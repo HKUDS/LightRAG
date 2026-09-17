@@ -53,6 +53,7 @@ from ..exceptions import (
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
+    VectorSpaceMismatchError,
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import (
@@ -4212,13 +4213,30 @@ class PGVectorStorage(BaseVectorStorage):
                                 f"Legacy table '{legacy_table_name}' has {legacy_dim}d vectors, "
                                 f"but new embedding model expects {embedding_dim}d."
                             )
-                            raise DataMigrationError(
-                                f"Dimension mismatch between legacy table '{legacy_table_name}' "
-                                f"and new embedding model. Expected {embedding_dim}d but got {legacy_dim}d."
+                            # Typed refusal, not DataMigrationError: nothing is
+                            # being migrated, and `lightrag-rebuild-vdb` recovers
+                            # from exactly this condition by dropping the
+                            # container and rebuilding it from the graph. It can
+                            # only do that if the refusal is distinguishable from
+                            # a database outage. See
+                            # docs/design/VectorSpaceProvenance.md.
+                            raise VectorSpaceMismatchError(
+                                backend="PGVectorStorage",
+                                container=legacy_table_name,
+                                expected_dim=embedding_dim,
+                                stored_dim=legacy_dim,
+                                detail=(
+                                    f"Its {legacy_count} row(s) for workspace "
+                                    f"'{workspace}' would otherwise be migrated "
+                                    f"into '{table_name}'."
+                                ),
                             )
 
-                    except DataMigrationError:
-                        # Re-raise DataMigrationError as-is to preserve specific error messages
+                    except (DataMigrationError, VectorSpaceMismatchError):
+                        # Re-raise as-is to preserve specific error messages --
+                        # and, for the refusal, its type: reframing it as a
+                        # migration failure below would hide it from the only
+                        # tool that can clear it.
                         raise
                     except Exception as e:
                         raise DataMigrationError(
@@ -4380,6 +4398,19 @@ class PGVectorStorage(BaseVectorStorage):
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
 
+            # Taken here, before anything that can refuse. setup_table() raises
+            # VectorSpaceMismatchError when the legacy table holds another
+            # embedding space, and a refused storage MUST still be able to serve
+            # drop(), which is how `lightrag-rebuild-vdb` clears that refusal.
+            # Assigning the lock after setup_table left it at None on the
+            # refusal path, so drop() then died on `async with None`. The
+            # workspace is final by this point, which is why this cannot move
+            # any earlier. See docs/design/VectorSpaceProvenance.md.
+            if self._flush_lock is None:
+                self._flush_lock = get_namespace_lock(
+                    self.namespace, workspace=self.workspace
+                )
+
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
                 self.db,
@@ -4388,11 +4419,6 @@ class PGVectorStorage(BaseVectorStorage):
                 embedding_dim=self.embedding_func.embedding_dim,
                 legacy_table_name=self.legacy_table_name,
                 base_table=self.legacy_table_name,  # base_table for DDL template lookup
-            )
-
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                self.namespace, workspace=self.workspace
             )
 
     async def finalize(self):
@@ -5336,6 +5362,11 @@ class PGVectorStorage(BaseVectorStorage):
         workspaces' legacy data and their pending one-time migration stay
         intact.
 
+        Callable on an instance whose ``initialize()`` refused with
+        ``VectorSpaceMismatchError``: that is the recovery
+        `lightrag-rebuild-vdb` performs, and it converges because the
+        legacy cleanup above removes the very rows the refusal was about.
+
         Concurrency contract:
             ``_flush_lock`` guards same-process flush / upsert / delete
             races only. Cross-worker buffered writes are NOT covered —
@@ -5362,10 +5393,17 @@ class PGVectorStorage(BaseVectorStorage):
             async with self._flush_lock:
                 self._pending_vector_docs.clear()
                 self._pending_vector_deletes.clear()
-                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                    table_name=self.table_name
-                )
-                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                # The suffixed table may legitimately not exist: an
+                # initialize() that refused with VectorSpaceMismatchError raised
+                # BEFORE creating it, and that refusal is exactly what
+                # `lightrag-rebuild-vdb` calls this method to clear. Nothing to
+                # delete there is success, not an error -- the legacy cleanup
+                # below is the part that actually clears the refusal.
+                if await self.db.check_table_exists(self.table_name):
+                    drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                        table_name=self.table_name
+                    )
+                    await self.db.execute(drop_sql, {"workspace": self.workspace})
 
                 # Also clear this workspace's rows from the kept legacy table so
                 # the next startup does not re-migrate the just-cleared data

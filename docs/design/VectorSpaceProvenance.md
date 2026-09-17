@@ -231,6 +231,41 @@ Two rules bind every raiser:
    has to delete the container out of band, which is the defect this work
    removes.
 
+### The named-container backends' refusal
+
+Milvus, Qdrant and PostgreSQL record no marker, but they each already compare
+the *dimension* of a container they are about to read against the one they are
+configured with. That comparison is the same refusal, so it raises the same
+type — and the two raiser rules apply to it unchanged.
+
+Three things that were wrong before and are now part of the contract:
+
+- **It is `VectorSpaceMismatchError`, not `DataMigrationError`.** Nothing is
+  being migrated when it fires; the container is simply in another embedding
+  space. Milvus additionally must not let `_validate_collection_and_load`
+  reframe it as the generic "manual intervention required" `RuntimeError`,
+  which is indistinguishable from a corrupt schema.
+- **A refused instance stays droppable.** Qdrant and PostgreSQL assigned
+  `_flush_lock` after the step that refuses, so `drop()` then died on
+  `async with None` — the OpenSearch bug again. Both now take the lock before
+  anything that can refuse, and `drop()` tolerates a container that does not
+  exist, because the refusal is raised *before* the new collection or table is
+  created.
+- **The refusal is scoped to what THIS workspace would migrate.** Qdrant's
+  legacy collection can be shared across tenants, and its gate counted every
+  tenant's points. That refused a workspace with nothing to migrate, and the
+  refusal could not be cleared: `drop()` only ever removes this workspace's
+  legacy points, so the next `initialize()` refused again — wedged, not
+  fail-closed. It now counts the legacy points this workspace would actually
+  migrate (all of them when the collection is untagged, which is exactly what
+  the migration below reads), so `drop()` → `initialize()` converges.
+
+A Milvus *legacy* collection in another embedding space is deliberately NOT a
+refusal: the suffixed collection does not exist yet, so nothing is being served
+out of the wrong space. The legacy collection is only a migration source, and an
+incompatible source is skipped. That case is the empty-container gate's, not
+this one's.
+
 ## The recovery protocol
 
 `lightrag/tools/rebuild_vdb.py`:
@@ -394,5 +429,5 @@ Each row lands with its own change; a row is only true once that change is in.
 | PR 2 | OpenSearch | marker in `_meta`; drop-capable while refused; fix the lost-`indices.create`-race attach that validates ownership but not compatibility |
 | PR 3 | MongoDB | marker in the JSON Schema validator `description`; `drop()` must rewrite that description and rebuild the Atlas search index when the DIMENSION changed (the index definition records a dimension and nothing else, so a same-dimension model change leaves a usable index) |
 | PR 4 / 5 | FAISS, Nano | marker in a `.space.json` sidecar / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
-| PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant assigns `_flush_lock` *after* its init block, the same shape as the OpenSearch bug) |
+| PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant and PostgreSQL assign `_flush_lock` *after* their init block, the same shape as the OpenSearch bug) — see *The named-container backends' refusal* |
 | gate | — | the empty-container gate and the adoption probe in `LightRAG.initialize_storages()` |
