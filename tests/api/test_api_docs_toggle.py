@@ -54,6 +54,10 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("TOKEN_SECRET", "")
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    # Part of the minimal viable server config since create_app began
+    # refusing to start without a named embedding model. The ollama
+    # binding's own default, so no EMBEDDING_DIM is implied.
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
 
     config._global_args = None
     config._initialized = False

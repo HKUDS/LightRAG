@@ -53,6 +53,7 @@ from ..exceptions import (
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
+    VectorSpaceMismatchError,
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import (
@@ -4137,6 +4138,24 @@ class PGVectorStorage(BaseVectorStorage):
         if not workspace:
             raise ValueError("workspace must be provided")
 
+        if embedding_dim is None:
+            # A dimension nobody declared is not an embedding-space change.
+            # `legacy_dim != None` in the compatibility check below would
+            # otherwise raise the typed refusal, and `lightrag-rebuild-vdb`
+            # answers that by DROPPING the container: this workspace's legacy
+            # rows would be deleted over a fact nobody reported, and the
+            # follow-up initialize() would then die on `VECTOR(None)` DDL, so
+            # the rebuild never happens either. Raised here rather than at the
+            # comparison because that check sits inside a `try` whose
+            # `except Exception` reframes everything it catches as
+            # DataMigrationError; out here it stays a plain, non-droppable
+            # schema error on every path through this function. See "Absent
+            # evidence never refuses" in docs/design/VectorSpaceProvenance.md.
+            raise ValueError(
+                f"embedding_dim must be provided to create or migrate "
+                f"'{table_name}': the configured embedding function declares none."
+            )
+
         new_table_exists = await db.check_table_exists(table_name)
         legacy_exists = legacy_table_name and await db.check_table_exists(
             legacy_table_name
@@ -4206,19 +4225,40 @@ class PGVectorStorage(BaseVectorStorage):
                                 vector_list = json.loads(vector_data)
                                 legacy_dim = len(vector_list)
 
+                        # Only the STORED side needs a presence check here:
+                        # `embedding_dim` is non-None by the guard at the top of
+                        # this function, so an undeclared dimension can never
+                        # reach the typed refusal below.
                         if legacy_dim and legacy_dim != embedding_dim:
                             logger.error(
                                 f"PostgreSQL: Dimension mismatch detected! "
                                 f"Legacy table '{legacy_table_name}' has {legacy_dim}d vectors, "
                                 f"but new embedding model expects {embedding_dim}d."
                             )
-                            raise DataMigrationError(
-                                f"Dimension mismatch between legacy table '{legacy_table_name}' "
-                                f"and new embedding model. Expected {embedding_dim}d but got {legacy_dim}d."
+                            # Typed refusal, not DataMigrationError: nothing is
+                            # being migrated, and `lightrag-rebuild-vdb` recovers
+                            # from exactly this condition by dropping the
+                            # container and rebuilding it from the graph. It can
+                            # only do that if the refusal is distinguishable from
+                            # a database outage. See
+                            # docs/design/VectorSpaceProvenance.md.
+                            raise VectorSpaceMismatchError(
+                                backend="PGVectorStorage",
+                                container=legacy_table_name,
+                                expected_dim=embedding_dim,
+                                stored_dim=legacy_dim,
+                                detail=(
+                                    f"Its {legacy_count} row(s) for workspace "
+                                    f"'{workspace}' would otherwise be migrated "
+                                    f"into '{table_name}'."
+                                ),
                             )
 
-                    except DataMigrationError:
-                        # Re-raise DataMigrationError as-is to preserve specific error messages
+                    except (DataMigrationError, VectorSpaceMismatchError):
+                        # Re-raise as-is to preserve specific error messages --
+                        # and, for the refusal, its type: reframing it as a
+                        # migration failure below would hide it from the only
+                        # tool that can clear it.
                         raise
                     except Exception as e:
                         raise DataMigrationError(
@@ -4380,6 +4420,19 @@ class PGVectorStorage(BaseVectorStorage):
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
 
+            # Taken here, before anything that can refuse. setup_table() raises
+            # VectorSpaceMismatchError when the legacy table holds another
+            # embedding space, and a refused storage MUST still be able to serve
+            # drop(), which is how `lightrag-rebuild-vdb` clears that refusal.
+            # Assigning the lock after setup_table left it at None on the
+            # refusal path, so drop() then died on `async with None`. The
+            # workspace is final by this point, which is why this cannot move
+            # any earlier. See docs/design/VectorSpaceProvenance.md.
+            if self._flush_lock is None:
+                self._flush_lock = get_namespace_lock(
+                    self.namespace, workspace=self.workspace
+                )
+
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
                 self.db,
@@ -4388,11 +4441,6 @@ class PGVectorStorage(BaseVectorStorage):
                 embedding_dim=self.embedding_func.embedding_dim,
                 legacy_table_name=self.legacy_table_name,
                 base_table=self.legacy_table_name,  # base_table for DDL template lookup
-            )
-
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                self.namespace, workspace=self.workspace
             )
 
     async def finalize(self):
@@ -5336,6 +5384,11 @@ class PGVectorStorage(BaseVectorStorage):
         workspaces' legacy data and their pending one-time migration stay
         intact.
 
+        Callable on an instance whose ``initialize()`` refused with
+        ``VectorSpaceMismatchError``: that is the recovery
+        `lightrag-rebuild-vdb` performs, and it converges because the
+        legacy cleanup above removes the very rows the refusal was about.
+
         Concurrency contract:
             ``_flush_lock`` guards same-process flush / upsert / delete
             races only. Cross-worker buffered writes are NOT covered —
@@ -5362,10 +5415,17 @@ class PGVectorStorage(BaseVectorStorage):
             async with self._flush_lock:
                 self._pending_vector_docs.clear()
                 self._pending_vector_deletes.clear()
-                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                    table_name=self.table_name
-                )
-                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                # The suffixed table may legitimately not exist: an
+                # initialize() that refused with VectorSpaceMismatchError raised
+                # BEFORE creating it, and that refusal is exactly what
+                # `lightrag-rebuild-vdb` calls this method to clear. Nothing to
+                # delete there is success, not an error -- the legacy cleanup
+                # below is the part that actually clears the refusal.
+                if await self.db.check_table_exists(self.table_name):
+                    drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                        table_name=self.table_name
+                    )
+                    await self.db.execute(drop_sql, {"workspace": self.workspace})
 
                 # Also clear this workspace's rows from the kept legacy table so
                 # the next startup does not re-migrate the just-cleared data

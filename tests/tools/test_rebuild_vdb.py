@@ -17,7 +17,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
+from lightrag.exceptions import VectorSpaceMismatchError
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
+from lightrag.namespace import NameSpace
 from lightrag.tools.rebuild_vdb import (
     check_vdb_consistency,
     rebuild_chunks_vdb,
@@ -1032,3 +1034,225 @@ def test_main_exits_zero_on_success(monkeypatch):
 
     # No SystemExit on success.
     rebuild_vdb.main()
+
+
+# ---------------------------------------------------------------------------
+# Embedding-space refusal: the tool must tolerate it, and only it
+# ---------------------------------------------------------------------------
+
+
+def _mismatch(container="entities_index"):
+    return VectorSpaceMismatchError(
+        backend="FakeVectorStorage",
+        container=container,
+        expected_model="new-model",
+        expected_dim=1024,
+        stored_model="old-model",
+        stored_dim=1024,
+    )
+
+
+class _RefusingVDB(MockVDB):
+    """A vector storage that refuses to attach until it has been dropped.
+
+    Models the contract every backend owes: the refusal leaves the instance
+    able to serve ``drop()``, and ``drop()`` re-provisions the container in the
+    current embedding space so the next ``initialize()`` attaches cleanly.
+    """
+
+    def __init__(self, refusals=1):
+        super().__init__()
+        self._refusals_left = refusals
+        self.init_calls = 0
+
+        async def _initialize():
+            self.init_calls += 1
+            if self._refusals_left > 0:
+                self._refusals_left -= 1
+                raise _mismatch()
+
+        async def _drop():
+            self.call_order.append("drop")
+            self.records.clear()
+            # A drop re-provisions the container, which is what clears the
+            # refusal; without this the tool would loop forever.
+            self._refusals_left = 0
+            return {"status": "success", "message": "data dropped"}
+
+        self.initialize = AsyncMock(side_effect=_initialize)
+        self.drop = AsyncMock(side_effect=_drop)
+
+
+def _tool_with_storages(entities, relationships, chunks):
+    tool = rebuild_vdb.RebuildTool()
+    tool.graph = SimpleNamespace(initialize=AsyncMock())
+    tool.text_chunks = SimpleNamespace(initialize=AsyncMock())
+    tool.entities_vdb = entities
+    tool.relationships_vdb = relationships
+    tool.chunks_vdb = chunks
+    for vdb in (entities, relationships, chunks):
+        if not hasattr(vdb, "initialize"):
+            vdb.initialize = AsyncMock()
+    tool.storage_names = {"graph": "g", "vector": "v", "kv": "k"}
+    tool.embedding_func = SimpleNamespace(
+        model_name="new-model", embedding_dim=1024, max_token_size=None
+    )
+    tool.embedding_available = True
+    return tool
+
+
+async def _setup_with(tool, monkeypatch):
+    """Drive the real setup_storages() with the test's fakes behind the factory.
+
+    The factory hands back exactly the objects the test built, keyed by
+    namespace, so the assertions inspect the same instances setup_storages()
+    initialized — a factory returning bare stand-ins would make every one of
+    these tests pass on an AttributeError instead of on the behaviour.
+    """
+    monkeypatch.setattr(tool, "resolve_storage_names", lambda: tool.storage_names)
+    monkeypatch.setattr(tool, "check_env_vars", lambda name: None)
+    monkeypatch.setattr(tool, "build_embedding_func", lambda: tool.embedding_func)
+    monkeypatch.setattr(
+        tool, "build_global_config", lambda: {"working_dir": "./rag_storage"}
+    )
+
+    by_namespace = {
+        NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION: tool.graph,
+        NameSpace.KV_STORE_TEXT_CHUNKS: tool.text_chunks,
+        NameSpace.VECTOR_STORE_ENTITIES: tool.entities_vdb,
+        NameSpace.VECTOR_STORE_RELATIONSHIPS: tool.relationships_vdb,
+        NameSpace.VECTOR_STORE_CHUNKS: tool.chunks_vdb,
+    }
+
+    def _fake_get_storage_class(name):
+        def _factory(*, namespace, **kwargs):
+            return by_namespace[namespace]
+
+        return _factory
+
+    import lightrag.kg.factory as factory
+
+    monkeypatch.setattr(factory, "get_storage_class", _fake_get_storage_class)
+    return await tool.setup_storages()
+
+
+@pytest.mark.asyncio
+async def test_setup_records_a_refused_vdb_instead_of_aborting(monkeypatch):
+    entities = _RefusingVDB()
+    tool = _tool_with_storages(entities, MockVDB(), MockVDB())
+
+    assert await _setup_with(tool, monkeypatch) is True
+
+    assert list(tool.incompatible_vdbs) == ["entities"]
+    assert "lightrag-rebuild-vdb" in tool.incompatible_vdbs["entities"]
+    # The sources and the healthy targets still came up.
+    tool.graph.initialize.assert_awaited()
+    tool.text_chunks.initialize.assert_awaited()
+    tool.relationships_vdb.initialize.assert_awaited()
+    tool.chunks_vdb.initialize.assert_awaited()
+    # A refusal is not a repair: nothing was dropped during setup.
+    entities.drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_setup_aborts_when_a_source_storage_fails(monkeypatch):
+    tool = _tool_with_storages(MockVDB(), MockVDB(), MockVDB())
+    tool.graph.initialize = AsyncMock(side_effect=RuntimeError("cluster down"))
+    assert await _setup_with(tool, monkeypatch) is False
+
+
+@pytest.mark.asyncio
+async def test_setup_aborts_on_a_non_typed_vector_failure(monkeypatch):
+    # A cluster outage must never be mistaken for a model change: the recovery
+    # for the typed refusal is destructive.
+    entities = MockVDB()
+    entities.initialize = AsyncMock(side_effect=RuntimeError("connection refused"))
+    tool = _tool_with_storages(entities, MockVDB(), MockVDB())
+    for vdb in (tool.relationships_vdb, tool.chunks_vdb):
+        vdb.initialize = AsyncMock()
+
+    assert await _setup_with(tool, monkeypatch) is False
+    assert tool.incompatible_vdbs == {}
+
+
+@pytest.mark.asyncio
+async def test_recovery_drops_then_reinitializes_the_refused_target():
+    entities = _RefusingVDB()
+    tool = _tool_with_storages(entities, MockVDB(), MockVDB())
+    with pytest.raises(VectorSpaceMismatchError):
+        await entities.initialize()  # the setup-time refusal
+    tool.incompatible_vdbs = {"entities": "refused"}
+
+    await tool.recover_incompatible(["entities", "relationships"])
+
+    entities.drop.assert_awaited_once()
+    # Two calls: the refusal, then the clean attach after the drop.
+    assert entities.init_calls == 2
+    assert tool.incompatible_vdbs == {}
+    # A target that never refused is left alone — no gratuitous drop.
+    tool.relationships_vdb.drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_reinitialize_when_the_drop_fails():
+    entities = _RefusingVDB()
+    entities.drop = AsyncMock(return_value={"status": "error", "message": "no perms"})
+
+    with pytest.raises(RuntimeError, match="Failed to drop"):
+        await rebuild_vdb.clear_vector_space_refusal(entities, "entities")
+    assert entities.init_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_check_reports_the_refusal_instead_of_all_records_missing():
+    graph = make_graph(
+        nodes=[node("Alice"), node("Bob")],
+        edges=[edge("Alice", "Bob")],
+    )
+    entities_vdb, relationships_vdb = MockVDB(), MockVDB()
+
+    report = await check_vdb_consistency(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        incompatible={"entities": str(_mismatch())},
+    )
+
+    assert report["incompatible"]["entities"]
+    assert report["consistent"] is False
+    # The refused store is not probed at all, so it reports no false drift.
+    entities_vdb.get_by_ids.assert_not_awaited()
+    assert report["missing_entities"] == 0
+    assert report["graph_entities"] == 2
+    # Its healthy sibling is still probed and still reports honestly.
+    relationships_vdb.get_by_ids.assert_awaited()
+    assert report["missing_relations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_check_without_refusals_is_unchanged():
+    graph = make_graph(nodes=[node("Alice")])
+    report = await check_vdb_consistency(graph, MockVDB(), MockVDB())
+    assert report["incompatible"] == {}
+    assert report["consistent"] is False  # the vdb really is empty
+    assert report["missing_entities"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    tool.print_source_counts = AsyncMock()
+    monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: True)
+    tool.incompatible_vdbs = {"entities": "refused", "chunks": "refused"}
+    tool.recover_incompatible = AsyncMock()
+
+    ok = rebuild_vdb._new_stats("entities", 1)
+    ok["rebuilt"] = 1
+    tool.run_rebuild_entities_relations = AsyncMock(return_value=[ok])
+
+    assert await tool.run() is True
+    # Option 2 rebuilds entities + relationships only, so only those are
+    # recovered; chunks stays refused until its own rebuild.
+    tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
