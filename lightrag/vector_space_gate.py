@@ -242,9 +242,13 @@ async def _vectors_are_expected(doc_status) -> bool:
       repairs it" is simply false, because no pipeline run will ever recreate
       objects an operator created by hand.
 
-    Anything PENDING, PARSING, ANALYZING, PROCESSING or FAILED is the opposite:
-    the residue has an owner and heals by being retried. Counting only the
-    unfinished states is also what keeps a PROCESSED row from being read as
+    Every other state -- PENDING, PARSING, ANALYZING, PREPROCESSED, PROCESSING,
+    FAILED -- is the opposite: the residue has an owner and heals by being
+    retried. The list is DERIVED from ``DocStatus`` rather than written out,
+    which is the safe direction for a state added later: a new member counts as
+    unfinished and can only ever suppress a refusal, never enable one. Counting
+    only the unfinished states is also what keeps a PROCESSED row from being
+    read as
     evidence about THESE entities -- the graph sample is ranked by degree, so an
     ingest that crashed after writing a batch of well-connected nodes but before
     their vector upserts fills the whole sample with rows that never had
