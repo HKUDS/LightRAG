@@ -1517,6 +1517,25 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             f"existing={existing_dimension}, current={current_dimension}"
                         ) from e
 
+                    # A dimension that is MISSING is not an embedding-space
+                    # change. `None != 768` would otherwise raise the typed
+                    # refusal, and `lightrag-rebuild-vdb` answers that by
+                    # DROPPING the collection -- so a malformed describe_collection
+                    # response, or an embedding_func that never declared a
+                    # dimension, would authorise destroying live vectors. A fact
+                    # nobody reported can never be evidence of a mismatch; see
+                    # "Absent evidence never refuses" in
+                    # docs/design/VectorSpaceProvenance.md.
+                    if existing_dim_int is None or current_dim_int is None:
+                        logger.error(
+                            f"[{self.workspace}] Missing dimension: existing={existing_dimension}, "
+                            f"current={current_dimension}"
+                        )
+                        raise ValueError(
+                            f"Missing dimension values for collection '{container}': "
+                            f"existing={existing_dimension}, current={current_dimension}"
+                        )
+
                     if existing_dim_int != current_dim_int:
                         raise VectorSpaceMismatchError(
                             backend=type(self).__name__,
