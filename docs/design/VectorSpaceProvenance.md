@@ -407,6 +407,14 @@ batch that failed and will be retried, a graph built through the admin API.
 escalated, and escalating it here refuses to start the very process whose next
 run repairs it.
 
+A backend that declares `persists_vectors = False` (`NoopVectorDBStorage`) is
+never judged at all: its reads are misses BY DESIGN, so every question here has
+a known, meaningless answer. Graph-only ingestion is a supported configuration,
+and after its first document the graph holds entities and doc-status holds a
+`PROCESSED` row — without this the gate refuses every restart of it, and
+`rebuilding_vector_storage` is not the answer, because such a deployment is not
+rebuilding anything. Same capability `lightrag-rebuild-vdb` already reads.
+
 A second exemption is **declared, not inferred**. An in-process rebuild BEGINS
 from the state the gate refuses, and so does the supported switch from
 `NoopVectorDBStorage` (graph-only ingestion, which writes no vectors by design)
@@ -447,6 +455,22 @@ still holds half its rows survives 32 lookups with probability 2⁻³², while o
 that has lost 99% of them is caught about half the time — and being caught is
 the right answer there too. It costs one graph query and one batched read per
 startup, and no backend has to grow a method.
+
+**An empty read is confirmed before it is believed.** Every server-backed
+`get_by_ids` — Milvus, Qdrant, PostgreSQL, MongoDB, OpenSearch — CATCHES its
+transport errors, logs them, and returns an empty list, so "the container is
+empty" and "the cluster blinked" arrive at the gate as the same value and no
+`try`/`except` around the call can separate them. What bounds the damage is
+`initialize()`: all five do authenticated I/O there and raise on failure, so a
+sustained outage never reaches the gate — only a blip in the few milliseconds
+since. A second read on the refusal path turns most of those blips back into a
+start, and an *exception* from that read is the one failure the backends do
+surface, so it is treated as "not evidence" and never refuses.
+
+Accepted residue: a blip spanning both reads still refuses, and the advice it
+gives — rebuild — is destructive. Closing it needs a read that fails loudly,
+which no vector backend offers today; adding one is a strict-read variant on
+every backend, which is a larger change than the window it closes.
 
 One shape had to be handled explicitly. The backends **disagree on what a miss
 looks like**: `BaseVectorStorage.get_by_ids` documents "the objects that were
@@ -505,8 +529,15 @@ untouched:
   `False` costs one more probe next start; raising would turn a safety feature
   into an outage.
 
-`initialize_storages()` probes `entities_vdb` because the graph's own ids
-address it directly, then adopts every pending storage: the three share one
+`initialize_storages()` marks the storages `INITIALIZED` **before** running
+either check. They have all completed `initialize()` by then and hold clients,
+pools and locks, and `finalize_storages()` skips the entire teardown unless the
+status says so — a caller that catches a refusal (to report it, or to go and
+rebuild) would otherwise leak every one of them, and a retry on the same object
+would initialize them twice.
+
+It probes `entities_vdb` because the graph's own ids address it directly, then
+adopts every pending storage: the three share one
 `embedding_func` and were written by the same deployment, so one probe settles
 all three.
 

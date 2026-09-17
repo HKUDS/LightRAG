@@ -230,6 +230,27 @@ async def _has_processed_documents(doc_status) -> bool:
     return int(counts.get(DocStatus.PROCESSED.value, 0) or 0) > 0
 
 
+async def _reread_sample(
+    entities_vdb, sample_ids: list[str]
+) -> list[dict[str, Any]] | None:
+    """Ask the vector storage for the sample once more.
+
+    Returns the rows it found, or ``None`` when the read itself failed -- the
+    one case the backends DO surface, and an unambiguous "this is not
+    evidence". Only ever called on the path that is about to refuse, so the
+    extra round trip is not on anyone's healthy startup.
+    """
+    try:
+        found = await entities_vdb.get_by_ids(sample_ids)
+    except Exception as e:
+        logger.warning(
+            f"Not refusing an empty vector storage: the confirming read failed "
+            f"({type(e).__name__}: {e})"
+        )
+        return None
+    return [row for row in (found or []) if isinstance(row, dict)]
+
+
 async def check_vector_space_at_startup(
     *,
     graph,
@@ -273,6 +294,17 @@ async def check_vector_space_at_startup(
     logged and swallowed, because none of them is evidence about the embedding
     space and none of them was a startup failure before this check existed.
     """
+    if not getattr(entities_vdb, "persists_vectors", True):
+        # NoopVectorDBStorage and anything else that declares it keeps no
+        # vectors: its reads are misses BY DESIGN, so every question below has
+        # a known, meaningless answer. Graph-only ingestion is a supported
+        # configuration, and after its first document the graph holds entities
+        # and doc-status holds a PROCESSED row -- so without this the gate
+        # would refuse every restart. `rebuilding_vector_storage` is not the
+        # answer there: such a deployment is not rebuilding anything.
+        # Same capability `lightrag-rebuild-vdb` already reads.
+        return
+
     pending = []
     for vdb in adoptable:
         try:
@@ -314,6 +346,26 @@ async def check_vector_space_at_startup(
     # difference between catching a vanished vector store and starting on top
     # of one, so the rows are counted, not the list.
     rows = [row for row in (found or []) if isinstance(row, dict)]
+
+    if not rows:
+        # Read it again before believing it. Every server-backed vector storage
+        # CATCHES its transport errors inside get_by_ids, logs them, and
+        # returns an empty list -- so "the container is empty" and "the cluster
+        # blinked" arrive here as the same value, and the try/except above
+        # cannot tell them apart. What bounds this is initialize(): Milvus,
+        # Qdrant, PostgreSQL, MongoDB and OpenSearch all do authenticated I/O
+        # there and RAISE on failure, so a sustained outage never reaches this
+        # line -- only a blip inside the few milliseconds since. A second read
+        # is what turns most of those blips back into a start.
+        #
+        # Not closed: a blip spanning both reads still refuses, and the advice
+        # it gives (rebuild) is destructive. Closing it needs a read that fails
+        # loudly, which no backend offers today. See
+        # docs/design/VectorSpaceProvenance.md.
+        confirmation = await _reread_sample(entities_vdb, sample_ids)
+        if confirmation is None:
+            return
+        rows = confirmation
 
     if not rows:
         if expect_empty_vector_storage:

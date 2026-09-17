@@ -2062,6 +2062,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 require=bool(self.pipeline_require_strict_storage_reads),
             )
 
+            # Marked INITIALIZED before the embedding-space check, not after.
+            # Every storage above has completed initialize(), so they hold
+            # clients, pools and locks -- and finalize_storages() skips the
+            # whole teardown unless the status says so. A caller that catches
+            # the refusal below (to report it, or to run a rebuild) would
+            # otherwise leak every one of them, and a retry on the same object
+            # would initialize them twice.
+            self._storages_status = StoragesStatus.INITIALIZED
+
             # The two checks no single storage can make for itself: the graph
             # holds entities while the vector store holds none (a model change
             # on a backend that names its container after the model), and an
@@ -2091,8 +2100,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         if vdb is not None
                     ],
                 )
-
-            self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
 
     def _get_parse_native_executor(self) -> ThreadPoolExecutor:

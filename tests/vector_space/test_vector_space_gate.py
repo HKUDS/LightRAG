@@ -69,6 +69,8 @@ class FakeVectorStorage:
     final_namespace = "vdb_entities_probe"
     namespace = "entities"
 
+    persists_vectors = True
+
     def __init__(
         self,
         rows=None,
@@ -80,6 +82,7 @@ class FakeVectorStorage:
         read_error=None,
         vector_read_error=None,
     ):
+        self.reads = 0
         self._rows = list(rows or [])
         self._vectors = dict(vectors or {})
         self._pending = pending
@@ -90,6 +93,7 @@ class FakeVectorStorage:
         self.adopted = 0
 
     async def get_by_ids(self, ids):
+        self.reads += 1
         if self._read_error is not None:
             raise self._read_error
         wanted = set(ids)
@@ -228,6 +232,62 @@ class TestEmptyContainerGate:
             FakeEmbedding(),
             doc_status=FakeDocStatus(error=RuntimeError("doc status down")),
         )
+
+    async def test_a_non_persistent_backend_is_never_judged(self):
+        """NoopVectorDBStorage keeps no vectors, so its reads are misses BY
+        DESIGN. Graph-only ingestion is supported, and after its first document
+        the graph holds entities and doc-status holds a PROCESSED row -- the
+        gate would otherwise refuse every restart of it."""
+
+        class NoopLike(FakeVectorStorage):
+            persists_vectors = False
+
+        vdb = NoopLike(rows=[], pending=True)
+        embedding = FakeEmbedding()
+
+        await _run(FakeGraph(labels=["Alice", "Bob"]), vdb, embedding)
+
+        # Nothing was even asked of it.
+        assert (vdb.reads, embedding.calls, vdb.adopted) == (0, 0, 0)
+
+    async def test_an_empty_read_is_confirmed_before_refusing(self):
+        """Every server-backed get_by_ids CATCHES its transport errors and
+        returns an empty list, so 'empty' and 'the cluster blinked' arrive as
+        the same value. A blip on the first read must not refuse."""
+
+        class BlinkingStorage(FakeVectorStorage):
+            async def get_by_ids(self, ids):
+                self.reads += 1
+                if self.reads == 1:
+                    return []  # the swallowed failure
+                return [_entity_row()]
+
+        vdb = BlinkingStorage()
+
+        await _run(FakeGraph(labels=["Alice"]), vdb, FakeEmbedding())
+
+        assert vdb.reads == 2
+
+    async def test_a_genuinely_empty_store_still_refuses_after_confirming(self):
+        vdb = FakeVectorStorage(rows=[])
+
+        with pytest.raises(VectorStorageEmptyError):
+            await _run(FakeGraph(labels=["Alice"]), vdb, FakeEmbedding())
+
+        assert vdb.reads == 2
+
+    async def test_a_raising_confirmation_read_does_not_refuse(self):
+        """An exception is the one failure the backends DO surface, and it is
+        unambiguous: the read did not run, so it is not evidence."""
+
+        class FailsOnConfirmation(FakeVectorStorage):
+            async def get_by_ids(self, ids):
+                self.reads += 1
+                if self.reads == 1:
+                    return []
+                raise RuntimeError("cluster down")
+
+        await _run(FakeGraph(labels=["Alice"]), FailsOnConfirmation(), FakeEmbedding())
 
     async def test_a_populated_vdb_passes(self):
         graph = FakeGraph(labels=["Alice"])

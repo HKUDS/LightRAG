@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG
-from lightrag.base import DocStatus
+from lightrag.base import DocStatus, StoragesStatus
 from lightrag.exceptions import VectorStorageEmptyError
 from lightrag.kg.shared_storage import initialize_share_data
 from lightrag.kg.vector_space import VECTOR_SPACE_MODEL_KEY
@@ -63,11 +63,12 @@ def _workspace(tmp_path) -> str:
     return f"gate-{tmp_path.name}"
 
 
-def _rag(tmp_path, *, model_name, rebuilding=False):
+def _rag(tmp_path, *, model_name, rebuilding=False, vector_storage=None):
     return LightRAG(
         working_dir=str(tmp_path),
         workspace=_workspace(tmp_path),
         rebuilding_vector_storage=rebuilding,
+        **({"vector_storage": vector_storage} if vector_storage else {}),
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=_DIM,
@@ -189,6 +190,56 @@ async def test_the_rebuild_flag_is_off_by_default(tmp_path):
 
     with pytest.raises(VectorStorageEmptyError):
         await _rag(tmp_path, model_name="bge-m3").initialize_storages()
+
+
+async def test_a_graph_only_deployment_restarts(tmp_path):
+    """NoopVectorDBStorage keeps no vectors by design, so after one ingested
+    document the graph holds entities, doc-status holds a PROCESSED row, and
+    every vector read is a miss. Graph-only is a supported configuration: the
+    gate must not refuse its every restart, and `rebuilding_vector_storage` is
+    not the answer because such a deployment is not rebuilding anything."""
+    seeded = _rag(tmp_path, model_name="bge-m3", vector_storage="NoopVectorDBStorage")
+    await seeded.initialize_storages()
+    await seeded.chunk_entity_relation_graph.upsert_node(
+        "Alice", {"entity_id": "Alice", "description": "an engineer"}
+    )
+    await seeded.doc_status.upsert(
+        {
+            "doc-seeded": {
+                "status": DocStatus.PROCESSED,
+                "content_summary": "Alice",
+                "content_length": 5,
+                "chunks_count": 1,
+                "chunks_list": ["chunk-1"],
+                "file_path": "alice.txt",
+            }
+        }
+    )
+    await seeded.chunk_entity_relation_graph.index_done_callback()
+    await seeded.doc_status.index_done_callback()
+    await seeded.finalize_storages()
+
+    restarted = _rag(
+        tmp_path, model_name="bge-m3", vector_storage="NoopVectorDBStorage"
+    )
+    await restarted.initialize_storages()
+    await restarted.finalize_storages()
+
+
+async def test_a_refused_instance_can_still_be_finalized(tmp_path):
+    """The refusal is raised AFTER every storage has initialized, so they hold
+    clients, pools and locks. A caller that catches it -- to report it, or to
+    go and rebuild -- must be able to tear them down; finalize_storages() skips
+    the whole teardown unless the status says the storages are up."""
+    await _seed(tmp_path, model_name="bge-m3")
+    (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    with pytest.raises(VectorStorageEmptyError):
+        await rag.initialize_storages()
+
+    assert rag._storages_status is StoragesStatus.INITIALIZED
+    await rag.finalize_storages()
 
 
 async def test_an_empty_deployment_starts(tmp_path):
