@@ -53,14 +53,15 @@ class FakeGraph:
 class FakeDocStatus:
     """Doc-status with just the one question the gate asks."""
 
-    def __init__(self, processed=1, error=None):
+    def __init__(self, processed=1, error=None, unfinished=0):
         self._processed = processed
         self._error = error
+        self._unfinished = unfinished
 
     async def get_status_counts(self):
         if self._error is not None:
             raise self._error
-        return {"processed": self._processed, "pending": 0}
+        return {"processed": self._processed, "processing": self._unfinished}
 
 
 class FakeVectorStorage:
@@ -139,15 +140,12 @@ def _entity_row(name="Alice", content="Alice is an engineer."):
     return {"id": compute_mdhash_id(name, prefix="ent-"), "content": content}
 
 
-async def _run(
-    graph, vdb, embedding, adoptable=None, doc_status=None, rebuilding=False
-):
+async def _run(graph, vdb, embedding, doc_status=None, rebuilding=False):
     await check_vector_space_at_startup(
         graph=graph,
         entities_vdb=vdb,
         doc_status=FakeDocStatus() if doc_status is None else doc_status,
         embedding_func=embedding,
-        adoptable=[vdb] if adoptable is None else adoptable,
         expect_empty_vector_storage=rebuilding,
     )
 
@@ -219,6 +217,22 @@ class TestEmptyContainerGate:
             FakeVectorStorage(rows=[]),
             FakeEmbedding(),
             doc_status=FakeDocStatus(processed=0),
+        )
+
+    async def test_unfinished_work_anywhere_does_not_refuse(self):
+        """A PROCESSED row says nothing about THESE entities. The graph is
+        ranked by degree, so an ingest that crashed after writing a batch of
+        well-connected nodes but before their vector upserts fills the whole
+        sample with rows that never had vectors -- while an older, unrelated
+        PROCESSED document supplies the "evidence" to refuse on. That refuses
+        the retry that would have healed it."""
+        graph = FakeGraph(labels=["Alice", "Bob"])
+
+        await _run(
+            graph,
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(processed=5, unfinished=1),
         )
 
     async def test_an_unreadable_doc_status_does_not_refuse(self):
@@ -461,26 +475,29 @@ class TestAdoptionProbe:
 
         await _run(graph, vdb, embedding)
 
-    async def test_every_pending_storage_is_adopted_from_the_one_probe(self):
-        """The three vector storages share one embedding_func and were written
-        by the same deployment, so probing the entity store settles it."""
+    async def test_only_the_probed_store_is_adopted(self):
+        """The three vector targets share an embedding_func but NOT a history.
+
+        ``lightrag-rebuild-vdb`` rebuilds entities, relationships and chunks
+        separately, so an interrupted rebuild after a same-dimension model
+        change can leave entities in the current space while the others still
+        hold the previous model's vectors. Stamping this model onto those on
+        the entity verdict would record a lie permanently -- the exact failure
+        this feature exists to prevent -- so a store nobody probed stays
+        unmarked.
+        """
         row = _entity_row()
         entities = FakeVectorStorage(
             rows=[row], vectors={row["id"]: [1.0, 0.0]}, pending=True
         )
         relationships = FakeVectorStorage(pending=True)
-        chunks = FakeVectorStorage(pending=False)
         embedding = FakeEmbedding([1.0, 0.0])
 
-        await _run(
-            FakeGraph(labels=["Alice"]),
-            entities,
-            embedding,
-            adoptable=[entities, relationships, chunks],
-        )
+        await _run(FakeGraph(labels=["Alice"]), entities, embedding)
 
         assert embedding.calls == 1
-        assert (entities.adopted, relationships.adopted, chunks.adopted) == (1, 1, 0)
+        assert entities.adopted == 1
+        assert relationships.adopted == 0
 
 
 # ---------------------------------------------------------------------------

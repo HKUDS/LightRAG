@@ -536,10 +536,28 @@ status says so — a caller that catches a refusal (to report it, or to go and
 rebuild) would otherwise leak every one of them, and a retry on the same object
 would initialize them twice.
 
-It probes `entities_vdb` because the graph's own ids address it directly, then
-adopts every pending storage: the three share one
-`embedding_func` and were written by the same deployment, so one probe settles
-all three.
+It probes `entities_vdb` because the graph's own ids address it directly, and
+adopts **only that store**. The three vector targets share an `embedding_func`
+but NOT a history: `lightrag-rebuild-vdb` rebuilds entities, relationships and
+chunks separately, and offers *entities + relationships* as a partial target, so
+an interrupted rebuild after a same-dimension model change can leave entities in
+the current space while relationships or chunks still hold the previous model's
+vectors. Adopting those on the entity verdict would stamp this model's name onto
+foreign vectors — permanently, invisibly, and beyond the reach of every later
+start. That is the exact lie this feature exists to prevent, so a store nobody
+probed stays unmarked. Probing relationships and chunks needs their own samples
+(graph edges, and `text_chunks` ids) and is deliberately left to a follow-up
+rather than approximated.
+
+**A refusal is sticky, and does not mean "not initialized".** The storages are
+all up when either check refuses, so `_storages_status` says `INITIALIZED` and
+`finalize_storages()` — which skips its whole teardown otherwise — can release
+their clients, pools and locks. The refusal is remembered on the instance and
+re-raised by any later `initialize_storages()`, because that method returns
+early once initialized and would otherwise come back *successful without
+re-running the check*, turning a fail-closed gate into a one-shot one.
+`check_lightrag_setup` reports a refused instance as not ready for the same
+reason.
 
 ## Accepted residues
 

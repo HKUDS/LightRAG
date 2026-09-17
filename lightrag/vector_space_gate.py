@@ -203,13 +203,25 @@ async def _probe_same_embedding_space(
     )
 
 
-async def _has_processed_documents(doc_status) -> bool:
-    """Whether the pipeline has ever finished a document in this workspace.
+async def _every_document_is_processed(doc_status) -> bool:
+    """Whether this workspace has finished documents and NOTHING else in it.
 
     A PROCESSED document is the pipeline's own claim that it wrote everything
-    that document produces, vectors included. That claim is what makes a
-    missing vector a defect rather than work still in flight, so it is the
-    difference between the gate and a false alarm.
+    that document produces, vectors included, which is what makes a missing
+    vector a defect rather than work still in flight.
+
+    But a PROCESSED row *somewhere* says nothing about the entities in THIS
+    sample. The graph is ranked by degree, so an ingest that crashed after
+    writing a batch of well-connected nodes but before their vector upserts can
+    fill the whole sample with rows that never had vectors -- while an older,
+    unrelated PROCESSED document supplies the "evidence" to refuse on. That
+    refuses the restart that would have healed it.
+
+    So every document has to be finished. A workspace holding anything PENDING,
+    PARSING, ANALYZING, PROCESSING or FAILED has work whose residue is exactly
+    "the graph is ahead of the vector store", and it heals by being retried,
+    not by being refused. Erring towards not-refusing is the documented
+    direction for this whole check.
 
     Anything that goes wrong here answers ``False``: a doc-status backend that
     cannot be read is not evidence that vectors are missing, and this is the
@@ -227,7 +239,23 @@ async def _has_processed_documents(doc_status) -> bool:
         return False
     if not isinstance(counts, dict):
         return False
-    return int(counts.get(DocStatus.PROCESSED.value, 0) or 0) > 0
+
+    def _count(status: DocStatus) -> int:
+        return int(counts.get(status.value, 0) or 0)
+
+    if _count(DocStatus.PROCESSED) <= 0:
+        return False
+    unfinished = sum(
+        _count(status) for status in DocStatus if status is not DocStatus.PROCESSED
+    )
+    if unfinished:
+        logger.warning(
+            f"Not refusing an empty vector storage: {unfinished} document(s) in "
+            f"this workspace have not finished processing, so a graph ahead of "
+            f"the vector store is work in flight rather than a defect."
+        )
+        return False
+    return True
 
 
 async def _reread_sample(
@@ -257,7 +285,6 @@ async def check_vector_space_at_startup(
     entities_vdb,
     doc_status=None,
     embedding_func,
-    adoptable=(),
     expect_empty_vector_storage: bool = False,
 ) -> None:
     """Run the empty-container gate, then the adoption probe if one is needed.
@@ -274,10 +301,6 @@ async def check_vector_space_at_startup(
         doc_status: the doc-status storage. Consulted only when the sample comes
             back empty, so the healthy path pays nothing for it.
         embedding_func: this instance's embedding function.
-        adoptable: the vector storages that may be adopted on a positive
-            verdict. They share one ``embedding_func`` and were written by the
-            same deployment, so the evidence gathered from ``entities_vdb``
-            settles the question for all of them.
         expect_empty_vector_storage: this caller is about to repopulate the
             vector storages, so an empty one is the expected starting state
             rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
@@ -305,16 +328,26 @@ async def check_vector_space_at_startup(
         # Same capability `lightrag-rebuild-vdb` already reads.
         return
 
+    # ONLY the entity store is adoptable here, because it is the only one this
+    # function gathers evidence about. The three vector targets share an
+    # ``embedding_func`` but NOT a history: `lightrag-rebuild-vdb` rebuilds
+    # entities, relationships and chunks separately (and offers
+    # "entities_vdb + relationships_vdb" as a partial target), so an
+    # interrupted rebuild after a same-dimension model change can leave
+    # entities in the current space while relationships or chunks still hold
+    # the previous model's vectors. Adopting those on the entity verdict would
+    # stamp this model's name onto foreign vectors -- permanently, and
+    # invisibly, which is the exact lie this whole feature exists to prevent.
+    # They stay unmarked until they can be probed with their own sample.
     pending = []
-    for vdb in adoptable:
-        try:
-            if await vdb.vector_space_adoption_pending():
-                pending.append(vdb)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning(
-                f"Could not ask {type(vdb).__name__} whether it needs "
-                f"embedding-space adoption: {e}"
-            )
+    try:
+        if await entities_vdb.vector_space_adoption_pending():
+            pending.append(entities_vdb)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(
+            f"Could not ask {type(entities_vdb).__name__} whether it needs "
+            f"embedding-space adoption: {e}"
+        )
 
     try:
         sample_ids = await _sample_entity_ids(graph, SAMPLE_SIZE)
@@ -379,7 +412,7 @@ async def check_vector_space_at_startup(
                 f"Serving anyway: this instance declared it is rebuilding them."
             )
             return
-        if await _has_processed_documents(doc_status):
+        if await _every_document_is_processed(doc_status):
             raise VectorStorageEmptyError(
                 vdb_name="entities",
                 container=getattr(entities_vdb, "final_namespace", None),

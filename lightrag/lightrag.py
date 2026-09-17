@@ -176,6 +176,8 @@ from lightrag.exceptions import (
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
     RecoveryAnchorMissingError,
+    VectorSpaceMismatchError,
+    VectorStorageEmptyError,
     flush_may_have_lost_reference,
 )
 from lightrag.utils import (
@@ -1681,6 +1683,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
 
+        # The embedding-space refusal, once raised, so a retry re-raises it
+        # instead of taking initialize_storages()'s already-initialized early
+        # return. A plain attribute, not a dataclass field: field order here is
+        # public API (see rebuilding_vector_storage) and this is internal state,
+        # never a constructor argument.
+        self._vector_space_refusal: Exception | None = None
+
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
         # behaviour); a negative value is a misconfiguration, fail fast.
         if self.pipeline_scheduling_page_size < 0:
@@ -2014,6 +2023,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
+        # A refusal is sticky. The storages below really are up -- which is why
+        # the status says so, and why finalize_storages() can tear them down --
+        # but the embedding-space verdict was NEGATIVE, and nothing about
+        # calling this again changes that. Without this, a retry would take the
+        # `status != CREATED` early return and come back successful WITHOUT
+        # re-running the check, turning a fail-closed gate into a one-shot one.
+        if self._vector_space_refusal is not None:
+            raise self._vector_space_refusal
         if self._storages_status == StoragesStatus.CREATED:
             # Record the loop the storages (and their shared_storage locks) bind
             # to, so the synchronous wrappers can fail fast if later driven from a
@@ -2084,22 +2101,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.entities_vdb is not None
                 and self.chunk_entity_relation_graph is not None
             ):
-                await check_vector_space_at_startup(
-                    graph=self.chunk_entity_relation_graph,
-                    entities_vdb=self.entities_vdb,
-                    doc_status=self.doc_status,
-                    embedding_func=self.embedding_func,
-                    expect_empty_vector_storage=self.rebuilding_vector_storage,
-                    adoptable=[
-                        vdb
-                        for vdb in (
-                            self.entities_vdb,
-                            self.relationships_vdb,
-                            self.chunks_vdb,
-                        )
-                        if vdb is not None
-                    ],
-                )
+                try:
+                    await check_vector_space_at_startup(
+                        graph=self.chunk_entity_relation_graph,
+                        entities_vdb=self.entities_vdb,
+                        doc_status=self.doc_status,
+                        embedding_func=self.embedding_func,
+                        expect_empty_vector_storage=self.rebuilding_vector_storage,
+                    )
+                except (VectorSpaceMismatchError, VectorStorageEmptyError) as refusal:
+                    self._vector_space_refusal = refusal
+                    raise
             logger.debug("All storage types initialized")
 
     def _get_parse_native_executor(self) -> ThreadPoolExecutor:

@@ -242,6 +242,42 @@ async def test_a_refused_instance_can_still_be_finalized(tmp_path):
     await rag.finalize_storages()
 
 
+async def test_a_refusal_is_sticky_across_retries(tmp_path):
+    """The storages really are up, so the status says INITIALIZED and teardown
+    works -- but the verdict was NEGATIVE, and calling initialize_storages()
+    again changes nothing about that. Without this it would take the
+    already-initialized early return and come back successful WITHOUT re-running
+    the check, turning a fail-closed gate into a one-shot one."""
+    await _seed(tmp_path, model_name="bge-m3")
+    (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    with pytest.raises(VectorStorageEmptyError):
+        await rag.initialize_storages()
+
+    with pytest.raises(VectorStorageEmptyError):
+        await rag.initialize_storages()
+
+    await rag.finalize_storages()
+
+
+async def test_a_refused_instance_is_not_reported_ready(tmp_path):
+    """The initialization diagnostic reads _storages_status, which now says
+    INITIALIZED on a refused instance. Reporting that one as ready is the one
+    thing it must not do."""
+    from lightrag.tools.check_initialization import check_lightrag_setup
+
+    await _seed(tmp_path, model_name="bge-m3")
+    (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    with pytest.raises(VectorStorageEmptyError):
+        await rag.initialize_storages()
+
+    assert await check_lightrag_setup(rag) is False
+    await rag.finalize_storages()
+
+
 async def test_an_empty_deployment_starts(tmp_path):
     """Nothing has been ingested yet, so there is nothing that SHOULD have a
     vector. A fresh install must not be refused for being fresh."""
