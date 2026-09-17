@@ -316,3 +316,39 @@ def run_integration_tests(request):
 
     # Fall back to environment variable
     return os.getenv("LIGHTRAG_RUN_INTEGRATION", "false").lower() == "true"
+
+
+@pytest.fixture(autouse=True)
+def _configured_embedding_model(monkeypatch):
+    """Give every test that builds a server the EMBEDDING_MODEL it now requires.
+
+    ``create_app`` refuses to start without one: the model's name is what each
+    vector storage records beside its vectors, and it is the only thing that
+    detects a later switch to a different model of the SAME dimension. A server
+    that cannot name its model has no protected way through an embedding
+    change, which LightRAG only supports as stop / rebuild / restart.
+
+    This lives at the ROOT rather than under ``tests/api/`` because the
+    requirement belongs to ``create_app``, not to a directory. Server-building
+    tests are not confined to ``tests/api/`` -- ``tests/llm/bedrock_impl/`` and
+    ``tests/llm/ollama_impl/`` call it too -- and a default scoped to one tree
+    leaves every caller outside it failing on a condition it never meant to
+    test. CI found exactly that.
+
+    It sets the variable only when the environment does not already carry one,
+    so a test that wants a specific model still wins, and a test that wants it
+    UNSET still wins as well: a function-scoped fixture runs before the test
+    body, so a later ``monkeypatch.delenv`` in the body takes effect.
+    ``tests/api/test_embedding_model_required.py`` and
+    ``tests/tools/test_rebuild_vdb.py`` both rely on that.
+
+    The value is the default binding's OWN default model, not an invented
+    name: a custom model obliges the operator to set ``EMBEDDING_DIM`` too
+    (see ``create_optimized_embedding_function``), and making every such test
+    carry a dimension it does not care about would be a second, unrelated
+    change to what they configure.
+    """
+    import os
+
+    if not (os.environ.get("EMBEDDING_MODEL") or "").strip():
+        monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
