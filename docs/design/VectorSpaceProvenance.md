@@ -407,8 +407,20 @@ batch that failed and will be retried, a graph built through the admin API.
 escalated, and escalating it here refuses to start the very process whose next
 run repairs it.
 
-The discriminator is **doc-status**: the gate refuses only when at least one
-document is `PROCESSED`. That status is the pipeline's own claim that it wrote
+A second exemption is **declared, not inferred**. An in-process rebuild BEGINS
+from the state the gate refuses, and so does the supported switch from
+`NoopVectorDBStorage` (graph-only ingestion, which writes no vectors by design)
+to a real vector backend. `lightrag-rebuild-vdb` never reaches this check — it
+drives the storages directly — but a program rebuilding through a `LightRAG`
+instance does, so it says so with `rebuilding_vector_storage=True`.
+Constructor-only, with no environment variable: a fail-closed check whose
+bypass can be exported in a shell is one an operator silences at 3am and never
+revisits, and what it silences is a deployment that answers every vector query
+with nothing. Declaring it in code keeps the claim attached to the program that
+makes it true.
+
+The discriminator for everything else is **doc-status**: the gate refuses only
+when at least one document is `PROCESSED`. That status is the pipeline's own claim that it wrote
 everything that document produces, vectors included, so it is what turns a
 missing vector from work-in-flight into a defect. Consulted only when the
 sample comes back empty, so the healthy path pays nothing for it, and a

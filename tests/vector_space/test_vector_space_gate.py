@@ -135,13 +135,16 @@ def _entity_row(name="Alice", content="Alice is an engineer."):
     return {"id": compute_mdhash_id(name, prefix="ent-"), "content": content}
 
 
-async def _run(graph, vdb, embedding, adoptable=None, doc_status=None):
+async def _run(
+    graph, vdb, embedding, adoptable=None, doc_status=None, rebuilding=False
+):
     await check_vector_space_at_startup(
         graph=graph,
         entities_vdb=vdb,
         doc_status=FakeDocStatus() if doc_status is None else doc_status,
         embedding_func=embedding,
         adoptable=[vdb] if adoptable is None else adoptable,
+        expect_empty_vector_storage=rebuilding,
     )
 
 
@@ -190,6 +193,14 @@ class TestEmptyContainerGate:
 
         with pytest.raises(VectorStorageEmptyError):
             await _run(graph, PositionalMissStorage(), FakeEmbedding())
+
+    async def test_a_declared_rebuild_is_not_refused(self):
+        """A caller that owns the repopulation starts from exactly this state:
+        an in-process rebuild, or the switch from NoopVectorDBStorage
+        (graph-only ingestion) to a real vector backend."""
+        graph = FakeGraph(labels=["Alice", "Bob"])
+
+        await _run(graph, FakeVectorStorage(rows=[]), FakeEmbedding(), rebuilding=True)
 
     async def test_an_unfinished_ingest_is_not_refused(self):
         """A graph ahead of the vector store, with nothing PROCESSED, is a

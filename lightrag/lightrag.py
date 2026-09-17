@@ -1178,6 +1178,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     them cannot be instantiated in the first place.
     """
 
+    rebuilding_vector_storage: bool = field(default=False)
+    """Declare that this instance exists to REPOPULATE the vector storages.
+
+    Startup normally refuses a vector storage that holds nothing while the graph
+    holds entities and at least one document is PROCESSED — the shape a changed
+    embedding model leaves on a backend that names its container after the model,
+    and equally the shape of a deleted vector file. An in-process rebuild starts
+    from exactly that state on purpose, so it has to say so.
+
+    Two callers need it, both of which own the repopulation that follows:
+    ``lightrag/tools/rebuild_vdb.py`` does not (it drives the storages directly
+    and never reaches this check), but a program that rebuilds through a
+    ``LightRAG`` instance does — including the supported switch from
+    ``NoopVectorDBStorage`` (graph-only ingestion) to a real vector backend.
+
+    Constructor-only, deliberately: there is no environment variable. A
+    fail-closed check whose bypass can be exported in a shell is a check an
+    operator silences at 3am and never revisits, and what it is silencing is a
+    deployment that answers every vector query with nothing. Declaring it in
+    code keeps the claim attached to the program that makes it true.
+    """
+
     max_pending_documents: int = field(
         default=get_env_value(
             "MAX_PENDING_DOCUMENTS",
@@ -2052,6 +2074,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     entities_vdb=self.entities_vdb,
                     doc_status=self.doc_status,
                     embedding_func=self.embedding_func,
+                    expect_empty_vector_storage=self.rebuilding_vector_storage,
                     adoptable=[
                         vdb
                         for vdb in (

@@ -63,10 +63,11 @@ def _workspace(tmp_path) -> str:
     return f"gate-{tmp_path.name}"
 
 
-def _rag(tmp_path, *, model_name):
+def _rag(tmp_path, *, model_name, rebuilding=False):
     return LightRAG(
         working_dir=str(tmp_path),
         workspace=_workspace(tmp_path),
+        rebuilding_vector_storage=rebuilding,
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=_DIM,
@@ -161,6 +162,33 @@ async def test_an_unfinished_ingest_is_not_refused(tmp_path):
     restarted = _rag(tmp_path, model_name="bge-m3")
     await restarted.initialize_storages()
     await restarted.finalize_storages()
+
+
+async def test_a_declared_rebuild_starts_on_an_empty_vector_storage(tmp_path):
+    """An in-process rebuild BEGINS from the state the gate refuses, so it has
+    to be able to say so.
+
+    The supported case is graph-only ingestion (``NoopVectorDBStorage``, which
+    writes no vectors by design) followed by a switch to a real vector backend:
+    the graph is populated, a document is PROCESSED, and the vector storage is
+    legitimately empty. Refusing there blocks the only thing that clears it.
+    """
+    await _seed(tmp_path, model_name="bge-m3")
+    (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
+
+    rebuilding = _rag(tmp_path, model_name="bge-m3", rebuilding=True)
+    await rebuilding.initialize_storages()
+    await rebuilding.finalize_storages()
+
+
+async def test_the_rebuild_flag_is_off_by_default(tmp_path):
+    """The same working directory, the same instant, without the declaration:
+    a check whose default is 'do not check' protects nobody."""
+    await _seed(tmp_path, model_name="bge-m3")
+    (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
+
+    with pytest.raises(VectorStorageEmptyError):
+        await _rag(tmp_path, model_name="bge-m3").initialize_storages()
 
 
 async def test_an_empty_deployment_starts(tmp_path):

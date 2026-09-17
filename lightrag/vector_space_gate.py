@@ -237,6 +237,7 @@ async def check_vector_space_at_startup(
     doc_status=None,
     embedding_func,
     adoptable=(),
+    expect_empty_vector_storage: bool = False,
 ) -> None:
     """Run the empty-container gate, then the adoption probe if one is needed.
 
@@ -256,11 +257,14 @@ async def check_vector_space_at_startup(
             verdict. They share one ``embedding_func`` and were written by the
             same deployment, so the evidence gathered from ``entities_vdb``
             settles the question for all of them.
+        expect_empty_vector_storage: this caller is about to repopulate the
+            vector storages, so an empty one is the expected starting state
+            rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
 
     Raises:
         VectorStorageEmptyError: the graph holds entities, at least one document
-            has been PROCESSED, and not one of the sampled entities has a
-            vector.
+            has been PROCESSED, not one of the sampled entities has a vector,
+            and the caller did not declare that it is about to rebuild them.
         VectorSpaceMismatchError: the probe ran and the stored vectors did not
             come from this embedding model.
 
@@ -312,6 +316,17 @@ async def check_vector_space_at_startup(
     rows = [row for row in (found or []) if isinstance(row, dict)]
 
     if not rows:
+        if expect_empty_vector_storage:
+            # The caller owns the repopulation that follows -- an in-process
+            # rebuild, or the supported switch from NoopVectorDBStorage
+            # (graph-only ingestion) to a real vector backend. Refusing here
+            # would block the only thing that clears the condition.
+            logger.info(
+                f"The entity vector storage holds no vectors for any of "
+                f"{len(sample_ids)} entities sampled from the knowledge graph. "
+                f"Serving anyway: this instance declared it is rebuilding them."
+            )
+            return
         if await _has_processed_documents(doc_status):
             raise VectorStorageEmptyError(
                 vdb_name="entities",
