@@ -724,7 +724,11 @@ def _make_args(tmp_path):
         query_aws_secret_access_key=None,
         query_aws_session_token=None,
         llm_model="us.amazon.nova-lite-v1:0",
-        embedding_model=None,
+        # The server refuses to start without a named embedding model, so these
+        # tests -- which are about the LLM side -- have to name one. It is the
+        # Bedrock binding's OWN default, which carries a known dimension, so
+        # they still say nothing about embedding configuration.
+        embedding_model="amazon.titan-embed-text-v2:0",
         embedding_dim=None,
         embedding_send_dim=False,
         embedding_token_limit=None,

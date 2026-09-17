@@ -446,7 +446,7 @@ python examples/lightrag_openai_demo.py
 
 For a streaming response implementation example, please see `examples/lightrag_openai_compatible_demo.py`. Prior to execution, ensure you modify the sample code's LLM and embedding configurations accordingly.
 
-**Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
+**Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. Vectors written by one model are unusable by another, so switching models requires rebuilding them. For the **demo** data specifically, the simplest route is to delete the demo directory (`./dickens`) and re-run — the corpus is small and disposable; keep `kv_store_llm_response_cache.json` if you want the LLM cache. For a **real deployment, do not delete the working directory**: it holds the knowledge graph and the text chunks, and deleting it turns a re-embedding job into a full re-ingestion of every document. Run `lightrag-rebuild-vdb` instead — see [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models).
 
 **Note 2**: Only `lightrag_openai_demo.py` and `lightrag_openai_compatible_demo.py` are officially supported sample codes. Other sample files are community contributions that haven't undergone full testing and optimization.
 

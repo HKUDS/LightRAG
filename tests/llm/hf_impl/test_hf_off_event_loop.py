@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 import threading
 import types
 import importlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -85,28 +87,30 @@ def test_hf_inference_executor_works_across_successive_event_loops(hf_module):
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork() is POSIX-only")
-def test_inference_executor_resets_after_fork(hf_module):
+def test_inference_executor_resets_after_fork():
     """A forked child (e.g. a gunicorn pre-fork worker) inherits a COPY of
     the parent's ThreadPoolExecutor object and its guard lock, but fork()
     only carries the calling thread into the child -- the pool's own
     worker thread (and, if some other thread held the guard lock at fork
     time, the thread that would release it) do not exist there. Submitting
     through the stale executor would hang forever. os.register_at_fork
-    must reset both so the child lazily builds a fresh pair."""
-    hf_module._get_hf_inference_executor()
-    assert hf_module._HF_INFERENCE_EXECUTOR is not None
+    must reset both so the child lazily builds a fresh pair.
 
-    pid = os.fork()
-    if pid == 0:
-        # Child: exit immediately via os._exit so control never returns to
-        # pytest's own machinery here (fixture teardown, etc. must run
-        # exactly once, in the parent only).
-        ok = hf_module._HF_INFERENCE_EXECUTOR is None
-        os._exit(0 if ok else 1)
-
-    _, status = os.waitpid(pid, 0)
-    assert os.WIFEXITED(status)
-    assert os.WEXITSTATUS(status) == 0
+    The fork runs in a subprocess, not here: a fresh single-threaded
+    interpreter is both what a pre-fork master actually looks like and the
+    only place CPython's multi-threaded-fork warning can be asserted absent
+    instead of filtered away. _fork_probe.py explains the rest."""
+    probe = Path(__file__).with_name("_fork_probe.py")
+    result = subprocess.run(
+        [sys.executable, str(probe)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"fork probe failed (rc={result.returncode})\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
 
 
 def test_cancelled_queued_hf_inference_does_not_run(hf_module):
@@ -138,20 +142,12 @@ def test_cancelled_queued_hf_inference_does_not_run(hf_module):
 
 @pytest.fixture
 def hf_module(monkeypatch):
+    # Teardown -- shutting the inference pool down and dropping the module --
+    # belongs to the autouse fixture in this directory's conftest, which also
+    # covers the sibling files that build the module through a plain helper.
     install_fake_transformers_and_torch(monkeypatch)
     sys.modules.pop("lightrag.llm.hf", None)
-    module = importlib.import_module("lightrag.llm.hf")
-    try:
-        yield module
-    finally:
-        # Tests that submit inference start the module-level executor's worker
-        # thread. Shut it down before the next test can exercise os.fork();
-        # removing only the module leaves that thread alive across fixtures.
-        executor = module._HF_INFERENCE_EXECUTOR
-        module._HF_INFERENCE_EXECUTOR = None
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=True)
-        sys.modules.pop("lightrag.llm.hf", None)
+    return importlib.import_module("lightrag.llm.hf")
 
 
 @pytest.mark.asyncio
