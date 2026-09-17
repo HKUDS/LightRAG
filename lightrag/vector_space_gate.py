@@ -278,7 +278,6 @@ async def _vectors_are_expected(doc_status) -> bool:
     return True
 
 
-
 async def _source_is_populated(name: str, probe) -> bool | None:
     """Run one source-side probe: ``True``/``False``, or ``None`` if unanswerable.
 
