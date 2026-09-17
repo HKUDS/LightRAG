@@ -503,6 +503,31 @@ any previously written vector makes the container non-empty, so only a first
 ingest crashing mid-way produces the shape at all — but the discriminator is
 kept, because that first-ingest case is real and heals by being retried.
 
+**The exemption is workspace-wide; the evidence it excuses is per-container.**
+An unfinished document explains the missing vectors for the objects *that*
+document produces, and nothing else. A workspace also holding objects no
+document produced — `acreate_entity` stamps `source_id = "manual_creation"`,
+`ainsert_custom_kg` likewise — would otherwise have an unrelated `PENDING` row
+excuse their empty container, and no pipeline run recreates them, so they stay
+unretrievable with nothing reporting it. So before the exemption is applied to a
+graph-sourced pairing, the gate samples graph objects (node payloads via
+`get_nodes_batch`, edge payloads from `iter_edges`) and refuses anyway if any
+names no real chunk — reusing `RELATION_NO_EVIDENCE_SOURCE_IDS`, the repo's
+existing name for those placeholders, rather than defining a second one.
+
+**Sampling is sound here, unlike for emptiness**, and the asymmetry is the whole
+reason one is sampled and the other asked. A sample that misses the documentless
+object answers "no", which only declines to refuse — the behaviour without the
+check at all. It can add refusals for what it finds, never remove one.
+`is_empty()` had the opposite exposure: there a wrong answer *causes* a refusal,
+which is why it had to be asked of a read that fails loudly. A probe that cannot
+run lands on the same side as a miss.
+
+This narrows the mixed state but does not close it: once the unfinished document
+completes and writes even one vector the container is no longer empty, and any
+still-missing vectors become invisible to this gate. That is the partial-loss
+residue below, not a second defect.
+
 The count comes from `count_docs_by_statuses(strict=True)`, never
 `get_status_counts()`. The latter is documented to swallow its errors and return
 what it managed to collect — `RedisDocStatusStorage` catches a mid-`SCAN`

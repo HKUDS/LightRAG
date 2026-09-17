@@ -43,16 +43,29 @@ pytestmark = pytest.mark.offline
 class FakeGraph:
     """A graph storage that can answer, be empty, or be broken."""
 
-    def __init__(self, labels=(), error=None, edges=None, edge_error=None):
+    def __init__(
+        self,
+        labels=(),
+        error=None,
+        edges=None,
+        edge_error=None,
+        source_id="chunk-1",
+        node_error=None,
+    ):
         self._labels = list(labels)
         self._error = error
+        # Default: every object names a real chunk, i.e. a document produced
+        # it. Tests for the admin-authored case pass source_id="manual_creation"
+        # (what acreate_entity stamps) or "".
+        self._source_id = source_id
+        self._node_error = node_error
         # Default: one edge per pair of labels, so a graph with entities also
         # has relations unless a test says otherwise.
         self._edges = (
             list(edges)
             if edges is not None
             else [
-                {"source": a, "target": b}
+                {"source": a, "target": b, "source_id": source_id}
                 for a, b in zip(self._labels, self._labels[1:])
             ]
         )
@@ -64,6 +77,13 @@ class FakeGraph:
         if self._error is not None:
             raise self._error
         return self._labels[:limit]
+
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict:
+        if self._node_error is not None:
+            raise self._node_error
+        return {
+            name: {"entity_id": name, "source_id": self._source_id} for name in node_ids
+        }
 
     async def iter_edges(self, batch_size: int):
         if self._edge_error is not None:
@@ -449,6 +469,89 @@ class TestEmptyContainerGate:
         )
 
         await _run(graph, vdb, FakeEmbedding())
+
+
+class TestUnfinishedWorkExemption:
+    """The doc-status exemption is workspace-wide; the evidence it excuses is
+    per-container. An unfinished document explains the missing vectors for the
+    objects THAT document produces, and nothing else."""
+
+    async def test_unfinished_work_still_exempts_pipeline_built_data(self):
+        """The exemption that four review rounds put here must survive: an
+        ingest interrupted before its vector flush heals by being retried."""
+        await _run(
+            FakeGraph(labels=["Alice", "Bob"], source_id="chunk-7"),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(processed=5, unfinished=1),
+        )
+
+    async def test_unfinished_work_does_not_exempt_admin_built_entities(self):
+        """``acreate_entity`` stamps ``source_id="manual_creation"`` and writes
+        no doc-status row. No pipeline run will ever recreate such an object, so
+        an unrelated PENDING document must not excuse its empty container --
+        otherwise those entities are silently unretrievable forever."""
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=["Manual"], source_id="manual_creation"),
+                FakeVectorStorage(rows=[]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(processed=5, unfinished=1),
+            )
+
+        assert excinfo.value.vdb_name == "entities"
+
+    async def test_an_empty_source_id_counts_as_documentless(self):
+        """The other shape the admin writers leave behind."""
+        with pytest.raises(VectorStorageEmptyError):
+            await _run(
+                FakeGraph(labels=["Manual"], source_id=""),
+                FakeVectorStorage(rows=[]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(processed=5, unfinished=1),
+            )
+
+    async def test_unfinished_work_does_not_exempt_admin_built_relations(self):
+        """Edges carry ``source_id`` too, and ``iter_edges`` yields the whole
+        payload, so the relation pairing gets the same treatment."""
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=["A", "B"], source_id="manual_creation"),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(processed=5, unfinished=1),
+                relationships_vdb=FakeVectorStorage(rows=[]),
+            )
+
+        assert excinfo.value.vdb_name == "relationships"
+
+    async def test_an_unreadable_node_payload_keeps_the_exemption(self):
+        """Sampling is sound here ONLY because a miss declines to refuse. A
+        probe that cannot run must land on the same side."""
+        await _run(
+            FakeGraph(
+                labels=["Manual"],
+                source_id="manual_creation",
+                node_error=RuntimeError("graph read failed"),
+            ),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(processed=5, unfinished=1),
+        )
+
+    async def test_the_probe_is_not_paid_on_a_healthy_start(self):
+        """It reads node PAYLOADS, not names, so it must stay on the branch
+        that was already about to exempt."""
+
+        class ExplodingNodeRead(FakeGraph):
+            async def get_nodes_batch(self, node_ids):
+                raise AssertionError("must not be consulted on a healthy start")
+
+        await _run(
+            ExplodingNodeRead(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+        )
 
 
 class TestPairings:

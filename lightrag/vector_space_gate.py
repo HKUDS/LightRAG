@@ -58,6 +58,7 @@ import os
 from typing import Any
 
 from lightrag.base import DocStatus
+from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
 from lightrag.exceptions import (
     StorageCapabilityError,
     VectorSpaceMismatchError,
@@ -72,6 +73,12 @@ from lightrag.utils import compute_mdhash_id, logger
 # is missing or whose vector cannot be fetched. The empty-container gate does
 # not sample at all; it asks ``is_empty()``.
 SAMPLE_SIZE = 32
+
+# How many graph objects to inspect for "no document produced this". Bounded
+# because it reads payloads rather than names, and sampling is sound here: a
+# miss only declines to refuse (see ``_nothing_will_heal``). Paid only on the
+# branch that was already about to exempt, never on a healthy start.
+DOCUMENTLESS_SAMPLE_SIZE = 32
 
 # Adoption needs near-identity. The same model re-embedding the same text lands
 # at ~1.0; the gap to a different model is wide (typically 0.0-0.5), so neither
@@ -335,6 +342,83 @@ async def _graph_has_edges(graph) -> bool:
             await aclose()
 
 
+def _has_document_source(source_id: Any) -> bool:
+    """Whether this ``source_id`` names a chunk a document actually produced.
+
+    ``RELATION_NO_EVIDENCE_SOURCE_IDS`` is the repo's existing name for the
+    placeholders the admin writers stamp instead of a real chunk id
+    (``acreate_entity`` defaults ``source_id`` to ``"manual_creation"``), and an
+    empty field means the same thing. Reusing that set keeps one definition of
+    "no document behind this" rather than a second one that can drift.
+    """
+    if not isinstance(source_id, str):
+        return False
+    return any(
+        part.strip() and part.strip() not in RELATION_NO_EVIDENCE_SOURCE_IDS
+        for part in source_id.split(GRAPH_FIELD_SEP)
+    )
+
+
+async def _graph_has_documentless_nodes(graph, limit: int) -> bool:
+    """Whether the sample holds an entity no document produced."""
+    labels = await graph.get_popular_labels(limit=limit)
+    if not labels:
+        return False
+    nodes = await graph.get_nodes_batch(list(labels))
+    return any(
+        isinstance(node, dict) and not _has_document_source(node.get("source_id"))
+        for node in (nodes or {}).values()
+    )
+
+
+async def _graph_has_documentless_edges(graph, limit: int) -> bool:
+    """Whether the first batch of edges holds a relation no document produced."""
+    iterator = graph.iter_edges(batch_size=limit)
+    try:
+        async for batch in iterator:
+            return any(
+                isinstance(edge, dict)
+                and not _has_document_source(edge.get("source_id"))
+                for edge in batch
+            )
+        return False
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+async def _nothing_will_heal(name: str, probe) -> bool:
+    """Whether a retry provably cannot restore what is missing here.
+
+    Answers the one thing the doc-status exemption cannot: an unfinished
+    document explains missing vectors for the objects THAT document produces,
+    and nothing else. A workspace built with ``acreate_entity`` /
+    ``ainsert_custom_kg`` holds objects no document produced, and no pipeline
+    run will ever recreate them -- so letting an unrelated PENDING row excuse
+    their empty container leaves them permanently unretrievable.
+
+    **Sampling is sound here, unlike for emptiness.** A sample that misses the
+    documentless object answers ``False``, which only declines to refuse -- the
+    behaviour without this check at all. It can add refusals for what it finds,
+    never remove one. ``is_empty()`` had the opposite exposure, which is why
+    that one had to be asked rather than sampled.
+
+    A probe that cannot run answers ``False`` for the same reason.
+    """
+    if probe is None:
+        return False
+    try:
+        return await probe()
+    except Exception as e:
+        logger.warning(
+            f"Could not tell whether {name} holds objects no document "
+            f"produced ({type(e).__name__}: {e}); treating the missing vectors "
+            f"as work a retry will heal"
+        )
+        return False
+
+
 async def _index_is_empty(name: str, vdb) -> bool | None:
     """Ask the vector storage whether it holds anything. ``None`` = no answer.
 
@@ -396,8 +480,14 @@ class _PairingGate:
             self._vectors_expected = await _vectors_are_expected(self._doc_status)
         return self._vectors_expected
 
-    async def check(self, *, name: str, source: str, vdb, source_probe) -> None:
-        """Refuse iff the source is populated and the index is provably empty."""
+    async def check(
+        self, *, name: str, source: str, vdb, source_probe, no_healing_probe=None
+    ) -> None:
+        """Refuse iff the source is populated and the index is provably empty.
+
+        ``no_healing_probe`` is consulted only on the branch the unfinished-
+        document exemption would otherwise take. See ``_nothing_will_heal``.
+        """
         if vdb is None:
             return
 
@@ -436,14 +526,28 @@ class _PairingGate:
             # *Consistency without transactions* is explicit that such a state
             # must not be escalated -- and escalating it here would refuse to
             # start the very process whose next run repairs it.
+            #
+            # But that exemption is workspace-wide while the evidence it
+            # excuses is per-container: an unfinished document explains the
+            # missing vectors for the objects THAT document produces, and
+            # nothing else. When the source also holds objects no document
+            # produced, no retry will recreate them, so the exemption does not
+            # reach them and the refusal stands.
+            if not await _nothing_will_heal(source, no_healing_probe):
+                logger.warning(
+                    f"The {name} vector storage holds no vectors while {source} "
+                    f"is not empty, but this workspace has unfinished "
+                    f"documents. Serving anyway: an ingest that has not "
+                    f"finished writing its vectors is repaired by the next "
+                    f"pipeline run, not by a refusal."
+                )
+                return
             logger.warning(
                 f"The {name} vector storage holds no vectors while {source} is "
-                f"not empty, but this workspace has unfinished documents. "
-                f"Serving anyway: an ingest that has not finished writing its "
-                f"vectors is repaired by the next pipeline run, not by a "
-                f"refusal."
+                f"not empty. This workspace has unfinished documents, but it "
+                f"also holds objects no document produced (created through the "
+                f"admin API), which no pipeline run can recreate. Refusing."
             )
-            return
 
         raise VectorStorageEmptyError(
             vdb_name=name,
@@ -626,6 +730,9 @@ async def check_vector_space_at_startup(
         source="the knowledge graph",
         vdb=entities_vdb,
         source_probe=lambda: _graph_has_nodes(graph),
+        no_healing_probe=lambda: _graph_has_documentless_nodes(
+            graph, DOCUMENTLESS_SAMPLE_SIZE
+        ),
     )
 
     await gate.check(
@@ -633,6 +740,9 @@ async def check_vector_space_at_startup(
         source="the knowledge graph",
         vdb=relationships_vdb,
         source_probe=lambda: _graph_has_edges(graph),
+        no_healing_probe=lambda: _graph_has_documentless_edges(
+            graph, DOCUMENTLESS_SAMPLE_SIZE
+        ),
     )
 
     if entities_vdb is not None and getattr(entities_vdb, "persists_vectors", True):

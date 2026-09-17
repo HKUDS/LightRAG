@@ -154,8 +154,13 @@ async def test_an_unfinished_ingest_is_not_refused(tmp_path):
     flight. The next pipeline run repairs that; refusing would block it."""
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
+    # source_id names the in-flight document's own chunk, which is what the
+    # extraction path stamps. Without it the node is indistinguishable from one
+    # created through the admin API -- and those the unfinished-document
+    # exemption deliberately does NOT cover, because no retry recreates them.
     await rag.chunk_entity_relation_graph.upsert_node(
-        "Alice", {"entity_id": "Alice", "description": "an engineer"}
+        "Alice",
+        {"entity_id": "Alice", "description": "an engineer", "source_id": "chunk-1"},
     )
     await rag.doc_status.upsert(
         {
@@ -188,6 +193,47 @@ async def test_an_admin_only_workspace_refuses_when_its_vectors_vanish(tmp_path)
         "Alice", {"entity_id": "Alice", "description": "an engineer"}
     )
     await rag.chunk_entity_relation_graph.index_done_callback()
+    await rag.finalize_storages()
+
+    restarted = _rag(tmp_path, model_name="bge-m3")
+    with pytest.raises(VectorStorageEmptyError):
+        await restarted.initialize_storages()
+    await restarted.finalize_storages()
+
+
+async def test_an_unrelated_unfinished_document_does_not_excuse_admin_entities(
+    tmp_path,
+):
+    """The mixed state: admin-built graph objects AND an unrelated in-flight
+    document. The workspace-wide exemption would let the PENDING row excuse an
+    empty container it cannot explain -- and no pipeline run recreates what
+    ``acreate_entity`` wrote, so those entities would be unretrievable with
+    nothing reporting it."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    # What acreate_entity stamps when the caller names no chunk.
+    await rag.chunk_entity_relation_graph.upsert_node(
+        "Manual",
+        {
+            "entity_id": "Manual",
+            "description": "created by an operator",
+            "source_id": "manual_creation",
+        },
+    )
+    await rag.doc_status.upsert(
+        {
+            "doc-unrelated": {
+                "status": DocStatus.PENDING,
+                "content_summary": "something else entirely",
+                "content_length": 20,
+                "chunks_count": 0,
+                "chunks_list": [],
+                "file_path": "other.txt",
+            }
+        }
+    )
+    await rag.chunk_entity_relation_graph.index_done_callback()
+    await rag.doc_status.index_done_callback()
     await rag.finalize_storages()
 
     restarted = _rag(tmp_path, model_name="bge-m3")
