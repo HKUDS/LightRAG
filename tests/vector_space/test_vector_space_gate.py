@@ -19,7 +19,11 @@ import numpy as np
 import pytest
 
 from lightrag.base import DocStatus
-from lightrag.exceptions import VectorSpaceMismatchError, VectorStorageEmptyError
+from lightrag.exceptions import (
+    StorageCapabilityError,
+    VectorSpaceMismatchError,
+    VectorStorageEmptyError,
+)
 from lightrag.utils import compute_mdhash_id
 from lightrag.vector_space_gate import (
     ADOPT_COSINE,
@@ -39,9 +43,20 @@ pytestmark = pytest.mark.offline
 class FakeGraph:
     """A graph storage that can answer, be empty, or be broken."""
 
-    def __init__(self, labels=(), error=None):
+    def __init__(self, labels=(), error=None, edges=None, edge_error=None):
         self._labels = list(labels)
         self._error = error
+        # Default: one edge per pair of labels, so a graph with entities also
+        # has relations unless a test says otherwise.
+        self._edges = (
+            list(edges)
+            if edges is not None
+            else [
+                {"source": a, "target": b}
+                for a, b in zip(self._labels, self._labels[1:])
+            ]
+        )
+        self._edge_error = edge_error
         self.calls = 0
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
@@ -49,6 +64,12 @@ class FakeGraph:
         if self._error is not None:
             raise self._error
         return self._labels[:limit]
+
+    async def iter_edges(self, batch_size: int):
+        if self._edge_error is not None:
+            raise self._edge_error
+        for start in range(0, len(self._edges), batch_size):
+            yield self._edges[start : start + batch_size]
 
 
 class FakeDocStatus:
@@ -89,8 +110,11 @@ class FakeVectorStorage:
         adopt_error=None,
         read_error=None,
         vector_read_error=None,
+        empty_error=None,
     ):
         self.reads = 0
+        self.empty_reads = 0
+        self._empty_error = empty_error
         self._rows = list(rows or [])
         self._vectors = dict(vectors or {})
         self._pending = pending
@@ -99,6 +123,12 @@ class FakeVectorStorage:
         self._read_error = read_error
         self._vector_read_error = vector_read_error
         self.adopted = 0
+
+    async def is_empty(self) -> bool:
+        self.empty_reads += 1
+        if self._empty_error is not None:
+            raise self._empty_error
+        return not self._rows
 
     async def get_by_ids(self, ids):
         self.reads += 1
@@ -143,14 +173,63 @@ class FakeEmbedding:
         return np.array([list(self._vector) for _ in texts], dtype=np.float32)
 
 
+class FakeKVStorage:
+    """``text_chunks`` -- the source side of the chunk pairing.
+
+    ``is_empty`` mirrors the REAL ``BaseKVStorage`` contract, which catches its
+    backend errors and answers ``True``. The gate depends on that: an
+    unreadable source lands on the same branch as an empty one (skip), which is
+    the safe direction. The vector side is the opposite contract, and
+    ``FakeVectorStorage.is_empty`` raises to match it.
+    """
+
+    def __init__(self, *, rows=0, error=None):
+        self._rows = rows
+        self._error = error
+        self.empty_reads = 0
+
+    async def is_empty(self) -> bool:
+        self.empty_reads += 1
+        if self._error is not None:
+            return True  # what every real KV backend does on failure
+        return self._rows == 0
+
+
 def _entity_row(name="Alice", content="Alice is an engineer."):
     return {"id": compute_mdhash_id(name, prefix="ent-"), "content": content}
 
 
-async def _run(graph, vdb, embedding, doc_status=None, rebuilding=False):
+async def _run(
+    graph,
+    vdb,
+    embedding,
+    doc_status=None,
+    rebuilding=False,
+    *,
+    relationships_vdb=None,
+    chunks_vdb=None,
+    text_chunks=None,
+):
+    """Drive the gate.
+
+    ``relationships_vdb`` and ``chunks_vdb`` default to populated stores so a
+    test that is about the ENTITY pairing is not answered by one of its
+    siblings. A test that wants those pairings passes them explicitly.
+    """
     await check_vector_space_at_startup(
         graph=graph,
         entities_vdb=vdb,
+        relationships_vdb=(
+            FakeVectorStorage(rows=[{"id": "rel-1"}])
+            if relationships_vdb is None
+            else relationships_vdb
+        ),
+        chunks_vdb=(
+            FakeVectorStorage(rows=[{"id": "chunk-1"}])
+            if chunks_vdb is None
+            else chunks_vdb
+        ),
+        text_chunks=FakeKVStorage(rows=1) if text_chunks is None else text_chunks,
         doc_status=FakeDocStatus() if doc_status is None else doc_status,
         embedding_func=embedding,
         expect_empty_vector_storage=rebuilding,
@@ -174,7 +253,7 @@ class TestEmptyContainerGate:
 
         error = excinfo.value
         assert error.vdb_name == "entities"
-        assert error.sampled == 3
+        assert error.source == "the knowledge graph"
         assert "lightrag-rebuild-vdb" in str(error)
 
     async def test_is_not_a_space_mismatch(self):
@@ -187,21 +266,6 @@ class TestEmptyContainerGate:
             await _run(graph, FakeVectorStorage(rows=[]), FakeEmbedding())
 
         assert not isinstance(excinfo.value, VectorSpaceMismatchError)
-
-    async def test_a_positional_miss_is_not_read_as_a_row(self):
-        """Nano returns one entry per requested id, with None where the row is
-        absent -- most backends return a compacted list. Counting the list
-        instead of the rows would start the server on top of a vanished vector
-        store."""
-
-        class PositionalMissStorage(FakeVectorStorage):
-            async def get_by_ids(self, ids):
-                return [None for _ in ids]
-
-        graph = FakeGraph(labels=["Alice", "Bob"])
-
-        with pytest.raises(VectorStorageEmptyError):
-            await _run(graph, PositionalMissStorage(), FakeEmbedding())
 
     async def test_a_declared_rebuild_is_not_refused(self):
         """A caller that owns the repopulation starts from exactly this state:
@@ -288,44 +352,38 @@ class TestEmptyContainerGate:
         # Nothing was even asked of it.
         assert (vdb.reads, embedding.calls, vdb.adopted) == (0, 0, 0)
 
-    async def test_an_empty_read_is_confirmed_before_refusing(self):
-        """Every server-backed get_by_ids CATCHES its transport errors and
-        returns an empty list, so 'empty' and 'the cluster blinked' arrive as
-        the same value. A blip on the first read must not refuse."""
+    async def test_emptiness_is_asked_not_inferred(self):
+        """The gate reads ``is_empty()`` and nothing else.
 
-        class BlinkingStorage(FakeVectorStorage):
-            async def get_by_ids(self, ids):
-                self.reads += 1
-                if self.reads == 1:
-                    return []  # the swallowed failure
-                return [_entity_row()]
-
-        vdb = BlinkingStorage()
-
-        await _run(FakeGraph(labels=["Alice"]), vdb, FakeEmbedding())
-
-        assert vdb.reads == 2
-
-    async def test_a_genuinely_empty_store_still_refuses_after_confirming(self):
+        It used to infer emptiness from a sample of ``get_by_ids`` misses,
+        which could not distinguish a miss from a swallowed transport error --
+        every server-backed reader catches and returns ``[]``. ``is_empty`` is
+        specified to RAISE instead, so the two are different values again."""
         vdb = FakeVectorStorage(rows=[])
 
         with pytest.raises(VectorStorageEmptyError):
             await _run(FakeGraph(labels=["Alice"]), vdb, FakeEmbedding())
 
-        assert vdb.reads == 2
+        assert (vdb.empty_reads, vdb.reads) == (1, 0)
 
-    async def test_a_raising_confirmation_read_does_not_refuse(self):
-        """An exception is the one failure the backends DO surface, and it is
-        unambiguous: the read did not run, so it is not evidence."""
+    async def test_a_raising_is_empty_does_not_refuse(self):
+        """The whole point of the fail-loud contract: a backend that could not
+        read the container says so, and a raise is never evidence of
+        emptiness."""
+        vdb = FakeVectorStorage(rows=[], empty_error=RuntimeError("cluster down"))
 
-        class FailsOnConfirmation(FakeVectorStorage):
-            async def get_by_ids(self, ids):
-                self.reads += 1
-                if self.reads == 1:
-                    return []
-                raise RuntimeError("cluster down")
+        await _run(FakeGraph(labels=["Alice"]), vdb, FakeEmbedding())
 
-        await _run(FakeGraph(labels=["Alice"]), FailsOnConfirmation(), FakeEmbedding())
+    async def test_a_backend_that_cannot_answer_is_skipped(self):
+        """``StorageCapabilityError`` is the fail-closed default on the base
+        class. A backend that never implemented ``is_empty`` is one the gate
+        cannot question -- which is where every backend stood before it
+        existed."""
+        vdb = FakeVectorStorage(
+            rows=[], empty_error=StorageCapabilityError("not supported")
+        )
+
+        await _run(FakeGraph(labels=["Alice"]), vdb, FakeEmbedding())
 
     async def test_a_populated_vdb_passes(self):
         graph = FakeGraph(labels=["Alice"])
@@ -333,16 +391,47 @@ class TestEmptyContainerGate:
 
         await _run(graph, vdb, FakeEmbedding())
 
-    async def test_an_empty_graph_asks_nothing(self):
-        """Nothing SHOULD have a vector, so neither check has a question. A
-        fresh install must not be refused for having no data yet."""
-        vdb = FakeVectorStorage(rows=[], pending=True)
+    async def test_an_empty_graph_exempts_only_the_graph_pairings(self):
+        """An empty graph means the entity and relation pairings have no source
+        to compare against -- it does NOT mean the whole check is over.
+
+        This is the bug the pairing model fixes: the old early return ended the
+        entire function, so a corpus producing text chunks but no extracted
+        entities left ``chunks_vdb`` unchecked."""
+        entities = FakeVectorStorage(rows=[], pending=True)
+        chunks = FakeVectorStorage(rows=[])
         embedding = FakeEmbedding()
 
-        await _run(FakeGraph(labels=[]), vdb, embedding)
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=[]),
+                entities,
+                embedding,
+                chunks_vdb=chunks,
+                text_chunks=FakeKVStorage(rows=7),
+            )
+
+        assert excinfo.value.vdb_name == "chunks"
+        # The entity pairing asked nothing of its own store.
+        assert entities.empty_reads == 0
+
+    async def test_a_fresh_install_is_not_refused(self):
+        """Everything empty: no graph, no chunks, no vectors. Every pairing has
+        an empty source, so none of them has a question to ask."""
+        entities = FakeVectorStorage(rows=[], pending=True)
+        embedding = FakeEmbedding()
+
+        await _run(
+            FakeGraph(labels=[]),
+            entities,
+            embedding,
+            relationships_vdb=FakeVectorStorage(rows=[]),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=FakeKVStorage(rows=0),
+        )
 
         assert embedding.calls == 0
-        assert vdb.adopted == 0
+        assert entities.adopted == 0
 
     async def test_a_broken_graph_backend_does_not_fail_startup(self):
         """A transient graph error is not evidence about the embedding space,
@@ -355,9 +444,152 @@ class TestEmptyContainerGate:
         """Specifically NOT read as 'empty': a read that errored says nothing
         about what the container holds."""
         graph = FakeGraph(labels=["Alice"])
-        vdb = FakeVectorStorage(read_error=RuntimeError("cluster down"))
+        vdb = FakeVectorStorage(
+            rows=[_entity_row()], read_error=RuntimeError("cluster down")
+        )
 
         await _run(graph, vdb, FakeEmbedding())
+
+
+class TestPairings:
+    """A vector storage is an INDEX; whether being empty is a defect depends on
+    the data it indexes. There are three such pairings and none substitutes for
+    another."""
+
+    async def test_chunks_are_checked_against_text_chunks(self):
+        """The pairing the graph cannot supply: a corpus can produce text
+        chunks and extract no entities at all."""
+        chunks = FakeVectorStorage(rows=[])
+
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=["Alice"]),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding(),
+                chunks_vdb=chunks,
+                text_chunks=FakeKVStorage(rows=3),
+            )
+
+        assert excinfo.value.vdb_name == "chunks"
+
+    async def test_no_text_chunks_asks_nothing_of_the_chunk_store(self):
+        """A workspace built entirely through ``acreate_entity`` has entities
+        and no chunks. Its empty chunk store is correct, not a defect."""
+        chunks = FakeVectorStorage(rows=[])
+
+        await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=chunks,
+            text_chunks=FakeKVStorage(rows=0),
+        )
+
+        assert chunks.empty_reads == 0
+
+    async def test_an_unreadable_text_chunks_source_does_not_refuse(self):
+        """``BaseKVStorage.is_empty`` catches its errors and answers True, so an
+        unreadable source arrives as 'no chunks'. That lands on the skip branch,
+        which is the direction this module wants everywhere."""
+        chunks = FakeVectorStorage(rows=[])
+
+        await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=chunks,
+            text_chunks=FakeKVStorage(rows=3, error=RuntimeError("redis down")),
+        )
+
+        assert chunks.empty_reads == 0
+
+    async def test_relations_are_checked_against_graph_edges(self):
+        """An interrupted rebuild can leave entities populated and relations
+        not: `lightrag-rebuild-vdb` rebuilds them as separate steps."""
+        relationships = FakeVectorStorage(rows=[])
+
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=["Alice", "Bob"]),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding(),
+                relationships_vdb=relationships,
+            )
+
+        assert excinfo.value.vdb_name == "relationships"
+
+    async def test_a_graph_with_no_edges_asks_nothing_of_the_relation_store(self):
+        """Entities without relations is an ordinary corpus, not a defect."""
+        relationships = FakeVectorStorage(rows=[])
+
+        await _run(
+            FakeGraph(labels=["Alice"], edges=[]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            relationships_vdb=relationships,
+        )
+
+        assert relationships.empty_reads == 0
+
+    async def test_a_backend_without_edge_iteration_is_skipped(self):
+        """``iter_edges`` is fail-closed on the base class. A backend that never
+        implemented it cannot answer the relation pairing, and 'cannot answer'
+        is never evidence."""
+        relationships = FakeVectorStorage(rows=[])
+
+        await _run(
+            FakeGraph(
+                labels=["Alice", "Bob"],
+                edge_error=StorageCapabilityError("no bounded edge iteration"),
+            ),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            relationships_vdb=relationships,
+        )
+
+        assert relationships.empty_reads == 0
+
+    async def test_doc_status_is_consulted_once_for_all_pairings(self):
+        """The refusal branch is the only one that costs a doc-status read, and
+        three pairings must not turn it into three reads."""
+
+        class CountingDocStatus(FakeDocStatus):
+            def __init__(self):
+                super().__init__(processed=0, unfinished=1)
+                self.counts = 0
+
+            async def count_docs_by_statuses(self, statuses, *, strict=True):
+                self.counts += 1
+                return await super().count_docs_by_statuses(statuses, strict=strict)
+
+        doc_status = CountingDocStatus()
+
+        await _run(
+            FakeGraph(labels=["Alice", "Bob"]),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=doc_status,
+            relationships_vdb=FakeVectorStorage(rows=[]),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=FakeKVStorage(rows=3),
+        )
+
+        assert doc_status.counts == 1
+
+    async def test_a_healthy_start_never_touches_doc_status(self):
+        """Every pairing satisfied: the gate must not pay for the question it
+        only asks before refusing."""
+
+        class ExplodingDocStatus:
+            async def count_docs_by_statuses(self, statuses, *, strict=True):
+                raise AssertionError("doc status must not be consulted")
+
+        await _run(
+            FakeGraph(labels=["Alice", "Bob"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            doc_status=ExplodingDocStatus(),
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -7073,6 +7073,38 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             # answers only where it is asked drifts.
             raise OpenSearchReferencesIntactError(str(e)) from e
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        An index this instance has never seen ready is reported empty only
+        after ``_recheck_index_presence`` has been allowed to fail loudly --
+        unlike the reads below it, which swallow that probe.
+        """
+        await self._recheck_index_presence()
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            index_ready = self._index_ready
+        if not index_ready:
+            return True
+        # `count` is search-based, so a flush that has not been refreshed yet
+        # would read as empty. `_refresh_for_search` lives on the KV class
+        # only, so the refresh is issued directly here.
+        await self.client.indices.refresh(index=self._index_name)
+        response = await self.client.count(index=self._index_name)
+        return response["count"] == 0
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.
 

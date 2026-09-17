@@ -328,8 +328,23 @@ async def test_sdk_creation_migrates_legacy_tracking_first(
         "LegacyB",
         {"description": "legacy", "source_id": "legacy-chunk", "weight": 1.0},
     )
+    # ...and the relation vector alongside the edge, for the same reason: every
+    # real edge writer (merge_nodes_and_edges, acreate_relation,
+    # ainsert_custom_kg) writes both, so an edge with no relation vector is the
+    # shape the startup gate reads as a lost vector store.
+    await rag.relationships_vdb.upsert(
+        {
+            compute_mdhash_id("LegacyA" + "LegacyB", prefix="rel-"): {
+                "src_id": "LegacyA",
+                "tgt_id": "LegacyB",
+                "source_id": "legacy-chunk",
+                "content": "legacy",
+            }
+        }
+    )
     await graph.index_done_callback()
     await rag.entities_vdb.index_done_callback()
+    await rag.relationships_vdb.index_done_callback()
     assert await rag.entity_chunks.is_empty()
     assert await rag.relation_chunks.is_empty()
 

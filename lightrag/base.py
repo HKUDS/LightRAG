@@ -495,6 +495,41 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors at all.
+
+        **This is the opposite contract from** ``BaseKVStorage.is_empty`` and
+        the difference is not cosmetic. That one catches its errors and answers
+        ``True``; this one MUST answer ``True`` only when it positively read
+        the container and found nothing, and MUST raise otherwise. The reason
+        is the direction each answer is used in: the startup gate refuses a
+        deployment on ``True`` here, so an error reported as "empty" is a
+        false outage, while the same error on the source side merely skips a
+        check. Never borrow a KV implementation for this.
+
+        The same rule rules out ``get_by_ids`` as a substitute: every
+        server-backed implementation catches its transport errors, logs, and
+        returns an empty list, so a miss and an outage arrive as one value.
+
+        The default raises :class:`~lightrag.exceptions.StorageCapabilityError`
+        -- the fail-closed compatibility rule used by ``iter_labels`` and
+        ``iter_edges``. A backend that has not implemented this is one the gate
+        cannot question, which is where every backend stood before the gate
+        existed; it must never be read as an answer.
+
+        Returns:
+            ``True`` if the container holds no vectors, ``False`` if it holds
+            at least one.
+
+        Raises:
+            StorageCapabilityError: this backend cannot answer the question.
+            Exception: the container could not be read. The caller treats any
+                raise as "no evidence" and does not refuse on it.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support emptiness checks"
+        )
+
     async def vector_space_adoption_pending(self) -> bool:
         """Whether this container holds vectors whose embedding model is unrecorded.
 

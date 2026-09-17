@@ -574,6 +574,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         return {"data": list(self._id_to_meta.values())}
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        Same shape as ``NanoVectorDBStorage.is_empty`` and for the same
+        reasons: no transport to fail, a pending upsert counts as non-empty,
+        and ``_pending_deletes`` is not subtracted because ``True`` is the only
+        answer here that can refuse a deployment.
+
+        ``_reload_index_from_disk_locked`` is called directly rather than
+        through ``_get_index``: ``_storage_lock`` is non-reentrant.
+        """
+        async with self._storage_lock:
+            if self._pending_upserts:
+                return False
+            self._reload_index_from_disk_locked()
+            return not self._id_to_meta
+
     async def delete(self, ids: list[str]):
         """Delete vectors for the provided custom IDs.
 

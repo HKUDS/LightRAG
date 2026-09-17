@@ -2088,14 +2088,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # would initialize them twice.
             self._storages_status = StoragesStatus.INITIALIZED
 
-            # The two checks no single storage can make for itself: the graph
-            # holds entities while the vector store holds none (a model change
-            # on a backend that names its container after the model), and an
-            # unmarked container that has to be adopted before its silence can
-            # end. Deliberately NOT in a backend's initialize(): it takes the
-            # graph and a vector store together, and `lightrag-rebuild-vdb`
-            # drives the storages directly, so the tool that FIXES these
-            # conditions is never blocked by them.
+            # The two checks no single storage can make for itself: a vector
+            # storage holding nothing while the data it INDEXES is not empty (a
+            # model change on a backend that names its container after the
+            # model), and an unmarked container that has to be adopted before
+            # its silence can end. Deliberately NOT in a backend's
+            # initialize(): the first takes a source storage and its index
+            # together, and `lightrag-rebuild-vdb` drives the storages
+            # directly, so the tool that FIXES these conditions is never
+            # blocked by them.
             # See docs/design/VectorSpaceProvenance.md.
             if (
                 self.entities_vdb is not None
@@ -2105,6 +2106,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     await check_vector_space_at_startup(
                         graph=self.chunk_entity_relation_graph,
                         entities_vdb=self.entities_vdb,
+                        relationships_vdb=self.relationships_vdb,
+                        chunks_vdb=self.chunks_vdb,
+                        text_chunks=self.text_chunks,
                         doc_status=self.doc_status,
                         embedding_func=self.embedding_func,
                         expect_empty_vector_storage=self.rebuilding_vector_storage,

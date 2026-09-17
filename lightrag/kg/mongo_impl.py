@@ -50,6 +50,7 @@ from ..constants import (
 )
 from ..exceptions import (
     SourceConflictRepairCASError,
+    StorageCapabilityError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
@@ -4982,6 +4983,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.debug(
                 f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            if self._data is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] MongoDB collection is not connected, "
+                    f"so {self.namespace} cannot be read for emptiness"
+                )
+            collection = self._data
+
+        return await collection.count_documents({}, limit=1) == 0
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer.

@@ -916,6 +916,32 @@ class NanoVectorDBStorage(BaseVectorStorage):
         client = await self._get_client()
         return getattr(client, "_NanoVectorDB__storage")
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        Cannot raise for the reason the contract is written around -- the data
+        is in this process, so there is no transport to fail. What it still has
+        to get right is the buffer: a pending upsert makes the container
+        non-empty even though nothing is materialized yet, and answering
+        ``True`` there would let the startup gate refuse a store that is
+        mid-ingest.
+
+        ``_pending_deletes`` is deliberately NOT subtracted. Doing so would
+        answer ``True`` for a store whose every row is queued for removal but
+        still on disk, and ``True`` is the only answer this method has that can
+        refuse a deployment. Reporting such a store as non-empty costs a check
+        that would have found nothing; the reverse costs a startup.
+
+        ``_reload_client_from_disk_locked`` is called directly rather than
+        through ``_get_client``: ``_storage_lock`` is non-reentrant.
+        """
+        async with self._storage_lock:
+            if self._pending_upserts:
+                return False
+            self._reload_client_from_disk_locked()
+            storage = getattr(self._client, "_NanoVectorDB__storage")
+            return not storage.get("data")
+
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs.
 

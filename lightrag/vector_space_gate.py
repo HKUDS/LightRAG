@@ -2,10 +2,9 @@
 
 Both ask a question that spans the graph and a vector storage, which is why
 they live one layer up in ``LightRAG.initialize_storages()`` rather than inside
-a backend's ``initialize()``. ``BaseVectorStorage`` has no enumeration API --
-only ``get_by_ids(ids)`` -- so a backend cannot obtain a sample of its own rows
-without a pile of new methods; up here the graph supplies the ids and the
-existing readers supply the content and the vector.
+a backend's ``initialize()``. A vector storage cannot tell on its own whether
+being empty is a defect: that depends on the data it INDEXES, which lives in
+another storage entirely.
 
 **The empty-container gate.** Milvus, Qdrant and PostgreSQL encode the
 embedding model in the container NAME, so changing the model does not reuse the
@@ -17,6 +16,17 @@ and the vector store holds none*. It also catches what no marker could -- a
 deleted vector file, a container emptied out of band, a rebuild that was
 interrupted -- and it self-clears, because a rebuild answers the question by
 populating the container.
+
+The check runs over three pairings, one per vector target, because each is a
+separate container that a model change replaces separately::
+
+    text_chunks (KV)  ->  chunks_vdb
+    graph entities    ->  entities_vdb
+    graph relations   ->  relationships_vdb
+
+None of them substitutes for another: a workspace built through
+``acreate_entity`` has entities and no chunks, and a corpus that extracts
+nothing has chunks and no entities. See ``_PairingGate``.
 
 **The adoption probe.** Every container that predates the provenance marker
 records no model, and *absent evidence never refuses*, so that silence never
@@ -32,8 +42,9 @@ The governing invariant, which every branch here is written to preserve:
     Only a probe that ran and returned a negative verdict may refuse. Every
     form of "it could not run" falls back to the pre-upgrade behaviour.
 
-An embedding provider that is down, a timeout, an empty graph, a sample absent
-from the vector store, a marker write denied by permissions -- all of these
+An embedding provider that is down, a timeout, a source storage that cannot be
+read, an index that cannot answer, a marker write denied by permissions -- all
+of these
 leave the container unmarked and the instance serving, which is exactly the
 detection capability LightRAG had before this feature existed.
 
@@ -47,16 +58,19 @@ import os
 from typing import Any
 
 from lightrag.base import DocStatus
-from lightrag.exceptions import VectorSpaceMismatchError, VectorStorageEmptyError
+from lightrag.exceptions import (
+    StorageCapabilityError,
+    VectorSpaceMismatchError,
+    VectorStorageEmptyError,
+)
 from lightrag.kg.vector_space import declared_model_name
 from lightrag.utils import compute_mdhash_id, logger
 
-# How many graph entities to look up. The gate refuses only when NONE of them
-# has a vector, so this is the confidence knob: a store that still holds half
-# its rows survives 32 lookups with probability 2**-32, while a store that has
-# lost 99% of them is caught about half the time -- and being caught is the
-# right answer there too. Kept small because it is one round trip on every
-# startup.
+# How many graph entities the ADOPTION PROBE looks up to find one row carrying
+# both a ``content`` field and a stored vector. Not a confidence knob -- the
+# probe needs exactly one usable row, and the margin covers rows whose content
+# is missing or whose vector cannot be fetched. The empty-container gate does
+# not sample at all; it asks ``is_empty()``.
 SAMPLE_SIZE = 32
 
 # Adoption needs near-identity. The same model re-embedding the same text lands
@@ -204,14 +218,13 @@ async def _probe_same_embedding_space(
 
 
 async def _vectors_are_expected(doc_status) -> bool:
-    """Whether this workspace's entities SHOULD have vectors by now.
+    """Whether this workspace SHOULD have vectors for its indexed data by now.
 
-    The caller has already established that the graph holds entities. This
-    decides whether their missing vectors are a defect or work in flight, and
-    there are two ways to be a defect:
-
-    So the question is only whether anything is UNFINISHED. Nothing is, in two
-    quite different situations, and both mean the same thing here:
+    The caller has already established that some indexed data is not empty
+    while its vector storage is. This decides whether that gap is a defect or
+    work in flight, so the question is only whether anything is UNFINISHED.
+    Nothing is, in two quite different situations, and both mean the same thing
+    here:
 
     * **Every document finished.** PROCESSED is the pipeline's claim that it
       wrote everything those documents produce, vectors included.
@@ -265,188 +278,245 @@ async def _vectors_are_expected(doc_status) -> bool:
     return True
 
 
-async def _reread_sample(
-    entities_vdb, sample_ids: list[str]
-) -> list[dict[str, Any]] | None:
-    """Ask the vector storage for the sample once more.
 
-    Returns the rows it found, or ``None`` when the read itself failed -- the
-    one case the backends DO surface, and an unambiguous "this is not
-    evidence". Only ever called on the path that is about to refuse, so the
-    extra round trip is not on anyone's healthy startup.
+async def _source_is_populated(name: str, probe) -> bool | None:
+    """Run one source-side probe: ``True``/``False``, or ``None`` if unanswerable.
+
+    ``None`` and ``False`` are handled identically by the caller, but they are
+    kept apart here so the log says which one happened. Neither can refuse: a
+    source that is empty poses no question, and a source that cannot be read
+    supplies no evidence.
+
+    Worth stating because it looks like an omission: ``BaseKVStorage.is_empty``
+    CATCHES its backend errors and answers ``True``, so a ``text_chunks`` read
+    that fails arrives here as "no chunks" rather than as a raise. That lands on
+    the same branch as a genuinely empty store -- skip, do not refuse -- which
+    is the direction this module wants everywhere, so the imprecision is
+    accepted rather than worked around. It is the mirror image of why the
+    INDEX side needed a new method: there, "I could not read it" answered as
+    "empty" would refuse a healthy deployment.
     """
     try:
-        found = await entities_vdb.get_by_ids(sample_ids)
+        return await probe()
     except Exception as e:
         logger.warning(
-            f"Not refusing an empty vector storage: the confirming read failed "
-            f"({type(e).__name__}: {e})"
+            f"Skipping the empty-container check for {name}: the source data "
+            f"could not be read ({type(e).__name__}: {e})"
         )
         return None
-    return [row for row in (found or []) if isinstance(row, dict)]
 
 
-async def check_vector_space_at_startup(
-    *,
-    graph,
-    entities_vdb,
-    doc_status=None,
-    embedding_func,
-    expect_empty_vector_storage: bool = False,
-) -> None:
-    """Run the empty-container gate, then the adoption probe if one is needed.
+async def _graph_has_nodes(graph) -> bool:
+    """Whether the graph holds at least one entity.
 
-    Both read the SAME sample, because both questions are about the same
-    evidence: which of the graph's entities have vectors, and do those vectors
-    come from this model. The gate answers first -- an empty container has
-    nothing to probe.
-
-    Args:
-        graph: the graph storage, already initialized.
-        entities_vdb: the entity vector storage, already initialized. It is the
-            one sampled because the graph's own ids address it directly.
-        doc_status: the doc-status storage. Consulted only when the sample comes
-            back empty, so the healthy path pays nothing for it.
-        embedding_func: this instance's embedding function.
-        expect_empty_vector_storage: this caller is about to repopulate the
-            vector storages, so an empty one is the expected starting state
-            rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
-
-    Raises:
-        VectorStorageEmptyError: the graph holds entities, at least one document
-            has been PROCESSED, not one of the sampled entities has a vector,
-            and the caller did not declare that it is about to rebuild them.
-        VectorSpaceMismatchError: the probe ran and the stored vectors did not
-            come from this embedding model.
-
-    Nothing else escapes. Every other failure -- an unreachable graph backend,
-    a vector store that errors on a read, a marker that cannot be written -- is
-    logged and swallowed, because none of them is evidence about the embedding
-    space and none of them was a startup failure before this check existed.
+    ``get_popular_labels`` rather than ``iter_labels``: it is abstract on
+    ``BaseGraphStorage`` so every backend implements it, while ``iter_labels``
+    fails closed on backends that never did.
     """
-    if not getattr(entities_vdb, "persists_vectors", True):
-        # NoopVectorDBStorage and anything else that declares it keeps no
-        # vectors: its reads are misses BY DESIGN, so every question below has
-        # a known, meaningless answer. Graph-only ingestion is a supported
-        # configuration, and after its first document the graph holds entities
-        # and doc-status holds a PROCESSED row -- so without this the gate
-        # would refuse every restart. `rebuilding_vector_storage` is not the
-        # answer there: such a deployment is not rebuilding anything.
-        # Same capability `lightrag-rebuild-vdb` already reads.
-        return
+    return bool(await graph.get_popular_labels(limit=1))
 
-    # ONLY the entity store is adoptable here, because it is the only one this
-    # function gathers evidence about. The three vector targets share an
-    # ``embedding_func`` but NOT a history: `lightrag-rebuild-vdb` rebuilds
-    # entities, relationships and chunks separately (and offers
-    # "entities_vdb + relationships_vdb" as a partial target), so an
-    # interrupted rebuild after a same-dimension model change can leave
-    # entities in the current space while relationships or chunks still hold
-    # the previous model's vectors. Adopting those on the entity verdict would
-    # stamp this model's name onto foreign vectors -- permanently, and
-    # invisibly, which is the exact lie this whole feature exists to prevent.
-    # They stay unmarked until they can be probed with their own sample.
-    pending = []
+
+async def _graph_has_edges(graph) -> bool:
+    """Whether the graph holds at least one relation.
+
+    ``iter_edges`` is the only bounded edge reader on the base class
+    (``get_all_edges`` materializes the whole graph). It is fail-closed by
+    default -- a backend that never implemented it raises
+    ``StorageCapabilityError``, which the caller reads as "unanswerable" and
+    skips. All seven in-tree graph backends implement it.
+    """
+    iterator = graph.iter_edges(batch_size=1)
     try:
-        if await entities_vdb.vector_space_adoption_pending():
-            pending.append(entities_vdb)
+        async for batch in iterator:
+            return bool(batch)
+        return False
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+async def _index_is_empty(name: str, vdb) -> bool | None:
+    """Ask the vector storage whether it holds anything. ``None`` = no answer.
+
+    Unlike every other read on these backends, ``is_empty`` is specified to
+    RAISE on a backend failure instead of reporting a miss, which is the whole
+    reason it exists: ``get_by_ids`` catches its transport errors and returns an
+    empty list, so an outage and an empty container arrive as one value. Here
+    they do not, and only a positive ``True`` can refuse.
+    """
+    try:
+        return await vdb.is_empty()
+    except StorageCapabilityError as e:
+        logger.debug(
+            f"Skipping the empty-container check for {name}: "
+            f"{type(vdb).__name__} cannot answer it ({e})"
+        )
+        return None
+    except Exception as e:
+        logger.warning(
+            f"Skipping the empty-container check for {name}: the vector "
+            f"storage could not be read ({type(e).__name__}: {e})"
+        )
+        return None
+
+
+class _PairingGate:
+    """The empty-container gate over one (source data, vector index) pairing.
+
+    A vector storage is an INDEX over data held elsewhere, and there are three
+    of them::
+
+        text_chunks (KV)    ->  chunks_vdb
+        graph entities      ->  entities_vdb
+        graph relations     ->  relationships_vdb
+
+    The rule is per-pairing, because each index is a separate container that a
+    model change replaces separately: **if the indexed data is not empty, its
+    index must not be empty either.** Checking only the entity pairing (which
+    is what this gate did first) misses a corpus that produces text chunks but
+    no extracted entities -- the graph is empty, so the check has nothing to
+    ask, while ``chunks_vdb`` is silently serving nothing.
+
+    The pairings do not substitute for one another. A workspace built entirely
+    through ``acreate_entity`` has entities and no chunks; a corpus that
+    extracts nothing has chunks and no entities. Only the pairing whose source
+    is populated has a question to ask.
+
+    ``doc_status`` is consulted at most once no matter how many pairings reach
+    that branch, and never on the healthy path.
+    """
+
+    def __init__(self, *, doc_status, expect_empty_vector_storage: bool) -> None:
+        self._doc_status = doc_status
+        self._expect_empty = expect_empty_vector_storage
+        self._vectors_expected: bool | None = None
+
+    async def _are_vectors_expected(self) -> bool:
+        if self._vectors_expected is None:
+            self._vectors_expected = await _vectors_are_expected(self._doc_status)
+        return self._vectors_expected
+
+    async def check(self, *, name: str, source: str, vdb, source_probe) -> None:
+        """Refuse iff the source is populated and the index is provably empty."""
+        if vdb is None:
+            return
+
+        if not getattr(vdb, "persists_vectors", True):
+            # NoopVectorDBStorage and anything else that declares it keeps no
+            # vectors: emptiness is its design, not a defect. Graph-only
+            # ingestion is a supported configuration, and without this the gate
+            # would refuse every restart after its first document.
+            # `rebuilding_vector_storage` is not the answer there: such a
+            # deployment is not rebuilding anything. Same capability
+            # `lightrag-rebuild-vdb` already reads.
+            return
+
+        if await _source_is_populated(name, source_probe) is not True:
+            return
+
+        if await _index_is_empty(name, vdb) is not True:
+            return
+
+        if self._expect_empty:
+            # The caller owns the repopulation that follows -- an in-process
+            # rebuild, or the supported switch from NoopVectorDBStorage
+            # (graph-only ingestion) to a real vector backend. Refusing here
+            # would block the only thing that clears the condition.
+            logger.info(
+                f"The {name} vector storage holds no vectors while {source} is "
+                f"not empty. Serving anyway: this instance declared it is "
+                f"rebuilding them."
+            )
+            return
+
+        if not await self._are_vectors_expected():
+            # An index behind its source, while a document is still in flight,
+            # is a residue that HEALS: an ingest interrupted before its vector
+            # flush, a batch that failed and will be retried. ``AGENTS.md``
+            # *Consistency without transactions* is explicit that such a state
+            # must not be escalated -- and escalating it here would refuse to
+            # start the very process whose next run repairs it.
+            logger.warning(
+                f"The {name} vector storage holds no vectors while {source} is "
+                f"not empty, but this workspace has unfinished documents. "
+                f"Serving anyway: an ingest that has not finished writing its "
+                f"vectors is repaired by the next pipeline run, not by a "
+                f"refusal."
+            )
+            return
+
+        raise VectorStorageEmptyError(
+            vdb_name=name,
+            container=getattr(vdb, "final_namespace", None),
+            source=source,
+        )
+
+
+async def _run_adoption_probe(graph, entities_vdb, embedding_func) -> None:
+    """Re-embed one stored entity and adopt the container if it matches.
+
+    Separate from the gate above, and running after it, because the two ask
+    different questions of different things. The gate asks whether a container
+    is empty; this asks whether a NON-empty container's vectors came from this
+    model. It samples on its own -- the gate no longer produces a sample, and
+    this needs rows with both a ``content`` field and a stored vector, which
+    emptiness alone never yields.
+
+    ONLY the entity store is adoptable here, because it is the only one this
+    function gathers evidence about. The three vector targets share an
+    ``embedding_func`` but NOT a history: `lightrag-rebuild-vdb` rebuilds
+    entities, relationships and chunks separately (and offers
+    "entities_vdb + relationships_vdb" as a partial target), so an interrupted
+    rebuild after a same-dimension model change can leave entities in the
+    current space while relationships or chunks still hold the previous model's
+    vectors. Adopting those on the entity verdict would stamp this model's name
+    onto foreign vectors -- permanently, and invisibly, which is the exact lie
+    this whole feature exists to prevent. They stay unmarked until they can be
+    probed with their own sample.
+    """
+    try:
+        if not await entities_vdb.vector_space_adoption_pending():
+            return
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(
             f"Could not ask {type(entities_vdb).__name__} whether it needs "
             f"embedding-space adoption: {e}"
         )
+        return
+
+    if declared_model_name(embedding_func) is None:
+        # Nothing to record, so nothing to prove. Reached only if a backend
+        # reported pending without checking; the storages answer False here.
+        return
 
     try:
         sample_ids = await _sample_entity_ids(graph, SAMPLE_SIZE)
     except Exception as e:
         logger.warning(
-            f"Skipping the embedding-space startup check: the graph storage "
-            f"could not supply a sample ({type(e).__name__}: {e})"
+            f"Embedding-space adoption deferred: the graph storage could not "
+            f"supply a sample ({type(e).__name__}: {e})"
         )
         return
-
     if not sample_ids:
-        # An empty graph is not evidence of anything: there is nothing that
-        # SHOULD have a vector, so neither check has a question to ask.
         return
 
     try:
         found = await entities_vdb.get_by_ids(sample_ids)
     except Exception as e:
         logger.warning(
-            f"Skipping the embedding-space startup check: the entity vector "
-            f"storage could not be read ({type(e).__name__}: {e})"
+            f"Embedding-space adoption deferred: the entity vector storage "
+            f"could not be read ({type(e).__name__}: {e})"
         )
         return
 
     # The backends disagree on the shape of a MISS. ``BaseVectorStorage``
     # documents "the objects that were found", and most return a compacted
     # list; Nano returns one entry per requested id, positionally, with None
-    # where a row is absent. Reading that as "the container has rows" is the
-    # difference between catching a vanished vector store and starting on top
-    # of one, so the rows are counted, not the list.
+    # where a row is absent. Counting the list rather than the rows would feed
+    # ``None`` placeholders into the probe below.
     rows = [row for row in (found or []) if isinstance(row, dict)]
-
     if not rows:
-        # Read it again before believing it. Every server-backed vector storage
-        # CATCHES its transport errors inside get_by_ids, logs them, and
-        # returns an empty list -- so "the container is empty" and "the cluster
-        # blinked" arrive here as the same value, and the try/except above
-        # cannot tell them apart. What bounds this is initialize(): Milvus,
-        # Qdrant, PostgreSQL, MongoDB and OpenSearch all do authenticated I/O
-        # there and RAISE on failure, so a sustained outage never reaches this
-        # line -- only a blip inside the few milliseconds since. A second read
-        # is what turns most of those blips back into a start.
-        #
-        # Not closed: a blip spanning both reads still refuses, and the advice
-        # it gives (rebuild) is destructive. Closing it needs a read that fails
-        # loudly, which no backend offers today. See
-        # docs/design/VectorSpaceProvenance.md.
-        confirmation = await _reread_sample(entities_vdb, sample_ids)
-        if confirmation is None:
-            return
-        rows = confirmation
-
-    if not rows:
-        if expect_empty_vector_storage:
-            # The caller owns the repopulation that follows -- an in-process
-            # rebuild, or the supported switch from NoopVectorDBStorage
-            # (graph-only ingestion) to a real vector backend. Refusing here
-            # would block the only thing that clears the condition.
-            logger.info(
-                f"The entity vector storage holds no vectors for any of "
-                f"{len(sample_ids)} entities sampled from the knowledge graph. "
-                f"Serving anyway: this instance declared it is rebuilding them."
-            )
-            return
-        if await _vectors_are_expected(doc_status):
-            raise VectorStorageEmptyError(
-                vdb_name="entities",
-                container=getattr(entities_vdb, "final_namespace", None),
-                sampled=len(sample_ids),
-            )
-        # A graph ahead of the vector store, with no document the pipeline ever
-        # called PROCESSED, is a residue that HEALS: an ingest interrupted
-        # before its vector flush, a batch that failed and will be retried, a
-        # graph built through the admin API. ``AGENTS.md`` *Consistency without
-        # transactions* is explicit that such a state must not be escalated --
-        # and escalating it here would refuse to start the very process whose
-        # next run repairs it.
-        logger.warning(
-            f"The entity vector storage holds no vectors for any of "
-            f"{len(sample_ids)} entities sampled from the knowledge graph, but "
-            f"no document has been processed yet. Serving anyway: an ingest "
-            f"that has not finished writing its vectors is repaired by the "
-            f"next pipeline run, not by a refusal."
-        )
-        return
-
-    if not pending:
-        return
-
-    if declared_model_name(embedding_func) is None:
-        # Nothing to record, so nothing to prove. Reached only if a backend
-        # reported pending without checking; the storages answer False here.
         return
 
     try:
@@ -484,16 +554,92 @@ async def check_vector_space_at_startup(
         )
         return
 
-    for vdb in pending:
-        try:
-            if await vdb.adopt_vector_space():
-                logger.info(
-                    f"Recorded the embedding model on {type(vdb).__name__} "
-                    f"'{getattr(vdb, 'namespace', '?')}' ({detail})"
-                )
-        except VectorSpaceMismatchError:
-            raise
-        except Exception as e:  # pragma: no cover - adopt must not raise
-            logger.warning(
-                f"Could not record the embedding model on {type(vdb).__name__}: {e}"
+    try:
+        if await entities_vdb.adopt_vector_space():
+            logger.info(
+                f"Recorded the embedding model on {type(entities_vdb).__name__} "
+                f"'{getattr(entities_vdb, 'namespace', '?')}' ({detail})"
             )
+    except VectorSpaceMismatchError:
+        raise
+    except Exception as e:  # pragma: no cover - adopt must not raise
+        logger.warning(
+            f"Could not record the embedding model on "
+            f"{type(entities_vdb).__name__}: {e}"
+        )
+
+
+async def check_vector_space_at_startup(
+    *,
+    graph,
+    entities_vdb,
+    relationships_vdb=None,
+    chunks_vdb=None,
+    text_chunks=None,
+    doc_status=None,
+    embedding_func,
+    expect_empty_vector_storage: bool = False,
+) -> None:
+    """Run the empty-container gate over all three pairings, then the probe.
+
+    Args:
+        graph: the graph storage, already initialized. It is the source side of
+            two pairings: its entities and its relations.
+        entities_vdb: the entity vector storage, already initialized.
+        relationships_vdb: the relation vector storage. Skipped when ``None``.
+        chunks_vdb: the chunk vector storage. Skipped when ``None``.
+        text_chunks: the chunk KV storage -- the source side of the chunk
+            pairing, and the only one that does not come from the graph.
+        doc_status: the doc-status storage. Consulted at most once, and only
+            when a pairing is about to refuse, so the healthy path pays nothing.
+        embedding_func: this instance's embedding function.
+        expect_empty_vector_storage: this caller is about to repopulate the
+            vector storages, so an empty one is the expected starting state
+            rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
+
+    Raises:
+        VectorStorageEmptyError: some indexed data is not empty while its vector
+            storage holds nothing, no document is unfinished, and the caller did
+            not declare that it is about to rebuild.
+        VectorSpaceMismatchError: the probe ran and the stored vectors did not
+            come from this embedding model.
+
+    Nothing else escapes. Every other failure -- an unreachable graph backend, a
+    vector store that errors on a read, a marker that cannot be written -- is
+    logged and swallowed, because none of them is evidence about the embedding
+    space and none of them was a startup failure before this check existed.
+    """
+    gate = _PairingGate(
+        doc_status=doc_status,
+        expect_empty_vector_storage=expect_empty_vector_storage,
+    )
+
+    if text_chunks is not None:
+        await gate.check(
+            name="chunks",
+            source="the text chunk storage",
+            vdb=chunks_vdb,
+            source_probe=lambda: _source_is_empty_inverted(text_chunks),
+        )
+
+    await gate.check(
+        name="entities",
+        source="the knowledge graph",
+        vdb=entities_vdb,
+        source_probe=lambda: _graph_has_nodes(graph),
+    )
+
+    await gate.check(
+        name="relationships",
+        source="the knowledge graph",
+        vdb=relationships_vdb,
+        source_probe=lambda: _graph_has_edges(graph),
+    )
+
+    if entities_vdb is not None and getattr(entities_vdb, "persists_vectors", True):
+        await _run_adoption_probe(graph, entities_vdb, embedding_func)
+
+
+async def _source_is_empty_inverted(kv_storage) -> bool:
+    """``True`` when the KV storage holds rows. Adapts the KV sense of empty."""
+    return not await kv_storage.is_empty()

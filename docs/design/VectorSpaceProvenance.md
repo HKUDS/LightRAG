@@ -332,17 +332,31 @@ exactly the failure this work exists to catch, so adoption carries evidence:
   quantization (`halfvec`) nor normalization moves it.
 
 The probe runs **one layer up**, in `LightRAG.initialize_storages()`, not inside
-a backend's `initialize()`. `BaseVectorStorage` has no enumeration API — only
-`get_by_ids(ids)` — so a backend cannot obtain a sample of its own records
-without eight new methods. One layer up, the graph supplies the ids
-(`iter_labels` → `compute_mdhash_id(name, prefix="ent-")`) and the existing
-`get_by_ids` / `get_vectors_by_ids` supply the content and the vector. That layer
-already needs graph access for the empty-container gate below, so all
+a backend's `initialize()`. It needs a record carrying BOTH a `content` field and
+its stored vector, and `BaseVectorStorage` has no enumeration API that would let
+a backend find one in its own container. One layer up, the graph supplies the ids
+(`get_popular_labels` → `compute_mdhash_id(name, prefix="ent-")`) and the
+existing `get_by_ids` / `get_vectors_by_ids` supply the content and the vector.
+That layer already needs graph access for the empty-container gate below, so all
 cross-storage evidence lives in one place.
 
-**One probe per startup.** The three vector storages share one
-`embedding_func`, so probing `entities_vdb` settles the question for all three.
-After a marker is successfully written, the cost is zero forever.
+`get_popular_labels` rather than `iter_labels`: it is abstract on
+`BaseGraphStorage` so every backend implements it, while `iter_labels` fails
+closed where it was never added. Ranking by degree also biases the sample towards
+entities that certainly exist — the base contract warns that a backend MAY
+surface a label with edges but no node document, and such an artifact would never
+have been embedded.
+
+**One probe per startup, and it adopts only what it probed.** The three vector
+storages share an `embedding_func` but **not a history**: `lightrag-rebuild-vdb`
+rebuilds entities, relationships and chunks as separate steps and offers
+*entities + relationships* as a partial target, so an interrupted rebuild after a
+same-dimension model change leaves entities in the current space while the others
+still hold the previous model's vectors. Adopting those on the entity verdict
+would record a lie that every later start believes and the probe itself sees no
+conflict in — worse than never detecting anything. Relationships and chunks stay
+unmarked until they can be probed with their own samples. After a marker is
+successfully written, the cost is zero forever.
 
 ### When the probe cannot answer
 
@@ -396,21 +410,43 @@ enumerate sibling containers per backend, or ask the cross-storage question,
 - It also catches what a marker cannot: a deleted vector file, a container
   emptied out of band, an interrupted rebuild.
 
-### What this gate does not see
+### One rule, three pairings
 
-**A workspace whose graph holds no entities at all.** The sample comes from the
-graph, so an empty graph ends the check — and a corpus that produces text chunks
-but no extracted entities (tables, numbers, a very small test corpus) leaves
-exactly that shape: `chunks_vdb` populated, the graph empty. After a model
-change on a named-container backend the new chunk container is empty too, and
-`naive` / `mix` retrieval then serves no chunk context without anything
-noticing.
+A vector storage is an **index** over data held somewhere else, so whether its
+being empty is a defect depends on that other data — which is why the question
+cannot be answered inside a backend's `initialize()`. There are three such
+pairings, and the rule is applied to each independently:
 
-Closing it means a second evidence path — a bounded doc-status page, its
-`chunks_list`, then `chunks_vdb.get_by_ids`. Every edge case this gate has had
-so far came from one of its evidence paths reading something as proof that it
-was not, so that belongs in its own change with its own tests rather than as a
-fourth branch bolted onto this one.
+| source data | index | how the source is read |
+| --- | --- | --- |
+| `text_chunks` (KV) | `chunks_vdb` | `BaseKVStorage.is_empty()` |
+| graph entities | `entities_vdb` | `get_popular_labels(limit=1)` |
+| graph relations | `relationships_vdb` | first batch of `iter_edges(batch_size=1)` |
+
+**If the indexed data is not empty, its index must not be empty either.**
+
+Per-pairing rather than one global check, because each index is a separate
+container that a model change replaces separately, and because **no pairing
+substitutes for another**:
+
+- A workspace built entirely through `acreate_entity` / an entities-only
+  `ainsert_custom_kg` has graph entities and **no text chunks**. Its empty chunk
+  container is correct.
+- A corpus that produces text chunks but extracts **no entities** (tables,
+  numbers, a very small corpus) leaves the graph empty while `chunks_vdb` is
+  populated.
+
+The second case is what the first implementation got wrong: it checked only the
+entity pairing, and its "the graph has no entities" early return ended the
+*whole* function, so `naive` / `mix` retrieval silently served no chunk context
+after a model change. An empty graph now exempts only the two pairings whose
+source *is* the graph.
+
+Relations add no detection coverage that entities do not already give — an edge
+implies its endpoint nodes — but they are a separate container, so an
+interrupted rebuild (`lightrag-rebuild-vdb` rebuilds entities, relationships and
+chunks as separate steps) can leave `relationships_vdb` empty while
+`entities_vdb` is populated.
 
 ### What makes an empty container a defect
 
@@ -446,8 +482,9 @@ makes it true.
 The discriminator for everything else is **doc-status**: the gate refuses only
 when **nothing in the workspace is unfinished**. Anything `PENDING`, `PARSING`,
 `ANALYZING`, `PROCESSING` or `FAILED` means the graph-ahead residue has an owner
-and heals by being retried. Consulted only when the sample comes back empty, so
-the healthy path pays nothing for it.
+and heals by being retried. Consulted only when a pairing is about to refuse,
+and at most **once** however many pairings reach that branch, so the healthy
+path pays nothing for it.
 
 Two situations satisfy that, and the vectors are missing in both by defect:
 every document finished, or **there are no documents at all**. The second is not
@@ -457,11 +494,14 @@ document would exempt an admin-built workspace forever. It is also the one place
 where "a later pipeline run repairs it" is simply false: no pipeline run will
 ever recreate objects an operator created by hand.
 
-Counting only the *unfinished* states is also what keeps a `PROCESSED` row from
-being read as evidence about *these* entities. The sample is ranked by degree,
-so an ingest that crashed after writing a batch of well-connected nodes but
-before their vector upserts fills it with rows that never had vectors, and an
-older unrelated document must not supply the "evidence" to refuse on.
+Counting only the *unfinished* states is also what keeps a `PROCESSED` row
+elsewhere from being read as evidence about *this* container. That mattered more
+under the old sampling design, where an ingest that crashed after writing a batch
+of well-connected nodes but before their vector upserts filled a degree-ranked
+sample with rows that never had vectors. `is_empty()` narrows it a great deal —
+any previously written vector makes the container non-empty, so only a first
+ingest crashing mid-way produces the shape at all — but the discriminator is
+kept, because that first-ingest case is real and heals by being retried.
 
 The count comes from `count_docs_by_statuses(strict=True)`, never
 `get_status_counts()`. The latter is documented to swallow its errors and return
@@ -471,50 +511,61 @@ while missing the `PENDING` row that explains everything. Strict counting raises
 instead, and a raise answers "do not refuse", like every other unreadable thing
 this module consults.
 
-### How "empty" is measured
+### How "empty" is measured: a read that fails loudly
 
-`lightrag/vector_space_gate.py` asks the graph for up to `SAMPLE_SIZE` (32)
-entities via `get_popular_labels`, turns each into its vector id
-(`compute_mdhash_id(label, prefix="ent-")`), and looks all of them up in
-`entities_vdb` in one `get_by_ids`. The gate refuses only when **not one** of
-them has a row.
+`BaseVectorStorage.is_empty()`, implemented on all eight in-tree backends.
 
-`get_popular_labels` rather than `iter_labels`: it is implemented by every
-graph backend (`iter_labels` fails closed where it was never added), it is
-bounded by construction, and ranking by degree biases the sample towards
-entities that certainly exist — the base contract warns that a backend MAY
-surface a label with edges but no node document, and such an artifact would
-never have been embedded.
+The first implementation **inferred** emptiness instead: 32 entity ids from
+`get_popular_labels`, one batched `get_by_ids`, refuse if not one had a row.
+That could not work, and the reason is worth keeping written down because it
+constrains any future read the gate might use.
 
-Sampling rather than a new `is_empty()` on `BaseVectorStorage`: a store that
-still holds half its rows survives 32 lookups with probability 2⁻³², while one
-that has lost 99% of them is caught about half the time — and being caught is
-the right answer there too. It costs one graph query and one batched read per
-startup, and no backend has to grow a method.
+**Every server-backed `get_by_ids` — Milvus, Qdrant, PostgreSQL, MongoDB,
+OpenSearch — catches its transport errors, logs them, and returns an empty
+list.** So "the container is empty" and "the cluster blinked" arrive as the
+*same value*, and no `try`/`except` around the call separates them. A confirming
+second read narrowed the window but could not close it: a blip spanning both
+reads still refused, and the advice a refusal gives — rebuild — is destructive.
 
-**An empty read is confirmed before it is believed.** Every server-backed
-`get_by_ids` — Milvus, Qdrant, PostgreSQL, MongoDB, OpenSearch — CATCHES its
-transport errors, logs them, and returns an empty list, so "the container is
-empty" and "the cluster blinked" arrive at the gate as the same value and no
-`try`/`except` around the call can separate them. What bounds the damage is
-`initialize()`: all five do authenticated I/O there and raise on failure, so a
-sustained outage never reaches the gate — only a blip in the few milliseconds
-since. A second read on the refusal path turns most of those blips back into a
-start, and an *exception* from that read is the one failure the backends do
-surface, so it is treated as "not evidence" and never refuses.
+`is_empty()` closes it by inverting the contract, and this is the whole point of
+adding a method rather than reusing a reader:
 
-Accepted residue: a blip spanning both reads still refuses, and the advice it
-gives — rebuild — is destructive. Closing it needs a read that fails loudly,
-which no vector backend offers today; adding one is a strict-read variant on
-every backend, which is a larger change than the window it closes.
+> Return `True` **only** when the container was positively read and found
+> empty. **Raise** on any backend failure.
 
-One shape had to be handled explicitly. The backends **disagree on what a miss
-looks like**: `BaseVectorStorage.get_by_ids` documents "the objects that were
-found" and most return a compacted list, but `NanoVectorDBStorage` returns one
-entry per requested id, positionally, with `None` where the row is absent.
-Counting the list rather than the rows would read `[None, None, None]` as a
-populated store — the difference between catching a vanished vector store and
-starting on top of one.
+That is the opposite of `BaseKVStorage.is_empty()`, which catches its errors and
+answers `True` — and the asymmetry is deliberate, because the two are used in
+opposite directions:
+
+- On the **index** side, `True` can refuse a deployment, so an error reported as
+  "empty" is a false outage. It must raise.
+- On the **source** side, `True` only *skips* a check, so an error reported as
+  "empty" costs nothing. The existing KV behaviour is therefore fine as it is,
+  and the gate depends on it: an unreadable `text_chunks` lands on the skip
+  branch.
+
+The base-class default raises `StorageCapabilityError`, the fail-closed pattern
+already used by `iter_labels` / `iter_edges`: a backend that has not implemented
+this is one the gate cannot question, which is where every backend stood before
+the gate existed. It must never be read as an answer. `NoopVectorDBStorage`
+keeps that default *deliberately* — it really does hold nothing, and answering
+so accurately would be a false refusal the day a caller forgets to check
+`persists_vectors` first.
+
+Each implementation counts a pending upsert as non-empty (the buffered rows are
+real) and does **not** subtract pending deletes: reporting a store as non-empty
+costs a check that would have found nothing, while the reverse costs a startup.
+
+Two consequences of dropping the sample:
+
+- The gate no longer has a sampling-probability argument to make, and the
+  "a store that lost 99% of its rows is caught about half the time" partial
+  detection is gone with it. `is_empty()` answers only the total case — which is
+  the case a model change on a named-container backend actually produces.
+- `SAMPLE_SIZE` and the positional-`None` handling (`NanoVectorDBStorage`
+  returns one entry per requested id, with `None` for a miss, while most
+  backends return a compacted list) now belong to the **adoption probe** alone,
+  which still needs real rows carrying a `content` field and a stored vector.
 
 ### What the probe's verdict bands mean
 
@@ -573,17 +624,12 @@ rebuild) would otherwise leak every one of them, and a retry on the same object
 would initialize them twice.
 
 It probes `entities_vdb` because the graph's own ids address it directly, and
-adopts **only that store**. The three vector targets share an `embedding_func`
-but NOT a history: `lightrag-rebuild-vdb` rebuilds entities, relationships and
-chunks separately, and offers *entities + relationships* as a partial target, so
-an interrupted rebuild after a same-dimension model change can leave entities in
-the current space while relationships or chunks still hold the previous model's
-vectors. Adopting those on the entity verdict would stamp this model's name onto
-foreign vectors — permanently, invisibly, and beyond the reach of every later
-start. That is the exact lie this feature exists to prevent, so a store nobody
-probed stays unmarked. Probing relationships and chunks needs their own samples
-(graph edges, and `text_chunks` ids) and is deliberately left to a follow-up
-rather than approximated.
+adopts **only that store** — see *The transition* above for why a store nobody
+probed must stay unmarked. Probing relationships and chunks needs their own
+samples (graph edges, and `text_chunks` ids) and is deliberately left to a
+follow-up rather than approximated. Note that this is the one place the three
+pairings of the empty-container gate do *not* extend to: emptiness is answerable
+per container, but provenance needs a readable row from the container itself.
 
 **A refusal is sticky, and does not mean "not initialized".** The storages are
 all up when either check refuses, so `_storages_status` says `INITIALIZED` and

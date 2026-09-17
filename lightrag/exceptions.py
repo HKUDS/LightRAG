@@ -774,7 +774,7 @@ class VectorSpaceMismatchError(RuntimeError):
 
 
 class VectorStorageEmptyError(RuntimeError):
-    """The knowledge graph holds entities and the vector storage holds none.
+    """A vector storage holds nothing while the data it indexes is not empty.
 
     Raised at startup by the cross-storage gate in
     ``LightRAG.initialize_storages()``. It is a *refusal to serve*: every
@@ -803,7 +803,10 @@ class VectorStorageEmptyError(RuntimeError):
     Args:
         vdb_name: the vector storage that came back empty, e.g. ``"entities"``.
         container: the physical container, when the backend can name it.
-        sampled: how many graph entities were looked up.
+        source: the data this storage indexes, named as an operator would
+            recognise it, e.g. ``"knowledge graph entities"``. It is the other
+            half of the evidence: an empty container is only a defect because
+            something it indexes is NOT empty.
     """
 
     def __init__(
@@ -811,12 +814,12 @@ class VectorStorageEmptyError(RuntimeError):
         *,
         vdb_name: str,
         container: str | None = None,
-        sampled: int = 0,
+        source: str = "the data it indexes",
     ) -> None:
         where = f" ('{container}')" if container else ""
         message = (
-            f"The {vdb_name} vector storage{where} holds no vectors for any of "
-            f"{sampled} entities sampled from the knowledge graph. Serving this "
+            f"The {vdb_name} vector storage{where} holds no vectors, but "
+            f"{source} is not empty. Serving this "
             f"would return no context for every query mode that uses vectors. "
             f"The usual cause is a changed embedding model or dimension: "
             f"Milvus, Qdrant and PostgreSQL put the model in the container "
@@ -828,4 +831,4 @@ class VectorStorageEmptyError(RuntimeError):
         super().__init__(message)
         self.vdb_name = vdb_name
         self.container = container
-        self.sampled = sampled
+        self.source = source
