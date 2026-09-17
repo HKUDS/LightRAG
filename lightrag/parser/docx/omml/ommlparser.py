@@ -1,6 +1,65 @@
+import unicodedata
 from xml.etree.cElementTree import Element
 
 from .utils import qn
+
+# A delimiter character selects the glyph; the side it lands on selects \left or
+# \right (see OMMLParser.parse_d). Keys must be NFKC-normalized, because that is
+# the form _normalize_delimiter() hands the lookup: U+2329 LEFT-POINTING ANGLE
+# BRACKET folds to U+3008 LEFT ANGLE BRACKET, so a U+2329 key is unreachable for
+# any text that has been through NFC - which is most text, including anything a
+# CJK IME produces. tests/parser/docx/test_omml_latex_delimiters.py pins it.
+DELIMITER_MAP = {
+    "(": "(",
+    ")": ")",
+    "[": "[",
+    "]": "]",
+    "{": "\\{",
+    "}": "\\}",
+    # U+3008/U+3009; U+2329/U+232A fold here, so they need no key of their own.
+    "〈": "\\langle",
+    "〉": "\\rangle",
+    "⟨": "\\langle",
+    "⟩": "\\rangle",
+    "⌊": "\\lfloor",
+    "⌋": "\\rfloor",
+    "⌈": "\\lceil",
+    "⌉": "\\rceil",
+    "|": "|",
+    "‖": "\\|",
+    # CJK brackets with no \left-compatible command of their own, mapped to the
+    # nearest scalable delimiter. U+3010/U+3011 and U+3014/U+3015 both land on
+    # [ ]: the glyph is approximate, which beats the parenthesis they used to
+    # fall back to. The fullwidth forms need no entry - NFKC folds them onto
+    # their ASCII counterparts above, including variants not enumerated here.
+    "【": "[",
+    "】": "]",
+    "〔": "[",
+    "〕": "]",
+}
+# These render at a fixed size, so they carry no \left / \right.
+FIXED_SIZE_DELIMITER_MAP = {
+    "⟦": "[\\![",
+    "⟧": "]\\!]",
+    # U+300A/U+300B, the one CJK pair with no single-glyph delimiter to borrow.
+    "《": "\\langle\\!\\langle",
+    "》": "\\rangle\\!\\rangle",
+}
+
+
+def _normalize_delimiter(char: str | None) -> str | None:
+    """Fold a Word delimiter character to the form the delimiter maps key on.
+
+    Pass the value of a single ``m:begChr`` / ``m:endChr`` / ``m:sepChr``
+    attribute and nothing else: NFKC is lossy over running text - it flattens
+    superscripts, mathematical alphanumerics and ligatures - so it must never
+    reach equation content. Normalizing here rather than at the lookup keeps
+    every consumer of the character (the maps, and the matrix-flavour test
+    below them) on one spelling.
+    """
+    if not char:
+        return char
+    return unicodedata.normalize("NFKC", char)
 
 
 class OMMLParser:
@@ -220,29 +279,12 @@ class OMMLParser:
         # half-open interval ("[0,1["), so a map with the side baked in needs
         # patch tables, and still emits \left in the end position for every
         # entry those tables miss.
-        delimiter_map = {
-            "(": "(",
-            ")": ")",
-            "[": "[",
-            "]": "]",
-            "{": "\\{",
-            "}": "\\}",
-            "〈": "\\langle",
-            "〉": "\\rangle",
-            "⟨": "\\langle",
-            "⟩": "\\rangle",
-            "⌊": "\\lfloor",
-            "⌋": "\\rfloor",
-            "⌈": "\\lceil",
-            "⌉": "\\rceil",
-            "|": "|",
-            "‖": "\\|",
-        }
-        # These render at a fixed size, so they carry no \left / \right.
-        fixed_size_map = {
-            "⟦": "[\\![",
-            "⟧": "]\\!]",
-        }
+        #
+        # Word also stores whatever character the author typed, so a CJK IME
+        # yields fullwidth and CJK brackets; _normalize_delimiter folds the ones
+        # that have an equivalent, and DELIMITER_MAP carries the rest. An
+        # unmapped character still falls back to the parenthesis pair -
+        # valid LaTeX, wrong glyph - which is what every CJK bracket got.
         text = ""
         start_bracket = "("
         end_bracket = ")"
@@ -252,11 +294,15 @@ class OMMLParser:
             for child2 in child:
                 if child.tag == qn("m:dPr"):
                     if child2.tag == qn("m:begChr"):
-                        start_bracket = child2.attrib.get(qn("m:val"))
+                        start_bracket = _normalize_delimiter(
+                            child2.attrib.get(qn("m:val"))
+                        )
                     if child2.tag == qn("m:endChr"):
-                        end_bracket = child2.attrib.get(qn("m:val"))
+                        end_bracket = _normalize_delimiter(
+                            child2.attrib.get(qn("m:val"))
+                        )
                     if child2.tag == qn("m:sepChr"):
-                        seperator = child2.attrib.get(qn("m:val"))
+                        seperator = _normalize_delimiter(child2.attrib.get(qn("m:val")))
                 if child2.tag == qn("m:m"):
                     is_matrix = True
 
@@ -268,15 +314,15 @@ class OMMLParser:
         start = ""
         end = ""
         if start_bracket:
-            if start_bracket in fixed_size_map:
-                start = fixed_size_map[start_bracket] + " "
+            if start_bracket in FIXED_SIZE_DELIMITER_MAP:
+                start = FIXED_SIZE_DELIMITER_MAP[start_bracket] + " "
             else:
-                start = "\\left" + delimiter_map.get(start_bracket, "(") + " "
+                start = "\\left" + DELIMITER_MAP.get(start_bracket, "(") + " "
         if end_bracket:
-            if end_bracket in fixed_size_map:
-                end = " " + fixed_size_map[end_bracket]
+            if end_bracket in FIXED_SIZE_DELIMITER_MAP:
+                end = " " + FIXED_SIZE_DELIMITER_MAP[end_bracket]
             else:
-                end = " " + "\\right" + delimiter_map.get(end_bracket, ")")
+                end = " " + "\\right" + DELIMITER_MAP.get(end_bracket, ")")
         # If there is no end bracket and this tag contains an m:eqArr tag as a
         # child, we assume that the eqArr should be translated to a cases environment
         # instead of an eqnarray* environment.
@@ -296,6 +342,8 @@ class OMMLParser:
         elif "\\right" in end and "\\left" not in start:
             start = "\\left. " + start
         if is_matrix:
+            # Normalized above, so a fullwidth ( or | selects the same flavour
+            # as its ASCII counterpart instead of falling through to bmatrix.
             if start_bracket == "(" and end_bracket == ")":
                 return text.replace("{matrix}", "{pmatrix}")
             elif start_bracket == "|" and end_bracket == "|":
