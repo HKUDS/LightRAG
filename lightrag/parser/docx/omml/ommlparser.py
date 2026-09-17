@@ -47,13 +47,16 @@ FIXED_SIZE_DELIMITER_MAP = {
 }
 
 
-# LaTeX's own special characters, which change the structure of an expression
-# rather than printing. NFKC folds the fullwidth forms straight onto them
-# (＆ -> &, ％ -> %), so a separator has to be guarded against them; see
-# _normalize_separator. A delimiter needs no such guard: its normalized
+# The separator characters a fold may produce. 94 fullwidth characters fold
+# onto ASCII, and the ones that stay a plain printing mark in math mode are
+# these few; the rest carry meaning there - ＆ is an alignment tab, ％ comments
+# out the rest of the line, ＇ becomes a prime on the preceding symbol, and a
+# fullwidth letter or digit becomes a variable. An allowlist is the only shape
+# that holds: the unsafe set cannot be enumerated, but the useful set is small.
+# See _normalize_separator. A delimiter needs no such guard: its normalized
 # character is only ever a lookup key, and an unmapped one falls back to the
 # parenthesis rather than reaching the output.
-_LATEX_SPECIAL_CHARS = frozenset("#$%&\\^_{}~")
+_FOLDABLE_SEPARATORS = frozenset("|,;:./")
 
 
 def _normalize_delimiter(char: str | None) -> str | None:
@@ -72,18 +75,18 @@ def _normalize_delimiter(char: str | None) -> str | None:
 
 
 def _normalize_separator(char: str | None) -> str | None:
-    """Fold a Word ``m:sepChr`` character, unless folding it would make syntax.
+    """Fold a Word ``m:sepChr`` character only onto a plain printing mark.
 
-    The separator is emitted verbatim between the elements, so normalizing it
-    has to stop where the result would stop printing: ＆ ＼ ｛ and friends fold
-    onto LaTeX's special characters, and ％ in particular would comment out the
-    rest of the line. Such a character keeps the spelling Word wrote, which is
-    the glyph the author chose and what this parser emitted before the fold.
+    The separator is emitted verbatim between the elements, unlike a delimiter,
+    which is only ever a lookup key. So the fold is allowed exactly where the
+    result is one of _FOLDABLE_SEPARATORS and means nothing in math mode;
+    anything else keeps the spelling Word wrote, which is the glyph the author
+    chose and what this parser emitted before the fold.
     """
     normalized = _normalize_delimiter(char)
-    if normalized and any(c in _LATEX_SPECIAL_CHARS for c in normalized):
-        return char
-    return normalized
+    if normalized in _FOLDABLE_SEPARATORS:
+        return normalized
+    return char
 
 
 class OMMLParser:

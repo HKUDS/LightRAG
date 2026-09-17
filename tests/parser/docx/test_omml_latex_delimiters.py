@@ -145,7 +145,13 @@ def test_fullwidth_delimiters_fold_onto_their_ascii_counterparts(beg, end, expec
     assert convert_omml_to_latex(_delimited(beg, end)) == expected
 
 
-@pytest.mark.parametrize(("beg", "end"), [("〈", "〉"), ("〈", "〉")])
+@pytest.mark.parametrize(
+    ("beg", "end"),
+    [
+        ("\u3008", "\u3009"),  # U+3008/U+3009, what NFC text carries
+        ("\u2329", "\u232a"),  # U+2329/U+232A, indistinguishable on screen
+    ],
+)
 @pytest.mark.offline
 def test_both_angle_bracket_spellings_reach_the_map(beg, end):
     # The map used to be keyed on U+2329, which canonically decomposes to
@@ -206,7 +212,10 @@ def test_matrix_flavour_follows_the_normalized_delimiter(beg, end, expected):
     assert convert_omml_to_latex(_matrix(beg, end)) == expected
 
 
-@pytest.mark.parametrize(("sep", "expected"), [("｜", "|"), ("，", ","), ("；", ";")])
+@pytest.mark.parametrize(
+    ("sep", "expected"),
+    [("｜", "|"), ("，", ","), ("；", ";"), ("：", ":"), ("．", "."), ("／", "/")],
+)
 @pytest.mark.offline
 def test_fullwidth_separator_is_normalized(sep, expected):
     # sepChr is emitted verbatim between the elements, so a fullwidth bar would
@@ -226,14 +235,34 @@ def _separated(sep: str) -> ET.Element:
 
 
 @pytest.mark.parametrize(
-    "sep", ["＃", "＄", "％", "＆", "＼", "＾", "＿", "｛", "｝", "～"]
+    "sep",
+    [
+        # LaTeX's own special characters.
+        "＃",
+        "＄",
+        "％",
+        "＆",
+        "＼",
+        "＾",
+        "＿",
+        "｛",
+        "｝",
+        "～",
+        # Structural in math mode without being special: ＇ becomes a prime on
+        # the preceding symbol, and a letter or digit becomes a variable.
+        "＇",
+        "｀",
+        "＂",
+        "Ｘ",
+        "５",
+    ],
 )
 @pytest.mark.offline
-def test_separator_keeps_the_character_word_wrote_when_folding_makes_syntax(sep):
-    # Unlike a delimiter, the separator is emitted verbatim, and these fold
-    # straight onto LaTeX's special characters: ＆ would become an alignment
-    # tab, ＼ the start of a command, ＾/＿ a script, and ％ would comment out
-    # the rest of the line. Folding has to stop short of making syntax.
+def test_separator_keeps_the_character_word_wrote_unless_the_fold_is_plain(sep):
+    # Unlike a delimiter, the separator is emitted verbatim, so the fold is
+    # allowed only onto a plain printing mark. The unsafe half of 94 fullwidth
+    # folds cannot be enumerated - ＆ is an alignment tab, ％ comments out the
+    # rest of the line, ＇ silently primes x - so the allowlist is the guard.
     assert convert_omml_to_latex(_separated(sep)) == f"\\left( x{sep}y \\right)"
 
 
