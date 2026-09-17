@@ -884,8 +884,11 @@ class EmbeddingFunc:
                 f"the model actually being called, and that the endpoint "
                 f"honours the requested output dimension. Vectors already "
                 f"stored under the previously declared dimension do not match "
-                f"the corrected one, so clear the data directory too unless "
-                f"nothing has been indexed yet."
+                f"the corrected one; unless nothing has been indexed yet, "
+                f"rebuild them with `lightrag-rebuild-vdb` after fixing the "
+                f"configuration. Do NOT clear the working directory -- that "
+                f"destroys the knowledge graph and text chunks the rebuild "
+                f"reads from."
             )
             raise ValueError(
                 f"Embedding dimension mismatch: expected dimension "

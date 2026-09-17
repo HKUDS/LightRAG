@@ -25,6 +25,7 @@ from ..constants import (
     GRAPH_FIELD_SEP,
     MILVUS_SUBMIT_LIMIT,
 )
+from ..exceptions import VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -1451,8 +1452,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         logger.debug(f"[{self.workspace}] Field '{field_name}' is compatible")
         return True
 
-    def _check_vector_dimension(self, collection_info: dict):
-        """Check vector dimension compatibility"""
+    def _check_vector_dimension(
+        self, collection_info: dict, container: str | None = None
+    ):
+        """Check vector dimension compatibility.
+
+        Args:
+            collection_info: ``describe_collection`` output for ``container``.
+            container: the collection the info describes. Defaults to
+                ``final_namespace``; the legacy-migration caller passes its own
+                source collection so the refusal names what it actually read.
+
+        Raises:
+            VectorSpaceMismatchError: the collection holds vectors of another
+                dimension. Callers that are merely *sourcing* a migration
+                (the legacy collection) must catch it -- a legacy collection in
+                another embedding space is not a refusal, because the suffixed
+                collection is a different container and is created fresh.
+            ValueError: the dimensions could not be parsed at all, which is a
+                broken schema rather than an embedding-space change and must
+                never reach ``lightrag-rebuild-vdb`` as a droppable condition.
+        """
+        container = container or self.final_namespace
         current_dimension = self.embedding_func.embedding_dim
 
         # Find vector field dimension
@@ -1492,14 +1513,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             f"current={current_dimension} (type={type(current_dimension)}), error={e}"
                         )
                         raise ValueError(
-                            f"Invalid dimension values for collection '{self.final_namespace}': "
+                            f"Invalid dimension values for collection '{container}': "
                             f"existing={existing_dimension}, current={current_dimension}"
                         ) from e
 
-                    if existing_dim_int != current_dim_int:
+                    # A dimension that is MISSING is not an embedding-space
+                    # change. `None != 768` would otherwise raise the typed
+                    # refusal, and `lightrag-rebuild-vdb` answers that by
+                    # DROPPING the collection -- so a malformed describe_collection
+                    # response, or an embedding_func that never declared a
+                    # dimension, would authorise destroying live vectors. A fact
+                    # nobody reported can never be evidence of a mismatch; see
+                    # "Absent evidence never refuses" in
+                    # docs/design/VectorSpaceProvenance.md.
+                    if existing_dim_int is None or current_dim_int is None:
+                        logger.error(
+                            f"[{self.workspace}] Missing dimension: existing={existing_dimension}, "
+                            f"current={current_dimension}"
+                        )
                         raise ValueError(
-                            f"Vector dimension mismatch for collection '{self.final_namespace}': "
-                            f"existing={existing_dim_int}, current={current_dim_int}"
+                            f"Missing dimension values for collection '{container}': "
+                            f"existing={existing_dimension}, current={current_dimension}"
+                        )
+
+                    if existing_dim_int != current_dim_int:
+                        raise VectorSpaceMismatchError(
+                            backend=type(self).__name__,
+                            container=container,
+                            expected_dim=current_dim_int,
+                            stored_dim=existing_dim_int,
                         )
 
                     logger.debug(
@@ -2127,6 +2169,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         try:
             self._client.describe_collection(self.final_namespace)
             self._validate_collection_compatibility()
+        except VectorSpaceMismatchError:
+            # Never reframed as a migration failure. The typed refusal is what
+            # `lightrag-rebuild-vdb` matches on to drop and re-provision this
+            # collection; wrapping it in a generic RuntimeError would leave the
+            # operator with no automated way out, which is the defect this
+            # replaces. See docs/design/VectorSpaceProvenance.md.
+            raise
         except Exception as validation_error:
             logger.error(
                 f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
@@ -2272,8 +2321,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
                 else:
                     try:
-                        self._check_vector_dimension(legacy_collection_info)
-                    except ValueError as legacy_error:
+                        self._check_vector_dimension(
+                            legacy_collection_info, container=self.legacy_namespace
+                        )
+                    # VectorSpaceMismatchError is caught here, not propagated:
+                    # the suffixed collection does not exist yet, so nothing is
+                    # being served out of the wrong embedding space. The legacy
+                    # collection is only a migration SOURCE, and an incompatible
+                    # source simply is not migrated.
+                    except (ValueError, VectorSpaceMismatchError) as legacy_error:
                         logger.warning(
                             f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
                             f"is not compatible with '{self.final_namespace}': {legacy_error}. "

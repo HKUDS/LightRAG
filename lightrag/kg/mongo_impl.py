@@ -52,9 +52,15 @@ from ..exceptions import (
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
+    VectorSpaceMismatchError,
 )
 from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
+from ..kg.vector_space import (
+    assert_vector_space_matches,
+    read_vector_space_marker,
+    vector_space_marker,
+)
 
 import pipmaster as pm
 
@@ -4126,6 +4132,76 @@ class MongoGraphStorage(BaseGraphStorage):
             return {"status": "error", "message": str(e)}
 
 
+# The embedding-space marker lives in the vector collection's JSON Schema
+# validator ``description``, never in a document. A marker document would be a
+# row in the data collection that every future full-collection scan owes an
+# exclusion; the validator is metadata and owes nothing, and no read path --
+# ``$vectorSearch`` or the ``_id`` / ``src_id`` / ``tgt_id`` finds -- can reach
+# it. See ``docs/design/VectorSpaceProvenance.md``.
+#
+# The prefix is what makes a foreign description unambiguously "not ours"
+# rather than something to be parsed and possibly misread, and it makes the
+# marker legible to an operator running ``db.getCollectionInfos()``.
+_VECTOR_SPACE_DESCRIPTION_PREFIX = "LightRAG embedding space: "
+
+
+def _vector_space_validator(embedding_func, existing: Any = None) -> dict:
+    """``existing`` with this instance's embedding space recorded in it.
+
+    MERGED, never replaced. ``collMod`` takes the whole validator, so writing a
+    bare marker schema would drop every rule an operator put on the collection
+    -- their ``required`` list, their ``properties`` -- from all future writes,
+    silently, on an ordinary ``/documents/clear``. That is the same hazard
+    OpenSearch's ``put_mapping`` has with ``_meta``, and it is answered the same
+    way: read what is there and add to it.
+
+    Only ``$jsonSchema.description`` is taken over, because that is the field
+    the marker lives in. An operator who used it for prose loses that prose;
+    that is the documented cost of this marker home, and it is a far smaller
+    one than losing validation rules. A validator with no ``$jsonSchema`` (a
+    plain query expression) keeps its operators: a validator is an implicit
+    AND, so the added ``$jsonSchema`` sits beside them, and ``bsonType:
+    object`` matches every document, so it rejects nothing on its own.
+    """
+    payload = json.dumps(vector_space_marker(embedding_func), sort_keys=True)
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    schema = merged.get("$jsonSchema")
+    schema = dict(schema) if isinstance(schema, dict) else {}
+    schema.setdefault("bsonType", "object")
+    schema["description"] = _VECTOR_SPACE_DESCRIPTION_PREFIX + payload
+    merged["$jsonSchema"] = schema
+    return merged
+
+
+def _read_validator_vector_space(validator: Any) -> tuple[str | None, int | None]:
+    """Extract ``(model, dim)`` from a stored validator, or ``(None, None)``.
+
+    Every way this can fail reads as "not recorded": no validator, a validator
+    written by something other than LightRAG, a truncated or hand-edited
+    payload. A marker we cannot read is not evidence of a mismatch.
+    """
+    if not isinstance(validator, dict):
+        return None, None
+    description = (validator.get("$jsonSchema") or {}).get("description")
+    if not isinstance(description, str) or not description.startswith(
+        _VECTOR_SPACE_DESCRIPTION_PREFIX
+    ):
+        return None, None
+    try:
+        payload = json.loads(description[len(_VECTOR_SPACE_DESCRIPTION_PREFIX) :])
+    except ValueError:
+        return None, None
+    return read_vector_space_marker(payload)
+
+
+async def _read_collection_validator(db: AsyncDatabase, name: str) -> Any:
+    """The validator currently stored on ``name``, or ``None``."""
+    cursor = await db.list_collections(filter={"name": name})
+    for info in await cursor.to_list(length=1):
+        return (info.get("options") or {}).get("validator")
+    return None
+
+
 @dataclass
 class _PendingVectorDoc:
     """Buffered vector upsert waiting for embedding and/or bulk flush."""
@@ -4227,11 +4303,34 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self._flush_lock = None
 
     async def initialize(self):
+        """Attach to the vector collection, refusing a foreign embedding space.
+
+        The flush lock is taken FIRST, before anything that can refuse. A
+        storage that raises ``VectorSpaceMismatchError`` below must stay able to
+        serve ``drop()``, because dropping and re-provisioning the collection is
+        how ``lightrag-rebuild-vdb`` clears that refusal; taking the lock after
+        the gate would leave ``_flush_lock`` at ``None`` on the refusal path and
+        ``drop()`` would die on ``async with None``. See
+        ``docs/design/VectorSpaceProvenance.md``.
+        """
+        if self._flush_lock is None:
+            self._flush_lock = get_namespace_lock(
+                namespace=self.final_namespace, workspace=""
+            )
         async with get_data_init_lock():
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            self._data = await get_or_create_collection(self.db, self._collection_name)
+            # A collection created here carries this instance's embedding-space
+            # marker; an existing one keeps whatever it has, and is judged by
+            # the gate below rather than silently re-stamped.
+            self._data = await get_or_create_collection(
+                self.db,
+                self._collection_name,
+                validator=_vector_space_validator(self.embedding_func),
+            )
+
+            await self._assert_collection_is_usable()
 
             # Ensure vector index exists
             await self.create_vector_index_if_not_exists()
@@ -4240,10 +4339,84 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Use MongoDB as VDB {self._collection_name}"
             )
 
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                namespace=self.final_namespace, workspace=""
+    async def _assert_collection_is_usable(self) -> None:
+        """Refuse a collection this instance cannot read. THE choke point.
+
+        Two facts, from two different places, because neither alone is enough:
+
+        * **Model**, from the validator marker. The collection name carries no
+          model on this backend, so a same-dimension model swap is invisible
+          without it -- the swap reuses this very collection and every query
+          then returns a previous model's neighbours.
+        * **Dimension**, from the Atlas search index definition. That is the
+          physical truth the index enforces, so it outranks the marker's copy;
+          the marker's dimension is only a fallback for a collection whose
+          index has not been built yet.
+
+        Absent evidence never refuses -- a collection recording neither
+        predates the marker and stays servable.
+        """
+        stored_model, marker_dim = _read_validator_vector_space(
+            await _read_collection_validator(self.db, self._collection_name)
+        )
+        index_dim = await self._read_search_index_dimension()
+        assert_vector_space_matches(
+            backend=type(self).__name__,
+            container=self._collection_name,
+            embedding_func=self.embedding_func,
+            stored_model=stored_model,
+            stored_dim=index_dim if index_dim is not None else marker_dim,
+        )
+
+    async def _read_search_index_dimension(self) -> int | None:
+        """``numDimensions`` of the Atlas vector index, or ``None``.
+
+        ``None`` covers "no index yet" as well as "the definition could not be
+        parsed", and both mean the same thing to every caller: this is not
+        evidence of a mismatch.
+        """
+        indexes_cursor = await self._data.list_search_indexes()
+        for index in await indexes_cursor.to_list(length=None):
+            if index.get("name") != self._index_name:
+                continue
+            for spec in (index.get("latestDefinition") or {}).get("fields", []):
+                if spec.get("type") == "vector" and spec.get("path") == "vector":
+                    dim = spec.get("numDimensions")
+                    return dim if isinstance(dim, int) else None
+        return None
+
+    async def _record_vector_space_marker(self) -> bool:
+        """Stamp this instance's embedding space onto the collection.
+
+        Called only where the marker is trivially TRUE: right after ``drop()``
+        emptied the collection. Never on attach -- an operator who upgrades and
+        swaps to a same-dimension model in one step would otherwise get the new
+        model's name recorded over the old model's vectors, permanently, after
+        which the gate can never fire.
+
+        Returns whether the write landed. A denial is NOT automatically benign,
+        and the caller has to decide: it leaves whatever marker is already
+        there, which on a collection previously marked for another model is the
+        PREVIOUS model's name -- see ``_reprovision_vector_space``. Only when
+        nothing conflicting is recorded does a denial reduce to "unmarked",
+        which is where every collection was before this feature existed.
+        """
+        try:
+            await self.db.command(
+                "collMod",
+                self._collection_name,
+                validator=_vector_space_validator(
+                    self.embedding_func,
+                    await _read_collection_validator(self.db, self._collection_name),
+                ),
             )
+            return True
+        except PyMongoError as e:
+            logger.warning(
+                f"[{self.workspace}] Could not record the embedding-space marker on "
+                f"collection '{self._collection_name}': {e}"
+            )
+            return False
 
     async def finalize(self):
         """Flush pending vector ops, release the Mongo client, surface unflushed data."""
@@ -4313,9 +4486,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
         Two guards run *before* the rebuild: (1) a FAILED index that is still
         ``queryable`` (a background rebuild/update failed but the previously
         built index keeps serving) is left in place to avoid taking a
-        still-serving index offline; (2) a FAILED index built under a
-        different embedding model raises rather than being auto-rebuilt
-        against incompatible stored vectors. Transitional states
+        still-serving index offline; (2) a FAILED index built for a different
+        DIMENSION raises rather than being auto-rebuilt against incompatible
+        stored vectors. A same-dimension model change is invisible here --
+        the index definition records no model -- and is caught by
+        ``_assert_collection_is_usable`` before this runs. Transitional states
         (``PENDING``/``BUILDING``) are left alone -- they become queryable
         without intervention.
         """
@@ -4343,15 +4518,18 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
                 expected_dim = self.embedding_func.embedding_dim
 
-                if existing_dim is not None and existing_dim != expected_dim:
-                    error_msg = (
-                        f"Vector dimension mismatch! Index '{self._index_name}' has "
-                        f"dimension {existing_dim}, but current embedding model expects "
-                        f"dimension {expected_dim}. Please drop the existing index or "
-                        f"use an embedding model with matching dimensions."
-                    )
-                    logger.error(f"[{self.workspace}] {error_msg}")
-                    raise ValueError(error_msg)
+                # Typed, because lightrag-rebuild-vdb answers this condition by
+                # dropping the collection: an untyped refusal would force it to
+                # catch Exception and destroy data on a cluster outage. The
+                # model side is judged by _assert_collection_is_usable; here
+                # only the index's own dimension is in hand.
+                assert_vector_space_matches(
+                    backend=type(self).__name__,
+                    container=self._collection_name,
+                    embedding_func=self.embedding_func,
+                    stored_model=None,
+                    stored_dim=existing_dim,
+                )
 
                 # Self-heal a FAILED index, but ONLY when it is actually
                 # non-queryable. Atlas can report status="FAILED" while
@@ -4912,8 +5090,70 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.error(f"[{self.workspace}] Error getting vectors: {e}")
             return result
 
+    async def _reprovision_vector_space(self) -> None:
+        """Rebuild the emptied collection for THIS instance's embedding space.
+
+        The step that makes a refusal recoverable on this backend. ``drop()``
+        used to go straight to ``create_vector_index_if_not_exists()``, which
+        re-read the SURVIVING Atlas search index definition and raised the same
+        dimension mismatch again -- ``delete_many({})`` removes documents, not
+        the index, and not the validator either. ``except PyMongoError`` did not
+        catch that raise, so the drop failed and the operator was left deleting
+        the index out of band. Three things have to happen here, in this order:
+
+        1. **Drop the search index when its dimension is wrong.** Only then:
+           the definition records a dimension and nothing else, so a
+           same-dimension MODEL change leaves a perfectly good index, and
+           rebuilding it would cost an Atlas index build for nothing.
+        2. **Rewrite the validator marker.** The collection is empty, so this
+           process's embedding space is now trivially the true one. Skipping it
+           would leave the previous model recorded and make the NEXT
+           ``initialize()`` refuse again -- the recovery would not converge.
+        3. **Recreate the index**, which is now either absent or compatible, so
+           the guard inside it cannot fire.
+        """
+        index_dim = await self._read_search_index_dimension()
+        expected_dim = self.embedding_func.embedding_dim
+        if index_dim is not None and index_dim != expected_dim:
+            logger.warning(
+                f"[{self.workspace}] Dropping vector index {self._index_name}: it was "
+                f"built for dimension {index_dim} and this instance embeds at "
+                f"{expected_dim}"
+            )
+            await self._data.drop_search_index(self._index_name)
+            await self._wait_for_search_index_absent(self._index_name)
+        if not await self._record_vector_space_marker():
+            # A denied write does not leave the collection unmarked -- it
+            # leaves whatever was there. On a collection previously marked for
+            # another model that is the PREVIOUS model's name, and the attach
+            # that ``clear_vector_space_refusal`` runs straight after this drop
+            # is refused all over again. Every vector is already gone by then,
+            # so the one thing this must not do is report success: that would
+            # send the tool off to rebuild into a collection it cannot attach
+            # to. Fail loud instead, naming the permission that is missing.
+            #
+            # When nothing conflicting is recorded the denial really does
+            # reduce to "unmarked", and that is not a failure -- it is where
+            # every collection was before this feature existed.
+            try:
+                await self._assert_collection_is_usable()
+            except VectorSpaceMismatchError as e:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] Dropped every vector in "
+                    f"'{self._collection_name}', but could not rewrite its "
+                    f"embedding-space marker: the collection still records the "
+                    f"previous model, so the rebuild would be refused. Grant "
+                    f"collMod on this collection and run lightrag-rebuild-vdb "
+                    f"again."
+                ) from e
+        await self.create_vector_index_if_not_exists()
+
     async def drop(self) -> dict[str, str]:
-        """Drop all documents and recreate the vector index. Destructive.
+        """Drop all documents and re-provision the collection. Destructive.
+
+        Also the recovery path for an embedding-space refusal: the collection
+        comes back empty and marked for THIS instance's model, so the next
+        ``initialize()`` attaches normally. See ``_reprovision_vector_space``.
 
         MUST only be called when ``pipeline_status`` is idle (see the
         Pipeline concurrency contract in ``docs/design/PipelineConcurrencyContract.md``); the only
@@ -4942,8 +5182,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 result = await self._data.delete_many({})
                 deleted_count = result.deleted_count
 
-                # Recreate vector index
-                await self.create_vector_index_if_not_exists()
+                # Re-provision in the CURRENT embedding space, not the one the
+                # collection used to hold.
+                await self._reprovision_vector_space()
 
             logger.info(
                 f"[{self.workspace}] Dropped {deleted_count} documents from vector storage {self._collection_name} and recreated vector index"
@@ -4957,13 +5198,30 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error dropping vector storage {self._collection_name}: {e}"
             )
             return {"status": "error", "message": str(e)}
+        except StorageControlPlaneError as e:
+            # Re-provisioning failed after the documents were already deleted.
+            # The deletion is real and irreversible; what is NOT true is that
+            # the collection is ready to be rebuilt, so this must not be
+            # reported as a success. See _reprovision_vector_space.
+            logger.error(f"[{self.workspace}] {e}")
+            return {"status": "error", "message": str(e)}
 
 
-async def get_or_create_collection(db: AsyncDatabase, collection_name: str):
+async def get_or_create_collection(
+    db: AsyncDatabase, collection_name: str, validator: dict | None = None
+):
+    """Return the collection, creating it with ``validator`` if it is absent.
+
+    ``validator`` is applied ONLY at creation. An existing collection keeps
+    whatever it has: overwriting a validator on attach would stamp this
+    process's embedding-space marker onto vectors it did not write. See
+    ``docs/design/VectorSpaceProvenance.md``.
+    """
     collection_names = await db.list_collection_names()
 
     if collection_name not in collection_names:
-        collection = await db.create_collection(collection_name)
+        kwargs = {"validator": validator} if validator else {}
+        collection = await db.create_collection(collection_name, **kwargs)
         logger.info(f"Created collection: {collection_name}")
         return collection
     else:
