@@ -203,51 +203,58 @@ async def _probe_same_embedding_space(
     )
 
 
-async def _every_document_is_processed(doc_status) -> bool:
-    """Whether this workspace has finished documents and NOTHING else in it.
+async def _vectors_are_expected(doc_status) -> bool:
+    """Whether this workspace's entities SHOULD have vectors by now.
 
-    A PROCESSED document is the pipeline's own claim that it wrote everything
-    that document produces, vectors included, which is what makes a missing
-    vector a defect rather than work still in flight.
+    The caller has already established that the graph holds entities. This
+    decides whether their missing vectors are a defect or work in flight, and
+    there are two ways to be a defect:
 
-    But a PROCESSED row *somewhere* says nothing about the entities in THIS
-    sample. The graph is ranked by degree, so an ingest that crashed after
-    writing a batch of well-connected nodes but before their vector upserts can
-    fill the whole sample with rows that never had vectors -- while an older,
-    unrelated PROCESSED document supplies the "evidence" to refuse on. That
-    refuses the restart that would have healed it.
+    So the question is only whether anything is UNFINISHED. Nothing is, in two
+    quite different situations, and both mean the same thing here:
 
-    So every document has to be finished. A workspace holding anything PENDING,
-    PARSING, ANALYZING, PROCESSING or FAILED has work whose residue is exactly
-    "the graph is ahead of the vector store", and it heals by being retried,
-    not by being refused. Erring towards not-refusing is the documented
-    direction for this whole check.
+    * **Every document finished.** PROCESSED is the pipeline's claim that it
+      wrote everything those documents produce, vectors included.
+    * **There are no documents at all.** ``acreate_entity`` and
+      ``ainsert_custom_kg`` write graph entities AND their vectors, and write
+      no doc-status row. Requiring a PROCESSED document would exempt such a
+      workspace forever -- and it is the one place where "a later pipeline run
+      repairs it" is simply false, because no pipeline run will ever recreate
+      objects an operator created by hand.
 
-    Anything that goes wrong here answers ``False``: a doc-status backend that
-    cannot be read is not evidence that vectors are missing, and this is the
-    last question asked before a refusal.
+    Anything PENDING, PARSING, ANALYZING, PROCESSING or FAILED is the opposite:
+    the residue has an owner and heals by being retried. Counting only the
+    unfinished states is also what keeps a PROCESSED row from being read as
+    evidence about THESE entities -- the graph sample is ranked by degree, so an
+    ingest that crashed after writing a batch of well-connected nodes but before
+    their vector upserts fills the whole sample with rows that never had
+    vectors, and an older unrelated document must not supply the "evidence" to
+    refuse on.
+
+    Counted with ``count_docs_by_statuses(strict=True)``, never
+    ``get_status_counts()``: the latter is documented to swallow its errors and
+    report what it managed to collect, so a doc-status read that failed halfway
+    could show a PROCESSED row while missing the PENDING one that explains
+    everything -- and refuse the restart that would have healed it. Strict
+    counting raises instead, and a raise answers "do not refuse", like every
+    other unreadable thing this module consults.
     """
     if doc_status is None:
         return False
+    unfinished_statuses = [
+        status for status in DocStatus if status is not DocStatus.PROCESSED
+    ]
     try:
-        counts = await doc_status.get_status_counts()
+        unfinished = await doc_status.count_docs_by_statuses(
+            unfinished_statuses, strict=True
+        )
     except Exception as e:
         logger.warning(
             f"Not refusing an empty vector storage: the document status could "
-            f"not be read ({type(e).__name__}: {e})"
+            f"not be counted ({type(e).__name__}: {e})"
         )
         return False
-    if not isinstance(counts, dict):
-        return False
 
-    def _count(status: DocStatus) -> int:
-        return int(counts.get(status.value, 0) or 0)
-
-    if _count(DocStatus.PROCESSED) <= 0:
-        return False
-    unfinished = sum(
-        _count(status) for status in DocStatus if status is not DocStatus.PROCESSED
-    )
     if unfinished:
         logger.warning(
             f"Not refusing an empty vector storage: {unfinished} document(s) in "
@@ -412,7 +419,7 @@ async def check_vector_space_at_startup(
                 f"Serving anyway: this instance declared it is rebuilding them."
             )
             return
-        if await _every_document_is_processed(doc_status):
+        if await _vectors_are_expected(doc_status):
             raise VectorStorageEmptyError(
                 vdb_name="entities",
                 container=getattr(entities_vdb, "final_namespace", None),

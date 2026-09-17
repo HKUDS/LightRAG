@@ -150,8 +150,38 @@ async def test_a_vanished_vector_store_refuses_to_serve(tmp_path):
 
 
 async def test_an_unfinished_ingest_is_not_refused(tmp_path):
-    """The graph got ahead of the vector store and no document ever reached
-    PROCESSED. The next pipeline run repairs that; refusing would block it."""
+    """The graph got ahead of the vector store while a document is still in
+    flight. The next pipeline run repairs that; refusing would block it."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    await rag.chunk_entity_relation_graph.upsert_node(
+        "Alice", {"entity_id": "Alice", "description": "an engineer"}
+    )
+    await rag.doc_status.upsert(
+        {
+            "doc-inflight": {
+                "status": DocStatus.PROCESSING,
+                "content_summary": "Alice",
+                "content_length": 5,
+                "chunks_count": 1,
+                "chunks_list": ["chunk-1"],
+                "file_path": "alice.txt",
+            }
+        }
+    )
+    await rag.chunk_entity_relation_graph.index_done_callback()
+    await rag.doc_status.index_done_callback()
+    await rag.finalize_storages()
+
+    restarted = _rag(tmp_path, model_name="bge-m3")
+    await restarted.initialize_storages()
+    await restarted.finalize_storages()
+
+
+async def test_an_admin_only_workspace_refuses_when_its_vectors_vanish(tmp_path):
+    """acreate_entity / ainsert_custom_kg write graph entities AND their
+    vectors, and no doc-status row. No pipeline run will ever recreate those,
+    so requiring a PROCESSED document would exempt such a workspace forever."""
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
     await rag.chunk_entity_relation_graph.upsert_node(
@@ -161,7 +191,8 @@ async def test_an_unfinished_ingest_is_not_refused(tmp_path):
     await rag.finalize_storages()
 
     restarted = _rag(tmp_path, model_name="bge-m3")
-    await restarted.initialize_storages()
+    with pytest.raises(VectorStorageEmptyError):
+        await restarted.initialize_storages()
     await restarted.finalize_storages()
 
 

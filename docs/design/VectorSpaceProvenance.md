@@ -396,6 +396,22 @@ enumerate sibling containers per backend, or ask the cross-storage question,
 - It also catches what a marker cannot: a deleted vector file, a container
   emptied out of band, an interrupted rebuild.
 
+### What this gate does not see
+
+**A workspace whose graph holds no entities at all.** The sample comes from the
+graph, so an empty graph ends the check — and a corpus that produces text chunks
+but no extracted entities (tables, numbers, a very small test corpus) leaves
+exactly that shape: `chunks_vdb` populated, the graph empty. After a model
+change on a named-container backend the new chunk container is empty too, and
+`naive` / `mix` retrieval then serves no chunk context without anything
+noticing.
+
+Closing it means a second evidence path — a bounded doc-status page, its
+`chunks_list`, then `chunks_vdb.get_by_ids`. Every edge case this gate has had
+so far came from one of its evidence paths reading something as proof that it
+was not, so that belongs in its own change with its own tests rather than as a
+fourth branch bolted onto this one.
+
 ### What makes an empty container a defect
 
 "The vector store is empty while the graph is not" is *not* by itself a
@@ -428,12 +444,32 @@ with nothing. Declaring it in code keeps the claim attached to the program that
 makes it true.
 
 The discriminator for everything else is **doc-status**: the gate refuses only
-when at least one document is `PROCESSED`. That status is the pipeline's own claim that it wrote
-everything that document produces, vectors included, so it is what turns a
-missing vector from work-in-flight into a defect. Consulted only when the
-sample comes back empty, so the healthy path pays nothing for it, and a
-doc-status backend that cannot be read answers "do not refuse" — it is the last
-question asked before a refusal, and an unread answer is not evidence.
+when **nothing in the workspace is unfinished**. Anything `PENDING`, `PARSING`,
+`ANALYZING`, `PROCESSING` or `FAILED` means the graph-ahead residue has an owner
+and heals by being retried. Consulted only when the sample comes back empty, so
+the healthy path pays nothing for it.
+
+Two situations satisfy that, and the vectors are missing in both by defect:
+every document finished, or **there are no documents at all**. The second is not
+an oversight — `acreate_entity` and `ainsert_custom_kg` write graph entities AND
+their vectors while writing no doc-status row, so requiring a `PROCESSED`
+document would exempt an admin-built workspace forever. It is also the one place
+where "a later pipeline run repairs it" is simply false: no pipeline run will
+ever recreate objects an operator created by hand.
+
+Counting only the *unfinished* states is also what keeps a `PROCESSED` row from
+being read as evidence about *these* entities. The sample is ranked by degree,
+so an ingest that crashed after writing a batch of well-connected nodes but
+before their vector upserts fills it with rows that never had vectors, and an
+older unrelated document must not supply the "evidence" to refuse on.
+
+The count comes from `count_docs_by_statuses(strict=True)`, never
+`get_status_counts()`. The latter is documented to swallow its errors and return
+what it managed to collect — `RedisDocStatusStorage` catches a mid-`SCAN`
+failure and returns the partial counts — so it could show a finished workspace
+while missing the `PENDING` row that explains everything. Strict counting raises
+instead, and a raise answers "do not refuse", like every other unreadable thing
+this module consults.
 
 ### How "empty" is measured
 

@@ -18,6 +18,7 @@ import asyncio
 import numpy as np
 import pytest
 
+from lightrag.base import DocStatus
 from lightrag.exceptions import VectorSpaceMismatchError, VectorStorageEmptyError
 from lightrag.utils import compute_mdhash_id
 from lightrag.vector_space_gate import (
@@ -58,10 +59,16 @@ class FakeDocStatus:
         self._error = error
         self._unfinished = unfinished
 
-    async def get_status_counts(self):
+    async def count_docs_by_statuses(self, statuses, *, strict=True):
         if self._error is not None:
             raise self._error
-        return {"processed": self._processed, "processing": self._unfinished}
+        return sum(
+            self._processed if status is DocStatus.PROCESSED else 0
+            for status in statuses
+        ) + sum(
+            self._unfinished if status is DocStatus.PROCESSING else 0
+            for status in statuses
+        )
 
 
 class FakeVectorStorage:
@@ -205,18 +212,17 @@ class TestEmptyContainerGate:
         await _run(graph, FakeVectorStorage(rows=[]), FakeEmbedding(), rebuilding=True)
 
     async def test_an_unfinished_ingest_is_not_refused(self):
-        """A graph ahead of the vector store, with nothing PROCESSED, is a
-        residue that HEALS -- an interrupted ingest, a failed batch, a graph
-        built through the admin API. Refusing here would block the very
-        process whose next run repairs it (AGENTS.md, *Consistency without
-        transactions*)."""
+        """A graph ahead of the vector store, while a document is still in
+        flight, is a residue that HEALS -- an interrupted ingest, a batch that
+        will be retried. Refusing here would block the very process whose next
+        run repairs it (AGENTS.md, *Consistency without transactions*)."""
         graph = FakeGraph(labels=["Alice", "Bob"])
 
         await _run(
             graph,
             FakeVectorStorage(rows=[]),
             FakeEmbedding(),
-            doc_status=FakeDocStatus(processed=0),
+            doc_status=FakeDocStatus(processed=0, unfinished=1),
         )
 
     async def test_unfinished_work_anywhere_does_not_refuse(self):
@@ -235,9 +241,27 @@ class TestEmptyContainerGate:
             doc_status=FakeDocStatus(processed=5, unfinished=1),
         )
 
+    async def test_an_admin_only_workspace_still_refuses(self):
+        """``acreate_entity`` / ``ainsert_custom_kg`` write graph entities AND
+        their vectors, and write no doc-status row. Requiring a PROCESSED
+        document would exempt such a workspace forever -- and it is the one
+        place where "a later pipeline run repairs it" is false, because no
+        pipeline run will ever recreate objects an operator made by hand."""
+        graph = FakeGraph(labels=["Alice"])
+
+        with pytest.raises(VectorStorageEmptyError):
+            await _run(
+                graph,
+                FakeVectorStorage(rows=[]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(processed=0, unfinished=0),
+            )
+
     async def test_an_unreadable_doc_status_does_not_refuse(self):
         """The last question before a refusal. An answer nobody could read is
-        not evidence that vectors are missing."""
+        not evidence that vectors are missing -- and a strict count RAISES
+        rather than reporting what it managed to collect, which is why the
+        gate asks for one."""
         graph = FakeGraph(labels=["Alice"])
 
         await _run(
