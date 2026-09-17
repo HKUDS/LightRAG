@@ -315,6 +315,37 @@ async def test_failed_probe_falls_back_to_the_two_table_storage(monkeypatch):
     assert ("finalize",) in storage._delegate.calls if storage._delegate else True
 
 
+async def test_indeterminate_probe_failure_fails_instead_of_falling_back(
+    monkeypatch,
+):
+    # Any non-PASSED probe outcome other than a definitively missing AGE
+    # extension is indeterminate; falling back would send writes to a
+    # different physical store and hide an existing AGE graph.
+    import lightrag.kg.hologres.graph_age as module
+
+    async def probe_version(client):
+        return CapabilityReport(HologresVersion(5, 0, 0))
+
+    async def probe_age(client):
+        return ProbeResult(
+            kind=ProbeKind.AGE,
+            status=ProbeStatus.FAILED,
+            blocking=False,
+            detail_code="age_graph_probe_failed",
+        )
+
+    monkeypatch.setattr(module, "probe_production_capabilities", probe_version)
+    monkeypatch.setattr(module, "probe_age_graph_capability", probe_age)
+
+    client = FakeAgeClient()
+    storage = make_storage(client=client)
+    with pytest.raises(HologresAGEGraphError, match="age_graph_probe_failed"):
+        await storage.initialize()
+
+    assert storage._delegate is None
+    assert storage._initialized is False
+
+
 # ---------------------------------------------------------------------------
 # CRUD statement pinning
 # ---------------------------------------------------------------------------
@@ -371,17 +402,14 @@ async def test_upsert_edge_normalizes_direction_and_replaces_properties(
         for call in endpoints
     ] == [True, False]
     assert "MERGE (n:Entity {entity_id: 'zeta'})" in endpoints[1]["sql"]
-    (merge,) = calls_for(client, "age.edge.merge")
+    # Edge creation and property replacement are one statement: an
+    # interruption must never expose an edge without its properties.
+    (upsert,) = calls_for(client, "age.edge.upsert")
     assert (
         "MATCH (a:Entity {entity_id: 'alpha'}), (b:Entity {entity_id: 'zeta'}) "
-        "MERGE (a)-[:DIRECTED]->(b)"
-    ) in merge["sql"]
-    assert "[r:" not in merge["sql"]
-    (set_call,) = calls_for(client, "age.edge.set")
-    assert (
-        "MATCH (a:Entity {entity_id: 'alpha'})-[r:DIRECTED]->"
-        "(b:Entity {entity_id: 'zeta'}) SET r = {keywords: 'k', weight: 2.5}"
-    ) in set_call["sql"]
+        "MERGE (a)-[r:DIRECTED]->(b) "
+        "SET r = {keywords: 'k', weight: 2.5}"
+    ) in upsert["sql"]
 
 
 async def test_self_loop_edge_creates_the_endpoint_once(ready_storage):
@@ -798,9 +826,9 @@ async def test_age_edge_upsert_and_remove_batches_dedupe_canonical_pairs(
             ("alpha", "zeta", {"weight": 2}),
         ]
     )
-    sets = calls_for(client, "age.edge.set")
-    assert len(sets) == 1
-    assert "{weight: 2}" in sets[0]["sql"]
+    upserts = calls_for(client, "age.edge.upsert")
+    assert len(upserts) == 1
+    assert "{weight: 2}" in upserts[0]["sql"]
 
     await storage.remove_edges([("zeta", "alpha"), ("alpha", "zeta")])
     deletes = calls_for(client, "age.edge.delete")

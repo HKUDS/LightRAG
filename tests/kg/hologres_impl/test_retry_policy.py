@@ -452,6 +452,28 @@ async def test_client_invalidates_timed_out_non_idempotent_write(config):
 
 
 @pytest.mark.asyncio
+async def test_client_invalidates_asyncio_timed_out_write(config):
+    # asyncio.TimeoutError only aliases the builtin TimeoutError from
+    # Python 3.11; on 3.10 it is a distinct class, so this test raises the
+    # asyncio class directly to pin the match on every supported version.
+    first = FakeConnection(execute=asyncio.TimeoutError())
+    second = FakeConnection(execute="INSERT 0 1")
+    pool = FakePool([first, second])
+    client = HologresClient(config, pool=pool)
+
+    with pytest.raises(HologresOperationError):
+        await client.execute_one(
+            "INSERT INTO events(id) VALUES($1)",
+            "event-1",
+            descriptor="event.insert",
+        )
+
+    assert pool.acquire_count == 1
+    assert first.terminated is True
+    assert pool.released_terminated == [True]
+
+
+@pytest.mark.asyncio
 async def test_client_propagates_task_cancellation(config):
     pool = FakePool([FakeConnection(fetch_value=asyncio.CancelledError())])
     client = HologresClient(config, pool=pool)

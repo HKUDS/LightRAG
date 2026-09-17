@@ -177,13 +177,15 @@ LIGHTRAG_GRAPH_STORAGE=HologresAGEGraphStorage
 lightrag_age_<workspace>
 ```
 
-如果探测失败，初始化会回退到两张表的 `HologresGraphStorage` 实现，并把后续图操作委托给该实现。
+探测结果按确定性分为两类：
+
+- **AGE 扩展缺失**（detail 为 `age_extension_missing`）—— 结论明确。初始化以 INFO 日志回退到两张表的 `HologresGraphStorage` 实现，并把后续图操作委托给该实现。
+- **其他任何探测失败**（瞬断、权限问题、探测行为异常等）—— 结果不确定。初始化会**直接失败**而不是回退：静默回退会把写入落到另一个物理存储，并使既有 AGE 图数据不可见。
 
 运行注意事项：
 
 - AGE 与两张表实现的物理存储不同，切换实现不会迁移图数据。
-- 如果某个 workspace 的图原本在 AGE 中，而后续某次启动回退到两张表实现，回退实现看不到 AGE 中的旧图数据。
-- 只有明确需要 AGE 语义并能监控启动探测结果时，才建议选择 AGE。
+- 如果初始化报 AGE 探测错误，先修复根因（连通性、权限）再重启；若 workspace 已有 AGE 图数据，不要切换到两张表实现。
 - 不要为普通共享 client 手动设置 `HOLOGRES_AGE_SEARCH_PATH=true`；AGE 存储会自行管理专用 client。
 
 ## 5. Schema 生命周期与 Workspace 隔离
@@ -369,9 +371,13 @@ uv run --extra pytest --with coverage coverage report \
 
 阻塞型探测表示服务端无法安全支持该后端所需的 SQL 或 driver 行为。不要绕过这些检查。应使用 Hologres 5.0+，并保留探测 detail 与服务端诊断。
 
-### AGE 启动回退到两张表实现
+### AGE 启动报探测错误
 
-AGE 探测失败时这是预期行为。可以选择继续使用 `HologresGraphStorage`，也可以排查实例的 AGE 支持。若已有图数据重要，不要频繁切换；两种实现使用不同物理存储。
+只有 AGE 扩展确定缺失时才会回退（INFO 日志）。其他探测失败会终止初始化并给出 detail code。请修复连通性或权限后重启。若既有图数据存放在 AGE 中，不要切换到两张表实现；两种实现使用不同物理存储。
+
+### Vector 启动拒绝余弦函数方向
+
+`approx_cosine_distance` 必须返回相似度（越大越相近）。Vector 存储在初始化时用常量向量查询验证方向，服务端若返回距离语义则拒绝提供服务，否则查询会悄悄返回最不相似的行。请记录报错并核实服务端 HGraph 构建。
 
 ### Schema 初始化失败
 

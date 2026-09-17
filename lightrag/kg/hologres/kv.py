@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import json
 from typing import Any, ClassVar, final
 
@@ -16,11 +15,7 @@ from .capabilities import (
     probe_production_capabilities,
     prove_stream_copy_capability,
 )
-from .client import (
-    STREAM_COPY_MIN_ROWS,
-    HologresClientManager,
-    quote_qualified_identifier,
-)
+from .client import HologresClientManager, quote_qualified_identifier
 from .config import HologresConfig
 from .schema import KV_TABLE_NAME, HologresSchemaManager, kv_schema_descriptors
 
@@ -67,6 +62,21 @@ _FULL_DOCS_PROTECTED = (
     "parse_engine",
     "chunk_options",
 )
+_FULL_DOCS_PROTECTED_SET = frozenset(_FULL_DOCS_PROTECTED)
+_NOW_SQL = "EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint"
+_STORED_CREATE_TIME_SQL = (
+    "CASE WHEN jsonb_typeof(current.payload->'create_time') = 'number' "
+    "THEN current.payload->'create_time' ELSE '0'::jsonb END"
+)
+_FULL_DOCS_PROTECTED_RESTORE_SQL = " || ".join(
+    "CASE "
+    f"WHEN EXCLUDED.payload->'{key}' IS NOT NULL THEN '{{}}'::jsonb "
+    "WHEN current.payload->'"
+    f"{key}' IS NOT NULL THEN jsonb_build_object('{key}', "
+    f"current.payload->'{key}') "
+    "ELSE '{}'::jsonb END"
+    for key in _FULL_DOCS_PROTECTED
+)
 
 
 def _protected_key_usable(payload: dict[str, Any], key: str) -> bool:
@@ -80,21 +90,20 @@ def _protected_key_usable(payload: dict[str, Any], key: str) -> bool:
     return value != "" and value != '""'
 
 
-def _merge_full_docs_payload(
-    existing: dict[str, Any] | None, new: dict[str, Any]
-) -> dict[str, Any]:
-    protected_set = set(_FULL_DOCS_PROTECTED)
-    if existing is not None:
-        merged = {k: v for k, v in existing.items() if k not in protected_set}
-    else:
-        merged = {}
-    merged.update({k: v for k, v in new.items() if k not in protected_set})
-    for key in _FULL_DOCS_PROTECTED:
-        if _protected_key_usable(new, key):
-            merged[key] = new[key]
-        elif existing is not None and key in existing:
-            merged[key] = existing[key]
-    return merged
+def _sanitize_full_docs_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop protected keys the caller did not supply a usable value for.
+
+    This inspects only the incoming payload and never reads a stored row, so
+    it stays race-free; merging against the stored value happens inside the
+    upsert statement itself, where the statement's EXCLUDED row carries a
+    protected key exactly when the caller supplied a usable value.
+    """
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in _FULL_DOCS_PROTECTED_SET
+        or _protected_key_usable(payload, key)
+    }
 
 
 def _decode_payload(payload: Any) -> dict[str, Any]:
@@ -371,13 +380,30 @@ class HologresKVStorage(BaseKVStorage):
         return keys - existing
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """Insert or replace records under the BaseKVStorage.upsert contract.
+
+        Timestamping and the full_docs protected-key merge are the storage's
+        job, and both happen inside the single upsert statement: the inserted
+        row carries server-generated ``create_time``/``update_time``, and the
+        conflict branch restores stored create_time (0 when the row never had
+        one) instead of accepting a caller-supplied value. The only client-side
+        step for full_docs is dropping protected keys the caller did not
+        supply a usable value for, which inspects the incoming payload alone
+        and therefore cannot race a concurrent writer. The stream-copy bulk
+        channel is not used here on purpose: its on_conflict update replaces
+        the whole row, which can neither stamp timestamps nor restore
+        protected keys server-side.
+        """
         if not data:
             return
+        is_full_docs = self.namespace == NameSpace.KV_STORE_FULL_DOCS
         records: list[tuple[str, dict[str, Any]]] = []
         for identifier, payload in data.items():
             if not isinstance(identifier, str) or not isinstance(payload, Mapping):
                 raise HologresKVError("Hologres KV input is invalid")
             normalized = dict(payload)
+            if is_full_docs:
+                normalized = _sanitize_full_docs_payload(normalized)
             _deterministic_json({identifier: normalized})
             records.append((identifier, normalized))
 
@@ -402,52 +428,38 @@ class HologresKVStorage(BaseKVStorage):
             chunks.append(current_json)
 
         client, table = self._ready()
-        is_full_docs = self.namespace == NameSpace.KV_STORE_FULL_DOCS
         if is_full_docs:
             descriptor = "kv.upsert.full_docs"
+            merge_sql = (
+                "current.payload || EXCLUDED.payload "
+                f"|| {_FULL_DOCS_PROTECTED_RESTORE_SQL} "
+                "|| jsonb_build_object("
+                f"'update_time', {_NOW_SQL}, "
+                f"'create_time', {_STORED_CREATE_TIME_SQL})"
+            )
         else:
             descriptor = "kv.upsert.replace"
+            merge_sql = (
+                "EXCLUDED.payload || jsonb_build_object("
+                f"'update_time', {_NOW_SQL}, "
+                f"'create_time', {_STORED_CREATE_TIME_SQL})"
+            )
         sql = (
             f"INSERT INTO {table} AS current "
             "(workspace, namespace, id, payload, updated_at) "
             "SELECT $1, $2, unnest($3::text[]), "
-            "unnest($4::jsonb[]), CURRENT_TIMESTAMP "
+            f"unnest($4::jsonb[]) || jsonb_build_object("
+            f"'create_time', {_NOW_SQL}, 'update_time', {_NOW_SQL}) "
             "ON CONFLICT (workspace, namespace, id) DO UPDATE SET "
-            "payload = EXCLUDED.payload, "
+            f"payload = {merge_sql}, "
             "updated_at = CURRENT_TIMESTAMP"
         )
-        use_stream_copy = bool(getattr(client, "stream_copy_available", False))
         for payload_json in chunks:
             payload_dict = json.loads(payload_json)
             keys = list(payload_dict.keys())
-            if is_full_docs:
-                existing = await self.get_by_ids(keys)
-                for idx, (key, existing_payload) in enumerate(
-                    zip(keys, existing)
-                ):
-                    payload_dict[key] = _merge_full_docs_payload(
-                        existing_payload, payload_dict[key]
-                    )
             values = [
                 _deterministic_json(payload_dict[k]) for k in keys
             ]
-            if use_stream_copy and len(keys) >= STREAM_COPY_MIN_ROWS:
-                updated_at = datetime.now(timezone.utc)
-                rows = [
-                    (self.workspace, self.namespace, key, value, updated_at)
-                    for key, value in zip(keys, values)
-                ]
-                try:
-                    await client.copy_rows(
-                        KV_TABLE_NAME,
-                        ("workspace", "namespace", "id", "payload", "updated_at"),
-                        rows,
-                        descriptor=descriptor,
-                        replay_safe=True,
-                    )
-                except Exception:
-                    raise HologresKVError("Hologres KV upsert failed") from None
-                continue
             try:
                 await client.execute_one(
                     sql,

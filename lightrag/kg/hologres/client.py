@@ -492,10 +492,14 @@ def _requires_invalidation(
 ) -> bool:
     if is_connection_loss(error):
         return True
+    # asyncio.TimeoutError is the class asyncio.wait_for actually raises; it
+    # only aliases the builtin TimeoutError from Python 3.11, so matching the
+    # builtin alone would miss timed-out writes on 3.10. On 3.11+ the two are
+    # the same object, so this match is correct on every supported version.
     return (
         kind is OperationKind.WRITE
         and not replay_safe
-        and isinstance(error, (TimeoutError, asyncio.CancelledError))
+        and isinstance(error, (asyncio.TimeoutError, asyncio.CancelledError))
     )
 
 
@@ -614,7 +618,7 @@ class HologresClient:
             except asyncio.CancelledError:
                 self._invalidate(pool)
                 raise
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 self._invalidate(pool)
                 raise HologresOperationError(
                     "Hologres pool close timed out"

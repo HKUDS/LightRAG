@@ -9,9 +9,12 @@ one protocol-bound agtype parameter map, and agtype values come back as JSON
 text. agtype operators resolve only through an ``ag_catalog`` search_path, so
 this backend runs on its own dedicated client instead of the shared pool.
 
-When the AGE capability probe fails, the storage falls back to the two-table
+A missing AGE extension (probe detail ``age_extension_missing``) is
+definitive, so initialization falls back to the two-table
 :class:`~lightrag.kg.hologres.graph.HologresGraphStorage` implementation and
-delegates every operation to it.
+delegates every operation to it. Any other probe failure is indeterminate and
+fails initialization instead: a silent fallback would send writes to a
+different physical store and hide an existing AGE graph.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from typing import Any, final
 from ...base import BaseGraphStorage
 from ...namespace import NameSpace
 from ...types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
-from ...utils import validate_workspace
+from ...utils import logger, validate_workspace
 from .capabilities import (
     ProbeStatus,
     probe_age_graph_capability,
@@ -232,9 +235,28 @@ class HologresAGEGraphStorage(BaseGraphStorage):
                         pass
                 raise
 
-            # Probe failed: fall back to the two-table implementation on the
-            # ordinary shared client stack; the dedicated AGE client is not
-            # needed any more.
+            # A FAILED probe splits into two outcomes. An absent AGE extension
+            # is definitive, so falling back is safe and quiet. Anything else
+            # (transient connection loss, permission problems, unexpected
+            # probe behavior) is indeterminate: falling back then would send
+            # writes to a different physical store and turn an existing AGE
+            # graph invisible, so initialization fails loudly instead.
+            if probe.detail_code != "age_extension_missing":
+                if owns_client:
+                    try:
+                        await actual_client.close()
+                    except Exception:
+                        pass
+                raise HologresAGEGraphError(
+                    "Hologres AGE graph capability probe failed "
+                    f"({probe.detail_code}); refusing to fall back to the "
+                    "two-table backend because writes would land in a "
+                    "different physical store than an existing AGE graph"
+                )
+            logger.info(
+                "Hologres AGE extension is not available on this server; "
+                "falling back to the two-table graph backend"
+            )
             if owns_client:
                 try:
                     await actual_client.close()
@@ -542,8 +564,12 @@ class HologresAGEGraphStorage(BaseGraphStorage):
         src_anchor = _agtype_map({"entity_id": src})
         tgt_anchor = _agtype_map({"entity_id": tgt})
         # Auto-create missing endpoints as stubs (MERGE keeps existing
-        # properties), then merge the edge, then REPLACE its properties —
-        # matching the two-table endpoint/replace semantics.
+        # properties); a crash here leaves a stub node without an edge, which
+        # a retry repairs — the same residue the two-table backend accepts.
+        # The edge row itself is one statement: MERGE and its property
+        # REPLACE run inside a single cypher call, so an interruption can
+        # never expose an edge without its properties (a property-less edge
+        # would carry no evidence and violate the relation weight contract).
         await self._write(
             f"MERGE (n:Entity {src_anchor})",
             descriptor="age.edge.endpoint",
@@ -557,14 +583,9 @@ class HologresAGEGraphStorage(BaseGraphStorage):
             )
         await self._write(
             f"MATCH (a:Entity {src_anchor}), (b:Entity {tgt_anchor}) "
-            "MERGE (a)-[:DIRECTED]->(b)",
-            descriptor="age.edge.merge",
-            replay_safe=True,
-        )
-        await self._write(
-            f"MATCH (a:Entity {src_anchor})-[r:DIRECTED]->(b:Entity {tgt_anchor}) "
+            "MERGE (a)-[r:DIRECTED]->(b) "
             f"SET r = {_agtype_map(dict(edge_data))}",
-            descriptor="age.edge.set",
+            descriptor="age.edge.upsert",
             replay_safe=True,
         )
 

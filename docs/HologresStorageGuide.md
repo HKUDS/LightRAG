@@ -177,13 +177,15 @@ During initialization it probes the AGE contract. If the probe passes, LightRAG 
 lightrag_age_<workspace>
 ```
 
-If the probe fails, initialization falls back to the two-table `HologresGraphStorage` implementation and delegates graph operations there.
+Probe outcomes split by certainty:
+
+- **AGE extension missing** — definitive. Initialization logs at INFO and falls back to the two-table `HologresGraphStorage`, delegating graph operations there.
+- **Any other probe failure** (transient connection loss, permission problems, unexpected probe behavior) — indeterminate. Initialization **fails** instead of falling back: a silent fallback would send writes to a different physical store and make an existing AGE graph invisible.
 
 Operational cautions:
 
 - AGE and the two-table backend use different physical storage. Switching between them does not migrate graph data.
-- If AGE previously held a workspace's graph but a later startup falls back, queries through the fallback backend will not see the AGE graph's data.
-- Use the AGE variant only when you specifically want AGE semantics and can monitor whether its startup probe passed.
+- If initialization fails with an AGE probe error, fix the underlying cause (connectivity, permissions) and restart; do not switch to the two-table backend if the workspace already holds AGE graph data.
 - Do not set `HOLOGRES_AGE_SEARCH_PATH=true` manually for the ordinary shared client; the AGE storage manages its dedicated client.
 
 ## 5. Schema lifecycle and workspace isolation
@@ -370,9 +372,13 @@ The instance must identify itself as Hologres 5.0 or newer. Connect to the inten
 
 Blocking probes indicate that the server cannot safely support the SQL or driver behavior required by the backend. Do not bypass them. Use Hologres 5.0+ and capture the probe detail plus server-side diagnostics.
 
-### AGE startup falls back to the two-table backend
+### AGE startup fails with a probe error
 
-This is expected when the AGE probe fails. Decide whether to continue with `HologresGraphStorage` or investigate AGE support on the instance. Do not switch repeatedly if existing graph data is important; the two backends use different storage.
+Only a definitively missing AGE extension falls back (logged at INFO). Any other probe failure stops initialization with the probe's detail code. Fix connectivity or permissions and restart. Do not switch to the two-table backend if existing graph data lives in AGE; the two backends use different storage.
+
+### Vector startup rejects the cosine function orientation
+
+`approx_cosine_distance` must return similarity (higher is closer). Vector storage proves this at initialize time with a constant-vector query and refuses to serve when a server returns distance semantics, because queries would otherwise silently rank the least similar rows first. Capture the error and verify the server's HGraph build.
 
 ### Schema initialization fails
 

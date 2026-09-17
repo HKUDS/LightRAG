@@ -17,6 +17,7 @@ from ...namespace import NameSpace
 from ...utils import compute_mdhash_id, validate_workspace
 from .capabilities import (
     probe_production_capabilities,
+    prove_similarity_orientation,
     prove_stream_copy_capability,
 )
 from .client import STREAM_COPY_MIN_ROWS, quote_qualified_identifier
@@ -236,6 +237,10 @@ class HologresVectorStorage(BaseVectorStorage):
                         )
 
                 capabilities = await probe_production_capabilities(actual_client)
+                # The query SQL below assumes approx_cosine_distance returns
+                # similarity; a distance-semantics server would otherwise
+                # return the least similar rows with no visible error.
+                await prove_similarity_orientation(actual_client)
                 manager = HologresSchemaManager(actual_client, schema=config.schema)
                 await manager.initialize(
                     vector_schema_descriptors(config.schema, self._dimension)

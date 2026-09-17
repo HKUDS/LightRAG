@@ -16,12 +16,13 @@ from lightrag.kg.hologres.capabilities import (
     ProbeStatus,
     _probe_setup_reset_bindings,
     parse_hologres_version,
+    prove_similarity_orientation,
     prove_stream_copy_capability,
     run_initial_isolated_probes,
     validate_hologres_version,
     validate_test_schema_name,
 )
-from lightrag.kg.hologres.client import HologresClient
+from lightrag.kg.hologres.client import HologresCapabilityError, HologresClient
 from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.schema import _JSONB_COLUMNAR_POSTCONDITION
 
@@ -225,6 +226,59 @@ def test_hgraph_probe_evidence_rejects_untyped_or_nonfinite_values(
             ordered_raw_scores=ordered_raw_scores,
             vector_filter_used=vector_filter_used,
         )
+
+
+class OrientationClient:
+    def __init__(self, result=None, error=None):
+        self.result = result
+        self.error = error
+        self.calls = []
+
+    async def fetch_value(self, sql, *values, descriptor):
+        self.calls.append((descriptor, values))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_orientation_probe_passes_when_similarity_outranks_distance():
+    client = OrientationClient(result=2.0)
+
+    await prove_similarity_orientation(client)
+
+    (descriptor, values) = client.calls[0]
+    assert descriptor == "probe.similarity.orientation"
+    # Same vector as the query scores higher than the exact opposite, which
+    # only holds when the function returns similarity rather than distance.
+    assert values == (
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [0.0, -1.5, "0.5", None, True],
+)
+@pytest.mark.asyncio
+async def test_orientation_probe_fails_closed_on_distance_or_unknown_semantics(
+    result,
+):
+    client = OrientationClient(result=result)
+
+    with pytest.raises(HologresCapabilityError, match="similarity"):
+        await prove_similarity_orientation(client)
+
+
+@pytest.mark.asyncio
+async def test_orientation_probe_fails_closed_when_the_query_itself_fails():
+    client = OrientationClient(error=RuntimeError("password=probe-secret"))
+
+    with pytest.raises(HologresCapabilityError, match="orientation"):
+        await prove_similarity_orientation(client)
+
 
 
 class ExistingSchemaClient:

@@ -1,6 +1,5 @@
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
 import inspect
 import json
 import logging
@@ -10,7 +9,6 @@ import pytest
 
 from lightrag.kg.hologres.capabilities import CapabilityReport, HologresVersion
 from lightrag.kg.hologres.client import (
-    STREAM_COPY_MIN_ROWS,
     HologresClientManager,
     HologresOperationError,
 )
@@ -990,6 +988,13 @@ async def test_generic_upsert_sends_complete_objects_in_replay_safe_replacement_
     assert "unnest($3::text[])" in call["sql"]
     assert "unnest($4::jsonb[])" in call["sql"]
     assert "payload = EXCLUDED.payload" in call["sql"]
+    # create_time/update_time are storage-managed and stamped by the
+    # statement itself: a stored numeric create_time survives an update, and
+    # anything else (legacy rows included) reads back as 0.
+    assert "EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)" in call["sql"]
+    assert "jsonb_typeof(current.payload->'create_time') = 'number'" in (
+        call["sql"]
+    )
     assert "updated_at = CURRENT_TIMESTAMP" in call["sql"]
     for secret in ("workspace-secret", "id-secret", "payload-secret"):
         assert secret not in call["sql"]
@@ -999,120 +1004,22 @@ async def test_generic_upsert_sends_complete_objects_in_replay_safe_replacement_
     assert len(client.calls) == before
 
 
-class StreamCopyCallClient(CallClient):
-    def __init__(self, config=CONFIG):
-        super().__init__(config)
-        self.stream_copy_available = True
-        self.copies = []
-
-    async def copy_rows(
-        self, table, columns, records, *, descriptor, replay_safe=False, timeout=None
-    ):
-        self.copies.append(
-            {
-                "table": table,
-                "columns": tuple(columns),
-                "records": [tuple(record) for record in records],
-                "descriptor": descriptor,
-                "replay_safe": replay_safe,
-            }
-        )
-        return f"COPY {len(self.copies[-1]['records'])}"
-
-
 def _bulk_kv_data(count):
     return {f"id-{index:04d}": {"value": index} for index in range(count)}
 
 
-async def test_bulk_upsert_routes_through_stream_copy_when_gated_and_large(
-    ready_storage,
-):
-    client = StreamCopyCallClient()
-    storage = await ready_storage(client, workspace="workspace-secret")
-    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS)
-
-    await storage.upsert(data)
-
-    assert calls_for(client, "kv.upsert.replace") == []
-    (copy,) = client.copies
-    assert copy["table"] == KV_TABLE_NAME
-    assert copy["columns"] == (
-        "workspace",
-        "namespace",
-        "id",
-        "payload",
-        "updated_at",
-    )
-    assert copy["descriptor"] == "kv.upsert.replace"
-    assert copy["replay_safe"] is True
-    assert len(copy["records"]) == len(data)
-    timestamps = set()
-    sent = {}
-    for row in copy["records"]:
-        workspace, namespace, identifier, payload, updated_at = row
-        assert workspace == storage.workspace
-        assert namespace == storage.namespace
-        assert isinstance(updated_at, datetime)
-        assert updated_at.tzinfo is timezone.utc
-        timestamps.add(updated_at)
-        sent[identifier] = json.loads(payload)
-    assert sent == data
-    # One shared client-side timestamp per chunk keeps the replayed COPY
-    # byte-identical, which is what justifies replay_safe=True.
-    assert len(timestamps) == 1
-
-
-async def test_bulk_upsert_below_threshold_keeps_parameterized_insert(
-    ready_storage,
-):
-    client = StreamCopyCallClient()
-    storage = await ready_storage(client, workspace="workspace-secret")
-    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS - 1)
-
-    await storage.upsert(data)
-
-    assert client.copies == []
-    (call,) = calls_for(client, "kv.upsert.replace")
-    assert call["method"] == "execute_one"
-
-
-async def test_bulk_upsert_without_proven_capability_keeps_parameterized_insert(
-    ready_storage,
-):
+async def test_bulk_upsert_stays_on_the_parameterized_statement(ready_storage):
+    # KV never routes through the stream-copy channel: its on_conflict update
+    # replaces the whole row and can neither stamp timestamps nor restore
+    # full_docs protected keys server-side.
     client = CallClient()
     storage = await ready_storage(client, workspace="workspace-secret")
-    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS)
+    data = _bulk_kv_data(64)
 
     await storage.upsert(data)
 
-    (call,) = calls_for(client, "kv.upsert.replace")
-    assert call["method"] == "execute_one"
-
-
-async def test_full_docs_bulk_upsert_merges_before_the_stream_copy(ready_storage):
-    client = StreamCopyCallClient()
-
-    def batch_rows(_sql, values, _kwargs):
-        return [
-            {"ordinality": index, "payload": None}
-            for index, _item in enumerate(values[3], start=1)
-        ]
-
-    client.handlers["kv.read.batch"] = batch_rows
-    storage = await ready_storage(
-        client,
-        namespace=NameSpace.KV_STORE_FULL_DOCS,
-        workspace="workspace-secret",
-    )
-    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS)
-
-    await storage.upsert(data)
-
-    (copy,) = client.copies
-    assert copy["descriptor"] == "kv.upsert.full_docs"
-    assert {
-        row[2]: json.loads(row[3]) for row in copy["records"]
-    } == data
+    calls = calls_for(client, "kv.upsert.replace")
+    assert [len(call["values"][2]) for call in calls] == [64]
 
 
 async def test_initialize_orders_probe_schema_prove_and_applies_the_proven_report(
@@ -1156,16 +1063,10 @@ async def test_initialize_orders_probe_schema_prove_and_applies_the_proven_repor
     assert events == ["probe", "schema", "prove", ("apply", proven_report)]
 
 
-async def test_full_docs_upsert_sql_pins_every_protected_merge_rule(ready_storage):
+async def test_full_docs_upsert_merges_protected_keys_inside_the_statement(
+    ready_storage,
+):
     client = CallClient()
-
-    def batch_rows(_sql, values, _kwargs):
-        return [
-            {"ordinality": ordinal, "payload": None}
-            for ordinal, _item in enumerate(values[3], start=1)
-        ]
-
-    client.handlers["kv.read.batch"] = batch_rows
     storage = await ready_storage(client, namespace=NameSpace.KV_STORE_FULL_DOCS)
 
     await storage.upsert(
@@ -1185,11 +1086,35 @@ async def test_full_docs_upsert_sql_pins_every_protected_merge_rule(ready_storag
         }
     )
 
+    # One replay-safe statement, and no read of stored rows: the merge must
+    # not be a client-side read-modify-write that concurrent upserts race.
     (call,) = calls_for(client, "kv.upsert.full_docs")
+    assert call["method"] == "execute_one"
     assert call["kwargs"]["replay_safe"] is True
-    assert "payload = EXCLUDED.payload" in call["sql"]
+    assert calls_for(client, "kv.read.batch") == []
     assert "unnest($3::text[])" in call["sql"]
     assert "unnest($4::jsonb[])" in call["sql"]
+    assert "current.payload || EXCLUDED.payload" in call["sql"]
+    # The statement itself restores every stored protected key the incoming
+    # row does not carry, and stamps create_time/update_time server-side.
+    for key in (
+        "sidecar_location",
+        "parse_format",
+        "content_hash",
+        "process_options",
+        "parse_engine",
+        "chunk_options",
+    ):
+        assert f"jsonb_build_object('{key}', current.payload->'{key}')" in (
+            call["sql"]
+        )
+    assert "EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)" in call["sql"]
+    assert "jsonb_typeof(current.payload->'create_time') = 'number'" in (
+        call["sql"]
+    )
+
+    # The incoming row keeps usable protected keys and drops unusable ones;
+    # the stored-side value survives through the statement's restore branch.
     sent_payload = json.loads(call["values"][3][0])
     assert sent_payload["content"] == ""
     assert sent_payload["doc_name"] == ""

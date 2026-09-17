@@ -12,6 +12,7 @@ from typing import Any
 import uuid
 
 from .client import (
+    HologresCapabilityError,
     HologresClient,
     HologresSqlError,
     OperationKind,
@@ -234,6 +235,45 @@ def _result(
         detail_code=detail_code,
         evidence=evidence,
     )
+
+
+async def prove_similarity_orientation(client: HologresClient) -> None:
+    """Prove ``approx_cosine_distance`` returns similarity, higher is closer.
+
+    Vector queries order by the function's output descending and filter with
+    ``cosine_better_than_threshold``; both invert if a server builds the
+    function with distance semantics, and the failure mode is silent (queries
+    simply return the least similar rows). The HGraph probe pins the exact
+    score contract, but it only runs inside the isolated probe suite, so
+    vector storage re-proves the orientation cheaply at initialize time with
+    two constant vectors — one scalar query, no DDL and no special privileges
+    — and refuses to serve on a mismatch.
+    """
+
+    try:
+        delta = await client.fetch_value(
+            "SELECT approx_cosine_distance($1::float4[], $2::float4[]) "
+            "- approx_cosine_distance($1::float4[], $3::float4[])",
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            descriptor="probe.similarity.orientation",
+        )
+    except Exception:
+        raise HologresCapabilityError(
+            "Hologres cosine similarity orientation probe failed"
+        ) from None
+    if (
+        isinstance(delta, bool)
+        or not isinstance(delta, (int, float))
+        or not math.isfinite(float(delta))
+        or float(delta) <= 0.0
+    ):
+        raise HologresCapabilityError(
+            "Hologres approx_cosine_distance does not return cosine "
+            "similarity (higher is closer); refusing to serve queries that "
+            "would silently rank the least similar rows first"
+        )
 
 
 async def probe_production_capabilities(

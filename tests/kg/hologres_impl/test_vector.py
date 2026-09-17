@@ -26,6 +26,10 @@ from lightrag.namespace import NameSpace
 from lightrag.utils import compute_mdhash_id
 
 
+async def _orientation_ok(_client):
+    """No-op for the vector orientation probe; pinned in test_capabilities."""
+
+
 CONFIG = HologresConfig(
     host="secret-vector-host.example",
     port=80,
@@ -139,6 +143,9 @@ def ready_storage(monkeypatch):
             return ()
 
     monkeypatch.setattr(vector_module, "probe_production_capabilities", probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     monkeypatch.setattr(vector_module, "HologresSchemaManager", AppliedSchemaManager)
 
     async def factory(client, **kwargs):
@@ -298,6 +305,9 @@ async def test_initialization_failure_leaves_storage_unready_and_sanitizes_error
         raise RuntimeError("password=probe-secret")
 
     monkeypatch.setattr(vector_module, "probe_production_capabilities", failed_probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     storage = make_storage(client=client)
     with pytest.raises(HologresVectorError) as exc_info:
         await storage.initialize()
@@ -343,6 +353,9 @@ async def test_shared_client_ownership_reuses_manager_and_reference_counts(monke
     manager = Manager()
     monkeypatch.setattr(vector_module, "_SHARED_CLIENTS", manager)
     monkeypatch.setattr(vector_module, "probe_production_capabilities", probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     monkeypatch.setattr(vector_module, "HologresSchemaManager", SchemaManager)
 
     first = make_storage(client=None)
@@ -386,6 +399,9 @@ async def test_shared_client_is_released_when_schema_initialization_fails(monkey
     manager = Manager()
     monkeypatch.setattr(vector_module, "_SHARED_CLIENTS", manager)
     monkeypatch.setattr(vector_module, "probe_production_capabilities", probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     monkeypatch.setattr(vector_module, "HologresSchemaManager", FailedSchemaManager)
 
     storage = make_storage(client=None)
@@ -413,6 +429,9 @@ async def test_initialization_failure_preserves_sanitized_release_failure(monkey
 
     monkeypatch.setattr(vector_module, "_SHARED_CLIENTS", Manager())
     monkeypatch.setattr(vector_module, "probe_production_capabilities", failed_probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     storage = make_storage(client=None)
 
     with pytest.raises(HologresVectorError) as exc_info:
@@ -455,6 +474,9 @@ async def test_repeatedly_cancelled_finalize_completes_shared_release(monkeypatc
 
     monkeypatch.setattr(vector_module, "_SHARED_CLIENTS", Manager())
     monkeypatch.setattr(vector_module, "probe_production_capabilities", probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     monkeypatch.setattr(vector_module, "HologresSchemaManager", AppliedSchemaManager)
     storage = make_storage(client=None)
     await storage.initialize()
@@ -502,6 +524,9 @@ async def test_repeatedly_cancelled_initialization_completes_shared_release(
 
     monkeypatch.setattr(vector_module, "_SHARED_CLIENTS", Manager())
     monkeypatch.setattr(vector_module, "probe_production_capabilities", probe)
+    monkeypatch.setattr(
+        vector_module, "prove_similarity_orientation", _orientation_ok
+    )
     storage = make_storage(client=None)
     initialization = asyncio.create_task(storage.initialize())
     await probe_started.wait()
