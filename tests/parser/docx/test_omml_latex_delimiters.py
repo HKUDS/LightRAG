@@ -78,3 +78,34 @@ def test_fixed_size_double_brackets_only_pair_scalable_sides(beg, end, expected)
     # ``⟦``/``⟧`` render as fixed-size ``[\![``/``]\!]``, not \left/\right, so
     # the empty delimiter is added only opposite a side that is scalable.
     assert convert_omml_to_latex(_delimited(beg, end)) == expected
+
+
+@pytest.mark.parametrize(
+    ("beg", "end", "expected"),
+    [
+        # An opening character as endChr: Word writes this for a half-open
+        # interval. Only ``[`` used to be handled, by a patch table.
+        ("[", "[", r"\left[ x \right["),
+        ("(", "(", r"\left( x \right("),
+        ("{", "{", r"\left\{ x \right\{"),
+        ("⌈", "⌊", r"\left\lceil x \right\lfloor"),
+        # A closing character as begChr, the mirror image. Only ``]`` was
+        # handled, by the other patch table.
+        ("]", "[", r"\left] x \right["),
+        (")", ")", r"\left) x \right)"),
+        ("}", "}", r"\left\} x \right\}"),
+        ("⌋", "⌉", r"\left\rfloor x \right\rceil"),
+        # One-sided, with the side the old map did not anticipate.
+        ("", "(", r"\left. x \right("),
+        (")", "", r"\left) x \right."),
+        ("", "{", r"\left. x \right\{"),
+        ("}", "", r"\left\} x \right."),
+    ],
+)
+@pytest.mark.offline
+def test_delimiter_side_follows_position_not_character(beg, end, expected):
+    # The character selects the glyph; the side it lands on selects \left or
+    # \right. Baking the side into the map emitted \left in the end position
+    # (and \right in the start position) for every entry the patch tables
+    # missed, which is an unmatched or out-of-order delimiter either way.
+    assert convert_omml_to_latex(_delimited(beg, end)) == expected
