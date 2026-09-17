@@ -404,6 +404,21 @@ def test_cancel_is_owner_checked_and_idempotent():
     assert again.ok and again.record["status"] == ScanJobStatus.CANCELLED.value
 
 
+def test_cancel_on_lease_expired_job_reports_abandoned_not_cancelled():
+    """A stale owner (lease already expired) must observe the same reap every
+    other mutating method performs: cancel() on such a job is a no-op success
+    reporting ABANDONED, not a transition to CANCELLED, and the record itself
+    must actually be ABANDONED, not RUNNING with a CANCELLED response."""
+    clock = _Clock(1000.0)
+    store = _store(clock=clock, lease_seconds=10.0)
+    store.create("t1", "owner")
+    clock.t = 1011.0  # lease (1000+10) expired; nobody has reaped it yet
+    res = store.cancel("t1", "owner")
+    assert res.ok and res.conflict is ScanJobUpdateConflict.TERMINAL
+    assert res.record["status"] == ScanJobStatus.ABANDONED.value
+    assert store.get("t1")["status"] == ScanJobStatus.ABANDONED.value
+
+
 def test_remove_terminal_never_removes_running():
     store = _store()
     store.create("t1", "owner")
