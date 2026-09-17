@@ -33,7 +33,7 @@ left as verbatim text rather than misrecognised.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Protocol
@@ -62,9 +62,6 @@ _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 # A single delimiter cell (after splitting on ``|``): ``---`` with optional
 # ``:`` alignment markers, nothing else.
 _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
-# A column separator: a ``|`` after an even run of backslashes, so not the
-# escaped ``\|`` (``\\|`` is an escaped backslash and still separates).
-_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\|")
 
 
 def table_marker(ref: str) -> str:
@@ -132,6 +129,46 @@ def _clean_heading(text: str) -> str:
     return _HEADING_TRAILING_HASHES_RE.sub("", text).strip()
 
 
+def _iter_row_cells(s: str) -> Iterator[str]:
+    """Yield ``s`` split on its column separators, unescaping as it goes.
+
+    The one statement of what a column separator is: ``\\|`` is cell content and
+    ``\\\\`` is a literal backslash, so only a bare ``|`` splits. Always yields one
+    cell more than ``s`` has separators, so a caller that only needs to know
+    whether a separator exists may stop after the second."""
+    buf: list[str] = []
+    i = 0
+    while i < len(s):
+        char = s[i]
+        if char == "\\" and i + 1 < len(s) and s[i + 1] in "\\|":
+            buf.append(s[i + 1])
+            i += 2
+            continue
+        if char == "|":
+            yield "".join(buf)
+            buf = []
+            i += 1
+            continue
+        buf.append(char)
+        i += 1
+    yield "".join(buf)
+
+
+def _has_unescaped_pipe(s: str) -> bool:
+    """True iff ``s`` carries at least one column separator.
+
+    Both places that decide whether a line belongs to a pipe table — the header
+    gate and the body-row terminator — must ask this instead of testing for a
+    raw ``|``, or a paragraph whose only pipe is escaped is read as a table.
+    Shares :func:`_iter_row_cells` with :func:`_split_pipe_row`, so the gate and
+    the split can never disagree about a case such as ``\\\\|``."""
+    if "|" not in s:
+        return False
+    cells = _iter_row_cells(s)
+    next(cells, None)
+    return next(cells, None) is not None
+
+
 def _split_pipe_row(line: str) -> list[str]:
     """Split a pipe-table row into trimmed cells, honouring GFM escapes.
 
@@ -142,25 +179,9 @@ def _split_pipe_row(line: str) -> list[str]:
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
-    cells: list[str] = []
-    buf: list[str] = []
-    i = 0
-    while i < len(s):
-        char = s[i]
-        if char == "\\" and i + 1 < len(s) and s[i + 1] in "\\|":
-            buf.append(s[i + 1])
-            i += 2
-            continue
-        if char == "|":
-            cells.append("".join(buf).strip())
-            buf = []
-            i += 1
-            continue
-        buf.append(char)
-        i += 1
-    tail = "".join(buf).strip()
-    if tail or not cells:
-        cells.append(tail)
+    cells = [cell.strip() for cell in _iter_row_cells(s)]
+    if len(cells) > 1 and not cells[-1]:
+        cells.pop()
     return cells
 
 
@@ -521,7 +542,7 @@ def extract_markdown(
 
         # --- pipe table ----------------------------------------------------
         if (
-            _UNESCAPED_PIPE_RE.search(line)
+            _has_unescaped_pipe(line)
             and i + 1 < n
             and _is_pipe_table_delimiter(line, lines[i + 1])
         ):
@@ -667,13 +688,17 @@ def _consume_pipe_table(
     lines: list[str], start: int
 ) -> tuple[int, list[list[str]], list[list[str]] | None]:
     """Parse a GFM pipe table whose header is ``lines[start]`` and delimiter is
-    ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``."""
+    ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``.
+
+    A body row must carry an unescaped ``|``: a following line whose only pipes
+    are escaped has no column separator, so it ends the table and is left to the
+    caller as plain text — the same rule that gates the header."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter
     while j < len(lines):
         s = lines[j].strip()
-        if not s or "|" not in s:
+        if not s or not _has_unescaped_pipe(s):
             break
         body.append(_split_pipe_row(lines[j]))
         j += 1

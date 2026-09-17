@@ -17,7 +17,9 @@ import pytest
 from lightrag.parser.markdown.extract import (
     PREFACE_HEADING,
     ResolvedImage,
+    _has_unescaped_pipe,
     _replace_inline_images,
+    _split_pipe_row,
     extract_markdown,
 )
 
@@ -170,6 +172,48 @@ def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
     ex = _extract(md)
     assert not ex.tables
     assert "foo \\| bar" in ex.blocks[0]["content"]
+
+
+def test_escaped_pipe_only_line_ends_the_table_body():
+    # A trailing line whose only pipe is escaped carries no column separator,
+    # so it ends the table and stays a paragraph -- the body terminator reads
+    # the same rule as the header gate instead of absorbing a bogus row.
+    md = "| h1 | h2 |\n| --- | --- |\n| a | b |\ntail \\| text\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a", "b"]]
+    assert "tail \\| text" in ex.blocks[0]["content"]
+
+
+def test_escaped_backslash_line_stays_in_the_table_body():
+    # Stability (green before and after): ``\\|`` is an escaped backslash
+    # followed by a real separator, so this line is still a body row. The
+    # terminator honours the whole escape rule, not "a pipe after a backslash".
+    md = "| h1 | h2 |\n| --- | --- |\n| a | b |\nc \\\\| d\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a", "b"], ["c \\", "d"]]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("foo", False),
+        ("a | b", True),
+        ("| foo |", True),  # a one-column table still carries separators
+        ("a \\| b", False),  # escaped pipe: cell content, no separator
+        ("a \\\\| b", True),  # escaped backslash, then a real separator
+        ("a \\\\\\| b", False),  # escaped backslash, then an escaped pipe
+        ("a \\\\\\\\| b", True),  # two escaped backslashes, then a separator
+    ],
+)
+def test_has_unescaped_pipe_agrees_with_the_row_splitter(line, expected):
+    # The table gate and the row splitter read one scan, so they cannot
+    # disagree about what an escape is; this pins the rule both of them see.
+    # The prepended ``|`` absorbs the splitter's opening-pipe strip, leaving a
+    # cell count that reflects exactly the separators in ``line``.
+    assert _has_unescaped_pipe(line) is expected
+    assert (len(_split_pipe_row("|" + line)) > 1) is expected
 
 
 def test_html_table_captured_verbatim_spanning_lines():
