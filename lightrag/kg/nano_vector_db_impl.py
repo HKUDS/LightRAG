@@ -1283,22 +1283,56 @@ class NanoVectorDBStorage(BaseVectorStorage):
         re-derives certification from whatever snapshot it loads, so an
         un-persisted verdict does not survive the first peer commit.
 
-        Never raises, per the base contract. A save this process cannot
-        complete leaves the file unmarked and certification set: the evidence
-        the probe gathered is about the rows, not about the disk, so the next
-        ordinary save still stamps them.
+        **This is a write path, so it reloads and replays like every other
+        one.** The marker lives in the same JSON object as the rows, so
+        stamping it rewrites the WHOLE namespace -- and this call arrives right
+        after an embedding probe that is allowed to take 30 seconds, which is
+        an unusually wide window for a peer to have committed into. Saving
+        ``self._client`` without reconciling would publish a snapshot from
+        before that commit and silently drop it. *Why these backends never
+        decline a stale write* in the file-backed contract is the rule being
+        followed here: reload the peer's snapshot, replay the pending buffer
+        and the redo logs on top, then publish.
+
+        Certification is set AFTER the reload on purpose:
+        ``_reload_client_from_disk_locked`` re-derives it from whatever
+        snapshot it loads, so setting it first would have the reload throw the
+        verdict away.
+
+        Never raises, per the base contract. A reconcile or save this process
+        cannot complete leaves the file unmarked and certification unset, and
+        the next start probes again.
         """
         if declared_model_name(self.embedding_func) is None:
             return False
 
         async def _committed() -> None:
-            return None
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
+            self.storage_updated.value = False
+            # Same ordering rule as index_done_callback: retired only PAST the
+            # publication, because the redo logs are the only copy that can
+            # rescue rows from an unnotified peer saving over them.
+            self._unsaved_deletes.clear()
+            self._unsaved_upserts.clear()
+            self._client_dirty = False
 
         async with self._storage_lock:
+            try:
+                self._reload_client_from_disk_locked(for_write=True)
+                await self._flush_pending_locked()
+            except Exception as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not reconcile "
+                    f"'{self._client_file_name}' before recording the "
+                    f"embedding-space marker: {e}"
+                )
+                return False
+
             self._vector_space_certified = True
             try:
                 await self._save_to_disk_locked(_committed)
             except Exception as e:
+                self._vector_space_certified = False
                 logger.warning(
                     f"[{self.workspace}] Could not record the embedding-space "
                     f"marker in '{self._client_file_name}': {e}"

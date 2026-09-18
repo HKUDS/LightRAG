@@ -171,6 +171,21 @@ Consequently the flush-failure propagation `NetworkXStorage` needs — a decline
 commit must not be acknowledged as durable, see `LightRAG._flush_storages` — has
 no counterpart here.
 
+**`NanoVectorDBStorage.adopt_vector_space` is a write path and follows the same
+rule**, which is easy to miss because it looks like metadata. Nano keeps the
+embedding-space marker in the *same JSON object as the rows*, so stamping it
+rewrites the whole namespace; and it is called immediately after an embedding
+probe allowed to take 30 seconds, which is an unusually wide window for a peer
+to commit into. It therefore reloads and replays under the lock before saving,
+exactly like `index_done_callback`, and sets certification *after* the reload —
+`_reload_client_from_disk_locked` re-derives certification from the snapshot it
+loads, so setting it first would have the reload discard the probe's verdict.
+
+`FaissVectorDBStorage.adopt_vector_space` has no such hazard and deliberately
+does not reconcile: its marker is a separate sidecar that is not part of the
+fenced `.index` / `.meta.json` publication, so adopting leaves the pair and its
+fingerprint untouched and there is nothing a peer could lose.
+
 The reason the graph store cannot do the same is recorded in
 [its contract](NetworkXSingleWriterContract.md#why-not-reload-then-replay-as-the-vector-backends-do):
 these buffers hold complete rows keyed by id, so replaying is last-writer-wins

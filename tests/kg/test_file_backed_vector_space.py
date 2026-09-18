@@ -440,6 +440,49 @@ async def test_nano_rechecks_provenance_when_reloading_a_peer_commit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nano_adoption_does_not_save_over_a_peer_commit(tmp_path):
+    """Nano only: adoption rewrites the WHOLE namespace, because the marker
+    lives in the same JSON object as the rows.
+
+    The adopting process reaches this call right after an embedding probe that
+    may take 30 seconds, so a peer has an unusually wide window to commit into.
+    Saving the pre-probe in-memory snapshot would publish the file as it looked
+    before that commit and drop the peer's rows -- and losing data is never an
+    accepted residue. The write path has to reload and replay like every other
+    one (file-backed contract, *Why these backends never decline a stale
+    write*)."""
+    backend = _Backend("nano")
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    assert await storage.vector_space_adoption_pending() is True
+
+    # A peer commits while this process is busy probing.
+    peer = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await peer.initialize()
+    await peer.upsert({"peer-row": {"content": "written during the probe"}})
+    await peer.index_done_callback()
+
+    # Stand in for the cross-process notification: this harness stubs
+    # set_all_update_flags, and the file channel is off in single-process mode
+    # (file_fingerprint.fence_enabled), so neither would fire on its own. Same
+    # device the peer-reload test above uses.
+    storage.storage_updated.value = True
+
+    assert await storage.adopt_vector_space() is True
+
+    # Both survive: the peer's row and the marker the probe earned.
+    reader = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await reader.initialize()
+    assert await reader.get_by_id("peer-row") is not None, (
+        "adoption saved a stale snapshot over the peer's commit"
+    )
+    assert await reader.get_by_id("v1") is not None
+    assert backend.read_marker(tmp_path) == ("bge-m3", 8)
+
+
+@pytest.mark.asyncio
 async def test_faiss_refuses_to_publish_beside_a_contradicting_marker(tmp_path):
     """FAISS only: an unwritable marker must not wedge the rebuild.
 
