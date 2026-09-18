@@ -200,6 +200,10 @@ async def test_graph_only_normal_ingestion_rebuilds_into_nano_vector_storage(
         working_dir=str(tmp_path),
         workspace=workspace,
         vector_storage="NanoVectorDBStorage",
+        # Graph-only ingestion left the graph populated and the vector storages
+        # empty on purpose, which is exactly the shape the startup gate refuses.
+        # This instance IS the rebuild, so it says so.
+        rebuilding_vector_storage=True,
         llm_model_func=AsyncMock(return_value=""),
         embedding_func=EmbeddingFunc(
             embedding_dim=8,
