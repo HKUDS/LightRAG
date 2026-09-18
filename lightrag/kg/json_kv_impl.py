@@ -434,6 +434,13 @@ class JsonKVStorage(BaseKVStorage):
         re-reads its rows under the lock, so a row deleted mid-scan is skipped
         and a row inserted mid-scan may or may not appear. Rows are deep-copied
         like ``get_by_ids`` so a caller cannot alias the shared dict.
+
+        The key snapshot is O(namespace) before the first page is yielded, and
+        that is accepted on purpose: this backend is for small-scale testing
+        only, so no change to it may be justified by throughput, and the
+        alternative (iterating the ``Manager().dict()`` proxy lazily) costs one
+        RPC per key and raises when a peer worker resizes the dict mid-scan.
+        Only the row payloads are paged; the keys are not.
         """
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonKVStorage")
