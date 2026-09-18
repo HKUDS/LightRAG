@@ -2375,7 +2375,7 @@ def _dead_pipeline_reservation_updates(
     reclaimed; a live-but-slow owner is never preempted.
 
     An owner whose liveness can NEVER be adjudicated (no PID / no
-    ``process_start_id`` — see :func:`_owner_identity_undecidable`) is neither
+    ``process_start_id`` — see :func:`_owner_identity_unprobeable`) is neither
     reclaimed nor ignored: LR2 §6.1 requires it to fence the workspace with
     ``recovery_required`` while leaving every flag it holds in place, so the
     freeze is never risked on a guess and the operator gets a 503 plus the
