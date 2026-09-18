@@ -52,7 +52,7 @@ def redis_doc_status(monkeypatch):
     fake in-memory store. No network I/O occurs."""
     fake = FakeRedis()
 
-    # Stub out the connection pool factory so __post_init__ does not invoke
+    # Stub out the connection pool factory so initialize() does not invoke
     # the real redis-py ConnectionPool.from_url (which is lazy but still
     # parses URLs and caches state we don't want).
     monkeypatch.setattr(
@@ -63,7 +63,7 @@ def redis_doc_status(monkeypatch):
         "lightrag.kg.redis_impl.RedisConnectionManager.release_pool",
         lambda redis_url: None,
     )
-    # Swap the Redis client class used in __post_init__ so any call site that
+    # Swap the Redis client class used in initialize() so any call site that
     # reaches self._redis hits the fake.
     monkeypatch.setattr(
         "lightrag.kg.redis_impl.Redis", lambda connection_pool=None, **_: fake
@@ -77,7 +77,11 @@ def redis_doc_status(monkeypatch):
         embedding_func=_DummyEmbeddingFunc(),
         workspace="test",
     )
-    storage._initialized = True  # skip the real ping in initialize()
+    # The constructor no longer connects, so stand in for initialize():
+    # attach the fake client and mark the storage ready (skips the real ping).
+    storage._pool = MagicMock(name="fake_pool")
+    storage._redis = fake
+    storage._initialized = True
     return storage
 
 
