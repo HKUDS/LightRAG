@@ -2080,6 +2080,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             is not None
         )
 
+    def _retain_startup_failure(self, failure: BaseException) -> None:
+        """Make ``failure`` the reason every later ``initialize_storages()`` raises.
+
+        An ``Exception`` is retained as itself. A ``BaseException`` that is
+        not one -- ``asyncio.CancelledError``, ``KeyboardInterrupt``,
+        ``SystemExit`` -- is not re-raisable on a later, unrelated call, so a
+        ``RuntimeError`` naming the interruption stands in for it.
+        """
+        if isinstance(failure, Exception):
+            self._startup_refusal = failure
+        else:
+            self._startup_refusal = RuntimeError(
+                f"initialize_storages() was interrupted by "
+                f"{type(failure).__name__} before its startup checks completed; "
+                f"this instance must not serve. Finalize it and start again "
+                f"with a new instance."
+            )
+
     async def _release_after_early_failure(
         self, started: list[tuple[str, Any]]
     ) -> None:
@@ -2171,9 +2189,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           must release them -- NOT that the checks passed. A successful return
           is what means the instance may serve.
         * A failure before ``INITIALIZED`` releases everything it opened and
-          leaves the status ``CREATED``; a retry re-runs every step from 1.
-        * A failure after ``INITIALIZED`` is sticky: this method re-raises it
-          on every later call rather than early-returning as initialized.
+          leaves the status ``CREATED``.
+        * EVERY failure is sticky, cancellation included: this method re-raises
+          it on every later call rather than early-returning as initialized or
+          re-running the steps on storages a rollback has closed. Retry with a
+          new instance.
         """
         # Sticky. The storages below really are up -- which is why the status
         # says so, and why finalize_storages() can tear them down -- but a
@@ -2250,13 +2270,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status,
                 require=bool(self.pipeline_require_strict_storage_reads),
             )
-        except BaseException:
+        except BaseException as failure:
             # Nothing above is covered by finalize_storages() -- the status
             # is still CREATED -- so release it here, in reverse order, the
             # configuration storage last. The original exception propagates;
-            # a teardown failure is logged and never replaces it. Everything
-            # is torn down, so a retry re-runs from step 1 rather than
-            # succeeding on state the failed attempt left behind.
+            # a teardown failure is logged and never replaces it. Sticky too:
+            # not every backend's finalize() is reversible (RedisKVStorage
+            # keeps `_initialized` while dropping its client), so a retry on
+            # this object could neither succeed honestly nor re-run from
+            # step 1. A new instance is the retry.
+            self._retain_startup_failure(failure)
             await self._release_after_early_failure(started)
             raise
 
@@ -2313,10 +2336,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     f"the configuration storage could not be flushed at the end "
                     f"of startup ({type(flush_error).__name__}: {flush_error})"
                 ) from flush_error
-        except Exception as refusal:
-            # Sticky (see the top of this method). The storages stay up so the
+        except BaseException as failure:
+            # Sticky (see the top of this method), cancellation included: a
+            # CancelledError here leaves the status INITIALIZED with the checks
+            # never completed, and only a retained failure keeps the next call
+            # from early-returning as ready. The storages stay up so the
             # caller can finalize them.
-            self._startup_refusal = refusal
+            self._retain_startup_failure(failure)
             raise
         logger.debug("All storage types initialized")
 
