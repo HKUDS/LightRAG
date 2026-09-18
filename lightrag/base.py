@@ -273,7 +273,7 @@ class StorageNameSpace(ABC):
         """
         return None
 
-    async def has_pending_index_ops(self) -> bool:
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         """Whether buffered upserts are still waiting for a commit.
 
         For a caller that is about to DROP this buffer, or to publish another
@@ -290,8 +290,14 @@ class StorageNameSpace(ABC):
         gate can quarantine it has already put the row on disk, where no
         quarantine reaches it.
 
-        UPSERTS only. A retained tombstone carries no reference and does not
-        make another namespace's rows unreachable.
+        UPSERTS only by default. A retained tombstone carries no reference and
+        does not make another namespace's rows unreachable, which is all the
+        reachability caller asks. ``include_deletes=True`` counts retained
+        tombstones too, for a caller that must know whether a DELETE landed:
+        the configuration store confirms a drop by strict read-back, and a
+        buffered tombstone answers that read as "gone" before the server
+        agrees (*Claiming a baseline atomically* in
+        ``docs/design/ConfigurationStorage.md``).
 
         The default is ``False``, which is the truth for an immediate-write or
         snapshot backend (no per-operation buffer, nothing to retain) and an

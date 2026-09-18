@@ -421,6 +421,19 @@ buffers in process memory and its own docstring says the buffer is
 process-local until the flush; releasing the lock first lets another worker read
 absent and claim again.
 
+**A flush that retained anything is a failed flush here.** The same backend
+keeps per-item *retryable* failures (408 / 429 / 5xx) buffered and returns from
+`index_done_callback()` normally — the residue heals on the next flush, which is
+fine for the pipeline — and its strict point read answers from that buffer: a
+buffered upsert reads as present, a buffered tombstone as gone. Flush then
+read-back would therefore confirm a claim, a rebuild record or a drop the server
+never saw. So every configuration flush asks
+`has_pending_index_ops(include_deletes=True)` afterwards; a retained operation
+drops the buffer (what the caller reports is then what is true) and raises
+`ConfigurationStorageError`. Only after that does the strict read-back confirm
+anything, and it is then a read of the server. Backends without a buffer answer
+`False` and pay nothing.
+
 The strict read-back is not a formality, but its job is narrower than it looks.
 It confirms that the write is visible and durable, and it validates whatever is
 *actually stored* against this process's configuration rather than against what
@@ -682,7 +695,9 @@ The implementation is not complete until these are regression tests.
 9. Rebuild succeeds, the configuration write fails → the tool exits non-zero and
    the next startup still refuses.
 10. On OpenSearch, the claim flushes and strict-reads back before releasing the
-    keyed lock.
+    keyed lock; a flush the backend answered with a retryable per-item failure
+    (the operation still buffered) fails the claim, the rebuild record and the
+    drop rather than being confirmed from the buffer.
 11. Two workers of one Gunicorn master claim concurrently → exactly one baseline.
 12. A reserved workspace name is refused for a public construction and accepted
     through the internal factory.

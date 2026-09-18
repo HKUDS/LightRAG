@@ -1755,16 +1755,24 @@ class OpenSearchKVStorage(BaseKVStorage):
         async with self._flush_lock:
             return _discard(self._pending_upserts)
 
-    async def has_pending_index_ops(self) -> bool:
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         """Whether buffered UPSERTS remain (retryable failures are retained).
 
-        Deletes are excluded on purpose -- see the base docstring: a retained
-        tombstone carries no reference to another namespace's rows.
+        Deletes are excluded by default -- see the base docstring: a retained
+        tombstone carries no reference to another namespace's rows. With
+        ``include_deletes=True`` a retained tombstone counts too, for the
+        caller that needs to know whether a delete reached the server.
         """
+
+        def _answer() -> bool:
+            if self._pending_upserts:
+                return True
+            return include_deletes and bool(self._pending_kv_deletes)
+
         if self._flush_lock is None:  # see drop_pending_index_ops
-            return bool(self._pending_upserts)
+            return _answer()
         async with self._flush_lock:
-            return bool(self._pending_upserts)
+            return _answer()
 
     async def _refresh_for_search(self) -> None:
         """Publish prior writes to a search-based read of this index.
