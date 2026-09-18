@@ -344,6 +344,30 @@ async def test_an_unreadable_chunk_source_leaves_only_that_baseline_absent(
     }
 
 
+async def test_surviving_vectors_behind_an_empty_source_record_no_baseline(
+    tmp_path,
+):
+    """The source was lost (here: text_chunks dropped) while its vector
+    container survived. An empty source alone must not record
+    ``origin=empty``: that would stamp the configured model over vectors
+    nobody probed, and no later start would probe them. The chunk baseline
+    stays absent; the two targets with a populated source record on their own
+    probes."""
+    await _seed(tmp_path, model_name=None)
+    orphaning = _rag(tmp_path, model_name=None)
+    await orphaning.initialize_storages()
+    await orphaning.text_chunks.drop()
+    await orphaning.finalize_storages()
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    await rag.finalize_storages()
+
+    records = _records(tmp_path)
+    assert set(records) == {"entities", "relationships"}
+    assert all(r["origin"] == "probe" for r in records.values())
+
+
 async def test_a_process_without_a_model_name_keeps_no_baselines(tmp_path):
     """Nothing to record and nothing to compare -- the same rule the container
     marker follows. Such a deployment starts exactly as before."""

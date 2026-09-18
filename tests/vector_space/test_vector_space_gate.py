@@ -803,7 +803,10 @@ class TestPairings:
             text_chunks=FakeKVStorage(rows=0),
         )
 
-        assert chunks.empty_reads == 0
+        # The coverage GATE asks nothing and refuses nothing. The one
+        # ``is_empty()`` read is the baseline evidence: an empty source
+        # records ``origin=empty`` only if the container is empty too.
+        assert (chunks.empty_reads, chunks.reads) == (1, 0)
 
     async def test_an_unreadable_text_chunks_source_does_not_refuse(self):
         """An unreadable source supplies no evidence: skip, do not refuse --
@@ -840,6 +843,53 @@ class TestPairings:
 
         assert evidence.source_populated["chunks"] is False
         assert text_chunks.empty_reads == 0, "is_empty() was not consulted"
+
+    async def test_an_empty_source_asks_its_container_before_an_empty_baseline(
+        self,
+    ):
+        """``origin=empty`` is a durable claim about the CONTAINER, so an empty
+        source is not enough: the evidence also carries the container's
+        fail-loud ``is_empty()`` -- ``True`` (record), ``False`` (survivors
+        nobody can vouch for: record nothing), ``None`` (unreadable: record
+        nothing). A populated source never asks."""
+        graph = FakeGraph(labels=["Alice"])
+        entities = FakeVectorStorage(rows=[_entity_row()])
+
+        both_empty = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=FakeKVStorage(rows=0),
+        )
+        assert both_empty.index_empty["chunks"] is True
+
+        survivors = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=FakeKVStorage(rows=0),
+        )
+        assert survivors.index_empty["chunks"] is False
+
+        unreadable = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[], empty_error=RuntimeError("down")),
+            text_chunks=FakeKVStorage(rows=0),
+        )
+        assert unreadable.index_empty["chunks"] is None
+
+        populated = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=FakeKVStorage(rows=1),
+        )
+        assert "chunks" not in populated.index_empty
 
     async def test_a_kv_store_without_enumeration_answers_populated_only(self):
         """The ``is_empty()`` fallback for a backend that cannot page its rows:
@@ -904,7 +954,10 @@ class TestPairings:
             relationships_vdb=relationships,
         )
 
-        assert relationships.empty_reads == 0
+        # The coverage GATE asks nothing and refuses nothing. The one
+        # ``is_empty()`` read is the baseline evidence: an empty source
+        # records ``origin=empty`` only if the container is empty too.
+        assert (relationships.empty_reads, relationships.reads) == (1, 0)
 
     async def test_a_backend_without_edge_iteration_is_skipped(self):
         """``iter_edges`` is fail-closed on the base class. A backend that never
@@ -1186,6 +1239,50 @@ class TestAdoptionProbe:
         assert embedding.calls == 1
         assert entities.adopted == 1
         assert relationships.adopted == 0
+
+    async def test_a_legacy_reverse_id_relation_store_is_probed_too(self):
+        """A historical custom-KG import may have hashed its relation vectors
+        under the reverse-order id (``make_relation_vdb_ids(...)[1]``). The
+        sample carries both candidate ids, so an all-legacy store is examined
+        and adopts on its own reproduced vectors instead of staying without a
+        baseline forever."""
+        legacy_id = make_relation_vdb_ids("Alice", "Bob")[1]
+        graph = FakeGraph(labels=["Alice", "Bob"])  # one Alice-Bob edge
+        entities = FakeVectorStorage(rows=[_entity_row()])
+        legacy = FakeVectorStorage(
+            rows=[{"id": legacy_id, "content": "Alice works with Bob"}],
+            vectors={legacy_id: [1.0, 0.0]},
+            pending=True,
+        )
+
+        await _run(graph, entities, FakeEmbedding([1.0, 0.0]), relationships_vdb=legacy)
+
+        assert legacy.adopted == 1
+
+    async def test_a_mixed_relation_store_is_not_adopted_on_canonical_rows_alone(
+        self,
+    ):
+        """Canonical rows reproduce, the legacy reverse-id row does not: the
+        verdict must cover both, so the container is not adopted."""
+        canonical_id, legacy_id = make_relation_vdb_ids("Alice", "Bob")
+        graph = FakeGraph(labels=["Alice", "Bob"])
+        entities = FakeVectorStorage(rows=[_entity_row()])
+        mixed = FakeVectorStorage(
+            rows=[
+                {"id": canonical_id, "content": "canonical"},
+                {"id": legacy_id, "content": "legacy"},
+            ],
+            vectors={canonical_id: [1.0, 0.0], legacy_id: [1.0, 0.0]},
+            pending=True,
+        )
+        embedding = FakeEmbedding([1.0, 0.0], by_text={"legacy": [0.0, 1.0]})
+
+        try:
+            await _run(graph, entities, embedding, relationships_vdb=mixed)
+        except VectorSpaceMismatchError:
+            pass
+
+        assert mixed.adopted == 0
 
     async def test_relations_are_probed_from_the_graphs_edges(self):
         """Relations have their own sample -- the first batch of iter_edges

@@ -186,7 +186,7 @@ never participates in a verdict**:
 | `origin` | how the baseline was established |
 | --- | --- |
 | `probe` | the homogeneous cosine probe reproduced stored vectors under this model |
-| `empty` | the source or the index was empty, so there was nothing to contradict |
+| `empty` | both the source and the index were empty, so there was nothing to contradict |
 | `rebuild` | written by a successful `lightrag-rebuild-vdb` of this target |
 
 ### Verdicts
@@ -211,7 +211,7 @@ Each target has a probe, and each probe samples from that target's own source:
 | target | sample |
 | --- | --- |
 | `entities` | the graph's most-connected labels (`get_popular_labels`), mapped to entity vector ids |
-| `relationships` | the first batch of `iter_edges`, mapped to the canonical relation vector id |
+| `relationships` | the first batch of `iter_edges`, mapped to **both** candidate relation vector ids (`make_relation_vdb_ids`: the canonical one, then the legacy reverse-order one a historical custom-KG import may have hashed under) -- an all-legacy store sampled by the canonical id alone would never be examined |
 | `chunks` | the first page of `text_chunks.iter_rows()` -- one bounded round trip, not a scan; the row id is the chunk vector id |
 
 The chunk probe is what the enumeration surface makes possible. Before
@@ -238,7 +238,7 @@ So, per target and independently:
 
 | source empty | source populated |
 | --- | --- |
-| record now, `origin=empty` (only on a fail-loud read; unreadable → leave absent) | run that target's probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source or index, no sampleable row) → leave absent and retry next start |
+| record now, `origin=empty` -- **only if that target's vector container is empty too** (fail-loud `is_empty()`). Surviving vectors behind an empty source: nothing can vouch for them and there is nothing to sample, so leave absent, warn, and point at the rebuild; container unreadable, or source unreadable: leave absent | run that target's probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source or index, no sampleable row) → leave absent and retry next start |
 
 **A verdict is about one container only.** The three targets share an
 `embedding_func` but not a history: `lightrag-rebuild-vdb` rebuilds them as

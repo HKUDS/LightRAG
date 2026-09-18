@@ -105,12 +105,18 @@ class StartupEvidence:
     because a refusal is not evidence to record anything on.
 
     Only a positive verdict may establish an ``origin=probe`` baseline for
-    THAT target, and only a ``False`` source may establish an ``origin=empty``
-    one. ``None`` anywhere means "no evidence", and no evidence records
-    nothing.
+    THAT target, and only a ``False`` source whose container is confirmed
+    empty too (``index_empty``) may establish an ``origin=empty`` one.
+    ``None`` anywhere means "no evidence", and no evidence records nothing.
     """
 
     source_populated: dict[str, bool | None] = field(default_factory=dict)
+    # Per target whose SOURCE is empty: whether its vector container is empty
+    # too, from the fail-loud ``is_empty()``; ``None`` when it could not be
+    # read. An ``origin=empty`` baseline needs BOTH to be empty -- a populated
+    # container behind an empty source holds vectors nobody can vouch for and
+    # nothing to sample, so it records nothing.
+    index_empty: dict[str, bool | None] = field(default_factory=dict)
     probes: dict[str, bool | None] = field(default_factory=dict)
     probe_details: dict[str, str] = field(default_factory=dict)
 
@@ -233,10 +239,13 @@ async def _sample_relation_ids(graph, limit: int) -> list[str]:
     """Vector ids for up to ``limit`` relations the graph actually holds.
 
     The first batch of ``iter_edges`` -- the only bounded edge reader on the
-    base class -- mapped to the canonical relation id the write path uses
-    (``make_relation_vdb_ids`` puts it first). A backend that never
-    implemented ``iter_edges`` raises ``StorageCapabilityError``, which the
-    caller reads as "could not sample".
+    base class -- mapped to BOTH candidate relation ids: the canonical one the
+    write path uses (``make_relation_vdb_ids`` puts it first) and the legacy
+    reverse-order one a historical custom-KG import may have hashed under.
+    Sampling only the canonical id would never examine an all-legacy store
+    (no baseline, ever) and would judge a mixed one on its canonical rows
+    alone. A backend that never implemented ``iter_edges`` raises
+    ``StorageCapabilityError``, which the caller reads as "could not sample".
     """
     iterator = graph.iter_edges(batch_size=limit)
     try:
@@ -251,8 +260,10 @@ async def _sample_relation_ids(graph, limit: int) -> list[str]:
                 src, tgt = str(src), str(tgt)
                 if not src.strip() or not tgt.strip():
                     continue
-                ids.append(make_relation_vdb_ids(src, tgt)[0])
-            return ids[:limit]
+                for rel_id in make_relation_vdb_ids(src, tgt):
+                    if rel_id not in ids:
+                        ids.append(rel_id)
+            return ids[: 2 * limit]
         return []
     finally:
         aclose = getattr(iterator, "aclose", None)
@@ -1015,6 +1026,22 @@ async def check_vector_space_at_startup(
         no_healing_probe=lambda: _edge_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
+    # For a target whose source is EMPTY, ask its container too: an
+    # ``origin=empty`` baseline is a durable claim that the configured model
+    # is the one this container's vectors are in, and it holds only when there
+    # are none. A source lost or restored empty while its container survived
+    # must leave the baseline absent, not stamp the model over the survivors.
+    for name, vdb in (
+        ("chunks", chunks_vdb),
+        ("entities", entities_vdb),
+        ("relationships", relationships_vdb),
+    ):
+        if evidence.source_populated.get(name) is not False or vdb is None:
+            continue
+        if not getattr(vdb, "persists_vectors", True):
+            continue
+        evidence.index_empty[name] = await _index_is_empty_for_baseline(name, vdb)
+
     # One probe per target, each on its own sample. The chunk probe needs the
     # chunk source; without it there is nothing to sample from.
     probes = (
@@ -1041,6 +1068,29 @@ async def check_vector_space_at_startup(
             name, vdb, sampler, embedding_func, force=name in probe_targets
         )
     return evidence
+
+
+async def _index_is_empty_for_baseline(name: str, vdb) -> bool | None:
+    """``vdb.is_empty()`` for the baseline decision: ``True`` / ``False``, or
+    ``None`` when the container could not be read or cannot answer. Same
+    fail-loud read as ``_index_is_empty``; only the log differs, because here
+    the consequence is an unrecorded baseline, not a skipped coverage check.
+    """
+    try:
+        return bool(await vdb.is_empty())
+    except StorageCapabilityError as e:
+        logger.info(
+            f"Whether the {name} vector storage is empty cannot be established: "
+            f"{type(vdb).__name__} cannot answer it ({e}). Its embedding "
+            f"baseline stays unrecorded."
+        )
+        return None
+    except Exception as e:
+        logger.warning(
+            f"Whether the {name} vector storage is empty could not be established "
+            f"({type(e).__name__}: {e}). Its embedding baseline stays unrecorded."
+        )
+        return None
 
 
 async def _chunk_source_is_populated(text_chunks) -> bool | None:
