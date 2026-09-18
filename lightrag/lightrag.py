@@ -1875,16 +1875,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # Initialize document status storage
         self.doc_status_storage_cls = get_storage_class(self.doc_status_storage)
 
-        # The configuration storage: the same KV backend, bound to the fixed
-        # reserved workspace rather than to this instance's. Only the factory
-        # may bind that name. Initialized FIRST and finalized with the rest;
-        # see docs/design/ConfigurationStorage.md.
-        self.configuration_storage: BaseKVStorage = create_configuration_storage(
-            self.key_string_value_json_storage_cls,
-            global_config=global_config,
-            embedding_func=self.embedding_func,
-        )
-
         self.llm_response_cache: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
             namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
             workspace=self.workspace,
@@ -1961,6 +1951,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             workspace=self.workspace,
             global_config=global_config,
             embedding_func=None,
+        )
+
+        # The configuration storage: the same KV backend, bound to the fixed
+        # reserved workspace rather than to this instance's. Only the factory
+        # may bind that name. Initialized FIRST (step 1) and finalized with the
+        # rest, but CONSTRUCTED LAST: a Redis storage takes its shared-pool
+        # reference in its constructor, and a constructor above may refuse
+        # (a reserved ``*_WORKSPACE`` override does) with no async teardown
+        # reachable from here -- so nothing this storage holds may precede
+        # one. See *Cleanup before INITIALIZED exists* in
+        # docs/design/ConfigurationStorage.md.
+        self.configuration_storage: BaseKVStorage = create_configuration_storage(
+            self.key_string_value_json_storage_cls,
+            global_config=global_config,
+            embedding_func=self.embedding_func,
         )
 
         # Per-role isolated LLM wrappers (independent queues per role).
