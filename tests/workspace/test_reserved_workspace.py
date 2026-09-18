@@ -310,3 +310,68 @@ def test_a_refused_override_leaks_no_configuration_pool_reference(
 
     assert url not in RedisConnectionManager._pools
     assert RedisConnectionManager._pool_refs.get(url, 0) == 0
+
+
+@pytest.mark.parametrize(
+    "bad_kwargs",
+    [
+        pytest.param({"llm_model_func": None}, id="missing-llm"),
+        pytest.param({"role_llm_configs": 42}, id="bad-role-config"),
+        pytest.param({"role_llm_configs": {"no_such_role": {}}}, id="unknown-role"),
+    ],
+)
+def test_the_configuration_storage_is_never_built_before_a_refusal(
+    tmp_path, monkeypatch, bad_kwargs
+):
+    """The validations that follow the storage constructors can refuse too,
+    and they run in the same synchronous ``__post_init__`` with no teardown.
+    The configuration storage is the last thing built that can raise, so a
+    construction refused ANYWHERE never built it -- which is what keeps a
+    Redis-backed one from leaking its pool reference on every failed
+    construction."""
+    import numpy as np
+
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+    from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
+
+    class _StubTokenizer(TokenizerInterface):
+        def encode(self, content: str) -> list[int]:
+            return [ord(c) for c in content]
+
+        def decode(self, tokens: list[int]) -> str:
+            return "".join(chr(t) for t in tokens)
+
+    async def _embed(texts, **kwargs):  # pragma: no cover - never called
+        return np.zeros((len(texts), 8), dtype=np.float32)
+
+    built = []
+    real_factory = lightrag_module.create_configuration_storage
+
+    def _spy(*args, **kwargs):
+        built.append(True)
+        return real_factory(*args, **kwargs)
+
+    monkeypatch.setattr(lightrag_module, "create_configuration_storage", _spy)
+
+    async def _llm(prompt, **kwargs):  # pragma: no cover - never called
+        return ""
+
+    # Every storage constructor must SUCCEED here, so the refusal under test
+    # is one of the validations that follow them, not a storage's own.
+    kwargs = {"llm_model_func": _llm, **bad_kwargs}
+    with pytest.raises((ValueError, TypeError)) as excinfo:
+        LightRAG(
+            working_dir=str(tmp_path),
+            workspace="tenant",
+            tokenizer=Tokenizer("stub", _StubTokenizer()),
+            embedding_func=EmbeddingFunc(
+                embedding_dim=8, max_token_size=1024, func=_embed, model_name="m"
+            ),
+            **kwargs,
+        )
+    assert "storage" not in str(excinfo.value).lower(), (
+        "the refusal came from a storage constructor, not a later validation"
+    )
+
+    assert built == [], "the configuration storage was built before a refusal"
