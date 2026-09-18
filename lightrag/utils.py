@@ -7923,6 +7923,33 @@ def _grant_reserved_workspace(workspace: str) -> _ReservedWorkspaceGrant:
     return _ReservedWorkspaceGrant(workspace)
 
 
+def validate_workspace_override(env_var: str, value: str | None) -> str | None:
+    """The workspace a ``*_WORKSPACE`` environment variable remaps TENANT data
+    to, stripped, or ``None`` / the empty value when it sets nothing.
+
+    Refuses the reserved ``_lightrag*`` family. The override is applied AFTER
+    ``validate_workspace()`` has passed the constructor argument, so without
+    this check ``REDIS_WORKSPACE=_lightrag_config`` (or any sibling variable)
+    would bind ordinary storage into the family the configuration container
+    lives in. The configuration storage never reaches here: its reserved
+    workspace skips the override altogether. See *The internal factory* in
+    docs/design/ConfigurationStorage.md.
+
+    Raises:
+        ValueError: the override names a reserved workspace.
+    """
+    if value is None:
+        return None
+    effective = str(value).strip()
+    if is_reserved_workspace(effective):
+        raise ValueError(
+            f"{env_var}={effective!r} names a workspace reserved for LightRAG's "
+            f"own containers (the {RESERVED_WORKSPACE_PREFIX!r} family); tenant "
+            f"data cannot be remapped onto it"
+        )
+    return effective
+
+
 def validate_workspace(workspace: str) -> str:
     """Validate a workspace name used to build per-workspace directories.
 

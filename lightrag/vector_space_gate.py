@@ -452,14 +452,14 @@ async def _source_is_populated(name: str, probe) -> bool | None:
     source that is empty poses no question, and a source that cannot be read
     supplies no evidence.
 
-    Worth stating because it looks like an omission: ``BaseKVStorage.is_empty``
-    CATCHES its backend errors and answers ``True``, so a ``text_chunks`` read
-    that fails arrives here as "no chunks" rather than as a raise. That lands on
-    the same branch as a genuinely empty store -- skip, do not refuse -- which
-    is the direction this module wants everywhere, so the imprecision is
-    accepted rather than worked around. It is the mirror image of why the
-    INDEX side needed a new method: there, "I could not read it" answered as
-    "empty" would refuse a healthy deployment.
+    The distinction matters beyond the log since the verdict also feeds the
+    embedding baselines: ``False`` records the configured model as that
+    target's ``origin=empty`` baseline, ``None`` records nothing. So a probe
+    must answer ``False`` only on a read that would have raised had it failed.
+    ``BaseKVStorage.is_empty`` does not qualify -- it catches its errors and
+    answers ``True`` -- which is why the chunk source is read through
+    ``_chunk_source_is_populated`` instead. The graph readers behind the other
+    two probes propagate their failures.
     """
     try:
         return await probe()
@@ -993,7 +993,7 @@ async def check_vector_space_at_startup(
             name="chunks",
             source="the text chunk storage",
             vdb=chunks_vdb,
-            source_probe=lambda: _source_is_empty_inverted(text_chunks),
+            source_probe=lambda: _chunk_source_is_populated(text_chunks),
             no_healing_probe=lambda: _finished_doc_chunk_ids(
                 doc_status, DOCUMENTLESS_SAMPLE_SIZE
             ),
@@ -1043,6 +1043,49 @@ async def check_vector_space_at_startup(
     return evidence
 
 
-async def _source_is_empty_inverted(kv_storage) -> bool:
-    """``True`` when the KV storage holds rows. Adapts the KV sense of empty."""
-    return not await kv_storage.is_empty()
+async def _chunk_source_is_populated(text_chunks) -> bool | None:
+    """Whether ``text_chunks`` holds a row: ``True``, ``False``, or ``None``
+    when empty and unreadable cannot be told apart.
+
+    NOT ``BaseKVStorage.is_empty()``. That method catches its backend errors
+    and answers ``True``, which was harmless while "empty" only skipped the
+    coverage check -- but the verdict returned here also decides whether a
+    durable ``origin=empty`` baseline is recorded for the chunk container, and
+    a transient outage must never stamp the configured model over vectors
+    nobody probed. So the answer comes from the first page of ``iter_rows``,
+    which the base contract requires to RAISE on a backend failure: a row
+    means populated, a clean end means empty, a raise propagates to the
+    caller as "no evidence". It is the same bounded read the chunk probe
+    samples from.
+
+    A backend without enumeration falls back to ``is_empty()``, whose
+    "populated" is trustworthy and whose "empty" is not: the first answers
+    ``True``, the second ``None``. The coverage check only acts on ``True``,
+    so that backend keeps exactly the check it had, and never a baseline it
+    did not earn.
+    """
+    try:
+        iterator = text_chunks.iter_rows(page_size=1)
+    except StorageCapabilityError:
+        iterator = None
+    if iterator is not None:
+        try:
+            async for _row in iterator:
+                return True
+            return False
+        except StorageCapabilityError:
+            # The base default raises on first iteration, not at the call.
+            pass
+        finally:
+            aclose = getattr(iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+    if not await text_chunks.is_empty():
+        return True
+    logger.info(
+        f"{type(text_chunks).__name__} cannot enumerate its rows and its "
+        f"is_empty() answers True on a failed read too, so whether the text "
+        f"chunk storage is empty cannot be established; the chunk baseline "
+        f"stays unrecorded until it can."
+    )
+    return None

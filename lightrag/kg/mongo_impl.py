@@ -41,6 +41,7 @@ from ..utils import (
     validate_interpreted_attribute_names,
     is_reserved_workspace,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -433,7 +434,9 @@ class MongoKVStorage(BaseKVStorage):
             mongodb_workspace = None
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -727,7 +730,9 @@ class MongoDocStatusStorage(DocStatusStorage):
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -1805,7 +1810,9 @@ class MongoGraphStorage(BaseGraphStorage):
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -4262,7 +4269,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )

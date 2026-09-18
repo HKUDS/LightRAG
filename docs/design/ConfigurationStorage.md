@@ -80,6 +80,12 @@ door has to be one ordinary configuration cannot find:
 - `PG_WORKSPACE`, `REDIS_WORKSPACE`, `MONGODB_WORKSPACE` and
   `OPENSEARCH_WORKSPACE` must not remap the internal container onto an ordinary
   workspace. The configuration container's workspace is fixed, not configured.
+- Nor may any `*_WORKSPACE` variable point tenant data INTO the family: the
+  override is applied after `validate_workspace()` has passed the constructor
+  argument, so every backend that honors one validates the override's value
+  too (`validate_workspace_override`) and refuses a reserved name at
+  construction. Neo4j and Memgraph validate after applying theirs and need no
+  second check.
 
 Reserving must happen in the **first** slice, before any deployment can create a
 workspace with such a name: a reservation made later cannot reclaim a name
@@ -216,11 +222,23 @@ place on a startup path, and `doc_status` could not stand in for it
 paged reader is a different thing from a scan: it costs one round trip whatever
 the namespace holds.
 
+**The source verdict must come from a read that raises when it fails.** A
+verdict of "empty" is now a durable write, not merely a skipped check, so an
+outage reported as emptiness would stamp the configured model over vectors
+nobody probed -- and the next start, finding a record, would never probe them.
+`BaseKVStorage.is_empty()` catches its errors and answers `True` on the four
+server backends, so the chunk source is read through the first page of
+`iter_rows()` instead (the same bounded read the chunk probe samples from),
+which the base contract requires to raise on failure. A KV backend without
+enumeration falls back to `is_empty()` and its "empty" is read as *unknown*:
+the coverage check it had is unchanged, and no baseline is recorded on it. The
+graph readers behind the other two verdicts propagate their failures already.
+
 So, per target and independently:
 
 | source empty | source populated |
 | --- | --- |
-| record now, `origin=empty` | run that target's probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source or index, no sampleable row) → leave absent and retry next start |
+| record now, `origin=empty` (only on a fail-loud read; unreadable → leave absent) | run that target's probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source or index, no sampleable row) → leave absent and retry next start |
 
 **A verdict is about one container only.** The three targets share an
 `embedding_func` but not a history: `lightrag-rebuild-vdb` rebuilds them as

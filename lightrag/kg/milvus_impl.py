@@ -17,6 +17,7 @@ from lightrag.utils import (
     _consume_future_exception,
     _wait_deferring_cancellation,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..base import BaseVectorStorage
 from ..constants import (
@@ -2453,7 +2454,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
         if milvus_workspace and milvus_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MILVUS_WORKSPACE", milvus_workspace
+            )
             logger.info(
                 f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )

@@ -10,12 +10,14 @@ docs/design/ConfigurationStorage.md.
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from lightrag.namespace import CONFIG_WORKSPACE, RESERVED_WORKSPACE_PREFIX
 from lightrag.utils import (
     _grant_reserved_workspace,
     is_reserved_workspace,
     validate_workspace,
+    validate_workspace_override,
 )
 
 pytestmark = pytest.mark.offline
@@ -159,3 +161,100 @@ class TestEnvironmentRemapIsIgnoredForReservedNames:
             assert tenant.workspace == "prod"
         finally:
             finalize_share_data()
+
+
+class TestEnvironmentRemapCannotNameAReservedWorkspace:
+    """The mirror of the class above. The override is applied AFTER
+    ``validate_workspace()`` passed the constructor argument, so without a
+    check of its own ``REDIS_WORKSPACE=_lightrag_config`` would bind tenant
+    data into the reserved family through the front door the reservation
+    exists to close."""
+
+    def test_the_validator_refuses_the_family_and_strips_the_rest(self):
+        assert validate_workspace_override("X_WORKSPACE", " prod ") == "prod"
+        assert validate_workspace_override("X_WORKSPACE", None) is None
+        assert validate_workspace_override("X_WORKSPACE", "") == ""
+        with pytest.raises(ValueError, match="X_WORKSPACE.*reserved"):
+            validate_workspace_override("X_WORKSPACE", CONFIG_WORKSPACE)
+
+    def test_opensearch(self, monkeypatch):
+        from lightrag.kg.opensearch_impl import _resolve_workspace
+
+        monkeypatch.setenv("OPENSEARCH_WORKSPACE", CONFIG_WORKSPACE)
+        with pytest.raises(ValueError, match="reserved"):
+            _resolve_workspace("tenant", "text_chunks")
+
+    def test_redis(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lightrag.kg.redis_impl import RedisDocStatusStorage, RedisKVStorage
+
+        monkeypatch.setenv("REDIS_WORKSPACE", CONFIG_WORKSPACE)
+        monkeypatch.setattr(
+            "lightrag.kg.redis_impl.RedisConnectionManager.get_pool",
+            lambda redis_url: MagicMock(name="pool"),
+        )
+        monkeypatch.setattr(
+            "lightrag.kg.redis_impl.Redis",
+            lambda connection_pool=None, **_: MagicMock(),
+        )
+        for cls in (RedisKVStorage, RedisDocStatusStorage):
+            with pytest.raises(ValueError, match="reserved"):
+                cls(
+                    namespace="text_chunks",
+                    workspace="tenant",
+                    global_config={},
+                    embedding_func=None,
+                )
+
+    def test_mongodb(self, monkeypatch):
+        from lightrag.kg.mongo_impl import MongoDocStatusStorage, MongoKVStorage
+
+        monkeypatch.setenv("MONGODB_WORKSPACE", CONFIG_WORKSPACE)
+        for cls in (MongoKVStorage, MongoDocStatusStorage):
+            with pytest.raises(ValueError, match="reserved"):
+                cls(
+                    namespace="text_chunks",
+                    global_config={},
+                    embedding_func=None,
+                    workspace="tenant",
+                )
+
+    def test_postgresql_client(self):
+        """One check for every PostgreSQL storage: they all take the override
+        from the shared client, which reads it once."""
+        from lightrag.kg.postgres_impl import PostgreSQLDB
+
+        with pytest.raises(ValueError, match="POSTGRES_WORKSPACE.*reserved"):
+            PostgreSQLDB(
+                {
+                    "host": "localhost",
+                    "port": 5432,
+                    "user": "u",
+                    "password": "p",
+                    "database": "d",
+                    "workspace": CONFIG_WORKSPACE,
+                    "max_connections": 1,
+                    "connection_retry_attempts": 1,
+                    "connection_retry_backoff": 0.1,
+                    "connection_retry_backoff_max": 0.1,
+                    "pool_close_timeout": 1,
+                }
+            )
+
+    def test_milvus_and_qdrant(self, monkeypatch):
+        from lightrag.kg.milvus_impl import MilvusVectorDBStorage
+        from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
+
+        embedding = SimpleNamespace(embedding_dim=8, model_name="m")
+        monkeypatch.setenv("MILVUS_WORKSPACE", CONFIG_WORKSPACE)
+        monkeypatch.setenv("QDRANT_WORKSPACE", CONFIG_WORKSPACE)
+        for cls in (MilvusVectorDBStorage, QdrantVectorDBStorage):
+            storage = cls.__new__(cls)
+            storage.namespace = "entities"
+            storage.workspace = "tenant"
+            storage.global_config = {"vector_db_storage_cls_kwargs": {}}
+            storage.embedding_func = embedding
+            storage.meta_fields = set()
+            with pytest.raises(ValueError, match="reserved"):
+                storage.__post_init__()
