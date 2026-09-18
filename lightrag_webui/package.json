@@ -58,7 +58,7 @@
     "minisearch": "^7.2.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-dropzone": "^19.3.0",
+    "react-dropzone": "^20.1.0",
     "react-error-boundary": "^6.1.5",
     "react-i18next": "^17.0.14",
     "react-markdown": "^10.1.0",
