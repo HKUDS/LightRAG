@@ -847,9 +847,8 @@ successful rebuild, so the switch back is a mismatch, refused at step 3 of
 startup -- ahead of the legacy-container migration those backends run inside
 `initialize()`. What stays open is recorded in that contract as its own
 residue: with no record yet (the first start after the upgrade), the
-legacy-container copy may still happen before anything judges it, and a
-`bootstrap_assumption` baseline on `relationships` or `chunks` can be wrong.
-Recovery in both cases: `lightrag-rebuild-vdb`.
+legacy-container copy may still happen before anything judges it. Recovery:
+`lightrag-rebuild-vdb`.
 
 **Embedder unavailable during an adopting start, in the same upgrade as a
 same-dimension model swap.** The probe cannot run, so the instance starts and

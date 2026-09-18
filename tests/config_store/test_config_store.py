@@ -366,7 +366,7 @@ class TestClaim:
         that boundary, and nothing here asserts anything about two masters)."""
         kv = FakeConfigKV(read_delay=0.001)
         first = cs.EmbeddingBaseline("bge-m3", 16, "empty")
-        second = cs.EmbeddingBaseline("bge-m3", 16, "bootstrap_assumption")
+        second = cs.EmbeddingBaseline("bge-m3", 16, "probe")
 
         results = await asyncio.gather(
             cs.claim_embedding_baseline(
@@ -389,7 +389,7 @@ class TestClaim:
         assert len(upserts) == 1
         # Both callers see the ONE record that exists, whoever wrote it.
         assert results[0] == results[1]
-        assert results[0].origin in {"empty", "bootstrap_assumption"}
+        assert results[0].origin in {"empty", "probe"}
 
     async def test_an_existing_record_that_differs_refuses_the_claim(self):
         kv = FakeConfigKV({_key("entities"): _row(model="old")})
