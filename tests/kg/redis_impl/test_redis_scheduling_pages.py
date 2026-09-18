@@ -92,6 +92,10 @@ def storage(monkeypatch):
         embedding_func=_DummyEmbeddingFunc(),
         workspace="test",
     )
+    # The constructor no longer connects, so stand in for initialize():
+    # attach the fake client and mark the storage ready (skips the real ping).
+    instance._pool = MagicMock(name="fake_pool")
+    instance._redis = fake
     instance._initialized = True
     return instance
 
