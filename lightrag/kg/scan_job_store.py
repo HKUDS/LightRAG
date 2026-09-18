@@ -579,6 +579,7 @@ class AsyncioScanJobStore:
             rec = self._jobs.get(track_id)
             if rec is None:
                 return ScanJobUpdateResult(False, ScanJobUpdateConflict.NOT_FOUND)
+            self._maybe_abandon_locked(rec, now)
             if rec.owner_token != owner_token:
                 return ScanJobUpdateResult(False, ScanJobUpdateConflict.OWNER)
             if rec.status != ScanJobStatus.RUNNING.value:
