@@ -81,7 +81,11 @@ from lightrag.kg.shared_storage import (
     with_reservation_lock,
 )
 from lightrag import pipeline_metrics
-from lightrag.chunker.registry import chunker_identity
+from lightrag.chunker.registry import (
+    ChunkingContext,
+    chunker_identity,
+    invoke_chunker,
+)
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -5102,6 +5106,15 @@ class _PipelineMixin:
                 doc_process_opts = parse_process_options(
                     (content_data or {}).get("process_options", "")
                 )
+                chunking_context = ChunkingContext(
+                    doc_id=doc_id,
+                    file_path=str(file_path),
+                    sidecar_location=(content_data or {}).get("sidecar_location"),
+                    parse_format=(content_data or {}).get("parse_format")
+                    or FULL_DOCS_FORMAT_RAW,
+                    parse_engine=(content_data or {}).get("parse_engine"),
+                    process_options=(content_data or {}).get("process_options") or "",
+                )
 
                 # Resume guard: if content was already extracted under
                 # earlier process_options, purge stale chunks + KG before
@@ -5243,8 +5256,9 @@ class _PipelineMixin:
                     strategy = doc_process_opts.chunking
                     if strategy == "C":
                         # C makes the legacy extension point explicit while
-                        # preserving its six positional arguments verbatim.
-                        # Its snapshot is intentionally the fixed-token one.
+                        # preserving its six positional arguments. An opted-in
+                        # callback additionally receives the keyword-only
+                        # ChunkingContext; its snapshot is fixed-token.
                         c_opts = dict(chunk_opts.get("fixed_token") or {})
                         c_chunk_size = int(
                             c_opts.get("chunk_token_size", resolved_chunk_size)
@@ -5301,7 +5315,11 @@ class _PipelineMixin:
                                 # the running loop, while async callbacks are
                                 # awaited immediately. CPU-bound callbacks own
                                 # any desired thread offload.
-                                chunking_result = self.chunking_func(*c_args)
+                                chunking_result = invoke_chunker(
+                                    self.chunking_func,
+                                    *c_args,
+                                    context=chunking_context,
+                                )
                                 if inspect.isawaitable(chunking_result):
                                     chunking_result = await chunking_result
                             except Exception as exc:
@@ -5519,8 +5537,10 @@ class _PipelineMixin:
                         # calling convention, and a CPU-bound custom chunker is
                         # responsible for its own ``to_thread``; see the
                         # ``chunking_func`` docstring.
-                        chunking_result = self.chunking_func(
-                            *legacy_args, **legacy_kwargs
+                        chunking_result = invoke_chunker(
+                            self.chunking_func,
+                            *legacy_args,
+                            context=chunking_context,
                         )
                     chunk_method = "legacy_chunking_func"
                     sidecar_backfill_eligible = is_builtin_chunker
