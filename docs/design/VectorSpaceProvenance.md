@@ -632,8 +632,34 @@ Two consequences of dropping the sample:
 
 ### What the probe's verdict bands mean
 
-The probe re-embeds one stored `content` and compares it with the vector stored
+The probe re-embeds stored `content` and compares it with the vector stored
 beside it. Three outcomes, not two:
+
+**Every compared record must agree, and one record is not enough.** A container
+can hold two embedding spaces at once, by a route this design itself opens: an
+upgrade that also switches to a same-dimension model starts *unmarked* when the
+probe cannot run (absent evidence never refuses), keeps serving, and then takes
+new writes — so the legacy rows and this model's rows share one container.
+`test_writing_to_an_unverified_legacy_store_does_not_certify_it` already
+constructs that shape; what it pins is only that the *save* does not stamp it.
+
+Adopting on whichever row the sample reached first would stamp this model over
+the foreign half and hide it permanently — the same lie as adopting a store
+nobody probed, one level down. So the probe compares up to `PROBE_ROWS` (8)
+records in **one batched embedding call** and adopts only if all of them
+reproduce. A record that fails while others pass is not an ambiguity: it is
+positive evidence that the container is not homogeneous, and it refuses saying
+so. The governing rule is untouched — a reproduced cosine of 0.3 is a negative
+verdict whoever else agrees.
+
+Residue, since 8 records cannot prove a whole container: a container whose
+foreign rows are a small enough minority can still be sampled entirely from the
+majority and adopted. The degree-ranked sample leans the useful way in the
+common case — the legacy entities are the well-connected, long-standing ones
+and the new writes are the newcomers — but a container that is overwhelmingly
+new with a few legacy stragglers can still be stamped. Proving a whole
+container means re-embedding all of it, which is a rebuild, and
+`lightrag-rebuild-vdb` already is that.
 
 | cosine | verdict |
 | --- | --- |

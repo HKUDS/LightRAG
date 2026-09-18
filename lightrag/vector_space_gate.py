@@ -94,6 +94,21 @@ ADOPT_COSINE = 0.95
 # ambiguous evidence is worse than the unmarked container it already had.
 REFUSE_COSINE = 0.70
 
+# How many stored records the probe compares before it will adopt. ONE is not
+# enough, and the case that proves it is reachable today: an upgrade that also
+# switches to a same-dimension model starts unmarked when the embedder is
+# unreachable (inconclusive), keeps serving, and then accepts new writes -- so
+# the container ends up holding the previous model's vectors AND this model's.
+# A single row picked out of that mixture adopts on whichever one it happened
+# to land on, and a marker recorded over a mixed container hides the foreign
+# half forever.
+#
+# Comparing several rows turns that mixture from something adoption conceals
+# into something the probe REPORTS: a row that fails while others pass is a
+# positive verdict about the container, not an ambiguity. One batched embedding
+# call, so the cost is the same round trip as before.
+PROBE_ROWS = 8
+
 _PROBE_TIMEOUT_ENV = "LIGHTRAG_VECTOR_SPACE_PROBE_TIMEOUT"
 DEFAULT_PROBE_TIMEOUT = 30.0
 
@@ -171,12 +186,24 @@ async def _probe_same_embedding_space(
     vectors: dict[str, list[float]],
     embedding_func,
 ) -> tuple[bool | None, str]:
-    """Re-embed one stored content and compare it with its stored vector.
+    """Re-embed several stored contents and compare them with their vectors.
 
     Returns ``(verdict, detail)`` where the verdict is ``True`` (adopt),
     ``False`` (refuse) or ``None`` (inconclusive -- do neither).
+
+    **Adoption needs every compared record to agree.** A container can hold
+    vectors from two models at once: an upgrade that also switched to a
+    same-dimension model starts unmarked when the probe cannot run, keeps
+    serving, and then takes new writes. Adopting on one row out of that mixture
+    stamps this model over the foreign half and hides it permanently -- the
+    same lie as adopting a store nobody probed, one level down.
+
+    So a row that fails while others pass is treated as what it is: positive
+    evidence that the container is NOT homogeneous, which refuses. The rule
+    stays "only a negative verdict may refuse" -- a reproduced cosine of 0.3 is
+    a negative verdict, whoever else in the container agrees.
     """
-    candidate = None
+    candidates: list[tuple[str, str, Any]] = []
     for row in rows:
         row_id = row.get("id")
         content = row.get("content")
@@ -185,19 +212,22 @@ async def _probe_same_embedding_space(
         stored = vectors.get(row_id)
         if stored is None:
             continue
-        candidate = (row_id, content, stored)
-        break
+        candidates.append((row_id, content, stored))
+        if len(candidates) >= PROBE_ROWS:
+            break
 
-    if candidate is None:
+    if not candidates:
         return None, "no sampled record carried both a content field and a vector"
 
-    row_id, content, stored = candidate
     try:
-        # context="document" matches how every backend embeds on the way in;
-        # a provider that prefixes queries differently would otherwise be
-        # compared against a vector it never would have written.
+        # One call for all of them: the cost is the round trip, not the texts.
+        # context="document" matches how every backend embeds on the way in; a
+        # provider that prefixes queries differently would otherwise be
+        # compared against vectors it never would have written.
         fresh = await asyncio.wait_for(
-            embedding_func([content], context="document"),
+            embedding_func(
+                [content for _, content, _ in candidates], context="document"
+            ),
             timeout=_probe_timeout(),
         )
     except asyncio.TimeoutError:
@@ -205,22 +235,44 @@ async def _probe_same_embedding_space(
     except Exception as e:
         return None, f"the embedding call failed ({type(e).__name__}: {e})"
 
-    try:
-        fresh_vector = fresh[0]
-    except (IndexError, TypeError, KeyError):
-        return None, "the embedding function returned no vector"
+    adopted: list[str] = []
+    for index, (row_id, _, stored) in enumerate(candidates):
+        try:
+            fresh_vector = fresh[index]
+        except (IndexError, TypeError, KeyError):
+            return (
+                None,
+                f"the embedding function returned no vector for record '{row_id}'",
+            )
 
-    similarity = _cosine(fresh_vector, stored)
-    if similarity is None:
-        return None, "the stored and freshly embedded vectors are not comparable"
-    if similarity >= ADOPT_COSINE:
-        return True, f"cosine {similarity:.3f} against record '{row_id}'"
-    if similarity <= REFUSE_COSINE:
-        return False, f"cosine {similarity:.3f} against record '{row_id}'"
-    return (
-        None,
-        f"cosine {similarity:.3f} against record '{row_id}' falls between "
-        f"{REFUSE_COSINE} and {ADOPT_COSINE}, which settles nothing",
+        similarity = _cosine(fresh_vector, stored)
+        if similarity is None:
+            return (
+                None,
+                f"the stored and freshly embedded vectors for record "
+                f"'{row_id}' are not comparable",
+            )
+        if similarity <= REFUSE_COSINE:
+            if adopted:
+                return False, (
+                    f"cosine {similarity:.3f} against record '{row_id}' while "
+                    f"{len(adopted)} other sampled record(s) reproduced their "
+                    f"vectors, so this container holds vectors from more than "
+                    f"one embedding space"
+                )
+            return False, f"cosine {similarity:.3f} against record '{row_id}'"
+        if similarity < ADOPT_COSINE:
+            return (
+                None,
+                f"cosine {similarity:.3f} against record '{row_id}' falls "
+                f"between {REFUSE_COSINE} and {ADOPT_COSINE}, which settles "
+                f"nothing",
+            )
+        adopted.append(row_id)
+
+    return True, (
+        f"{len(adopted)} sampled record(s) reproduced their stored vectors, "
+        f"including '{adopted[0]}'"
     )
 
 

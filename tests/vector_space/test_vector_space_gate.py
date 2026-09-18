@@ -229,19 +229,27 @@ class FakeEmbedding:
     model_name = "probe-model"
     embedding_dim = 4
 
-    def __init__(self, vector=None, *, error=None, hang=False):
+    def __init__(self, vector=None, *, error=None, hang=False, by_text=None):
         self._vector = vector
         self._error = error
         self._hang = hang
+        # Per-text vectors, for containers that hold more than one embedding
+        # space: each stored content re-embeds to its OWN fresh vector.
+        self._by_text = dict(by_text or {})
         self.calls = 0
+        self.batch_sizes: list[int] = []
 
     async def __call__(self, texts, **kwargs):
         self.calls += 1
+        self.batch_sizes.append(len(texts))
         if self._hang:
             await asyncio.sleep(3600)
         if self._error is not None:
             raise self._error
-        return np.array([list(self._vector) for _ in texts], dtype=np.float32)
+        return np.array(
+            [list(self._by_text.get(text, self._vector)) for text in texts],
+            dtype=np.float32,
+        )
 
 
 class FakeKVStorage:
@@ -924,6 +932,57 @@ class TestAdoptionProbe:
 
         assert "lightrag-rebuild-vdb" in str(excinfo.value)
         assert vdb.adopted == 0
+
+    async def test_a_mixed_container_refuses_instead_of_adopting(self):
+        """The container holds vectors from TWO models at once.
+
+        Reachable today: an upgrade that also switches to a same-dimension
+        model starts unmarked when the probe cannot run (absent evidence never
+        refuses), keeps serving, and then takes new writes -- so the legacy
+        rows and this model's rows share one container. Adopting on whichever
+        row the sample happened to reach first would stamp this model over the
+        foreign half and hide it permanently."""
+        old_row = _entity_row("Legacy", content="written by the previous model")
+        new_row = _entity_row("Fresh", content="written by this model")
+        vdb = FakeVectorStorage(
+            rows=[new_row, old_row],
+            vectors={
+                new_row["id"]: [1.0, 0.0, 0.0, 0.0],
+                old_row["id"]: [1.0, 0.0, 0.0, 0.0],
+            },
+            pending=True,
+        )
+        embedding = FakeEmbedding(
+            by_text={
+                # reproduces its stored vector
+                new_row["content"]: [1.0, 0.0, 0.0, 0.0],
+                # does not: a different embedding space
+                old_row["content"]: [0.0, 1.0, 0.0, 0.0],
+            }
+        )
+
+        with pytest.raises(VectorSpaceMismatchError) as excinfo:
+            await _run(FakeGraph(labels=["Fresh", "Legacy"]), vdb, embedding)
+
+        assert "more than one embedding space" in str(excinfo.value)
+        assert vdb.adopted == 0
+
+    async def test_every_compared_record_must_reproduce_before_adopting(self):
+        """The homogeneity rule, from the other side: all of them agreeing is
+        what adoption needs, and it is one batched embedding call."""
+        rows = [_entity_row(f"E{i}", content=f"content {i}") for i in range(3)]
+        vdb = FakeVectorStorage(
+            rows=rows,
+            vectors={row["id"]: [1.0, 0.0, 0.0, 0.0] for row in rows},
+            pending=True,
+        )
+        embedding = FakeEmbedding([1.0, 0.0, 0.0, 0.0])
+
+        await _run(FakeGraph(labels=["E0", "E1", "E2"]), vdb, embedding)
+
+        assert vdb.adopted == 1
+        assert embedding.calls == 1, "the probe must not pay a round trip per row"
+        assert embedding.batch_sizes == [3]
 
     async def test_an_ambiguous_cosine_settles_nothing(self):
         """Between the two thresholds the probe has not returned a negative
