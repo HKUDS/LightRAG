@@ -27,6 +27,7 @@ def test_config_reads_valid_hologres_environment_and_redacts_password():
             "HOLOGRES_RETRY_BACKOFF": "0.25",
             "HOLOGRES_STREAM_COPY_ENABLED": "yes",
             "HOLOGRES_AGE_SEARCH_PATH": "yes",
+            "HOLOGRES_AGE_ALLOW_UNSUPPORTED": "true",
             "POSTGRES_PASSWORD": "must-not-be-read",
         }
     )
@@ -47,6 +48,7 @@ def test_config_reads_valid_hologres_environment_and_redacts_password():
     assert config.retry_backoff == 0.25
     assert config.stream_copy_enabled is True
     assert config.age_search_path is True
+    assert config.age_allow_unsupported is True
     assert "example.hologres.aliyuncs.com" not in repr(config)
     assert "test_user" not in repr(config)
     assert "top-secret-password" not in repr(config)
@@ -71,6 +73,10 @@ def test_config_reads_valid_hologres_environment_and_redacts_password():
         ({"HOLOGRES_RETRY_BACKOFF": "-0.1"}, "HOLOGRES_RETRY_BACKOFF"),
         ({"HOLOGRES_STREAM_COPY_ENABLED": "sometimes"}, "HOLOGRES_STREAM_COPY_ENABLED"),
         ({"HOLOGRES_SCHEMA": "public; DROP SCHEMA public"}, "HOLOGRES_SCHEMA"),
+        (
+            {"HOLOGRES_AGE_ALLOW_UNSUPPORTED": "sometimes"},
+            "HOLOGRES_AGE_ALLOW_UNSUPPORTED",
+        ),
     ],
 )
 def test_config_rejects_invalid_values_without_echoing_them(updates, expected_fragment):
@@ -135,6 +141,8 @@ def _direct_config(**updates):
         {"stream_copy_enabled": 1},
         {"age_search_path": "true"},
         {"age_search_path": 1},
+        {"age_allow_unsupported": "true"},
+        {"age_allow_unsupported": 1},
     ],
 )
 def test_direct_construction_cannot_bypass_configuration_validation(updates):

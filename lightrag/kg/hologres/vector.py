@@ -14,7 +14,7 @@ from typing import Any, final
 from ...base import BaseVectorStorage
 from ...constants import DEFAULT_QUERY_PRIORITY
 from ...namespace import NameSpace
-from ...utils import compute_mdhash_id, validate_workspace
+from ...utils import compute_mdhash_id
 from .capabilities import (
     probe_production_capabilities,
     prove_similarity_orientation,
@@ -28,6 +28,7 @@ from .schema import (
     HologresSchemaManager,
     vector_schema_descriptors,
 )
+from .workspace import resolve_workspace
 
 
 _ID_CHUNK_SIZE = 1000
@@ -183,10 +184,7 @@ class HologresVectorStorage(BaseVectorStorage):
 
         if not isinstance(self.namespace, str) or self.namespace not in _ALLOWED_NAMESPACES:
             raise ValueError("Unsupported Hologres vector namespace")
-        try:
-            self.workspace = validate_workspace(self.workspace)
-        except (TypeError, ValueError):
-            raise ValueError("Invalid Hologres vector workspace") from None
+        self.workspace = resolve_workspace(self.workspace, role="vector")
 
         batch_size = self.global_config.get("embedding_batch_num")
         if (
@@ -408,14 +406,18 @@ class HologresVectorStorage(BaseVectorStorage):
         client, table = self._ready()
         sql = (
             f"INSERT INTO {table} AS current ("
-            "workspace, namespace, id, embedding, content, payload, updated_at) "
+            "workspace, namespace, id, embedding, content, payload, "
+            "create_time, updated_at) "
             "SELECT $1, $2, ($3::text[])[g.idx], "
             "(($4::text[])[g.idx])::float4[], "
-            "($5::text[])[g.idx], ($6::jsonb[])[g.idx], CURRENT_TIMESTAMP "
+            "($5::text[])[g.idx], ($6::jsonb[])[g.idx], "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
             "FROM generate_series(1, $7::int) AS g(idx) "
             "ON CONFLICT (workspace, namespace, id) DO UPDATE SET "
             "embedding = EXCLUDED.embedding, content = EXCLUDED.content, "
-            "payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP"
+            "payload = EXCLUDED.payload, "
+            "create_time = current.create_time, "
+            "updated_at = CURRENT_TIMESTAMP"
         )
         use_stream_copy = bool(getattr(client, "stream_copy_available", False))
         for payload_json in payloads:
@@ -427,7 +429,7 @@ class HologresVectorStorage(BaseVectorStorage):
                 for r in records
             ]
             if use_stream_copy and len(ids) >= STREAM_COPY_MIN_ROWS:
-                updated_at = datetime.now(timezone.utc)
+                written_at = datetime.now(timezone.utc)
                 rows = [
                     (
                         self.workspace,
@@ -436,7 +438,8 @@ class HologresVectorStorage(BaseVectorStorage):
                         [float(value) for value in record["embedding"]],
                         record["content"],
                         payload_value,
-                        updated_at,
+                        written_at,
+                        written_at,
                     )
                     for record, payload_value in zip(records, payload_values)
                 ]
@@ -450,6 +453,7 @@ class HologresVectorStorage(BaseVectorStorage):
                             "embedding",
                             "content",
                             "payload",
+                            "create_time",
                             "updated_at",
                         ),
                         rows,
@@ -690,7 +694,8 @@ class HologresVectorStorage(BaseVectorStorage):
         sql = (
             "SELECT id, content, payload, "
             "approx_cosine_distance(embedding, $3::float4[]) AS score, "
-            "EXTRACT(EPOCH FROM updated_at)::bigint AS created_at "
+            "COALESCE(EXTRACT(EPOCH FROM create_time), 0)::bigint "
+            "AS created_at "
             f"FROM {table} "
             "WHERE workspace = $1 AND namespace = $2 "
             "AND approx_cosine_distance(embedding, $3::float4[]) "

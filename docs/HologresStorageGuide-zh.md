@@ -92,7 +92,7 @@ LIGHTRAG_GRAPH_STORAGE=HologresAGEGraphStorage
 
 ## 3. 环境变量
 
-所有 Hologres 配置都使用 `HOLOGRES_` 前缀。后端没有 `HOLOGRES_WORKSPACE`；workspace 统一使用 LightRAG 的 `WORKSPACE`。
+所有 Hologres 配置都使用 `HOLOGRES_` 前缀。workspace 遵循数据库后端统一的优先级链：`HOLOGRES_WORKSPACE` > LightRAG 实例 `WORKSPACE` > `default`。
 
 ### 连接配置
 
@@ -104,6 +104,7 @@ LIGHTRAG_GRAPH_STORAGE=HologresAGEGraphStorage
 | `HOLOGRES_PASSWORD` | 必填 | 非空字符串 | 数据库密码 |
 | `HOLOGRES_DATABASE` | 必填 | 非空字符串 | 已存在的数据库 |
 | `HOLOGRES_SCHEMA` | `public` | SQL 标识符，最长 63 字节 | 存放 LightRAG 对象的 schema |
+| `HOLOGRES_WORKSPACE` | 未设置 | 合法的 LightRAG workspace | 覆盖所有 Hologres 存储角色使用的 workspace |
 | `HOLOGRES_SSL_MODE` | `prefer` | `disable`、`allow`、`prefer`、`require`、`verify-ca`、`verify-full` | asyncpg SSL 模式 |
 
 Schema 标识符必须以 ASCII 字母或 `_` 开头，后续字符只能是 ASCII 字母、数字或 `_`。
@@ -128,6 +129,7 @@ Schema 标识符必须以 ASCII 字母或 `_` 开头，后续字符只能是 ASC
 |---|---:|---|
 | `HOLOGRES_STREAM_COPY_ENABLED` | `false` | 为符合条件的批量写入开启 stream COPY。 |
 | `HOLOGRES_AGE_SEARCH_PATH` | `false` | 面向调用方自供专用 AGE client 的内部兼容开关。 |
+| `HOLOGRES_AGE_ALLOW_UNSUPPORTED` | `false` | 当 AGE 扩展缺失时，显式接受两张表 fallback 的开关。 |
 
 布尔值不区分大小写，接受 `1/true/yes/on` 与 `0/false/no/off`。
 
@@ -179,7 +181,7 @@ lightrag_age_<workspace>
 
 探测结果按确定性分为两类：
 
-- **AGE 扩展缺失**（detail 为 `age_extension_missing`）—— 结论明确。初始化以 INFO 日志回退到两张表的 `HologresGraphStorage` 实现，并把后续图操作委托给该实现。
+- **AGE 扩展缺失**（detail 为 `age_extension_missing`）—— 结论明确，但 fallback 的物理图 schema 不同。初始化默认失败；只有设置 `HOLOGRES_AGE_ALLOW_UNSUPPORTED=true` 后，才会记录 WARNING 并委托给 `HologresGraphStorage`。
 - **其他任何探测失败**（瞬断、权限问题、探测行为异常等）—— 结果不确定。初始化会**直接失败**而不是回退：静默回退会把写入落到另一个物理存储，并使既有 AGE 图数据不可见。
 
 运行注意事项：
@@ -222,7 +224,7 @@ Schema manager 会：
 
 ### Workspace 隔离
 
-所有后端都使用共同的 `WORKSPACE` 设置：
+workspace 遵循 `HOLOGRES_WORKSPACE` > 实例 `WORKSPACE` > `default`：
 
 | 后端 | 隔离方式 |
 |---|---|
@@ -288,6 +290,13 @@ Hologres 配置与后端诊断信息会对 host、user、password 和 database �
 ### 并发写入者
 
 一个逻辑知识库对应一个 `WORKSPACE`。多个 server worker 或存储实例可以并发初始化同一个 schema；迁移 ledger 会协调增量 descriptor 应用，并在 catalog 状态无法证明一致时 fail closed，而不是猜测状态。
+
+### 已接受的写入残留
+
+- **两张表图实现的端点创建。** node upsert 可能先创建端点 stub，edge upsert 也可能先补建缺失端点。Hologres 后端写入是单条 autocommit 语句，因此中断可能留下 stub 节点。后续再次 upsert 该边、执行 rebuild，或通过 purge/rebuild 会重写或清理它；这与 PostgreSQL 表格图实现接受的端点 stub 残留一致。
+- **KV full-docs 的合并范围。** PostgreSQL 使用固定 full-docs 列，而 JSONB upsert 会合并本次提供的键并保留历史写入的键。若生产方必须让删除生效，请显式写入 `null`；六个受保护字段仍使用与 PostgreSQL 兼容的恢复语义。
+
+doc-status 有两个有意的兼容差异：upsert 校验采用整批 fail-closed（PostgreSQL 是跳过非法记录并记录日志）；在 Hologres 受限 client 下，每条记录是一条 replay-safe 单语句。配置只读取 `HOLOGRES_*` 环境变量；`config.ini` 和通用 `get_env_value` 间接层不属于这个隔离后端。测试套件中 Hologres 专用 integration gating 已在 PR 描述和 `tests/conftest.py` 中说明。
 
 ### AGE graph 清理
 
@@ -373,7 +382,7 @@ uv run --extra pytest --with coverage coverage report \
 
 ### AGE 启动报探测错误
 
-只有 AGE 扩展确定缺失时才会回退（INFO 日志）。其他探测失败会终止初始化并给出 detail code。请修复连通性或权限后重启。若既有图数据存放在 AGE 中，不要切换到两张表实现；两种实现使用不同物理存储。
+AGE 扩展缺失时默认启动失败，除非 `HOLOGRES_AGE_ALLOW_UNSUPPORTED=true` 显式接受两张表 fallback。其他探测失败始终终止初始化并给出 detail code。请修复连通性或权限后重启。若既有图数据存放在 AGE 中，不要开启 fallback；两种实现使用不同物理存储。
 
 ### Vector 启动拒绝余弦函数方向
 

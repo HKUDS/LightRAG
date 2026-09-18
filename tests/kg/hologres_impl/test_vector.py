@@ -217,7 +217,7 @@ def test_repr_redacts_configuration_and_runtime_state():
 
 @pytest.mark.parametrize("dimension", [1, 3, 1536])
 def test_vector_descriptor_is_dimension_specific_and_carries_frozen_hgraph_index(dimension):
-    (descriptor, columnar_descriptor) = vector_schema_descriptors(
+    (descriptor, columnar_descriptor, create_time_descriptor) = vector_schema_descriptors(
         CONFIG.schema, dimension
     )
     normalized = " ".join(descriptor.sql.split()).lower()
@@ -257,6 +257,12 @@ def test_vector_descriptor_is_dimension_specific_and_carries_frozen_hgraph_index
     assert columnar_descriptor.sql == (
         f'ALTER TABLE "{CONFIG.schema}"."{VECTOR_TABLE_NAME}" '
         "ALTER COLUMN payload SET (enable_columnar_type = on)"
+    )
+    assert create_time_descriptor.identity == ("vector", 1, 3, "create_time")
+    assert create_time_descriptor.replay_safe is True
+    assert create_time_descriptor.sql == (
+        f'ALTER TABLE "{CONFIG.schema}"."{VECTOR_TABLE_NAME}" '
+        "ADD COLUMN IF NOT EXISTS create_time timestamptz"
     )
     assert (
         "attoptions @> ARRAY['enable_columnar_type=on']"
@@ -675,13 +681,23 @@ async def test_bulk_upsert_routes_through_stream_copy_when_gated_and_large(
         "embedding",
         "content",
         "payload",
+        "create_time",
         "updated_at",
     )
     assert copy["descriptor"] == "vector.upsert"
     assert copy["replay_safe"] is True
     assert len(copy["records"]) == len(data)
     for row in copy["records"]:
-        workspace, namespace, identifier, embedding, content, payload, updated_at = row
+        (
+            workspace,
+            namespace,
+            identifier,
+            embedding,
+            content,
+            payload,
+            create_time,
+            updated_at,
+        ) = row
         assert workspace == storage.workspace
         assert namespace == storage.namespace
         assert embedding == data[identifier]["embedding"]
@@ -690,6 +706,7 @@ async def test_bulk_upsert_routes_through_stream_copy_when_gated_and_large(
         assert json.loads(payload) == {"content": data[identifier]["content"]}
         assert isinstance(updated_at, datetime)
         assert updated_at.tzinfo is timezone.utc
+        assert create_time == updated_at
 
 
 async def test_bulk_upsert_below_threshold_keeps_parameterized_insert(ready_storage):
@@ -702,6 +719,32 @@ async def test_bulk_upsert_below_threshold_keeps_parameterized_insert(ready_stor
     assert client.copies == []
     (write,) = calls_for(client, "vector.upsert")
     assert write["method"] == "execute_one"
+    assert "create_time = current.create_time" in write["sql"]
+    assert "create_time = EXCLUDED.create_time" not in write["sql"]
+
+
+async def test_query_reads_create_time_and_defaults_legacy_null_rows_to_zero(
+    ready_storage,
+):
+    embedding = FakeEmbedding(error=AssertionError("must not embed"))
+    client = CallClient()
+    client.handlers["vector.query"] = [
+        {
+            "id": "a",
+            "content": "alpha",
+            "payload": {"content": "alpha"},
+            "score": 0.9,
+            "created_at": 0,
+        }
+    ]
+    storage = await ready_storage(client, embedding=embedding)
+
+    result = await storage.query("q", top_k=1, query_embedding=[1.0, 0.0, 0.0])
+
+    assert result[0]["created_at"] == 0
+    sql = calls_for(client, "vector.query")[0]["sql"]
+    assert "FROM create_time" in sql
+    assert "FROM updated_at" not in sql
 
 
 async def test_bulk_upsert_without_proven_capability_keeps_parameterized_insert(
@@ -1042,7 +1085,7 @@ async def test_query_with_supplied_embedding_returns_similarity_ordered_payloads
             "content": "beta",
             "payload": {"content": "beta"},
             "score": 0.5,
-            "created_at": None,
+            "created_at": 0,
         },
     ]
     storage = await ready_storage(client, embedding=embedding)
@@ -1061,7 +1104,7 @@ async def test_query_with_supplied_embedding_returns_similarity_ordered_payloads
             "id": "b",
             "content": "beta",
             "distance": 0.5,
-            "created_at": None,
+            "created_at": 0,
         },
     ]
     assert embedding.calls == []

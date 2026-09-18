@@ -12,9 +12,9 @@ Hologres-imposed:
   deletes, never via CASCADE;
 * no multi-argument ``unnest`` — pair batches use ``generate_series`` with
   array subscripts;
-* no ``COLLATE "C"`` clause — the capability probe instead proves the
-  database collation IS ``C``, so plain ``ORDER BY`` already matches
-  Python's code-point ordering.
+* explicit ``COLLATE "C"`` on identifier tie-breakers — the server default
+  is not assumed, so SQL ordering remains aligned with the Python
+  ``min``/``max`` edge canonicalization on every collation.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from typing import Any, final
 from ...base import BaseGraphStorage
 from ...namespace import NameSpace
 from ...types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
-from ...utils import validate_workspace
 from .capabilities import (
     probe_production_capabilities,
     prove_stream_copy_capability,
@@ -42,6 +41,7 @@ from .schema import (
     HologresSchemaManager,
     graph_schema_descriptors,
 )
+from .workspace import resolve_workspace
 
 
 _ID_CHUNK_SIZE = 1000
@@ -161,10 +161,7 @@ class HologresGraphStorage(BaseGraphStorage):
             or self.namespace not in _ALLOWED_NAMESPACES
         ):
             raise ValueError("Unsupported Hologres graph namespace")
-        try:
-            self.workspace = validate_workspace(self.workspace)
-        except (TypeError, ValueError):
-            raise ValueError("Invalid Hologres graph workspace") from None
+        self.workspace = resolve_workspace(self.workspace, role="graph")
         self._lifecycle_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
@@ -946,8 +943,8 @@ class HologresGraphStorage(BaseGraphStorage):
             raise HologresGraphError("Hologres graph limit is invalid")
         client, nodes, edges = self._ready()
         # Rank ALL nodes including isolated (degree 0) ones, ties broken by
-        # id ascending. No COLLATE clause: the probe proves datcollate='C',
-        # so the default ORDER BY is already Python's code-point order.
+        # id in code-point order. COLLATE is explicit because the server
+        # default collation is outside this backend's control.
         try:
             rows = await client.fetch_all(
                 "SELECT n.id AS id, COALESCE(d.degree, 0) AS degree "
@@ -962,7 +959,7 @@ class HologresGraphStorage(BaseGraphStorage):
                 ") sub GROUP BY id"
                 ") d ON d.id = n.id "
                 "WHERE n.workspace = $1 AND n.namespace = $2 "
-                "ORDER BY degree DESC, n.id ASC "
+                "ORDER BY degree DESC, n.id COLLATE \"C\" ASC "
                 "LIMIT $3::int",
                 self.workspace,
                 self.namespace,
@@ -1025,7 +1022,7 @@ class HologresGraphStorage(BaseGraphStorage):
                       AND namespace = $2
                       AND LOWER(id) LIKE $7 ESCAPE E'\\\\'
                 ) scored
-                ORDER BY score DESC, id ASC
+                ORDER BY score DESC, id COLLATE "C" ASC
                 LIMIT $8::int
                 """,
                 self.workspace,
@@ -1182,7 +1179,7 @@ class HologresGraphStorage(BaseGraphStorage):
             f"JOIN {nodes} n "
             "ON n.workspace = $1 AND n.namespace = $2 AND n.id = c.nid "
             "LEFT JOIN candidate_degrees d ON d.id = c.nid "
-            "ORDER BY COALESCE(d.degree, 0) DESC, n.id ASC "
+            "ORDER BY COALESCE(d.degree, 0) DESC, n.id COLLATE \"C\" ASC "
             "LIMIT $5::int"
         )
         while frontier and depth < max_depth and len(collected) <= node_budget:
@@ -1249,7 +1246,7 @@ class HologresGraphStorage(BaseGraphStorage):
                     ") sub GROUP BY id"
                     ") d ON d.id = n.id "
                     "WHERE n.workspace = $1 AND n.namespace = $2 "
-                    "ORDER BY degree DESC, n.id ASC "
+                    "ORDER BY degree DESC, n.id COLLATE \"C\" ASC "
                     "LIMIT $3::int",
                     self.workspace,
                     self.namespace,

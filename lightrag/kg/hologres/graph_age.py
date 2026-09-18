@@ -9,12 +9,13 @@ one protocol-bound agtype parameter map, and agtype values come back as JSON
 text. agtype operators resolve only through an ``ag_catalog`` search_path, so
 this backend runs on its own dedicated client instead of the shared pool.
 
-A missing AGE extension (probe detail ``age_extension_missing``) is
-definitive, so initialization falls back to the two-table
-:class:`~lightrag.kg.hologres.graph.HologresGraphStorage` implementation and
-delegates every operation to it. Any other probe failure is indeterminate and
-fails initialization instead: a silent fallback would send writes to a
-different physical store and hide an existing AGE graph.
+The selected graph backend is authoritative. A missing AGE extension is
+therefore a startup failure unless ``HOLOGRES_AGE_ALLOW_UNSUPPORTED`` is
+explicitly enabled; only then does initialization fall back to the two-table
+:class:`~lightrag.kg.hologres.graph.HologresGraphStorage`. Any other probe
+failure is indeterminate and always fails initialization, because fallback
+could send writes to a different physical store and hide an existing AGE
+graph.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from typing import Any, final
 from ...base import BaseGraphStorage
 from ...namespace import NameSpace
 from ...types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
-from ...utils import logger, validate_workspace
+from ...utils import logger
 from .capabilities import (
     ProbeStatus,
     probe_age_graph_capability,
@@ -39,6 +40,7 @@ from .capabilities import (
 from .client import HologresClient, OperationKind, validate_identifier
 from .config import HologresConfig
 from .graph import HologresGraphStorage
+from .workspace import resolve_workspace
 
 
 _GRAPH_NAME_PREFIX = "lightrag_age_"
@@ -172,10 +174,9 @@ class HologresAGEGraphStorage(BaseGraphStorage):
             or self.namespace not in _ALLOWED_NAMESPACES
         ):
             raise ValueError("Unsupported Hologres AGE graph namespace")
-        try:
-            self.workspace = validate_workspace(self.workspace)
-        except (TypeError, ValueError):
-            raise ValueError("Invalid Hologres AGE graph workspace") from None
+        self.workspace = resolve_workspace(
+            self.workspace, role="AGE graph"
+        )
         graph = f"{_GRAPH_NAME_PREFIX}{self.workspace}"
         try:
             self._graph = validate_identifier(graph)
@@ -236,27 +237,31 @@ class HologresAGEGraphStorage(BaseGraphStorage):
                 raise
 
             # A FAILED probe splits into two outcomes. An absent AGE extension
-            # is definitive, so falling back is safe and quiet. Anything else
-            # (transient connection loss, permission problems, unexpected
-            # probe behavior) is indeterminate: falling back then would send
-            # writes to a different physical store and turn an existing AGE
-            # graph invisible, so initialization fails loudly instead.
-            if probe.detail_code != "age_extension_missing":
-                if owns_client:
-                    try:
-                        await actual_client.close()
-                    except Exception:
-                        pass
+            # is definitive, but it still changes the physical schema; make the
+            # operator opt in before using the incompatible two-table store.
+            # Anything else (transient connection loss, permission problems,
+            # unexpected probe behavior) is indeterminate: falling back then
+            # would send writes to a different physical store and turn an
+            # existing AGE graph invisible, so initialization fails loudly.
+            if probe.detail_code == "age_extension_missing":
+                if not config.age_allow_unsupported:
+                    raise HologresAGEGraphError(
+                        "Hologres AGE extension is not available; refusing to "
+                        "silently use the two-table backend. Set "
+                        "HOLOGRES_AGE_ALLOW_UNSUPPORTED=true only to accept "
+                        "the different physical graph schema."
+                    )
+                logger.warning(
+                    "HOLOGRES_AGE_ALLOW_UNSUPPORTED is enabled; falling back "
+                    "to the two-table graph backend"
+                )
+            else:
                 raise HologresAGEGraphError(
                     "Hologres AGE graph capability probe failed "
                     f"({probe.detail_code}); refusing to fall back to the "
                     "two-table backend because writes would land in a "
                     "different physical store than an existing AGE graph"
                 )
-            logger.info(
-                "Hologres AGE extension is not available on this server; "
-                "falling back to the two-table graph backend"
-            )
             if owns_client:
                 try:
                     await actual_client.close()

@@ -36,7 +36,7 @@ from ...exceptions import (
     StorageRecordNotFoundError,
 )
 from ...namespace import NameSpace
-from ...utils import logger, validate_workspace
+from ...utils import logger
 from .capabilities import (
     probe_production_capabilities,
     prove_stream_copy_capability,
@@ -49,6 +49,7 @@ from .schema import (
     HologresSchemaManager,
     doc_status_schema_descriptors,
 )
+from .workspace import resolve_workspace
 
 
 _ID_CHUNK_SIZE = 1000
@@ -272,10 +273,7 @@ class HologresDocStatusStorage(DocStatusStorage):
     def __post_init__(self) -> None:
         if self.namespace != NameSpace.DOC_STATUS:
             raise ValueError("Unsupported Hologres DocStatus namespace")
-        try:
-            self.workspace = validate_workspace(self.workspace)
-        except (TypeError, ValueError):
-            raise ValueError("Invalid Hologres DocStatus workspace") from None
+        self.workspace = resolve_workspace(self.workspace, role="doc status")
         self._lifecycle_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
@@ -376,9 +374,11 @@ class HologresDocStatusStorage(DocStatusStorage):
 
         try:
             status = raw["status"]
-            raw["status"] = (
-                status if isinstance(status, DocStatus) else DocStatus(status)
-            )
+            # Public read rows use the same plain-string representation as
+            # PostgreSQL. Validate and construct through the enum, then restore
+            # the string before returning; f-string output must not become
+            # Python-version dependent.
+            status_enum = DocStatus(status)
         except (TypeError, ValueError):
             raise HologresDocStatusError(
                 "Hologres DocStatus row has corrupt status"
@@ -393,13 +393,18 @@ class HologresDocStatusStorage(DocStatusStorage):
             DocProcessingStatus.from_stored(copy.deepcopy(raw))
         except (TypeError, ValueError):
             raise HologresDocStatusError("Hologres DocStatus row is corrupt") from None
+        raw["status"] = status_enum.value
         return identifier, raw
 
     @staticmethod
     def _full_status(row: Any) -> tuple[str, DocProcessingStatus]:
         identifier, raw = HologresDocStatusStorage._decode_raw_row(row)
+        model_input = dict(raw)
+        model_input["status"] = DocStatus(raw["status"])
         try:
-            status = DocProcessingStatus.from_stored(copy.deepcopy(raw))
+            status = DocProcessingStatus.from_stored(
+                copy.deepcopy(model_input)
+            )
         except (TypeError, ValueError):
             raise HologresDocStatusError("Hologres DocStatus row is corrupt") from None
         return identifier, status
@@ -474,12 +479,17 @@ class HologresDocStatusStorage(DocStatusStorage):
         raw["file_path"] = raw.get("file_path") or "no-file-path"
         raw.setdefault("metadata", {})
         raw.setdefault("chunks_list", [])
-        raw.setdefault("chunks_count", None)
+        raw.setdefault("chunks_count", -1)
         raw.setdefault("error_msg", None)
         raw.setdefault("track_id", None)
         raw.setdefault("content_hash", None)
         raw.setdefault("multimodal_processed", None)
         try:
+            persisted_status = (
+                raw["status"].value
+                if isinstance(raw["status"], DocStatus)
+                else raw["status"]
+            )
             raw_status = raw["status"]
             raw["status"] = (
                 raw_status
@@ -511,7 +521,11 @@ class HologresDocStatusStorage(DocStatusStorage):
         extra = {key: value for key, value in raw.items() if key not in known}
         normalized = {
             "id": identifier,
-            "status": document.status.value,
+            # DocProcessingStatus may derive a display/scheduling status for
+            # multimodal records, but persistence stores the producer's raw
+            # status. Derived behavior belongs to read paths, shared with the
+            # PostgreSQL and JSON implementations.
+            "status": persisted_status,
             "created_at": document.created_at,
             "updated_at": document.updated_at,
             "file_path": document.file_path,
@@ -653,7 +667,11 @@ class HologresDocStatusStorage(DocStatusStorage):
             "ON CONFLICT (workspace, id) DO UPDATE SET "
             "status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, "
             "file_path = EXCLUDED.file_path, track_id = EXCLUDED.track_id, "
-            "content_hash = EXCLUDED.content_hash, "
+            # Once set, content_hash is write-once-after-set. State transitions
+            # reuse a loaded payload that may predate the separate targeted
+            # hash patch, so an omitted/empty value must not clear it.
+            "content_hash = COALESCE("
+            "NULLIF(EXCLUDED.content_hash, ''), current.content_hash), "
             "content_summary = EXCLUDED.content_summary, "
             "content_length = EXCLUDED.content_length, "
             "chunks_count = EXCLUDED.chunks_count, chunks_list = EXCLUDED.chunks_list, "

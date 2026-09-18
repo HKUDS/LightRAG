@@ -960,9 +960,9 @@ async def test_get_popular_labels_ranks_by_degree_including_isolated_nodes(
     (call,) = calls_for(client, "graph.labels.popular")
     assert call["values"] == ("workspace-a", storage.namespace, 2)
     assert "LEFT JOIN" in call["sql"]
-    assert "ORDER BY degree DESC, n.id ASC" in call["sql"]
+    assert 'ORDER BY degree DESC, n.id COLLATE "C" ASC' in call["sql"]
     assert "LIMIT $3::int" in call["sql"]
-    assert "COLLATE" not in call["sql"]
+    assert call["sql"].count('COLLATE "C"') == 1
 
 
 @pytest.mark.parametrize("limit", [True, False, 0, -1, 1.5, "5"])
@@ -1002,7 +1002,7 @@ async def test_search_labels_escapes_like_wildcards_and_keeps_the_scoring_shape(
     assert "100 - LENGTH(id)" in sql
     assert "THEN 50" in sql
     assert sql.count("ESCAPE E'\\\\'") == 4
-    assert "COLLATE" not in sql
+    assert 'ORDER BY score DESC, id COLLATE "C" ASC' in sql
 
 
 async def test_blank_search_queries_short_circuit_without_touching_the_database(
@@ -1202,7 +1202,9 @@ async def test_drop_failures_raise_a_sanitized_error(ready_storage):
 # SQL hygiene ----------------------------------------------------------------------
 
 
-async def test_every_emitted_statement_is_single_and_collation_free(ready_storage):
+async def test_every_emitted_statement_is_single_and_pins_identifier_collation(
+    ready_storage,
+):
     client = CallClient()
     client.handlers["graph.node.exists"] = {"present": 1}
     client.handlers["graph.kg.seed"] = {"id": "S", "properties": "{}"}
@@ -1224,6 +1226,9 @@ async def test_every_emitted_statement_is_single_and_collation_free(ready_storag
 
     assert client.calls
     for call in client.calls:
+        sql = call["sql"].replace('n.id COLLATE "C"', "").replace(
+            'id COLLATE "C"', ""
+        )
         assert ";" not in call["sql"]
-        assert "COLLATE" not in call["sql"]
+        assert 'COLLATE "C"' not in sql
         assert "unnest($3::text[], $4::text[])" not in call["sql"]

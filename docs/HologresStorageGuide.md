@@ -92,7 +92,9 @@ See [Choosing a graph backend](#4-choosing-a-graph-backend) before selecting the
 
 ## 3. Environment variables
 
-All Hologres settings use the `HOLOGRES_` prefix. The backend does not define `HOLOGRES_WORKSPACE`; it uses LightRAG's common `WORKSPACE`.
+All Hologres settings use the `HOLOGRES_` prefix. Workspace selection follows
+the database-backend priority chain `HOLOGRES_WORKSPACE` > the LightRAG
+instance `WORKSPACE` > `default`.
 
 ### Connection settings
 
@@ -104,6 +106,7 @@ All Hologres settings use the `HOLOGRES_` prefix. The backend does not define `H
 | `HOLOGRES_PASSWORD` | required | non-empty string | database password |
 | `HOLOGRES_DATABASE` | required | non-empty string | existing database |
 | `HOLOGRES_SCHEMA` | `public` | SQL identifier, at most 63 bytes | schema holding LightRAG objects |
+| `HOLOGRES_WORKSPACE` | unset | valid LightRAG workspace | override the workspace for every Hologres storage role |
 | `HOLOGRES_SSL_MODE` | `prefer` | `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full` | asyncpg SSL mode |
 
 The schema identifier must start with an ASCII letter or `_`, and its remaining characters must be ASCII letters, digits, or `_`.
@@ -128,6 +131,7 @@ The schema identifier must start with an ASCII letter or `_`, and its remaining 
 |---|---:|---|
 | `HOLOGRES_STREAM_COPY_ENABLED` | `false` | Opt in to stream COPY for qualifying bulk writes. |
 | `HOLOGRES_AGE_SEARCH_PATH` | `false` | Internal compatibility switch for a caller-supplied dedicated AGE client. |
+| `HOLOGRES_AGE_ALLOW_UNSUPPORTED` | `false` | Explicit opt in to the two-table fallback when the AGE extension is missing. |
 
 Boolean values accept `1/true/yes/on` and `0/false/no/off`, case-insensitively.
 
@@ -179,7 +183,7 @@ lightrag_age_<workspace>
 
 Probe outcomes split by certainty:
 
-- **AGE extension missing** — definitive. Initialization logs at INFO and falls back to the two-table `HologresGraphStorage`, delegating graph operations there.
+- **AGE extension missing** — definitive, but the fallback has a different physical graph schema. Initialization fails unless `HOLOGRES_AGE_ALLOW_UNSUPPORTED=true`; when enabled, it logs a WARNING and delegates to `HologresGraphStorage`.
 - **Any other probe failure** (transient connection loss, permission problems, unexpected probe behavior) — indeterminate. Initialization **fails** instead of falling back: a silent fallback would send writes to a different physical store and make an existing AGE graph invisible.
 
 Operational cautions:
@@ -290,6 +294,13 @@ Hologres configuration and backend diagnostics redact the host, user, password, 
 
 Use one `WORKSPACE` per logical knowledge base. Multiple server workers or storage instances may initialize the same schema concurrently; the migration ledger arbitrates additive descriptor application and fails closed rather than guessing when catalog state is inconsistent.
 
+### Accepted write residues
+
+- **Two-table graph endpoint creation.** A node upsert may create endpoint stubs before the edge statement, and an edge upsert may create a missing endpoint before writing the edge. Hologres backend writes are single autocommit statements, so an interruption can leave a stub node. The next upsert of that edge, a rebuild, or a purge/rebuild removes or rewrites it; this is the same endpoint-stub residue accepted by the PostgreSQL table graph implementation.
+- **KV full-docs merge breadth.** Unlike PostgreSQL's fixed full-doc columns, JSONB upsert merges supplied keys and retains previously written keys. Delete a field by writing an explicit `null` if the producer must make absence durable; protected fields still use the PostgreSQL-compatible restore semantics.
+
+Doc-status compatibility differs deliberately in two ways: validation is fail-closed for the whole upsert (rather than PostgreSQL's skip-and-log behavior), and each record is a replay-safe single statement under the Hologres restricted client. Configuration is environment-only (`HOLOGRES_*`); `config.ini` and the generic `get_env_value` indirection are intentionally outside this isolated backend. The test suite's Hologres-specific integration gating is described in the PR description and `tests/conftest.py`.
+
 ### AGE graph cleanup
 
 Dropping data through `HologresAGEGraphStorage` removes the workspace's graph contents. Live tests additionally drop their randomly created AGE graph namespaces during cleanup so repeated test runs do not accumulate test graphs.
@@ -374,7 +385,7 @@ Blocking probes indicate that the server cannot safely support the SQL or driver
 
 ### AGE startup fails with a probe error
 
-Only a definitively missing AGE extension falls back (logged at INFO). Any other probe failure stops initialization with the probe's detail code. Fix connectivity or permissions and restart. Do not switch to the two-table backend if existing graph data lives in AGE; the two backends use different storage.
+Missing AGE fails startup unless `HOLOGRES_AGE_ALLOW_UNSUPPORTED=true` explicitly accepts the two-table fallback. Any other probe failure always stops initialization with the probe's detail code. Fix connectivity or permissions and restart. Do not enable the fallback if existing graph data lives in AGE; the two backends use different storage.
 
 ### Vector startup rejects the cosine function orientation
 

@@ -522,6 +522,53 @@ async def test_upsert_inserts_large_record_without_byte_limit_check(
     assert len(writes) == 1
 
 
+async def test_upsert_keeps_existing_content_hash_when_update_omits_it(
+    ready_storage,
+):
+    storage, client = ready_storage
+    payload = {
+        key: value
+        for key, value in row(content_hash="").items()
+        if key not in {"id", "extra"}
+    }
+
+    await storage.upsert({"doc-a": payload})
+
+    (write,) = calls_for(client, "doc_status.upsert")
+    assert (
+        "content_hash = COALESCE(NULLIF(EXCLUDED.content_hash, ''), "
+        "current.content_hash)" in write["sql"]
+    )
+    assert "content_hash = EXCLUDED.content_hash" not in write["sql"]
+
+
+async def test_upsert_persists_producer_status_before_multimodal_derivation(
+    ready_storage,
+):
+    storage, client = ready_storage
+    payload = {
+        key: value
+        for key, value in row(
+            status=DocStatus.PROCESSED, multimodal_processed=False
+        ).items()
+        if key not in {"id", "extra"}
+    }
+
+    await storage.upsert({"doc-a": payload})
+
+    (write,) = calls_for(client, "doc_status.upsert")
+    assert write["values"][2] == DocStatus.PROCESSED.value
+
+    client.handlers["doc_status.read.one"] = row(
+        status=DocStatus.PROCESSED.value,
+        multimodal_processed=False,
+    )
+    restored = await storage.get_by_id_strict("doc-a")
+    assert restored is not None
+    assert type(restored["status"]) is str
+    assert restored["status"] == DocStatus.PROCESSED.value
+
+
 async def test_nullable_chunks_list_round_trips_as_jsonb_null(ready_storage):
     storage, client = ready_storage
     nullable = {

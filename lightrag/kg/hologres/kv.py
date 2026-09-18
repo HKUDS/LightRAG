@@ -10,7 +10,6 @@ from typing import Any, ClassVar, final
 
 from ...base import BaseKVStorage
 from ...namespace import NameSpace
-from ...utils import validate_workspace
 from .capabilities import (
     probe_production_capabilities,
     prove_stream_copy_capability,
@@ -18,6 +17,7 @@ from .capabilities import (
 from .client import HologresClientManager, quote_qualified_identifier
 from .config import HologresConfig
 from .schema import KV_TABLE_NAME, HologresSchemaManager, kv_schema_descriptors
+from .workspace import resolve_workspace
 
 
 _ID_CHUNK_SIZE = 1000
@@ -182,10 +182,7 @@ class HologresKVStorage(BaseKVStorage):
     def __post_init__(self) -> None:
         if not isinstance(self.namespace, str) or self.namespace not in _ALLOWED_NAMESPACES:
             raise ValueError("Unsupported Hologres KV namespace")
-        try:
-            self.workspace = validate_workspace(self.workspace)
-        except (TypeError, ValueError):
-            raise ValueError("Invalid Hologres KV workspace") from None
+        self.workspace = resolve_workspace(self.workspace, role="KV")
         self._lifecycle_lock = asyncio.Lock()
 
     def __repr__(self) -> str:

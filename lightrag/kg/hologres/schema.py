@@ -672,7 +672,7 @@ def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, ...]:
 
 def vector_schema_descriptors(
     schema: str, dimension: int
-) -> tuple[SchemaDescriptor, SchemaDescriptor]:
+) -> tuple[SchemaDescriptor, SchemaDescriptor, SchemaDescriptor]:
     """Return the dimension-bound descriptor for the shared vector table.
 
     The table carries the HGraph Cosine index property whose DDL syntax and
@@ -785,9 +785,33 @@ def vector_schema_descriptors(
         ),
         replay_safe=True,
     )
+    create_time = SchemaDescriptor(
+        name="create_time",
+        component="vector",
+        version=1,
+        step=3,
+        sql=(
+            f"ALTER TABLE {qualified_table} "
+            "ADD COLUMN IF NOT EXISTS create_time timestamptz"
+        ),
+        postcondition_sql=(
+            "SELECT COALESCE(("
+            "SELECT count(*) = 1 FROM pg_catalog.pg_attribute a "
+            "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+            "WHERE n.nspname = $1 AND c.relname = $2 AND a.attname = 'create_time' "
+            "AND t.typname = 'timestamptz' "
+            "AND a.attnum > 0 AND NOT a.attisdropped"
+            "), false)"
+        ),
+        postcondition_args=(validated, VECTOR_TABLE_NAME),
+        replay_safe=True,
+    )
     return (
         descriptor,
         _jsonb_columnar_descriptor(schema, "vector", 2, VECTOR_TABLE_NAME, "payload"),
+        create_time,
     )
 
 

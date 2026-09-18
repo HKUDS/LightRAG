@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,8 @@ CONFIG = HologresConfig(
     schema="lightrag_test_age",
     connection_retries=0,
 )
+
+AGE_ALLOWED_CONFIG = replace(CONFIG, age_allow_unsupported=True)
 
 
 def make_storage(*, workspace="ws1", client=None, config=CONFIG):
@@ -255,7 +258,37 @@ async def test_initialize_skips_creation_when_graph_and_labels_exist(ready_stora
     assert client.procedures == []
 
 
-async def test_failed_probe_falls_back_to_the_two_table_storage(monkeypatch):
+async def test_missing_age_extension_fails_without_explicit_opt_in(monkeypatch):
+    import lightrag.kg.hologres.graph_age as module
+
+    async def probe_version(client):
+        return CapabilityReport(HologresVersion(5, 0, 0))
+
+    async def probe_age(client):
+        return ProbeResult(
+            kind=ProbeKind.AGE,
+            status=ProbeStatus.FAILED,
+            blocking=False,
+            detail_code="age_extension_missing",
+        )
+
+    monkeypatch.setattr(module, "probe_production_capabilities", probe_version)
+    monkeypatch.setattr(module, "probe_age_graph_capability", probe_age)
+
+    client = FakeAgeClient()
+    storage = make_storage(client=client)
+    with pytest.raises(
+        HologresAGEGraphError, match="HOLOGRES_AGE_ALLOW_UNSUPPORTED"
+    ):
+        await storage.initialize()
+
+    assert storage._delegate is None
+    assert client.close_count == 0
+
+
+async def test_missing_age_extension_falls_back_only_when_explicitly_opted_in(
+    monkeypatch,
+):
     import lightrag.kg.hologres.graph_age as module
 
     async def probe_version(client):
@@ -300,19 +333,8 @@ async def test_failed_probe_falls_back_to_the_two_table_storage(monkeypatch):
     monkeypatch.setattr(module, "HologresGraphStorage", RecordingDelegate)
 
     client = FakeAgeClient()
-    storage = make_storage(client=client)
+    storage = make_storage(client=client, config=AGE_ALLOWED_CONFIG)
     await storage.initialize()
-
-    assert storage._delegate is not None
-    assert storage._delegate.initialized is True
-    assert created["namespace"] == NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
-    assert created["workspace"] == "ws1"
-    assert created["config"] is CONFIG
-
-    assert await storage.has_node("x") is True
-    assert await storage.drop() == {"status": "success", "message": "data dropped"}
-    await storage.finalize()
-    assert ("finalize",) in storage._delegate.calls if storage._delegate else True
 
 
 async def test_indeterminate_probe_failure_fails_instead_of_falling_back(

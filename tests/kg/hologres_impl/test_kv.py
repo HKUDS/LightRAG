@@ -191,10 +191,10 @@ def test_workspace_validation_precedes_database_access_and_sanitizes_errors(work
     assert workspace not in str(exc_info.value)
 
 
-def test_empty_workspace_remains_a_valid_empty_bound_value():
+def test_empty_workspace_uses_database_backend_default():
     storage = make_storage(workspace="")
 
-    assert storage.workspace == ""
+    assert storage.workspace == "default"
 
 
 def test_storage_advertises_complete_or_raise_point_reads():
