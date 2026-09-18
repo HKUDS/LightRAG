@@ -78,7 +78,17 @@ from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
 )
-from lightrag.exceptions import StorageCapabilityError, VectorSpaceMismatchError
+from lightrag.config_store import (
+    EMBEDDING_TARGETS,
+    create_configuration_storage,
+    read_embedding_baselines,
+    record_embedding_baseline,
+)
+from lightrag.exceptions import (
+    ConfigurationStorageError,
+    StorageCapabilityError,
+    VectorSpaceMismatchError,
+)
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.namespace import NameSpace
 from lightrag.utils import (
@@ -634,6 +644,10 @@ class RebuildTool:
         self.relationships_vdb = None
         self.chunks_vdb = None
         self.text_chunks = None
+        # The configuration storage: where each target's embedding baseline is
+        # recorded AFTER that target's rebuild is durable and verified, and
+        # never before. See docs/design/ConfigurationStorage.md.
+        self.configuration_storage = None
         self.global_config: Dict[str, Any] = {}
         self.embedding_func: EmbeddingFunc | None = None
         self.embedding_available = False
@@ -801,14 +815,22 @@ class RebuildTool:
             global_config=self.global_config,
             embedding_func=self.embedding_func,
         )
+        self.configuration_storage = create_configuration_storage(
+            kv_cls,
+            global_config=self.global_config,
+            embedding_func=self.embedding_func,
+        )
 
         print("\nInitializing storages...")
         try:
             # Authoritative sources first, on the server-identical path: any
             # failure here aborts, migrations included. Rebuilding vectors out
             # of a half-migrated graph or chunk store is worse than not
-            # rebuilding.
-            for storage in (self.graph, self.text_chunks):
+            # rebuilding. The configuration storage is a source too: a rebuild
+            # that cannot record its baseline afterwards is not a clean
+            # recovery, so failing to open it aborts here rather than after
+            # the vectors were dropped.
+            for storage in (self.configuration_storage, self.graph, self.text_chunks):
                 await storage.initialize()
             # Vector targets, one at a time, tolerating ONLY the typed
             # embedding-space refusal. This is the condition the tool exists to
@@ -835,6 +857,8 @@ class RebuildTool:
         print(f"- Workspace:      {self.workspace if self.workspace else '(default)'}")
         print(f"- Working Dir:    {self.global_config['working_dir']}")
         print("- Connection Status: ✓ Success")
+        if not await self.print_baselines():
+            return False
         if self.incompatible_vdbs:
             print(
                 f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) hold "
@@ -848,6 +872,86 @@ class RebuildTool:
                 "  authoritative sources; nothing else can repair them."
             )
         return True
+
+    async def print_baselines(self) -> bool:
+        """Report each target's recorded embedding baseline against the config.
+
+        Diagnostic: the server refuses to START on a recorded mismatch, and
+        this tool is the way out of that refusal, so it lists what the server
+        would refuse on rather than refusing itself. A configuration read that
+        cannot complete aborts (returns False): a rebuild that could not record
+        its baseline afterwards would leave the server refusing anyway.
+        """
+        try:
+            recorded = await read_embedding_baselines(
+                self.configuration_storage, self.workspace
+            )
+        except ConfigurationStorageError as e:
+            print(f"✗ Could not read the recorded embedding baselines: {e}")
+            return False
+        print("- Embedding baselines (recorded -> configured):")
+        mismatched = []
+        for target in EMBEDDING_TARGETS:
+            baseline = recorded.get(target)
+            if baseline is None:
+                print(f"    {target:14s} (none recorded)")
+                continue
+            differs = baseline.differs_from(self.embedding_func)
+            flag = "  ✗ MISMATCH" if differs else ""
+            print(
+                f"    {target:14s} model={baseline.model!r} dim={baseline.dim} "
+                f"origin={baseline.origin}{flag}"
+            )
+            if differs:
+                mismatched.append(target)
+        if mismatched:
+            print(
+                f"\n{BOLD_RED}⚠️  The server refuses to start this workspace: "
+                f"{', '.join(mismatched)} were adopted under another embedding "
+                f"space.{RESET}\n  Rebuilding them (menu options 2-4) re-embeds "
+                f"from the authoritative sources and records the configured "
+                f"space as their baseline."
+            )
+        return True
+
+    async def commit_baseline(self, label: str, stats: Dict[str, Any]) -> None:
+        """Record ``label``'s baseline once its rebuild is durable and verified.
+
+        Configuration LAST: the record is written only when every batch and
+        every flush of that one target succeeded, and only that target's
+        record moves. A rebuild whose baseline could not be recorded is
+        reported as a failed rebuild -- the stale record keeps the server
+        refusing, which is the safe direction, and re-running converges.
+        """
+        if stats["errors"]:
+            print(
+                f"  ⚠️  {label}: baseline NOT recorded -- the rebuild reported "
+                f"errors, so the previous record stays and the server keeps "
+                f"refusing until a clean rebuild."
+            )
+            return
+        try:
+            baseline = await record_embedding_baseline(
+                self.configuration_storage,
+                workspace=self.workspace,
+                target=label,
+                embedding_func=self.embedding_func,
+            )
+        except ConfigurationStorageError as e:
+            print(f"  ✗ {label}: rebuilt, but the baseline could not be recorded: {e}")
+            stats["errors"].append(
+                {
+                    "batch": "baseline",
+                    "records_lost": 0,
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                }
+            )
+            return
+        print(
+            f"  ✓ {label}: baseline recorded (model={baseline.model!r} "
+            f"dim={baseline.dim})"
+        )
 
     def vector_targets(self) -> Dict[str, Any]:
         """The three rebuild targets, keyed by the label used in reports."""
@@ -881,6 +985,7 @@ class RebuildTool:
             self.relationships_vdb,
             self.chunks_vdb,
             self.text_chunks,
+            self.configuration_storage,
         ]
 
     # ------------------------------------------------------------------
@@ -1042,37 +1147,37 @@ class RebuildTool:
     async def run_rebuild_entities_relations(self) -> List[Dict[str, Any]]:
         all_stats = []
         self.print_rebuild_section("entities")
-        all_stats.append(
-            await rebuild_entities_vdb(
-                self.graph,
-                self.entities_vdb,
-                self.global_config,
-                batch_size=self.batch_size,
-                progress_callback=self.make_progress_printer("entities"),
-            )
+        stats = await rebuild_entities_vdb(
+            self.graph,
+            self.entities_vdb,
+            self.global_config,
+            batch_size=self.batch_size,
+            progress_callback=self.make_progress_printer("entities"),
         )
+        await self.commit_baseline("entities", stats)
+        all_stats.append(stats)
         self.print_rebuild_section("relationships")
-        all_stats.append(
-            await rebuild_relationships_vdb(
-                self.graph,
-                self.relationships_vdb,
-                self.global_config,
-                batch_size=self.batch_size,
-                progress_callback=self.make_progress_printer("relationships"),
-            )
+        stats = await rebuild_relationships_vdb(
+            self.graph,
+            self.relationships_vdb,
+            self.global_config,
+            batch_size=self.batch_size,
+            progress_callback=self.make_progress_printer("relationships"),
         )
+        await self.commit_baseline("relationships", stats)
+        all_stats.append(stats)
         return all_stats
 
     async def run_rebuild_chunks(self) -> List[Dict[str, Any]]:
         self.print_rebuild_section("chunks")
-        return [
-            await rebuild_chunks_vdb(
-                self.text_chunks,
-                self.chunks_vdb,
-                batch_size=self.batch_size,
-                progress_callback=self.make_progress_printer("chunks"),
-            )
-        ]
+        stats = await rebuild_chunks_vdb(
+            self.text_chunks,
+            self.chunks_vdb,
+            batch_size=self.batch_size,
+            progress_callback=self.make_progress_printer("chunks"),
+        )
+        await self.commit_baseline("chunks", stats)
+        return [stats]
 
     def report_rebuild(self, all_stats: List[Dict[str, Any]]) -> bool:
         """Print the rebuild report and return True if any batch/flush failed."""

@@ -10,7 +10,7 @@ import numpy as np
 import configparser
 import asyncio
 
-from typing import Any, ClassVar, Sequence, Union, final
+from typing import Any, AsyncIterator, ClassVar, Sequence, Union, final
 
 from ..base import (
     CURSOR_END,
@@ -39,6 +39,7 @@ from ..utils import (
     _cooperative_yield,
     merge_source_ids,
     validate_interpreted_attribute_names,
+    is_reserved_workspace,
     validate_workspace,
 )
 from ..utils_graph import relation_evidence_count
@@ -52,6 +53,7 @@ from ..exceptions import (
     SourceConflictRepairCASError,
     StorageCapabilityError,
     StorageControlPlaneError,
+    StorageNotInitializedError,
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
 )
@@ -424,6 +426,11 @@ class MongoKVStorage(BaseKVStorage):
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        if is_reserved_workspace(self.workspace):
+            # A reserved workspace is fixed, not configured: the configuration
+            # container must stay where every process finds it, whatever the
+            # environment remaps tenant data to.
+            mongodb_workspace = None
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
@@ -590,6 +597,20 @@ class MongoKVStorage(BaseKVStorage):
         except PyMongoError as e:
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) through a server cursor whose
+        batch size bounds what is in memory at once. ``_id`` is the document
+        key already; the time defaults match ``get_by_ids``."""
+        if self._data is None:
+            raise StorageNotInitializedError("MongoKVStorage")
+        cursor = self._data.find({}, batch_size=max(1, int(page_size)))
+        async for doc in cursor:
+            if not doc:
+                continue
+            doc.setdefault("create_time", 0)
+            doc.setdefault("update_time", 0)
+            yield doc
 
     async def delete(self, ids: list[str]) -> None:
         """Delete documents with specified IDs

@@ -4,7 +4,7 @@ import asyncio
 import re
 import time
 import hashlib
-from typing import Any, ClassVar, final, Sequence, Union
+from typing import Any, AsyncIterator, ClassVar, final, Sequence, Union
 from dataclasses import dataclass
 import pipmaster as pm
 import configparser
@@ -27,6 +27,7 @@ from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
     _cooperative_yield,
+    is_reserved_workspace,
     validate_workspace,
 )
 
@@ -395,6 +396,11 @@ class RedisKVStorage(BaseKVStorage):
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Redis storage instances
         redis_workspace = os.environ.get("REDIS_WORKSPACE")
+        if is_reserved_workspace(self.workspace):
+            # A reserved workspace is fixed, not configured: the configuration
+            # container must stay where every process finds it, whatever the
+            # environment remaps tenant data to.
+            redis_workspace = None
         if redis_workspace and redis_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = redis_workspace.strip()
@@ -797,6 +803,35 @@ class RedisKVStorage(BaseKVStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract): SCAN the namespace prefix a page
+        of keys at a time and read each page through ``get_by_ids`` so the
+        rows come out exactly as a point read would shape them.
+
+        SCAN may return a key twice while the keyspace is rehashing; that is
+        the best-effort snapshot the base contract allows, and a caller that
+        needs uniqueness de-duplicates on ``_id``.
+        """
+        pattern = f"{self.final_namespace}:*"
+        prefix_len = len(self.final_namespace) + 1
+        page_size = max(1, int(page_size))
+        async with self._get_redis_connection() as redis:
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=pattern, count=page_size)
+                if keys:
+                    ids = [
+                        (k.decode() if isinstance(k, bytes) else k)[prefix_len:]
+                        for k in keys
+                    ]
+                    for row_id, row in zip(ids, await self.get_by_ids(ids)):
+                        if row is None:
+                            continue
+                        row["_id"] = row_id
+                        yield row
+                if cursor == 0:
+                    break
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs"""
