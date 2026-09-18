@@ -96,10 +96,9 @@ class BaselineOrigin:
 
     PROBE = "probe"
     EMPTY = "empty"
-    BOOTSTRAP_ASSUMPTION = "bootstrap_assumption"
     REBUILD = "rebuild"
 
-    ALL = frozenset({PROBE, EMPTY, BOOTSTRAP_ASSUMPTION, REBUILD})
+    ALL = frozenset({PROBE, EMPTY, REBUILD})
 
 
 def embedding_baseline_suffix(target: str) -> str:
@@ -113,7 +112,7 @@ def embedding_baseline_suffix(target: str) -> str:
 
 _EMBEDDING_BASELINE_SCHEMA = (
     "{model: str (unfolded, as configured), dim: int | null, origin: one of "
-    "probe | empty | bootstrap_assumption | rebuild}"
+    "probe | empty | rebuild}"
 )
 
 CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {

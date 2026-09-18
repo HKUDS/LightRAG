@@ -250,11 +250,12 @@ async def test_a_fresh_deployment_records_empty_baselines_and_restarts(tmp_path)
     assert _records(tmp_path) == records
 
 
-async def test_a_legacy_workspace_probes_entities_and_trusts_the_other_two(tmp_path):
+async def test_a_legacy_workspace_probes_every_target_on_its_own_sample(tmp_path):
     """Scenario 6. Written before any marker or baseline existed (no model
     name), so the first start with a model has three absent records and a
-    populated source behind each: the entity probe reproduces the vectors,
-    relationships and chunks have no probe and are trusted on first use."""
+    populated source behind each: each probe reproduces its own target's
+    vectors -- entities from the graph's labels, relations from its edges,
+    chunks from the first page of text_chunks -- and each records on that."""
     await _seed(tmp_path, model_name=None)
     assert _records(tmp_path) == {}
 
@@ -263,9 +264,10 @@ async def test_a_legacy_workspace_probes_entities_and_trusts_the_other_two(tmp_p
     await rag.finalize_storages()
 
     records = _records(tmp_path)
-    assert records["entities"] == {"model": "bge-m3", "dim": _DIM, "origin": "probe"}
-    assert records["relationships"]["origin"] == "bootstrap_assumption"
-    assert records["chunks"]["origin"] == "bootstrap_assumption"
+    assert records == {
+        target: {"model": "bge-m3", "dim": _DIM, "origin": "probe"}
+        for target in ("entities", "relationships", "chunks")
+    }
 
 
 async def test_a_negative_probe_refuses_and_writes_no_record(tmp_path):
@@ -294,15 +296,17 @@ async def test_an_inconclusive_probe_writes_nothing_and_is_retried(tmp_path):
     await rag.initialize_storages()
     await rag.finalize_storages()
 
-    records = _records(tmp_path)
-    assert "entities" not in records
-    assert records["relationships"]["origin"] == "bootstrap_assumption"
-    assert records["chunks"]["origin"] == "bootstrap_assumption"
+    # Every probe needs the embedder, so every populated target stays absent.
+    assert _records(tmp_path) == {}
 
     healthy = _rag(tmp_path, model_name="bge-m3")
     await healthy.initialize_storages()
     await healthy.finalize_storages()
-    assert _records(tmp_path)["entities"]["origin"] == "probe"
+    assert {t: r["origin"] for t, r in _records(tmp_path).items()} == {
+        "entities": "probe",
+        "relationships": "probe",
+        "chunks": "probe",
+    }
 
 
 async def test_a_process_without_a_model_name_keeps_no_baselines(tmp_path):

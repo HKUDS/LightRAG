@@ -45,8 +45,19 @@ ends by itself. It has to be ended by adopting the container -- but not
 blindly: an operator who upgrades AND switches to a same-dimension model in one
 step would otherwise get the new model's name stamped onto the old model's
 vectors, permanently, after which the gate can never fire again. So adoption
-carries evidence: re-embed one stored ``content`` with the current model and
-compare it against the vector stored beside it.
+carries evidence: re-embed a few stored ``content`` fields with the current
+model and compare them against the vectors stored beside them.
+
+The probe runs PER TARGET, each on a sample drawn from its own source --
+entities from the graph's most-connected labels, relations from the first
+batch of ``iter_edges``, chunks from the first page of
+``text_chunks.iter_rows`` -- because the three targets share an
+``embedding_func`` but not a history: `lightrag-rebuild-vdb` rebuilds them
+separately, so an interrupted rebuild after a same-dimension model change can
+leave entities in the current space while relationships or chunks still hold
+the previous model's vectors. A verdict about one container is evidence about
+that container only; nothing is ever adopted, or recorded as a baseline, on a
+sibling's verdict.
 
 The governing invariant, which every branch here is written to preserve:
 
@@ -67,7 +78,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Collection
 
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
@@ -77,7 +88,7 @@ from lightrag.exceptions import (
     VectorStorageEmptyError,
 )
 from lightrag.kg.vector_space import declared_model_name
-from lightrag.utils import compute_mdhash_id, logger
+from lightrag.utils import compute_mdhash_id, logger, make_relation_vdb_ids
 
 
 @dataclass
@@ -86,21 +97,22 @@ class StartupEvidence:
 
     ``source_populated`` answers, per vector target, whether the data that
     target INDEXES holds anything: ``True`` / ``False``, or ``None`` when the
-    source could not be read or the pairing was not examined. ``entity_probe``
-    is the adoption probe's verdict on the entity container: ``True`` when the
-    stored vectors reproduced under the configured model, ``None`` when the
-    probe did not run or could not answer. A negative verdict is never stored
-    here -- it raises ``VectorSpaceMismatchError`` instead, because a refusal
-    is not evidence to record anything on.
+    source could not be read or the pairing was not examined. ``probes`` is
+    the adoption probe's verdict per target: ``True`` when the stored vectors
+    reproduced under the configured model, ``None`` when the probe did not run
+    or could not answer (``probe_details`` says why). A negative verdict is
+    never stored here -- it raises ``VectorSpaceMismatchError`` instead,
+    because a refusal is not evidence to record anything on.
 
-    Only a positive verdict may establish an ``origin=probe`` baseline, and
-    only a ``False`` source may establish an ``origin=empty`` one. ``None``
-    anywhere means "no evidence", and no evidence records nothing.
+    Only a positive verdict may establish an ``origin=probe`` baseline for
+    THAT target, and only a ``False`` source may establish an ``origin=empty``
+    one. ``None`` anywhere means "no evidence", and no evidence records
+    nothing.
     """
 
     source_populated: dict[str, bool | None] = field(default_factory=dict)
-    entity_probe: bool | None = None
-    entity_probe_detail: str = ""
+    probes: dict[str, bool | None] = field(default_factory=dict)
+    probe_details: dict[str, str] = field(default_factory=dict)
 
 
 # How many graph entities the ADOPTION PROBE looks up to find one row carrying
@@ -215,6 +227,61 @@ async def _sample_entity_ids(graph, limit: int) -> list[str]:
     """
     labels = await graph.get_popular_labels(limit=limit)
     return [compute_mdhash_id(label, prefix="ent-") for label in labels]
+
+
+async def _sample_relation_ids(graph, limit: int) -> list[str]:
+    """Vector ids for up to ``limit`` relations the graph actually holds.
+
+    The first batch of ``iter_edges`` -- the only bounded edge reader on the
+    base class -- mapped to the canonical relation id the write path uses
+    (``make_relation_vdb_ids`` puts it first). A backend that never
+    implemented ``iter_edges`` raises ``StorageCapabilityError``, which the
+    caller reads as "could not sample".
+    """
+    iterator = graph.iter_edges(batch_size=limit)
+    try:
+        async for batch in iterator:
+            ids: list[str] = []
+            for edge in batch:
+                if not isinstance(edge, dict):
+                    continue
+                src, tgt = edge.get("source"), edge.get("target")
+                if src is None or tgt is None:
+                    continue
+                src, tgt = str(src), str(tgt)
+                if not src.strip() or not tgt.strip():
+                    continue
+                ids.append(make_relation_vdb_ids(src, tgt)[0])
+            return ids[:limit]
+        return []
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+async def _sample_chunk_ids(text_chunks, limit: int) -> list[str]:
+    """Vector ids for up to ``limit`` chunks the KV store actually holds.
+
+    The first page of ``BaseKVStorage.iter_rows`` -- one bounded round trip,
+    not a scan: the iterator is closed as soon as the page is full. Chunk
+    vectors are keyed by the chunk id, so the row id is the vector id.
+    """
+    iterator = text_chunks.iter_rows(page_size=limit)
+    ids: list[str] = []
+    try:
+        async for row in iterator:
+            if isinstance(row, dict):
+                row_id = row.get("_id") or row.get("id")
+                if isinstance(row_id, str) and row_id:
+                    ids.append(row_id)
+            if len(ids) >= limit:
+                break
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
+    return ids
 
 
 async def _probe_same_embedding_space(
@@ -750,41 +817,30 @@ class _PairingGate:
         )
 
 
-async def _run_adoption_probe(
-    graph, entities_vdb, embedding_func, *, force: bool = False
+async def _probe_target(
+    name: str, vdb, sampler, embedding_func, *, force: bool = False
 ) -> tuple[bool | None, str]:
-    """Re-embed stored entities; adopt the container's marker if they match.
+    """Re-embed stored records of ONE target; adopt its marker if they match.
 
     Separate from the gate above, and running after it, because the two ask
     different questions of different things. The gate asks whether a container
     is empty; this asks whether a NON-empty container's vectors came from this
-    model. It samples on its own -- the gate no longer produces a sample, and
-    this needs rows with both a ``content`` field and a stored vector, which
-    emptiness alone never yields.
+    model. ``sampler`` draws the candidate ids from the target's own source
+    (see the module docstring); the probe needs rows with both a ``content``
+    field and a stored vector, which emptiness alone never yields.
 
     Runs when the container's marker is pending, or when ``force`` is set --
-    the caller has an absent entity BASELINE to establish and needs the same
-    evidence, whatever the container marker says (Milvus, Qdrant and
-    PostgreSQL carry none). Returns ``(verdict, detail)``: ``True`` reproduced,
-    ``None`` did not run or could not answer. A negative verdict raises.
-
-    ONLY the entity store is adoptable here, because it is the only one this
-    function gathers evidence about. The three vector targets share an
-    ``embedding_func`` but NOT a history: `lightrag-rebuild-vdb` rebuilds
-    entities, relationships and chunks separately (and offers
-    "entities_vdb + relationships_vdb" as a partial target), so an interrupted
-    rebuild after a same-dimension model change can leave entities in the
-    current space while relationships or chunks still hold the previous model's
-    vectors. Adopting those on the entity verdict would stamp this model's name
-    onto foreign vectors -- permanently, and invisibly, which is the exact lie
-    this whole feature exists to prevent. They stay unmarked until they can be
-    probed with their own sample.
+    the caller has an absent BASELINE for this target to establish and needs
+    the same evidence, whatever the container marker says (Milvus, Qdrant and
+    PostgreSQL carry none). Returns ``(verdict, detail)``: ``True``
+    reproduced, ``None`` did not run or could not answer. A negative verdict
+    raises. The verdict is about THIS container only.
     """
     try:
-        pending = bool(await entities_vdb.vector_space_adoption_pending())
+        pending = bool(await vdb.vector_space_adoption_pending())
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(
-            f"Could not ask {type(entities_vdb).__name__} whether it needs "
+            f"Could not ask {type(vdb).__name__} whether {name} needs "
             f"embedding-space adoption: {e}"
         )
         pending = False
@@ -797,23 +853,23 @@ async def _run_adoption_probe(
         return None, "this process declares no embedding model name"
 
     try:
-        sample_ids = await _sample_entity_ids(graph, SAMPLE_SIZE)
+        sample_ids = await sampler()
     except Exception as e:
         detail = (
-            f"the graph storage could not supply a sample ({type(e).__name__}: {e})"
+            f"the {name} source could not supply a sample ({type(e).__name__}: {e})"
         )
-        logger.warning(f"Embedding-space adoption deferred: {detail}")
+        logger.warning(f"Embedding-space adoption of {name} deferred: {detail}")
         return None, detail
     if not sample_ids:
-        return None, "the graph holds no entities to sample"
+        return None, f"the {name} source holds nothing to sample"
 
     try:
-        found = await entities_vdb.get_by_ids(sample_ids)
+        found = await vdb.get_by_ids(sample_ids)
     except Exception as e:
         detail = (
-            f"the entity vector storage could not be read ({type(e).__name__}: {e})"
+            f"the {name} vector storage could not be read ({type(e).__name__}: {e})"
         )
-        logger.warning(f"Embedding-space adoption deferred: {detail}")
+        logger.warning(f"Embedding-space adoption of {name} deferred: {detail}")
         return None, detail
 
     # The backends disagree on the shape of a MISS. ``BaseVectorStorage``
@@ -823,54 +879,54 @@ async def _run_adoption_probe(
     # ``None`` placeholders into the probe below.
     rows = [row for row in (found or []) if isinstance(row, dict)]
     if not rows:
-        return None, "none of the sampled entities has a vector record"
+        return None, f"none of the sampled {name} records has a vector record"
 
     try:
-        vectors = await entities_vdb.get_vectors_by_ids(
+        vectors = await vdb.get_vectors_by_ids(
             [row["id"] for row in rows if row.get("id")]
         )
     except Exception as e:
         detail = f"the stored vectors could not be read ({type(e).__name__}: {e})"
-        logger.warning(f"Embedding-space adoption deferred: {detail}")
+        logger.warning(f"Embedding-space adoption of {name} deferred: {detail}")
         return None, detail
 
     verdict, detail = await _probe_same_embedding_space(rows, vectors, embedding_func)
 
     if verdict is False:
         raise VectorSpaceMismatchError(
-            backend=type(entities_vdb).__name__,
-            container=getattr(entities_vdb, "final_namespace", "entities"),
+            backend=type(vdb).__name__,
+            container=getattr(vdb, "final_namespace", name),
             expected_model=declared_model_name(embedding_func),
             stored_model=None,
             detail=(
-                f"Re-embedding a stored record with the configured model did "
-                f"not reproduce its stored vector ({detail}), so these vectors "
-                f"were written by a different model."
+                f"Re-embedding a stored {name} record with the configured model "
+                f"did not reproduce its stored vector ({detail}), so these "
+                f"vectors were written by a different model."
             ),
         )
 
     if verdict is None:
         logger.warning(
-            f"Embedding-space adoption deferred: {detail}. The vector storages "
-            f"stay unmarked, so a later swap to a different model of the same "
-            f"dimension cannot be detected yet; this is retried on the next "
-            f"start."
+            f"Embedding-space adoption of {name} deferred: {detail}. The "
+            f"container stays unmarked, so a later swap to a different model of "
+            f"the same dimension cannot be detected yet; this is retried on the "
+            f"next start."
         )
         return None, detail
 
     if pending:
         try:
-            if await entities_vdb.adopt_vector_space():
+            if await vdb.adopt_vector_space():
                 logger.info(
-                    f"Recorded the embedding model on {type(entities_vdb).__name__} "
-                    f"'{getattr(entities_vdb, 'namespace', '?')}' ({detail})"
+                    f"Recorded the embedding model on {type(vdb).__name__} "
+                    f"'{getattr(vdb, 'namespace', name)}' ({detail})"
                 )
         except VectorSpaceMismatchError:
             raise
         except Exception as e:  # pragma: no cover - adopt must not raise
             logger.warning(
-                f"Could not record the embedding model on "
-                f"{type(entities_vdb).__name__}: {e}"
+                f"Could not record the embedding model on {type(vdb).__name__} "
+                f"'{name}': {e}"
             )
     return True, detail
 
@@ -885,9 +941,9 @@ async def check_vector_space_at_startup(
     doc_status=None,
     embedding_func,
     expect_empty_vector_storage: bool = False,
-    probe_entities: bool = False,
+    probe_targets: Collection[str] = (),
 ) -> StartupEvidence:
-    """Run the coverage gate over all three pairings, then the probe.
+    """Run the coverage gate over all three pairings, then the probes.
 
     Args:
         graph: the graph storage, already initialized. It is the source side of
@@ -903,11 +959,12 @@ async def check_vector_space_at_startup(
         expect_empty_vector_storage: this caller is about to repopulate the
             vector storages, so an empty one is the expected starting state
             rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
-        probe_entities: run the entity probe even when the container's own
-            marker needs no adoption. The caller has an absent entity baseline
-            to establish (``docs/design/ConfigurationStorage.md``) and needs
-            the verdict; on the backends without a marker this is the only way
-            the probe ever runs.
+        probe_targets: targets (``"entities"``, ``"relationships"``,
+            ``"chunks"``) whose probe must run even when the container's own
+            marker needs no adoption. The caller has an absent baseline for
+            each of them to establish (``docs/design/ConfigurationStorage.md``)
+            and needs the verdict; on the backends without a marker this is
+            the only way a probe ever runs.
 
     Returns:
         The evidence the checks gathered -- see ``StartupEvidence``.
@@ -958,9 +1015,30 @@ async def check_vector_space_at_startup(
         no_healing_probe=lambda: _edge_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
-    if entities_vdb is not None and getattr(entities_vdb, "persists_vectors", True):
-        evidence.entity_probe, evidence.entity_probe_detail = await _run_adoption_probe(
-            graph, entities_vdb, embedding_func, force=probe_entities
+    # One probe per target, each on its own sample. The chunk probe needs the
+    # chunk source; without it there is nothing to sample from.
+    probes = (
+        ("entities", entities_vdb, lambda: _sample_entity_ids(graph, SAMPLE_SIZE)),
+        (
+            "relationships",
+            relationships_vdb,
+            lambda: _sample_relation_ids(graph, SAMPLE_SIZE),
+        ),
+        (
+            "chunks",
+            chunks_vdb,
+            (lambda: _sample_chunk_ids(text_chunks, SAMPLE_SIZE))
+            if text_chunks is not None
+            else None,
+        ),
+    )
+    for name, vdb, sampler in probes:
+        if vdb is None or sampler is None:
+            continue
+        if not getattr(vdb, "persists_vectors", True):
+            continue
+        evidence.probes[name], evidence.probe_details[name] = await _probe_target(
+            name, vdb, sampler, embedding_func, force=name in probe_targets
         )
     return evidence
 
