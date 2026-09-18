@@ -2130,30 +2130,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         What gets written depends on the evidence, per target: a source that
         is EMPTY records the configured space (``origin=empty``); a populated
-        entity source records only on a POSITIVE probe (``origin=probe``); a
-        populated relationship or chunk source, which has no probe, is trusted
-        on first use (``origin=bootstrap_assumption``). Every other case --
-        source unreadable, probe inconclusive or unable to run -- writes
-        NOTHING and is retried on the next start. See *Establishing a
-        baseline* in docs/design/ConfigurationStorage.md.
+        source records only on a POSITIVE probe of THAT target
+        (``origin=probe``). Every other case -- source unreadable, probe
+        inconclusive or unable to run -- writes NOTHING and is retried on the
+        next start. No target is ever recorded on a sibling's verdict. See
+        *Establishing a baseline* in docs/design/ConfigurationStorage.md.
         """
         for target in bootstrap_targets:
             populated = evidence.source_populated.get(target)
             if populated is False:
                 origin = BaselineOrigin.EMPTY
-            elif populated is True and target == NameSpace.VECTOR_STORE_ENTITIES:
-                if evidence.entity_probe is not True:
+            elif populated is True:
+                if evidence.probes.get(target) is not True:
                     logger.warning(
                         f"[{self.workspace}] The embedding baseline for "
                         f"{target} stays unrecorded: the adoption probe could "
                         f"not vouch for the stored vectors "
-                        f"({evidence.entity_probe_detail or 'no verdict'}). "
+                        f"({evidence.probe_details.get(target) or 'no verdict'}). "
                         f"Retried on the next start."
                     )
                     continue
                 origin = BaselineOrigin.PROBE
-            elif populated is True:
-                origin = BaselineOrigin.BOOTSTRAP_ASSUMPTION
             else:
                 logger.warning(
                     f"[{self.workspace}] The embedding baseline for {target} "
@@ -2318,10 +2315,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     doc_status=self.doc_status,
                     embedding_func=self.embedding_func,
                     expect_empty_vector_storage=self.rebuilding_vector_storage,
-                    # The probe's verdict is the only evidence an absent
-                    # entity baseline can be established on, whatever the
-                    # container's own marker says.
-                    probe_entities=NameSpace.VECTOR_STORE_ENTITIES in bootstrap_targets,
+                    # A probe's verdict is the only evidence an absent
+                    # baseline can be established on, whatever the container's
+                    # own marker says -- one probe per absent target.
+                    probe_targets=bootstrap_targets,
                 )
 
             # Steps 7 and 8. Claim the baselines that were absent, then flush

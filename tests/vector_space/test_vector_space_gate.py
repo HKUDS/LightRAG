@@ -25,7 +25,7 @@ from lightrag.exceptions import (
     VectorSpaceMismatchError,
     VectorStorageEmptyError,
 )
-from lightrag.utils import compute_mdhash_id
+from lightrag.utils import compute_mdhash_id, make_relation_vdb_ids
 from lightrag.vector_space_gate import (
     ADOPT_COSINE,
     REFUSE_COSINE,
@@ -281,6 +281,15 @@ class FakeKVStorage:
         if self._chunk_owner is None:
             return []
         return [{"id": cid, "full_doc_id": self._chunk_owner} for cid in ids]
+
+    def iter_rows(self, *, page_size=200):
+        """The chunk probe's sample: the first page of rows, ``_id`` included."""
+
+        async def _gen():
+            for i in range(min(self._rows, page_size)):
+                yield {"_id": f"chunk-{i + 1}", "content": f"chunk {i + 1}"}
+
+        return _gen()
 
 
 def _entity_row(name="Alice", content="Alice is an engineer."):
@@ -1087,29 +1096,110 @@ class TestAdoptionProbe:
 
         await _run(graph, vdb, embedding)
 
-    async def test_only_the_probed_store_is_adopted(self):
+    async def test_each_store_is_adopted_only_on_its_own_evidence(self):
         """The three vector targets share an embedding_func but NOT a history.
 
         ``lightrag-rebuild-vdb`` rebuilds entities, relationships and chunks
         separately, so an interrupted rebuild after a same-dimension model
         change can leave entities in the current space while the others still
         hold the previous model's vectors. Stamping this model onto those on
-        the entity verdict would record a lie permanently -- the exact failure
-        this feature exists to prevent -- so a store nobody probed stays
-        unmarked.
+        the ENTITY verdict would record a lie permanently -- so each container
+        is probed on a sample from its own source, and one whose sample yields
+        nothing stays unmarked whatever its siblings proved.
         """
         row = _entity_row()
         entities = FakeVectorStorage(
             rows=[row], vectors={row["id"]: [1.0, 0.0]}, pending=True
         )
+        # Pending, but the graph has no edges: nothing to sample, no verdict.
         relationships = FakeVectorStorage(pending=True)
         embedding = FakeEmbedding([1.0, 0.0])
 
-        await _run(FakeGraph(labels=["Alice"]), entities, embedding)
+        await _run(
+            FakeGraph(labels=["Alice"], edges=[]),
+            entities,
+            embedding,
+            relationships_vdb=relationships,
+        )
 
         assert embedding.calls == 1
         assert entities.adopted == 1
         assert relationships.adopted == 0
+
+    async def test_relations_are_probed_from_the_graphs_edges(self):
+        """Relations have their own sample -- the first batch of iter_edges
+        mapped to the canonical relation id -- so their container adopts on
+        its own reproduced vectors, and refuses on its own foreign ones."""
+        rel_id = make_relation_vdb_ids("Alice", "Bob")[0]
+        graph = FakeGraph(labels=["Alice", "Bob"])  # one Alice-Bob edge
+        entities = FakeVectorStorage(rows=[_entity_row()])  # marked already
+
+        reproduced = FakeVectorStorage(
+            rows=[{"id": rel_id, "content": "Alice works with Bob"}],
+            vectors={rel_id: [1.0, 0.0]},
+            pending=True,
+        )
+        await _run(
+            graph, entities, FakeEmbedding([1.0, 0.0]), relationships_vdb=reproduced
+        )
+        assert reproduced.adopted == 1
+
+        foreign = FakeVectorStorage(
+            rows=[{"id": rel_id, "content": "Alice works with Bob"}],
+            vectors={rel_id: [1.0, 0.0]},
+            pending=True,
+        )
+        with pytest.raises(VectorSpaceMismatchError) as excinfo:
+            await _run(
+                graph, entities, FakeEmbedding([0.0, 1.0]), relationships_vdb=foreign
+            )
+        assert "relationships" in str(excinfo.value)
+        assert foreign.adopted == 0
+
+    async def test_chunks_are_probed_from_the_first_page_of_text_chunks(self):
+        """Chunks have their own sample too -- the first page of the KV
+        store's ``iter_rows`` -- which is what the enumeration surface made
+        possible. The chunk container adopts on its own vectors."""
+        entities = FakeVectorStorage(rows=[_entity_row()])
+        chunks = FakeVectorStorage(
+            rows=[{"id": "chunk-1", "content": "chunk 1"}],
+            vectors={"chunk-1": [1.0, 0.0]},
+            pending=True,
+        )
+        embedding = FakeEmbedding([1.0, 0.0])
+
+        await _run(
+            FakeGraph(labels=["Alice"]),
+            entities,
+            embedding,
+            chunks_vdb=chunks,
+            text_chunks=FakeKVStorage(rows=1),
+        )
+
+        assert chunks.adopted == 1
+        assert embedding.calls == 1, "entities were marked; only chunks probed"
+
+    async def test_a_kv_store_without_enumeration_leaves_chunks_unmarked(self):
+        """A backend that cannot page its rows cannot supply a chunk sample.
+        That is 'could not run', never a refusal -- and never an adoption."""
+
+        class NoEnumeration(FakeKVStorage):
+            def iter_rows(self, *, page_size=200):
+                raise StorageCapabilityError("no enumeration")
+
+        chunks = FakeVectorStorage(
+            rows=[{"id": "chunk-1", "content": "chunk 1"}],
+            vectors={"chunk-1": [1.0, 0.0]},
+            pending=True,
+        )
+        await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding([1.0, 0.0]),
+            chunks_vdb=chunks,
+            text_chunks=NoEnumeration(rows=1),
+        )
+        assert chunks.adopted == 0
 
 
 # ---------------------------------------------------------------------------

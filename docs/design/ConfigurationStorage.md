@@ -181,7 +181,6 @@ never participates in a verdict**:
 | --- | --- |
 | `probe` | the homogeneous cosine probe reproduced stored vectors under this model |
 | `empty` | the source or the index was empty, so there was nothing to contradict |
-| `bootstrap_assumption` | populated source, no probe available for this target — trust on first use |
 | `rebuild` | written by a successful `lightrag-rebuild-vdb` of this target |
 
 ### Verdicts
@@ -199,39 +198,38 @@ function:
 When more than one target mismatches, the refusal names **all** of them in one
 message. An operator planning a rebuild needs the whole list, not the first one.
 
-### Establishing a baseline: probe where possible, trust on first use where not
+### Establishing a baseline: every target on its own evidence
 
-`entities` has a probe and the other two do not, and that asymmetry is a fact
-about the code, not a gap to be filled in this slice:
+Each target has a probe, and each probe samples from that target's own source:
 
-- `_run_adoption_probe(graph, entities_vdb, embedding_func)`
-  (`vector_space_gate.py`) certifies **entities only**.
-- `BaseKVStorage` has no enumeration API suited to a startup path.
-  `rebuild_vdb.enumerate_kv_keys()` exists but is a backend-specific full scan,
-  documented as such (`rebuild_vdb.enumerate_kv_keys()`), and a full KV scan on every startup
-  is exactly what `kg_integrity_repair` is deliberately offline to avoid.
-- `doc_status` cannot stand in for it either: `ainsert_custom_kg` writes chunks
-  and no doc-status row, so `chunks_list` does not cover them.
+| target | sample |
+| --- | --- |
+| `entities` | the graph's most-connected labels (`get_popular_labels`), mapped to entity vector ids |
+| `relationships` | the first batch of `iter_edges`, mapped to the canonical relation vector id |
+| `chunks` | the first page of `text_chunks.iter_rows()` -- one bounded round trip, not a scan; the row id is the chunk vector id |
 
-So:
+The chunk probe is what the enumeration surface makes possible. Before
+`BaseKVStorage.iter_rows()` existed the only KV enumeration was
+`rebuild_vdb.enumerate_kv_keys()`, a backend-specific full scan that has no
+place on a startup path, and `doc_status` could not stand in for it
+(`ainsert_custom_kg` writes chunks and no doc-status row). A first page of a
+paged reader is a different thing from a scan: it costs one round trip whatever
+the namespace holds.
 
-| target | source empty | source populated |
-| --- | --- | --- |
-| `entities` | record now, `origin=empty` | run the existing probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source) → leave absent and retry next start |
-| `relationships`, `chunks` | record now, `origin=empty` | record the configured space, `origin=bootstrap_assumption` |
+So, per target and independently:
 
-Trust on first use is the right trade here, and the reasoning has to be explicit
-because it looks like a weakening. If those containers really hold another
-model's vectors, retrieval is **already wrong before the baseline is written** —
-TOFU does not introduce that error, and it does not hide it either: the
-per-container markers and the coverage gate keep running unchanged, and a
-configuration baseline **must never suppress a refusal either of them raises**.
-What TOFU buys is that the *next* model change is refused instead of silently
-accepted. Leaving the record absent forever buys nothing and keeps the blind
-spot open.
+| source empty | source populated |
+| --- | --- |
+| record now, `origin=empty` | run that target's probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source or index, no sampleable row) → leave absent and retry next start |
 
-The residue — a `bootstrap_assumption` baseline can be wrong, and the record can
-never detect that on its own — is recorded below.
+**A verdict is about one container only.** The three targets share an
+`embedding_func` but not a history: `lightrag-rebuild-vdb` rebuilds them as
+three separate steps, so an interrupted rebuild after a same-dimension model
+change can leave `entities` in the current space while `relationships` or
+`chunks` still hold the previous model's vectors. Nothing is recorded, and no
+container marker is adopted, on a sibling's verdict. An earlier revision of
+this document trusted `relationships` and `chunks` on first use because they
+had no probe; that trade-off no longer exists and is gone.
 
 `lightrag-rebuild-vdb` rewrites a target's record after rebuilding it. Without
 that, a deliberate model change would have no way through, and a gate with no
@@ -580,13 +578,6 @@ not decided here and must be decided before a key marked sensitive exists.
 Per *Consistency without transactions* in `AGENTS.md`, each is a decision with a
 recovery path.
 
-**A `bootstrap_assumption` baseline can be wrong.** `relationships` and `chunks`
-adopt the configured space without evidence. If the vectors are another model's,
-the record now asserts something false — but retrieval was already wrong before
-it was written, and the per-container markers and the coverage gate still run.
-Recovery: `lightrag-rebuild-vdb`, which replaces the baseline with
-`origin=rebuild`.
-
 **A legacy-container copy made before any judgement.** With records absent, the
 Milvus / Qdrant / PostgreSQL legacy migration runs inside `initialize()` and may
 copy rows into a `{model}_{dim}d` container before the probe judges anything.
@@ -642,8 +633,9 @@ The implementation is not complete until these are regression tests.
 3. `relationships` mismatches → refused, naming `relationships`.
 4. `chunks` mismatches → refused, naming `chunks`.
 5. Several targets mismatch → one refusal listing all of them, not one per start.
-6. Legacy workspace, first start: the entity probe succeeds, the other two
-   establish `bootstrap_assumption` baselines.
+6. Legacy workspace, first start: each of the three probes succeeds on its own
+   sample and each target records `origin=probe`; a target whose probe could
+   not run stays absent while the other two are recorded.
 7. Entity probe returns negative → refused, and **no** record is written.
 8. Rebuilding `chunks` alone updates only `embedding/chunks`.
 9. Rebuild succeeds, the configuration write fails → the tool exits non-zero and
