@@ -2136,9 +2136,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Step 7: claim a baseline for each target whose record was absent.
 
         What gets written depends on the evidence, per target: a source that
-        is EMPTY records the configured space (``origin=empty``); a populated
+        is EMPTY records the configured space (``origin=empty``) only when
+        that target's vector container is confirmed empty too; a populated
         source records only on a POSITIVE probe of THAT target
-        (``origin=probe``). Every other case -- source unreadable, probe
+        (``origin=probe``). Every other case -- source or container
+        unreadable, vectors surviving behind an empty source, probe
         inconclusive or unable to run -- writes NOTHING and is retried on the
         next start. No target is ever recorded on a sibling's verdict. See
         *Establishing a baseline* in docs/design/ConfigurationStorage.md.
@@ -2146,6 +2148,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         for target in bootstrap_targets:
             populated = evidence.source_populated.get(target)
             if populated is False:
+                index_empty = evidence.index_empty.get(target)
+                if index_empty is False:
+                    logger.warning(
+                        f"[{self.workspace}] The embedding baseline for "
+                        f"{target} stays unrecorded: its source holds no data "
+                        f"but its vector storage still holds vectors, and "
+                        f"nothing can vouch for the model they were written "
+                        f"in. Rebuild them with lightrag-rebuild-vdb or clear "
+                        f"the workspace; retried on the next start."
+                    )
+                    continue
+                if index_empty is not True:
+                    logger.warning(
+                        f"[{self.workspace}] The embedding baseline for "
+                        f"{target} stays unrecorded: whether its vector "
+                        f"storage is empty could not be established. Retried "
+                        f"on the next start."
+                    )
+                    continue
                 origin = BaselineOrigin.EMPTY
             elif populated is True:
                 if evidence.probes.get(target) is not True:
