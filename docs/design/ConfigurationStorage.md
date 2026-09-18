@@ -507,6 +507,12 @@ That asymmetry is the whole reason for the ordering, and it is why a partial
 drop must not opportunistically delete "the records for the parts that did
 drop".
 
+"Every data storage" includes the opt-in LLM cache drop that `/documents/clear`
+runs after the storage drops: the records are deleted after it, and a failed
+cache drop keeps them exactly as a failed storage drop does. The cache rows
+that survive are workspace data too, and the endpoint's history entry names
+which drop kept the records.
+
 Workspace names becoming UUIDs later reduces the accepted residue to orphan rows
 and a misleading inventory rather than a wrong refusal, but does not remove the
 obligation: `LightRAG(workspace=...)` is a library call too, and the
