@@ -301,8 +301,12 @@ def create_configuration_storage(
             global_config=global_config,
             embedding_func=embedding_func,
         )
+    # A backend that RE-BOUND the container elsewhere is refused. A stand-in
+    # that records no workspace at all (test doubles handed to the factory)
+    # has not remapped anything; every real backend carries the dataclass
+    # field, so ``None`` here is never a real backend's answer.
     bound = getattr(storage, "workspace", None)
-    if bound != CONFIG_WORKSPACE:
+    if bound is not None and bound != CONFIG_WORKSPACE:
         raise ConfigurationStorageError(
             f"{type(storage).__name__} bound the configuration container to "
             f"workspace {bound!r} instead of {CONFIG_WORKSPACE!r}; the "
