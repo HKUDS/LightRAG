@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.base import DocStatus
@@ -77,6 +78,30 @@ from lightrag.exceptions import (
 )
 from lightrag.kg.vector_space import declared_model_name
 from lightrag.utils import compute_mdhash_id, logger
+
+
+@dataclass
+class StartupEvidence:
+    """What the startup checks established, for the caller that records baselines.
+
+    ``source_populated`` answers, per vector target, whether the data that
+    target INDEXES holds anything: ``True`` / ``False``, or ``None`` when the
+    source could not be read or the pairing was not examined. ``entity_probe``
+    is the adoption probe's verdict on the entity container: ``True`` when the
+    stored vectors reproduced under the configured model, ``None`` when the
+    probe did not run or could not answer. A negative verdict is never stored
+    here -- it raises ``VectorSpaceMismatchError`` instead, because a refusal
+    is not evidence to record anything on.
+
+    Only a positive verdict may establish an ``origin=probe`` baseline, and
+    only a ``False`` source may establish an ``origin=empty`` one. ``None``
+    anywhere means "no evidence", and no evidence records nothing.
+    """
+
+    source_populated: dict[str, bool | None] = field(default_factory=dict)
+    entity_probe: bool | None = None
+    entity_probe_detail: str = ""
+
 
 # How many graph entities the ADOPTION PROBE looks up to find one row carrying
 # both a ``content`` field and a stored vector. Not a confidence knob -- the
@@ -645,14 +670,17 @@ class _PairingGate:
 
     async def check(
         self, *, name: str, source: str, vdb, source_probe, no_healing_probe=None
-    ) -> None:
+    ) -> bool | None:
         """Refuse iff the source is populated and the index is provably empty.
 
-        ``no_healing_probe`` is consulted only on the branch the unfinished-
-        document exemption would otherwise take. See ``_nothing_will_heal``.
+        Returns the source-side verdict (``True`` populated, ``False`` empty,
+        ``None`` unreadable or not examined) so the caller can record a
+        baseline on it. ``no_healing_probe`` is consulted only on the branch
+        the unfinished-document exemption would otherwise take. See
+        ``_nothing_will_heal``.
         """
         if vdb is None:
-            return
+            return None
 
         if not getattr(vdb, "persists_vectors", True):
             # NoopVectorDBStorage and anything else that declares it keeps no
@@ -662,13 +690,14 @@ class _PairingGate:
             # `rebuilding_vector_storage` is not the answer there: such a
             # deployment is not rebuilding anything. Same capability
             # `lightrag-rebuild-vdb` already reads.
-            return
+            return None
 
-        if await _source_is_populated(name, source_probe) is not True:
-            return
+        populated = await _source_is_populated(name, source_probe)
+        if populated is not True:
+            return populated
 
         if await _index_is_empty(name, vdb) is not True:
-            return
+            return True
 
         if self._expect_empty:
             # The caller owns the repopulation that follows -- an in-process
@@ -680,7 +709,7 @@ class _PairingGate:
                 f"not empty. Serving anyway: this instance declared it is "
                 f"rebuilding them."
             )
-            return
+            return True
 
         if not await self._are_vectors_expected():
             # An index behind its source, while a document is still in flight,
@@ -706,7 +735,7 @@ class _PairingGate:
                     f"finished writing its vectors is repaired by the next "
                     f"pipeline run, not by a refusal."
                 )
-                return
+                return True
             logger.warning(
                 f"The {name} vector storage holds no vectors while {source} is "
                 f"not empty. This workspace has unfinished documents, but it "
@@ -721,8 +750,10 @@ class _PairingGate:
         )
 
 
-async def _run_adoption_probe(graph, entities_vdb, embedding_func) -> None:
-    """Re-embed one stored entity and adopt the container if it matches.
+async def _run_adoption_probe(
+    graph, entities_vdb, embedding_func, *, force: bool = False
+) -> tuple[bool | None, str]:
+    """Re-embed stored entities; adopt the container's marker if they match.
 
     Separate from the gate above, and running after it, because the two ask
     different questions of different things. The gate asks whether a container
@@ -730,6 +761,12 @@ async def _run_adoption_probe(graph, entities_vdb, embedding_func) -> None:
     model. It samples on its own -- the gate no longer produces a sample, and
     this needs rows with both a ``content`` field and a stored vector, which
     emptiness alone never yields.
+
+    Runs when the container's marker is pending, or when ``force`` is set --
+    the caller has an absent entity BASELINE to establish and needs the same
+    evidence, whatever the container marker says (Milvus, Qdrant and
+    PostgreSQL carry none). Returns ``(verdict, detail)``: ``True`` reproduced,
+    ``None`` did not run or could not answer. A negative verdict raises.
 
     ONLY the entity store is adoptable here, because it is the only one this
     function gathers evidence about. The three vector targets share an
@@ -744,39 +781,40 @@ async def _run_adoption_probe(graph, entities_vdb, embedding_func) -> None:
     probed with their own sample.
     """
     try:
-        if not await entities_vdb.vector_space_adoption_pending():
-            return
+        pending = bool(await entities_vdb.vector_space_adoption_pending())
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(
             f"Could not ask {type(entities_vdb).__name__} whether it needs "
             f"embedding-space adoption: {e}"
         )
-        return
+        pending = False
+    if not pending and not force:
+        return None, "the container already records its embedding model"
 
     if declared_model_name(embedding_func) is None:
         # Nothing to record, so nothing to prove. Reached only if a backend
         # reported pending without checking; the storages answer False here.
-        return
+        return None, "this process declares no embedding model name"
 
     try:
         sample_ids = await _sample_entity_ids(graph, SAMPLE_SIZE)
     except Exception as e:
-        logger.warning(
-            f"Embedding-space adoption deferred: the graph storage could not "
-            f"supply a sample ({type(e).__name__}: {e})"
+        detail = (
+            f"the graph storage could not supply a sample ({type(e).__name__}: {e})"
         )
-        return
+        logger.warning(f"Embedding-space adoption deferred: {detail}")
+        return None, detail
     if not sample_ids:
-        return
+        return None, "the graph holds no entities to sample"
 
     try:
         found = await entities_vdb.get_by_ids(sample_ids)
     except Exception as e:
-        logger.warning(
-            f"Embedding-space adoption deferred: the entity vector storage "
-            f"could not be read ({type(e).__name__}: {e})"
+        detail = (
+            f"the entity vector storage could not be read ({type(e).__name__}: {e})"
         )
-        return
+        logger.warning(f"Embedding-space adoption deferred: {detail}")
+        return None, detail
 
     # The backends disagree on the shape of a MISS. ``BaseVectorStorage``
     # documents "the objects that were found", and most return a compacted
@@ -785,18 +823,16 @@ async def _run_adoption_probe(graph, entities_vdb, embedding_func) -> None:
     # ``None`` placeholders into the probe below.
     rows = [row for row in (found or []) if isinstance(row, dict)]
     if not rows:
-        return
+        return None, "none of the sampled entities has a vector record"
 
     try:
         vectors = await entities_vdb.get_vectors_by_ids(
             [row["id"] for row in rows if row.get("id")]
         )
     except Exception as e:
-        logger.warning(
-            f"Embedding-space adoption deferred: the stored vectors could not "
-            f"be read ({type(e).__name__}: {e})"
-        )
-        return
+        detail = f"the stored vectors could not be read ({type(e).__name__}: {e})"
+        logger.warning(f"Embedding-space adoption deferred: {detail}")
+        return None, detail
 
     verdict, detail = await _probe_same_embedding_space(rows, vectors, embedding_func)
 
@@ -820,21 +856,23 @@ async def _run_adoption_probe(graph, entities_vdb, embedding_func) -> None:
             f"dimension cannot be detected yet; this is retried on the next "
             f"start."
         )
-        return
+        return None, detail
 
-    try:
-        if await entities_vdb.adopt_vector_space():
-            logger.info(
-                f"Recorded the embedding model on {type(entities_vdb).__name__} "
-                f"'{getattr(entities_vdb, 'namespace', '?')}' ({detail})"
+    if pending:
+        try:
+            if await entities_vdb.adopt_vector_space():
+                logger.info(
+                    f"Recorded the embedding model on {type(entities_vdb).__name__} "
+                    f"'{getattr(entities_vdb, 'namespace', '?')}' ({detail})"
+                )
+        except VectorSpaceMismatchError:
+            raise
+        except Exception as e:  # pragma: no cover - adopt must not raise
+            logger.warning(
+                f"Could not record the embedding model on "
+                f"{type(entities_vdb).__name__}: {e}"
             )
-    except VectorSpaceMismatchError:
-        raise
-    except Exception as e:  # pragma: no cover - adopt must not raise
-        logger.warning(
-            f"Could not record the embedding model on "
-            f"{type(entities_vdb).__name__}: {e}"
-        )
+    return True, detail
 
 
 async def check_vector_space_at_startup(
@@ -847,7 +885,8 @@ async def check_vector_space_at_startup(
     doc_status=None,
     embedding_func,
     expect_empty_vector_storage: bool = False,
-) -> None:
+    probe_entities: bool = False,
+) -> StartupEvidence:
     """Run the coverage gate over all three pairings, then the probe.
 
     Args:
@@ -864,6 +903,14 @@ async def check_vector_space_at_startup(
         expect_empty_vector_storage: this caller is about to repopulate the
             vector storages, so an empty one is the expected starting state
             rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
+        probe_entities: run the entity probe even when the container's own
+            marker needs no adoption. The caller has an absent entity baseline
+            to establish (``docs/design/ConfigurationStorage.md``) and needs
+            the verdict; on the backends without a marker this is the only way
+            the probe ever runs.
+
+    Returns:
+        The evidence the checks gathered -- see ``StartupEvidence``.
 
     Raises:
         VectorStorageEmptyError: some indexed data is not empty while its vector
@@ -882,9 +929,10 @@ async def check_vector_space_at_startup(
         text_chunks=text_chunks,
         expect_empty_vector_storage=expect_empty_vector_storage,
     )
+    evidence = StartupEvidence()
 
     if text_chunks is not None:
-        await gate.check(
+        evidence.source_populated["chunks"] = await gate.check(
             name="chunks",
             source="the text chunk storage",
             vdb=chunks_vdb,
@@ -894,7 +942,7 @@ async def check_vector_space_at_startup(
             ),
         )
 
-    await gate.check(
+    evidence.source_populated["entities"] = await gate.check(
         name="entities",
         source="the knowledge graph",
         vdb=entities_vdb,
@@ -902,7 +950,7 @@ async def check_vector_space_at_startup(
         no_healing_probe=lambda: _node_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
-    await gate.check(
+    evidence.source_populated["relationships"] = await gate.check(
         name="relationships",
         source="the knowledge graph",
         vdb=relationships_vdb,
@@ -911,7 +959,10 @@ async def check_vector_space_at_startup(
     )
 
     if entities_vdb is not None and getattr(entities_vdb, "persists_vectors", True):
-        await _run_adoption_probe(graph, entities_vdb, embedding_func)
+        evidence.entity_probe, evidence.entity_probe_detail = await _run_adoption_probe(
+            graph, entities_vdb, embedding_func, force=probe_entities
+        )
+    return evidence
 
 
 async def _source_is_empty_inverted(kv_storage) -> bool:

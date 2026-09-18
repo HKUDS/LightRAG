@@ -47,6 +47,7 @@ from ..exceptions import (
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
+    StorageNotInitializedError,
     StorageRecordNotFoundError,
 )
 from ..utils import (
@@ -55,6 +56,7 @@ from ..utils import (
     _cooperative_yield,
     merge_source_ids,
     parse_cache_key,
+    is_reserved_workspace,
     validate_workspace,
 )
 from ..utils_graph import relation_evidence_count
@@ -855,7 +857,14 @@ class ClientManager:
 
 
 def _resolve_workspace(workspace: str, namespace: str):
-    """Resolve effective workspace from env or parameter."""
+    """Resolve effective workspace from env or parameter.
+
+    A reserved workspace is fixed, not configured: the configuration container
+    must stay where every process finds it, whatever the environment remaps
+    tenant data to, so ``OPENSEARCH_WORKSPACE`` is ignored for it.
+    """
+    if is_reserved_workspace(workspace):
+        return workspace
     opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
     if opensearch_workspace and opensearch_workspace.strip():
         effective = opensearch_workspace.strip()
@@ -1838,6 +1847,39 @@ class OpenSearchKVStorage(BaseKVStorage):
             # not quarantine rows naming them over a visibility round trip.
             raise OpenSearchReferencesIntactError(str(e)) from e
         self._refreshed_generation = owed
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) over a PIT scan, read-your-writes.
+
+        The pending buffer is snapshotted under ``_flush_lock`` first, so a
+        buffered upsert of this process is yielded in place of (or in
+        addition to) its indexed version and a buffered delete hides its
+        row, matching what ``get_by_ids`` would answer for the same ids.
+        """
+        if self._flush_lock is None:
+            raise StorageNotInitializedError("OpenSearchKVStorage")
+        async with self._flush_lock:
+            pending = dict(self._pending_upserts)
+            deleted = set(self._pending_kv_deletes)
+        seen_pending: set[str] = set()
+        async for hits in self._iter_raw_docs(batch_size=max(1, int(page_size))):
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if doc_id is None or doc_id in deleted:
+                    continue
+                if doc_id in pending:
+                    seen_pending.add(doc_id)
+                    yield self._materialize_pending_kv_doc(doc_id, pending[doc_id])
+                    continue
+                data = dict(hit.get("_source") or {})
+                data.pop("__mirrored_id", None)
+                data["_id"] = doc_id
+                data.setdefault("create_time", 0)
+                data.setdefault("update_time", 0)
+                yield data
+        for doc_id, source in pending.items():
+            if doc_id not in seen_pending and doc_id not in deleted:
+                yield self._materialize_pending_kv_doc(doc_id, source)
 
     async def is_empty(self) -> bool:
         """Return True if the index (plus pending buffer) contains no docs.

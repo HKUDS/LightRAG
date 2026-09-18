@@ -70,6 +70,7 @@ from lightrag.base import (
     SourceConflict,
     SourceUnique,
 )
+from lightrag.config_store import delete_workspace_configuration
 from lightrag.exceptions import (
     PipelineBackpressureError,
     SourceConflictPrimaryUnusableError,
@@ -6147,6 +6148,43 @@ def create_document_routes(
                         f"after drop; the next /documents/scan may fail until "
                         f"a write recreates it: {reinit_error}"
                     )
+
+            # The workspace's configuration records go LAST, and only when
+            # EVERY data drop succeeded. The two residues are not symmetric:
+            # data gone with the records still there is loud and recoverable
+            # (a same-named workspace is refused until they are cleaned),
+            # while records gone with data still there lets the next startup
+            # bootstrap a wrong baseline over surviving vectors -- never
+            # acceptable. So a partial drop keeps all three records, and does
+            # not opportunistically remove "the ones for the parts that did
+            # drop". See *Workspace drop* in
+            # docs/design/ConfigurationStorage.md.
+            configuration_storage = getattr(rag, "configuration_storage", None)
+            if configuration_storage is None:
+                pass
+            elif storage_error_count > 0:
+                append_pipeline_history(
+                    pipeline_status,
+                    "Kept the workspace configuration records: a storage drop failed",
+                )
+            else:
+                try:
+                    await delete_workspace_configuration(
+                        configuration_storage, rag.workspace
+                    )
+                    append_pipeline_history(
+                        pipeline_status, "Deleted the workspace configuration records"
+                    )
+                except Exception as config_error:
+                    error_msg = (
+                        f"Error deleting the workspace configuration records: "
+                        f"{config_error}"
+                    )
+                    errors.append(error_msg)
+                    summary = "the workspace configuration records could not be deleted"
+                    error_summaries.append(summary)
+                    logger.error(error_msg)
+                    append_pipeline_history(pipeline_status, f"Error: {summary}")
 
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:

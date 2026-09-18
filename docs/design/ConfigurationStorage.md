@@ -1,9 +1,13 @@
 # Configuration storage contract
 
-Status: **planned**. Nothing in this document is implemented yet. It states the
-rules the implementation must follow, so that the first slice does not have to
-be re-cut when the second arrives. Tracked in
-[#4006](https://github.com/HKUDS/LightRAG/issues/4006).
+Status: **slice 1 implemented** (`lightrag/config_store.py`, the `config` KV
+namespace on all five backends, the nine-step startup in
+`LightRAG.initialize_storages()`, the rebuild and drop commit protocols, the
+enumeration surface `BaseKVStorage.iter_rows()`); slice 2 and everything under
+*later* in the rollout table are still planned. Tracked in
+[#4006](https://github.com/HKUDS/LightRAG/issues/4006). The acceptance
+scenarios are regression tests under `tests/config_store/`, with the
+per-backend enumeration tests beside each backend under `tests/kg/`.
 
 It builds on the embedding-space work in
 [#3978](https://github.com/HKUDS/LightRAG/issues/3978): the per-container
@@ -62,9 +66,9 @@ workspace's. Configuration does not follow the knowledge base it configures.
 The whole `_lightrag*` workspace-name family is reserved and
 `validate_workspace()` rejects it. That rule, applied naively, **rejects the
 configuration storage itself**: all five KV backends call
-`validate_workspace(self.workspace)` in `__post_init__` (`json_kv_impl.py:72`,
-`redis_impl.py:394`, `mongo_impl.py:423`, `postgres_impl.py:3127`,
-`opensearch_impl.py:1018`). So the reservation needs a private door, and the
+`validate_workspace(self.workspace)` in `__post_init__` (`JsonKVStorage`,
+`RedisKVStorage`, `MongoKVStorage`, `PGKVStorage`, `OpenSearchKVStorage`). So
+the reservation needs a private door, and the
 door has to be one ordinary configuration cannot find:
 
 - public `LightRAG(workspace="_lightrag_config")` is **refused**;
@@ -155,7 +159,7 @@ per-container marker stores it unfolded.
 One record per workspace would be wrong, and could not be split later.
 `lightrag-rebuild-vdb` rebuilds `entities`, `relationships` and `chunks` as
 three separate steps against three separate containers
-(`rebuild_vdb.py:855-857`), so after an interrupted or deliberately partial
+(`RebuildTool.vector_targets()` in `rebuild_vdb.py`), so after an interrupted or deliberately partial
 rebuild the three legitimately sit in different embedding spaces. A single
 record cannot be advanced by a partial rebuild without either lying about the
 targets that were not rebuilt or refusing to record the one that was.
@@ -201,10 +205,10 @@ message. An operator planning a rebuild needs the whole list, not the first one.
 about the code, not a gap to be filled in this slice:
 
 - `_run_adoption_probe(graph, entities_vdb, embedding_func)`
-  (`vector_space_gate.py:724`) certifies **entities only**.
+  (`vector_space_gate.py`) certifies **entities only**.
 - `BaseKVStorage` has no enumeration API suited to a startup path.
   `rebuild_vdb.enumerate_kv_keys()` exists but is a backend-specific full scan,
-  documented as such (`rebuild_vdb.py:408`), and a full KV scan on every startup
+  documented as such (`rebuild_vdb.enumerate_kv_keys()`), and a full KV scan on every startup
   is exactly what `kg_integrity_repair` is deliberately offline to avoid.
 - `doc_status` cannot stand in for it either: `ainsert_custom_kg` writes chunks
   and no doc-status row, so `chunks_list` does not cover them.
@@ -271,7 +275,7 @@ relabel is prevented before it occurs.
 Step 5 sits where it does deliberately, and moving it to the end would break a
 contract the existing code states in a comment: every storage above it holds
 clients, pools and locks, and `finalize_storages()` skips the whole teardown
-unless the status says `INITIALIZED` (`lightrag.py:2272`). Marking it last would
+unless the status says `INITIALIZED` (`LightRAG.finalize_storages`). Marking it last would
 mean that a refusal from the coverage gate, a failed probe, a failed claim or a
 failed flush leaves every storage up with the status still `CREATED`, and the
 caller's `finalize_storages()` silently releases nothing.
@@ -292,7 +296,7 @@ Consequences the implementation owes:
   next `initialize_storages()` call, which would otherwise take the
   `status != CREATED` early return and come back successful without re-running
   anything. The merged code already does this for the embedding-space verdict
-  (`lightrag.py:2026-2033`): a stored refusal is re-raised at the top of the
+  (`LightRAG._startup_refusal`): a stored refusal is re-raised at the top of the
   method, and its comment gives the reason — "turning a fail-closed gate into a
   one-shot one". Every failure introduced here joins that mechanism rather than
   inventing a second one.
@@ -435,8 +439,8 @@ present, equal    -> proceed
 ```
 
 Use `get_by_id_strict()`. All five KV backends already declare
-`supports_strict_point_reads = True` (`json_kv_impl.py:68`, `redis_impl.py:391`,
-`mongo_impl.py:411`, `postgres_impl.py:3124`, `opensearch_impl.py:996`), so this
+`supports_strict_point_reads = True` (a `ClassVar` on each of the five KV
+classes), so this
 costs no new backend work — but the caller must still check the ClassVar rather
 than assume it, since `BaseKVStorage` defaults it to `False`.
 

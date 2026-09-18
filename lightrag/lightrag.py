@@ -166,18 +166,25 @@ from lightrag.utils_pipeline import (
     require_doc_status_record,
 )
 from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
-from lightrag.vector_space_gate import check_vector_space_at_startup
+from lightrag.vector_space_gate import StartupEvidence, check_vector_space_at_startup
+from lightrag.config_store import (
+    BaselineOrigin,
+    claim_embedding_baseline,
+    configured_baseline,
+    create_configuration_storage,
+    precheck_embedding_baselines,
+    read_embedding_baselines,
+)
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
     AdminWriteGateRefusedError,
     AdminWriteHoldExceededError,
+    ConfigurationStorageError,
     IndexFlushError,
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
     RecoveryAnchorMissingError,
-    VectorSpaceMismatchError,
-    VectorStorageEmptyError,
     flush_may_have_lost_reference,
 )
 from lightrag.utils import (
@@ -196,6 +203,7 @@ from lightrag.utils import (
     get_extract_cache_fence,
     convert_to_user_format,
     logger,
+    validate_workspace,
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
@@ -1683,12 +1691,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
 
-        # The embedding-space refusal, once raised, so a retry re-raises it
-        # instead of taking initialize_storages()'s already-initialized early
-        # return. A plain attribute, not a dataclass field: field order here is
-        # public API (see rebuilding_vector_storage) and this is internal state,
-        # never a constructor argument.
-        self._vector_space_refusal: Exception | None = None
+        # A post-INITIALIZED startup failure, once raised, so a retry re-raises
+        # it instead of taking initialize_storages()'s already-initialized
+        # early return: the embedding-space refusals, and every failure of the
+        # configuration steps that follow them. A plain attribute, not a
+        # dataclass field: field order here is public API (see
+        # rebuilding_vector_storage) and this is internal state, never a
+        # constructor argument.
+        self._startup_refusal: Exception | None = None
+
+        # Refused here, before any storage is built, so the message names the
+        # rule rather than whichever backend happened to construct first. The
+        # ``_lightrag*`` family is reserved for LightRAG's own containers.
+        validate_workspace(self.workspace)
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
         # behaviour); a negative value is a misconfiguration, fail fast.
@@ -1860,6 +1875,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # Initialize document status storage
         self.doc_status_storage_cls = get_storage_class(self.doc_status_storage)
 
+        # The configuration storage: the same KV backend, bound to the fixed
+        # reserved workspace rather than to this instance's. Only the factory
+        # may bind that name. Initialized FIRST and finalized with the rest;
+        # see docs/design/ConfigurationStorage.md.
+        self.configuration_storage: BaseKVStorage = create_configuration_storage(
+            self.key_string_value_json_storage_cls,
+            global_config=global_config,
+            embedding_func=self.embedding_func,
+        )
+
         self.llm_response_cache: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
             namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
             workspace=self.workspace,
@@ -2021,54 +2046,201 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         self._storages_status = StoragesStatus.CREATED
 
-    async def initialize_storages(self):
-        """Storage initialization must be called one by one to prevent deadlock"""
-        # A refusal is sticky. The storages below really are up -- which is why
-        # the status says so, and why finalize_storages() can tear them down --
-        # but the embedding-space verdict was NEGATIVE, and nothing about
-        # calling this again changes that. Without this, a retry would take the
-        # `status != CREATED` early return and come back successful WITHOUT
-        # re-running the check, turning a fail-closed gate into a one-shot one.
-        if self._vector_space_refusal is not None:
-            raise self._vector_space_refusal
-        if self._storages_status == StoragesStatus.CREATED:
-            # Record the loop the storages (and their shared_storage locks) bind
-            # to, so the synchronous wrappers can fail fast if later driven from a
-            # different loop (run_in_executor / a loop on another thread).
-            self._owning_loop = asyncio.get_running_loop()
+    def _business_storages(self) -> list[tuple[str, Any]]:
+        """Every storage but the configuration one, in initialization order."""
+        return [
+            ("full_docs", self.full_docs),
+            ("text_chunks", self.text_chunks),
+            ("full_entities", self.full_entities),
+            ("full_relations", self.full_relations),
+            ("entity_chunks", self.entity_chunks),
+            ("relation_chunks", self.relation_chunks),
+            ("entities_vdb", self.entities_vdb),
+            ("relationships_vdb", self.relationships_vdb),
+            ("chunks_vdb", self.chunks_vdb),
+            ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
+            ("llm_response_cache", self.llm_response_cache),
+            ("doc_status", self.doc_status),
+        ]
 
-            # Set the first initialized workspace will set the default workspace
-            # Allows namespace operation without specifying workspace for backward compatibility
-            default_workspace = get_default_workspace()
-            if default_workspace is None:
-                set_default_workspace(self.workspace)
-            elif default_workspace != self.workspace:
-                logger.info(
-                    f"Creating LightRAG instance with workspace='{self.workspace}' "
-                    f"while default workspace is set to '{default_workspace}'"
+    def _embedding_baselines_apply(self) -> bool:
+        """Whether this instance keeps per-target embedding baselines at all.
+
+        Not for a vector backend that persists no vectors (there is no space
+        to record), and not when the embedding function declares no model
+        name (nothing to record and nothing to compare -- the same rule the
+        per-container marker follows).
+        """
+        if self.entities_vdb is None or not getattr(
+            self.entities_vdb, "persists_vectors", True
+        ):
+            return False
+        return (
+            configured_baseline(self.embedding_func, origin=BaselineOrigin.EMPTY)
+            is not None
+        )
+
+    async def _release_after_early_failure(
+        self, started: list[tuple[str, Any]]
+    ) -> None:
+        """Best-effort teardown for a failure BEFORE ``INITIALIZED``.
+
+        ``finalize_storages()`` releases nothing while the status is still
+        ``CREATED``, so the storages that are up must be released here: in
+        reverse order, the configuration storage last, every failure logged and
+        none of them allowed to replace the exception that is propagating.
+        See *Cleanup before INITIALIZED exists* in
+        docs/design/ConfigurationStorage.md.
+        """
+        for name, storage in reversed(started):
+            if storage is None:
+                continue
+            try:
+                await storage.finalize()
+            except asyncio.CancelledError:
+                raise
+            except Exception as teardown_error:
+                logger.error(
+                    f"[{self.workspace}] Could not release {name} while backing "
+                    f"out of a failed startup: {teardown_error}"
                 )
 
-            # Auto-initialize pipeline_status for this workspace
-            from lightrag.kg.shared_storage import initialize_pipeline_status
+    async def _establish_embedding_baselines(
+        self, bootstrap_targets: list[str], evidence: StartupEvidence
+    ) -> None:
+        """Step 7: claim a baseline for each target whose record was absent.
 
-            await initialize_pipeline_status(workspace=self.workspace)
+        What gets written depends on the evidence, per target: a source that
+        is EMPTY records the configured space (``origin=empty``); a populated
+        entity source records only on a POSITIVE probe (``origin=probe``); a
+        populated relationship or chunk source, which has no probe, is trusted
+        on first use (``origin=bootstrap_assumption``). Every other case --
+        source unreadable, probe inconclusive or unable to run -- writes
+        NOTHING and is retried on the next start. See *Establishing a
+        baseline* in docs/design/ConfigurationStorage.md.
+        """
+        for target in bootstrap_targets:
+            populated = evidence.source_populated.get(target)
+            if populated is False:
+                origin = BaselineOrigin.EMPTY
+            elif populated is True and target == NameSpace.VECTOR_STORE_ENTITIES:
+                if evidence.entity_probe is not True:
+                    logger.warning(
+                        f"[{self.workspace}] The embedding baseline for "
+                        f"{target} stays unrecorded: the adoption probe could "
+                        f"not vouch for the stored vectors "
+                        f"({evidence.entity_probe_detail or 'no verdict'}). "
+                        f"Retried on the next start."
+                    )
+                    continue
+                origin = BaselineOrigin.PROBE
+            elif populated is True:
+                origin = BaselineOrigin.BOOTSTRAP_ASSUMPTION
+            else:
+                logger.warning(
+                    f"[{self.workspace}] The embedding baseline for {target} "
+                    f"stays unrecorded: whether its source holds data could not "
+                    f"be established. Retried on the next start."
+                )
+                continue
+            candidate = configured_baseline(self.embedding_func, origin=origin)
+            if candidate is None:  # pragma: no cover - guarded by the caller
+                return
+            await claim_embedding_baseline(
+                self.configuration_storage,
+                workspace=self.workspace,
+                target=target,
+                candidate=candidate,
+                embedding_func=self.embedding_func,
+            )
 
-            for storage in (
-                self.full_docs,
-                self.text_chunks,
-                self.full_entities,
-                self.full_relations,
-                self.entity_chunks,
-                self.relation_chunks,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.chunk_entity_relation_graph,
-                self.llm_response_cache,
-                self.doc_status,
-            ):
+    async def initialize_storages(self):
+        """Bring every storage up, in the order the contract fixes.
+
+        Nine steps (``docs/design/ConfigurationStorage.md``, *Startup
+        sequence*): the configuration storage first; a strict read of this
+        workspace's three embedding baselines; a PRECHECK that refuses on a
+        recorded mismatch BEFORE any vector storage initializes; the business
+        storages, with a reverse-order rollback if one of them fails; the
+        ``INITIALIZED`` mark; the coverage gate and the entity adoption probe;
+        the baselines that were absent; a flush of the configuration storage.
+
+        Rules a caller can rely on:
+
+        * ``INITIALIZED`` means the resources exist and ``finalize_storages()``
+          must release them -- NOT that the checks passed. A successful return
+          is what means the instance may serve.
+        * A failure before ``INITIALIZED`` releases everything it opened and
+          leaves the status ``CREATED``; a retry re-runs every step from 1.
+        * A failure after ``INITIALIZED`` is sticky: this method re-raises it
+          on every later call rather than early-returning as initialized.
+        """
+        # Sticky. The storages below really are up -- which is why the status
+        # says so, and why finalize_storages() can tear them down -- but a
+        # verdict was NEGATIVE (or a claim or flush failed), and nothing about
+        # calling this again changes that. Without this, a retry would take
+        # the `status != CREATED` early return and come back successful
+        # WITHOUT re-running anything, turning a fail-closed gate into a
+        # one-shot one.
+        if self._startup_refusal is not None:
+            raise self._startup_refusal
+        if self._storages_status != StoragesStatus.CREATED:
+            return
+
+        # Record the loop the storages (and their shared_storage locks) bind
+        # to, so the synchronous wrappers can fail fast if later driven from a
+        # different loop (run_in_executor / a loop on another thread).
+        self._owning_loop = asyncio.get_running_loop()
+
+        # Set the first initialized workspace will set the default workspace
+        # Allows namespace operation without specifying workspace for backward compatibility
+        default_workspace = get_default_workspace()
+        if default_workspace is None:
+            set_default_workspace(self.workspace)
+        elif default_workspace != self.workspace:
+            logger.info(
+                f"Creating LightRAG instance with workspace='{self.workspace}' "
+                f"while default workspace is set to '{default_workspace}'"
+            )
+
+        # Auto-initialize pipeline_status for this workspace
+        from lightrag.kg.shared_storage import initialize_pipeline_status
+
+        await initialize_pipeline_status(workspace=self.workspace)
+
+        # From here until INITIALIZED, `started` is the list of what must be
+        # released if a step fails. A storage is appended BEFORE its
+        # initialize() runs: one that raises may already have allocated, and
+        # the rollback owes it a finalize() too.
+        started: list[tuple[str, Any]] = []
+        baselines_apply = self._embedding_baselines_apply()
+        bootstrap_targets: list[str] = []
+        try:
+            # Step 1. The configuration storage, before anything that depends
+            # on what it records.
+            started.append(("configuration_storage", self.configuration_storage))
+            await self.configuration_storage.initialize()
+
+            # Steps 2 and 3. Strict-read the three baselines and compare the
+            # ones that exist. A mismatch refuses HERE, before any vector
+            # storage initializes -- ahead of the legacy-container migration
+            # Milvus, Qdrant and PostgreSQL run inside initialize(). A read
+            # that could not complete is a startup failure, never "absent".
+            if baselines_apply:
+                recorded = await read_embedding_baselines(
+                    self.configuration_storage, self.workspace
+                )
+                bootstrap_targets = precheck_embedding_baselines(
+                    recorded, self.embedding_func, workspace=self.workspace
+                )
+            else:
+                bootstrap_targets = []
+
+            # Step 4. The business storages, one at a time to prevent
+            # deadlock.
+            for name, storage in self._business_storages():
                 if storage:
-                    # logger.debug(f"Initializing storage: {storage}")
+                    started.append((name, storage))
                     await storage.initialize()
 
             # After initialize(), so a backend that derives capabilities during
@@ -2078,47 +2250,75 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status,
                 require=bool(self.pipeline_require_strict_storage_reads),
             )
+        except BaseException:
+            # Nothing above is covered by finalize_storages() -- the status
+            # is still CREATED -- so release it here, in reverse order, the
+            # configuration storage last. The original exception propagates;
+            # a teardown failure is logged and never replaces it. Everything
+            # is torn down, so a retry re-runs from step 1 rather than
+            # succeeding on state the failed attempt left behind.
+            await self._release_after_early_failure(started)
+            raise
 
-            # Marked INITIALIZED before the embedding-space check, not after.
-            # Every storage above has completed initialize(), so they hold
-            # clients, pools and locks -- and finalize_storages() skips the
-            # whole teardown unless the status says so. A caller that catches
-            # the refusal below (to report it, or to run a rebuild) would
-            # otherwise leak every one of them, and a retry on the same object
-            # would initialize them twice.
-            self._storages_status = StoragesStatus.INITIALIZED
+        # Step 5. Marked INITIALIZED before the checks, not after. Every
+        # storage above has completed initialize(), so they hold clients,
+        # pools and locks -- and finalize_storages() skips the whole teardown
+        # unless the status says so. A caller that catches a refusal below
+        # (to report it, or to run a rebuild) would otherwise leak every one
+        # of them, and a retry on the same object would initialize them
+        # twice.
+        self._storages_status = StoragesStatus.INITIALIZED
 
-            # The two checks no single storage can make for itself: a vector
-            # storage holding nothing while the data it INDEXES is not empty
-            # (an index that does not cover its source -- never built, lost,
-            # half rebuilt, or replaced by an empty container after a model
-            # change on a backend that names its container after the model),
-            # and an unmarked container that has to be adopted before its
-            # silence can end. Deliberately NOT in a backend's
+        try:
+            # Step 6. The two checks no single storage can make for itself: a
+            # vector storage holding nothing while the data it INDEXES is not
+            # empty (an index that does not cover its source -- never built,
+            # lost, half rebuilt, or replaced by an empty container after a
+            # model change on a backend that names its container after the
+            # model), and an unmarked container that has to be adopted before
+            # its silence can end. Deliberately NOT in a backend's
             # initialize(): the first takes a source storage and its index
             # together, and `lightrag-rebuild-vdb` drives the storages
             # directly, so the tool that FIXES these conditions is never
-            # blocked by them.
-            # See docs/design/VectorSpaceProvenance.md.
+            # blocked by them. See docs/design/VectorSpaceProvenance.md.
+            evidence = StartupEvidence()
             if (
                 self.entities_vdb is not None
                 and self.chunk_entity_relation_graph is not None
             ):
-                try:
-                    await check_vector_space_at_startup(
-                        graph=self.chunk_entity_relation_graph,
-                        entities_vdb=self.entities_vdb,
-                        relationships_vdb=self.relationships_vdb,
-                        chunks_vdb=self.chunks_vdb,
-                        text_chunks=self.text_chunks,
-                        doc_status=self.doc_status,
-                        embedding_func=self.embedding_func,
-                        expect_empty_vector_storage=self.rebuilding_vector_storage,
-                    )
-                except (VectorSpaceMismatchError, VectorStorageEmptyError) as refusal:
-                    self._vector_space_refusal = refusal
-                    raise
-            logger.debug("All storage types initialized")
+                evidence = await check_vector_space_at_startup(
+                    graph=self.chunk_entity_relation_graph,
+                    entities_vdb=self.entities_vdb,
+                    relationships_vdb=self.relationships_vdb,
+                    chunks_vdb=self.chunks_vdb,
+                    text_chunks=self.text_chunks,
+                    doc_status=self.doc_status,
+                    embedding_func=self.embedding_func,
+                    expect_empty_vector_storage=self.rebuilding_vector_storage,
+                    # The probe's verdict is the only evidence an absent
+                    # entity baseline can be established on, whatever the
+                    # container's own marker says.
+                    probe_entities=NameSpace.VECTOR_STORE_ENTITIES in bootstrap_targets,
+                )
+
+            # Steps 7 and 8. Claim the baselines that were absent, then flush
+            # the configuration storage so the claims are durable before this
+            # returns.
+            if baselines_apply and bootstrap_targets:
+                await self._establish_embedding_baselines(bootstrap_targets, evidence)
+            try:
+                await self.configuration_storage.index_done_callback()
+            except Exception as flush_error:
+                raise ConfigurationStorageError(
+                    f"the configuration storage could not be flushed at the end "
+                    f"of startup ({type(flush_error).__name__}: {flush_error})"
+                ) from flush_error
+        except Exception as refusal:
+            # Sticky (see the top of this method). The storages stay up so the
+            # caller can finalize them.
+            self._startup_refusal = refusal
+            raise
+        logger.debug("All storage types initialized")
 
     def _get_parse_native_executor(self) -> ThreadPoolExecutor:
         """Lazily build the per-instance native-parser thread pool.
@@ -2284,6 +2484,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
                 ("llm_response_cache", self.llm_response_cache),
                 ("doc_status", self.doc_status),
+                # Initialized first, released last: a business storage's
+                # final flush may still want it open. Exactly once -- the
+                # early-failure rollback only runs while the status is
+                # CREATED, which never reaches this branch.
+                ("configuration_storage", self.configuration_storage),
             ]
 
             # Finalize each storage individually to ensure one failure doesn't prevent others from closing

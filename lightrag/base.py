@@ -741,6 +741,37 @@ class BaseKVStorage(StorageNameSpace, ABC):
             bool: True if storage contains no data, False otherwise
         """
 
+    def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row of this namespace, a page at a time.
+
+        The enumeration surface the configuration inventory consumes (see
+        *Enumeration, and what the inventory really costs* in
+        ``docs/design/ConfigurationStorage.md``). Rules for implementers:
+
+        * never materialize the whole namespace -- read ``page_size`` rows per
+          backend round trip and yield them as they arrive;
+        * yield rows in the same shape ``get_by_id`` returns, ``_id`` included;
+        * a row inserted or deleted while the scan runs may or may not be
+          seen -- callers get a best-effort snapshot, not isolation;
+        * raise on a backend failure rather than ending the stream early, so
+          a partial listing is never mistaken for a complete one.
+
+        The default raises ``StorageCapabilityError`` on first iteration. It
+        is NOT a hot-path API: a startup path must never scan a namespace.
+
+        Returns:
+            An async iterator over row dicts. ``page_size`` bounds the rows
+            fetched per round trip, not the total.
+        """
+
+        async def _unsupported() -> AsyncIterator[dict[str, Any]]:
+            raise StorageCapabilityError(
+                f"{type(self).__name__} does not support row enumeration"
+            )
+            yield {}  # pragma: no cover - makes this an async generator
+
+        return _unsupported()
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
