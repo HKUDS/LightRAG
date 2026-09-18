@@ -309,6 +309,41 @@ async def test_an_inconclusive_probe_writes_nothing_and_is_retried(tmp_path):
     }
 
 
+async def test_an_unreadable_chunk_source_leaves_only_that_baseline_absent(
+    tmp_path, monkeypatch
+):
+    """A source that cannot be read is not an empty source. The four server
+    KV backends answer ``is_empty() -> True`` on a failed read, so had the
+    gate trusted it a transient outage during bootstrap would have recorded
+    ``origin=empty`` for chunks over whatever the chunk container holds -- and
+    no later start would probe it. The chunk source is read through
+    ``iter_rows`` (fail-loud) instead: its baseline stays absent, the other
+    two record on their own evidence, and the next start with a readable
+    source records it."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+
+    async def _unreadable(*, page_size=200):
+        raise ConnectionError("chunk store unreachable")
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(rag.text_chunks, "iter_rows", _unreadable)
+    await rag.initialize_storages()
+    await rag.finalize_storages()
+
+    records = _records(tmp_path)
+    assert set(records) == {"entities", "relationships"}
+    assert all(r["origin"] == "empty" for r in records.values())
+
+    healthy = _rag(tmp_path, model_name="bge-m3")
+    await healthy.initialize_storages()
+    await healthy.finalize_storages()
+    assert _records(tmp_path)["chunks"] == {
+        "model": "bge-m3",
+        "dim": _DIM,
+        "origin": "empty",
+    }
+
+
 async def test_a_process_without_a_model_name_keeps_no_baselines(tmp_path):
     """Nothing to record and nothing to compare -- the same rule the container
     marker follows. Such a deployment starts exactly as before."""

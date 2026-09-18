@@ -58,6 +58,7 @@ from ..utils import (
     parse_cache_key,
     is_reserved_workspace,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -867,7 +868,9 @@ def _resolve_workspace(workspace: str, namespace: str):
         return workspace
     opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
     if opensearch_workspace and opensearch_workspace.strip():
-        effective = opensearch_workspace.strip()
+        effective = validate_workspace_override(
+            "OPENSEARCH_WORKSPACE", opensearch_workspace
+        )
         logger.info(
             f"Using OPENSEARCH_WORKSPACE: '{effective}' (overriding '{workspace}/{namespace}')"
         )
