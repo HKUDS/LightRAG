@@ -3845,9 +3845,7 @@ async def try_initialize_namespace(
     return False
 
 
-async def release_namespace_init(
-    namespace: str, workspace: str | None = None
-) -> None:
+async def release_namespace_init(namespace: str, workspace: str | None = None) -> None:
     """Hand back an initialization claim whose load did not finish.
 
     Clearing the flag lets the NEXT worker to ask claim the load and read the
