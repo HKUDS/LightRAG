@@ -248,10 +248,11 @@ entity probe reads `entities_vdb`.
       all equal     -> continue
       absent        -> remember as a bootstrap target
 4.  initialize the remaining KV, graph, doc-status and the three vector storages
-5.  run the existing coverage gate and the entity adoption probe
-6.  establish the baselines remembered in step 3
-7.  flush the configuration storage
-8.  mark INITIALIZED
+5.  mark INITIALIZED
+6.  run the existing coverage gate and the entity adoption probe
+7.  establish the baselines remembered in step 3
+8.  flush the configuration storage
+9.  return successfully
 ```
 
 **Only step 3 must precede step 4.** That is what puts the mismatch refusal
@@ -265,15 +266,46 @@ negative probe refuses to serve; but the copy has happened. That is an accepted
 residue, recorded below. This document does **not** claim that every legacy
 relabel is prevented before it occurs.
 
-### Cleanup on a precheck refusal
+### `INITIALIZED` means the resources are up, not that the service may serve
 
-At step 3 the configuration storage is initialized and nothing else is, and
-`finalize_storages()` tears down only when `_storages_status == INITIALIZED`
-(`lightrag.py:2272`) — a status that is not set yet and must not be set, because
-it would claim storages that never initialized. So the precheck's own failure
-path closes the configuration storage explicitly (client, pool, refcount) before
-raising. A refusal that leaks a connection pool turns a safety feature into an
-operational one.
+Step 5 sits where it does deliberately, and moving it to the end would break a
+contract the existing code states in a comment: every storage above it holds
+clients, pools and locks, and `finalize_storages()` skips the whole teardown
+unless the status says `INITIALIZED` (`lightrag.py:2272`). Marking it last would
+mean that a refusal from the coverage gate, a failed probe, a failed claim or a
+failed flush leaves every storage up with the status still `CREATED`, and the
+caller's `finalize_storages()` silently releases nothing.
+
+So the two ideas are kept apart:
+
+| | meaning |
+| --- | --- |
+| `INITIALIZED` | the resources exist and `finalize_storages()` must release them |
+| a successful return from `initialize_storages()` | the checks passed and the instance may serve |
+
+Consequences the implementation owes:
+
+- **The configuration storage is an ordinary member of the teardown list.** It is
+  initialized first and finalized with the rest, exactly once.
+- **Everything after step 5 is sticky.** A post-`INITIALIZED` failure — coverage
+  gate, probe, claim, read-back, flush — must be retained and re-raised by the
+  next `initialize_storages()` call, which would otherwise take the
+  `status != CREATED` early return and come back successful without re-running
+  anything. The merged code already does this for the embedding-space verdict
+  (`lightrag.py:2026-2033`): a stored refusal is re-raised at the top of the
+  method, and its comment gives the reason — "turning a fail-closed gate into a
+  one-shot one". Every failure introduced here joins that mechanism rather than
+  inventing a second one.
+- **Steps 1-3 are the only ones outside it**, and they get explicit cleanup
+  instead (below).
+
+### Cleanup before `INITIALIZED` exists
+
+Steps 2 and 3 both run with the configuration storage up and nothing else, so
+neither can rely on the teardown list. **Both** failure paths — a strict read
+that could not complete, and a precheck refusal — close the configuration
+storage explicitly (client, pool, refcount) before raising. A refusal that leaks
+a connection pool turns a safety feature into an operational one.
 
 ## Claiming a baseline atomically
 
@@ -301,10 +333,12 @@ buffers in process memory and its own docstring says the buffer is
 process-local until the flush; releasing the lock first lets another worker read
 absent and claim again.
 
-The strict read-back is not a formality — it is what makes the losing side of a
-race safe. It reads whatever is actually stored and validates *that* against
-this process's configuration, so a process whose write lost to a different
-configuration refuses instead of proceeding on a claim it did not win.
+The strict read-back is not a formality, but its job is narrower than it looks.
+It confirms that the write is visible and durable, and it validates whatever is
+*actually stored* against this process's configuration rather than against what
+this process believed it wrote. Inside the lock's scope that closes the
+buffered-write hole above. It does **not** provide exclusion, and the section
+below says exactly where that ends.
 
 ### What the lock does and does not span
 
@@ -316,19 +350,38 @@ configuration refuses instead of proceeding on a claim it did not win.
 | two containers / pods / hosts | **no** |
 | separate SDK processes | **no** |
 
-`shared_storage` locks do not cross a process tree, so the deployment model has
-to be stated rather than assumed. **This contract chooses the constraint over
-the mechanism:** one LightRAG master or SDK process group initializes a given
-configuration store at a time, and overlapping rolling deployments are not
-supported. That is the same constraint the embedding-space work already
-operates under — LightRAG propagates no configuration between worker processes
-and supports no rolling update, so a model change is always stop →
-`lightrag-rebuild-vdb` → start.
+`shared_storage` locks do not cross a process tree, so the deployment model is
+part of this contract rather than an assumption under it. **The atomic claim
+covers workers sharing one `shared_storage` instance — one Gunicorn master —
+and nothing wider.** Two independent masters, containers, hosts or SDK process
+groups must not initialize the same configuration store concurrently, and
+overlapping rolling deployments are not supported. That is the same constraint
+the embedding-space work already operates under: LightRAG propagates no
+configuration between worker processes and supports no rolling update, so a
+model change is always stop → `lightrag-rebuild-vdb` → start, one deployment at
+a time.
 
-Adding create-if-absent/CAS to all five backends is the alternative, and it is a
-project of its own; it is not required to make this slice safe, because the
-read-back above degrades a cross-master race to *one side refuses to start*
-rather than *two baselines exist*.
+**The read-back does not extend that boundary, and this document previously
+claimed it did.** It does not, and the counter-example is simple:
+
+```
+master A  read absent
+master B  read absent
+master A  write A, flush, read back A, validate -> proceeds
+master B  write B, flush, read back B, validate -> proceeds
+```
+
+Both sides read back their own write and both start; the store ends up holding
+B while A is serving on a baseline that is no longer recorded. A read-back can
+only report the record that exists at the moment it runs. Exclusion needs
+mutual exclusion or a compare-and-set, and neither is present here.
+
+Concurrent initialization by separate process trees is therefore **unsupported,
+not a handled residue** — nothing in this slice makes it safe, and it must not
+be listed among the states this design accepts. Supporting it later needs one
+of: a distributed `shared_storage` lock, or genuine create-if-absent/CAS in each
+backend. Both are projects of their own, and neither is required for the
+supported deployment shape.
 
 ## Reads are strict
 
@@ -495,11 +548,6 @@ names are UUIDs.
 confirm absent, which bootstraps again — the same class as a wiped marker, and
 the same recovery.
 
-**A cross-process-tree claim race.** Two masters with different configurations
-can both attempt a first claim; the strict read-back makes the loser refuse to
-start rather than proceed on a claim it did not win. Recovery: start one at a
-time, per the deployment constraint above.
-
 **Whole-namespace publication on the JSON backend.** `JsonKVStorage` rewrites
 the whole namespace file on flush, so `_lightrag_config` becomes a single write
 point shared by every workspace in the process. Visibility is unaffected (its
@@ -523,8 +571,9 @@ the more convenient one.
 | later | migrating existing environment variables into the store, key by key; a display-name → UUID mapping once workspace names become UUIDs; the secrets policy |
 
 The server-level pair in slice 2 is **diagnostic and never gates**. It flaps
-when two differently configured servers start alternately, while a per-target
-baseline moves only on a successful rebuild. A value that looks authoritative
+when differently configured servers start one after another against the same
+store — sequentially, since concurrent initialization is unsupported — while a
+per-target baseline moves only on a successful rebuild. A value that looks authoritative
 and is not will otherwise be wired into a refusal by someone reading it later.
 
 Slice 1 is a safety property and lands alone.
@@ -556,3 +605,15 @@ The implementation is not complete until these are regression tests.
     treated as absent.
 16. The inventory pages through configuration rows on each of the five KV
     backends.
+17. A configuration strict read fails at step 2 → the configuration storage is
+    fully finalized and no other storage was initialized.
+18. The coverage gate or the entity probe refuses → `finalize_storages()`
+    releases the configuration storage **and** every business storage.
+19. A claim, read-back or configuration flush fails → a second
+    `initialize_storages()` fails again instead of early-returning on
+    `INITIALIZED`.
+20. A normal shutdown finalizes the configuration storage together with the
+    others, exactly once.
+21. Concurrent claims are covered only for workers of one Gunicorn master;
+    nothing asserts anything about two independent masters, which the contract
+    does not support.
