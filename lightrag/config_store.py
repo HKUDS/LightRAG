@@ -395,6 +395,18 @@ def precheck_embedding_baselines(
 
 
 async def _flush(config: Any, what: str) -> None:
+    """Flush, and refuse to call a flush that retained anything a success.
+
+    ``OpenSearchKVStorage.index_done_callback`` keeps per-item RETRYABLE
+    failures (408 / 429 / 5xx) buffered and returns normally, and its strict
+    point read answers from that buffer -- a buffered upsert reads as present,
+    a buffered tombstone as gone -- so flush-then-read-back would confirm a
+    write or a delete the server never saw. After the flush the store is
+    asked whether anything is still buffered, tombstones included; if so the
+    buffer is dropped, so what the caller reports is what is true, and the
+    flush is reported as the failure it is. Backends without a buffer answer
+    ``False`` and are unaffected.
+    """
     try:
         await config.index_done_callback()
     except Exception as e:
@@ -402,6 +414,32 @@ async def _flush(config: Any, what: str) -> None:
             f"the configuration storage could not flush {what} "
             f"({type(e).__name__}: {e})"
         ) from e
+    has_pending = getattr(config, "has_pending_index_ops", None)
+    if has_pending is None:
+        return
+    try:
+        retained = bool(await has_pending(include_deletes=True))
+    except Exception as e:
+        raise ConfigurationStorageError(
+            f"the configuration storage could not say whether {what} was "
+            f"flushed ({type(e).__name__}: {e})"
+        ) from e
+    if not retained:
+        return
+    drop = getattr(config, "drop_pending_index_ops", None)
+    if drop is not None:
+        try:
+            await drop()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                f"Could not discard the configuration operations the flush "
+                f"retained ({type(e).__name__}: {e}); they may replay at shutdown"
+            )
+    raise ConfigurationStorageError(
+        f"the configuration storage retained {what} after the flush (the "
+        f"backend reported a transient failure and kept the operation "
+        f"buffered); the write is not durable and must not be reported as one"
+    )
 
 
 async def _write_baseline_row(
