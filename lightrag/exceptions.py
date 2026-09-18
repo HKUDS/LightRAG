@@ -771,3 +771,70 @@ class VectorSpaceMismatchError(RuntimeError):
         self.expected_dim = expected_dim
         self.stored_model = stored_model
         self.stored_dim = stored_dim
+
+
+class VectorStorageEmptyError(RuntimeError):
+    """A vector storage holds nothing while the data it indexes is not empty.
+
+    Raised at startup by the cross-storage gate in
+    ``LightRAG.initialize_storages()``. It is a *refusal to serve*: every
+    retrieval mode but ``naive`` would silently return nothing, which reads as
+    "no relevant context" rather than as a broken deployment.
+
+    Why it is not ``VectorSpaceMismatchError``: no vectors were written in
+    another embedding space, because there are no vectors at all. The
+    distinction is load-bearing for ``lightrag-rebuild-vdb``, which answers
+    that type by DROPPING the container -- pointless here, and a tool that
+    conflated the two would report a destruction it did not need to perform.
+    The remedy is the same rebuild, but it starts at the rebuild, not at a drop.
+
+    This is a COVERAGE failure, not an identity one, and it has a family of
+    causes: a container dropped or a volume not mounted, a rebuild that stopped
+    halfway, the vector backend switched without migrating the data, a
+    workspace prefix that does not match the one the vectors were written
+    under. Milvus, Qdrant and PostgreSQL reach it by one more route -- they
+    encode the embedding model in the container NAME, so changing the model
+    provisions a NEW, EMPTY, correctly-named container that no marker can fire
+    on. That route is an identity question showing up as a coverage symptom;
+    the recorded per-workspace embedding space answers it directly, and this
+    error keeps the causes it is the only evidence for.
+
+    The condition self-clears. Once a rebuild populates the container the
+    question answers itself, which is why the gate asks it fresh at every
+    startup rather than recording anything.
+
+    Args:
+        vdb_name: the vector storage that came back empty, e.g. ``"entities"``.
+        container: the physical container, when the backend can name it.
+        source: the data this storage indexes, named as an operator would
+            recognise it, e.g. ``"knowledge graph entities"``. It is the other
+            half of the evidence: an empty container is only a defect because
+            something it indexes is NOT empty.
+    """
+
+    def __init__(
+        self,
+        *,
+        vdb_name: str,
+        container: str | None = None,
+        source: str = "the data it indexes",
+    ) -> None:
+        where = f" ('{container}')" if container else ""
+        message = (
+            f"The {vdb_name} vector storage{where} holds no vectors, but "
+            f"{source} is not empty. Serving this "
+            f"would return no context for every query mode that uses vectors. "
+            f"The index does not cover its source: it was never built, it was "
+            f"lost (a dropped container, a volume that is not mounted), a "
+            f"rebuild stopped part way, the vector backend was changed without "
+            f"migrating the data, or -- on Milvus, Qdrant and PostgreSQL, which "
+            f"put the embedding model in the container name -- a model change "
+            f"provisioned a new, empty one. Rebuild the vector storages from "
+            f"the knowledge graph with `lightrag-rebuild-vdb` (run it with this "
+            f"embedding configuration), or point this instance back at the "
+            f"configuration whose vectors are still there."
+        )
+        super().__init__(message)
+        self.vdb_name = vdb_name
+        self.container = container
+        self.source = source

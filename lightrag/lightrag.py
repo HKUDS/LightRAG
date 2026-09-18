@@ -166,6 +166,7 @@ from lightrag.utils_pipeline import (
     require_doc_status_record,
 )
 from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.vector_space_gate import check_vector_space_at_startup
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
@@ -175,6 +176,8 @@ from lightrag.exceptions import (
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
     RecoveryAnchorMissingError,
+    VectorSpaceMismatchError,
+    VectorStorageEmptyError,
     flush_may_have_lost_reference,
 )
 from lightrag.utils import (
@@ -1360,6 +1363,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     shifted 43 of them. See ``tests/test_dataclass_positional_compatibility.py``.
     """
 
+    # Declared last for the same reason as the fields above: new fields go at
+    # the END of this dataclass, never mid-class. Placing this one next to the
+    # other startup-behaviour flags shifted 55 of the constructor's parameters.
+    # See ``tests/test_dataclass_positional_compatibility.py``.
+    rebuilding_vector_storage: bool = field(default=False)
+    """Declare that this instance exists to REPOPULATE the vector storages.
+
+    Startup normally refuses a vector storage that holds nothing while the graph
+    holds entities and at least one document is PROCESSED — the shape a changed
+    embedding model leaves on a backend that names its container after the
+    model, and equally the shape of a deleted vector file. An in-process rebuild
+    starts from exactly that state on purpose, so it has to say so.
+
+    ``lightrag/tools/rebuild_vdb.py`` does NOT need this: it drives the storages
+    directly and never reaches the check. A program that rebuilds through a
+    ``LightRAG`` instance does -- including the supported switch from
+    ``NoopVectorDBStorage`` (graph-only ingestion, which writes no vectors by
+    design) to a real vector backend.
+
+    Constructor-only, deliberately: there is no environment variable. A
+    fail-closed check whose bypass can be exported in a shell is one an operator
+    silences at 3am and never revisits, and what it silences is a deployment
+    that answers every vector query with nothing. Declaring it in code keeps the
+    claim attached to the program that makes it true.
+
+    See ``docs/design/VectorSpaceProvenance.md``.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1651,6 +1682,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._replace_addon_params(addon_params, mark_dirty=False)
         self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
+
+        # The embedding-space refusal, once raised, so a retry re-raises it
+        # instead of taking initialize_storages()'s already-initialized early
+        # return. A plain attribute, not a dataclass field: field order here is
+        # public API (see rebuilding_vector_storage) and this is internal state,
+        # never a constructor argument.
+        self._vector_space_refusal: Exception | None = None
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
         # behaviour); a negative value is a misconfiguration, fail fast.
@@ -1985,6 +2023,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
+        # A refusal is sticky. The storages below really are up -- which is why
+        # the status says so, and why finalize_storages() can tear them down --
+        # but the embedding-space verdict was NEGATIVE, and nothing about
+        # calling this again changes that. Without this, a retry would take the
+        # `status != CREATED` early return and come back successful WITHOUT
+        # re-running the check, turning a fail-closed gate into a one-shot one.
+        if self._vector_space_refusal is not None:
+            raise self._vector_space_refusal
         if self._storages_status == StoragesStatus.CREATED:
             # Record the loop the storages (and their shared_storage locks) bind
             # to, so the synchronous wrappers can fail fast if later driven from a
@@ -2033,7 +2079,45 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 require=bool(self.pipeline_require_strict_storage_reads),
             )
 
+            # Marked INITIALIZED before the embedding-space check, not after.
+            # Every storage above has completed initialize(), so they hold
+            # clients, pools and locks -- and finalize_storages() skips the
+            # whole teardown unless the status says so. A caller that catches
+            # the refusal below (to report it, or to run a rebuild) would
+            # otherwise leak every one of them, and a retry on the same object
+            # would initialize them twice.
             self._storages_status = StoragesStatus.INITIALIZED
+
+            # The two checks no single storage can make for itself: a vector
+            # storage holding nothing while the data it INDEXES is not empty
+            # (an index that does not cover its source -- never built, lost,
+            # half rebuilt, or replaced by an empty container after a model
+            # change on a backend that names its container after the model),
+            # and an unmarked container that has to be adopted before its
+            # silence can end. Deliberately NOT in a backend's
+            # initialize(): the first takes a source storage and its index
+            # together, and `lightrag-rebuild-vdb` drives the storages
+            # directly, so the tool that FIXES these conditions is never
+            # blocked by them.
+            # See docs/design/VectorSpaceProvenance.md.
+            if (
+                self.entities_vdb is not None
+                and self.chunk_entity_relation_graph is not None
+            ):
+                try:
+                    await check_vector_space_at_startup(
+                        graph=self.chunk_entity_relation_graph,
+                        entities_vdb=self.entities_vdb,
+                        relationships_vdb=self.relationships_vdb,
+                        chunks_vdb=self.chunks_vdb,
+                        text_chunks=self.text_chunks,
+                        doc_status=self.doc_status,
+                        embedding_func=self.embedding_func,
+                        expect_empty_vector_storage=self.rebuilding_vector_storage,
+                    )
+                except (VectorSpaceMismatchError, VectorStorageEmptyError) as refusal:
+                    self._vector_space_refusal = refusal
+                    raise
             logger.debug("All storage types initialized")
 
     def _get_parse_native_executor(self) -> ThreadPoolExecutor:
