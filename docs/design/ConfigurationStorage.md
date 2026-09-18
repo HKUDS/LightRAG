@@ -366,9 +366,12 @@ shared-pool reference in its constructor, so a constructor that raises after
 another Redis storage was built leaks that reference with no `finalize()`
 reachable. That too predates this design (twelve constructors ran in sequence
 before it). What this slice owes is to add nothing to it: the configuration
-storage is constructed **last**, after every business storage, so a refusal in
-an ordinary constructor — a reserved `*_WORKSPACE` override is the one this
-slice introduces — finds nothing of the configuration storage's to leak.
+storage is constructed as the **last statement of `__post_init__` that can
+raise** — after every business storage and after every validation that follows
+them (`llm_model_func` present, `role_llm_configs` well-formed) — so a refusal
+anywhere in construction, a reserved `*_WORKSPACE` override being the one this
+slice introduces, finds nothing of the configuration storage's to leak. A new
+check added to `__post_init__` goes **above** that construction.
 
 **A failed step 4 does not heal by retrying.** Either the failure is retained
 the way post-`INITIALIZED` failures are, or a full retry is supported and
