@@ -505,6 +505,92 @@ class TestDrop:
 
 
 # ---------------------------------------------------------------------------
+# A flush that retained its operation
+# ---------------------------------------------------------------------------
+
+
+class _RetainingKV(FakeConfigKV):
+    """The OpenSearch shape when the server answers a retryable failure
+    (429): ``index_done_callback`` keeps the operation buffered and returns
+    normally, and the strict read answers from the buffer -- a buffered
+    upsert as present, a buffered tombstone as gone. Flush-then-read-back
+    alone would confirm a write the server never saw."""
+
+    def __init__(self, rows=None):
+        super().__init__(rows)
+        self.tombstones = set()
+        self.dropped = 0
+
+    async def get_by_id_strict(self, key):
+        self.calls.append(("read", key))
+        if key in self.tombstones:
+            return None
+        if key in self.pending:
+            return dict(self.pending[key])
+        row = self.visible.get(key)
+        return None if row is None else dict(row)
+
+    async def index_done_callback(self):
+        self.calls.append(("flush",))  # ...and retains everything: 429
+
+    async def delete(self, ids):
+        self.calls.append(("delete", tuple(ids)))
+        self.tombstones.update(ids)
+
+    async def has_pending_index_ops(self, *, include_deletes=False):
+        return bool(self.pending) or (include_deletes and bool(self.tombstones))
+
+    async def drop_pending_index_ops(self):
+        self.dropped += 1
+        self.pending.clear()
+        self.tombstones.clear()
+
+
+class TestRetainedFlush:
+    async def test_a_claim_whose_flush_retained_the_write_fails(self):
+        kv = _RetainingKV()
+        with pytest.raises(ConfigurationStorageError, match="retained"):
+            await cs.claim_embedding_baseline(
+                kv,
+                workspace="ws",
+                target="entities",
+                candidate=cs.EmbeddingBaseline("bge-m3", 16, "empty"),
+                embedding_func=_embedding(),
+            )
+        # Reported as not written, and made true: the buffer is dropped so a
+        # later flush at shutdown cannot land an unvalidated record.
+        assert kv.visible == {} and kv.pending == {} and kv.dropped == 1
+
+    async def test_a_rebuild_record_whose_flush_retained_the_write_fails(self):
+        kv = _RetainingKV({_key("chunks"): _row(model="old", target="chunks")})
+        with pytest.raises(ConfigurationStorageError, match="retained"):
+            await cs.record_embedding_baseline(
+                kv, workspace="ws", target="chunks", embedding_func=_embedding()
+            )
+        assert kv.visible[_key("chunks")]["value"]["model"] == "old"
+
+    async def test_a_drop_whose_flush_retained_the_tombstones_fails(self):
+        """A buffered tombstone reads as "gone"; without the pending check the
+        read-back would confirm a deletion the server still has rows for --
+        the never-acceptable *configuration gone, data remains* direction."""
+        kv = _RetainingKV({_key(t): _row(target=t) for t in cs.EMBEDDING_TARGETS})
+        with pytest.raises(ConfigurationStorageError, match="retained"):
+            await cs.delete_workspace_configuration(kv, "ws")
+        assert len(kv.visible) == 3 and kv.tombstones == set()
+
+    async def test_a_backend_without_a_buffer_is_unaffected(self):
+        kv = FakeConfigKV()  # no has_pending_index_ops at all
+        recorded = await cs.claim_embedding_baseline(
+            kv,
+            workspace="ws",
+            target="entities",
+            candidate=cs.EmbeddingBaseline("bge-m3", 16, "empty"),
+            embedding_func=_embedding(),
+        )
+        assert recorded.model == "bge-m3"
+
+
+# ---------------------------------------------------------------------------
 # Enumeration and the factory
 # ---------------------------------------------------------------------------
 

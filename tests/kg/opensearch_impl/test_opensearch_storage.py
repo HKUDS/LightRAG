@@ -1036,6 +1036,10 @@ class TestKVStorageBatching:
 
             await s.delete(["gone-1"])
             assert await s.has_pending_index_ops() is False
+            # The configuration store asks with tombstones included: a
+            # buffered delete answers its strict read-back as "gone" before
+            # the server agrees.
+            assert await s.has_pending_index_ops(include_deletes=True) is True
 
     @pytest.mark.asyncio
     async def test_repeated_kv_upserts_flush_in_single_bulk_call(
