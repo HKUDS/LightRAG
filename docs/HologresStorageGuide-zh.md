@@ -294,7 +294,7 @@ Hologres 配置与后端诊断信息会对 host、user、password 和 database �
 ### 已接受的写入残留
 
 - **两张表图实现的端点创建。** node upsert 可能先创建端点 stub，edge upsert 也可能先补建缺失端点。Hologres 后端写入是单条 autocommit 语句，因此中断可能留下 stub 节点。后续再次 upsert 该边、执行 rebuild，或通过 purge/rebuild 会重写或清理它；这与 PostgreSQL 表格图实现接受的端点 stub 残留一致。
-- **KV full-docs 的合并范围。** PostgreSQL 使用固定 full-docs 列，而 JSONB upsert 会合并本次提供的键并保留历史写入的键。若生产方必须让删除生效，请显式写入 `null`；六个受保护字段仍使用与 PostgreSQL 兼容的恢复语义。
+- **KV full-docs 的合并范围。** PostgreSQL 使用固定 full-docs 列，而 JSONB upsert 会合并本次提供的键并保留历史写入的键。如需清除非受保护键，请显式写入 `null`；该键仍会存在但值为 null，不会被移除。六个受保护字段仍使用与 PostgreSQL 兼容的恢复语义。
 
 doc-status 有两个有意的兼容差异：upsert 校验采用整批 fail-closed（PostgreSQL 是跳过非法记录并记录日志）；在 Hologres 受限 client 下，每条记录是一条 replay-safe 单语句。配置只读取 `HOLOGRES_*` 环境变量；`config.ini` 和通用 `get_env_value` 间接层不属于这个隔离后端。测试套件中 Hologres 专用 integration gating 已在 PR 描述和 `tests/conftest.py` 中说明。
 

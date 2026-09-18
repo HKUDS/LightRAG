@@ -297,7 +297,7 @@ Use one `WORKSPACE` per logical knowledge base. Multiple server workers or stora
 ### Accepted write residues
 
 - **Two-table graph endpoint creation.** A node upsert may create endpoint stubs before the edge statement, and an edge upsert may create a missing endpoint before writing the edge. Hologres backend writes are single autocommit statements, so an interruption can leave a stub node. The next upsert of that edge, a rebuild, or a purge/rebuild removes or rewrites it; this is the same endpoint-stub residue accepted by the PostgreSQL table graph implementation.
-- **KV full-docs merge breadth.** Unlike PostgreSQL's fixed full-doc columns, JSONB upsert merges supplied keys and retains previously written keys. Delete a field by writing an explicit `null` if the producer must make absence durable; protected fields still use the PostgreSQL-compatible restore semantics.
+- **KV full-docs merge breadth.** Unlike PostgreSQL's fixed full-doc columns, JSONB upsert merges supplied keys and retains previously written keys. To clear a non-protected key, write an explicit `null`; the key remains present with a null value rather than being removed. Protected fields still use the PostgreSQL-compatible restore semantics.
 
 Doc-status compatibility differs deliberately in two ways: validation is fail-closed for the whole upsert (rather than PostgreSQL's skip-and-log behavior), and each record is a replay-safe single statement under the Hologres restricted client. Configuration is environment-only (`HOLOGRES_*`); `config.ini` and the generic `get_env_value` indirection are intentionally outside this isolated backend. The test suite's Hologres-specific integration gating is described in the PR description and `tests/conftest.py`.
 
