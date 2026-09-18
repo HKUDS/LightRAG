@@ -23,9 +23,9 @@ from .shared_storage import (
     get_namespace_lock,
     get_data_init_lock,
     get_update_flag,
+    namespace_init_claim,
     set_all_update_flags,
     clear_all_update_flags,
-    try_initialize_namespace,
 )
 
 
@@ -90,12 +90,16 @@ class JsonKVStorage(BaseKVStorage):
     async def initialize(self):
         """Bind to the shared namespace dict and load from disk on first init.
 
-        ``try_initialize_namespace`` is a global init lock that returns
-        ``True`` for exactly one process per ``(namespace, workspace)``;
-        that process reads the JSON file and populates the shared
-        ``self._data`` under ``_storage_lock``. Subsequent processes
-        skip the file read — they will see the same shared dict via
-        ``get_namespace_data``.
+        ``namespace_init_claim`` is a global init lock that yields ``True``
+        to exactly one process per ``(namespace, workspace)``; that process
+        reads the JSON file and populates the shared ``self._data`` under
+        ``_storage_lock``. Subsequent processes skip the file read — they
+        will see the same shared dict via ``get_namespace_data``.
+
+        The load MUST stay inside the claim. Leaving it by exception hands
+        the claim back so the next process reads the file again; a claim
+        kept over an empty dict would make every later instance in this
+        process tree read absence where the file has rows.
 
         For ``*_cache`` namespaces an extra
         ``_migrate_legacy_cache_structure`` pass runs against the loaded
@@ -109,27 +113,27 @@ class JsonKVStorage(BaseKVStorage):
         )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(
+            async with namespace_init_claim(
                 self.namespace, workspace=self.workspace
-            )
-            self._data = await get_namespace_data(
-                self.namespace, workspace=self.workspace
-            )
-            if need_init:
-                loaded_data = load_json(self._file_name) or {}
-                async with self._storage_lock:
-                    # Migrate legacy cache structure if needed
-                    if self.namespace.endswith("_cache"):
-                        loaded_data = await self._migrate_legacy_cache_structure(
-                            loaded_data
+            ) as need_init:
+                self._data = await get_namespace_data(
+                    self.namespace, workspace=self.workspace
+                )
+                if need_init:
+                    loaded_data = load_json(self._file_name) or {}
+                    async with self._storage_lock:
+                        # Migrate legacy cache structure if needed
+                        if self.namespace.endswith("_cache"):
+                            loaded_data = await self._migrate_legacy_cache_structure(
+                                loaded_data
+                            )
+
+                        self._data.update(loaded_data)
+                        data_count = len(loaded_data)
+
+                        logger.info(
+                            f"[{self.workspace}] Process {os.getpid()} KV load {self.namespace} with {data_count} records"
                         )
-
-                    self._data.update(loaded_data)
-                    data_count = len(loaded_data)
-
-                    logger.info(
-                        f"[{self.workspace}] Process {os.getpid()} KV load {self.namespace} with {data_count} records"
-                    )
 
     async def index_done_callback(self) -> None:
         """Flush dirty in-memory state to disk and clear all dirty flags.

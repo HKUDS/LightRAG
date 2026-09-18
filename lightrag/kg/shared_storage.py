@@ -8,6 +8,7 @@ from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing.managers import BaseProxy, SyncManager
 import time
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from contextvars import ContextVar
@@ -3812,9 +3813,16 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
 async def try_initialize_namespace(
     namespace: str, workspace: str | None = None
 ) -> bool:
-    """
-    Returns True if the current worker(process) gets initialization permission for loading data later.
-    The worker does not get the permission is prohibited to load data from files.
+    """Claim the one-time load of ``(namespace, workspace)`` for this worker.
+
+    Returns True for exactly one worker per namespace; every other worker is
+    prohibited from loading the file and reads the shared dict instead.
+
+    A True claim is a PROMISE TO FINISH, and the flag it sets says "loaded"
+    from the moment it returns -- not once the data is actually in the shared
+    dict. A claimer whose load then fails must hand the claim back with
+    ``release_namespace_init``, or the namespace stays empty while announcing
+    itself loaded. Prefer ``namespace_init_claim``, which does that for you.
     """
     global _init_flags, _manager
 
@@ -3835,6 +3843,107 @@ async def try_initialize_namespace(
         )
 
     return False
+
+
+async def release_namespace_init(
+    namespace: str, workspace: str | None = None
+) -> None:
+    """Hand back an initialization claim whose load did not finish.
+
+    Clearing the flag lets the NEXT worker to ask claim the load and read the
+    file again, which is what makes a transient read failure (a momentary
+    ``PermissionError``, a full disk) recoverable rather than sticky for the
+    life of the process tree. A persistent failure simply fails again, loudly,
+    in the next claimer.
+
+    Safe to call without a claim, and safe after the shared data is gone --
+    both are no-ops, so a teardown path may call it unconditionally.
+    """
+    global _init_flags
+
+    if _init_flags is None:
+        return
+
+    final_namespace = get_final_namespace(namespace, workspace)
+
+    async with get_internal_lock():
+        if _init_flags.pop(final_namespace, None) is None:
+            return
+
+    direct_log(
+        f"Process {os.getpid()} released the initialization claim on storage "
+        f"namespace: [{final_namespace}]"
+    )
+
+
+@asynccontextmanager
+async def namespace_init_claim(namespace: str, workspace: str | None = None):
+    """Hold a load claim for the body, and hand it back if the body fails.
+
+    Yields what ``try_initialize_namespace`` returned: True means THIS worker
+    owes the namespace its data, so the body must populate the shared dict
+    before leaving. Leaving by exception releases the claim.
+
+    Why the claim cannot simply stay: the flag is the only record that a
+    namespace has been loaded, so a claim left behind over an empty dict makes
+    every later instance in this process tree skip the file and read absence
+    where the file has rows -- rows it then overwrites on the next commit,
+    because a commit publishes the whole namespace. For the configuration
+    namespace that turns a refusal into a silent rewrite of the baseline the
+    unread file recorded.
+    """
+    need_init = await try_initialize_namespace(namespace, workspace=workspace)
+    try:
+        yield need_init
+    except BaseException:
+        if need_init:
+            await _hand_back_namespace_init(namespace, workspace)
+        raise
+
+
+# Strong references to in-flight claim releases, so a release the caller stopped
+# waiting for (see below) cannot be garbage-collected mid-flight: the event loop
+# holds only a weak reference to a running task.
+_claim_release_tasks: set = set()
+
+
+async def _hand_back_namespace_init(namespace: str, workspace: str | None) -> None:
+    """Release a claim on the way out of a failed load, cancellation included.
+
+    A CANCELLED load is a claim that must be handed back too, but awaiting
+    anything from a task that is being cancelled re-raises at once and would
+    leave the flag set. So the release runs as its own task and is only
+    ``shield``-ed here: losing the wait for it does not stop it.
+
+    Nothing that happens here may replace the failure that is propagating --
+    the caller needs to see why the load failed, not why the bookkeeping for
+    it did -- so a failed release is reported from the task's own callback
+    rather than from the await, which the caller may never reach.
+    """
+
+    def _done(task) -> None:
+        _claim_release_tasks.discard(task)
+        if task.cancelled():
+            return
+        release_error = task.exception()
+        if release_error is not None:
+            direct_log(
+                f"Process {os.getpid()} could not release the initialization claim "
+                f"on [{get_final_namespace(namespace, workspace)}]: {release_error}",
+                level="ERROR",
+            )
+
+    release = asyncio.ensure_future(
+        release_namespace_init(namespace, workspace=workspace)
+    )
+    _claim_release_tasks.add(release)
+    release.add_done_callback(_done)
+    try:
+        await asyncio.shield(release)
+    except BaseException:
+        # Including a cancellation delivered right here: the release itself is
+        # unaffected, and the exception the caller is propagating stands.
+        pass
 
 
 async def get_namespace_data(
