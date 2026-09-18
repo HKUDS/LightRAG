@@ -73,8 +73,16 @@ class _FakeConfigKV:
 
 
 class _ClearRag:
-    def __init__(self, workspace: str, *, failing_chunks: bool = False):
+    def __init__(
+        self,
+        workspace: str,
+        *,
+        failing_chunks: bool = False,
+        failing_cache: bool = False,
+    ):
         self.workspace = workspace
+        self.failing_cache = failing_cache
+        self.cache_cleared = 0
         storage = _NoopStorage()
         storage.workspace = workspace
         if failing_chunks:
@@ -95,8 +103,10 @@ class _ClearRag:
         self.doc_status = storage
         self.configuration_storage = _FakeConfigKV(workspace)
 
-    async def aclear_cache(self):  # pragma: no cover - not opted in here
-        raise AssertionError("not requested")
+    async def aclear_cache(self):
+        if self.failing_cache:
+            raise RuntimeError("cache backend refused the drop")
+        self.cache_cleared += 1
 
 
 def _clear_endpoint(rag, input_dir):
@@ -162,3 +172,36 @@ async def test_a_failed_record_delete_is_reported_not_hidden(tmp_path):
 
     assert response.status == "partial_success"
     assert "configuration records could not be deleted" in response.message
+
+
+async def test_a_failed_cache_drop_keeps_all_three_records(tmp_path):
+    """The opt-in cache drop is a data drop too. Every storage dropped, but
+    ``aclear_cache`` raised: the cache rows survive in this workspace, so the
+    records stay with them rather than being deleted first and leaving the
+    never-acceptable residue (configuration gone, data remains)."""
+    workspace = f"clear-config-cache-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+    rag = _ClearRag(workspace, failing_cache=True)
+
+    response = await _clear_endpoint(rag, tmp_path)(clear_llm_cache=True)
+
+    assert response.status == "partial_success"
+    assert "LLM response cache could not be cleared" in response.message
+    config = rag.configuration_storage
+    assert config.deleted == []
+    assert len(config.rows) == 3
+
+
+async def test_a_successful_cache_drop_still_lets_the_records_go(tmp_path):
+    """Ordering only: the records are deleted AFTER the cache drop, not
+    skipped because one was requested."""
+    workspace = f"clear-config-cache-ok-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+    rag = _ClearRag(workspace)
+
+    response = await _clear_endpoint(rag, tmp_path)(clear_llm_cache=True)
+
+    assert response.status == "success"
+    assert rag.cache_cleared == 1
+    assert rag.configuration_storage.rows == {}
+    assert len(rag.configuration_storage.deleted) == 1

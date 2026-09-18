@@ -5908,6 +5908,12 @@ def create_document_routes(
         inflicts exactly the harm above on whatever survived. The response
         says the cache was preserved and why; re-run the clear to remove it.
 
+        The workspace's configuration records (its embedding baselines) are
+        deleted last, and only when every data drop succeeded, the opt-in
+        cache drop included: records gone with data still present would let
+        the next startup adopt a wrong baseline over it. A partial drop keeps
+        all three records and the history says why.
+
         Top-level input files are always deleted unconditionally: a later
         /documents/scan would otherwise re-enqueue them. The __parsed__
         directory is opt-in only, since it holds pre-parsed cache artifacts
@@ -6149,43 +6155,6 @@ def create_document_routes(
                         f"a write recreates it: {reinit_error}"
                     )
 
-            # The workspace's configuration records go LAST, and only when
-            # EVERY data drop succeeded. The two residues are not symmetric:
-            # data gone with the records still there is loud and recoverable
-            # (a same-named workspace is refused until they are cleaned),
-            # while records gone with data still there lets the next startup
-            # bootstrap a wrong baseline over surviving vectors -- never
-            # acceptable. So a partial drop keeps all three records, and does
-            # not opportunistically remove "the ones for the parts that did
-            # drop". See *Workspace drop* in
-            # docs/design/ConfigurationStorage.md.
-            configuration_storage = getattr(rag, "configuration_storage", None)
-            if configuration_storage is None:
-                pass
-            elif storage_error_count > 0:
-                append_pipeline_history(
-                    pipeline_status,
-                    "Kept the workspace configuration records: a storage drop failed",
-                )
-            else:
-                try:
-                    await delete_workspace_configuration(
-                        configuration_storage, rag.workspace
-                    )
-                    append_pipeline_history(
-                        pipeline_status, "Deleted the workspace configuration records"
-                    )
-                except Exception as config_error:
-                    error_msg = (
-                        f"Error deleting the workspace configuration records: "
-                        f"{config_error}"
-                    )
-                    errors.append(error_msg)
-                    summary = "the workspace configuration records could not be deleted"
-                    error_summaries.append(summary)
-                    logger.error(error_msg)
-                    append_pipeline_history(pipeline_status, f"Error: {summary}")
-
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
@@ -6220,6 +6189,7 @@ def create_document_routes(
             # name them -- and the next clear, or a re-add of the same content
             # that re-keys onto them, disposes of them.
             cache_cleared_message = ""
+            cache_drop_failed = False
             if clear_llm_cache and storage_error_count > 0:
                 cache_cleared_message = (
                     " LLM cache preserved: a storage drop failed, and the "
@@ -6241,6 +6211,7 @@ def create_document_routes(
                         pipeline_status, "Successfully cleared the LLM response cache"
                     )
                 except Exception as cache_error:
+                    cache_drop_failed = True
                     error_msg = f"Error clearing the LLM response cache: {cache_error}"
                     logger.error(error_msg)
                     errors.append(error_msg)
@@ -6250,6 +6221,50 @@ def create_document_routes(
                     # GET /documents/pipeline_status, so it is a response
                     # channel too: the category goes here, the raw text only
                     # to the log above.
+                    append_pipeline_history(pipeline_status, f"Error: {summary}")
+
+            # The workspace's configuration records go LAST -- after the
+            # data drops above AND the opt-in cache drop just before this --
+            # and only when EVERY one of them succeeded. The two residues are
+            # not symmetric: data gone with the records still there is loud
+            # and recoverable (a same-named workspace is refused until they
+            # are cleaned), while records gone with data still there lets the
+            # next startup bootstrap a wrong baseline over surviving rows --
+            # never acceptable. So a partial drop keeps all three records, and
+            # does not opportunistically remove "the ones for the parts that
+            # did drop". A failed cache drop is a data drop that failed: the
+            # cache rows survive in this workspace, so the records stay too.
+            # See *Workspace drop* in docs/design/ConfigurationStorage.md.
+            configuration_storage = getattr(rag, "configuration_storage", None)
+            if configuration_storage is None:
+                pass
+            elif storage_error_count > 0 or cache_drop_failed:
+                kept_reason = (
+                    "a storage drop failed"
+                    if storage_error_count > 0
+                    else "the LLM cache drop failed"
+                )
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Kept the workspace configuration records: {kept_reason}",
+                )
+            else:
+                try:
+                    await delete_workspace_configuration(
+                        configuration_storage, rag.workspace
+                    )
+                    append_pipeline_history(
+                        pipeline_status, "Deleted the workspace configuration records"
+                    )
+                except Exception as config_error:
+                    error_msg = (
+                        f"Error deleting the workspace configuration records: "
+                        f"{config_error}"
+                    )
+                    errors.append(error_msg)
+                    summary = "the workspace configuration records could not be deleted"
+                    error_summaries.append(summary)
+                    logger.error(error_msg)
                     append_pipeline_history(pipeline_status, f"Error: {summary}")
 
             # Log file deletion start
