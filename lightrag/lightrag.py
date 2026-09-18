@@ -1953,21 +1953,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             embedding_func=None,
         )
 
-        # The configuration storage: the same KV backend, bound to the fixed
-        # reserved workspace rather than to this instance's. Only the factory
-        # may bind that name. Initialized FIRST (step 1) and finalized with the
-        # rest, but CONSTRUCTED LAST: a Redis storage takes its shared-pool
-        # reference in its constructor, and a constructor above may refuse
-        # (a reserved ``*_WORKSPACE`` override does) with no async teardown
-        # reachable from here -- so nothing this storage holds may precede
-        # one. See *Cleanup before INITIALIZED exists* in
-        # docs/design/ConfigurationStorage.md.
-        self.configuration_storage: BaseKVStorage = create_configuration_storage(
-            self.key_string_value_json_storage_cls,
-            global_config=global_config,
-            embedding_func=self.embedding_func,
-        )
-
         # Per-role isolated LLM wrappers (independent queues per role).
         # The base ``self.llm_model_func`` is intentionally NOT queue-wrapped:
         # every code path that calls an LLM goes through one of the role
@@ -2048,6 +2033,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         self._rebuild_role_llm_funcs()
         self._log_llm_role_config("initialized")
+
+        # The configuration storage: the same KV backend, bound to the fixed
+        # reserved workspace rather than to this instance's. Only the factory
+        # may bind that name. Initialized FIRST (step 1) and finalized with the
+        # rest, but CONSTRUCTED as the LAST thing here that can raise: a Redis
+        # storage takes its shared-pool reference in its constructor, this
+        # method is synchronous with no teardown reachable, and every
+        # constructor and validation above may refuse (a reserved
+        # ``*_WORKSPACE`` override, a missing ``llm_model_func``, a bad role
+        # config) -- so nothing this storage holds may precede any of them.
+        # See *Cleanup before INITIALIZED exists* in
+        # docs/design/ConfigurationStorage.md.
+        self.configuration_storage: BaseKVStorage = create_configuration_storage(
+            self.key_string_value_json_storage_cls,
+            global_config=global_config,
+            embedding_func=self.embedding_func,
+        )
 
         self._storages_status = StoragesStatus.CREATED
 
