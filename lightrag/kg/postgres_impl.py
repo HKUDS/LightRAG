@@ -74,6 +74,7 @@ from ..utils import (
     performance_timing_log,
     is_reserved_workspace,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -435,7 +436,13 @@ class PostgreSQLDB:
         self.user = config["user"]
         self.password = config["password"]
         self.database = config["database"]
-        self.workspace = config["workspace"]
+        # One check for every PostgreSQL storage: they all take the
+        # override from this shared client. POSTGRES_WORKSPACE (or the
+        # config.ini value) may remap tenant data, never into the reserved
+        # family the configuration container lives in.
+        self.workspace = validate_workspace_override(
+            "POSTGRES_WORKSPACE", config["workspace"]
+        )
         self.max = int(config["max_connections"])
         self.increment = 1
         self.pool: Pool | None = None

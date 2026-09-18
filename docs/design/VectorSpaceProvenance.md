@@ -644,10 +644,14 @@ opposite directions:
 
 - On the **index** side, `True` can refuse a deployment, so an error reported as
   "empty" is a false outage. It must raise.
-- On the **source** side, `True` only *skips* a check, so an error reported as
-  "empty" costs nothing. The existing KV behaviour is therefore fine as it is,
-  and the gate depends on it: an unreadable `text_chunks` lands on the skip
-  branch.
+- On the **source** side, `True` only *skips* a check, so for the coverage
+  gate alone an error reported as "empty" costs nothing. The gate's source
+  verdict later became the evidence for an `origin=empty` embedding baseline
+  as well, and a durable write cannot rest on an answer that hides an outage,
+  so the chunk source is now read through the first page of
+  `BaseKVStorage.iter_rows()`, which raises on failure; `is_empty()` is a
+  fallback whose "empty" is read as unknown. See *Establishing a baseline* in
+  [ConfigurationStorage.md](ConfigurationStorage.md).
 
 The base-class default raises `StorageCapabilityError`, the fail-closed pattern
 already used by `iter_labels` / `iter_edges`: a backend that has not implemented

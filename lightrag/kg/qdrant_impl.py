@@ -14,7 +14,13 @@ from ..base import BaseVectorStorage
 from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
-from ..utils import _cooperative_yield, compute_mdhash_id, logger, validate_workspace
+from ..utils import (
+    _cooperative_yield,
+    compute_mdhash_id,
+    logger,
+    validate_workspace,
+    validate_workspace_override,
+)
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
@@ -522,7 +528,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
         if qdrant_workspace and qdrant_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = qdrant_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "QDRANT_WORKSPACE", qdrant_workspace
+            )
             logger.info(
                 f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )

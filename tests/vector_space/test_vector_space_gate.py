@@ -256,10 +256,12 @@ class FakeKVStorage:
     """``text_chunks`` -- the source side of the chunk pairing.
 
     ``is_empty`` mirrors the REAL ``BaseKVStorage`` contract, which catches its
-    backend errors and answers ``True``. The gate depends on that: an
-    unreadable source lands on the same branch as an empty one (skip), which is
-    the safe direction. The vector side is the opposite contract, and
-    ``FakeVectorStorage.is_empty`` raises to match it.
+    backend errors and answers ``True``; ``iter_rows`` mirrors ITS contract and
+    raises. The gate reads the source through ``iter_rows`` for exactly that
+    reason: its verdict also backs a durable ``origin=empty`` baseline, and an
+    unreadable source must land on "no evidence", never on "empty". The vector
+    side is the opposite contract, and ``FakeVectorStorage.is_empty`` raises
+    to match it.
     """
 
     def __init__(self, *, rows=0, error=None, chunk_owner="doc-1"):
@@ -286,6 +288,8 @@ class FakeKVStorage:
         """The chunk probe's sample: the first page of rows, ``_id`` included."""
 
         async def _gen():
+            if self._error is not None:
+                raise self._error  # what every real KV backend does on failure
             for i in range(min(self._rows, page_size)):
                 yield {"_id": f"chunk-{i + 1}", "content": f"chunk {i + 1}"}
 
@@ -313,7 +317,7 @@ async def _run(
     test that is about the ENTITY pairing is not answered by one of its
     siblings. A test that wants those pairings passes them explicitly.
     """
-    await check_vector_space_at_startup(
+    return await check_vector_space_at_startup(
         graph=graph,
         entities_vdb=vdb,
         relationships_vdb=(
@@ -802,12 +806,13 @@ class TestPairings:
         assert chunks.empty_reads == 0
 
     async def test_an_unreadable_text_chunks_source_does_not_refuse(self):
-        """``BaseKVStorage.is_empty`` catches its errors and answers True, so an
-        unreadable source arrives as 'no chunks'. That lands on the skip branch,
-        which is the direction this module wants everywhere."""
+        """An unreadable source supplies no evidence: skip, do not refuse --
+        and, since the same verdict backs the chunk baseline, it is ``None``,
+        never ``False``. ``BaseKVStorage.is_empty`` would have said "empty"
+        (it catches its errors), which is why the gate reads ``iter_rows``."""
         chunks = FakeVectorStorage(rows=[])
 
-        await _run(
+        evidence = await _run(
             FakeGraph(labels=["Alice"]),
             FakeVectorStorage(rows=[_entity_row()]),
             FakeEmbedding(),
@@ -816,6 +821,62 @@ class TestPairings:
         )
 
         assert chunks.empty_reads == 0
+        assert evidence.source_populated["chunks"] is None
+
+    async def test_an_empty_text_chunks_source_is_confirmed_by_a_fail_loud_read(
+        self,
+    ):
+        """``False`` -- the answer that records ``origin=empty`` -- comes only
+        from a read that would have raised had it failed."""
+        text_chunks = FakeKVStorage(rows=0)
+
+        evidence = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=text_chunks,
+        )
+
+        assert evidence.source_populated["chunks"] is False
+        assert text_chunks.empty_reads == 0, "is_empty() was not consulted"
+
+    async def test_a_kv_store_without_enumeration_answers_populated_only(self):
+        """The ``is_empty()`` fallback for a backend that cannot page its rows:
+        "populated" is trustworthy and keeps the coverage check, "empty" is
+        indistinguishable from an outage and becomes "unknown"."""
+
+        class NoEnumeration(FakeKVStorage):
+            def iter_rows(self, *, page_size=200):
+                raise StorageCapabilityError("no enumeration")
+
+        populated = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=NoEnumeration(rows=1),
+        )
+        assert populated.source_populated["chunks"] is True
+
+        chunks = FakeVectorStorage(rows=[])
+        with pytest.raises(VectorStorageEmptyError):
+            await _run(
+                FakeGraph(labels=["Alice"]),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding(),
+                chunks_vdb=chunks,
+                text_chunks=NoEnumeration(rows=1),
+            )
+
+        unknown = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=NoEnumeration(rows=0),
+        )
+        assert unknown.source_populated["chunks"] is None
 
     async def test_relations_are_checked_against_graph_edges(self):
         """An interrupted rebuild can leave entities populated and relations

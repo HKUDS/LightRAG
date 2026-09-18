@@ -29,6 +29,7 @@ from lightrag.utils import (
     _cooperative_yield,
     is_reserved_workspace,
     validate_workspace,
+    validate_workspace_override,
 )
 
 from lightrag.base import (
@@ -403,7 +404,9 @@ class RedisKVStorage(BaseKVStorage):
             redis_workspace = None
         if redis_workspace and redis_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = redis_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "REDIS_WORKSPACE", redis_workspace
+            )
             logger.info(
                 f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -1048,7 +1051,9 @@ class RedisDocStatusStorage(DocStatusStorage):
         redis_workspace = os.environ.get("REDIS_WORKSPACE")
         if redis_workspace and redis_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = redis_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "REDIS_WORKSPACE", redis_workspace
+            )
             logger.info(
                 f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
