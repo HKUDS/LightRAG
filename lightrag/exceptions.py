@@ -773,6 +773,86 @@ class VectorSpaceMismatchError(RuntimeError):
         self.stored_dim = stored_dim
 
 
+class ConfigurationStorageError(RuntimeError):
+    """The configuration storage could not complete a read, a write or a claim.
+
+    Raised by ``lightrag.config_store`` when a record that decides whether the
+    instance may serve cannot be read to a definite answer (a transport
+    failure, a backend that cannot promise strict point reads, a row whose
+    shape does not parse), when a claim's read-back does not return the row
+    that was just written, or when a flush that had to land did not.
+
+    It is a STARTUP FAILURE, deliberately distinct from "the record is absent".
+    Absent means bootstrap; this means stop. Treating one as the other is the
+    defect the strict-read rule exists to prevent: a store that could not be
+    reached must never be mistaken for a store that holds nothing. See *Reads
+    are strict* in docs/design/ConfigurationStorage.md.
+    """
+
+
+class EmbeddingBaselineMismatchError(VectorSpaceMismatchError):
+    """A recorded per-target embedding baseline disagrees with the configuration.
+
+    Raised at step 3 of ``LightRAG.initialize_storages()`` -- BEFORE any vector
+    storage initializes -- when at least one of a workspace's three baseline
+    records (``entities``, ``relationships``, ``chunks``) names a model or a
+    dimension other than the one this process is configured with. One raise
+    lists every mismatched target: an operator planning a rebuild needs the
+    whole list, not the first entry.
+
+    A ``VectorSpaceMismatchError`` subclass so callers that already answer that
+    refusal (report it, run ``lightrag-rebuild-vdb``) answer this one the same
+    way. Unlike the parent, nothing physical refused here: the baseline is a
+    record kept in the configuration storage, and the container name on the
+    backends that carry one may well agree with the configuration -- that is
+    precisely the case this record exists to catch.
+
+    Args:
+        workspace: the workspace whose baselines were compared.
+        mismatches: one entry per target that differs, each a mapping with
+            ``target``, ``recorded_model``, ``recorded_dim``,
+            ``expected_model`` and ``expected_dim``.
+    """
+
+    def __init__(self, *, workspace: str, mismatches: list[dict]) -> None:
+        if not mismatches:
+            raise ValueError(
+                "EmbeddingBaselineMismatchError needs at least one mismatch"
+            )
+        lines = []
+        for m in mismatches:
+            lines.append(
+                f"{m.get('target')}: recorded model "
+                f"{m.get('recorded_model')!r} dim {m.get('recorded_dim')}, "
+                f"configured model {m.get('expected_model')!r} dim "
+                f"{m.get('expected_dim')}"
+            )
+        shown = workspace if workspace else "(default)"
+        message = (
+            f"Workspace {shown!r} refuses to start: the recorded embedding "
+            f"baseline differs from the configured embedding function for "
+            f"{len(mismatches)} vector target(s) -- "
+            + "; ".join(lines)
+            + ". The vectors in those targets were adopted under another "
+            "embedding space, so serving them would return nothing, or "
+            "confidently wrong neighbours. Rebuild them with "
+            "`lightrag-rebuild-vdb` (run with this embedding configuration), "
+            "or point this instance back at the previous embedding "
+            "configuration."
+        )
+        RuntimeError.__init__(self, message)
+        first = mismatches[0]
+        self.backend = "configuration storage"
+        self.container = workspace
+        self.expected_model = first.get("expected_model")
+        self.expected_dim = first.get("expected_dim")
+        self.stored_model = first.get("recorded_model")
+        self.stored_dim = first.get("recorded_dim")
+        self.workspace = workspace
+        self.mismatches = [dict(m) for m in mismatches]
+        self.targets = [m.get("target") for m in mismatches]
+
+
 class VectorStorageEmptyError(RuntimeError):
     """A vector storage holds nothing while the data it indexes is not empty.
 

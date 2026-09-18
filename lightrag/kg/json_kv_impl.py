@@ -1,7 +1,7 @@
 import copy
 import os
 from dataclasses import dataclass
-from typing import Any, ClassVar, final
+from typing import Any, AsyncIterator, ClassVar, final
 
 from lightrag.base import (
     normalize_kv_create_time,
@@ -426,6 +426,34 @@ class JsonKVStorage(BaseKVStorage):
         """
         async with self._storage_lock:
             return len(self._data) == 0
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract), a page of keys at a time.
+
+        The key list is one Manager RPC taken under the lock; each page then
+        re-reads its rows under the lock, so a row deleted mid-scan is skipped
+        and a row inserted mid-scan may or may not appear. Rows are deep-copied
+        like ``get_by_ids`` so a caller cannot alias the shared dict.
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
+        page_size = max(1, int(page_size))
+        async with self._storage_lock:
+            keys = list(self._data.keys())
+        for start in range(0, len(keys), page_size):
+            page: list[dict[str, Any]] = []
+            async with self._storage_lock:
+                for key in keys[start : start + page_size]:
+                    data = self._data.get(key)
+                    if data is None:
+                        continue
+                    row = copy.deepcopy(data)
+                    row.setdefault("create_time", 0)
+                    row.setdefault("update_time", 0)
+                    row["_id"] = key
+                    page.append(row)
+            for row in page:
+                yield row
 
     async def drop(self) -> dict[str, str]:
         """Clear shared memory and immediately persist the empty state.

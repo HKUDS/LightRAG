@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag.exceptions import VectorSpaceMismatchError
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
-from lightrag.namespace import NameSpace
+from lightrag.namespace import CONFIG_WORKSPACE, NameSpace
 from lightrag.tools.rebuild_vdb import (
     check_vdb_consistency,
     rebuild_chunks_vdb,
@@ -865,12 +865,10 @@ async def test_check_only_stub_carries_embedding_model_name(monkeypatch):
 
     captured_funcs = []
 
-    class _DummyStorage:
+    class _DummyStorage(_FakeConfigStorage):
         def __init__(self, *, embedding_func, **kwargs):
+            super().__init__(**kwargs)
             captured_funcs.append(embedding_func)
-
-        async def initialize(self):
-            return None
 
     monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
 
@@ -898,12 +896,8 @@ async def test_check_only_stub_model_name_none_when_unset(monkeypatch):
 
     monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
 
-    class _DummyStorage:
-        def __init__(self, **kwargs):
-            pass
-
-        async def initialize(self):
-            return None
+    class _DummyStorage(_FakeConfigStorage):
+        pass
 
     monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
 
@@ -1083,10 +1077,26 @@ class _RefusingVDB(MockVDB):
         self.drop = AsyncMock(side_effect=_drop)
 
 
+class _FakeConfigStorage:
+    """The surface setup_storages() touches on the configuration storage:
+    the factory binds it to the reserved workspace, initializes it with the
+    sources, and strict-reads the three baselines (all absent here)."""
+
+    supports_strict_point_reads = True
+
+    def __init__(self, **kwargs):
+        self.workspace = kwargs.get("workspace")
+        self.initialize = AsyncMock()
+
+    async def get_by_id_strict(self, id):
+        return None
+
+
 def _tool_with_storages(entities, relationships, chunks):
     tool = rebuild_vdb.RebuildTool()
     tool.graph = SimpleNamespace(initialize=AsyncMock())
     tool.text_chunks = SimpleNamespace(initialize=AsyncMock())
+    tool.configuration_storage = _FakeConfigStorage(workspace=CONFIG_WORKSPACE)
     tool.entities_vdb = entities
     tool.relationships_vdb = relationships
     tool.chunks_vdb = chunks
@@ -1119,6 +1129,7 @@ async def _setup_with(tool, monkeypatch):
     by_namespace = {
         NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION: tool.graph,
         NameSpace.KV_STORE_TEXT_CHUNKS: tool.text_chunks,
+        NameSpace.KV_STORE_CONFIG: tool.configuration_storage,
         NameSpace.VECTOR_STORE_ENTITIES: tool.entities_vdb,
         NameSpace.VECTOR_STORE_RELATIONSHIPS: tool.relationships_vdb,
         NameSpace.VECTOR_STORE_CHUNKS: tool.chunks_vdb,

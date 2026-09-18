@@ -99,6 +99,17 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 - LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 
+### Configuration storage contract
+
+**Full contract: [docs/design/ConfigurationStorage.md](docs/design/ConfigurationStorage.md) — read it before touching `lightrag/config_store.py`, `LightRAG.initialize_storages` / `finalize_storages`, `validate_workspace`, the `config` KV namespace on any backend, the baseline writes in `lightrag/tools/rebuild_vdb.py`, or the configuration cleanup in `/documents/clear`.**
+
+- One KV namespace (`config`) in one fixed, reserved workspace (`_lightrag_config`) holds the server's settings and every workspace's. Only `create_configuration_storage()` may bind that workspace; the `_lightrag*` name family is refused everywhere else, and no `*_WORKSPACE` environment variable may remap it. Never add a public `allow_reserved`-style flag.
+- Keys are `<workspace>/<suffix>` (separator `/`, never `.`) and are **never reparsed**: the row carries `workspace` as a field. Every suffix is declared in `CONFIG_KEY_REGISTRY` before it is written.
+- The first keys are the three per-target embedding baselines. A baseline is *the space adopted for that target*, not *the space its vectors were written in*; `origin` records how it was established and never enters a verdict. Reads are strict: a read that could not complete is a startup failure, never "absent".
+- Startup is nine ordered steps. Only the precheck of records that exist runs before the vector storages initialize; the coverage gate, the entity probe and the establishment of absent baselines run after `INITIALIZED`. `INITIALIZED` means *resources exist and must be released*, not *checks passed*. A failure before it rolls back everything it opened (reverse order, configuration storage last); a failure after it is sticky.
+- An absent baseline is claimed under a keyed lock with the flush and a strict read-back **inside** the lock, and that covers workers of one Gunicorn master only — concurrent initialization by separate process trees is unsupported, not a residue. A probe that could not run writes **nothing**.
+- Rebuild: per target, data durable and verified first, that one target's record last, non-zero exit if the record fails. Drop: every data storage first, the three records last, all-or-nothing. A baseline never suppresses a refusal from the coverage gate or a per-container marker.
+
 ### Relation weight contract
 
 **Full contract: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#relation-weight-contract)** — keep it synchronized with the core API docstrings, REST graph documentation, and custom-KG examples whenever relation write behavior changes.
