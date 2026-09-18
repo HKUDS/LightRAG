@@ -5127,6 +5127,45 @@ class PGVectorStorage(BaseVectorStorage):
             )
             raise
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        Scoped by ``workspace``, not just by table: PostgreSQL isolates
+        workspaces with a column, so an unfiltered read would report a sibling
+        workspace's rows as this one's. The table name already carries the
+        embedding model and dimension, which is exactly why this backend needs
+        the check -- a model change lands in a different, empty table.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+
+        query = (
+            f"SELECT EXISTS(SELECT 1 FROM {self.table_name} WHERE workspace=$1) "
+            f"AS has_data"
+        )
+        result = await self.db.query(query, [self.workspace])
+        if not result or "has_data" not in result:
+            # `SELECT EXISTS(...)` always produces exactly one row, so no row
+            # means the read did not do what it claims. Raising keeps that out
+            # of the "empty" answer, which is the only one that can refuse.
+            raise RuntimeError(
+                f"[{self.workspace}] emptiness check on {self.table_name} "
+                f"returned no row"
+            )
+        return not result["has_data"]
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
 
