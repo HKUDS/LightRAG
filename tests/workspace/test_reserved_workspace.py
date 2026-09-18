@@ -23,7 +23,19 @@ from lightrag.utils import (
 pytestmark = pytest.mark.offline
 
 
-@pytest.mark.parametrize("name", ["_lightrag_config", "_lightrag_server", "_lightragx"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "_lightrag_config",
+        "_lightrag_server",
+        "_lightragx",
+        # Case variants: OpenSearch lowercases index names, so these would
+        # land on the internal container's index if they were tenant-safe.
+        "_LightRAG_config",
+        "_LIGHTRAG_CONFIG",
+        "_Lightrag_other",
+    ],
+)
 def test_the_reserved_family_is_refused(name):
     assert is_reserved_workspace(name)
     with pytest.raises(ValueError, match="reserved"):
@@ -41,6 +53,9 @@ def test_the_grant_admits_exactly_one_name_and_only_while_held():
         assert validate_workspace(CONFIG_WORKSPACE) == CONFIG_WORKSPACE
         with pytest.raises(ValueError):
             validate_workspace(RESERVED_WORKSPACE_PREFIX + "_other")
+        with pytest.raises(ValueError):
+            # One SPELLING, not one name folded: the grant is exact.
+            validate_workspace(CONFIG_WORKSPACE.upper())
     with pytest.raises(ValueError):
         validate_workspace(CONFIG_WORKSPACE)
 
@@ -176,6 +191,8 @@ class TestEnvironmentRemapCannotNameAReservedWorkspace:
         assert validate_workspace_override("X_WORKSPACE", "") == ""
         with pytest.raises(ValueError, match="X_WORKSPACE.*reserved"):
             validate_workspace_override("X_WORKSPACE", CONFIG_WORKSPACE)
+        with pytest.raises(ValueError, match="reserved"):
+            validate_workspace_override("X_WORKSPACE", "_LightRAG_config")
 
     def test_opensearch(self, monkeypatch):
         from lightrag.kg.opensearch_impl import _resolve_workspace
@@ -183,6 +200,20 @@ class TestEnvironmentRemapCannotNameAReservedWorkspace:
         monkeypatch.setenv("OPENSEARCH_WORKSPACE", CONFIG_WORKSPACE)
         with pytest.raises(ValueError, match="reserved"):
             _resolve_workspace("tenant", "text_chunks")
+
+    def test_opensearch_refuses_the_case_variant_its_index_names_fold(
+        self, monkeypatch
+    ):
+        """OpenSearch lowercases index names, so ``_LightRAG_config`` would
+        share the internal container's index. The reservation is
+        case-insensitive for exactly this reason."""
+        from lightrag.kg.opensearch_impl import _resolve_workspace
+
+        monkeypatch.setenv("OPENSEARCH_WORKSPACE", "_LightRAG_config")
+        with pytest.raises(ValueError, match="reserved"):
+            _resolve_workspace("tenant", "config")
+        with pytest.raises(ValueError, match="reserved"):
+            validate_workspace("_LightRAG_config")
 
     def test_redis(self, monkeypatch):
         from unittest.mock import MagicMock

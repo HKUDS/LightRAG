@@ -64,8 +64,12 @@ workspace's. Configuration does not follow the knowledge base it configures.
 ### The internal factory, and why the reservation cannot be a plain rule
 
 The whole `_lightrag*` workspace-name family is reserved and
-`validate_workspace()` rejects it. That rule, applied naively, **rejects the
-configuration storage itself**: all five KV backends call
+`validate_workspace()` rejects it — **case-insensitively**. OpenSearch
+lowercases index names, so `_LightRAG_config` and `_lightrag_config` are one
+index there, and a reservation that knew only one spelling would let an
+ordinary storage reach the configuration container through the other. The
+grant, by contrast, admits exactly one spelling. That rule, applied naively,
+**rejects the configuration storage itself**: all five KV backends call
 `validate_workspace(self.workspace)` in `__post_init__` (`JsonKVStorage`,
 `RedisKVStorage`, `MongoKVStorage`, `PGKVStorage`, `OpenSearchKVStorage`). So
 the reservation needs a private door, and the

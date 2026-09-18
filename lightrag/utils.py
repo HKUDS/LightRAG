@@ -7887,8 +7887,18 @@ _reserved_workspace_grant: contextvars.ContextVar[str | None] = contextvars.Cont
 
 
 def is_reserved_workspace(workspace: str | None) -> bool:
-    """Whether ``workspace`` belongs to the family LightRAG keeps for itself."""
-    return bool(workspace) and str(workspace).startswith(RESERVED_WORKSPACE_PREFIX)
+    """Whether ``workspace`` belongs to the family LightRAG keeps for itself.
+
+    Case-insensitive on purpose: OpenSearch lowercases index names, so
+    ``_LightRAG_config`` and ``_lightrag_config`` land on the SAME index there,
+    and a reservation that only knew one spelling would let an ordinary
+    storage reach the configuration container through the other. The grant
+    still admits exactly one spelling (``CONFIG_WORKSPACE``), so every
+    variant is refused everywhere else.
+    """
+    return bool(workspace) and (
+        str(workspace).casefold().startswith(RESERVED_WORKSPACE_PREFIX.casefold())
+    )
 
 
 class _ReservedWorkspaceGrant:
