@@ -104,7 +104,17 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 
     return LightRAG(
         working_dir=str(tmp_path),
-        workspace=f"chunking-parity-{tmp_path.name}",
+        # The parent is in the name because every caller here passes a
+        # SUBDIRECTORY of pytest's tmp_path (`tmp_path / "work"`), so
+        # `tmp_path.name` alone is "work" for most tests in this file and they
+        # would all share one workspace. That matters because the two stores
+        # this collides across do not have the same lifetime: JsonKVStorage
+        # keeps its data in a process-wide `Manager().dict()` keyed by
+        # workspace, while NanoVectorDBStorage writes files under working_dir.
+        # One test's text chunks therefore survive into the next test's fresh,
+        # empty chunk vectors -- a shape no deployment produces, and one the
+        # startup gate correctly refuses.
+        workspace=f"chunking-parity-{tmp_path.parent.name}-{tmp_path.name}",
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=32,

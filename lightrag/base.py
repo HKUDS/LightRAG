@@ -495,6 +495,81 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors at all.
+
+        **This is the opposite contract from** ``BaseKVStorage.is_empty`` and
+        the difference is not cosmetic. That one catches its errors and answers
+        ``True``; this one MUST answer ``True`` only when it positively read
+        the container and found nothing, and MUST raise otherwise. The reason
+        is the direction each answer is used in: the startup gate refuses a
+        deployment on ``True`` here, so an error reported as "empty" is a
+        false outage, while the same error on the source side merely skips a
+        check. Never borrow a KV implementation for this.
+
+        The same rule rules out ``get_by_ids`` as a substitute: every
+        server-backed implementation catches its transport errors, logs, and
+        returns an empty list, so a miss and an outage arrive as one value.
+
+        The default raises :class:`~lightrag.exceptions.StorageCapabilityError`
+        -- the fail-closed compatibility rule used by ``iter_labels`` and
+        ``iter_edges``. A backend that has not implemented this is one the gate
+        cannot question, which is where every backend stood before the gate
+        existed; it must never be read as an answer.
+
+        Returns:
+            ``True`` if the container holds no vectors, ``False`` if it holds
+            at least one.
+
+        Raises:
+            StorageCapabilityError: this backend cannot answer the question.
+            Exception: the container could not be read. The caller treats any
+                raise as "no evidence" and does not refuse on it.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support emptiness checks"
+        )
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this container holds vectors whose embedding model is unrecorded.
+
+        Answered from state ``initialize()`` already computed, so asking is
+        cheap enough for every startup. ``True`` means two things at once: the
+        container records no model, AND this process can name one -- a process
+        with no ``model_name`` has nothing to record and must answer ``False``,
+        or it would invite a caller to pay for evidence no one can act on.
+
+        The default is ``False``, which is the right answer for every backend
+        whose container NAME carries the model (Milvus, Qdrant, PostgreSQL):
+        there is no marker to adopt, and a second copy of a fact the name
+        already carries would only drift.
+
+        Read ``docs/design/VectorSpaceProvenance.md`` before changing what
+        counts as pending. In particular this must NOT report a container that
+        is merely empty: an empty container is adopted by the backend itself,
+        without evidence, because there are no vectors to misdescribe.
+        """
+        return False
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model over a container recording none.
+
+        Called by ``LightRAG.initialize_storages()`` only after a round-trip
+        probe has confirmed the stored vectors really came from this model.
+        Never call it on unexamined evidence: the recorded name is believed by
+        every later start, so a false one disables the gate permanently.
+
+        MUST NOT raise. A marker this process cannot write (a read-only
+        account, a denied ``collMod``, a full disk) leaves the container
+        exactly where it was -- unmarked, which is where every container was
+        before this feature existed. Returning ``False`` costs one more probe
+        at the next start; raising would turn a safety feature into an outage.
+
+        Returns:
+            Whether the container now records this process's embedding model.
+        """
+        return False
+
 
 def normalize_kv_create_time(value: Any) -> int:
     """Coerce a stored ``create_time`` into the int the KV contract promises.

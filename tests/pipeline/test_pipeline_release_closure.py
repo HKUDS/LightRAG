@@ -90,7 +90,15 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 
     return LightRAG(
         working_dir=str(tmp_path),
-        workspace=f"test-release-closure-{tmp_path.name}",
+        # The parent is in the name because callers here pass a SUBDIRECTORY of
+        # pytest's tmp_path (`tmp_path / "work"`), so `tmp_path.name` alone
+        # collides across tests. That matters because the two stores it collides
+        # across do not have the same lifetime: JsonKVStorage keeps its data in a
+        # process-wide Manager().dict() keyed by workspace, while file-backed
+        # vector storages write under working_dir, which IS unique per test. One
+        # test's text chunks then survive into the next test's fresh, empty
+        # chunk vectors -- a shape no deployment produces.
+        workspace=f"test-release-closure-{tmp_path.parent.name}-{tmp_path.name}",
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=32,
