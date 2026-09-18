@@ -296,16 +296,55 @@ Consequences the implementation owes:
   method, and its comment gives the reason — "turning a fail-closed gate into a
   one-shot one". Every failure introduced here joins that mechanism rather than
   inventing a second one.
-- **Steps 1-3 are the only ones outside it**, and they get explicit cleanup
-  instead (below).
+- **Steps 1-4 run outside it**, and need explicit cleanup instead (below).
 
 ### Cleanup before `INITIALIZED` exists
 
-Steps 2 and 3 both run with the configuration storage up and nothing else, so
-neither can rely on the teardown list. **Both** failure paths — a strict read
-that could not complete, and a precheck refusal — close the configuration
-storage explicitly (client, pool, refcount) before raising. A refusal that leaks
-a connection pool turns a safety feature into an operational one.
+Everything up to and including step 4 runs while the status is still `CREATED`,
+so none of it is covered by the teardown list. Three failure points live there,
+and all three must release what they opened:
+
+**Step 2, a strict read that could not complete**, and **step 3, a precheck
+refusal.** The configuration storage is up and nothing else is. Both paths close
+it explicitly (client, pool, refcount) before raising. A refusal that leaks a
+connection pool turns a safety feature into an operational one.
+
+**Step 4, a storage that fails partway through the loop.** This is the case an
+earlier revision of this document got wrong by claiming only steps 1-3 were
+exposed. The loop initializes twelve storages one at a time; if the eighth
+raises, seven are up, the configuration storage is up, the status is still
+`CREATED`, and the caller's `finalize_storages()` releases none of them.
+
+So step 4 owns a rollback protocol:
+
+- track every storage the loop has **started**, in order;
+- on a failure, best-effort finalize in reverse order — the storage that raised
+  (it may have allocated before raising), then the ones that succeeded, then the
+  configuration storage;
+- a teardown failure is logged and never replaces the original exception, which
+  is what propagates;
+- a storage the loop never reached is left alone.
+
+**Do not simply move `INITIALIZED` ahead of the loop instead.** Teardown would
+then call `finalize()` on storages that never ran `initialize()`, and that is
+not a contract the backends currently offer: `PGKVStorage.finalize` and
+`MongoKVStorage.finalize` guard on `self.db is not None` and are safe, Redis
+documents `close()` as idempotent — but `OpenSearchKVStorage.finalize` awaits
+`_flush_pending_kv_ops()` *before* its `self.client is not None` guard, so it
+does not obviously tolerate an instance that was never initialized. Introducing
+an `INITIALIZING` status that teardown understands is a legitimate alternative,
+but it needs that per-backend contract established first and stated here; the
+tracked-list rollback needs nothing new from any backend.
+
+Partial-initialization leakage predates this design — the loop has always been
+able to fail midway. What this slice adds is the configuration storage in the
+same chain, and it must not be the reason the gap goes on being undocumented.
+
+**A failed step 4 does not heal by retrying.** Either the failure is retained
+the way post-`INITIALIZED` failures are, or a full retry is supported and
+re-runs every step from 1; what is not acceptable is a second
+`initialize_storages()` returning successfully because some state was left
+behind by the first.
 
 ## Claiming a baseline atomically
 
@@ -617,3 +656,8 @@ The implementation is not complete until these are regression tests.
 21. Concurrent claims are covered only for workers of one Gunicorn master;
     nothing asserts anything about two independent masters, which the contract
     does not support.
+22. A storage in step 4 raises — injected at the first, a middle and the last
+    member of the loop. The configuration storage, the storage that raised and
+    every storage initialized before it are each released exactly once;
+    storages the loop never reached are not touched; the original exception is
+    what propagates.
