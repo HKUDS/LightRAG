@@ -360,6 +360,16 @@ Partial-initialization leakage predates this design — the loop has always been
 able to fail midway. What this slice adds is the configuration storage in the
 same chain, and it must not be the reason the gap goes on being undocumented.
 
+**Construction, before step 1, has the same shape and no rollback at all.**
+`LightRAG.__post_init__` is synchronous, and `RedisKVStorage` takes its
+shared-pool reference in its constructor, so a constructor that raises after
+another Redis storage was built leaks that reference with no `finalize()`
+reachable. That too predates this design (twelve constructors ran in sequence
+before it). What this slice owes is to add nothing to it: the configuration
+storage is constructed **last**, after every business storage, so a refusal in
+an ordinary constructor — a reserved `*_WORKSPACE` override is the one this
+slice introduces — finds nothing of the configuration storage's to leak.
+
 **A failed step 4 does not heal by retrying.** Either the failure is retained
 the way post-`INITIALIZED` failures are, or a full retry is supported and
 re-runs every step from 1; what is not acceptable is a second

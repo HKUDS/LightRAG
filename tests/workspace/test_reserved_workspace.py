@@ -258,3 +258,55 @@ class TestEnvironmentRemapCannotNameAReservedWorkspace:
             storage.meta_fields = set()
             with pytest.raises(ValueError, match="reserved"):
                 storage.__post_init__()
+
+
+def test_a_refused_override_leaks_no_configuration_pool_reference(
+    tmp_path, monkeypatch
+):
+    """``RedisKVStorage`` takes its shared-pool reference in its constructor,
+    and ``LightRAG.__post_init__`` has no async teardown. Had the
+    configuration storage been constructed FIRST, the refusal in the first
+    ordinary storage's constructor would have left its reference behind,
+    growing on every failed construction. It is constructed last, so a refused
+    override acquires nothing."""
+    pytest.importorskip("redis")
+    from unittest.mock import MagicMock
+
+    from lightrag import LightRAG
+    from lightrag.kg.redis_impl import RedisConnectionManager
+    from lightrag.utils import Tokenizer, TokenizerInterface
+
+    class _StubTokenizer(TokenizerInterface):
+        def encode(self, content: str) -> list[int]:
+            return [ord(c) for c in content]
+
+        def decode(self, tokens: list[int]) -> str:
+            return "".join(chr(t) for t in tokens)
+
+    url = f"redis://leak-check-{tmp_path.name}:6379"
+    monkeypatch.setenv("REDIS_URI", url)
+    monkeypatch.setenv("REDIS_WORKSPACE", CONFIG_WORKSPACE)
+    monkeypatch.setattr(
+        "lightrag.kg.redis_impl.ConnectionPool.from_url",
+        lambda *args, **kwargs: MagicMock(name="pool"),
+    )
+    monkeypatch.setattr(
+        "lightrag.kg.redis_impl.Redis", lambda connection_pool=None, **_: MagicMock()
+    )
+
+    async def _llm(prompt, **kwargs):  # pragma: no cover - never called
+        return ""
+
+    with pytest.raises(ValueError, match="reserved"):
+        LightRAG(
+            working_dir=str(tmp_path),
+            workspace="tenant",
+            llm_model_func=_llm,
+            kv_storage="RedisKVStorage",
+            # The default tokenizer downloads tiktoken data; not this test's
+            # subject, and not available offline.
+            tokenizer=Tokenizer("stub", _StubTokenizer()),
+        )
+
+    assert url not in RedisConnectionManager._pools
+    assert RedisConnectionManager._pool_refs.get(url, 0) == 0
