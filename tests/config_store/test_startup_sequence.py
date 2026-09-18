@@ -379,20 +379,47 @@ async def test_several_mismatches_are_one_refusal(tmp_path):
     assert excinfo.value.targets == ["entities", "chunks"]
 
 
-async def test_a_recorded_mismatch_is_sticky_only_through_the_record(tmp_path):
-    """A mismatch refused before INITIALIZED leaves nothing up, so a retry
-    re-runs from step 1 -- and refuses again on the same record. What it may
-    never do is come back successful."""
+async def test_a_failure_before_initialized_is_sticky_too(tmp_path):
+    """A refusal before INITIALIZED leaves nothing up -- and the retry is a
+    new instance, not this one: not every backend's finalize() is reversible,
+    so a second call on the same object re-raises rather than re-running the
+    steps on storages the rollback closed."""
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
     await rag.finalize_storages()
     await _write_record(tmp_path, "entities", model_name="previous-model")
 
     refused = _rag(tmp_path, model_name="bge-m3")
+    config_init = _Spy(refused.configuration_storage, "initialize")
     with pytest.raises(EmbeddingBaselineMismatchError):
         await refused.initialize_storages()
     with pytest.raises(EmbeddingBaselineMismatchError):
         await refused.initialize_storages()
+    assert config_init.calls == 1, "the second call must not re-run the steps"
+    assert refused._storages_status is StoragesStatus.CREATED
+
+
+async def test_a_cancellation_after_initialized_is_sticky(tmp_path):
+    """asyncio.CancelledError is not an Exception. Without retaining it, a
+    cancelled probe, claim or flush leaves the status INITIALIZED and the next
+    call early-returns as ready with the checks never completed."""
+    import asyncio
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    _Spy(
+        rag.configuration_storage,
+        "index_done_callback",
+        raise_with=asyncio.CancelledError(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await rag.initialize_storages()
+    assert rag._storages_status is StoragesStatus.INITIALIZED
+
+    with pytest.raises(RuntimeError, match="interrupted by CancelledError"):
+        await rag.initialize_storages()
+
+    await rag.finalize_storages()
 
 
 # ---------------------------------------------------------------------------

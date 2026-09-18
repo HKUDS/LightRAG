@@ -348,7 +348,19 @@ same chain, and it must not be the reason the gap goes on being undocumented.
 the way post-`INITIALIZED` failures are, or a full retry is supported and
 re-runs every step from 1; what is not acceptable is a second
 `initialize_storages()` returning successfully because some state was left
-behind by the first.
+behind by the first. The implementation takes the first option, for every
+failure before `INITIALIZED` and not only step 4's: not every backend's
+`finalize()` is reversible (`RedisKVStorage.close()` drops its client while
+leaving `_initialized` set), so a retry on the same object could neither
+succeed honestly nor re-run from step 1. A new instance is the retry.
+
+**Cancellation is a failure too.** `asyncio.CancelledError` is not an
+`Exception`, and a handler that catches only `Exception` after `INITIALIZED`
+lets a cancelled probe, claim or flush leave the status `INITIALIZED` with
+nothing retained -- the next call early-returns as ready with the checks never
+completed. Every failure is retained, `BaseException` included; an interruption
+that cannot itself be re-raised later is retained as a `RuntimeError` naming
+it.
 
 ## Claiming a baseline atomically
 
