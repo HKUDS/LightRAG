@@ -2111,17 +2111,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Best-effort teardown for a failure BEFORE ``INITIALIZED``.
 
         ``finalize_storages()`` releases nothing while the status is still
-        ``CREATED``, so the storages that are up must be released here: in
-        reverse order, the configuration storage last, every failure logged and
-        none of them allowed to replace the exception that is propagating.
+        ``CREATED``, so everything this instance holds must be released here:
+        in reverse initialization order, the configuration storage last, every
+        failure logged and none of them allowed to replace the exception that
+        is propagating.
+
+        Two kinds of holding, and they take different calls. A storage the
+        rollback list names has begun ``initialize()`` and gets ``finalize()``.
+        A storage BELOW the failure never initialized -- but construction is
+        not free everywhere, and a constructor that took a process-wide
+        resource (the Redis backends take a reference on the shared connection
+        pool) would keep it for the life of the process: those get
+        ``release_unstarted()``, whose default releases nothing. Calling
+        ``finalize()`` on them instead is not an option -- no backend promises
+        it works on an instance that never initialized. The failure is sticky,
+        so nothing here can be needed again.
         See *Cleanup before INITIALIZED exists* in
         docs/design/ConfigurationStorage.md.
         """
-        for name, storage in reversed(started):
+        up = {id(storage) for _, storage in started if storage is not None}
+        constructed: list[tuple[str, Any]] = [
+            ("configuration_storage", getattr(self, "configuration_storage", None)),
+            *self._business_storages(),
+        ]
+        for name, storage in reversed(constructed):
             if storage is None:
                 continue
+            if id(storage) in up:
+                release = storage.finalize
+            else:
+                release = getattr(storage, "release_unstarted", None)
+                if release is None:
+                    continue
             try:
-                await storage.finalize()
+                await release()
             except asyncio.CancelledError:
                 raise
             except Exception as teardown_error:

@@ -50,7 +50,7 @@ from .shared_storage import (
     get_update_flag,
     set_all_update_flags,
     clear_all_update_flags,
-    try_initialize_namespace,
+    namespace_init_claim,
 )
 
 
@@ -126,9 +126,11 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Bind to the shared namespace dict and load from disk on first init.
 
         Same protocol as ``JsonKVStorage.initialize``: a global init
-        lock (``try_initialize_namespace``) elects one process to read
-        the JSON file into the shared ``self._data``; other processes
-        skip the read and see the same shared dict.
+        lock (``namespace_init_claim``) elects one process to read the
+        JSON file into the shared ``self._data``; other processes skip
+        the read and see the same shared dict. The load stays inside the
+        claim so that a failed read is retried by the next process
+        instead of leaving the namespace empty but marked loaded.
         """
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
@@ -138,19 +140,19 @@ class JsonDocStatusStorage(DocStatusStorage):
         )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(
+            async with namespace_init_claim(
                 self.namespace, workspace=self.workspace
-            )
-            self._data = await get_namespace_data(
-                self.namespace, workspace=self.workspace
-            )
-            if need_init:
-                loaded_data = load_json(self._file_name) or {}
-                async with self._storage_lock:
-                    self._data.update(loaded_data)
-                    logger.info(
-                        f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
-                    )
+            ) as need_init:
+                self._data = await get_namespace_data(
+                    self.namespace, workspace=self.workspace
+                )
+                if need_init:
+                    loaded_data = load_json(self._file_name) or {}
+                    async with self._storage_lock:
+                        self._data.update(loaded_data)
+                        logger.info(
+                            f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
+                        )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""

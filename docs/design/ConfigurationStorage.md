@@ -347,7 +347,9 @@ So step 4 owns a rollback protocol:
   configuration storage;
 - a teardown failure is logged and never replaces the original exception, which
   is what propagates;
-- a storage the loop never reached is left alone.
+- a storage the loop never reached is not `finalize()`d — but it is not simply
+  left alone either, because construction is not free everywhere. See
+  *Construction is not free* below.
 
 **Do not simply move `INITIALIZED` ahead of the loop instead.** Teardown would
 then call `finalize()` on storages that never ran `initialize()`, and that is
@@ -364,15 +366,34 @@ Partial-initialization leakage predates this design — the loop has always been
 able to fail midway. What this slice adds is the configuration storage in the
 same chain, and it must not be the reason the gap goes on being undocumented.
 
-**Construction, before step 1, has the same shape and no rollback at all.**
-`LightRAG.__post_init__` is synchronous, and `RedisKVStorage` takes its
-shared-pool reference in its constructor, so a constructor that raises after
-another Redis storage was built leaks that reference with no `finalize()`
-reachable. That too predates this design (twelve constructors ran in sequence
-before it). What this slice owes is to add nothing to it: the configuration
-storage is constructed as the **last statement of `__post_init__` that can
-raise** — after every business storage and after every validation that follows
-them (`llm_model_func` present, `role_llm_configs` well-formed) — so a refusal
+#### Construction is not free
+
+`RedisKVStorage` and `RedisDocStatusStorage` take their shared-pool reference
+in `__post_init__`, not in `initialize()` — alone among the backends. Two
+consequences, and they need different answers.
+
+**A startup that fails before a storage's turn.** Construction SUCCEEDED, so
+every Redis-backed storage already holds a reference; a refusal at step 2 or 3
+means the rollback list names only the configuration storage, and the other
+references belong to storages whose `initialize()` never ran. `finalize()` is
+not available to the rollback there — no backend promises it works on an
+instance that never initialized, which is the same argument that keeps
+`INITIALIZED` behind the loop. So the rollback calls `release_unstarted()` on
+them instead: a surface whose default releases nothing, overridden only where
+the constructor took something. The failure is sticky, so nothing it releases
+can be wanted again. The alternative — moving the acquisition into
+`initialize()`, where every other backend does it — is the better fix and is
+tracked in [#4016](https://github.com/HKUDS/LightRAG/issues/4016); `release_unstarted()` is correct either way, and becomes a
+no-op once that lands.
+
+**A constructor that raises.** `LightRAG.__post_init__` is synchronous, so
+there is no rollback to run at all: a constructor that raises after another
+Redis storage was built leaks that reference with no `finalize()` reachable.
+That predates this design (twelve constructors ran in sequence before it), and
+what this slice owes is to add nothing to it: the configuration storage is
+constructed as the **last statement of `__post_init__` that can raise** —
+after every business storage and after every validation that follows them
+(`llm_model_func` present, `role_llm_configs` well-formed) — so a refusal
 anywhere in construction, a reserved `*_WORKSPACE` override being the one this
 slice introduces, finds nothing of the configuration storage's to leak. A new
 check added to `__post_init__` goes **above** that construction.
@@ -504,6 +525,23 @@ than assume it, since `BaseKVStorage` defaults it to `False`.
 
 A configuration store that was deliberately emptied reads as confirmed absent
 and bootstraps again, which is correct. A store that cannot be reached does not.
+
+**Strictness has to survive the layer below the read, too.** On the JSON
+backend the file is read once per process tree and shared: the first instance
+to ask wins a claim, loads the file into the shared namespace dict, and every
+later instance reads that dict instead of the file. The flag recording the
+claim says "loaded" from the moment it is taken, so a load that FAILS — a
+momentary `PermissionError`, a full disk — used to leave the namespace marked
+loaded and EMPTY. The instance that hit the failure refused correctly; the next
+one in the same process tree skipped the file, read absence as confirmed
+absence, bootstrapped its own model as a first start, and published the whole
+namespace over the record that should have refused it, taking every other
+workspace's rows in that file with it (a commit publishes the whole namespace).
+So a claim is a promise to finish: leaving the load by exception, cancellation
+included, hands the claim back and the next instance reads the file again
+(`namespace_init_claim` in `lightrag/kg/shared_storage.py`). A transient
+failure is therefore recoverable and a persistent one simply fails again,
+loudly, in the next claimer.
 
 ## Rebuild: one target at a time, configuration last
 

@@ -27,6 +27,7 @@ from lightrag.exceptions import (
     VectorSpaceMismatchError,
     VectorStorageEmptyError,
 )
+from lightrag.kg import json_kv_impl
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
@@ -513,6 +514,52 @@ async def test_a_strict_read_failure_fails_startup_and_releases_the_config_stora
     assert config_finalize.calls == 1
     assert full_docs_init.calls == 0
     assert _records(tmp_path) == {}, "nothing may be bootstrapped on a failed read"
+
+
+async def test_an_unreadable_configuration_file_is_read_again_by_the_next_instance(
+    tmp_path, monkeypatch
+):
+    """A failed read must not become "no baseline" for the whole process tree.
+
+    The JSON backend reads its file once per process tree and shares the
+    result; the flag that records the read is set before the read runs. A
+    read that then FAILS used to leave the namespace marked loaded and empty,
+    so the NEXT instance -- which skips the file -- saw no baseline at all,
+    bootstrapped its own model as a first start, and published the whole
+    namespace over the record that should have refused it. The failure is
+    handed back instead, so the file is read again and still governs.
+    """
+    await _seed(tmp_path, model_name="bge-m3")
+    config_file = tmp_path / CONFIG_WORKSPACE / "kv_store_config.json"
+    recorded = json.loads(config_file.read_text())
+    assert _records(tmp_path)["entities"]["model"] == "bge-m3"
+
+    # Restart the process tree: the shared dicts and the load claims start
+    # empty, which is what puts the file back in charge.
+    finalize_share_data()
+    initialize_share_data(workers=1)
+
+    real_load_json = json_kv_impl.load_json
+    refused = {"done": False}
+
+    def _load_json(path):
+        if not refused["done"] and str(path) == str(config_file):
+            refused["done"] = True
+            raise PermissionError("configuration file temporarily unreadable")
+        return real_load_json(path)
+
+    monkeypatch.setattr(json_kv_impl, "load_json", _load_json)
+
+    with pytest.raises(PermissionError):
+        await _rag(tmp_path, model_name="bge-m3").initialize_storages()
+    assert refused["done"]
+
+    rag = _rag(tmp_path, model_name="a-different-model")
+    with pytest.raises(EmbeddingBaselineMismatchError) as excinfo:
+        await rag.initialize_storages()
+
+    assert set(excinfo.value.targets) == {"entities", "relationships", "chunks"}
+    assert json.loads(config_file.read_text()) == recorded
 
 
 @pytest.mark.parametrize("position", ["first", "middle", "last"])
