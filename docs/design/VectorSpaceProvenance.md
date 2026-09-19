@@ -648,9 +648,11 @@ opposite directions:
   gate alone an error reported as "empty" costs nothing. The gate's source
   verdict later became the evidence for an `origin=empty` embedding baseline
   as well, and a durable write cannot rest on an answer that hides an outage,
-  so the chunk source is now read through the first page of
-  `BaseKVStorage.iter_rows()`, which raises on failure; `is_empty()` is a
-  fallback whose "empty" is read as unknown. See *Establishing a baseline* in
+  so on the starts that have a baseline to establish the chunk source is read
+  through the first page of `BaseKVStorage.iter_rows()`, which raises on
+  failure; `is_empty()` is a fallback whose "empty" is read as unknown, and it
+  stays the read for a target whose baseline is already recorded and which
+  therefore claims nothing. See *Establishing a baseline* in
   [ConfigurationStorage.md](ConfigurationStorage.md).
 
 The base-class default raises `StorageCapabilityError`, the fail-closed pattern
