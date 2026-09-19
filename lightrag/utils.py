@@ -12,6 +12,7 @@ import json
 import logging
 import logging.handlers
 import math
+import configparser
 import os
 import re
 import time
@@ -7958,6 +7959,74 @@ def validate_workspace_override(env_var: str, value: str | None) -> str | None:
             f"data cannot be remapped onto it"
         )
     return effective
+
+
+# Every ``*_WORKSPACE`` override, with the ``config.ini`` section that can set
+# it instead where one exists. Beside ``validate_workspace_override`` so a new
+# backend's override gets added to both at once.
+WORKSPACE_OVERRIDE_SOURCES: tuple[tuple[str, str | None], ...] = (
+    ("POSTGRES_WORKSPACE", "postgres"),
+    ("NEO4J_WORKSPACE", "neo4j"),
+    ("MEMGRAPH_WORKSPACE", None),
+    ("MILVUS_WORKSPACE", None),
+    ("MONGODB_WORKSPACE", None),
+    ("OPENSEARCH_WORKSPACE", None),
+    ("QDRANT_WORKSPACE", None),
+    ("REDIS_WORKSPACE", None),
+)
+
+_workspace_override_warning_emitted = False
+
+
+def warn_about_workspace_overrides() -> list[str]:
+    """Warn ONCE per process about every ``*_WORKSPACE`` override in effect.
+
+    These variables exist to keep LEGACY data reachable, and nothing above the
+    storage layer knows one is set: a backend applies it inside its own
+    constructor, so the workspace a caller asked for and the container its data
+    lands in can differ, and every record keyed by the caller's workspace --
+    the embedding baselines among them -- stays under the name the caller gave.
+
+    That is tolerable while the override never moves. Using one to MOVE data --
+    setting, changing or clearing it on a deployment that already has some --
+    points the same instance at a different container while those records stay
+    behind, and no check below can tell that apart from an ordinary start. So
+    the rule is stated where an operator will see it rather than enforced:
+    a storage's workspace follows the server's, and switching data location by
+    editing one of these is unsupported.
+
+    Returns the variables it warned about, so a caller can report them. Emits
+    at most once per process; later calls return the same list silently.
+    """
+    global _workspace_override_warning_emitted
+
+    file_config = configparser.ConfigParser()
+    try:
+        file_config.read("config.ini", "utf-8")
+    except (OSError, configparser.Error):  # pragma: no cover - unreadable file
+        pass
+
+    in_effect: list[str] = []
+    for env_var, section in WORKSPACE_OVERRIDE_SOURCES:
+        value = os.environ.get(env_var)
+        if (value is None or not value.strip()) and section is not None:
+            value = file_config.get(section, "workspace", fallback=None)
+        if value is not None and value.strip():
+            in_effect.append(env_var)
+
+    if in_effect and not _workspace_override_warning_emitted:
+        _workspace_override_warning_emitted = True
+        logger.warning(
+            f"Workspace override(s) in effect: {', '.join(in_effect)}. These "
+            f"exist only to keep legacy data reachable and are deprecated: a "
+            f"storage's workspace should follow the server's. They are applied "
+            f"inside the storage layer, so nothing above it sees one -- do NOT "
+            f"set, change or clear one to move an existing deployment's data. "
+            f"Doing so points this instance at a different container while the "
+            f"records keyed by the server's workspace, including the recorded "
+            f"embedding baselines, stay where they are."
+        )
+    return in_effect
 
 
 def validate_workspace(workspace: str) -> str:

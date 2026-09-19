@@ -91,6 +91,35 @@ door has to be one ordinary configuration cannot find:
   construction. Neo4j and Memgraph validate after applying theirs and need no
   second check.
 
+#### `*_WORKSPACE` is legacy compatibility, and baselines do not follow it
+
+A baseline is keyed by the workspace the CALLER named, and each backend applies
+its own `*_WORKSPACE` override inside its constructor, below the layer that
+computes that key. So when an override is in effect the record and the
+container it describes can sit under different names — and the override
+deliberately **collapses distinct logical workspaces onto one physical
+container** (`MilvusVectorDBStorage` says so in its own comments), so two
+instances on different models can each hold a matching baseline over the same
+container.
+
+This is **not** re-keyed by the effective workspace, and the reason is what the
+variables are for: they exist to keep LEGACY data reachable, and their presence
+is meant to be transparent to everything above the storage layer. Keying
+configuration by them would make that presence visible in the record format and
+would bless what is actually the unsupported act — using one to MOVE data.
+Setting, changing or clearing an override on a deployment that already has data
+points the instance at another container while everything keyed by the caller's
+workspace stays behind, and no check below can tell that apart from an ordinary
+start.
+
+So the rule is announced rather than enforced: `warn_about_workspace_overrides()`
+names every override in effect once per process at startup, states that they are
+deprecated, that a storage's workspace should follow the server's, and that
+switching data location by editing one is unsupported. Recovery, if one was
+moved: point the override back, or rebuild the moved target with
+`lightrag-rebuild-vdb`, which re-embeds from the authoritative sources and
+records the baseline afresh.
+
 Reserving must happen in the **first** slice, before any deployment can create a
 workspace with such a name: a reservation made later cannot reclaim a name
 already in use. Cost: a deployment whose workspace is already named that way
