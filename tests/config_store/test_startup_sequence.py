@@ -668,6 +668,31 @@ async def test_a_cancellation_during_rollback_still_finishes_the_releases(tmp_pa
 # ---------------------------------------------------------------------------
 
 
+async def test_a_cancelled_shutdown_still_gives_the_directory_back(tmp_path):
+    """Shutdown is the other place a cancel must not strand the claim.
+
+    ``finalize_storages`` awaits several times before it reaches the release,
+    and a cancel delivered at any of them -- an escalating shutdown is the
+    ordinary case -- would leave the directory claimed by a process on its way
+    out. The next server is then refused by one that is already gone, and no
+    later call can give it back: a retry returns early on the status.
+    """
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    assert holds_working_dir_lock(str(tmp_path)) is True
+
+    # The first storage the teardown reaches is cancelled.
+    _Spy(rag.full_docs, "finalize", raise_with=asyncio.CancelledError())
+
+    await rag.finalize_storages()
+
+    assert holds_working_dir_lock(str(tmp_path)) is False, (
+        "a cancelled shutdown kept the working-directory claim"
+    )
+
+
 async def test_a_gate_refusal_leaves_everything_releasable(tmp_path):
     """Scenario 18: the refusal comes AFTER the storages are up, so the status
     says so and finalize_storages() releases the configuration storage and
