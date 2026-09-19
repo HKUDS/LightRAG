@@ -301,11 +301,13 @@ class StorageNameSpace(ABC):
 
         The default is ``False``, which is the truth for an immediate-write or
         snapshot backend (no per-operation buffer, nothing to retain) and an
-        UNIMPLEMENTED answer for the deferred per-item vector storages, which
-        do buffer and do retain. Only ``OpenSearchKVStorage`` overrides it,
-        because only the KV side is asked today. Before querying this on a
-        vector storage, implement it there -- a confident ``False`` over a
-        non-empty buffer is worse than no method at all.
+        UNIMPLEMENTED answer for a deferred per-item backend, which does buffer
+        and does retain. The two OpenSearch storages that are asked today --
+        ``OpenSearchKVStorage`` (the configuration store's flush) and
+        ``OpenSearchVectorDBStorage`` (the rebuild tool, before it records a
+        baseline) -- override it. Before querying this on any other buffering
+        backend, implement it there: a confident ``False`` over a non-empty
+        buffer is worse than no method at all.
         """
         return False
 
