@@ -1197,10 +1197,21 @@ class OpenSearchKVStorage(BaseKVStorage):
         Refreshes before opening the PIT: the point-in-time freezes the view
         for the whole scan, so a row that is written but not yet in a
         searchable segment when it opens is missed by every page.
+
+        A missing index RAISES here rather than ending the scan, for the same
+        reason ``get_by_id_strict`` refuses to answer in that state: after
+        ``initialize()`` the index always exists, so a scan that finds it gone
+        cannot tell an empty namespace from a dropped one, and the base
+        ``iter_rows`` contract forbids presenting a partial listing as a
+        complete one.
         """
         await self._refresh_for_search()
         if not self._index_ready:
-            return
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] {self.namespace} index "
+                f"'{self._index_name}' is not ready; a scan cannot tell an "
+                f"empty namespace from a dropped one"
+            )
 
         try:
             pit = await self.client.create_pit(
@@ -1237,7 +1248,11 @@ class OpenSearchKVStorage(BaseKVStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' unexpectedly missing mid-scan; the "
+                    f"rows yielded so far are not a complete listing"
+                ) from e
             logger.error(f"[{self.workspace}] Error scanning documents: {e}")
             raise
 
@@ -1866,6 +1881,13 @@ class OpenSearchKVStorage(BaseKVStorage):
         buffered upsert of this process is yielded in place of (or in
         addition to) its indexed version and a buffered delete hides its
         row, matching what ``get_by_ids`` would answer for the same ids.
+
+        Raises ``StorageControlPlaneError`` when the index is gone -- the
+        scan never ends early to signal "empty". The refusal precedes every
+        row, the buffered ones included: ``_iter_raw_docs`` does not flush
+        (``_refresh_for_search`` is best-effort and returns on a missing
+        index), so the indexed side is unknown, and yielding the buffer alone
+        would be exactly the partial listing the base contract forbids.
         """
         if self._flush_lock is None:
             raise StorageNotInitializedError("OpenSearchKVStorage")
