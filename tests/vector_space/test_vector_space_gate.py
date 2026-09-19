@@ -25,11 +25,14 @@ from lightrag.exceptions import (
     VectorSpaceMismatchError,
     VectorStorageEmptyError,
 )
-from lightrag.utils import compute_mdhash_id
+from lightrag.utils import compute_mdhash_id, make_relation_vdb_ids
 from lightrag.vector_space_gate import (
     ADOPT_COSINE,
+    PROBE_ROWS,
     REFUSE_COSINE,
+    SAMPLE_SIZE,
     _cosine,
+    _sample_chunk_ids,
     check_vector_space_at_startup,
 )
 
@@ -223,6 +226,25 @@ class FakeVectorStorage:
         return self._adopt_result
 
 
+class _PositionalVectorStorage(FakeVectorStorage):
+    """``get_by_ids`` answered positionally, the way Nano answers it.
+
+    ``FakeVectorStorage`` filters its rows through ``set(ids)``, which hides
+    duplicate ids the way PostgreSQL's ``id = ANY(...)`` does.
+    ``NanoVectorDBStorage`` returns one entry per REQUESTED id instead -- see
+    the MISS-shape comment in ``_probe_target`` -- so a duplicated sample
+    arrives at the probe as duplicated ROWS. That is the backend this test
+    class models.
+    """
+
+    async def get_by_ids(self, ids):
+        self.reads += 1
+        if self._read_error is not None:
+            raise self._read_error
+        by_id = {row.get("id"): row for row in self._rows}
+        return [by_id[row_id] for row_id in ids if row_id in by_id]
+
+
 class FakeEmbedding:
     """Returns a fixed vector, or fails, or hangs."""
 
@@ -256,10 +278,13 @@ class FakeKVStorage:
     """``text_chunks`` -- the source side of the chunk pairing.
 
     ``is_empty`` mirrors the REAL ``BaseKVStorage`` contract, which catches its
-    backend errors and answers ``True``. The gate depends on that: an
-    unreadable source lands on the same branch as an empty one (skip), which is
-    the safe direction. The vector side is the opposite contract, and
-    ``FakeVectorStorage.is_empty`` raises to match it.
+    backend errors and answers ``True``; ``iter_rows`` mirrors ITS contract and
+    raises. The gate reads the source through ``iter_rows`` on the starts that
+    have a chunk BASELINE to establish, for exactly that reason: that verdict
+    backs a durable ``origin=empty`` record, and an unreadable source must land
+    on "no evidence", never on "empty". Every other start keeps ``is_empty()``,
+    whose "empty" only skips a check. The vector side is the opposite contract,
+    and ``FakeVectorStorage.is_empty`` raises to match it.
     """
 
     def __init__(self, *, rows=0, error=None, chunk_owner="doc-1"):
@@ -270,6 +295,7 @@ class FakeKVStorage:
         # ainsert_custom_kg leaves behind, since it writes no doc-status row.
         self._chunk_owner = chunk_owner
         self.empty_reads = 0
+        self.enumerations = 0
 
     async def is_empty(self) -> bool:
         self.empty_reads += 1
@@ -281,6 +307,42 @@ class FakeKVStorage:
         if self._chunk_owner is None:
             return []
         return [{"id": cid, "full_doc_id": self._chunk_owner} for cid in ids]
+
+    def iter_rows(self, *, page_size=200):
+        """The chunk probe's sample: the first page of rows, ``_id`` included."""
+        self.enumerations += 1
+
+        async def _gen():
+            if self._error is not None:
+                raise self._error  # what every real KV backend does on failure
+            for i in range(min(self._rows, page_size)):
+                yield {"_id": f"chunk-{i + 1}", "content": f"chunk {i + 1}"}
+
+        return _gen()
+
+
+class _RehashingChunks(FakeKVStorage):
+    """A chunk source that hands every row back twice, in place.
+
+    What Redis does under a rehash: ``SCAN`` may return a key it has already
+    returned. The base contract allows it and ``RedisKVStorage.iter_rows``
+    documents it.
+    """
+
+    def __init__(self, *, pairs: int):
+        super().__init__(rows=pairs)
+        self._pairs = pairs
+
+    def iter_rows(self, *, page_size=200):
+        self.enumerations += 1
+
+        async def _gen():
+            for i in range(1, self._pairs + 1):
+                row = {"_id": f"chunk-{i}", "content": f"chunk {i}"}
+                yield row
+                yield dict(row)
+
+        return _gen()
 
 
 def _entity_row(name="Alice", content="Alice is an engineer."):
@@ -297,14 +359,21 @@ async def _run(
     relationships_vdb=None,
     chunks_vdb=None,
     text_chunks=None,
+    baseline_targets=(),
 ):
     """Drive the gate.
 
     ``relationships_vdb`` and ``chunks_vdb`` default to populated stores so a
     test that is about the ENTITY pairing is not answered by one of its
     siblings. A test that wants those pairings passes them explicitly.
+
+    ``baseline_targets`` defaults to none, i.e. a workspace whose three
+    baselines are already recorded: the coverage gate alone, on the cheap
+    reads it has always used. A test about the BASELINE evidence -- the strict
+    source read, the container's ``is_empty()``, a forced probe -- names the
+    targets whose record is absent.
     """
-    await check_vector_space_at_startup(
+    return await check_vector_space_at_startup(
         graph=graph,
         entities_vdb=vdb,
         relationships_vdb=(
@@ -321,6 +390,7 @@ async def _run(
         doc_status=FakeDocStatus() if doc_status is None else doc_status,
         embedding_func=embedding,
         expect_empty_vector_storage=rebuilding,
+        baseline_targets=baseline_targets,
     )
 
 
@@ -788,25 +858,183 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=chunks,
             text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
         )
 
-        assert chunks.empty_reads == 0
+        # The coverage GATE asks nothing and refuses nothing. The one
+        # ``is_empty()`` read is the baseline evidence: an empty source
+        # records ``origin=empty`` only if the container is empty too.
+        assert (chunks.empty_reads, chunks.reads) == (1, 0)
 
     async def test_an_unreadable_text_chunks_source_does_not_refuse(self):
-        """``BaseKVStorage.is_empty`` catches its errors and answers True, so an
-        unreadable source arrives as 'no chunks'. That lands on the skip branch,
-        which is the direction this module wants everywhere."""
+        """An unreadable source supplies no evidence: skip, do not refuse --
+        and, since the same verdict backs the chunk baseline, it is ``None``,
+        never ``False``. ``BaseKVStorage.is_empty`` would have said "empty"
+        (it catches its errors), which is why the gate reads ``iter_rows``."""
         chunks = FakeVectorStorage(rows=[])
 
-        await _run(
+        evidence = await _run(
             FakeGraph(labels=["Alice"]),
             FakeVectorStorage(rows=[_entity_row()]),
             FakeEmbedding(),
             chunks_vdb=chunks,
             text_chunks=FakeKVStorage(rows=3, error=RuntimeError("redis down")),
+            baseline_targets=("chunks",),
         )
 
         assert chunks.empty_reads == 0
+        assert evidence.source_populated["chunks"] is None
+
+    async def test_an_empty_text_chunks_source_is_confirmed_by_a_fail_loud_read(
+        self,
+    ):
+        """``False`` -- the answer that records ``origin=empty`` -- comes only
+        from a read that would have raised had it failed."""
+        text_chunks = FakeKVStorage(rows=0)
+
+        evidence = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=text_chunks,
+            baseline_targets=("chunks",),
+        )
+
+        assert evidence.source_populated["chunks"] is False
+        assert text_chunks.empty_reads == 0, "is_empty() was not consulted"
+
+    async def test_an_empty_source_asks_its_container_before_an_empty_baseline(
+        self,
+    ):
+        """``origin=empty`` is a durable claim about the CONTAINER, so an empty
+        source is not enough: the evidence also carries the container's
+        fail-loud ``is_empty()`` -- ``True`` (record), ``False`` (survivors
+        nobody can vouch for: record nothing), ``None`` (unreadable: record
+        nothing). A populated source never asks."""
+        graph = FakeGraph(labels=["Alice"])
+        entities = FakeVectorStorage(rows=[_entity_row()])
+
+        both_empty = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
+        )
+        assert both_empty.index_empty["chunks"] is True
+
+        survivors = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
+        )
+        assert survivors.index_empty["chunks"] is False
+
+        unreadable = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[], empty_error=RuntimeError("down")),
+            text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
+        )
+        assert unreadable.index_empty["chunks"] is None
+
+        populated = await _run(
+            graph,
+            entities,
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=FakeKVStorage(rows=1),
+            baseline_targets=("chunks",),
+        )
+        assert "chunks" not in populated.index_empty
+
+    async def test_a_kv_store_without_enumeration_answers_populated_only(self):
+        """The ``is_empty()`` fallback for a backend that cannot page its rows:
+        "populated" is trustworthy and keeps the coverage check, "empty" is
+        indistinguishable from an outage and becomes "unknown"."""
+
+        class NoEnumeration(FakeKVStorage):
+            def iter_rows(self, *, page_size=200):
+                raise StorageCapabilityError("no enumeration")
+
+        populated = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=NoEnumeration(rows=1),
+            baseline_targets=("chunks",),
+        )
+        assert populated.source_populated["chunks"] is True
+
+        chunks = FakeVectorStorage(rows=[])
+        with pytest.raises(VectorStorageEmptyError):
+            await _run(
+                FakeGraph(labels=["Alice"]),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding(),
+                chunks_vdb=chunks,
+                text_chunks=NoEnumeration(rows=1),
+                baseline_targets=("chunks",),
+            )
+
+        unknown = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=NoEnumeration(rows=0),
+            baseline_targets=("chunks",),
+        )
+        assert unknown.source_populated["chunks"] is None
+
+    async def test_a_recorded_chunk_baseline_enumerates_nothing(self):
+        """The strict read is the price of CLAIMING a baseline, not of starting.
+
+        Every later start has the record already, so the chunk source is read
+        the way the coverage gate has always read it. It matters beyond a
+        round trip: ``BaseKVStorage.iter_rows`` forbids a startup path from
+        scanning a namespace, and ``JsonKVStorage`` -- rows in a
+        ``Manager().dict()`` -- snapshots its whole key list before it can
+        yield a first page.
+        """
+        text_chunks = FakeKVStorage(rows=3)
+
+        evidence = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=text_chunks,
+        )
+
+        assert text_chunks.enumerations == 0
+        assert text_chunks.empty_reads == 1
+        assert evidence.source_populated["chunks"] is True
+
+    async def test_a_recorded_baseline_asks_no_container_whether_it_is_empty(self):
+        """``index_empty`` is evidence for a claim, so a target that claims
+        nothing does not gather it -- and an empty source still refuses
+        nothing, exactly as before baselines existed."""
+        chunks = FakeVectorStorage(rows=[])
+
+        evidence = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=chunks,
+            text_chunks=FakeKVStorage(rows=0),
+        )
+
+        assert chunks.empty_reads == 0
+        assert evidence.index_empty == {}
 
     async def test_relations_are_checked_against_graph_edges(self):
         """An interrupted rebuild can leave entities populated and relations
@@ -832,9 +1060,13 @@ class TestPairings:
             FakeVectorStorage(rows=[_entity_row()]),
             FakeEmbedding(),
             relationships_vdb=relationships,
+            baseline_targets=("relationships",),
         )
 
-        assert relationships.empty_reads == 0
+        # The coverage GATE asks nothing and refuses nothing. The one
+        # ``is_empty()`` read is the baseline evidence: an empty source
+        # records ``origin=empty`` only if the container is empty too.
+        assert (relationships.empty_reads, relationships.reads) == (1, 0)
 
     async def test_a_backend_without_edge_iteration_is_skipped(self):
         """``iter_edges`` is fail-closed on the base class. A backend that never
@@ -1087,29 +1319,201 @@ class TestAdoptionProbe:
 
         await _run(graph, vdb, embedding)
 
-    async def test_only_the_probed_store_is_adopted(self):
+    async def test_each_store_is_adopted_only_on_its_own_evidence(self):
         """The three vector targets share an embedding_func but NOT a history.
 
         ``lightrag-rebuild-vdb`` rebuilds entities, relationships and chunks
         separately, so an interrupted rebuild after a same-dimension model
         change can leave entities in the current space while the others still
         hold the previous model's vectors. Stamping this model onto those on
-        the entity verdict would record a lie permanently -- the exact failure
-        this feature exists to prevent -- so a store nobody probed stays
-        unmarked.
+        the ENTITY verdict would record a lie permanently -- so each container
+        is probed on a sample from its own source, and one whose sample yields
+        nothing stays unmarked whatever its siblings proved.
         """
         row = _entity_row()
         entities = FakeVectorStorage(
             rows=[row], vectors={row["id"]: [1.0, 0.0]}, pending=True
         )
+        # Pending, but the graph has no edges: nothing to sample, no verdict.
         relationships = FakeVectorStorage(pending=True)
         embedding = FakeEmbedding([1.0, 0.0])
 
-        await _run(FakeGraph(labels=["Alice"]), entities, embedding)
+        await _run(
+            FakeGraph(labels=["Alice"], edges=[]),
+            entities,
+            embedding,
+            relationships_vdb=relationships,
+        )
 
         assert embedding.calls == 1
         assert entities.adopted == 1
         assert relationships.adopted == 0
+
+    async def test_a_legacy_reverse_id_relation_store_is_probed_too(self):
+        """A historical custom-KG import may have hashed its relation vectors
+        under the reverse-order id (``make_relation_vdb_ids(...)[1]``). The
+        sample carries both candidate ids, so an all-legacy store is examined
+        and adopts on its own reproduced vectors instead of staying without a
+        baseline forever."""
+        legacy_id = make_relation_vdb_ids("Alice", "Bob")[1]
+        graph = FakeGraph(labels=["Alice", "Bob"])  # one Alice-Bob edge
+        entities = FakeVectorStorage(rows=[_entity_row()])
+        legacy = FakeVectorStorage(
+            rows=[{"id": legacy_id, "content": "Alice works with Bob"}],
+            vectors={legacy_id: [1.0, 0.0]},
+            pending=True,
+        )
+
+        await _run(graph, entities, FakeEmbedding([1.0, 0.0]), relationships_vdb=legacy)
+
+        assert legacy.adopted == 1
+
+    async def test_a_mixed_relation_store_is_not_adopted_on_canonical_rows_alone(
+        self,
+    ):
+        """Canonical rows reproduce, the legacy reverse-id row does not: the
+        verdict must cover both, so the container is not adopted."""
+        canonical_id, legacy_id = make_relation_vdb_ids("Alice", "Bob")
+        graph = FakeGraph(labels=["Alice", "Bob"])
+        entities = FakeVectorStorage(rows=[_entity_row()])
+        mixed = FakeVectorStorage(
+            rows=[
+                {"id": canonical_id, "content": "canonical"},
+                {"id": legacy_id, "content": "legacy"},
+            ],
+            vectors={canonical_id: [1.0, 0.0], legacy_id: [1.0, 0.0]},
+            pending=True,
+        )
+        embedding = FakeEmbedding([1.0, 0.0], by_text={"legacy": [0.0, 1.0]})
+
+        try:
+            await _run(graph, entities, embedding, relationships_vdb=mixed)
+        except VectorSpaceMismatchError:
+            pass
+
+        assert mixed.adopted == 0
+
+    async def test_relations_are_probed_from_the_graphs_edges(self):
+        """Relations have their own sample -- the first batch of iter_edges
+        mapped to the canonical relation id -- so their container adopts on
+        its own reproduced vectors, and refuses on its own foreign ones."""
+        rel_id = make_relation_vdb_ids("Alice", "Bob")[0]
+        graph = FakeGraph(labels=["Alice", "Bob"])  # one Alice-Bob edge
+        entities = FakeVectorStorage(rows=[_entity_row()])  # marked already
+
+        reproduced = FakeVectorStorage(
+            rows=[{"id": rel_id, "content": "Alice works with Bob"}],
+            vectors={rel_id: [1.0, 0.0]},
+            pending=True,
+        )
+        await _run(
+            graph, entities, FakeEmbedding([1.0, 0.0]), relationships_vdb=reproduced
+        )
+        assert reproduced.adopted == 1
+
+        foreign = FakeVectorStorage(
+            rows=[{"id": rel_id, "content": "Alice works with Bob"}],
+            vectors={rel_id: [1.0, 0.0]},
+            pending=True,
+        )
+        with pytest.raises(VectorSpaceMismatchError) as excinfo:
+            await _run(
+                graph, entities, FakeEmbedding([0.0, 1.0]), relationships_vdb=foreign
+            )
+        assert "relationships" in str(excinfo.value)
+        assert foreign.adopted == 0
+
+    async def test_chunks_are_probed_from_the_first_page_of_text_chunks(self):
+        """Chunks have their own sample too -- the first page of the KV
+        store's ``iter_rows`` -- which is what the enumeration surface made
+        possible. The chunk container adopts on its own vectors."""
+        entities = FakeVectorStorage(rows=[_entity_row()])
+        chunks = FakeVectorStorage(
+            rows=[{"id": "chunk-1", "content": "chunk 1"}],
+            vectors={"chunk-1": [1.0, 0.0]},
+            pending=True,
+        )
+        embedding = FakeEmbedding([1.0, 0.0])
+
+        await _run(
+            FakeGraph(labels=["Alice"]),
+            entities,
+            embedding,
+            chunks_vdb=chunks,
+            text_chunks=FakeKVStorage(rows=1),
+        )
+
+        assert chunks.adopted == 1
+        assert embedding.calls == 1, "entities were marked; only chunks probed"
+
+    async def test_a_repeated_chunk_row_is_sampled_once(self):
+        """``iter_rows`` may hand the same row back twice; the sample may not.
+
+        ``RedisKVStorage.iter_rows`` says it in its own docstring -- ``SCAN``
+        repeats keys while the keyspace rehashes -- and leaves the
+        de-duplication to the caller that needs uniqueness. This is that
+        caller: the probe treats every sampled row as an independent record.
+        The read budget is unchanged (rows EXAMINED, not ids kept), so a
+        duplicated source yields a SHORTER sample, never a padded one.
+        """
+        ids = await _sample_chunk_ids(_RehashingChunks(pairs=16), SAMPLE_SIZE)
+
+        assert ids == [f"chunk-{i}" for i in range(1, 17)]
+        assert len(set(ids)) == len(ids)
+
+    async def test_duplicates_do_not_spend_the_probe_comparison_budget(self):
+        """The eight comparison slots go to eight DISTINCT chunks.
+
+        A container holding two embedding spaces is caught only if a foreign
+        record reaches ``_probe_same_embedding_space``. With the source
+        repeating every row and ``NanoVectorDBStorage`` answering
+        ``get_by_ids`` positionally -- one entry per REQUESTED id -- the
+        duplicates used to arrive as separate rows and fill all
+        ``PROBE_ROWS`` slots with four chunks. The foreign fifth was never
+        compared, and the container was adopted as homogeneous: the exact lie
+        ``_probe_same_embedding_space`` refuses to tell one level up.
+        """
+        assert PROBE_ROWS == 8, "this test is about the comparison budget"
+        rows = [{"id": f"chunk-{i}", "content": f"chunk {i}"} for i in range(1, 17)]
+        # Every chunk reproduces its vector except the fifth, which is the one
+        # that sits beyond the first eight RAW rows but inside the first eight
+        # distinct ones.
+        vectors = {f"chunk-{i}": [1.0, 0.0] for i in range(1, 17)}
+        vectors["chunk-5"] = [0.0, 1.0]
+        chunks = _PositionalVectorStorage(rows=rows, vectors=vectors, pending=True)
+
+        with pytest.raises(VectorSpaceMismatchError):
+            await _run(
+                FakeGraph(labels=["Alice"]),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding([1.0, 0.0]),
+                chunks_vdb=chunks,
+                text_chunks=_RehashingChunks(pairs=16),
+            )
+
+        assert chunks.adopted == 0
+
+    async def test_a_kv_store_without_enumeration_leaves_chunks_unmarked(self):
+        """A backend that cannot page its rows cannot supply a chunk sample.
+        That is 'could not run', never a refusal -- and never an adoption."""
+
+        class NoEnumeration(FakeKVStorage):
+            def iter_rows(self, *, page_size=200):
+                raise StorageCapabilityError("no enumeration")
+
+        chunks = FakeVectorStorage(
+            rows=[{"id": "chunk-1", "content": "chunk 1"}],
+            vectors={"chunk-1": [1.0, 0.0]},
+            pending=True,
+        )
+        await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding([1.0, 0.0]),
+            chunks_vdb=chunks,
+            text_chunks=NoEnumeration(rows=1),
+        )
+        assert chunks.adopted == 0
 
 
 # ---------------------------------------------------------------------------

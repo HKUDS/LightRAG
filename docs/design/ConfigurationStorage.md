@@ -1,9 +1,13 @@
 # Configuration storage contract
 
-Status: **planned**. Nothing in this document is implemented yet. It states the
-rules the implementation must follow, so that the first slice does not have to
-be re-cut when the second arrives. Tracked in
-[#4006](https://github.com/HKUDS/LightRAG/issues/4006).
+Status: **slice 1 implemented** (`lightrag/config_store.py`, the `config` KV
+namespace on all five backends, the nine-step startup in
+`LightRAG.initialize_storages()`, the rebuild and drop commit protocols, the
+enumeration surface `BaseKVStorage.iter_rows()`); slice 2 and everything under
+*later* in the rollout table are still planned. Tracked in
+[#4006](https://github.com/HKUDS/LightRAG/issues/4006). The acceptance
+scenarios are regression tests under `tests/config_store/`, with the
+per-backend enumeration tests beside each backend under `tests/kg/`.
 
 It builds on the embedding-space work in
 [#3978](https://github.com/HKUDS/LightRAG/issues/3978): the per-container
@@ -60,11 +64,15 @@ workspace's. Configuration does not follow the knowledge base it configures.
 ### The internal factory, and why the reservation cannot be a plain rule
 
 The whole `_lightrag*` workspace-name family is reserved and
-`validate_workspace()` rejects it. That rule, applied naively, **rejects the
-configuration storage itself**: all five KV backends call
-`validate_workspace(self.workspace)` in `__post_init__` (`json_kv_impl.py:72`,
-`redis_impl.py:394`, `mongo_impl.py:423`, `postgres_impl.py:3127`,
-`opensearch_impl.py:1018`). So the reservation needs a private door, and the
+`validate_workspace()` rejects it — **case-insensitively**. OpenSearch
+lowercases index names, so `_LightRAG_config` and `_lightrag_config` are one
+index there, and a reservation that knew only one spelling would let an
+ordinary storage reach the configuration container through the other. The
+grant, by contrast, admits exactly one spelling. That rule, applied naively,
+**rejects the configuration storage itself**: all five KV backends call
+`validate_workspace(self.workspace)` in `__post_init__` (`JsonKVStorage`,
+`RedisKVStorage`, `MongoKVStorage`, `PGKVStorage`, `OpenSearchKVStorage`). So
+the reservation needs a private door, and the
 door has to be one ordinary configuration cannot find:
 
 - public `LightRAG(workspace="_lightrag_config")` is **refused**;
@@ -76,6 +84,45 @@ door has to be one ordinary configuration cannot find:
 - `PG_WORKSPACE`, `REDIS_WORKSPACE`, `MONGODB_WORKSPACE` and
   `OPENSEARCH_WORKSPACE` must not remap the internal container onto an ordinary
   workspace. The configuration container's workspace is fixed, not configured.
+- Nor may any `*_WORKSPACE` variable point tenant data INTO the family: the
+  override is applied after `validate_workspace()` has passed the constructor
+  argument, so every backend that honors one validates the override's value
+  too (`validate_workspace_override`) and refuses a reserved name at
+  construction. Neo4j and Memgraph validate after applying theirs and need no
+  second check.
+
+#### `*_WORKSPACE` is legacy compatibility, and baselines do not follow it
+
+A baseline is keyed by the workspace the CALLER named, and each backend applies
+its own `*_WORKSPACE` override inside its constructor, below the layer that
+computes that key. So when an override is in effect the record and the
+container it describes can sit under different names — and the override
+deliberately **collapses distinct logical workspaces onto one physical
+container** (`MilvusVectorDBStorage` says so in its own comments), so two
+instances on different models can each hold a matching baseline over the same
+container.
+
+This is **not** re-keyed by the effective workspace, and the reason is what the
+variables are for: they exist to keep LEGACY data reachable, and their presence
+is meant to be transparent to everything above the storage layer. Keying
+configuration by them would make that presence visible in the record format and
+would bless what is actually the unsupported act — using one to MOVE data.
+Setting, changing or clearing an override on a deployment that already has data
+points the instance at another container while everything keyed by the caller's
+workspace stays behind, and no check below can tell that apart from an ordinary
+start.
+
+So the rule is announced rather than enforced:
+`warn_about_workspace_overrides()` names every override in effect, states that
+they are deprecated, that a storage's workspace should follow the server's, and
+that switching data location by editing one is unsupported. It is called from
+the **application's** startup and not from `LightRAG` — the uvicorn entry point
+(`lightrag_server.main`) and the Gunicorn master's `on_starting` hook, which
+runs before it forks — so an operator hears it once per server start rather
+than once per worker or once per instance. Recovery, if one was
+moved: point the override back, or rebuild the moved target with
+`lightrag-rebuild-vdb`, which re-embeds from the authoritative sources and
+records the baseline afresh.
 
 Reserving must happen in the **first** slice, before any deployment can create a
 workspace with such a name: a reservation made later cannot reclaim a name
@@ -86,6 +133,53 @@ PostgreSQL is the only backend needing schema work: `NAMESPACE_TABLE_MAP` gains
 an entry, `TABLES` gains the DDL, and `PGKVStorage` needs the SQL templates it
 dispatches per namespace (`get_by_id_config`, `get_by_ids_config`,
 `upsert_config`). See *Enumeration* for the one thing the other four do owe.
+
+### One server at a time on a file-backed configuration
+
+The in-process guard (*One file per namespace per process tree* in
+`FileBackedSnapshotContract.md`) cannot see another SERVER. Each process tree
+has its own in-memory copy, so two of them started on one `working_dir` each
+load the configuration file, each accumulate a private view, and each rewrite
+the whole thing — the later flush dropping whatever the other recorded since.
+
+That is fatal here in a way it is not elsewhere: an overwritten baseline reads
+back as **absent**, and absent is the one answer that lets a start bootstrap.
+The next start does not refuse the model change the baseline existed to refuse;
+it records the configured model over vectors nobody probed, and the protection
+is gone with nothing in any log.
+
+So a file-backed configuration storage **claims its `working_dir`** for the life
+of its process tree (`lightrag/kg/working_dir_lock.py`), and a second tree is
+refused with `WorkingDirectoryInUseError`. Four properties matter:
+
+- **An OS lock, not a PID file.** The kernel releases it when the holder dies,
+  so a `SIGKILL`, an OOM kill or a power cut leaves nothing stale to reap and
+  there is no read-PID-then-probe-liveness race.
+- **`fork` shares it.** The Gunicorn master takes it in `on_starting`, *before*
+  forking, and the workers inherit that claim and count themselves in. Taken
+  after the fork, each worker would open its own descriptor and all but one
+  would be refused.
+- **It fails open.** Locking is unreliable on NFSv3 without lockd and on
+  SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
+  deployments. A backend that cannot lock gets a warning and proceeds; refusing
+  would break deployments that work, to protect against a rarer failure.
+- **It is asked of the configuration storage**, not of the four business ones,
+  so the claim follows it if it ever becomes separately configurable.
+- **`lightrag-rebuild-vdb` takes it too**, around its own configuration-storage
+  lifecycle. The tool is a second process tree by construction, and the record
+  it writes to say the rebuild happened is exactly the one a running server
+  would overwrite. The confirmation prompt is not a substitute: it asks the
+  operator, the claim asks the filesystem.
+
+**Accepted residue.** A deployment whose configuration is on a server backend
+but whose business data is file-backed is *not* protected: two servers there
+still overwrite each other's `full_docs`, `doc_status`, graph and vectors, and
+lose more than baselines doing it. That is the long-standing "separate process
+trees are unsupported" position, unchanged. This claim narrows the blast radius
+rather than closing it, because the baseline is the case whose failure is
+silent. Recovery is unchanged — one server per directory, or server backends —
+and widening the claim to any file-backed storage is a deliberate follow-up,
+since it would refuse deployments that work today.
 
 ## Keys
 
@@ -155,7 +249,7 @@ per-container marker stores it unfolded.
 One record per workspace would be wrong, and could not be split later.
 `lightrag-rebuild-vdb` rebuilds `entities`, `relationships` and `chunks` as
 three separate steps against three separate containers
-(`rebuild_vdb.py:855-857`), so after an interrupted or deliberately partial
+(`RebuildTool.vector_targets()` in `rebuild_vdb.py`), so after an interrupted or deliberately partial
 rebuild the three legitimately sit in different embedding spaces. A single
 record cannot be advanced by a partial rebuild without either lying about the
 targets that were not rebuilt or refusing to record the one that was.
@@ -176,8 +270,7 @@ never participates in a verdict**:
 | `origin` | how the baseline was established |
 | --- | --- |
 | `probe` | the homogeneous cosine probe reproduced stored vectors under this model |
-| `empty` | the source or the index was empty, so there was nothing to contradict |
-| `bootstrap_assumption` | populated source, no probe available for this target — trust on first use |
+| `empty` | both the source and the index were empty, so there was nothing to contradict |
 | `rebuild` | written by a successful `lightrag-rebuild-vdb` of this target |
 
 ### Verdicts
@@ -195,39 +288,62 @@ function:
 When more than one target mismatches, the refusal names **all** of them in one
 message. An operator planning a rebuild needs the whole list, not the first one.
 
-### Establishing a baseline: probe where possible, trust on first use where not
+### Establishing a baseline: every target on its own evidence
 
-`entities` has a probe and the other two do not, and that asymmetry is a fact
-about the code, not a gap to be filled in this slice:
+Each target has a probe, and each probe samples from that target's own source:
 
-- `_run_adoption_probe(graph, entities_vdb, embedding_func)`
-  (`vector_space_gate.py:724`) certifies **entities only**.
-- `BaseKVStorage` has no enumeration API suited to a startup path.
-  `rebuild_vdb.enumerate_kv_keys()` exists but is a backend-specific full scan,
-  documented as such (`rebuild_vdb.py:408`), and a full KV scan on every startup
-  is exactly what `kg_integrity_repair` is deliberately offline to avoid.
-- `doc_status` cannot stand in for it either: `ainsert_custom_kg` writes chunks
-  and no doc-status row, so `chunks_list` does not cover them.
+| target | sample |
+| --- | --- |
+| `entities` | the graph's most-connected labels (`get_popular_labels`), mapped to entity vector ids |
+| `relationships` | the first batch of `iter_edges`, mapped to **both** candidate relation vector ids (`make_relation_vdb_ids`: the canonical one, then the legacy reverse-order one a historical custom-KG import may have hashed under) -- an all-legacy store sampled by the canonical id alone would never be examined |
+| `chunks` | the first page of `text_chunks.iter_rows()` -- one bounded round trip, not a scan; the row id is the chunk vector id |
 
-So:
+The chunk probe is what the enumeration surface makes possible. Before
+`BaseKVStorage.iter_rows()` existed the only KV enumeration was
+`rebuild_vdb.enumerate_kv_keys()`, a backend-specific full scan that has no
+place on a startup path, and `doc_status` could not stand in for it
+(`ainsert_custom_kg` writes chunks and no doc-status row). A first page of a
+paged reader is a different thing from a scan: it costs one round trip whatever
+the namespace holds.
 
-| target | source empty | source populated |
-| --- | --- | --- |
-| `entities` | record now, `origin=empty` | run the existing probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source) → leave absent and retry next start |
-| `relationships`, `chunks` | record now, `origin=empty` | record the configured space, `origin=bootstrap_assumption` |
+**The source verdict must come from a read that raises when it fails.** A
+verdict of "empty" is now a durable write, not merely a skipped check, so an
+outage reported as emptiness would stamp the configured model over vectors
+nobody probed -- and the next start, finding a record, would never probe them.
+`BaseKVStorage.is_empty()` catches its errors and answers `True` on the four
+server backends, so the chunk source is read through the first page of
+`iter_rows()` instead (the same bounded read the chunk probe samples from),
+which the base contract requires to raise on failure. A KV backend without
+enumeration falls back to `is_empty()` and its "empty" is read as *unknown*:
+the coverage check it had is unchanged, and no baseline is recorded on it. The
+graph readers behind the other two verdicts propagate their failures already.
 
-Trust on first use is the right trade here, and the reasoning has to be explicit
-because it looks like a weakening. If those containers really hold another
-model's vectors, retrieval is **already wrong before the baseline is written** —
-TOFU does not introduce that error, and it does not hide it either: the
-per-container markers and the coverage gate keep running unchanged, and a
-configuration baseline **must never suppress a refusal either of them raises**.
-What TOFU buys is that the *next* model change is refused instead of silently
-accepted. Leaving the record absent forever buys nothing and keeps the blind
-spot open.
+**Only a target with a baseline to establish pays for that read.** The strict
+read, the probe and the container's own `is_empty()` are all keyed on the same
+list -- `baseline_targets`, the targets the precheck found absent. A target
+whose baseline is already recorded claims nothing from this start, so its
+source is read exactly as the coverage check has always read it
+(`is_empty()`), and nothing enumerates. This is not an optimization detail:
+the enumeration contract says a startup path must never scan a namespace, and
+`JsonKVStorage` -- whose rows live in a `Manager().dict()` -- snapshots its key
+list before it can yield a first page. Charging that to every start would
+contradict the contract on the one backend that cannot page lazily; charging
+it to the single start that claims the baseline does not.
 
-The residue — a `bootstrap_assumption` baseline can be wrong, and the record can
-never detect that on its own — is recorded below.
+So, per target and independently:
+
+| source empty | source populated |
+| --- | --- |
+| record now, `origin=empty` -- **only if that target's vector container is empty too** (fail-loud `is_empty()`). Surviving vectors behind an empty source: nothing can vouch for them and there is nothing to sample, so leave absent, warn, and point at the rebuild; container unreadable, or source unreadable: leave absent | run that target's probe. Negative → **refuse**, and write nothing. Positive → record, `origin=probe`. Could not run (embedder down, timeout, unreadable source or index, no sampleable row) → leave absent and retry next start |
+
+**A verdict is about one container only.** The three targets share an
+`embedding_func` but not a history: `lightrag-rebuild-vdb` rebuilds them as
+three separate steps, so an interrupted rebuild after a same-dimension model
+change can leave `entities` in the current space while `relationships` or
+`chunks` still hold the previous model's vectors. Nothing is recorded, and no
+container marker is adopted, on a sibling's verdict. An earlier revision of
+this document trusted `relationships` and `chunks` on first use because they
+had no probe; that trade-off no longer exists and is gone.
 
 `lightrag-rebuild-vdb` rewrites a target's record after rebuilding it. Without
 that, a deliberate model change would have no way through, and a gate with no
@@ -251,7 +367,9 @@ entity probe reads `entities_vdb`.
 5.  mark INITIALIZED
 6.  run the existing coverage gate and the entity adoption probe
 7.  establish the baselines remembered in step 3
-8.  flush the configuration storage
+8.  flush the configuration storage -- through the same flush the claims
+    use, never `index_done_callback()` directly, so the rules below apply
+    to it too
 9.  return successfully
 ```
 
@@ -271,7 +389,7 @@ relabel is prevented before it occurs.
 Step 5 sits where it does deliberately, and moving it to the end would break a
 contract the existing code states in a comment: every storage above it holds
 clients, pools and locks, and `finalize_storages()` skips the whole teardown
-unless the status says `INITIALIZED` (`lightrag.py:2272`). Marking it last would
+unless the status says `INITIALIZED` (`LightRAG.finalize_storages`). Marking it last would
 mean that a refusal from the coverage gate, a failed probe, a failed claim or a
 failed flush leaves every storage up with the status still `CREATED`, and the
 caller's `finalize_storages()` silently releases nothing.
@@ -292,7 +410,7 @@ Consequences the implementation owes:
   next `initialize_storages()` call, which would otherwise take the
   `status != CREATED` early return and come back successful without re-running
   anything. The merged code already does this for the embedding-space verdict
-  (`lightrag.py:2026-2033`): a stored refusal is re-raised at the top of the
+  (`LightRAG._startup_refusal`): a stored refusal is re-raised at the top of the
   method, and its comment gives the reason — "turning a fail-closed gate into a
   one-shot one". Every failure introduced here joins that mechanism rather than
   inventing a second one.
@@ -323,7 +441,9 @@ So step 4 owns a rollback protocol:
   configuration storage;
 - a teardown failure is logged and never replaces the original exception, which
   is what propagates;
-- a storage the loop never reached is left alone.
+- a storage the loop never reached is left alone: no backend acquires anything
+  before its `initialize()` runs, so it is holding nothing. See *Construction
+  takes nothing* below.
 
 **Do not simply move `INITIALIZED` ahead of the loop instead.** Teardown would
 then call `finalize()` on storages that never ran `initialize()`, and that is
@@ -340,11 +460,61 @@ Partial-initialization leakage predates this design — the loop has always been
 able to fail midway. What this slice adds is the configuration storage in the
 same chain, and it must not be the reason the gap goes on being undocumented.
 
+#### Construction takes nothing
+
+**No backend acquires a process-wide resource in its constructor**, so a
+storage the loop never reached is holding nothing and the rollback owes it
+nothing. That invariant is load-bearing here and easy to break silently: a
+constructor has no teardown path, `LightRAG.__post_init__` is synchronous and
+builds twelve storages before validating anything, and a refusal anywhere in
+that sequence drops every storage already built on the floor — no `finalize()`
+is reachable, and there is no half-built `LightRAG` to call
+`finalize_storages()` on. The Redis backends held their shared-pool reference
+that way until [#4017](https://github.com/HKUDS/LightRAG/pull/4017) moved the
+acquisition into `initialize()`, where every other backend already did it, and
+gated `close()` on a reference actually held. A new backend that acquires in
+`__post_init__` reopens the leak, and the rollback cannot cover it: `finalize()`
+on an instance that never initialized is not a contract any backend offers —
+the same argument that keeps `INITIALIZED` behind the loop.
+
+One ordering survives from when this was not true: the configuration storage is
+constructed as the **last statement of `__post_init__` that can raise**, after
+every business storage and after the validations that follow them
+(`llm_model_func` present, `role_llm_configs` well-formed). It is no longer
+load-bearing — there is nothing of the configuration storage's to leak — but it
+is kept, because building something a refusal is about to discard is pointless
+either way. A new check added to `__post_init__` goes **above** that
+construction.
+
 **A failed step 4 does not heal by retrying.** Either the failure is retained
 the way post-`INITIALIZED` failures are, or a full retry is supported and
 re-runs every step from 1; what is not acceptable is a second
 `initialize_storages()` returning successfully because some state was left
-behind by the first.
+behind by the first. The implementation takes the first option, for every
+failure before `INITIALIZED` and not only step 4's: not every backend's
+`finalize()` is safe to undo (`OpenSearchKVStorage.finalize()` flushes its
+pending buffer ahead of its own client guard), so a retry on the same object
+could neither succeed honestly nor re-run from step 1. A new instance is the
+retry.
+
+**Where stickiness starts.** Steps 1 through 9 are the guarded phase; the
+preamble before them -- binding the event loop, the default workspace,
+`pipeline_status` -- is not, and deliberately so. Stickiness exists to stop two
+things: a later call early-returning on a status that says `INITIALIZED`, and
+re-running steps against storages a rollback has closed. Neither is reachable
+before step 1, where nothing has been opened and the status has not moved, so a
+failure there is an ordinary failure and the retry re-runs every check for real.
+Making it sticky would strand an instance over a transient shared-storage
+failure and buy no safety. A regression test pins the boundary rather than
+leaving it to be re-derived.
+
+**Cancellation is a failure too.** `asyncio.CancelledError` is not an
+`Exception`, and a handler that catches only `Exception` after `INITIALIZED`
+lets a cancelled probe, claim or flush leave the status `INITIALIZED` with
+nothing retained -- the next call early-returns as ready with the checks never
+completed. Every failure is retained, `BaseException` included; an interruption
+that cannot itself be re-raised later is retained as a `RuntimeError` naming
+it.
 
 ## Claiming a baseline atomically
 
@@ -371,6 +541,39 @@ async with get_storage_keyed_lock(
 buffers in process memory and its own docstring says the buffer is
 process-local until the flush; releasing the lock first lets another worker read
 absent and claim again.
+
+**A flush that retained anything is a failed flush here.** The same backend
+keeps per-item *retryable* failures (408 / 429 / 5xx) buffered and returns from
+`index_done_callback()` normally — the residue heals on the next flush, which is
+fine for the pipeline — and its strict point read answers from that buffer: a
+buffered upsert reads as present, a buffered tombstone as gone. Flush then
+read-back would therefore confirm a claim, a rebuild record or a drop the server
+never saw. So every configuration flush asks
+`has_pending_index_ops(include_deletes=True)` afterwards; a retained operation
+drops the buffer (what the caller reports is then what is true) and raises
+`ConfigurationStorageError`. **Every** flush means every one: the claims, the
+rebuild record, the drop, and step 8's final guard, which is why none of them
+calls `index_done_callback()` directly. Only after that does the strict read-back confirm
+anything, and it is then a read of the server. Backends without a buffer answer
+`False` and pay nothing.
+
+**And a flush that RAISED is not automatically a failed one.** The mirror case:
+the bulk landed and only `indices.refresh()` afterwards failed. The backend can
+prove that raise lost nothing and says so by raising
+`ReferencesIntactFlushError` — but that type covers two situations its own
+docstring separates, and they need opposite answers: every operation still
+buffered (a transport error from the bulk call), or the commit landed and only a
+step after it failed. Catching both as a failed flush reports a **durable write
+as one that did not happen**, which is the asymmetry *Consistency without
+transactions* forbids outright, and it costs a refused startup on a record the
+server already has, or a whole re-embed reported as failed by the rebuild tool.
+
+So the same question decides both directions: **ask the buffer, not the return
+value.** Nothing retained after a raise means the write landed, and the strict
+read-back — which every caller here performs — is what confirms it. Something
+retained means the write is not durable, whether the flush returned or raised. A
+backend that cannot be asked keeps the conservative reading of its own raise,
+because there is then no way to tell the two situations apart.
 
 The strict read-back is not a formality, but its job is narrower than it looks.
 It confirms that the write is visible and durable, and it validates whatever is
@@ -435,13 +638,30 @@ present, equal    -> proceed
 ```
 
 Use `get_by_id_strict()`. All five KV backends already declare
-`supports_strict_point_reads = True` (`json_kv_impl.py:68`, `redis_impl.py:391`,
-`mongo_impl.py:411`, `postgres_impl.py:3124`, `opensearch_impl.py:996`), so this
+`supports_strict_point_reads = True` (a `ClassVar` on each of the five KV
+classes), so this
 costs no new backend work — but the caller must still check the ClassVar rather
 than assume it, since `BaseKVStorage` defaults it to `False`.
 
 A configuration store that was deliberately emptied reads as confirmed absent
 and bootstraps again, which is correct. A store that cannot be reached does not.
+
+**Strictness has to survive the layer below the read, too.** On the JSON
+backend the file is read once per process tree and shared: the first instance
+to ask wins a claim, loads the file into the shared namespace dict, and every
+later instance reads that dict instead of the file. The flag recording the
+claim says "loaded" from the moment it is taken, so a load that FAILS — a
+momentary `PermissionError`, a full disk — used to leave the namespace marked
+loaded and EMPTY. The instance that hit the failure refused correctly; the next
+one in the same process tree skipped the file, read absence as confirmed
+absence, bootstrapped its own model as a first start, and published the whole
+namespace over the record that should have refused it, taking every other
+workspace's rows in that file with it (a commit publishes the whole namespace).
+So a claim is a promise to finish: leaving the load by exception, cancellation
+included, hands the claim back and the next instance reads the file again
+(`namespace_init_claim` in `lightrag/kg/shared_storage.py`). A transient
+failure is therefore recoverable and a persistent one simply fails again,
+loudly, in the next claimer.
 
 ## Rebuild: one target at a time, configuration last
 
@@ -450,7 +670,7 @@ Per target, in this order:
 ```
 rebuild the target VDB
 → flush / index_done_callback the target VDB
-→ verify the rebuild succeeded
+→ verify the rebuild succeeded, the retained buffer included
 → update THAT target's configuration key
 → flush / index_done_callback the configuration storage
 ```
@@ -459,6 +679,21 @@ rebuild the target VDB
   for the other two;
 - the configuration write happens **after** the target is durable and verified,
   never before;
+- **a returning `index_done_callback` is not the verification.** A per-item
+  backend keeps its retryable failures (408/429/5xx) buffered and returns
+  normally, so the last flush of a rebuild can leave vectors that never reached
+  the server with nothing left to retry them. Mid-rebuild that residue heals —
+  the next flush retries it — and is accepted; a residue left by the LAST flush
+  is not, because the baseline about to be written would claim the target was
+  adopted in the configured space while its index is incomplete, and no later
+  check catches it: the startup precheck sees a matching record, and the
+  coverage gate only refuses an EMPTY index. So the tool asks the vector
+  storage directly (`has_pending_index_ops(include_deletes=True)`) before
+  recording, and a retained operation — or an answer that could not be read —
+  is a failed rebuild. This is the same rule the configuration flush follows
+  (*A flush that retained anything is a failed flush*), applied to the data
+  side, and it is why `OpenSearchVectorDBStorage` implements that method
+  rather than inheriting the base `False`;
 - a failed rebuild advances nothing;
 - a rebuild that succeeds while the configuration write fails makes the **tool
   exit non-zero**. The stale record keeps refusing startup, which is the safe
@@ -493,6 +728,12 @@ That asymmetry is the whole reason for the ordering, and it is why a partial
 drop must not opportunistically delete "the records for the parts that did
 drop".
 
+"Every data storage" includes the opt-in LLM cache drop that `/documents/clear`
+runs after the storage drops: the records are deleted after it, and a failed
+cache drop keeps them exactly as a failed storage drop does. The cache rows
+that survive are workspace data too, and the endpoint's history entry names
+which drop kept the records.
+
 Workspace names becoming UUIDs later reduces the accepted residue to orphan rows
 and a misleading inventory rather than a wrong refusal, but does not remove the
 obligation: `LightRAG(workspace=...)` is a library call too, and the
@@ -516,11 +757,43 @@ consumes:
 - classification by the row's explicit `workspace` field, never by reparsing the
   key;
 - per-backend implementations counted as real work, not as a free consequence of
-  the namespace.
+  the namespace;
+- **a container that cannot be read raises; it never ends the stream.** A
+  missing index, a dropped collection or a closed connection is not an empty
+  listing, and the callers cannot tell the two apart from a clean end: the
+  inventory would under-report, and the chunk source verdict would turn a lost
+  container into a durable `origin=empty` baseline. `OpenSearchKVStorage`
+  refuses in the same index-missing states its `get_by_id_strict` refuses in
+  (index not ready, index gone mid-scan), for the same reason: after `initialize()` the
+  index exists, so its absence is indistinguishable from data loss.
 
 Whether the five implementations land in slice 1 or slice 2 is a scheduling
 choice; what is not a choice is pretending PostgreSQL is the only backend with
 work to do.
+
+Startup uses the same surface, and stays inside the same rule, by bounding both
+*what* it reads and *when*: never more than the first page, and only for a
+target whose baseline is absent (*Establishing a baseline*). A backend that
+cannot page its first page cheaply therefore pays once, not on every start.
+
+That bound is on the ROWS, not on the round trips, and on a backend that finds
+its namespace by scanning a key prefix the two come apart: proving a namespace
+EMPTY means reaching the end of the keyspace however many batches that takes,
+because `MATCH` is applied after each batch and a batch that matches nothing
+looks exactly like the end. Redis is the case. It is not a cost the strict read
+introduces -- `is_empty()`, the read every other start uses, is
+`scan_iter(match=..., count=1)` over the same keyspace -- so what the strict
+read buys (an outage that cannot be recorded as `origin=empty`) is bought at no
+extra walk.
+
+A page is also not a set: `iter_rows` is a best-effort snapshot, and Redis says
+in its own docstring that `SCAN` may return a key twice while the keyspace
+rehashes, leaving de-duplication to the caller that needs uniqueness. The chunk
+sampler is that caller, because the probe weighs each sampled row as an
+independent record -- so it keeps distinct ids only, and spends its budget on
+rows examined rather than ids kept. A duplicated source shrinks the sample; it
+never pads it with copies that would spend the comparison slots without adding
+evidence.
 
 ## What this does not retire
 
@@ -563,13 +836,6 @@ not decided here and must be decided before a key marked sensitive exists.
 
 Per *Consistency without transactions* in `AGENTS.md`, each is a decision with a
 recovery path.
-
-**A `bootstrap_assumption` baseline can be wrong.** `relationships` and `chunks`
-adopt the configured space without evidence. If the vectors are another model's,
-the record now asserts something false — but retrieval was already wrong before
-it was written, and the per-container markers and the coverage gate still run.
-Recovery: `lightrag-rebuild-vdb`, which replaces the baseline with
-`origin=rebuild`.
 
 **A legacy-container copy made before any judgement.** With records absent, the
 Milvus / Qdrant / PostgreSQL legacy migration runs inside `initialize()` and may
@@ -626,14 +892,17 @@ The implementation is not complete until these are regression tests.
 3. `relationships` mismatches → refused, naming `relationships`.
 4. `chunks` mismatches → refused, naming `chunks`.
 5. Several targets mismatch → one refusal listing all of them, not one per start.
-6. Legacy workspace, first start: the entity probe succeeds, the other two
-   establish `bootstrap_assumption` baselines.
+6. Legacy workspace, first start: each of the three probes succeeds on its own
+   sample and each target records `origin=probe`; a target whose probe could
+   not run stays absent while the other two are recorded.
 7. Entity probe returns negative → refused, and **no** record is written.
 8. Rebuilding `chunks` alone updates only `embedding/chunks`.
 9. Rebuild succeeds, the configuration write fails → the tool exits non-zero and
    the next startup still refuses.
 10. On OpenSearch, the claim flushes and strict-reads back before releasing the
-    keyed lock.
+    keyed lock; a flush the backend answered with a retryable per-item failure
+    (the operation still buffered) fails the claim, the rebuild record and the
+    drop rather than being confirmed from the buffer.
 11. Two workers of one Gunicorn master claim concurrently → exactly one baseline.
 12. A reserved workspace name is refused for a public construction and accepted
     through the internal factory.

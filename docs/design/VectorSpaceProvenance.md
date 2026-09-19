@@ -644,10 +644,16 @@ opposite directions:
 
 - On the **index** side, `True` can refuse a deployment, so an error reported as
   "empty" is a false outage. It must raise.
-- On the **source** side, `True` only *skips* a check, so an error reported as
-  "empty" costs nothing. The existing KV behaviour is therefore fine as it is,
-  and the gate depends on it: an unreadable `text_chunks` lands on the skip
-  branch.
+- On the **source** side, `True` only *skips* a check, so for the coverage
+  gate alone an error reported as "empty" costs nothing. The gate's source
+  verdict later became the evidence for an `origin=empty` embedding baseline
+  as well, and a durable write cannot rest on an answer that hides an outage,
+  so on the starts that have a baseline to establish the chunk source is read
+  through the first page of `BaseKVStorage.iter_rows()`, which raises on
+  failure; `is_empty()` is a fallback whose "empty" is read as unknown, and it
+  stays the read for a target whose baseline is already recorded and which
+  therefore claims nothing. See *Establishing a baseline* in
+  [ConfigurationStorage.md](ConfigurationStorage.md).
 
 The base-class default raises `StorageCapabilityError`, the fail-closed pattern
 already used by `iter_labels` / `iter_edges`: a backend that has not implemented
@@ -814,13 +820,16 @@ rather than an outage.
 
 **Fold collision on Milvus / Qdrant / PostgreSQL.** The suffix lowercases and
 folds punctuation, so two models whose names differ only in case or punctuation
-share a container undetected. Accepted because a *harmful* collision needs two
-genuinely different models whose names differ only that way **and** which share a
-dimension; in practice such name pairs are the same model spelled differently by
-different providers or config files, which is benign. Recovery:
-`lightrag-rebuild-vdb`. Closed properly by the recorded per-workspace embedding
-space, which stores the unfolded name
-([#4006](https://github.com/HKUDS/LightRAG/issues/4006)).
+share a container undetected. A *harmful* collision needs two genuinely
+different models whose names differ only that way **and** which share a
+dimension; in practice such name pairs are the same model spelled differently
+by different providers or config files, which is benign. **Closed** for any
+workspace with a recorded baseline: the per-target embedding baseline
+(`docs/design/ConfigurationStorage.md`) stores the model name **unfolded**, so
+the two spellings compare unequal at the precheck and the second refuses to
+start. Still open for a workspace whose baseline is absent -- the first start
+after the upgrade, or a probe that could not run -- until the record is
+established. Recovery: `lightrag-rebuild-vdb`.
 
 **No `EMBEDDING_MODEL` configured.** Milvus, Qdrant and PostgreSQL fall back to
 an un-suffixed container (`qdrant_impl.py`, `milvus_impl.py`,
@@ -832,23 +841,20 @@ them from reading or overwriting each other, so each tenant's own retrieval stay
 correct. Recovery: set `EMBEDDING_MODEL` and run `lightrag-rebuild-vdb` — the
 suffix then moves the workspace to a new, protected container.
 
-**A model change that lands on a populated container is undetected on Milvus,
-Qdrant and PostgreSQL.** The container name is derived from the current
-configuration, so it can never contradict it, and the coverage gate only fires
-when the change lands on an *empty* container. Switching from model A to B
-(accepted through a rebuild) and back to A reuses `entities_a_1024d`, which is
-not empty — it holds the corpus as it stood when the deployment switched away —
-so the gate passes and retrieval is silently stale and partial. The same shape
-covers the legacy-container migration, which copies rows from an un-suffixed
-container into `{model}_{dim}d` guarded only by *dimension*, and runs inside
-`initialize()` where this gate cannot precede it. Accepted for now because the
-alternative — enumerating sibling containers per backend — was rejected above
-for reasons that still hold, and because these three backends behaved this way
-before this work too. Closed by a recorded per-workspace embedding space
-checked ahead of the vector storages' `initialize()`
-([#4006](https://github.com/HKUDS/LightRAG/issues/4006)). Recovery today:
-`lightrag-rebuild-vdb` after any deliberate model change, including a change
-back.
+**A model change that lands on a populated container on Milvus, Qdrant and
+PostgreSQL** was undetected by this gate: the container name is derived from
+the current configuration, so it can never contradict it, and the coverage
+gate only fires when the change lands on an *empty* container. Switching from
+model A to B (accepted through a rebuild) and back to A reused
+`entities_a_1024d`, which is not empty, so the gate passed and retrieval was
+silently stale and partial. **Closed** by the recorded per-target embedding
+baseline (`docs/design/ConfigurationStorage.md`): the record moves only on a
+successful rebuild, so the switch back is a mismatch, refused at step 3 of
+startup -- ahead of the legacy-container migration those backends run inside
+`initialize()`. What stays open is recorded in that contract as its own
+residue: with no record yet (the first start after the upgrade), the
+legacy-container copy may still happen before anything judges it. Recovery:
+`lightrag-rebuild-vdb`.
 
 **Embedder unavailable during an adopting start, in the same upgrade as a
 same-dimension model swap.** The probe cannot run, so the instance starts and

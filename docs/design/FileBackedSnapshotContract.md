@@ -413,7 +413,7 @@ reloads.
 
 `JsonDocStatusStorage` does not inherit from `JsonKVStorage` — it reimplements
 the same protocol against the same `shared_storage` primitives
-(`get_namespace_data`, `try_initialize_namespace`, `set_all_update_flags`,
+(`get_namespace_data`, `namespace_init_claim`, `set_all_update_flags`,
 `clear_all_update_flags`). Everything below therefore describes both, and a
 change to one of them is almost always a change the other needs too. Where they
 deliberately diverge is called out where it arises: the flush trigger in
@@ -439,10 +439,63 @@ read/write path.
 
 ### First-time load (`initialize`)
 
-`try_initialize_namespace` is a global init lock that returns `True` to exactly
-one process per `(namespace, workspace)`. That process reads the JSON file and
+`namespace_init_claim` is a global init lock that yields `True` to exactly one
+process per `(namespace, workspace)`. That process reads the JSON file and
 populates `self._data` under `_storage_lock`. Other processes skip the load —
 they will see the data through the same shared proxy.
+
+**The load must stay inside the claim.** The flag behind it says "loaded" from
+the moment it is taken, not once the data is in the shared dict, so a load that
+fails would otherwise leave the namespace marked loaded and EMPTY for the life
+of the process tree: the instance that hit the failure raises, and every
+instance after it reads absence where the file has rows — then overwrites those
+rows on the next commit, because a commit publishes the whole namespace.
+Leaving the claim by exception, cancellation included, hands it back so the
+next instance reads the file again. A transient read failure is recoverable; a
+persistent one fails again, loudly, in the next claimer.
+
+`try_initialize_namespace` still exists as the primitive the claim is built on,
+and a caller that uses it directly owes the same release
+(`release_namespace_init`).
+
+### One file per namespace per process tree
+
+The key is `workspace:namespace`. It says nothing about which FILE backs it,
+and for the JSON pair the container's identity *is* the file — so two
+`working_dir` roots in one process tree meet on one in-memory copy. Ordinary
+namespaces hide this behind the workspace (two tenants under different names
+never collide), but the `config` namespace is pinned to one reserved workspace,
+so every instance lands on the same key however its tenants are named.
+
+What that cost, before the claim asserted it: the second instance skipped the
+load, read its own file's rows as **absent**, and then published the union into
+whichever file flushed first — the other never being written at all. Absence is
+the one answer that lets a start bootstrap, so for a baseline this is the
+configured model recorded over vectors nobody probed. No lock fixes it, because
+nothing here is a race: serialize the two perfectly and they still share one
+dict.
+
+So the claim carries the file (`backing=`), and a second, DIFFERENT file while
+the first is still held is refused with
+`SharedNamespaceBackingConflictError`. Two rules follow:
+
+- **Refused at once, allowed in turn.** The hold is given back by `finalize()`,
+  and it is *counted*: a process tree's workers each hold the same namespace
+  and finalize independently, so only the last one out releases it. A caller
+  whose startup fails AFTER `INITIALIZED` still owes that teardown — the
+  refusal is sticky, but the resources are open.
+- **The flag and the data are released together.** The flag means "this
+  namespace carries a file's contents", so dropping one without the other
+  leaves the next instance either re-reading into rows that are already there
+  (the load is `update`, not a replace) or trusting rows nobody loaded. The
+  dict is emptied **in place**, never replaced: `get_namespace_data` caches the
+  object per process and documents it as stable for the life of the shared
+  data.
+
+This is a process-tree guard, and only that. Two separate process trees on one
+`working_dir` are still unsupported and still undetected here — that needs a
+lock on the directory itself, which is a different mechanism for a different
+failure.
 
 ### Reversed flag semantics
 

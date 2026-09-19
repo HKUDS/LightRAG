@@ -1,7 +1,7 @@
 import copy
 import os
 from dataclasses import dataclass
-from typing import Any, ClassVar, final
+from typing import Any, AsyncIterator, ClassVar, final
 
 from lightrag.base import (
     normalize_kv_create_time,
@@ -23,9 +23,10 @@ from .shared_storage import (
     get_namespace_lock,
     get_data_init_lock,
     get_update_flag,
+    leave_namespace_init,
+    namespace_init_claim,
     set_all_update_flags,
     clear_all_update_flags,
-    try_initialize_namespace,
 )
 
 
@@ -82,6 +83,8 @@ class JsonKVStorage(BaseKVStorage):
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
         self._data = None
+        # Whether THIS instance holds the shared namespace; see ``finalize``.
+        self._holds_namespace = False
         self._storage_lock = None
         self.storage_updated = None
 
@@ -90,12 +93,16 @@ class JsonKVStorage(BaseKVStorage):
     async def initialize(self):
         """Bind to the shared namespace dict and load from disk on first init.
 
-        ``try_initialize_namespace`` is a global init lock that returns
-        ``True`` for exactly one process per ``(namespace, workspace)``;
-        that process reads the JSON file and populates the shared
-        ``self._data`` under ``_storage_lock``. Subsequent processes
-        skip the file read — they will see the same shared dict via
-        ``get_namespace_data``.
+        ``namespace_init_claim`` is a global init lock that yields ``True``
+        to exactly one process per ``(namespace, workspace)``; that process
+        reads the JSON file and populates the shared ``self._data`` under
+        ``_storage_lock``. Subsequent processes skip the file read — they
+        will see the same shared dict via ``get_namespace_data``.
+
+        The load MUST stay inside the claim. Leaving it by exception hands
+        the claim back so the next process reads the file again; a claim
+        kept over an empty dict would make every later instance in this
+        process tree read absence where the file has rows.
 
         For ``*_cache`` namespaces an extra
         ``_migrate_legacy_cache_structure`` pass runs against the loaded
@@ -109,27 +116,36 @@ class JsonKVStorage(BaseKVStorage):
         )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(
-                self.namespace, workspace=self.workspace
-            )
-            self._data = await get_namespace_data(
-                self.namespace, workspace=self.workspace
-            )
-            if need_init:
-                loaded_data = load_json(self._file_name) or {}
-                async with self._storage_lock:
-                    # Migrate legacy cache structure if needed
-                    if self.namespace.endswith("_cache"):
-                        loaded_data = await self._migrate_legacy_cache_structure(
-                            loaded_data
+            async with namespace_init_claim(
+                self.namespace, workspace=self.workspace, backing=self._file_name
+            ) as need_init:
+                self._data = await get_namespace_data(
+                    self.namespace, workspace=self.workspace
+                )
+                if need_init:
+                    loaded_data = load_json(self._file_name) or {}
+                    async with self._storage_lock:
+                        # Migrate legacy cache structure if needed
+                        if self.namespace.endswith("_cache"):
+                            loaded_data = await self._migrate_legacy_cache_structure(
+                                loaded_data
+                            )
+
+                        self._data.update(loaded_data)
+                        data_count = len(loaded_data)
+
+                        logger.info(
+                            f"[{self.workspace}] Process {os.getpid()} KV load {self.namespace} with {data_count} records"
                         )
 
-                    self._data.update(loaded_data)
-                    data_count = len(loaded_data)
-
-                    logger.info(
-                        f"[{self.workspace}] Process {os.getpid()} KV load {self.namespace} with {data_count} records"
-                    )
+        # Only NOW does this instance hold the namespace. The claim is counted
+        # and the count belongs to whoever took it, so a ``finalize()`` from an
+        # instance that never got one releases somebody else's -- and the last
+        # release empties the shared dict, which the real holder then publishes
+        # over its own file. ``initialize_storages`` adds a storage to its
+        # rollback list BEFORE initializing it, so that finalize is on the
+        # normal path of any refusal here, this claim's own included.
+        self._holds_namespace = True
 
     async def index_done_callback(self) -> None:
         """Flush dirty in-memory state to disk and clear all dirty flags.
@@ -427,6 +443,41 @@ class JsonKVStorage(BaseKVStorage):
         async with self._storage_lock:
             return len(self._data) == 0
 
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract), a page of keys at a time.
+
+        The key list is one Manager RPC taken under the lock; each page then
+        re-reads its rows under the lock, so a row deleted mid-scan is skipped
+        and a row inserted mid-scan may or may not appear. Rows are deep-copied
+        like ``get_by_ids`` so a caller cannot alias the shared dict.
+
+        The key snapshot is O(namespace) before the first page is yielded, and
+        that is accepted on purpose: this backend is for small-scale testing
+        only, so no change to it may be justified by throughput, and the
+        alternative (iterating the ``Manager().dict()`` proxy lazily) costs one
+        RPC per key and raises when a peer worker resizes the dict mid-scan.
+        Only the row payloads are paged; the keys are not.
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
+        page_size = max(1, int(page_size))
+        async with self._storage_lock:
+            keys = list(self._data.keys())
+        for start in range(0, len(keys), page_size):
+            page: list[dict[str, Any]] = []
+            async with self._storage_lock:
+                for key in keys[start : start + page_size]:
+                    data = self._data.get(key)
+                    if data is None:
+                        continue
+                    row = copy.deepcopy(data)
+                    row.setdefault("create_time", 0)
+                    row.setdefault("update_time", 0)
+                    row["_id"] = key
+                    page.append(row)
+            for row in page:
+                yield row
+
     async def drop(self) -> dict[str, str]:
         """Clear shared memory and immediately persist the empty state.
 
@@ -539,3 +590,9 @@ class JsonKVStorage(BaseKVStorage):
         """
         if self.namespace.endswith("_cache"):
             await self.index_done_callback()
+
+        # Give up this instance's hold LAST, after anything that still needed
+        # the shared dict: the last holder's release empties it.
+        if self._holds_namespace:
+            self._holds_namespace = False
+            await leave_namespace_init(self.namespace, workspace=self.workspace)
