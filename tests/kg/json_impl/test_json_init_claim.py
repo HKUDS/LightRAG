@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -315,4 +316,70 @@ async def test_finalizing_twice_releases_once(tmp_path, cls, module, namespace):
 
     assert await sibling.get_by_id("row-a") is not None, (
         "a double finalize took the sibling's hold"
+    )
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_a_failed_load_leaves_no_rows_behind(
+    tmp_path, monkeypatch, cls, module, namespace
+):
+    """Giving the claim back must also drop what the failed load put there.
+
+    The window is between ``self._data.update(loaded_data)`` and the claim
+    exiting -- a cancel landing there, or anything raising after the rows are
+    in. Handing back only the FLAG leaves rows nobody owns, and the next
+    claimer may back a DIFFERENT file: it loads onto them and publishes the
+    union into its own file.
+    """
+    workspace = "partialws"
+    other = tmp_path / "second-root"
+    _seed_file(tmp_path, workspace, namespace, {"from-a": {"value": "A"}})
+    _seed_file(other, workspace, namespace, {"from-b": {"value": "B"}})
+
+    real_info = module.logger.info
+
+    def _raise_after_the_rows_land(message, *args, **kwargs):
+        if "load" in str(message):
+            raise RuntimeError("gave up right after the rows landed")
+        return real_info(message, *args, **kwargs)
+
+    monkeypatch.setattr(module.logger, "info", _raise_after_the_rows_land)
+    with pytest.raises(RuntimeError):
+        await _storage(cls, tmp_path, workspace, namespace).initialize()
+    monkeypatch.setattr(module.logger, "info", real_info)
+
+    # The namespace is free again, so a different root may claim it -- and
+    # must not find the abandoned rows.
+    second = _storage(cls, other, workspace, namespace)
+    await second.initialize()
+
+    assert await second.get_by_id("from-b") is not None
+    assert await second.get_by_id("from-a") is None, (
+        "the failed load's rows survived into another directory's namespace"
+    )
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_two_spellings_of_one_directory_are_one_backing(
+    tmp_path, monkeypatch, cls, module, namespace
+):
+    """The claim compares the FILE, not the string naming it.
+
+    A deployment that configures ``./rag_storage`` in one place and its
+    absolute path in another backs the same file, so refusing it would block
+    a configuration that is not a conflict at all.
+    """
+    workspace = "spellingws"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "A"}})
+
+    first = _storage(cls, tmp_path, workspace, namespace)
+    await first.initialize()
+
+    monkeypatch.chdir(tmp_path.parent)
+    relative = os.path.relpath(str(tmp_path), str(tmp_path.parent))
+    second = _storage(cls, relative, workspace, namespace)
+    await second.initialize()
+
+    assert await second.get_by_id("row-a") is not None, (
+        "the same file under a second spelling did not share the namespace"
     )

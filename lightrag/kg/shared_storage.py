@@ -3848,6 +3848,13 @@ async def try_initialize_namespace(
         raise ValueError("Try to create nanmespace before Shared-Data is initialized")
 
     final_namespace = get_final_namespace(namespace, workspace)
+    if backing is not None:
+        # Compare the FILE, not the spelling of it. Two instances configured
+        # with "./rag_storage" and its absolute path -- or through a symlink
+        # and its target -- back the same file and must share the namespace,
+        # so comparing raw constructor strings would refuse a configuration
+        # that is not a conflict at all.
+        backing = os.path.realpath(backing)
 
     async with get_internal_lock():
         if final_namespace not in _init_flags:
@@ -3884,6 +3891,9 @@ async def release_namespace_init(namespace: str, workspace: str | None = None) -
     life of the process tree. A persistent failure simply fails again, loudly,
     in the next claimer.
 
+    Releasing also EMPTIES the namespace, because a load that gave up partway
+    leaves rows nobody owns and the next claimer may back a different file.
+
     Safe to call without a claim, and safe after the shared data is gone --
     both are no-ops, so a teardown path may call it unconditionally.
     """
@@ -3898,6 +3908,15 @@ async def release_namespace_init(namespace: str, workspace: str | None = None) -
         if _init_flags.pop(final_namespace, None) is None:
             return
         _init_holders.pop(final_namespace, None)
+        # And drop whatever the failed load had already put there. A claim
+        # that gives up after ``update`` but before it finishes leaves rows
+        # nobody owns: the next claimer may back a DIFFERENT file, load onto
+        # them, and publish the union into its own file. Emptied in place,
+        # for the reason ``leave_namespace_init`` empties in place.
+        if _shared_dicts is not None:
+            namespace_data = _shared_dicts.get(final_namespace)
+            if namespace_data is not None:
+                namespace_data.clear()
 
     direct_log(
         f"Process {os.getpid()} released the initialization claim on storage "
