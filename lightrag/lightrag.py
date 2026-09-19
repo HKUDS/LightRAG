@@ -2132,24 +2132,39 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         See *Cleanup before INITIALIZED exists* in
         docs/design/ConfigurationStorage.md.
         """
-        for name, storage in reversed(started):
-            if storage is None:
-                continue
-            try:
-                await storage.finalize()
-            except asyncio.CancelledError:
-                raise
-            except Exception as teardown_error:
-                logger.error(
-                    f"[{self.workspace}] Could not release {name} while backing "
-                    f"out of a failed startup: {teardown_error}"
-                )
-
-        # The directory claim is taken before step 1, so it outlives every
-        # storage in the rollback list and is given back last.
-        if self._holds_working_dir:
-            self._holds_working_dir = False
-            release_working_dir_lock(self.working_dir)
+        try:
+            for name, storage in reversed(started):
+                if storage is None:
+                    continue
+                # Shielded, and the cancellation absorbed: a cancel delivered
+                # while backing out (shutdown, a timeout escalating) must not
+                # stop the releases that have not run yet, and must not become
+                # the exception the caller sees instead of why the startup
+                # failed. The startup failure is what propagates and what is
+                # retained as sticky; a teardown cancellation is reported and
+                # dropped, exactly as a teardown error is.
+                release = asyncio.ensure_future(storage.finalize())
+                try:
+                    await asyncio.shield(release)
+                except asyncio.CancelledError:
+                    logger.error(
+                        f"[{self.workspace}] Cancelled while releasing {name} "
+                        f"during startup rollback; the release itself was "
+                        f"shielded and continues"
+                    )
+                except Exception as teardown_error:
+                    logger.error(
+                        f"[{self.workspace}] Could not release {name} while backing "
+                        f"out of a failed startup: {teardown_error}"
+                    )
+        finally:
+            # The directory claim is taken before step 1, so it outlives every
+            # storage in the rollback list and is given back last -- in a
+            # ``finally`` because it is the one release nothing else can
+            # perform, and leaving it held would refuse the retry.
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(self.working_dir)
 
     async def _establish_embedding_baselines(
         self, bootstrap_targets: list[str], evidence: StartupEvidence
