@@ -25,6 +25,7 @@ from lightrag.exceptions import (
     ConfigurationStorageError,
     EmbeddingBaselineMismatchError,
     VectorSpaceMismatchError,
+    ReferencesIntactFlushError,
     VectorStorageEmptyError,
 )
 from lightrag.kg import json_kv_impl
@@ -207,6 +208,14 @@ async def _write_record(tmp_path, target, *, model_name, dim=_DIM):
         ),
     )
     await config.finalize()
+
+
+async def _always_pending(*, include_deletes: bool = False) -> bool:
+    return True
+
+
+async def _drop_nothing() -> None:
+    return None
 
 
 class _Spy:
@@ -665,6 +674,50 @@ async def test_a_failed_configuration_flush_is_sticky(tmp_path):
     with pytest.raises(ConfigurationStorageError):
         await rag.initialize_storages()
 
+    await rag.finalize_storages()
+
+
+async def test_a_refresh_failure_over_landed_claims_still_starts(tmp_path):
+    """The final flush of step 8 must read its own raise the way the per-claim
+    flushes do. A backend that committed and then failed only on the step after
+    (OpenSearch's ``indices.refresh``) raises ``ReferencesIntactFlushError`` over
+    an EMPTY buffer: the baselines are durable, so refusing the startup would
+    report a durable write as one that did not happen."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+    real_flush = rag.configuration_storage.index_done_callback
+    raises = {"n": 0}
+
+    async def _commit_then_fail_to_refresh():
+        await real_flush()  # the commit lands
+        raises["n"] += 1
+        raise ReferencesIntactFlushError("refresh unavailable")
+
+    rag.configuration_storage.index_done_callback = _commit_then_fail_to_refresh
+
+    await rag.initialize_storages()
+
+    assert raises["n"] >= 1, "the flush must actually have raised"
+    assert rag._storages_status is StoragesStatus.INITIALIZED
+    assert rag._startup_refusal is None
+    assert set(_records(tmp_path)) == set(cs.EMBEDDING_TARGETS)
+    await rag.finalize_storages()
+
+
+async def test_a_retained_final_flush_is_still_a_failure(tmp_path):
+    """The other side of the same question: a backend that kept the operation
+    buffered has not made it durable, whichever way the flush left."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+
+    async def _retain():
+        raise ReferencesIntactFlushError("bulk transport error")
+
+    rag.configuration_storage.index_done_callback = _retain
+    rag.configuration_storage.has_pending_index_ops = _always_pending
+    rag.configuration_storage.drop_pending_index_ops = _drop_nothing
+
+    with pytest.raises(ConfigurationStorageError):
+        await rag.initialize_storages()
+    assert rag._storages_status is StoragesStatus.INITIALIZED
     await rag.finalize_storages()
 
 
