@@ -204,7 +204,6 @@ from lightrag.utils import (
     convert_to_user_format,
     logger,
     validate_workspace,
-    warn_about_workspace_overrides,
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
@@ -2259,12 +2258,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"Creating LightRAG instance with workspace='{self.workspace}' "
                 f"while default workspace is set to '{default_workspace}'"
             )
-
-        # Deprecated, and applied below this layer where nothing can see it:
-        # say so once, loudly, because an override that MOVES data leaves every
-        # record keyed by this workspace -- the embedding baselines included --
-        # behind in the container it moved away from.
-        warn_about_workspace_overrides()
 
         # Auto-initialize pipeline_status for this workspace
         from lightrag.kg.shared_storage import initialize_pipeline_status

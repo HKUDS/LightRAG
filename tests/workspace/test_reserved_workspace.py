@@ -426,7 +426,9 @@ class TestWorkspaceOverridesAreDeprecatedAndAnnounced:
     instance follows the override to another container while those records stay
     behind, and no later check can tell that apart from an ordinary start. The
     rule is therefore announced to the operator rather than enforced, which
-    makes the announcement itself worth pinning.
+    makes the announcement itself worth pinning -- including WHERE it is made,
+    since a per-instance warning would be noise and a per-worker one would
+    repeat itself as many times as the server has workers.
     """
 
     @pytest.fixture(autouse=True)
@@ -483,8 +485,9 @@ class TestWorkspaceOverridesAreDeprecatedAndAnnounced:
         assert warn_about_workspace_overrides() == ["POSTGRES_WORKSPACE"]
         assert len(warnings_seen) == 1
 
-    def test_it_warns_once_per_process(self, monkeypatch, warnings_seen):
-        """A per-instance warning would be noise in a multi-worker server."""
+    def test_a_second_call_stays_quiet(self, monkeypatch, warnings_seen):
+        """Belt and braces: the call sites already make it once per server
+        start, and a stray second call must not double the output."""
         from lightrag.utils import warn_about_workspace_overrides
 
         monkeypatch.setenv("REDIS_WORKSPACE", "legacy_container")
@@ -492,3 +495,37 @@ class TestWorkspaceOverridesAreDeprecatedAndAnnounced:
         second = warn_about_workspace_overrides()
         assert first == second == ["REDIS_WORKSPACE"]
         assert len(warnings_seen) == 1
+
+    def test_the_lightrag_object_does_not_warn(self, monkeypatch):
+        """It belongs to the application's startup, not to an instance: a
+        library user constructing several LightRAGs, or a server with N
+        workers, must not get the deprecation N times."""
+        import lightrag.lightrag as _lightrag
+
+        assert not hasattr(_lightrag, "warn_about_workspace_overrides"), (
+            "the warning was moved out of LightRAG and into the launchers"
+        )
+
+    def test_both_launchers_warn_before_serving(self, monkeypatch):
+        """uvicorn's single process and the Gunicorn MASTER (which runs
+        on_starting before forking) are the two once-per-server-start points."""
+        import inspect
+        import sys
+
+        # Both modules parse argv at import time; pytest's would fail them.
+        monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+        from lightrag.api import gunicorn_config, lightrag_server
+
+        uvicorn_main = inspect.getsource(lightrag_server.main)
+        assert "warn_about_workspace_overrides()" in uvicorn_main
+        # Ahead of the splash screen, so it is not buried under it.
+        assert uvicorn_main.index(
+            "warn_about_workspace_overrides()"
+        ) < uvicorn_main.index("display_splash_screen")
+
+        master_hook = inspect.getsource(gunicorn_config.on_starting)
+        assert "warn_about_workspace_overrides()" in master_hook
+        assert "forking workers" in master_hook, (
+            "on_starting must still be the pre-fork hook for this to be once "
+            "per server start"
+        )

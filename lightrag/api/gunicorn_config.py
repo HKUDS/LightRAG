@@ -119,6 +119,13 @@ def on_starting(server):
     # Log the location of the LightRAG log file
     print(f"LightRAG log file: {log_file_path}\n")
 
+    # Here rather than in a worker: the master is the one process every run
+    # has exactly one of, so the deprecation is said once per server start
+    # instead of once per worker.
+    from lightrag.utils import warn_about_workspace_overrides
+
+    warn_about_workspace_overrides()
+
     print("Gunicorn initialization complete, forking workers...\n")
 
 

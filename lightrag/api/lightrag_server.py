@@ -80,7 +80,7 @@ from lightrag.api.ui_customization import (
     resolve_ui_customization_snapshot,
 )
 
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.utils import logger, set_verbose_debug, warn_about_workspace_overrides
 from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
@@ -3439,6 +3439,7 @@ def main():
 
     # Configure logging before parsing args
     configure_logging()
+    warn_about_workspace_overrides()
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
 
