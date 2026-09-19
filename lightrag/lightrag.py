@@ -2592,67 +2592,88 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # their queue.get() coroutines pending on the destroyed event loop.
         await self._shutdown_model_queues()
         if self._storages_status == StoragesStatus.INITIALIZED:
-            await self._commit_cache_pair_before_finalize()
-            storages = [
-                ("full_docs", self.full_docs),
-                ("text_chunks", self.text_chunks),
-                ("full_entities", self.full_entities),
-                ("full_relations", self.full_relations),
-                ("entity_chunks", self.entity_chunks),
-                ("relation_chunks", self.relation_chunks),
-                ("entities_vdb", self.entities_vdb),
-                ("relationships_vdb", self.relationships_vdb),
-                ("chunks_vdb", self.chunks_vdb),
-                ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
-                ("llm_response_cache", self.llm_response_cache),
-                ("doc_status", self.doc_status),
-                # Initialized first, released last: a business storage's
-                # final flush may still want it open. Exactly once -- the
-                # early-failure rollback only runs while the status is
-                # CREATED, which never reaches this branch.
-                ("configuration_storage", self.configuration_storage),
-            ]
+            try:
+                await self._commit_cache_pair_before_finalize()
+                storages = [
+                    ("full_docs", self.full_docs),
+                    ("text_chunks", self.text_chunks),
+                    ("full_entities", self.full_entities),
+                    ("full_relations", self.full_relations),
+                    ("entity_chunks", self.entity_chunks),
+                    ("relation_chunks", self.relation_chunks),
+                    ("entities_vdb", self.entities_vdb),
+                    ("relationships_vdb", self.relationships_vdb),
+                    ("chunks_vdb", self.chunks_vdb),
+                    ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
+                    ("llm_response_cache", self.llm_response_cache),
+                    ("doc_status", self.doc_status),
+                    # Initialized first, released last: a business storage's
+                    # final flush may still want it open. Exactly once -- the
+                    # early-failure rollback only runs while the status is
+                    # CREATED, which never reaches this branch.
+                    ("configuration_storage", self.configuration_storage),
+                ]
 
-            # Finalize each storage individually to ensure one failure doesn't prevent others from closing
-            successful_finalizations = []
-            failed_finalizations = []
+                # Finalize each storage individually to ensure one failure doesn't prevent others from closing
+                successful_finalizations = []
+                failed_finalizations = []
 
-            for storage_name, storage in storages:
-                if storage:
-                    try:
-                        if storage is self.llm_response_cache:
-                            await self._quarantine_cache_before_finalize(
-                                chunks_finalize_failed=(
-                                    "text_chunks" in failed_finalizations
+                for storage_name, storage in storages:
+                    if storage:
+                        try:
+                            if storage is self.llm_response_cache:
+                                await self._quarantine_cache_before_finalize(
+                                    chunks_finalize_failed=(
+                                        "text_chunks" in failed_finalizations
+                                    )
                                 )
-                            )
-                        await storage.finalize()
-                        successful_finalizations.append(storage_name)
-                        logger.debug(f"Successfully finalized {storage_name}")
-                    except Exception as e:
-                        error_msg = f"Failed to finalize {storage_name}: {e}"
-                        logger.error(error_msg)
-                        failed_finalizations.append(storage_name)
+                            # Shielded, and the cancellation absorbed, for the
+                            # reason the startup rollback shields its releases:
+                            # a cancel delivered here would abandon every
+                            # storage after this one, and an unfinalized
+                            # file-backed storage keeps its hold on the shared
+                            # namespace -- so the next server is refused by a
+                            # process that was already shutting down.
+                            release = asyncio.ensure_future(storage.finalize())
+                            try:
+                                await asyncio.shield(release)
+                            except asyncio.CancelledError:
+                                logger.error(
+                                    f"Cancelled while finalizing {storage_name}; "
+                                    f"the release itself was shielded and continues"
+                                )
+                                failed_finalizations.append(storage_name)
+                                continue
+                            successful_finalizations.append(storage_name)
+                            logger.debug(f"Successfully finalized {storage_name}")
+                        except Exception as e:
+                            error_msg = f"Failed to finalize {storage_name}: {e}"
+                            logger.error(error_msg)
+                            failed_finalizations.append(storage_name)
 
-            # Log summary of finalization results
-            if successful_finalizations:
-                logger.info(
-                    f"Successfully finalized {len(successful_finalizations)} storages"
-                )
+                # Log summary of finalization results
+                if successful_finalizations:
+                    logger.info(
+                        f"Successfully finalized {len(successful_finalizations)} storages"
+                    )
 
-            if failed_finalizations:
-                logger.error(
-                    f"Failed to finalize {len(failed_finalizations)} storages: {', '.join(failed_finalizations)}"
-                )
-            else:
-                logger.debug("All storages finalized successfully")
+                if failed_finalizations:
+                    logger.error(
+                        f"Failed to finalize {len(failed_finalizations)} storages: {', '.join(failed_finalizations)}"
+                    )
+                else:
+                    logger.debug("All storages finalized successfully")
 
-            # Last, after every storage that writes under it is down.
-            if self._holds_working_dir:
-                self._holds_working_dir = False
-                release_working_dir_lock(self.working_dir)
-
-            self._storages_status = StoragesStatus.FINALIZED
+                self._storages_status = StoragesStatus.FINALIZED
+            finally:
+                # Last, after every storage that writes under it is down --
+                # and in a ``finally`` because a cancel delivered anywhere
+                # above would otherwise leave the directory claimed by a
+                # process that is shutting down, refusing the next server
+                # until this one exits.
+                if self._holds_working_dir:
+                    self._holds_working_dir = False
+                    release_working_dir_lock(self.working_dir)
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()
