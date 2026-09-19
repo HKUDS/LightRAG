@@ -6924,14 +6924,20 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
             results = []
             for hit in response["hits"]["hits"]:
-                # OpenSearch k-NN with lucene engine and cosinesimil space type
-                # returns scores that can be used directly as similarity measure.
-                score = hit["_score"]
+                # OpenSearch k-NN with the lucene engine and cosinesimil space
+                # type scores each hit as (1 + cosine_similarity) / 2, in
+                # [0, 1] -- not raw cosine similarity (Lucene's
+                # VectorSimilarityFunction.COSINE requires non-negative
+                # scores, so the plugin rescales rather than returning the
+                # native [-1, 1] range). Convert back before comparing to
+                # cosine_better_than_threshold, which every other backend
+                # compares against raw cosine similarity.
+                cosine_similarity = 2 * hit["_score"] - 1
 
-                if score >= self.cosine_better_than_threshold:
+                if cosine_similarity >= self.cosine_better_than_threshold:
                     doc = hit["_source"]
                     doc["id"] = hit["_id"]
-                    doc["distance"] = score
+                    doc["distance"] = cosine_similarity
                     results.append(doc)
             logger.info(
                 f"[{self.workspace}] Vector query on {self._index_name}: "
