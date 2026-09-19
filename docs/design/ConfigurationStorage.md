@@ -716,8 +716,8 @@ consumes:
   listing, and the callers cannot tell the two apart from a clean end: the
   inventory would under-report, and the chunk source verdict would turn a lost
   container into a durable `origin=empty` baseline. `OpenSearchKVStorage`
-  refuses in exactly the states its `get_by_id_strict` refuses in (index not
-  ready, index gone mid-scan), for the same reason: after `initialize()` the
+  refuses in the same index-missing states its `get_by_id_strict` refuses in
+  (index not ready, index gone mid-scan), for the same reason: after `initialize()` the
   index exists, so its absence is indistinguishable from data loss.
 
 Whether the five implementations land in slice 1 or slice 2 is a scheduling
