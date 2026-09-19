@@ -112,10 +112,14 @@ points the instance at another container while everything keyed by the caller's
 workspace stays behind, and no check below can tell that apart from an ordinary
 start.
 
-So the rule is announced rather than enforced: `warn_about_workspace_overrides()`
-names every override in effect once per process at startup, states that they are
-deprecated, that a storage's workspace should follow the server's, and that
-switching data location by editing one is unsupported. Recovery, if one was
+So the rule is announced rather than enforced:
+`warn_about_workspace_overrides()` names every override in effect, states that
+they are deprecated, that a storage's workspace should follow the server's, and
+that switching data location by editing one is unsupported. It is called from
+the **application's** startup and not from `LightRAG` — the uvicorn entry point
+(`lightrag_server.main`) and the Gunicorn master's `on_starting` hook, which
+runs before it forks — so an operator hears it once per server start rather
+than once per worker or once per instance. Recovery, if one was
 moved: point the override back, or rebuild the moved target with
 `lightrag-rebuild-vdb`, which re-embeds from the authoritative sources and
 records the baseline afresh.
