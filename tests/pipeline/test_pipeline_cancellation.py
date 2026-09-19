@@ -589,13 +589,14 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
     )
     parsed_data = {"blocks_path": str(blocks_path)}
 
-    # Per-call behaviour: call 1 succeeds quickly (~0.05s), call 2 fails
-    # quickly (~0.1s), call 3 would take 5s — we want to prove fail-fast
-    # cancels call 3 rather than wait. Ordering by call_count rather than
-    # by item identifier because the VLM role wrapper does not surface
-    # the item filename in its kwargs (only image_inputs bytes).
+    # Per-call behaviour: call 1 succeeds quickly, call 2 fails quickly,
+    # call 3 parks on an event the test controls. Ordering by call_count
+    # rather than by item identifier because the VLM role wrapper does
+    # not surface the item filename in its kwargs (only image_inputs bytes).
     call_count = {"n": 0}
     call_lock = asyncio.Lock()
+    release_slow = asyncio.Event()
+    slow_completed = asyncio.Event()
 
     async def vlm_func(prompt, **kwargs):
         async with call_lock:
@@ -607,10 +608,11 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         if seq == 2:
             await asyncio.sleep(0.1)
             raise MultimodalAnalysisError("forced failure")
-        # 1.2s instead of 5s: still proves fail-fast doesn't wait (test
-        # checks elapsed < 0.8s) but keeps post-analyze cleanup bounded
-        # since the worker keeps running this sleep until completion.
-        await asyncio.sleep(1.2)
+        # Never completes on its own. fail-fast must cancel this call
+        # rather than wait; teardown releases the event so the worker
+        # can exit instead of sleeping out a wall-clock delay.
+        await release_slow.wait()
+        slow_completed.set()
         return json.dumps({"name": "late", "type": "Chart", "description": "late"})
 
     rag = _build_rag(tmp_path, vlm_func=vlm_func)
@@ -624,7 +626,6 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         }
         pipeline_status_lock = asyncio.Lock()
 
-        start = time.monotonic()
         with pytest.raises(MultimodalAnalysisError):
             await asyncio.wait_for(
                 rag.analyze_multimodal(
@@ -637,12 +638,12 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
                 ),
                 timeout=15.0,
             )
-        elapsed = time.monotonic() - start
 
-        # Without fail-fast we'd have waited for the 1.2s sleep on the
-        # third call. 0.8s gives the second-call failure path room
-        # while still catching any regression that waits for call 3.
-        assert elapsed < 0.8, f"fail-fast still waited {elapsed:.2f}s for slow task"
+        # Without fail-fast the caller would stay blocked on
+        # release_slow.wait() until wait_for times out. Completing
+        # here with the event still unset is the clock-free proof
+        # that the slow task was cancelled rather than awaited.
+        assert not slow_completed.is_set(), "fail-fast waited for the slow task"
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         statuses = sorted(
@@ -674,6 +675,7 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         ]
         assert len(forced_items) == 1
     finally:
+        release_slow.set()
         await _shutdown_role_workers(rag)
         await rag.finalize_storages()
 
