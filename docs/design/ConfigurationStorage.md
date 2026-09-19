@@ -134,6 +134,48 @@ an entry, `TABLES` gains the DDL, and `PGKVStorage` needs the SQL templates it
 dispatches per namespace (`get_by_id_config`, `get_by_ids_config`,
 `upsert_config`). See *Enumeration* for the one thing the other four do owe.
 
+### One server at a time on a file-backed configuration
+
+The in-process guard (*One file per namespace per process tree* in
+`FileBackedSnapshotContract.md`) cannot see another SERVER. Each process tree
+has its own in-memory copy, so two of them started on one `working_dir` each
+load the configuration file, each accumulate a private view, and each rewrite
+the whole thing — the later flush dropping whatever the other recorded since.
+
+That is fatal here in a way it is not elsewhere: an overwritten baseline reads
+back as **absent**, and absent is the one answer that lets a start bootstrap.
+The next start does not refuse the model change the baseline existed to refuse;
+it records the configured model over vectors nobody probed, and the protection
+is gone with nothing in any log.
+
+So a file-backed configuration storage **claims its `working_dir`** for the life
+of its process tree (`lightrag/kg/working_dir_lock.py`), and a second tree is
+refused with `WorkingDirectoryInUseError`. Four properties matter:
+
+- **An OS lock, not a PID file.** The kernel releases it when the holder dies,
+  so a `SIGKILL`, an OOM kill or a power cut leaves nothing stale to reap and
+  there is no read-PID-then-probe-liveness race.
+- **`fork` shares it.** The Gunicorn master takes it in `on_starting`, *before*
+  forking, and the workers inherit that claim and count themselves in. Taken
+  after the fork, each worker would open its own descriptor and all but one
+  would be refused.
+- **It fails open.** Locking is unreliable on NFSv3 without lockd and on
+  SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
+  deployments. A backend that cannot lock gets a warning and proceeds; refusing
+  would break deployments that work, to protect against a rarer failure.
+- **It is asked of the configuration storage**, not of the four business ones,
+  so the claim follows it if it ever becomes separately configurable.
+
+**Accepted residue.** A deployment whose configuration is on a server backend
+but whose business data is file-backed is *not* protected: two servers there
+still overwrite each other's `full_docs`, `doc_status`, graph and vectors, and
+lose more than baselines doing it. That is the long-standing "separate process
+trees are unsupported" position, unchanged. This claim narrows the blast radius
+rather than closing it, because the baseline is the case whose failure is
+silent. Recovery is unchanged — one server per directory, or server backends —
+and widening the claim to any file-backed storage is a deliberate follow-up,
+since it would refuse deployments that work today.
+
 ## Keys
 
 ```
