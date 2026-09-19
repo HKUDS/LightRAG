@@ -1689,7 +1689,7 @@ def create_app(args):
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
-                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                logger.debug("Uvicorn Mode: finalizing shared storage...")
                 finalize_share_data()
             else:
                 # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
