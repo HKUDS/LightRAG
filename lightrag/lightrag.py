@@ -172,6 +172,7 @@ from lightrag.config_store import (
     claim_embedding_baseline,
     configured_baseline,
     create_configuration_storage,
+    flush_configuration_storage,
     precheck_embedding_baselines,
     read_embedding_baselines,
 )
@@ -180,7 +181,6 @@ from lightrag.exceptions import (
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
     AdminWriteGateRefusedError,
     AdminWriteHoldExceededError,
-    ConfigurationStorageError,
     IndexFlushError,
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
@@ -2360,13 +2360,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # returns.
             if baselines_apply and bootstrap_targets:
                 await self._establish_embedding_baselines(bootstrap_targets, evidence)
-            try:
-                await self.configuration_storage.index_done_callback()
-            except Exception as flush_error:
-                raise ConfigurationStorageError(
-                    f"the configuration storage could not be flushed at the end "
-                    f"of startup ({type(flush_error).__name__}: {flush_error})"
-                ) from flush_error
+            # Through the store's own flush, not index_done_callback()
+            # directly: each claim above already flushed inside its lock, so
+            # this one is the guard that nothing is left buffered when startup
+            # returns -- and a raise from it must not be read as a failed write
+            # when the buffer is empty (the commit landed and only the refresh
+            # after it failed). See *A flush that retained anything is a failed
+            # flush here* in docs/design/ConfigurationStorage.md.
+            await flush_configuration_storage(
+                self.configuration_storage, "the startup claims"
+            )
         except BaseException as failure:
             # Sticky (see the top of this method), cancellation included: a
             # CancelledError here leaves the status INITIALIZED with the checks
