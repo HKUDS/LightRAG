@@ -9,11 +9,14 @@ docs/design/ConfigurationStorage.md.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from types import SimpleNamespace
 
 from lightrag.namespace import CONFIG_WORKSPACE, RESERVED_WORKSPACE_PREFIX
 from lightrag.utils import (
+    WORKSPACE_OVERRIDE_SOURCES,
     _grant_reserved_workspace,
     is_reserved_workspace,
     validate_workspace,
@@ -406,3 +409,86 @@ def test_the_configuration_storage_is_never_built_before_a_refusal(
     )
 
     assert built == [], "the configuration storage was built before a refusal"
+
+
+_OVERRIDE_ENV_VARS = [env for env, _ in WORKSPACE_OVERRIDE_SOURCES]
+
+
+class TestWorkspaceOverridesAreDeprecatedAndAnnounced:
+    """``*_WORKSPACE`` exists to keep legacy data reachable, and the storage
+    layer applies it where nothing above can see it: the workspace a caller
+    asked for and the container its data lands in can differ, and every record
+    keyed by the caller's workspace -- the embedding baselines among them --
+    stays under the name the caller gave.
+
+    That is tolerable while the override never moves, and is not tolerable when
+    one is set, changed or cleared to MOVE an existing deployment's data: the
+    instance follows the override to another container while those records stay
+    behind, and no later check can tell that apart from an ordinary start. The
+    rule is therefore announced to the operator rather than enforced, which
+    makes the announcement itself worth pinning.
+    """
+
+    @pytest.fixture(autouse=True)
+    def warnings_seen(self, monkeypatch, tmp_path):
+        """LightRAG's logger does not propagate, so caplog never sees these --
+        collect them off the logger itself."""
+        import lightrag.utils as _utils
+
+        monkeypatch.setattr(_utils, "_workspace_override_warning_emitted", False)
+        for env_var, _section in WORKSPACE_OVERRIDE_SOURCES:
+            monkeypatch.delenv(env_var, raising=False)
+        # config.ini is read relative to the cwd; keep the test off any real one.
+        monkeypatch.chdir(tmp_path)
+
+        records: list[str] = []
+
+        class _Collect(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Collect(level=logging.WARNING)
+        _utils.logger.addHandler(handler)
+        try:
+            yield records
+        finally:
+            _utils.logger.removeHandler(handler)
+
+    def test_no_override_says_nothing(self, warnings_seen):
+        from lightrag.utils import warn_about_workspace_overrides
+
+        assert warn_about_workspace_overrides() == []
+        assert warnings_seen == []
+
+    @pytest.mark.parametrize("env_var", _OVERRIDE_ENV_VARS)
+    def test_each_override_is_named_and_called_deprecated(
+        self, env_var, monkeypatch, warnings_seen
+    ):
+        from lightrag.utils import warn_about_workspace_overrides
+
+        monkeypatch.setenv(env_var, "legacy_container")
+        assert warn_about_workspace_overrides() == [env_var]
+        assert len(warnings_seen) == 1
+        message = warnings_seen[0]
+        assert env_var in message
+        assert "deprecated" in message
+        assert "embedding baselines" in message
+
+    def test_a_config_ini_override_counts_too(self, tmp_path, warnings_seen):
+        """PostgreSQL and Neo4j fall back to config.ini, so the environment
+        alone is not where the answer lives."""
+        from lightrag.utils import warn_about_workspace_overrides
+
+        (tmp_path / "config.ini").write_text("[postgres]\nworkspace = legacy\n")
+        assert warn_about_workspace_overrides() == ["POSTGRES_WORKSPACE"]
+        assert len(warnings_seen) == 1
+
+    def test_it_warns_once_per_process(self, monkeypatch, warnings_seen):
+        """A per-instance warning would be noise in a multi-worker server."""
+        from lightrag.utils import warn_about_workspace_overrides
+
+        monkeypatch.setenv("REDIS_WORKSPACE", "legacy_container")
+        first = warn_about_workspace_overrides()
+        second = warn_about_workspace_overrides()
+        assert first == second == ["REDIS_WORKSPACE"]
+        assert len(warnings_seen) == 1
