@@ -222,9 +222,7 @@ def test_executor_safe_context_callback_forwards_context(monkeypatch):
 
     install_impl(monkeypatch, callback)
     monkeypatch.setattr(utils, "run_in_chunking_executor", offload)
-    registry.register_chunker(
-        spec(executor_safe=True, accepts_context=True)
-    )
+    registry.register_chunker(spec(executor_safe=True, accepts_context=True))
     context = registry.ChunkingContext(
         doc_id="doc-1",
         file_path="doc-1.txt",

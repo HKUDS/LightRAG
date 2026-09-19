@@ -167,9 +167,7 @@ def register_chunker(spec: ChunkerSpec, *, origin: str | None = None) -> None:
     if not isinstance(spec.executor_safe, bool):
         raise ValueError(f"chunker {spec.name!r} executor_safe must be a bool")
     if not isinstance(spec.accepts_context, bool):
-        raise ValueError(
-            f"chunker {spec.name!r} accepts_context must be a bool"
-        )
+        raise ValueError(f"chunker {spec.name!r} accepts_context must be a bool")
     resolved_origin = _registration_origin or origin or spec.impl
     previous = _REGISTRY.get(spec.name)
     if previous is not None:
