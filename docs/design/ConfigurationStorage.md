@@ -405,6 +405,17 @@ pending buffer ahead of its own client guard), so a retry on the same object
 could neither succeed honestly nor re-run from step 1. A new instance is the
 retry.
 
+**Where stickiness starts.** Steps 1 through 9 are the guarded phase; the
+preamble before them -- binding the event loop, the default workspace,
+`pipeline_status` -- is not, and deliberately so. Stickiness exists to stop two
+things: a later call early-returning on a status that says `INITIALIZED`, and
+re-running steps against storages a rollback has closed. Neither is reachable
+before step 1, where nothing has been opened and the status has not moved, so a
+failure there is an ordinary failure and the retry re-runs every check for real.
+Making it sticky would strand an instance over a transient shared-storage
+failure and buy no safety. A regression test pins the boundary rather than
+leaving it to be re-derived.
+
 **Cancellation is a failure too.** `asyncio.CancelledError` is not an
 `Exception`, and a handler that catches only `Exception` after `INITIALIZED`
 lets a cancelled probe, claim or flush leave the status `INITIALIZED` with
