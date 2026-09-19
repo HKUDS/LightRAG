@@ -5,6 +5,11 @@ A PIT + search_after scan, read-your-writes against the process-local buffer:
 a buffered upsert is yielded in place of its indexed version, a buffered
 delete hides its row, and a buffered row the index has never seen is yielded
 after the scan.
+
+A missing index RAISES rather than ending the scan: the base contract forbids
+presenting a partial listing as a complete one, and ``_chunk_source_is_populated``
+turns a clean end into "confirmed empty", which is a durable ``origin=empty``
+baseline write.
 """
 
 from __future__ import annotations
@@ -14,7 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lightrag.exceptions import StorageNotInitializedError
+from opensearchpy.exceptions import OpenSearchException
+
+from lightrag.exceptions import StorageControlPlaneError, StorageNotInitializedError
 from lightrag.kg.opensearch_impl import OpenSearchKVStorage
 
 pytestmark = pytest.mark.offline
@@ -109,3 +116,62 @@ async def test_an_uninitialized_storage_raises():
     with pytest.raises(StorageNotInitializedError):
         async for _ in storage.iter_rows():
             pass
+
+
+async def test_a_dropped_index_raises_instead_of_ending_the_scan():
+    """``_index_ready=False`` (post-drop) cannot answer "empty".
+
+    Before this was fixed the scan returned zero rows and ended cleanly, which
+    ``_chunk_source_is_populated`` reads as a confirmed-empty chunk source --
+    the verdict that records an ``origin=empty`` embedding baseline for a
+    container nobody could read.
+    """
+    storage, client = _storage([])
+    storage._index_ready = False
+
+    rows = []
+    with pytest.raises(StorageControlPlaneError, match="not ready"):
+        async for row in storage.iter_rows():
+            rows.append(row)
+
+    assert rows == []
+    client.create_pit.assert_not_awaited()
+
+
+async def test_an_index_that_vanishes_mid_scan_raises_and_marks_it_missing():
+    """A live ``index_not_found`` is data loss, not emptiness.
+
+    After ``initialize()`` the index always exists, so it disappearing under a
+    scan (restore, concurrent drop) is indistinguishable from data loss -- the
+    same argument ``get_by_id_strict`` makes for a point read.
+    """
+    storage, client = _storage([])
+    client.create_pit = AsyncMock(
+        side_effect=OpenSearchException("index_not_found_exception: iterws_config")
+    )
+
+    with pytest.raises(StorageControlPlaneError, match="unexpectedly missing"):
+        async for _ in storage.iter_rows():
+            pass
+
+    assert storage._index_ready is False
+
+
+async def test_the_pending_buffer_alone_is_not_yielded_as_the_listing():
+    """A buffer is not the namespace, so it cannot stand in for one.
+
+    ``_iter_raw_docs`` does not flush -- ``_refresh_for_search`` is
+    best-effort and returns on a missing index -- so with the index gone the
+    indexed side is unknown. The old code skipped the scan and yielded the
+    buffered rows after it, a partial listing that ended cleanly; now the
+    refusal precedes every row.
+    """
+    storage, _ = _storage([], pending={"buffered": {"value": 1}})
+    storage._index_ready = False
+
+    rows = []
+    with pytest.raises(StorageControlPlaneError):
+        async for row in storage.iter_rows():
+            rows.append(row)
+
+    assert rows == []
