@@ -257,3 +257,62 @@ async def test_the_hold_is_given_back_only_by_the_last_holder(
     released = _storage(cls, other, workspace, namespace)
     await released.initialize()
     assert await released.get_by_id("row-b") is not None
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_a_refused_instance_releases_nobody_elses_hold(
+    tmp_path, cls, module, namespace
+):
+    """A storage that never got a hold must not give one back.
+
+    ``initialize_storages`` appends a storage to its rollback list BEFORE
+    calling ``initialize()``, so a refusal here is followed by ``finalize()``
+    on the very instance that was refused. An unconditional release then
+    decrements the count of whoever DOES hold the namespace -- and the last
+    release empties the shared dict, which the real holder publishes over its
+    own file at the next flush. The guard that was meant to protect the rows
+    would have destroyed them.
+    """
+    workspace = "refusedws"
+    other = tmp_path / "second-root"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "from A"}})
+    _seed_file(other, workspace, namespace, {"row-b": {"value": "from B"}})
+
+    holder = _storage(cls, tmp_path, workspace, namespace)
+    await holder.initialize()
+
+    refused = _storage(cls, other, workspace, namespace)
+    with pytest.raises(SharedNamespaceBackingConflictError):
+        await refused.initialize()
+    await refused.finalize()  # what the startup rollback does
+
+    assert await holder.get_by_id("row-a") is not None, (
+        "the refused instance released the holder's namespace"
+    )
+
+    # And the holder is still the holder: a third root is still refused.
+    with pytest.raises(SharedNamespaceBackingConflictError):
+        await _storage(cls, tmp_path / "third-root", workspace, namespace).initialize()
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_finalizing_twice_releases_once(tmp_path, cls, module, namespace):
+    """The hold is given back on the first finalize and not again.
+
+    A second call must not decrement past this instance's own hold, or it
+    takes a sibling's -- the same defect as releasing one never held.
+    """
+    workspace = "twicews"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "from A"}})
+
+    first = _storage(cls, tmp_path, workspace, namespace)
+    await first.initialize()
+    sibling = _storage(cls, tmp_path, workspace, namespace)
+    await sibling.initialize()
+
+    await first.finalize()
+    await first.finalize()
+
+    assert await sibling.get_by_id("row-a") is not None, (
+        "a double finalize took the sibling's hold"
+    )
