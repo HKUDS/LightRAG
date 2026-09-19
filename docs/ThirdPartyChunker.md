@@ -1,6 +1,6 @@
 # Third-party chunkers
 
-An installed package can publish a legacy six-argument chunker without modifying LightRAG. The Server discovers registrations at startup and injects one selected callback. This implements [#3868](https://github.com/HKUDS/LightRAG/issues/3868); it does not add `C(name=...)`, context-aware callbacks, identity enforcement, multiple active chunkers, or a transform hook for F/R/V/P.
+An installed package can publish a legacy six-argument chunker without modifying LightRAG. The Server discovers registrations at startup and injects one selected callback. This implements [#3868](https://github.com/HKUDS/LightRAG/issues/3868); it also supports an explicit context-aware callback contract. It does not add `C(name=...)`, identity enforcement, multiple active chunkers, or a transform hook for F/R/V/P.
 
 ## Publish an import-cheap registration
 
@@ -24,6 +24,7 @@ def register():
         version="1",
         description="Organization-specific document splitting",
         executor_safe=False,
+        accepts_context=False,
     ))
 ```
 
@@ -47,7 +48,37 @@ Both synchronous and async callbacks are supported, and receive exactly these si
 
 For CPU-bound, synchronous, thread-safe code, set `executor_safe=True` to use LightRAG's existing bounded chunking executor. Such code must not need the running event loop or return awaitables. An async function/async callable object with that flag is rejected at startup. Leave it false for loop-dependent implementations, or offload explicitly inside an async callback. The declaration is an author promise, not a sandbox or a proof of thread safety.
 
-That executor is a **single-worker** pool shared with the built-in strategies, so the flag buys the event loop back, not parallelism: a slow plugin queues ahead of every other document's chunking instead of blocking the loop. Prefer it anyway for CPU-bound code — a stalled loop stops serving HTTP — but do not read it as headroom.
+That executor is a **single-worker** pool shared with the built-in strategies, so the flag buys the event loop back, not parallelism: a slow plugin queues ahead of every other document's chunking instead of blocking the loop. Prefer it anyway for CPU-bound code, but do not read it as extra parallel capacity.
+
+## Receive document context
+
+Legacy callbacks receive exactly six positional arguments. A callback that needs
+document metadata must opt in explicitly; LightRAG never retries a callback
+after a `TypeError` to guess its signature.
+
+For a constructor-supplied callback, use the marker decorator:
+
+```python
+from lightrag.chunker import ChunkingContext, accepts_chunking_context
+
+@accepts_chunking_context
+def chunk(tokenizer, content, split_by_character, split_by_character_only,
+          chunk_overlap_token_size, chunk_token_size, *, context: ChunkingContext):
+    # context.doc_id, context.file_path, context.sidecar_location,
+    # context.parse_format, context.parse_engine and context.process_options
+    # describe the document being chunked.
+    ...
+```
+
+`sidecar_location` is the durable URI for the parser sidecar directory. When a
+local path is needed, resolve it with `resolve_sidecar_uri` from
+`lightrag.utils_pipeline`; do not cast arbitrary URI schemes directly to
+`pathlib.Path`.
+
+For an entry-point plugin, set `accepts_context=True` on `ChunkerSpec` and
+accept the same keyword-only `context` argument. The six legacy arguments and
+the context are passed exactly once; the context is immutable for the duration
+of the call.
 
 ## Select in the Server
 
