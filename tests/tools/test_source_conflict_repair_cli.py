@@ -372,15 +372,20 @@ async def test_scan_classification_and_a_manual_freeze_also_refuse(tmp_path):
         storage = await _storage(
             tmp_path / flag, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
         )
-        with pytest.raises(StorageControlPlaneError, match=expected):
-            await repair_one_conflict(
-                storage,
-                "a.pdf",
-                "doc-1",
-                workspace=workspace,
-                full_docs=_AnyContent(),
-                apply=True,
-            )
+        try:
+            with pytest.raises(StorageControlPlaneError, match=expected):
+                await repair_one_conflict(
+                    storage,
+                    "a.pdf",
+                    "doc-1",
+                    workspace=workspace,
+                    full_docs=_AnyContent(),
+                    apply=True,
+                )
+        finally:
+            # Each iteration binds the same workspace to a DIFFERENT working
+            # directory, so the hold has to go back before the next one takes it.
+            await storage.finalize()
 
 
 @pytest.mark.asyncio

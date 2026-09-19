@@ -458,6 +458,45 @@ persistent one fails again, loudly, in the next claimer.
 and a caller that uses it directly owes the same release
 (`release_namespace_init`).
 
+### One file per namespace per process tree
+
+The key is `workspace:namespace`. It says nothing about which FILE backs it,
+and for the JSON pair the container's identity *is* the file — so two
+`working_dir` roots in one process tree meet on one in-memory copy. Ordinary
+namespaces hide this behind the workspace (two tenants under different names
+never collide), but the `config` namespace is pinned to one reserved workspace,
+so every instance lands on the same key however its tenants are named.
+
+What that cost, before the claim asserted it: the second instance skipped the
+load, read its own file's rows as **absent**, and then published the union into
+whichever file flushed first — the other never being written at all. Absence is
+the one answer that lets a start bootstrap, so for a baseline this is the
+configured model recorded over vectors nobody probed. No lock fixes it, because
+nothing here is a race: serialize the two perfectly and they still share one
+dict.
+
+So the claim carries the file (`backing=`), and a second, DIFFERENT file while
+the first is still held is refused with
+`SharedNamespaceBackingConflictError`. Two rules follow:
+
+- **Refused at once, allowed in turn.** The hold is given back by `finalize()`,
+  and it is *counted*: a process tree's workers each hold the same namespace
+  and finalize independently, so only the last one out releases it. A caller
+  whose startup fails AFTER `INITIALIZED` still owes that teardown — the
+  refusal is sticky, but the resources are open.
+- **The flag and the data are released together.** The flag means "this
+  namespace carries a file's contents", so dropping one without the other
+  leaves the next instance either re-reading into rows that are already there
+  (the load is `update`, not a replace) or trusting rows nobody loaded. The
+  dict is emptied **in place**, never replaced: `get_namespace_data` caches the
+  object per process and documents it as stable for the life of the shared
+  data.
+
+This is a process-tree guard, and only that. Two separate process trees on one
+`working_dir` are still unsupported and still undetected here — that needs a
+lock on the directory itself, which is a different mechanism for a different
+failure.
+
 ### Reversed flag semantics
 
 Anyone writing (`upsert` / `delete` / `drop`):

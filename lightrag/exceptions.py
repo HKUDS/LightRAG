@@ -108,6 +108,26 @@ class StorageCapabilityError(RuntimeError):
     """
 
 
+class SharedNamespaceBackingConflictError(RuntimeError):
+    """Two file-backed storages in one process tree claimed one namespace
+    while backed by DIFFERENT files.
+
+    The five file-backed storages publish a namespace by rewriting a whole
+    file, and the JSON pair share one in-memory copy per process tree keyed by
+    ``workspace:namespace`` — a key that says nothing about which file backs
+    it. When both coincide the sharing is correct and required. When they do
+    not, the second storage silently inherits the first's rows, reads its own
+    file's contents as ABSENT, and then publishes the union into whichever
+    file flushes first — the other never being written at all.
+
+    Absence is the one answer that lets a start bootstrap, so for the
+    configuration namespace that silence would record the configured model
+    over vectors nobody probed. Refusing is the only reading that does not
+    turn a divergence into a durable claim. See *One file per namespace per
+    process tree* in ``docs/design/FileBackedSnapshotContract.md``.
+    """
+
+
 class StorageControlPlaneError(RuntimeError):
     """A storage control-plane read failed (e.g. an index that must exist is
     unexpectedly absent, or a not-yet-ready index during rebuild/recovery).
