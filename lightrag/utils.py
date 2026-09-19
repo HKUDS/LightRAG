@@ -7995,8 +7995,14 @@ def warn_about_workspace_overrides() -> list[str]:
     a storage's workspace follows the server's, and switching data location by
     editing one of these is unsupported.
 
-    Returns the variables it warned about, so a caller can report them. Emits
-    at most once per process; later calls return the same list silently.
+    Called from the APPLICATION's startup, not from ``LightRAG``: the uvicorn
+    entry point (``lightrag_server.main``) and the Gunicorn master's
+    ``on_starting`` hook, which runs before it forks. That is once per server
+    start rather than once per worker or once per instance, which is what an
+    operator-facing deprecation wants. The once-per-process guard below only
+    keeps a second call quiet; it is not what makes the count right.
+
+    Returns the variables it warned about, so a caller can report them.
     """
     global _workspace_override_warning_emitted
 
