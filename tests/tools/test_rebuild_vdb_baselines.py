@@ -312,3 +312,65 @@ class TestTheToolIsASecondProcessTree:
         assert rebuild_vdb.uses_working_dir("MongoKVStorage") is False
         assert rebuild_vdb.uses_working_dir("OpenSearchKVStorage") is False
         assert rebuild_vdb.uses_working_dir("JsonKVStorage") is True
+
+
+class TestAFlushThatRaisedMayHaveLanded:
+    """``_flush`` asks the buffer, not the exception, what a flush did.
+
+    The rule this PR states for the configuration flush applies to the data
+    side too: ``ReferencesIntactFlushError`` covers BOTH "the bulk failed with
+    every operation still buffered" AND "the bulk landed and only the refresh
+    after it failed". Reading both as a failed batch reports durable vectors
+    as lost -- and ``commit_baseline`` then withholds the baseline, so the
+    server keeps refusing to start over an index that is in fact rebuilt.
+    """
+
+    class _Vdb:
+        def __init__(self, *, retained: bool):
+            self._retained = retained
+
+        async def index_done_callback(self):
+            raise rebuild_vdb.ReferencesIntactFlushError("refresh failed")
+
+        async def has_pending_index_ops(self, *, include_deletes: bool = False):
+            return self._retained
+
+    class _UnanswerableVdb:
+        async def index_done_callback(self):
+            raise rebuild_vdb.ReferencesIntactFlushError("refresh failed")
+
+    def _stats(self):
+        return {
+            "label": "entities",
+            "staged": 5,
+            "rebuilt": 0,
+            "batches": 1,
+            "failed_batches": 0,
+            "errors": [],
+        }
+
+    async def test_an_empty_buffer_means_the_write_landed(self):
+        stats = self._stats()
+        await rebuild_vdb._flush(self._Vdb(retained=False), stats)
+
+        assert stats["rebuilt"] == 5
+        assert stats["failed_batches"] == 0
+        assert stats["errors"] == []
+        assert stats["staged"] == 0
+
+    async def test_a_retained_buffer_is_still_a_failed_batch(self):
+        stats = self._stats()
+        await rebuild_vdb._flush(self._Vdb(retained=True), stats)
+
+        assert stats["rebuilt"] == 0
+        assert stats["failed_batches"] == 1
+        assert stats["errors"][0]["records_lost"] == 5
+
+    async def test_a_storage_that_cannot_be_asked_keeps_the_conservative_reading(self):
+        """Unanswerable is treated as retained: a flush is never credited on
+        an assumption."""
+        stats = self._stats()
+        await rebuild_vdb._flush(self._UnanswerableVdb(), stats)
+
+        assert stats["rebuilt"] == 0
+        assert stats["failed_batches"] == 1

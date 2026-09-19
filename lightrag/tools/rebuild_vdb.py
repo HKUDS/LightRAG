@@ -86,6 +86,7 @@ from lightrag.config_store import (
 )
 from lightrag.exceptions import (
     ConfigurationStorageError,
+    ReferencesIntactFlushError,
     StorageCapabilityError,
     VectorSpaceMismatchError,
     WorkingDirectoryInUseError,
@@ -218,24 +219,67 @@ async def _flush(vdb, stats: Dict[str, Any]) -> None:
     if stats["staged"] == 0:
         return
     label = stats["label"]
+    failure: BaseException | None = None
     try:
         await vdb.index_done_callback()
-        stats["rebuilt"] += stats["staged"]
+    except ReferencesIntactFlushError as e:
+        # A backend that can prove its raise lost nothing. Whether anything
+        # LANDED is the buffer's answer to give, not this exception's -- and
+        # OpenSearch raises this both when a bulk failed with every operation
+        # still buffered AND when the bulk was accepted and only the refresh
+        # after it failed. Reading both as a failed flush reports durable
+        # vectors as lost, and ``commit_baseline`` then withholds the
+        # baseline, leaving the server refusing to start over an index that
+        # is in fact rebuilt.
+        if await _retained_after_flush(vdb):
+            failure = e
+        else:
+            logger.warning(
+                f"Rebuild {label}: the flush of {stats['staged']} staged "
+                f"record(s) reported {type(e).__name__}, but the storage "
+                f"kept nothing buffered -- the write landed and only a step "
+                f"after it failed ({e})"
+            )
     except Exception as e:
+        failure = e
+
+    if failure is None:
+        stats["rebuilt"] += stats["staged"]
+    else:
         logger.error(
-            f"Rebuild {label}: flush of {stats['staged']} staged record(s) failed: {e}"
+            f"Rebuild {label}: flush of {stats['staged']} staged record(s) "
+            f"failed: {failure}"
         )
         stats["failed_batches"] += 1
         stats["errors"].append(
             {
                 "batch": f"flush@batch-{stats['batches']}",
                 "records_lost": stats["staged"],
-                "error_type": type(e).__name__,
-                "error_msg": str(e),
+                "error_type": type(failure).__name__,
+                "error_msg": str(failure),
             }
         )
-    finally:
-        stats["staged"] = 0
+    stats["staged"] = 0
+
+
+async def _retained_after_flush(vdb) -> bool:
+    """Whether the storage still holds operations the server never took.
+
+    A backend that cannot be asked keeps the conservative reading of its own
+    raise: unanswerable is treated as retained, so a flush is never credited
+    on an assumption.
+    """
+    has_pending = getattr(vdb, "has_pending_index_ops", None)
+    if has_pending is None:
+        return True
+    try:
+        return bool(await has_pending(include_deletes=True))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.error(
+            f"Could not ask {type(vdb).__name__} whether its flush retained "
+            f"anything ({type(e).__name__}: {e}); treating it as retained"
+        )
+        return True
 
 
 async def _upsert_batch(
