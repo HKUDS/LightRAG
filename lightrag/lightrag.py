@@ -2111,40 +2111,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Best-effort teardown for a failure BEFORE ``INITIALIZED``.
 
         ``finalize_storages()`` releases nothing while the status is still
-        ``CREATED``, so everything this instance holds must be released here:
-        in reverse initialization order, the configuration storage last, every
-        failure logged and none of them allowed to replace the exception that
-        is propagating.
+        ``CREATED``, so the storages that are up must be released here: in
+        reverse order, the configuration storage last, every failure logged and
+        none of them allowed to replace the exception that is propagating.
 
-        Two kinds of holding, and they take different calls. A storage the
-        rollback list names has begun ``initialize()`` and gets ``finalize()``.
-        A storage BELOW the failure never initialized -- but construction is
-        not free everywhere, and a constructor that took a process-wide
-        resource (the Redis backends take a reference on the shared connection
-        pool) would keep it for the life of the process: those get
-        ``release_unstarted()``, whose default releases nothing. Calling
-        ``finalize()`` on them instead is not an option -- no backend promises
-        it works on an instance that never initialized. The failure is sticky,
-        so nothing here can be needed again.
+        Only the storages the rollback list names need releasing. No backend
+        acquires a process-wide resource before its ``initialize()`` runs, so
+        one the loop never reached is holding nothing -- and ``finalize()`` on
+        it would not be an option anyway, since no backend promises that works
+        on an instance that never initialized.
         See *Cleanup before INITIALIZED exists* in
         docs/design/ConfigurationStorage.md.
         """
-        up = {id(storage) for _, storage in started if storage is not None}
-        constructed: list[tuple[str, Any]] = [
-            ("configuration_storage", getattr(self, "configuration_storage", None)),
-            *self._business_storages(),
-        ]
-        for name, storage in reversed(constructed):
+        for name, storage in reversed(started):
             if storage is None:
                 continue
-            if id(storage) in up:
-                release = storage.finalize
-            else:
-                release = getattr(storage, "release_unstarted", None)
-                if release is None:
-                    continue
             try:
-                await release()
+                await storage.finalize()
             except asyncio.CancelledError:
                 raise
             except Exception as teardown_error:
@@ -2323,10 +2306,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # is still CREATED -- so release it here, in reverse order, the
             # configuration storage last. The original exception propagates;
             # a teardown failure is logged and never replaces it. Sticky too:
-            # not every backend's finalize() is reversible (RedisKVStorage
-            # keeps `_initialized` while dropping its client), so a retry on
-            # this object could neither succeed honestly nor re-run from
-            # step 1. A new instance is the retry.
+            # not every backend's finalize() is safe to undo (OpenSearch's
+            # flushes its pending buffer ahead of its own client guard), so a
+            # retry on this object could neither succeed honestly nor re-run
+            # from step 1. A new instance is the retry.
             self._retain_startup_failure(failure)
             await self._release_after_early_failure(started)
             raise

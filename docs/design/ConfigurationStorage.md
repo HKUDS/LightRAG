@@ -347,9 +347,9 @@ So step 4 owns a rollback protocol:
   configuration storage;
 - a teardown failure is logged and never replaces the original exception, which
   is what propagates;
-- a storage the loop never reached is not `finalize()`d — but it is not simply
-  left alone either, because construction is not free everywhere. See
-  *Construction is not free* below.
+- a storage the loop never reached is left alone: no backend acquires anything
+  before its `initialize()` runs, so it is holding nothing. See *Construction
+  takes nothing* below.
 
 **Do not simply move `INITIALIZED` ahead of the loop instead.** Teardown would
 then call `finalize()` on storages that never ran `initialize()`, and that is
@@ -366,37 +366,31 @@ Partial-initialization leakage predates this design — the loop has always been
 able to fail midway. What this slice adds is the configuration storage in the
 same chain, and it must not be the reason the gap goes on being undocumented.
 
-#### Construction is not free
+#### Construction takes nothing
 
-`RedisKVStorage` and `RedisDocStatusStorage` take their shared-pool reference
-in `__post_init__`, not in `initialize()` — alone among the backends. Two
-consequences, and they need different answers.
+**No backend acquires a process-wide resource in its constructor**, so a
+storage the loop never reached is holding nothing and the rollback owes it
+nothing. That invariant is load-bearing here and easy to break silently: a
+constructor has no teardown path, `LightRAG.__post_init__` is synchronous and
+builds twelve storages before validating anything, and a refusal anywhere in
+that sequence drops every storage already built on the floor — no `finalize()`
+is reachable, and there is no half-built `LightRAG` to call
+`finalize_storages()` on. The Redis backends held their shared-pool reference
+that way until [#4017](https://github.com/HKUDS/LightRAG/pull/4017) moved the
+acquisition into `initialize()`, where every other backend already did it, and
+gated `close()` on a reference actually held. A new backend that acquires in
+`__post_init__` reopens the leak, and the rollback cannot cover it: `finalize()`
+on an instance that never initialized is not a contract any backend offers —
+the same argument that keeps `INITIALIZED` behind the loop.
 
-**A startup that fails before a storage's turn.** Construction SUCCEEDED, so
-every Redis-backed storage already holds a reference; a refusal at step 2 or 3
-means the rollback list names only the configuration storage, and the other
-references belong to storages whose `initialize()` never ran. `finalize()` is
-not available to the rollback there — no backend promises it works on an
-instance that never initialized, which is the same argument that keeps
-`INITIALIZED` behind the loop. So the rollback calls `release_unstarted()` on
-them instead: a surface whose default releases nothing, overridden only where
-the constructor took something. The failure is sticky, so nothing it releases
-can be wanted again. The alternative — moving the acquisition into
-`initialize()`, where every other backend does it — is the better fix and is
-tracked in [#4016](https://github.com/HKUDS/LightRAG/issues/4016); `release_unstarted()` is correct either way, and becomes a
-no-op once that lands.
-
-**A constructor that raises.** `LightRAG.__post_init__` is synchronous, so
-there is no rollback to run at all: a constructor that raises after another
-Redis storage was built leaks that reference with no `finalize()` reachable.
-That predates this design (twelve constructors ran in sequence before it), and
-what this slice owes is to add nothing to it: the configuration storage is
-constructed as the **last statement of `__post_init__` that can raise** —
-after every business storage and after every validation that follows them
-(`llm_model_func` present, `role_llm_configs` well-formed) — so a refusal
-anywhere in construction, a reserved `*_WORKSPACE` override being the one this
-slice introduces, finds nothing of the configuration storage's to leak. A new
-check added to `__post_init__` goes **above** that construction.
+One ordering survives from when this was not true: the configuration storage is
+constructed as the **last statement of `__post_init__` that can raise**, after
+every business storage and after the validations that follow them
+(`llm_model_func` present, `role_llm_configs` well-formed). It is no longer
+load-bearing — there is nothing of the configuration storage's to leak — but it
+is kept, because building something a refusal is about to discard is pointless
+either way. A new check added to `__post_init__` goes **above** that
+construction.
 
 **A failed step 4 does not heal by retrying.** Either the failure is retained
 the way post-`INITIALIZED` failures are, or a full retry is supported and
@@ -404,9 +398,10 @@ re-runs every step from 1; what is not acceptable is a second
 `initialize_storages()` returning successfully because some state was left
 behind by the first. The implementation takes the first option, for every
 failure before `INITIALIZED` and not only step 4's: not every backend's
-`finalize()` is reversible (`RedisKVStorage.close()` drops its client while
-leaving `_initialized` set), so a retry on the same object could neither
-succeed honestly nor re-run from step 1. A new instance is the retry.
+`finalize()` is safe to undo (`OpenSearchKVStorage.finalize()` flushes its
+pending buffer ahead of its own client guard), so a retry on the same object
+could neither succeed honestly nor re-run from step 1. A new instance is the
+retry.
 
 **Cancellation is a failure too.** `asyncio.CancelledError` is not an
 `Exception`, and a handler that catches only `Exception` after `INITIALIZED`

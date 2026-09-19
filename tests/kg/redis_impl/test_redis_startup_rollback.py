@@ -1,15 +1,19 @@
-"""Construction-time resources and a startup that fails before ``INITIALIZED``.
+"""A startup that fails before ``INITIALIZED`` holds no Redis pool reference.
 
-The Redis backends are the ones that take a shared-pool reference in
-``__post_init__`` rather than in ``initialize()``. A ``LightRAG`` constructor
-therefore already holds one reference per Redis-backed storage before any
-startup step runs -- and a startup that fails EARLY (an unreadable
-configuration record, a recorded baseline that does not match) never reaches
-those storages' ``initialize()``, so the rollback list does not name them and
-``finalize_storages()`` releases nothing while the status is still
-``CREATED``. Without ``release_unstarted`` every one of those references
-outlives the instance, and the shared pool is never disconnected when the
-last genuine user goes away.
+The Redis backends acquire their shared-pool reference in ``initialize()``,
+and a startup can refuse long before that: an unreadable configuration record
+or a recorded embedding baseline that does not match refuses at step 2 or 3,
+with every storage constructed and none of them initialized. The rollback list
+therefore names only the configuration storage, and ``finalize_storages()``
+releases nothing at all while the status is still ``CREATED`` -- so anything a
+CONSTRUCTOR had taken would outlive the instance with nothing left to release
+it.
+
+The unit tests next door pin the backend half of that (construction touches the
+manager's registry not at all, ``close()`` before ``initialize()`` releases
+nothing). This one pins it through a whole ``LightRAG``, which is where the
+symptom was reported: the reference count is what it was before, at every point
+of a refused startup.
 """
 
 from __future__ import annotations
@@ -18,11 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lightrag.kg.redis_impl import (
-    RedisConnectionManager,
-    RedisDocStatusStorage,
-    RedisKVStorage,
-)
+from lightrag.kg.redis_impl import RedisConnectionManager
 from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
 pytestmark = pytest.mark.offline
@@ -54,30 +54,9 @@ def redis_url(tmp_path, monkeypatch):
     RedisConnectionManager._pool_refs.pop(url, None)
 
 
-@pytest.mark.parametrize("cls", [RedisKVStorage, RedisDocStatusStorage])
-async def test_release_unstarted_gives_back_the_constructor_reference(cls, redis_url):
-    storage = cls(
-        namespace="full_docs" if cls is RedisKVStorage else "doc_status",
-        workspace="tenant",
-        global_config={"working_dir": "unused"},
-        embedding_func=None,
-    )
-    assert RedisConnectionManager._pool_refs[redis_url] == 1
-
-    await storage.release_unstarted()
-
-    assert redis_url not in RedisConnectionManager._pool_refs
-    # Idempotent: a second pass must not steal another storage's reference.
-    await storage.release_unstarted()
-    assert redis_url not in RedisConnectionManager._pool_refs
-
-
-async def test_a_startup_that_fails_before_the_storages_start_leaks_no_reference(
-    tmp_path, redis_url
-):
-    """The whole instance on Redis, refused at step 1. Every reference the
-    constructor took is handed back, including the ones belonging to storages
-    whose ``initialize()`` was never called."""
+async def test_a_startup_refused_at_step_1_holds_no_pool_reference(tmp_path, redis_url):
+    """The whole instance on Redis, refused before the business storages start.
+    No reference is held after construction, and none after the rollback."""
     from lightrag import LightRAG
     from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 
@@ -100,8 +79,9 @@ async def test_a_startup_that_fails_before_the_storages_start_leaks_no_reference
             doc_status_storage="RedisDocStatusStorage",
             tokenizer=Tokenizer("stub", _StubTokenizer()),
         )
-        held = RedisConnectionManager._pool_refs[redis_url]
-        assert held > 1, "the constructor holds one reference per Redis storage"
+        assert redis_url not in RedisConnectionManager._pool_refs, (
+            "construction must take no reference: nothing would ever release it"
+        )
 
         boom = ConnectionError("configuration backend unreachable")
 
@@ -114,9 +94,7 @@ async def test_a_startup_that_fails_before_the_storages_start_leaks_no_reference
             await rag.initialize_storages()
         assert excinfo.value is boom
 
-        assert redis_url not in RedisConnectionManager._pool_refs, (
-            "every construction-time reference must be handed back"
-        )
+        assert redis_url not in RedisConnectionManager._pool_refs
         assert redis_url not in RedisConnectionManager._pools
     finally:
         finalize_share_data()
