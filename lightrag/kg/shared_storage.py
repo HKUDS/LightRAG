@@ -42,6 +42,7 @@ from lightrag import pipeline_metrics
 from lightrag.exceptions import (
     PipelineBackpressureError,
     PipelineNotInitializedError,
+    SharedNamespaceBackingConflictError,
 )
 from lightrag.kg.pipeline_ingress import (
     AsyncioPipelineIngress,
@@ -121,7 +122,13 @@ _default_workspace: Optional[str] = None
 
 # shared data for storage across processes
 _shared_dicts: Optional[Dict[str, Any]] = None
-_init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
+_init_flags: Optional[Dict[str, Any]] = None  # namespace -> True, or its backing file
+# namespace -> how many LIVE storages hold it. A namespace is released (flag
+# dropped, shared dict emptied) when the last one finalizes, which is what
+# makes a SEQUENCE of instances on different files legal while two AT ONCE is
+# not. Counted rather than boolean because a process tree's workers each hold
+# the same namespace and finalize independently.
+_init_holders: Optional[Dict[str, int]] = None
 _update_flags: Optional[Dict[str, bool]] = None  # namespace -> updated
 
 # locks for mutex access
@@ -1557,6 +1564,7 @@ def initialize_share_data(
         _data_init_lock, \
         _shared_dicts, \
         _init_flags, \
+        _init_holders, \
         _initialized, \
         _update_flags, \
         _async_locks, \
@@ -1610,6 +1618,7 @@ def initialize_share_data(
         _data_init_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
+        _init_holders = _manager.dict()
         _update_flags = _manager.dict()
         # Server-side hub owning every workspace's ingress mailbox (same
         # pre-fork topology as _keyed_holder_table): workers inherit this one
@@ -1639,6 +1648,7 @@ def initialize_share_data(
         _keyed_holder_table = None  # multiprocess-only; unused single-process
         _shared_dicts = {}
         _init_flags = {}
+        _init_holders = {}
         _update_flags = {}
         _pipeline_ingress_hub = None  # multiprocess-only server-side hub
         _scan_job_store_hub = None  # multiprocess-only server-side hub
@@ -3811,7 +3821,7 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
 
 
 async def try_initialize_namespace(
-    namespace: str, workspace: str | None = None
+    namespace: str, workspace: str | None = None, *, backing: str | None = None
 ) -> bool:
     """Claim the one-time load of ``(namespace, workspace)`` for this worker.
 
@@ -3823,8 +3833,16 @@ async def try_initialize_namespace(
     dict. A claimer whose load then fails must hand the claim back with
     ``release_namespace_init``, or the namespace stays empty while announcing
     itself loaded. Prefer ``namespace_init_claim``, which does that for you.
+
+    ``backing`` is the file this caller would load, and passing it makes the
+    claim assert what the key cannot. ``workspace:namespace`` says nothing
+    about which file backs it, so two storages on different ``working_dir``
+    roots meet on one key: the later one skips the load, reads its own file's
+    rows as absent, and publishes the union into whichever file flushes first.
+    A caller that names its file gets ``SharedNamespaceBackingConflictError``
+    instead of that silence; one that names none is unchanged.
     """
-    global _init_flags, _manager
+    global _init_flags, _init_holders, _manager
 
     if _init_flags is None:
         raise ValueError("Try to create nanmespace before Shared-Data is initialized")
@@ -3833,11 +3851,23 @@ async def try_initialize_namespace(
 
     async with get_internal_lock():
         if final_namespace not in _init_flags:
-            _init_flags[final_namespace] = True
+            _init_flags[final_namespace] = backing if backing is not None else True
+            _init_holders[final_namespace] = 1
             direct_log(
                 f"Process {os.getpid()} ready to initialize storage namespace: [{final_namespace}]"
             )
             return True
+        held = _init_flags[final_namespace]
+        if backing is not None and isinstance(held, str) and held != backing:
+            raise SharedNamespaceBackingConflictError(
+                f"storage namespace [{final_namespace}] is held by a LIVE "
+                f"storage backed by {held!r}, but this one is backed by "
+                f"{backing!r}. One namespace is one in-memory copy, so the two "
+                f"files would share rows and whichever flushed second would "
+                f"never be written at all. Run one working_dir at a time in a "
+                f"process, or use a server storage backend."
+            )
+        _init_holders[final_namespace] = _init_holders.get(final_namespace, 0) + 1
         direct_log(
             f"Process {os.getpid()} storage namespace already initialized: [{final_namespace}]"
         )
@@ -3857,7 +3887,7 @@ async def release_namespace_init(namespace: str, workspace: str | None = None) -
     Safe to call without a claim, and safe after the shared data is gone --
     both are no-ops, so a teardown path may call it unconditionally.
     """
-    global _init_flags
+    global _init_flags, _init_holders
 
     if _init_flags is None:
         return
@@ -3867,6 +3897,7 @@ async def release_namespace_init(namespace: str, workspace: str | None = None) -
     async with get_internal_lock():
         if _init_flags.pop(final_namespace, None) is None:
             return
+        _init_holders.pop(final_namespace, None)
 
     direct_log(
         f"Process {os.getpid()} released the initialization claim on storage "
@@ -3874,8 +3905,61 @@ async def release_namespace_init(namespace: str, workspace: str | None = None) -
     )
 
 
+async def leave_namespace_init(namespace: str, workspace: str | None = None) -> bool:
+    """Give up one live hold on ``(namespace, workspace)``; release it at zero.
+
+    The counterpart of a successful ``try_initialize_namespace``, called from
+    a storage's ``finalize()``. Releasing means dropping the load flag AND
+    emptying the shared dict, and the two must go together: the flag says the
+    namespace carries a file's contents, so clearing one without the other
+    leaves the next instance either re-reading into rows that are already
+    there or trusting rows nobody loaded.
+
+    Emptied IN PLACE rather than dropped, because ``get_namespace_data``
+    caches the dict object per process and documents it as stable for the life
+    of the shared data -- replacing it would strand every cached reference on
+    an orphan.
+
+    Returns True if this call released the namespace. Safe to call without a
+    hold and after the shared data is gone; both are no-ops, so a teardown
+    path may call it unconditionally.
+
+    What this buys: a namespace that nothing holds any more can be re-claimed
+    by an instance backed by a DIFFERENT file, which is what makes a sequence
+    of ``LightRAG`` instances on separate working directories legal while two
+    at once stays refused.
+    """
+    global _init_flags, _init_holders
+
+    if _init_flags is None or _init_holders is None:
+        return False
+
+    final_namespace = get_final_namespace(namespace, workspace)
+
+    async with get_internal_lock():
+        remaining = _init_holders.get(final_namespace, 0) - 1
+        if remaining > 0:
+            _init_holders[final_namespace] = remaining
+            return False
+        _init_holders.pop(final_namespace, None)
+        if _init_flags.pop(final_namespace, None) is None:
+            return False
+        if _shared_dicts is not None:
+            namespace_data = _shared_dicts.get(final_namespace)
+            if namespace_data is not None:
+                namespace_data.clear()
+
+    direct_log(
+        f"Process {os.getpid()} released the last hold on storage namespace: "
+        f"[{final_namespace}]"
+    )
+    return True
+
+
 @asynccontextmanager
-async def namespace_init_claim(namespace: str, workspace: str | None = None):
+async def namespace_init_claim(
+    namespace: str, workspace: str | None = None, *, backing: str | None = None
+):
     """Hold a load claim for the body, and hand it back if the body fails.
 
     Yields what ``try_initialize_namespace`` returned: True means THIS worker
@@ -3890,12 +3974,19 @@ async def namespace_init_claim(namespace: str, workspace: str | None = None):
     namespace that turns a refusal into a silent rewrite of the baseline the
     unread file recorded.
     """
-    need_init = await try_initialize_namespace(namespace, workspace=workspace)
+    need_init = await try_initialize_namespace(
+        namespace, workspace=workspace, backing=backing
+    )
     try:
         yield need_init
     except BaseException:
+        # Both branches took a hold; neither storage became live.
         if need_init:
             await _hand_back_namespace_init(namespace, workspace)
+        else:
+            await _hand_back_namespace_init(
+                namespace, workspace, releaser=leave_namespace_init
+            )
         raise
 
 
@@ -3905,8 +3996,14 @@ async def namespace_init_claim(namespace: str, workspace: str | None = None):
 _claim_release_tasks: set = set()
 
 
-async def _hand_back_namespace_init(namespace: str, workspace: str | None) -> None:
+async def _hand_back_namespace_init(
+    namespace: str, workspace: str | None, *, releaser=None
+) -> None:
     """Release a claim on the way out of a failed load, cancellation included.
+
+    ``releaser`` is the coroutine function that gives the hold back --
+    ``release_namespace_init`` for a claimer that owed the load, or
+    ``leave_namespace_init`` for a joiner that only took a hold.
 
     A CANCELLED load is a claim that must be handed back too, but awaiting
     anything from a task that is being cancelled re-raises at once and would
@@ -3932,7 +4029,7 @@ async def _hand_back_namespace_init(namespace: str, workspace: str | None) -> No
             )
 
     release = asyncio.ensure_future(
-        release_namespace_init(namespace, workspace=workspace)
+        (releaser or release_namespace_init)(namespace, workspace=workspace)
     )
     _claim_release_tasks.add(release)
     release.add_done_callback(_done)
@@ -4123,6 +4220,7 @@ def finalize_share_data():
         _data_init_lock, \
         _shared_dicts, \
         _init_flags, \
+        _init_holders, \
         _initialized, \
         _update_flags, \
         _async_locks, \
@@ -4162,6 +4260,8 @@ def finalize_share_data():
                 _shared_dicts.clear()
             if _init_flags is not None:
                 _init_flags.clear()
+            if _init_holders is not None:
+                _init_holders.clear()
             if _update_flags is not None:
                 # Clear each namespace's update flags list and Value objects
                 try:
@@ -4195,6 +4295,7 @@ def finalize_share_data():
     _is_multiprocess = None
     _shared_dicts = None
     _init_flags = None
+    _init_holders = None
     _internal_lock = None
     _data_init_lock = None
     _update_flags = None

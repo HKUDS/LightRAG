@@ -23,6 +23,7 @@ from .shared_storage import (
     get_namespace_lock,
     get_data_init_lock,
     get_update_flag,
+    leave_namespace_init,
     namespace_init_claim,
     set_all_update_flags,
     clear_all_update_flags,
@@ -114,7 +115,7 @@ class JsonKVStorage(BaseKVStorage):
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
             async with namespace_init_claim(
-                self.namespace, workspace=self.workspace
+                self.namespace, workspace=self.workspace, backing=self._file_name
             ) as need_init:
                 self._data = await get_namespace_data(
                     self.namespace, workspace=self.workspace
@@ -578,3 +579,7 @@ class JsonKVStorage(BaseKVStorage):
         """
         if self.namespace.endswith("_cache"):
             await self.index_done_callback()
+
+        # Give up this instance's hold LAST, after anything that still needed
+        # the shared dict: the last holder's release empties it.
+        await leave_namespace_init(self.namespace, workspace=self.workspace)

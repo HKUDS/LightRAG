@@ -1957,111 +1957,115 @@ def test_analyze_multimodal_overwrites_already_analyzed_items(tmp_path):
             extract_llm_model_func=_extract,
         )
         await rag.initialize_storages()
-
-        # Minimal blocks file with valid meta.
-        blocks = tmp_path / "demo.blocks.jsonl"
-        blocks.write_text(
-            "\n".join(
-                [
-                    json.dumps({"type": "meta", "format_version": "1.0"}),
-                    json.dumps({"type": "content", "content": "body"}),
-                ]
+        try:
+            # Minimal blocks file with valid meta.
+            blocks = tmp_path / "demo.blocks.jsonl"
+            blocks.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "meta", "format_version": "1.0"}),
+                        json.dumps({"type": "content", "content": "body"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
 
-        # 64x64 PNG so the image-pixel skip guard does NOT short-circuit
-        # before the VLM call.
-        img_path = tmp_path / "img1.png"
-        import struct
-        import zlib
+            # 64x64 PNG so the image-pixel skip guard does NOT short-circuit
+            # before the VLM call.
+            img_path = tmp_path / "img1.png"
+            import struct
+            import zlib
 
-        def _png_bytes(w: int, h: int) -> bytes:
-            sig = b"\x89PNG\r\n\x1a\n"
-            ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
-            crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
-            ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
-            idat_payload = b"\x00" * (w * h * 4 + h)
-            compressed = zlib.compress(idat_payload)
-            crc_idat = zlib.crc32(b"IDAT" + compressed).to_bytes(4, "big")
-            idat_chunk = (
-                struct.pack(">I", len(compressed)) + b"IDAT" + compressed + crc_idat
+            def _png_bytes(w: int, h: int) -> bytes:
+                sig = b"\x89PNG\r\n\x1a\n"
+                ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
+                crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
+                ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
+                idat_payload = b"\x00" * (w * h * 4 + h)
+                compressed = zlib.compress(idat_payload)
+                crc_idat = zlib.crc32(b"IDAT" + compressed).to_bytes(4, "big")
+                idat_chunk = (
+                    struct.pack(">I", len(compressed)) + b"IDAT" + compressed + crc_idat
+                )
+                iend_chunk = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+                return sig + ihdr_chunk + idat_chunk + iend_chunk
+
+            img_path.write_bytes(_png_bytes(64, 64))
+
+            # Drawings sidecar with ONE item already analyzed (status=success).
+            drawings = tmp_path / "demo.drawings.json"
+            drawings.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "drawings": {
+                            "id1": {
+                                "id": "id1",
+                                "caption": "fig1",
+                                "path": str(img_path),
+                                "llm_analyze_result": {
+                                    "name": "Existing",
+                                    "type": "Photo",
+                                    "description": "kept as-is",
+                                    "analyze_time": 1700000000,
+                                    "status": "success",
+                                    "message": "",
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
             )
-            iend_chunk = b"\x00\x00\x00\x00IEND\xaeB`\x82"
-            return sig + ihdr_chunk + idat_chunk + iend_chunk
 
-        img_path.write_bytes(_png_bytes(64, 64))
+            # Tables sidecar with one fresh item (no prior result).
+            tables = tmp_path / "demo.tables.json"
+            tables.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "tables": {
+                            "tbl1": {
+                                "id": "tbl1",
+                                "caption": "tbl",
+                                "format": "html",
+                                "content": "Header|Row",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-        # Drawings sidecar with ONE item already analyzed (status=success).
-        drawings = tmp_path / "demo.drawings.json"
-        drawings.write_text(
-            json.dumps(
-                {
-                    "version": "1.0",
-                    "drawings": {
-                        "id1": {
-                            "id": "id1",
-                            "caption": "fig1",
-                            "path": str(img_path),
-                            "llm_analyze_result": {
-                                "name": "Existing",
-                                "type": "Photo",
-                                "description": "kept as-is",
-                                "analyze_time": 1700000000,
-                                "status": "success",
-                                "message": "",
-                            },
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+            parsed = {
+                "doc_id": "doc-1",
+                "file_path": "demo.pdf",
+                "blocks_path": str(blocks),
+                "content": "body",
+            }
+            await rag.analyze_multimodal(
+                "doc-1", "demo.pdf", parsed, process_options="it"
+            )
 
-        # Tables sidecar with one fresh item (no prior result).
-        tables = tmp_path / "demo.tables.json"
-        tables.write_text(
-            json.dumps(
-                {
-                    "version": "1.0",
-                    "tables": {
-                        "tbl1": {
-                            "id": "tbl1",
-                            "caption": "tbl",
-                            "format": "html",
-                            "content": "Header|Row",
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+            drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
+            existing = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
+            # Existing result was overwritten by the new VLM result.
+            assert existing["name"] == "Image"
+            assert existing["description"] == "details"
+            assert existing["status"] == "success"
 
-        parsed = {
-            "doc_id": "doc-1",
-            "file_path": "demo.pdf",
-            "blocks_path": str(blocks),
-            "content": "body",
-        }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="it")
+            tables_payload = json.loads(tables.read_text(encoding="utf-8"))
+            new_result = tables_payload["tables"]["tbl1"]["llm_analyze_result"]
+            assert new_result["name"] == "Item"
+            assert new_result["status"] == "success"
 
-        drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
-        existing = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        # Existing result was overwritten by the new VLM result.
-        assert existing["name"] == "Image"
-        assert existing["description"] == "details"
-        assert existing["status"] == "success"
-
-        tables_payload = json.loads(tables.read_text(encoding="utf-8"))
-        new_result = tables_payload["tables"]["tbl1"]["llm_analyze_result"]
-        assert new_result["name"] == "Item"
-        assert new_result["status"] == "success"
-
-        # Drawings are recomputed through VLM; tables take the EXTRACT role
-        # (per design §3.1), not VLM.
-        assert vlm_calls["n"] == 1
-        assert extract_calls["n"] == 1
+            # Drawings are recomputed through VLM; tables take the EXTRACT role
+            # (per design §3.1), not VLM.
+            assert vlm_calls["n"] == 1
+            assert extract_calls["n"] == 1
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 
@@ -2762,80 +2766,83 @@ def test_analyze_multimodal_invalid_json_hard_fails(tmp_path):
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_broken_vlm)
         await rag.initialize_storages()
-        # 64x64 PNG so the image-pixel skip guard does NOT short-circuit
-        # before the VLM call.
-        img_path = tmp_path / "img1.png"
-        import struct
-        import zlib
+        try:
+            # 64x64 PNG so the image-pixel skip guard does NOT short-circuit
+            # before the VLM call.
+            img_path = tmp_path / "img1.png"
+            import struct
+            import zlib
 
-        def _png_bytes(w: int, h: int) -> bytes:
-            sig = b"\x89PNG\r\n\x1a\n"
-            ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
-            crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
-            ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
-            idat_payload = b"\x00" * (w * h * 4 + h)
-            compressed = zlib.compress(idat_payload)
-            crc_idat = zlib.crc32(b"IDAT" + compressed).to_bytes(4, "big")
-            idat_chunk = (
-                struct.pack(">I", len(compressed)) + b"IDAT" + compressed + crc_idat
+            def _png_bytes(w: int, h: int) -> bytes:
+                sig = b"\x89PNG\r\n\x1a\n"
+                ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
+                crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
+                ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
+                idat_payload = b"\x00" * (w * h * 4 + h)
+                compressed = zlib.compress(idat_payload)
+                crc_idat = zlib.crc32(b"IDAT" + compressed).to_bytes(4, "big")
+                idat_chunk = (
+                    struct.pack(">I", len(compressed)) + b"IDAT" + compressed + crc_idat
+                )
+                iend_chunk = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+                return sig + ihdr_chunk + idat_chunk + iend_chunk
+
+            img_path.write_bytes(_png_bytes(64, 64))
+
+            blocks = tmp_path / "demo.blocks.jsonl"
+            blocks.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "meta", "format_version": "1.0"}),
+                        json.dumps({"type": "content", "content": "body"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            iend_chunk = b"\x00\x00\x00\x00IEND\xaeB`\x82"
-            return sig + ihdr_chunk + idat_chunk + iend_chunk
 
-        img_path.write_bytes(_png_bytes(64, 64))
-
-        blocks = tmp_path / "demo.blocks.jsonl"
-        blocks.write_text(
-            "\n".join(
-                [
-                    json.dumps({"type": "meta", "format_version": "1.0"}),
-                    json.dumps({"type": "content", "content": "body"}),
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        drawings = tmp_path / "demo.drawings.json"
-        drawings.write_text(
-            json.dumps(
-                {
-                    "version": "1.0",
-                    "drawings": {
-                        "id1": {
-                            "id": "id1",
-                            "caption": "图1 测试图",
-                            "footnotes": [],
-                            "path": str(img_path),
-                        }
+            drawings = tmp_path / "demo.drawings.json"
+            drawings.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "drawings": {
+                            "id1": {
+                                "id": "id1",
+                                "caption": "图1 测试图",
+                                "footnotes": [],
+                                "path": str(img_path),
+                            }
+                        },
                     },
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-
-        parsed = {
-            "doc_id": "doc-1",
-            "file_path": "demo.pdf",
-            "blocks_path": str(blocks),
-            "content": "body",
-        }
-        from lightrag.exceptions import MultimodalAnalysisError
-
-        with pytest.raises(MultimodalAnalysisError):
-            await rag.analyze_multimodal(
-                "doc-1", "demo.pdf", parsed, process_options="i"
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
             )
 
-        drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
-        result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        # One JSON conformance retry, then the hard failure surfaces.
-        assert calls["n"] == 2
-        # Sidecar carries a failure marker so a re-run sees the prior failure
-        # and does not silently consume it.
-        assert result["status"] == "failure"
-        assert "missing or invalid field" in result["message"]
+            parsed = {
+                "doc_id": "doc-1",
+                "file_path": "demo.pdf",
+                "blocks_path": str(blocks),
+                "content": "body",
+            }
+            from lightrag.exceptions import MultimodalAnalysisError
+
+            with pytest.raises(MultimodalAnalysisError):
+                await rag.analyze_multimodal(
+                    "doc-1", "demo.pdf", parsed, process_options="i"
+                )
+
+            drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
+            result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
+            # One JSON conformance retry, then the hard failure surfaces.
+            assert calls["n"] == 2
+            # Sidecar carries a failure marker so a re-run sees the prior failure
+            # and does not silently consume it.
+            assert result["status"] == "failure"
+            assert "missing or invalid field" in result["message"]
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 
@@ -2923,63 +2930,68 @@ def test_analyze_multimodal_unknown_image_type_folds_to_other(tmp_path):
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
         await rag.initialize_storages()
-        import struct
-        import zlib
+        try:
+            import struct
+            import zlib
 
-        def _png(w, h):
-            sig = b"\x89PNG\r\n\x1a\n"
-            ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
-            crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
-            return sig + struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
+            def _png(w, h):
+                sig = b"\x89PNG\r\n\x1a\n"
+                ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
+                crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
+                return sig + struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
 
-        img_path = tmp_path / "img1.png"
-        img_path.write_bytes(_png(64, 64))
+            img_path = tmp_path / "img1.png"
+            img_path.write_bytes(_png(64, 64))
 
-        blocks = tmp_path / "demo.blocks.jsonl"
-        blocks.write_text(
-            "\n".join(
-                [
-                    json.dumps({"type": "meta", "format_version": "1.0"}),
-                    json.dumps({"type": "content", "content": "body"}),
-                ]
+            blocks = tmp_path / "demo.blocks.jsonl"
+            blocks.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "meta", "format_version": "1.0"}),
+                        json.dumps({"type": "content", "content": "body"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
 
-        drawings = tmp_path / "demo.drawings.json"
-        drawings.write_text(
-            json.dumps(
-                {
-                    "version": "1.0",
-                    "drawings": {
-                        "id1": {
-                            "id": "id1",
-                            "caption": "图1 测试图",
-                            "footnotes": [],
-                            "path": str(img_path),
-                        }
+            drawings = tmp_path / "demo.drawings.json"
+            drawings.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "drawings": {
+                            "id1": {
+                                "id": "id1",
+                                "caption": "图1 测试图",
+                                "footnotes": [],
+                                "path": str(img_path),
+                            }
+                        },
                     },
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
-        parsed = {
-            "doc_id": "doc-1",
-            "file_path": "demo.pdf",
-            "blocks_path": str(blocks),
-            "content": "body",
-        }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="i")
+            parsed = {
+                "doc_id": "doc-1",
+                "file_path": "demo.pdf",
+                "blocks_path": str(blocks),
+                "content": "body",
+            }
+            await rag.analyze_multimodal(
+                "doc-1", "demo.pdf", parsed, process_options="i"
+            )
 
-        payload = json.loads(drawings.read_text(encoding="utf-8"))
-        result = payload["drawings"]["id1"]["llm_analyze_result"]
-        assert result["status"] == "success"
-        assert result["type"] == "Other"
-        assert result["description"] == "details"
-        assert "analyze_time" in result
+            payload = json.loads(drawings.read_text(encoding="utf-8"))
+            result = payload["drawings"]["id1"]["llm_analyze_result"]
+            assert result["status"] == "success"
+            assert result["type"] == "Other"
+            assert result["description"] == "details"
+            assert "analyze_time" in result
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 
@@ -2998,56 +3010,61 @@ def test_analyze_multimodal_skips_tiny_image_without_vlm_call(tmp_path):
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
         await rag.initialize_storages()
-        # 1x1 PNG.
-        img_path = tmp_path / "tiny.png"
-        img_path.write_bytes(
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
-            b"\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
-        )
-
-        blocks = tmp_path / "demo.blocks.jsonl"
-        blocks.write_text(
-            "\n".join(
-                [
-                    json.dumps({"type": "meta", "format_version": "1.0"}),
-                    json.dumps({"type": "content", "content": "body"}),
-                ]
+        try:
+            # 1x1 PNG.
+            img_path = tmp_path / "tiny.png"
+            img_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
+                b"\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
             )
-            + "\n",
-            encoding="utf-8",
-        )
 
-        drawings = tmp_path / "demo.drawings.json"
-        drawings.write_text(
-            json.dumps(
-                {
-                    "version": "1.0",
-                    "drawings": {
-                        "id1": {
-                            "id": "id1",
-                            "caption": "tiny",
-                            "path": str(img_path),
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+            blocks = tmp_path / "demo.blocks.jsonl"
+            blocks.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "meta", "format_version": "1.0"}),
+                        json.dumps({"type": "content", "content": "body"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
-        parsed = {
-            "doc_id": "doc-1",
-            "file_path": "demo.pdf",
-            "blocks_path": str(blocks),
-            "content": "body",
-        }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="i")
+            drawings = tmp_path / "demo.drawings.json"
+            drawings.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "drawings": {
+                            "id1": {
+                                "id": "id1",
+                                "caption": "tiny",
+                                "path": str(img_path),
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-        payload = json.loads(drawings.read_text(encoding="utf-8"))
-        result = payload["drawings"]["id1"]["llm_analyze_result"]
-        assert result["status"] == "skipped"
-        assert "smaller than" in result["message"]
-        assert calls["n"] == 0
+            parsed = {
+                "doc_id": "doc-1",
+                "file_path": "demo.pdf",
+                "blocks_path": str(blocks),
+                "content": "body",
+            }
+            await rag.analyze_multimodal(
+                "doc-1", "demo.pdf", parsed, process_options="i"
+            )
+
+            payload = json.loads(drawings.read_text(encoding="utf-8"))
+            result = payload["drawings"]["id1"]["llm_analyze_result"]
+            assert result["status"] == "skipped"
+            assert "smaller than" in result["message"]
+            assert calls["n"] == 0
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 
@@ -3074,57 +3091,61 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
             extract_llm_model_func=_extract,
         )
         await rag.initialize_storages()
-
-        blocks = tmp_path / "demo.blocks.jsonl"
-        blocks.write_text(
-            "\n".join(
-                [
-                    json.dumps({"type": "meta", "format_version": "1.0"}),
-                    json.dumps({"type": "content", "content": "body"}),
-                ]
+        try:
+            blocks = tmp_path / "demo.blocks.jsonl"
+            blocks.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "meta", "format_version": "1.0"}),
+                        json.dumps({"type": "content", "content": "body"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
 
-        tables = tmp_path / "demo.tables.json"
-        tables.write_text(
-            json.dumps(
-                {
-                    "version": "1.0",
-                    "tables": {
-                        "id1": {
-                            "id": "id1",
-                            "caption": "表1 指标说明",
-                            "footnotes": ["单位：国际标准单位"],
-                            "format": "html",
-                            "content": "<table><tr><th>符号</th><th>代表意义</th><th>单位</th></tr><tr><td>A</td><td>面积</td><td>m2</td></tr></table>",
-                        }
+            tables = tmp_path / "demo.tables.json"
+            tables.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "tables": {
+                            "id1": {
+                                "id": "id1",
+                                "caption": "表1 指标说明",
+                                "footnotes": ["单位：国际标准单位"],
+                                "format": "html",
+                                "content": "<table><tr><th>符号</th><th>代表意义</th><th>单位</th></tr><tr><td>A</td><td>面积</td><td>m2</td></tr></table>",
+                            }
+                        },
                     },
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
-        parsed = {
-            "doc_id": "doc-1",
-            "file_path": "demo.pdf",
-            "blocks_path": str(blocks),
-            "content": "body",
-        }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="t")
+            parsed = {
+                "doc_id": "doc-1",
+                "file_path": "demo.pdf",
+                "blocks_path": str(blocks),
+                "content": "body",
+            }
+            await rag.analyze_multimodal(
+                "doc-1", "demo.pdf", parsed, process_options="t"
+            )
 
-        payload = json.loads(tables.read_text(encoding="utf-8"))
-        result = payload["tables"]["id1"]["llm_analyze_result"]
-        assert result["status"] == "success"
-        assert result["name"] == "model_benchmark_metrics"
-        assert "符号、代表意义和单位" in result["description"]
-        # Cache id was written back so document delete can clean it up.
-        assert any(
-            cid.startswith("default:analysis:")
-            for cid in payload["tables"]["id1"].get("llm_cache_list", [])
-        )
+            payload = json.loads(tables.read_text(encoding="utf-8"))
+            result = payload["tables"]["id1"]["llm_analyze_result"]
+            assert result["status"] == "success"
+            assert result["name"] == "model_benchmark_metrics"
+            assert "符号、代表意义和单位" in result["description"]
+            # Cache id was written back so document delete can clean it up.
+            assert any(
+                cid.startswith("default:analysis:")
+                for cid in payload["tables"]["id1"].get("llm_cache_list", [])
+            )
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 

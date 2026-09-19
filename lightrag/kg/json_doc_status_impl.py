@@ -50,6 +50,7 @@ from .shared_storage import (
     get_update_flag,
     set_all_update_flags,
     clear_all_update_flags,
+    leave_namespace_init,
     namespace_init_claim,
 )
 
@@ -122,6 +123,17 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         reap_orphan_tmp_files(self._file_name, self.workspace or "_")
 
+    async def finalize(self):
+        """Give up this instance's hold on the shared namespace.
+
+        ``JsonKVStorage`` does the same (the pair reimplement one protocol, so
+        a change to one is nearly always a change the other needs). Nothing is
+        flushed here: doc-status writes that change scheduling state already
+        flush synchronously, because doc-status is the pipeline's recovery
+        anchor.
+        """
+        await leave_namespace_init(self.namespace, workspace=self.workspace)
+
     async def initialize(self):
         """Bind to the shared namespace dict and load from disk on first init.
 
@@ -141,7 +153,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
             async with namespace_init_claim(
-                self.namespace, workspace=self.workspace
+                self.namespace, workspace=self.workspace, backing=self._file_name
             ) as need_init:
                 self._data = await get_namespace_data(
                     self.namespace, workspace=self.workspace
