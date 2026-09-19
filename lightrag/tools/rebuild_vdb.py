@@ -88,8 +88,14 @@ from lightrag.exceptions import (
     ConfigurationStorageError,
     StorageCapabilityError,
     VectorSpaceMismatchError,
+    WorkingDirectoryInUseError,
 )
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
+from lightrag.kg.working_dir_lock import (
+    acquire_working_dir_lock,
+    release_working_dir_lock,
+    uses_working_dir,
+)
 from lightrag.namespace import NameSpace
 from lightrag.utils import (
     EmbeddingFunc,
@@ -100,6 +106,8 @@ from lightrag.utils import (
     safe_vdb_operation_with_exception,
     setup_logger,
 )
+
+DEFAULT_WORKING_DIR = "./rag_storage"
 
 # NOTE: .env loading and logger setup are deferred to main() so that importing
 # this module as a library (see README "Library usage") has no side effects on
@@ -653,6 +661,9 @@ class RebuildTool:
         # recorded AFTER that target's rebuild is durable and verified, and
         # never before. See docs/design/ConfigurationStorage.md.
         self.configuration_storage = None
+        # Whether this run holds the working-directory claim; see
+        # ``setup_storages``.
+        self._holds_working_dir = False
         self.global_config: Dict[str, Any] = {}
         self.embedding_func: EmbeddingFunc | None = None
         self.embedding_available = False
@@ -712,7 +723,7 @@ class RebuildTool:
 
     def build_global_config(self) -> Dict[str, Any]:
         global_config: Dict[str, Any] = {
-            "working_dir": os.getenv("WORKING_DIR", "./rag_storage"),
+            "working_dir": os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
             # Backend selection, mirroring LightRAG._build_global_config. PG
             # storages derive enable_vector from global_config["vector_storage"],
             # so this must carry the real backend name for a mixed config like
@@ -753,6 +764,25 @@ class RebuildTool:
 
         self.storage_names = self.resolve_storage_names()
         self.workspace = os.getenv("WORKSPACE", "")
+
+        # Claim the working directory FIRST, before building anything. This
+        # tool is a SECOND process tree: a server running on the same
+        # directory keeps its own in-memory copy of a file-backed
+        # configuration namespace and publishes by rewriting the whole file,
+        # so the two would overwrite each other's baselines -- and the record
+        # this tool writes is the one that says the rebuild happened. The
+        # confirmation prompt is not a substitute; it asks the operator, and
+        # this asks the filesystem. Taken on the resolved storage NAME so the
+        # refusal precedes the environment checks and the embedding function:
+        # the answer does not depend on them, so neither should the wait.
+        self._holds_working_dir = uses_working_dir(self.storage_names["kv"])
+        if self._holds_working_dir:
+            try:
+                acquire_working_dir_lock(os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR))
+            except WorkingDirectoryInUseError as e:
+                self._holds_working_dir = False
+                print(f"\n✗ {e}")
+                return False
 
         print("\nChecking configuration...")
         for storage_name in set(self.storage_names.values()):
@@ -1365,6 +1395,10 @@ class RebuildTool:
                 finalize_share_data()
             except Exception:
                 pass
+            # Last, after every storage that writes under it is down.
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR))
 
 
 async def async_main() -> bool:

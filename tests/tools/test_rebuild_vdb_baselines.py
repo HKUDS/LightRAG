@@ -9,6 +9,7 @@ docs/design/ConfigurationStorage.md.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -249,3 +250,65 @@ async def test_a_storage_that_retained_nothing_records_its_baseline(capsys):
     )
     assert stats["errors"] == []
     assert "baseline recorded" in capsys.readouterr().out
+
+
+class TestTheToolIsASecondProcessTree:
+    """``lightrag-rebuild-vdb`` run against a directory a server already holds.
+
+    Both keep a private in-memory copy of a file-backed configuration
+    namespace and publish by rewriting the whole file, so whichever flushes
+    second erases the other's baselines -- including the very record this tool
+    writes to say the rebuild happened. The confirmation prompt asks the
+    operator; this asks the filesystem.
+    """
+
+    async def test_setup_refuses_while_another_process_tree_holds_it(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The real lock, against a real holder, through the real method.
+
+        The holder is simulated by taking the claim and then dropping this
+        process's bookkeeping, so the tool's own ``acquire`` opens a second
+        descriptor -- which ``flock`` refuses even within one process.
+
+        The refusal must also come FIRST: nothing about the answer depends on
+        the environment checks or on building an embedding function, so the
+        operator should not wait for them, and this assertion should not
+        depend on whatever the ambient environment happens to hold.
+        """
+        from lightrag.kg import working_dir_lock as wdl
+
+        # The tool parses argv; pytest's own arguments would make argparse exit.
+        monkeypatch.setattr(sys, "argv", ["lightrag-rebuild-vdb"])
+        monkeypatch.setenv("WORKING_DIR", str(tmp_path))
+        monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
+        monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
+        monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
+        monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
+        monkeypatch.setenv("WORKSPACE", "rebuildws")
+
+        wdl.acquire_working_dir_lock(str(tmp_path))
+        holder = dict(wdl._claims)
+        wdl._claims.clear()  # the tool must look like a different tree
+
+        tool = rebuild_vdb.RebuildTool()
+        try:
+            ok = await tool.setup_storages()
+
+            assert ok is False, "the tool ran while another process tree held it"
+            assert "already in use" in capsys.readouterr().out
+            assert tool.configuration_storage is None, (
+                "the configuration storage was opened despite the refusal"
+            )
+            assert tool._holds_working_dir is False
+        finally:
+            wdl._claims.update(holder)
+            wdl.release_working_dir_lock(str(tmp_path))
+
+    def test_a_server_backed_configuration_claims_nothing(self):
+        """Two processes against one PostgreSQL share a container by design;
+        refusing there would invent a restriction."""
+        assert rebuild_vdb.uses_working_dir("PGKVStorage") is False
+        assert rebuild_vdb.uses_working_dir("MongoKVStorage") is False
+        assert rebuild_vdb.uses_working_dir("OpenSearchKVStorage") is False
+        assert rebuild_vdb.uses_working_dir("JsonKVStorage") is True
