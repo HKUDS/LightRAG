@@ -469,8 +469,9 @@ async def _source_is_populated(name: str, probe) -> bool | None:
     must answer ``False`` only on a read that would have raised had it failed.
     ``BaseKVStorage.is_empty`` does not qualify -- it catches its errors and
     answers ``True`` -- which is why the chunk source is read through
-    ``_chunk_source_is_populated`` instead. The graph readers behind the other
-    two probes propagate their failures.
+    ``_chunk_source_is_populated``, in its strict mode, on the starts that
+    have a chunk baseline to establish. The graph readers behind the other two
+    probes propagate their failures.
     """
     try:
         return await probe()
@@ -952,7 +953,7 @@ async def check_vector_space_at_startup(
     doc_status=None,
     embedding_func,
     expect_empty_vector_storage: bool = False,
-    probe_targets: Collection[str] = (),
+    baseline_targets: Collection[str] = (),
 ) -> StartupEvidence:
     """Run the coverage gate over all three pairings, then the probes.
 
@@ -970,12 +971,18 @@ async def check_vector_space_at_startup(
         expect_empty_vector_storage: this caller is about to repopulate the
             vector storages, so an empty one is the expected starting state
             rather than a defect. See ``LightRAG.rebuilding_vector_storage``.
-        probe_targets: targets (``"entities"``, ``"relationships"``,
-            ``"chunks"``) whose probe must run even when the container's own
-            marker needs no adoption. The caller has an absent baseline for
-            each of them to establish (``docs/design/ConfigurationStorage.md``)
-            and needs the verdict; on the backends without a marker this is
-            the only way a probe ever runs.
+        baseline_targets: targets (``"entities"``, ``"relationships"``,
+            ``"chunks"``) whose baseline is absent, so the caller is about to
+            establish one from what this call returns
+            (``docs/design/ConfigurationStorage.md``). Three things key off
+            it, all for the same reason -- a durable claim needs evidence a
+            coverage check does not: the target's probe runs even when the
+            container's own marker needs no adoption (on the backends without
+            a marker this is the only way a probe ever runs); its source is
+            read strictly, so "empty" cannot come from a failed read; and its
+            container is asked whether it is empty. A target that is not
+            listed pays none of that, which is what keeps every later start
+            on the read the coverage gate has always used.
 
     Returns:
         The evidence the checks gathered -- see ``StartupEvidence``.
@@ -1004,7 +1011,9 @@ async def check_vector_space_at_startup(
             name="chunks",
             source="the text chunk storage",
             vdb=chunks_vdb,
-            source_probe=lambda: _chunk_source_is_populated(text_chunks),
+            source_probe=lambda: _chunk_source_is_populated(
+                text_chunks, strict="chunks" in baseline_targets
+            ),
             no_healing_probe=lambda: _finished_doc_chunk_ids(
                 doc_status, DOCUMENTLESS_SAMPLE_SIZE
             ),
@@ -1036,6 +1045,10 @@ async def check_vector_space_at_startup(
         ("entities", entities_vdb),
         ("relationships", relationships_vdb),
     ):
+        if name not in baseline_targets:
+            # Nobody consumes the answer: only ``_establish_embedding_baselines``
+            # reads ``index_empty``, and only for the targets it claims.
+            continue
         if evidence.source_populated.get(name) is not False or vdb is None:
             continue
         if not getattr(vdb, "persists_vectors", True):
@@ -1065,7 +1078,7 @@ async def check_vector_space_at_startup(
         if not getattr(vdb, "persists_vectors", True):
             continue
         evidence.probes[name], evidence.probe_details[name] = await _probe_target(
-            name, vdb, sampler, embedding_func, force=name in probe_targets
+            name, vdb, sampler, embedding_func, force=name in baseline_targets
         )
     return evidence
 
@@ -1093,20 +1106,28 @@ async def _index_is_empty_for_baseline(name: str, vdb) -> bool | None:
         return None
 
 
-async def _chunk_source_is_populated(text_chunks) -> bool | None:
+async def _chunk_source_is_populated(
+    text_chunks, *, strict: bool = True
+) -> bool | None:
     """Whether ``text_chunks`` holds a row: ``True``, ``False``, or ``None``
     when empty and unreadable cannot be told apart.
 
-    NOT ``BaseKVStorage.is_empty()``. That method catches its backend errors
-    and answers ``True``, which was harmless while "empty" only skipped the
-    coverage check -- but the verdict returned here also decides whether a
-    durable ``origin=empty`` baseline is recorded for the chunk container, and
-    a transient outage must never stamp the configured model over vectors
-    nobody probed. So the answer comes from the first page of ``iter_rows``,
-    which the base contract requires to RAISE on a backend failure: a row
-    means populated, a clean end means empty, a raise propagates to the
-    caller as "no evidence". It is the same bounded read the chunk probe
-    samples from.
+    ``strict=False`` is ``BaseKVStorage.is_empty()``, the read the coverage
+    check has always used. It catches its backend errors and answers ``True``
+    (empty), which the check acts on by skipping -- harmless, because the
+    caller has a baseline recorded for chunks already and will claim nothing
+    from this verdict.
+
+    ``strict=True`` is for the start that must CLAIM that baseline. A durable
+    ``origin=empty`` record says the configured model is the one this
+    container's vectors are in, so a transient outage read as "empty" would
+    stamp that model over vectors nobody probed. The answer then comes from
+    the first page of ``iter_rows``, which the base contract requires to RAISE
+    on a backend failure: a row means populated, a clean end means empty, a
+    raise propagates to the caller as "no evidence". It is the same bounded
+    read the chunk probe samples from -- and it costs whatever enumeration
+    costs on that backend, which is why it is spent only on the starts that
+    need it (``JsonKVStorage`` snapshots its key list before the first page).
 
     A backend without enumeration falls back to ``is_empty()``, whose
     "populated" is trustworthy and whose "empty" is not: the first answers
@@ -1114,6 +1135,8 @@ async def _chunk_source_is_populated(text_chunks) -> bool | None:
     so that backend keeps exactly the check it had, and never a baseline it
     did not earn.
     """
+    if not strict:
+        return not await text_chunks.is_empty()
     try:
         iterator = text_chunks.iter_rows(page_size=1)
     except StorageCapabilityError:

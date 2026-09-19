@@ -271,6 +271,18 @@ enumeration falls back to `is_empty()` and its "empty" is read as *unknown*:
 the coverage check it had is unchanged, and no baseline is recorded on it. The
 graph readers behind the other two verdicts propagate their failures already.
 
+**Only a target with a baseline to establish pays for that read.** The strict
+read, the probe and the container's own `is_empty()` are all keyed on the same
+list -- `baseline_targets`, the targets the precheck found absent. A target
+whose baseline is already recorded claims nothing from this start, so its
+source is read exactly as the coverage check has always read it
+(`is_empty()`), and nothing enumerates. This is not an optimization detail:
+the enumeration contract says a startup path must never scan a namespace, and
+`JsonKVStorage` -- whose rows live in a `Manager().dict()` -- snapshots its key
+list before it can yield a first page. Charging that to every start would
+contradict the contract on the one backend that cannot page lazily; charging
+it to the single start that claims the baseline does not.
+
 So, per target and independently:
 
 | source empty | source populated |
@@ -698,11 +710,24 @@ consumes:
 - classification by the row's explicit `workspace` field, never by reparsing the
   key;
 - per-backend implementations counted as real work, not as a free consequence of
-  the namespace.
+  the namespace;
+- **a container that cannot be read raises; it never ends the stream.** A
+  missing index, a dropped collection or a closed connection is not an empty
+  listing, and the callers cannot tell the two apart from a clean end: the
+  inventory would under-report, and the chunk source verdict would turn a lost
+  container into a durable `origin=empty` baseline. `OpenSearchKVStorage`
+  refuses in exactly the states its `get_by_id_strict` refuses in (index not
+  ready, index gone mid-scan), for the same reason: after `initialize()` the
+  index exists, so its absence is indistinguishable from data loss.
 
 Whether the five implementations land in slice 1 or slice 2 is a scheduling
 choice; what is not a choice is pretending PostgreSQL is the only backend with
 work to do.
+
+Startup uses the same surface, and stays inside the same rule, by bounding both
+*what* it reads and *when*: never more than the first page, and only for a
+target whose baseline is absent (*Establishing a baseline*). A backend that
+cannot page its first page cheaply therefore pays once, not on every start.
 
 ## What this does not retire
 

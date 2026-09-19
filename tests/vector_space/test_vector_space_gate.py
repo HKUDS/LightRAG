@@ -257,11 +257,12 @@ class FakeKVStorage:
 
     ``is_empty`` mirrors the REAL ``BaseKVStorage`` contract, which catches its
     backend errors and answers ``True``; ``iter_rows`` mirrors ITS contract and
-    raises. The gate reads the source through ``iter_rows`` for exactly that
-    reason: its verdict also backs a durable ``origin=empty`` baseline, and an
-    unreadable source must land on "no evidence", never on "empty". The vector
-    side is the opposite contract, and ``FakeVectorStorage.is_empty`` raises
-    to match it.
+    raises. The gate reads the source through ``iter_rows`` on the starts that
+    have a chunk BASELINE to establish, for exactly that reason: that verdict
+    backs a durable ``origin=empty`` record, and an unreadable source must land
+    on "no evidence", never on "empty". Every other start keeps ``is_empty()``,
+    whose "empty" only skips a check. The vector side is the opposite contract,
+    and ``FakeVectorStorage.is_empty`` raises to match it.
     """
 
     def __init__(self, *, rows=0, error=None, chunk_owner="doc-1"):
@@ -272,6 +273,7 @@ class FakeKVStorage:
         # ainsert_custom_kg leaves behind, since it writes no doc-status row.
         self._chunk_owner = chunk_owner
         self.empty_reads = 0
+        self.enumerations = 0
 
     async def is_empty(self) -> bool:
         self.empty_reads += 1
@@ -286,6 +288,7 @@ class FakeKVStorage:
 
     def iter_rows(self, *, page_size=200):
         """The chunk probe's sample: the first page of rows, ``_id`` included."""
+        self.enumerations += 1
 
         async def _gen():
             if self._error is not None:
@@ -310,12 +313,19 @@ async def _run(
     relationships_vdb=None,
     chunks_vdb=None,
     text_chunks=None,
+    baseline_targets=(),
 ):
     """Drive the gate.
 
     ``relationships_vdb`` and ``chunks_vdb`` default to populated stores so a
     test that is about the ENTITY pairing is not answered by one of its
     siblings. A test that wants those pairings passes them explicitly.
+
+    ``baseline_targets`` defaults to none, i.e. a workspace whose three
+    baselines are already recorded: the coverage gate alone, on the cheap
+    reads it has always used. A test about the BASELINE evidence -- the strict
+    source read, the container's ``is_empty()``, a forced probe -- names the
+    targets whose record is absent.
     """
     return await check_vector_space_at_startup(
         graph=graph,
@@ -334,6 +344,7 @@ async def _run(
         doc_status=FakeDocStatus() if doc_status is None else doc_status,
         embedding_func=embedding,
         expect_empty_vector_storage=rebuilding,
+        baseline_targets=baseline_targets,
     )
 
 
@@ -801,6 +812,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=chunks,
             text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
         )
 
         # The coverage GATE asks nothing and refuses nothing. The one
@@ -821,6 +833,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=chunks,
             text_chunks=FakeKVStorage(rows=3, error=RuntimeError("redis down")),
+            baseline_targets=("chunks",),
         )
 
         assert chunks.empty_reads == 0
@@ -839,6 +852,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[]),
             text_chunks=text_chunks,
+            baseline_targets=("chunks",),
         )
 
         assert evidence.source_populated["chunks"] is False
@@ -861,6 +875,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[]),
             text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
         )
         assert both_empty.index_empty["chunks"] is True
 
@@ -870,6 +885,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
             text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
         )
         assert survivors.index_empty["chunks"] is False
 
@@ -879,6 +895,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[], empty_error=RuntimeError("down")),
             text_chunks=FakeKVStorage(rows=0),
+            baseline_targets=("chunks",),
         )
         assert unreadable.index_empty["chunks"] is None
 
@@ -888,6 +905,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
             text_chunks=FakeKVStorage(rows=1),
+            baseline_targets=("chunks",),
         )
         assert "chunks" not in populated.index_empty
 
@@ -906,6 +924,7 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
             text_chunks=NoEnumeration(rows=1),
+            baseline_targets=("chunks",),
         )
         assert populated.source_populated["chunks"] is True
 
@@ -917,6 +936,7 @@ class TestPairings:
                 FakeEmbedding(),
                 chunks_vdb=chunks,
                 text_chunks=NoEnumeration(rows=1),
+                baseline_targets=("chunks",),
             )
 
         unknown = await _run(
@@ -925,8 +945,50 @@ class TestPairings:
             FakeEmbedding(),
             chunks_vdb=FakeVectorStorage(rows=[]),
             text_chunks=NoEnumeration(rows=0),
+            baseline_targets=("chunks",),
         )
         assert unknown.source_populated["chunks"] is None
+
+    async def test_a_recorded_chunk_baseline_enumerates_nothing(self):
+        """The strict read is the price of CLAIMING a baseline, not of starting.
+
+        Every later start has the record already, so the chunk source is read
+        the way the coverage gate has always read it. It matters beyond a
+        round trip: ``BaseKVStorage.iter_rows`` forbids a startup path from
+        scanning a namespace, and ``JsonKVStorage`` -- rows in a
+        ``Manager().dict()`` -- snapshots its whole key list before it can
+        yield a first page.
+        """
+        text_chunks = FakeKVStorage(rows=3)
+
+        evidence = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=FakeVectorStorage(rows=[{"id": "chunk-1"}]),
+            text_chunks=text_chunks,
+        )
+
+        assert text_chunks.enumerations == 0
+        assert text_chunks.empty_reads == 1
+        assert evidence.source_populated["chunks"] is True
+
+    async def test_a_recorded_baseline_asks_no_container_whether_it_is_empty(self):
+        """``index_empty`` is evidence for a claim, so a target that claims
+        nothing does not gather it -- and an empty source still refuses
+        nothing, exactly as before baselines existed."""
+        chunks = FakeVectorStorage(rows=[])
+
+        evidence = await _run(
+            FakeGraph(labels=["Alice"]),
+            FakeVectorStorage(rows=[_entity_row()]),
+            FakeEmbedding(),
+            chunks_vdb=chunks,
+            text_chunks=FakeKVStorage(rows=0),
+        )
+
+        assert chunks.empty_reads == 0
+        assert evidence.index_empty == {}
 
     async def test_relations_are_checked_against_graph_edges(self):
         """An interrupted rebuild can leave entities populated and relations
@@ -952,6 +1014,7 @@ class TestPairings:
             FakeVectorStorage(rows=[_entity_row()]),
             FakeEmbedding(),
             relationships_vdb=relationships,
+            baseline_targets=("relationships",),
         )
 
         # The coverage GATE asks nothing and refuses nothing. The one

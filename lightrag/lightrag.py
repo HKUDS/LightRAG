@@ -2354,10 +2354,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     doc_status=self.doc_status,
                     embedding_func=self.embedding_func,
                     expect_empty_vector_storage=self.rebuilding_vector_storage,
-                    # A probe's verdict is the only evidence an absent
-                    # baseline can be established on, whatever the container's
-                    # own marker says -- one probe per absent target.
-                    probe_targets=bootstrap_targets,
+                    # The absent baselines. A probe's verdict is the only
+                    # evidence one can be established on, whatever the
+                    # container's own marker says -- one probe per absent
+                    # target -- and their sources are read strictly, which
+                    # the targets already recorded neither need nor pay for.
+                    baseline_targets=bootstrap_targets,
                 )
 
             # Steps 7 and 8. Claim the baselines that were absent, then flush
