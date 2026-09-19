@@ -150,6 +150,119 @@ def test_resolves_only_selected_implementation(monkeypatch):
         registry.resolve_chunker("broken")
 
 
+def test_context_aware_registration_receives_keyword_only_context(monkeypatch):
+    seen = {}
+
+    def callback(*args, context):
+        seen["args"] = args
+        seen["context"] = context
+        return args
+
+    install_impl(monkeypatch, callback)
+    registry.register_chunker(spec(accepts_context=True))
+    context = registry.ChunkingContext(
+        doc_id="doc-1",
+        file_path="notes.txt",
+        sidecar_location="notes.blocks.jsonl",
+        parse_format="lightrag",
+        parse_engine="docx",
+        process_options="C!",
+    )
+
+    assert registry.resolve_chunker("acme")(*range(6), context=context) == tuple(
+        range(6)
+    )
+    assert seen == {"args": tuple(range(6)), "context": context}
+
+
+def test_context_capability_validates_callback_signature(monkeypatch):
+    def callback(*args):
+        return args
+
+    install_impl(monkeypatch, callback)
+    registry.register_chunker(spec(accepts_context=True))
+    with pytest.raises(ValueError, match="context-aware.*keyword-only context"):
+        registry.resolve_chunker("acme")
+
+
+def test_async_context_callback_receives_context(monkeypatch):
+    async def callback(*args, context):
+        return args, context
+
+    install_impl(monkeypatch, callback)
+    registry.register_chunker(spec(accepts_context=True))
+    context = registry.ChunkingContext(
+        doc_id="doc-1",
+        file_path="doc-1.txt",
+        sidecar_location=None,
+        parse_format="raw",
+        parse_engine=None,
+        process_options="",
+    )
+
+    async def run():
+        return await registry.resolve_chunker("acme")(*range(6), context=context)
+
+    args, received_context = asyncio.run(run())
+    assert args == tuple(range(6))
+    assert received_context == context
+
+
+def test_executor_safe_context_callback_forwards_context(monkeypatch):
+    import lightrag.utils as utils
+
+    seen = {}
+
+    def callback(*args, context):
+        seen["context"] = context
+        return args
+
+    async def offload(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    install_impl(monkeypatch, callback)
+    monkeypatch.setattr(utils, "run_in_chunking_executor", offload)
+    registry.register_chunker(spec(executor_safe=True, accepts_context=True))
+    context = registry.ChunkingContext(
+        doc_id="doc-1",
+        file_path="doc-1.txt",
+        sidecar_location=None,
+        parse_format="raw",
+        parse_engine=None,
+        process_options="",
+    )
+
+    assert asyncio.run(
+        registry.resolve_chunker("acme")(*range(6), context=context)
+    ) == tuple(range(6))
+    assert seen["context"] == context
+
+
+def test_context_callback_type_error_is_not_retried(monkeypatch):
+    calls = []
+
+    @registry.accepts_chunking_context
+    def callback(*args, context):
+        calls.append((args, context))
+        raise TypeError("callback body failed")
+
+    with pytest.raises(TypeError, match="callback body failed"):
+        registry.invoke_chunker(
+            callback,
+            *range(6),
+            context=registry.ChunkingContext(
+                doc_id="doc-1",
+                file_path="doc-1.txt",
+                sidecar_location=None,
+                parse_format="raw",
+                parse_engine=None,
+                process_options="",
+            ),
+        )
+    # The helper must surface the callback error without a legacy retry.
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "callback",
     [
@@ -331,6 +444,7 @@ def test_executor_safe_uses_existing_bounded_pool(monkeypatch):
         {"description": None},
         {"description": "two\nlines"},
         {"executor_safe": "true"},
+        {"accepts_context": "true"},
     ],
 )
 def test_invalid_spec_metadata_is_rejected(changes):
