@@ -200,7 +200,12 @@ async def _flush(vdb, stats: Dict[str, Any]) -> None:
     than in ``upsert``. Treat such a failure the same way as a failed upsert
     batch: record it, drop the staged count, and continue (sources are never
     modified, so the user can re-run). ``rebuilt`` is only incremented after a
-    flush succeeds, so it never overstates what was actually persisted.
+    flush succeeds. That is not the whole story on a per-item backend, which
+    keeps a retryable failure buffered and returns normally: ``rebuilt`` then
+    counts a record the server never took. Mid-rebuild that heals -- the next
+    flush retries it -- so it is not treated as an error here. What must not
+    heal silently is a residue left by the LAST flush, and ``commit_baseline``
+    asks the storage directly before recording anything.
     """
     if stats["staged"] == 0:
         return
@@ -922,6 +927,16 @@ class RebuildTool:
         record moves. A rebuild whose baseline could not be recorded is
         reported as a failed rebuild -- the stale record keeps the server
         refusing, which is the safe direction, and re-running converges.
+
+        "Every flush succeeded" is not what a returning ``index_done_callback``
+        proves. A per-item backend keeps its retryable failures (408/429/5xx)
+        buffered and returns normally, so the last flush of a rebuild can leave
+        vectors that never reached the server with nothing left to retry them.
+        The baseline would then say the target was adopted in the configured
+        space while its index is incomplete -- and no later check catches that:
+        the startup precheck sees a matching record, and the coverage gate only
+        refuses an EMPTY index. So the storage is asked directly, and a
+        retained operation is a failed rebuild.
         """
         if stats["errors"]:
             print(
@@ -929,6 +944,8 @@ class RebuildTool:
                 f"errors, so the previous record stays and the server keeps "
                 f"refusing until a clean rebuild."
             )
+            return
+        if not await self._vectors_are_durable(label, stats):
             return
         try:
             baseline = await record_embedding_baseline(
@@ -952,6 +969,54 @@ class RebuildTool:
             f"  ✓ {label}: baseline recorded (model={baseline.model!r} "
             f"dim={baseline.dim})"
         )
+
+    async def _vectors_are_durable(self, label: str, stats: Dict[str, Any]) -> bool:
+        """Whether ``label``'s vector storage retained nothing after its flush.
+
+        Records an error on ``stats`` and returns False when something is still
+        buffered, or when the storage could not answer -- an unreadable answer
+        is not a durable one. A backend that buffers nothing answers False and
+        costs a method call.
+        """
+        vdb = self.vector_targets().get(label)
+        has_pending = getattr(vdb, "has_pending_index_ops", None)
+        if has_pending is None:
+            return True
+        try:
+            retained = bool(await has_pending(include_deletes=True))
+        except Exception as e:
+            print(
+                f"  ✗ {label}: rebuilt, but the vector storage could not say "
+                f"whether anything is still buffered: {e}"
+            )
+            stats["errors"].append(
+                {
+                    "batch": "durability",
+                    "records_lost": 0,
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                }
+            )
+            return False
+        if not retained:
+            return True
+        print(
+            f"  ✗ {label}: rebuilt, but the vector storage still holds "
+            f"operations its last flush could not deliver -- the baseline is "
+            f"NOT recorded, so the server keeps refusing until a clean rebuild."
+        )
+        stats["errors"].append(
+            {
+                "batch": "durability",
+                "records_lost": 0,
+                "error_type": "RetainedVectorOps",
+                "error_msg": (
+                    "the vector storage retained operations after its final "
+                    "flush; the rebuilt index is incomplete"
+                ),
+            }
+        )
+        return False
 
     def vector_targets(self) -> Dict[str, Any]:
         """The three rebuild targets, keyed by the label used in reports."""

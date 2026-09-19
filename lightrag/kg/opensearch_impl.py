@@ -7092,6 +7092,28 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
 
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
+        """Whether buffered vector UPSERTS remain (retryable ones are retained).
+
+        The vector side needs its own answer for the same reason the KV side
+        does: ``_flush_pending_vector_ops`` keeps per-doc 408/429/5xx failures
+        buffered and returns normally, so a successful ``index_done_callback``
+        is not proof that every staged vector reached the server. The base
+        default would answer ``False`` over a non-empty buffer.
+
+        Deletes are excluded by default, as in the base docstring.
+        """
+
+        def _answer() -> bool:
+            if self._pending_vector_docs:
+                return True
+            return include_deletes and bool(self._pending_vector_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
     async def index_done_callback(self) -> None:
         """Flush pending vector ops and refresh the index for k-NN visibility.
 

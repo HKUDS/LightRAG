@@ -40,14 +40,33 @@ class _FakeConfigKV:
         self.flushes += 1
 
 
-def _tool(config, *, embedding_model="new-model"):
+def _tool(config, *, embedding_model="new-model", vdbs=None):
     tool = rebuild_vdb.RebuildTool()
     tool.workspace = "ws"
     tool.configuration_storage = config
     tool.embedding_func = SimpleNamespace(
         model_name=embedding_model, embedding_dim=1024, max_token_size=None
     )
+    for target, vdb in (vdbs or {}).items():
+        setattr(tool, f"{target}_vdb", vdb)
     return tool
+
+
+class _FakeVectorStorage:
+    """A vector storage that answers the durability question the way a per-item
+    backend does: ``index_done_callback`` already returned, and whether anything
+    is still buffered is a separate question only the storage can answer."""
+
+    def __init__(self, *, retained=False, answer_error=None):
+        self.retained = retained
+        self.answer_error = answer_error
+        self.asked = 0
+
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
+        self.asked += 1
+        if self.answer_error is not None:
+            raise self.answer_error
+        return self.retained
 
 
 def _stats(label, errors=()):
@@ -159,3 +178,74 @@ async def test_print_baselines_aborts_when_the_store_cannot_be_read(capsys):
     tool = _tool(Unreadable())
     assert await tool.print_baselines() is False
     assert "Could not read" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# A flush that returned is not a flush that landed
+# ---------------------------------------------------------------------------
+
+
+async def test_retained_vector_ops_record_no_baseline(capsys):
+    """The defect: OpenSearch keeps per-doc 408/429/5xx failures buffered and
+    returns normally from ``index_done_callback``, so the rebuild reports no
+    errors. Recording the baseline there would claim the target was adopted in
+    the configured space while its index is missing vectors -- and nothing
+    later catches it, because the startup precheck sees a matching record and
+    the coverage gate only refuses an EMPTY index."""
+    config = _FakeConfigKV(
+        {cs.embedding_baseline_key("ws", "chunks"): _old_record("chunks")}
+    )
+    vdb = _FakeVectorStorage(retained=True)
+    tool = _tool(config, vdbs={"chunks": vdb})
+    stats = _stats("chunks")
+
+    await tool.commit_baseline("chunks", stats)
+
+    assert vdb.asked == 1
+    assert (
+        config.rows[cs.embedding_baseline_key("ws", "chunks")]["value"]["model"]
+        == "old-model"
+    ), "the stale record must stay, so the server keeps refusing"
+    assert config.flushes == 0
+    assert [e["error_type"] for e in stats["errors"]] == ["RetainedVectorOps"]
+    assert "still holds" in capsys.readouterr().out
+
+
+async def test_an_unanswerable_durability_question_records_no_baseline(capsys):
+    """An answer that could not be read is not a durable one."""
+    config = _FakeConfigKV(
+        {cs.embedding_baseline_key("ws", "entities"): _old_record("entities")}
+    )
+    vdb = _FakeVectorStorage(answer_error=ConnectionError("index unreachable"))
+    tool = _tool(config, vdbs={"entities": vdb})
+    stats = _stats("entities")
+
+    await tool.commit_baseline("entities", stats)
+
+    assert (
+        config.rows[cs.embedding_baseline_key("ws", "entities")]["value"]["model"]
+        == "old-model"
+    )
+    assert [e["error_type"] for e in stats["errors"]] == ["ConnectionError"]
+    assert "could not say" in capsys.readouterr().out
+
+
+async def test_a_storage_that_retained_nothing_records_its_baseline(capsys):
+    """The other half: asking costs a method call and changes nothing when the
+    flush really did land everything."""
+    config = _FakeConfigKV(
+        {cs.embedding_baseline_key("ws", "chunks"): _old_record("chunks")}
+    )
+    vdb = _FakeVectorStorage(retained=False)
+    tool = _tool(config, vdbs={"chunks": vdb})
+    stats = _stats("chunks")
+
+    await tool.commit_baseline("chunks", stats)
+
+    assert vdb.asked == 1
+    assert (
+        config.rows[cs.embedding_baseline_key("ws", "chunks")]["value"]["model"]
+        == "new-model"
+    )
+    assert stats["errors"] == []
+    assert "baseline recorded" in capsys.readouterr().out
