@@ -545,7 +545,7 @@ Per target, in this order:
 ```
 rebuild the target VDB
 → flush / index_done_callback the target VDB
-→ verify the rebuild succeeded
+→ verify the rebuild succeeded, the retained buffer included
 → update THAT target's configuration key
 → flush / index_done_callback the configuration storage
 ```
@@ -554,6 +554,21 @@ rebuild the target VDB
   for the other two;
 - the configuration write happens **after** the target is durable and verified,
   never before;
+- **a returning `index_done_callback` is not the verification.** A per-item
+  backend keeps its retryable failures (408/429/5xx) buffered and returns
+  normally, so the last flush of a rebuild can leave vectors that never reached
+  the server with nothing left to retry them. Mid-rebuild that residue heals —
+  the next flush retries it — and is accepted; a residue left by the LAST flush
+  is not, because the baseline about to be written would claim the target was
+  adopted in the configured space while its index is incomplete, and no later
+  check catches it: the startup precheck sees a matching record, and the
+  coverage gate only refuses an EMPTY index. So the tool asks the vector
+  storage directly (`has_pending_index_ops(include_deletes=True)`) before
+  recording, and a retained operation — or an answer that could not be read —
+  is a failed rebuild. This is the same rule the configuration flush follows
+  (*A flush that retained anything is a failed flush*), applied to the data
+  side, and it is why `OpenSearchVectorDBStorage` implements that method
+  rather than inheriting the base `False`;
 - a failed rebuild advances nothing;
 - a rebuild that succeeds while the configuration write fails makes the **tool
   exit non-zero**. The stale record keeps refusing startup, which is the safe
