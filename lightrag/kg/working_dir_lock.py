@@ -91,7 +91,11 @@ _claims: dict[str, _Claim] = {}
 
 
 def _lock_path(working_dir: str) -> str:
-    return os.path.join(os.path.abspath(working_dir), LOCK_FILENAME)
+    # ``realpath``, not ``abspath``: two spellings of one directory -- a
+    # relative path and its absolute form, a symlink and its target -- must
+    # produce ONE key, or this process tree opens a second descriptor on the
+    # same file and refuses itself.
+    return os.path.join(os.path.realpath(working_dir), LOCK_FILENAME)
 
 
 def _try_lock(handle) -> bool:
