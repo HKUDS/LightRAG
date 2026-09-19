@@ -165,6 +165,11 @@ refused with `WorkingDirectoryInUseError`. Four properties matter:
   would break deployments that work, to protect against a rarer failure.
 - **It is asked of the configuration storage**, not of the four business ones,
   so the claim follows it if it ever becomes separately configurable.
+- **`lightrag-rebuild-vdb` takes it too**, around its own configuration-storage
+  lifecycle. The tool is a second process tree by construction, and the record
+  it writes to say the rebuild happened is exactly the one a running server
+  would overwrite. The confirmation prompt is not a substitute: it asks the
+  operator, the claim asks the filesystem.
 
 **Accepted residue.** A deployment whose configuration is on a server backend
 but whose business data is file-backed is *not* protected: two servers there
