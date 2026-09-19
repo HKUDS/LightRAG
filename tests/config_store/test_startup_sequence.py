@@ -14,6 +14,7 @@ docs/design/ConfigurationStorage.md.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import numpy as np
@@ -628,6 +629,38 @@ async def test_a_teardown_failure_during_rollback_never_replaces_the_cause(tmp_p
     with pytest.raises(RuntimeError) as excinfo:
         await rag.initialize_storages()
     assert excinfo.value is boom
+
+
+async def test_a_cancellation_during_rollback_still_finishes_the_releases(tmp_path):
+    """Backing out is not a place a cancel may stop halfway.
+
+    Shutdown and an escalating timeout both deliver a cancel while the
+    rollback runs. Letting it out of the loop would leave every storage after
+    the cancelled one up, leave the working-directory claim held -- which
+    refuses the retry -- and put the teardown's cancellation in front of the
+    reason the startup failed.
+    """
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    boom = RuntimeError("entities_vdb refused to come up")
+    _Spy(rag.entities_vdb, "initialize", raise_with=boom)
+    # The first release the rollback reaches is cancelled; everything after it
+    # must still run.
+    _Spy(rag.full_docs, "finalize", raise_with=asyncio.CancelledError())
+    config_finalize = _Spy(rag.configuration_storage, "finalize")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await rag.initialize_storages()
+
+    assert excinfo.value is boom, "the teardown cancellation replaced the cause"
+    assert config_finalize.calls == 1, (
+        "the cancellation stopped the rollback before the configuration storage"
+    )
+    assert holds_working_dir_lock(str(tmp_path)) is False, (
+        "the working-directory claim survived the rollback and would refuse a retry"
+    )
+    assert rag._storages_status is StoragesStatus.CREATED
 
 
 # ---------------------------------------------------------------------------

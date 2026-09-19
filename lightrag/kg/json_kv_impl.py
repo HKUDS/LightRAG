@@ -83,6 +83,8 @@ class JsonKVStorage(BaseKVStorage):
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
         self._data = None
+        # Whether THIS instance holds the shared namespace; see ``finalize``.
+        self._holds_namespace = False
         self._storage_lock = None
         self.storage_updated = None
 
@@ -135,6 +137,15 @@ class JsonKVStorage(BaseKVStorage):
                         logger.info(
                             f"[{self.workspace}] Process {os.getpid()} KV load {self.namespace} with {data_count} records"
                         )
+
+        # Only NOW does this instance hold the namespace. The claim is counted
+        # and the count belongs to whoever took it, so a ``finalize()`` from an
+        # instance that never got one releases somebody else's -- and the last
+        # release empties the shared dict, which the real holder then publishes
+        # over its own file. ``initialize_storages`` adds a storage to its
+        # rollback list BEFORE initializing it, so that finalize is on the
+        # normal path of any refusal here, this claim's own included.
+        self._holds_namespace = True
 
     async def index_done_callback(self) -> None:
         """Flush dirty in-memory state to disk and clear all dirty flags.
@@ -582,4 +593,6 @@ class JsonKVStorage(BaseKVStorage):
 
         # Give up this instance's hold LAST, after anything that still needed
         # the shared dict: the last holder's release empties it.
-        await leave_namespace_init(self.namespace, workspace=self.workspace)
+        if self._holds_namespace:
+            self._holds_namespace = False
+            await leave_namespace_init(self.namespace, workspace=self.workspace)
