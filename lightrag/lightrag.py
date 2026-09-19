@@ -194,7 +194,6 @@ from lightrag.utils import (
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
-    merge_source_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_entity_name,
@@ -4381,6 +4380,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    _merge_attributes,
                     apply_relation_weight_floor,
                     relation_evidence_source_ids,
                     validate_relation_weight,
@@ -4711,25 +4711,48 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
                         weight = relationship_data["weight"]
+                        description = relationship_data["description"]
+                        keywords = relationship_data["keywords"]
                         existing_edge = existing_edges.get(
                             (src_id, tgt_id)
                         ) or existing_edges.get((tgt_id, src_id))
                         if existing_edge is not None:
-                            source_id = GRAPH_FIELD_SEP.join(
-                                merge_source_ids(
-                                    [existing_edge.get("source_id") or ""],
-                                    [source_id],
-                                )
+                            # Same merge every other existing-relation path uses
+                            # (_merge_entities_impl's relation_updates): union
+                            # source_id/file_path, combine description/keywords,
+                            # take the larger weight, then re-floor it to the
+                            # combined evidence count.
+                            merged = _merge_attributes(
+                                [
+                                    existing_edge,
+                                    {
+                                        "weight": weight,
+                                        "description": description,
+                                        "keywords": keywords,
+                                        "source_id": source_id,
+                                        "file_path": file_path,
+                                    },
+                                ],
+                                {
+                                    "description": "concatenate",
+                                    "keywords": "join_unique_comma",
+                                    "source_id": "join_unique",
+                                    "file_path": "join_unique",
+                                    "weight": "max",
+                                },
+                                filter_none_only=True,
                             )
+                            source_id = merged.get("source_id", source_id)
+                            description = merged.get("description", description)
+                            keywords = merged.get("keywords", keywords)
                             weight = apply_relation_weight_floor(
-                                max(weight, existing_edge.get("weight") or 0.0),
-                                source_id,
+                                merged.get("weight", weight), source_id
                             )
 
                         edge_data = {
                             "weight": weight,
-                            "description": relationship_data["description"],
-                            "keywords": relationship_data["keywords"],
+                            "description": description,
+                            "keywords": keywords,
                             "source_id": source_id,
                             "file_path": file_path,
                             "created_at": int(time.time()),
@@ -4740,8 +4763,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             {
                                 "src_id": normalized_src_id,
                                 "tgt_id": normalized_tgt_id,
-                                "description": relationship_data["description"],
-                                "keywords": relationship_data["keywords"],
+                                "description": description,
+                                "keywords": keywords,
                                 "source_id": source_id,
                                 "weight": weight,
                                 "file_path": file_path,

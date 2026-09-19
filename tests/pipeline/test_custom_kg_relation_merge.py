@@ -114,6 +114,11 @@ async def test_ainsert_custom_kg_merges_source_id_and_weight_into_existing_edge(
     # Two distinct real sources now back this relation, so weight must be >= 2.
     assert edge_data["weight"] >= 2.0
 
+    # description/keywords/file_path must combine, not just replace.
+    assert "old description" in edge_data["description"]
+    assert "Alice mentored Bob" in edge_data["description"]
+    assert set(edge_data["keywords"].split(",")) == {"old", "mentorship"}
+
 
 @pytest.mark.asyncio
 async def test_ainsert_custom_kg_writes_new_relation_unmerged(
