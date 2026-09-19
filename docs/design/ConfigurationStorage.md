@@ -729,6 +729,25 @@ Startup uses the same surface, and stays inside the same rule, by bounding both
 target whose baseline is absent (*Establishing a baseline*). A backend that
 cannot page its first page cheaply therefore pays once, not on every start.
 
+That bound is on the ROWS, not on the round trips, and on a backend that finds
+its namespace by scanning a key prefix the two come apart: proving a namespace
+EMPTY means reaching the end of the keyspace however many batches that takes,
+because `MATCH` is applied after each batch and a batch that matches nothing
+looks exactly like the end. Redis is the case. It is not a cost the strict read
+introduces -- `is_empty()`, the read every other start uses, is
+`scan_iter(match=..., count=1)` over the same keyspace -- so what the strict
+read buys (an outage that cannot be recorded as `origin=empty`) is bought at no
+extra walk.
+
+A page is also not a set: `iter_rows` is a best-effort snapshot, and Redis says
+in its own docstring that `SCAN` may return a key twice while the keyspace
+rehashes, leaving de-duplication to the caller that needs uniqueness. The chunk
+sampler is that caller, because the probe weighs each sampled row as an
+independent record -- so it keeps distinct ids only, and spends its budget on
+rows examined rather than ids kept. A duplicated source shrinks the sample; it
+never pads it with copies that would spend the comparison slots without adding
+evidence.
+
 ## What this does not retire
 
 The baselines answer **identity**: is the configured space the one adopted for

@@ -272,21 +272,44 @@ async def _sample_relation_ids(graph, limit: int) -> list[str]:
 
 
 async def _sample_chunk_ids(text_chunks, limit: int) -> list[str]:
-    """Vector ids for up to ``limit`` chunks the KV store actually holds.
+    """Vector ids for up to ``limit`` DISTINCT chunks the KV store holds.
 
-    The first page of ``BaseKVStorage.iter_rows`` -- one bounded round trip,
-    not a scan: the iterator is closed as soon as the page is full. Chunk
-    vectors are keyed by the chunk id, so the row id is the vector id.
+    The first page of ``BaseKVStorage.iter_rows``, closed as soon as the
+    budget is spent. Chunk vectors are keyed by the chunk id, so the row id is
+    the vector id.
+
+    **Distinct, and the sample may come back short.** ``iter_rows`` is a
+    best-effort snapshot: ``RedisKVStorage`` says in its own docstring that
+    ``SCAN`` may return a key twice while the keyspace is rehashing, and puts
+    the de-duplication on the caller. This is that caller, and it is the one
+    that must care -- ``_probe_same_embedding_space`` treats each row as an
+    independent record, so a repeated row would occupy comparison slots
+    without adding evidence, and a container holding two embedding spaces
+    would be judged on fewer distinct chunks than the sample size promises.
+    Half a sample of genuinely distinct rows is worth more than a full one of
+    copies, so the budget below counts rows EXAMINED, not ids kept: the read
+    stays exactly the size it was, and duplicates shrink the sample instead of
+    padding it.
+
+    What this cannot do is make a sample representative. A container whose
+    foreign vectors all sit outside the first page is adopted on the rows that
+    were seen -- the residue inherent to sampling, stated in
+    ``_probe_same_embedding_space``. De-duplication keeps the sample as wide
+    as the read allows; it does not widen the read.
     """
     iterator = text_chunks.iter_rows(page_size=limit)
     ids: list[str] = []
+    seen: set[str] = set()
+    examined = 0
     try:
         async for row in iterator:
+            examined += 1
             if isinstance(row, dict):
                 row_id = row.get("_id") or row.get("id")
-                if isinstance(row_id, str) and row_id:
+                if isinstance(row_id, str) and row_id and row_id not in seen:
+                    seen.add(row_id)
                     ids.append(row_id)
-            if len(ids) >= limit:
+            if len(ids) >= limit or examined >= limit:
                 break
     finally:
         aclose = getattr(iterator, "aclose", None)
@@ -1128,6 +1151,19 @@ async def _chunk_source_is_populated(
     read the chunk probe samples from -- and it costs whatever enumeration
     costs on that backend, which is why it is spent only on the starts that
     need it (``JsonKVStorage`` snapshots its key list before the first page).
+
+    **"Bounded" bounds the rows, not the round trips.** On a backend that
+    finds its namespace by scanning a key prefix, proving the namespace EMPTY
+    means reaching the end of the keyspace however many batches that takes:
+    ``RedisKVStorage.iter_rows`` walks ``SCAN`` to a zero cursor, because
+    Redis applies ``MATCH`` after each batch and a batch that matches nothing
+    is indistinguishable from the end of the namespace. That is not a cost
+    this read introduces -- ``is_empty()``, the read it replaces and the one
+    every other start still uses, is ``scan_iter(match=..., count=1)`` over
+    the same keyspace, so the empty case has always walked it. What the
+    strict read changes is the ANSWER on failure, which is the whole point:
+    ``is_empty()`` reports an outage as "empty", and here that would be a
+    durable ``origin=empty`` record.
 
     A backend without enumeration falls back to ``is_empty()``, whose
     "populated" is trustworthy and whose "empty" is not: the first answers

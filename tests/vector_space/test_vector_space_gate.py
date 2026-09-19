@@ -28,8 +28,11 @@ from lightrag.exceptions import (
 from lightrag.utils import compute_mdhash_id, make_relation_vdb_ids
 from lightrag.vector_space_gate import (
     ADOPT_COSINE,
+    PROBE_ROWS,
     REFUSE_COSINE,
+    SAMPLE_SIZE,
     _cosine,
+    _sample_chunk_ids,
     check_vector_space_at_startup,
 )
 
@@ -223,6 +226,25 @@ class FakeVectorStorage:
         return self._adopt_result
 
 
+class _PositionalVectorStorage(FakeVectorStorage):
+    """``get_by_ids`` answered positionally, the way Nano answers it.
+
+    ``FakeVectorStorage`` filters its rows through ``set(ids)``, which hides
+    duplicate ids the way PostgreSQL's ``id = ANY(...)`` does.
+    ``NanoVectorDBStorage`` returns one entry per REQUESTED id instead -- see
+    the MISS-shape comment in ``_probe_target`` -- so a duplicated sample
+    arrives at the probe as duplicated ROWS. That is the backend this test
+    class models.
+    """
+
+    async def get_by_ids(self, ids):
+        self.reads += 1
+        if self._read_error is not None:
+            raise self._read_error
+        by_id = {row.get("id"): row for row in self._rows}
+        return [by_id[row_id] for row_id in ids if row_id in by_id]
+
+
 class FakeEmbedding:
     """Returns a fixed vector, or fails, or hangs."""
 
@@ -295,6 +317,30 @@ class FakeKVStorage:
                 raise self._error  # what every real KV backend does on failure
             for i in range(min(self._rows, page_size)):
                 yield {"_id": f"chunk-{i + 1}", "content": f"chunk {i + 1}"}
+
+        return _gen()
+
+
+class _RehashingChunks(FakeKVStorage):
+    """A chunk source that hands every row back twice, in place.
+
+    What Redis does under a rehash: ``SCAN`` may return a key it has already
+    returned. The base contract allows it and ``RedisKVStorage.iter_rows``
+    documents it.
+    """
+
+    def __init__(self, *, pairs: int):
+        super().__init__(rows=pairs)
+        self._pairs = pairs
+
+    def iter_rows(self, *, page_size=200):
+        self.enumerations += 1
+
+        async def _gen():
+            for i in range(1, self._pairs + 1):
+                row = {"_id": f"chunk-{i}", "content": f"chunk {i}"}
+                yield row
+                yield dict(row)
 
         return _gen()
 
@@ -1399,6 +1445,53 @@ class TestAdoptionProbe:
 
         assert chunks.adopted == 1
         assert embedding.calls == 1, "entities were marked; only chunks probed"
+
+    async def test_a_repeated_chunk_row_is_sampled_once(self):
+        """``iter_rows`` may hand the same row back twice; the sample may not.
+
+        ``RedisKVStorage.iter_rows`` says it in its own docstring -- ``SCAN``
+        repeats keys while the keyspace rehashes -- and leaves the
+        de-duplication to the caller that needs uniqueness. This is that
+        caller: the probe treats every sampled row as an independent record.
+        The read budget is unchanged (rows EXAMINED, not ids kept), so a
+        duplicated source yields a SHORTER sample, never a padded one.
+        """
+        ids = await _sample_chunk_ids(_RehashingChunks(pairs=16), SAMPLE_SIZE)
+
+        assert ids == [f"chunk-{i}" for i in range(1, 17)]
+        assert len(set(ids)) == len(ids)
+
+    async def test_duplicates_do_not_spend_the_probe_comparison_budget(self):
+        """The eight comparison slots go to eight DISTINCT chunks.
+
+        A container holding two embedding spaces is caught only if a foreign
+        record reaches ``_probe_same_embedding_space``. With the source
+        repeating every row and ``NanoVectorDBStorage`` answering
+        ``get_by_ids`` positionally -- one entry per REQUESTED id -- the
+        duplicates used to arrive as separate rows and fill all
+        ``PROBE_ROWS`` slots with four chunks. The foreign fifth was never
+        compared, and the container was adopted as homogeneous: the exact lie
+        ``_probe_same_embedding_space`` refuses to tell one level up.
+        """
+        assert PROBE_ROWS == 8, "this test is about the comparison budget"
+        rows = [{"id": f"chunk-{i}", "content": f"chunk {i}"} for i in range(1, 17)]
+        # Every chunk reproduces its vector except the fifth, which is the one
+        # that sits beyond the first eight RAW rows but inside the first eight
+        # distinct ones.
+        vectors = {f"chunk-{i}": [1.0, 0.0] for i in range(1, 17)}
+        vectors["chunk-5"] = [0.0, 1.0]
+        chunks = _PositionalVectorStorage(rows=rows, vectors=vectors, pending=True)
+
+        with pytest.raises(VectorSpaceMismatchError):
+            await _run(
+                FakeGraph(labels=["Alice"]),
+                FakeVectorStorage(rows=[_entity_row()]),
+                FakeEmbedding([1.0, 0.0]),
+                chunks_vdb=chunks,
+                text_chunks=_RehashingChunks(pairs=16),
+            )
+
+        assert chunks.adopted == 0
 
     async def test_a_kv_store_without_enumeration_leaves_chunks_unmarked(self):
         """A backend that cannot page its rows cannot supply a chunk sample.
