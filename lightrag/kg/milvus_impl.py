@@ -2433,6 +2433,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
             )
         self.cosine_better_than_threshold = cosine_threshold
+        if self.index_config.metric_type != "COSINE":
+            logger.warning(
+                f"[{self.workspace}] {self.namespace}: cosine_better_than_threshold "
+                f"is configured but the collection metric is "
+                f"{self.index_config.metric_type}, not COSINE -- the threshold is "
+                "not applied at query time on this metric."
+            )
 
         # Ensure created_at is in meta_fields
         if "created_at" not in self.meta_fields:

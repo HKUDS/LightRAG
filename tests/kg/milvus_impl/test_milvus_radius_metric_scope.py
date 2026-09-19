@@ -13,6 +13,7 @@ fixture setup in test_milvus_off_event_loop.py.
 """
 
 import asyncio
+import logging
 
 import numpy as np
 import pytest
@@ -116,3 +117,34 @@ async def test_ip_metric_does_not_apply_cosine_scale_radius():
     await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
 
     assert "radius" not in captured["search_params"]["params"]
+
+
+def test_non_cosine_metric_warns_that_threshold_is_ignored(
+    caplog: pytest.LogCaptureFixture,
+):
+    """cosine_better_than_threshold is required at construction regardless of
+    metric_type, so an operator on L2/IP who set it gets no other signal that
+    it is never applied at query time."""
+    lightrag_logger = logging.getLogger("lightrag")
+    previous_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            _make_storage(metric_type="L2", threshold=0.2)
+    finally:
+        lightrag_logger.propagate = previous_propagate
+
+    assert "not COSINE" in caplog.text
+
+
+def test_cosine_metric_does_not_warn(caplog: pytest.LogCaptureFixture):
+    lightrag_logger = logging.getLogger("lightrag")
+    previous_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            _make_storage(metric_type="COSINE", threshold=0.2)
+    finally:
+        lightrag_logger.propagate = previous_propagate
+
+    assert "not COSINE" not in caplog.text
