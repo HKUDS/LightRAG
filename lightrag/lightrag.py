@@ -2585,14 +2585,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
-        await self._cancel_admin_release_drives()
-        # These wrappers own long-lived worker and health-check tasks. Drain
-        # them while the response cache and other storages are still usable;
-        # otherwise closing an asyncio.run()/manual loop after finalize leaves
-        # their queue.get() coroutines pending on the destroyed event loop.
-        await self._shutdown_model_queues()
-        if self._storages_status == StoragesStatus.INITIALIZED:
-            try:
+        try:
+            await self._cancel_admin_release_drives()
+            # These wrappers own long-lived worker and health-check tasks. Drain
+            # them while the response cache and other storages are still usable;
+            # otherwise closing an asyncio.run()/manual loop after finalize leaves
+            # their queue.get() coroutines pending on the destroyed event loop.
+            await self._shutdown_model_queues()
+            if self._storages_status == StoragesStatus.INITIALIZED:
                 await self._commit_cache_pair_before_finalize()
                 storages = [
                     ("full_docs", self.full_docs),
@@ -2665,15 +2665,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.debug("All storages finalized successfully")
 
                 self._storages_status = StoragesStatus.FINALIZED
-            finally:
-                # Last, after every storage that writes under it is down --
-                # and in a ``finally`` because a cancel delivered anywhere
-                # above would otherwise leave the directory claimed by a
-                # process that is shutting down, refusing the next server
-                # until this one exits.
-                if self._holds_working_dir:
-                    self._holds_working_dir = False
-                    release_working_dir_lock(self.working_dir)
+        finally:
+            # Outside the status guard AND above the first teardown
+            # await: draining the model queues can legitimately block,
+            # so a cancel delivered there would otherwise skip every
+            # release below it -- leaving the directory claimed by a
+            # process on its way out, which nothing can undo (a retry
+            # returns early on the status).
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(self.working_dir)
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()

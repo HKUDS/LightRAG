@@ -693,6 +693,29 @@ async def test_a_cancelled_shutdown_still_gives_the_directory_back(tmp_path):
     )
 
 
+async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path):
+    """``_shutdown_model_queues`` can legitimately block while it drains.
+
+    A cancel delivered there sits ABOVE everything the teardown does, so a
+    guard that starts after it protects nothing: no storage is finalized and
+    the directory stays claimed by a process on its way out.
+    """
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    assert holds_working_dir_lock(str(tmp_path)) is True
+
+    _Spy(rag, "_shutdown_model_queues", raise_with=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await rag.finalize_storages()
+
+    assert holds_working_dir_lock(str(tmp_path)) is False, (
+        "a cancel in the pre-teardown awaits kept the working-directory claim"
+    )
+
+
 async def test_a_gate_refusal_leaves_everything_releasable(tmp_path):
     """Scenario 18: the refusal comes AFTER the storages are up, so the status
     says so and finalize_storages() releases the configuration storage and
