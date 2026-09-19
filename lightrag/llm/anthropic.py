@@ -27,7 +27,10 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
+from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.utils import (
+    empty_length_truncated_hint,
+    format_response_diagnostics,
     safe_unicode_decode,
     logger,
     TruncatedResponse,
@@ -245,20 +248,51 @@ async def anthropic_complete_if_cache(
                         "total_tokens": prompt_tokens + output_tokens,
                     }
                 )
-            # When extended thinking is enabled, the first content block is a
-            # ThinkingBlock/RedactedThinkingBlock (no `.text` attribute) and the
-            # visible answer follows in a later block. Pick the first block that
-            # carries a text payload instead of assuming content[0] is it.
-            content = next(
-                (block.text for block in response.content if hasattr(block, "text")),
-                None,
-            )
+            # When extended thinking is enabled, the content list interleaves
+            # ThinkingBlock/RedactedThinkingBlock entries with the visible
+            # answer -- [thinking, text, thinking, text] is a real shape, not
+            # just [thinking, text] -- so every text block must be joined, not
+            # just the first one found. Checked by ``.type`` rather than
+            # ``hasattr(block, "text")``: a future block type could carry an
+            # unrelated ``.text`` attribute.
+            text_blocks = [
+                block.text
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            ]
+            content = "".join(text_blocks) if text_blocks else None
+            stop_reason = getattr(response, "stop_reason", None)
             if content is None:
+                if stop_reason == "max_tokens":
+                    # Deterministic for this prompt/budget: a thinking model
+                    # can spend the whole output budget on the reasoning
+                    # trace and never reach a text block. Non-retryable --
+                    # matching the OpenAI/Gemini bindings -- so this fails
+                    # after one request instead of buying two more
+                    # full-budget generations plus backoff for a result that
+                    # will be identically empty.
+                    thinking_len = sum(
+                        len(getattr(block, "thinking", "") or "")
+                        for block in response.content
+                    )
+                    diagnostics = format_response_diagnostics(
+                        stop_reason=stop_reason,
+                        content_block_types=[
+                            getattr(block, "type", None) for block in response.content
+                        ],
+                        thinking_len=thinking_len,
+                    )
+                    hint = empty_length_truncated_hint(
+                        "consider raising max_tokens or disabling thinking mode",
+                        reasoning_consumed_budget=bool(thinking_len),
+                    )
+                    message = f"Anthropic API returned no text content block ({diagnostics}): {hint}"
+                    logger.error(message)
+                    raise EmptyTruncatedResponseError(message)
                 raise InvalidResponseError(
-                    "Anthropic API returned no text content block "
-                    f"(stop_reason={getattr(response, 'stop_reason', None)})"
+                    f"Anthropic API returned no text content block (stop_reason={stop_reason})"
                 )
-            if getattr(response, "stop_reason", None) == "max_tokens":
+            if stop_reason == "max_tokens":
                 content = TruncatedResponse(content)
             return content
         finally:

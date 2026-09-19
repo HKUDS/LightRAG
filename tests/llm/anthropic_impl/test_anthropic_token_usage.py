@@ -38,7 +38,7 @@ class _Stream:
 async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
     tracker = TokenTracker()
     response = SimpleNamespace(
-        content=[SimpleNamespace(text="answer")],
+        content=[SimpleNamespace(type="text", text="answer")],
         stop_reason="end_turn",
         usage=_usage(
             input_tokens=10,
