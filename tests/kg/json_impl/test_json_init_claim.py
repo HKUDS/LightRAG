@@ -18,6 +18,7 @@ import json
 
 import pytest
 
+from lightrag.exceptions import SharedNamespaceBackingConflictError
 from lightrag.kg import json_doc_status_impl, json_kv_impl
 from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
 from lightrag.kg.json_kv_impl import JsonKVStorage
@@ -136,3 +137,123 @@ async def test_a_cancelled_load_hands_the_claim_back():
         await asyncio.sleep(0)
 
     assert await try_initialize_namespace("cancelns", workspace="ws") is True
+
+
+# ---------------------------------------------------------------------------
+# One file per namespace, while anyone holds it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_two_live_instances_on_different_files_are_refused(
+    tmp_path, cls, module, namespace
+):
+    """The key says ``workspace:namespace`` and says nothing about the file.
+
+    Two ``working_dir`` roots therefore meet on one in-memory copy. Before the
+    refusal the second instance read its OWN file's rows as absent -- and
+    absence is the one answer that lets a start bootstrap -- then published the
+    union into whichever file flushed first, the other never being written at
+    all. The workspaces do not even have to differ for it to matter here: the
+    configuration namespace is pinned to one reserved workspace, so every
+    instance lands on the same key however its tenants are named.
+    """
+    workspace = "backingws"
+    other = tmp_path / "second-root"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "from A"}})
+    _seed_file(other, workspace, namespace, {"row-b": {"value": "from B"}})
+
+    first = _storage(cls, tmp_path, workspace, namespace)
+    await first.initialize()
+
+    second = _storage(cls, other, workspace, namespace)
+    with pytest.raises(SharedNamespaceBackingConflictError) as excinfo:
+        await second.initialize()
+
+    message = str(excinfo.value)
+    assert str(tmp_path) in message and str(other) in message
+
+    # The refusal changed nothing: the holder still has its own rows.
+    assert await first.get_by_id("row-a") is not None
+    assert await first.get_by_id("row-b") is None
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_the_same_file_twice_still_shares_one_copy(
+    tmp_path, cls, module, namespace
+):
+    """The refusal is about DIVERGENT backing, not about a second instance.
+
+    One file behind two storages is the normal case -- a process tree's
+    workers all open the same one -- and sharing the copy is the point of the
+    claim, not a defect in it.
+    """
+    workspace = "sharedws"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "from A"}})
+
+    first = _storage(cls, tmp_path, workspace, namespace)
+    await first.initialize()
+    second = _storage(cls, tmp_path, workspace, namespace)
+    await second.initialize()
+
+    assert await second.get_by_id("row-a") is not None
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_a_sequence_of_roots_is_legal_and_each_reads_its_own_file(
+    tmp_path, cls, module, namespace
+):
+    """Refused AT ONCE, allowed IN TURN.
+
+    The hold is given back by ``finalize()``, and the last one out empties the
+    shared dict as well as dropping the flag -- the two have to travel
+    together, or the next instance loads its file on top of rows it never
+    wrote (the load is ``update``, not a replace).
+    """
+    workspace = "seqws"
+    other = tmp_path / "second-root"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "from A"}})
+    _seed_file(other, workspace, namespace, {"row-b": {"value": "from B"}})
+
+    first = _storage(cls, tmp_path, workspace, namespace)
+    await first.initialize()
+    assert await first.get_by_id("row-a") is not None
+    await first.finalize()
+
+    second = _storage(cls, other, workspace, namespace)
+    await second.initialize()
+
+    assert await second.get_by_id("row-b") is not None
+    assert await second.get_by_id("row-a") is None, (
+        "the released namespace kept the previous root's rows"
+    )
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_the_hold_is_given_back_only_by_the_last_holder(
+    tmp_path, cls, module, namespace
+):
+    """A worker finalizing must not empty the namespace under its siblings."""
+    workspace = "holdws"
+    other = tmp_path / "second-root"
+    _seed_file(tmp_path, workspace, namespace, {"row-a": {"value": "from A"}})
+    _seed_file(other, workspace, namespace, {"row-b": {"value": "from B"}})
+
+    first = _storage(cls, tmp_path, workspace, namespace)
+    await first.initialize()
+    sibling = _storage(cls, tmp_path, workspace, namespace)
+    await sibling.initialize()
+
+    await first.finalize()
+    assert await sibling.get_by_id("row-a") is not None, (
+        "one holder leaving emptied the namespace for the other"
+    )
+
+    # Still held, so a divergent root is still refused.
+    with pytest.raises(SharedNamespaceBackingConflictError):
+        await _storage(cls, other, workspace, namespace).initialize()
+
+    await sibling.finalize()
+    released = _storage(cls, other, workspace, namespace)
+    await released.initialize()
+    assert await released.get_by_id("row-b") is not None
