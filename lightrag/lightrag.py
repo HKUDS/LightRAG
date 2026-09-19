@@ -105,6 +105,11 @@ from lightrag.kg import (
 )
 
 
+from lightrag.kg.working_dir_lock import (
+    acquire_working_dir_lock,
+    release_working_dir_lock,
+    uses_working_dir,
+)
 from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     acquire_reservation,
@@ -1699,6 +1704,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # rebuilding_vector_storage) and this is internal state, never a
         # constructor argument.
         self._startup_refusal: Exception | None = None
+        # Whether THIS instance holds a claim on ``working_dir``; see
+        # ``lightrag/kg/working_dir_lock.py``. Set at the top of
+        # ``initialize_storages``, cleared by whichever path gives it back.
+        self._holds_working_dir: bool = False
 
         # Refused here, before any storage is built, so the message names the
         # rule rather than whichever backend happened to construct first. The
@@ -2136,6 +2145,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     f"out of a failed startup: {teardown_error}"
                 )
 
+        # The directory claim is taken before step 1, so it outlives every
+        # storage in the rollback list and is given back last.
+        if self._holds_working_dir:
+            self._holds_working_dir = False
+            release_working_dir_lock(self.working_dir)
+
     async def _establish_embedding_baselines(
         self, bootstrap_targets: list[str], evidence: StartupEvidence
     ) -> None:
@@ -2263,6 +2278,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         from lightrag.kg.shared_storage import initialize_pipeline_status
 
         await initialize_pipeline_status(workspace=self.workspace)
+
+        # Claim the working directory when the CONFIGURATION storage is
+        # file-backed, and only then. Such a storage shares its in-memory copy
+        # inside ONE process tree and publishes by rewriting the whole file, so
+        # a second server on this directory would overwrite this one's
+        # baselines with neither able to see it happen -- and an overwritten
+        # baseline reads as ABSENT, which is the one answer that lets a start
+        # bootstrap over vectors nobody probed.
+        #
+        # Asked of the configuration storage itself rather than of the four
+        # business ones, so the claim follows it if it ever becomes separately
+        # configurable. What this deliberately does NOT do is refuse a
+        # deployment whose business data is file-backed while its
+        # configuration is not: see the residue in working_dir_lock.py.
+        self._holds_working_dir = uses_working_dir(
+            type(self.configuration_storage).__name__
+        )
+        if self._holds_working_dir:
+            try:
+                acquire_working_dir_lock(self.working_dir)
+            except BaseException as e:
+                # Before step 1, so nothing is open yet and nothing is sticky:
+                # a refusal here leaves the instance exactly as it was.
+                self._holds_working_dir = False
+                raise e
 
         # From here until INITIALIZED, `started` is the list of what must be
         # released if a step fails. A storage is appended BEFORE its
@@ -2591,6 +2631,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             else:
                 logger.debug("All storages finalized successfully")
+
+            # Last, after every storage that writes under it is down.
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(self.working_dir)
 
             self._storages_status = StoragesStatus.FINALIZED
 

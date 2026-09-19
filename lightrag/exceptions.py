@@ -108,6 +108,17 @@ class StorageCapabilityError(RuntimeError):
     """
 
 
+class WorkingDirectoryInUseError(RuntimeError):
+    """Another process tree already holds this ``working_dir``.
+
+    The file-backed storages rewrite whole files from an in-memory copy that is
+    shared inside one process tree and nowhere else, so two servers on one
+    directory each accumulate a private view and each publish it over the
+    other's. Nothing inside either tree can observe that, which is why the
+    claim lives on the directory. See ``lightrag/kg/working_dir_lock.py``.
+    """
+
+
 class SharedNamespaceBackingConflictError(RuntimeError):
     """Two file-backed storages in one process tree claimed one namespace
     while backed by DIFFERENT files.
