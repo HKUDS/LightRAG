@@ -5,7 +5,7 @@ This module isolates the document parse/enqueue/extraction pipeline so that
 The mixin is wired into :class:`lightrag.LightRAG` via multiple inheritance
 and relies on attributes/methods that the main class provides
 (``self.full_docs``, ``self.doc_status``, ``self.tokenizer``,
-``self.parse_native``-related fields, ``self._insert_done``,
+parser-registry-related fields, ``self._insert_done``,
 ``self._process_extract_entities``, etc.).
 """
 
