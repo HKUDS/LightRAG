@@ -450,6 +450,24 @@ drops the buffer (what the caller reports is then what is true) and raises
 anything, and it is then a read of the server. Backends without a buffer answer
 `False` and pay nothing.
 
+**And a flush that RAISED is not automatically a failed one.** The mirror case:
+the bulk landed and only `indices.refresh()` afterwards failed. The backend can
+prove that raise lost nothing and says so by raising
+`ReferencesIntactFlushError` — but that type covers two situations its own
+docstring separates, and they need opposite answers: every operation still
+buffered (a transport error from the bulk call), or the commit landed and only a
+step after it failed. Catching both as a failed flush reports a **durable write
+as one that did not happen**, which is the asymmetry *Consistency without
+transactions* forbids outright, and it costs a refused startup on a record the
+server already has, or a whole re-embed reported as failed by the rebuild tool.
+
+So the same question decides both directions: **ask the buffer, not the return
+value.** Nothing retained after a raise means the write landed, and the strict
+read-back — which every caller here performs — is what confirms it. Something
+retained means the write is not durable, whether the flush returned or raised. A
+backend that cannot be asked keeps the conservative reading of its own raise,
+because there is then no way to tell the two situations apart.
+
 The strict read-back is not a formality, but its job is narrower than it looks.
 It confirms that the write is visible and durable, and it validates whatever is
 *actually stored* against this process's configuration rather than against what

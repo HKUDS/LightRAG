@@ -18,6 +18,8 @@ import pytest
 
 from lightrag import config_store as cs
 from lightrag.exceptions import ConfigurationStorageError
+from opensearchpy import OpenSearchException
+
 from lightrag.kg.opensearch_impl import ClientManager, OpenSearchKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.utils import EmbeddingFunc
@@ -204,4 +206,32 @@ async def test_a_healthy_server_confirms_the_claim_from_the_server_not_the_buffe
         )
     assert recorded.model == "bge-m3"
     assert cs.embedding_baseline_key(WORKSPACE, "entities") in server.docs
+    assert await storage.has_pending_index_ops(include_deletes=True) is False
+
+
+async def test_a_refresh_failure_over_a_landed_bulk_still_claims():
+    """The mirror of the 429 cases: the bulk LANDED and only
+    ``indices.refresh`` failed, so ``index_done_callback`` raises
+    ``OpenSearchReferencesIntactError`` over a durable write and an empty
+    buffer. Reporting that as a failed claim would refuse a startup, and fail a
+    rebuild, over a record the server already has — a durable write reported as
+    one that did not happen."""
+    server = _FakeServer(rate_limited=False)
+    server.client.indices.refresh = AsyncMock(
+        side_effect=OpenSearchException("refresh unavailable")
+    )
+    storage = await _config_storage(server)
+
+    with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=server.bulk):
+        baseline = await cs.claim_embedding_baseline(
+            storage,
+            workspace=WORKSPACE,
+            target="entities",
+            candidate=cs.EmbeddingBaseline("bge-m3", 8, "empty"),
+            embedding_func=_embedding(),
+        )
+
+    assert baseline.model == "bge-m3"
+    key = cs.embedding_baseline_key(WORKSPACE, "entities")
+    assert server.docs[key]["value"]["model"] == "bge-m3", "the server has the row"
     assert await storage.has_pending_index_ops(include_deletes=True) is False
