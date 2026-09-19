@@ -2,11 +2,12 @@
 
 ``MATCH (a)-[r]-(b)`` is undirected with both endpoints free, so Neo4j's
 pattern matcher yields one row per orientation of every relationship --
-{a:X, b:Y} and {a:Y, b:X}. ``RETURN DISTINCT`` on the projected columns does
-not collapse them, since source/target are swapped between the two rows, so
-every edge came back twice. The fix dedupes on the relationship's own
-identity (``id(r)``) instead, mirroring the ``collect(DISTINCT r)`` pattern
-already used by get_knowledge_graph.
+{a:X, b:Y} and {a:Y, b:X}. Every edge is created through an undirected MERGE
+(see upsert_edge), which still gives the relationship exactly one physical
+direction in storage, so the fix matches it directed (``-[r]->``) instead:
+each relationship is then returned exactly once, with no DISTINCT and no
+client-side dedup set to keep in memory -- required for iter_edges, whose
+batch/yield contract must stay O(batch_size), not O(graph size).
 """
 
 import pytest
@@ -75,27 +76,15 @@ def _make_storage(records):
     return storage, calls
 
 
-def _both_orientations(rel_id, source, target, properties):
-    """The two rows Neo4j's undirected pattern matcher yields for one edge."""
-    return [
-        {
-            "rel_id": rel_id,
-            "source": source,
-            "target": target,
-            "properties": dict(properties),
-        },
-        {
-            "rel_id": rel_id,
-            "source": target,
-            "target": source,
-            "properties": dict(properties),
-        },
-    ]
+def _record(source, target, properties):
+    """A directed match returns one row per relationship, in its stored
+    orientation -- no rel_id needed since there is nothing left to dedupe."""
+    return {"source": source, "target": target, "properties": dict(properties)}
 
 
 @pytest.mark.asyncio
-async def test_get_all_edges_collapses_both_orientations_of_one_relationship():
-    records = _both_orientations(1, "Alpha", "Beta", {"weight": 1.0})
+async def test_get_all_edges_returns_one_row_per_relationship():
+    records = [_record("Alpha", "Beta", {"weight": 1.0})]
     storage, calls = _make_storage(records)
 
     edges = await storage.get_all_edges()
@@ -104,13 +93,17 @@ async def test_get_all_edges_collapses_both_orientations_of_one_relationship():
     assert edges[0]["source"] == "Alpha"
     assert edges[0]["target"] == "Beta"
     query, _ = calls[0]
-    assert "id(r)" in query
+    assert "-[r]->" in query
+    assert "DISTINCT" not in query
+    assert "id(r)" not in query
 
 
 @pytest.mark.asyncio
 async def test_get_all_edges_keeps_distinct_relationships():
-    records = _both_orientations(1, "Alpha", "Beta", {"weight": 1.0})
-    records += _both_orientations(2, "Alpha", "Gamma", {"weight": 2.0})
+    records = [
+        _record("Alpha", "Beta", {"weight": 1.0}),
+        _record("Alpha", "Gamma", {"weight": 2.0}),
+    ]
     storage, _ = _make_storage(records)
 
     edges = await storage.get_all_edges()
@@ -121,8 +114,8 @@ async def test_get_all_edges_keeps_distinct_relationships():
 
 
 @pytest.mark.asyncio
-async def test_iter_edges_collapses_both_orientations_of_one_relationship():
-    records = _both_orientations(1, "Alpha", "Beta", {"weight": 1.0})
+async def test_iter_edges_returns_one_row_per_relationship():
+    records = [_record("Alpha", "Beta", {"weight": 1.0})]
     storage, calls = _make_storage(records)
 
     batches = [batch async for batch in storage.iter_edges(batch_size=10)]
@@ -132,4 +125,6 @@ async def test_iter_edges_collapses_both_orientations_of_one_relationship():
     assert edges[0]["source"] == "Alpha"
     assert edges[0]["target"] == "Beta"
     query, _ = calls[0]
-    assert "id(r)" in query
+    assert "-[r]->" in query
+    assert "DISTINCT" not in query
+    assert "id(r)" not in query
