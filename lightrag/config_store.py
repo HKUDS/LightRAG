@@ -44,6 +44,7 @@ from typing import Any, AsyncIterator, Callable
 from lightrag.exceptions import (
     ConfigurationStorageError,
     EmbeddingBaselineMismatchError,
+    ReferencesIntactFlushError,
 )
 from lightrag.kg.vector_space import declared_dimension, declared_model_name
 from lightrag.namespace import CONFIG_WORKSPACE, SERVER_CONFIG_SCOPE, NameSpace
@@ -395,20 +396,39 @@ def precheck_embedding_baselines(
 
 
 async def _flush(config: Any, what: str) -> None:
-    """Flush, and refuse to call a flush that retained anything a success.
+    """Flush, and let the BUFFER decide what the flush did -- not the return.
+
+    Two ways a flush misreports itself, and one question separates them.
 
     ``OpenSearchKVStorage.index_done_callback`` keeps per-item RETRYABLE
-    failures (408 / 429 / 5xx) buffered and returns normally, and its strict
+    failures (408 / 429 / 5xx) buffered and RETURNS NORMALLY, and its strict
     point read answers from that buffer -- a buffered upsert reads as present,
     a buffered tombstone as gone -- so flush-then-read-back would confirm a
-    write or a delete the server never saw. After the flush the store is
-    asked whether anything is still buffered, tombstones included; if so the
-    buffer is dropped, so what the caller reports is what is true, and the
-    flush is reported as the failure it is. Backends without a buffer answer
-    ``False`` and are unaffected.
+    write or a delete the server never saw.
+
+    The mirror case is a flush that RAISES over a write that landed. A backend
+    able to prove its raise lost nothing raises ``ReferencesIntactFlushError``,
+    and that type covers two situations its own docstring separates: every
+    operation still buffered (a bulk transport error), or the commit landed and
+    only a step after it failed (a refresh). Treating both as a failed flush
+    reports a durable write as one that did not happen, which is the one thing
+    this module exists to prevent.
+
+    So the store is asked the same question either way -- is anything still
+    buffered, tombstones included. Retained: the buffer is dropped (what the
+    caller reports must be what is true) and the flush is the failure it is.
+    Nothing retained: the flush landed, and every caller here strict-reads the
+    row back, so the read-back is what confirms it. A backend that cannot
+    answer keeps the conservative reading of its own raise. Backends without a
+    buffer answer ``False`` and are unaffected.
     """
+    intact_failure: ReferencesIntactFlushError | None = None
     try:
         await config.index_done_callback()
+    except ReferencesIntactFlushError as e:
+        # Nothing was lost -- but whether anything LANDED is the buffer's
+        # answer to give, below.
+        intact_failure = e
     except Exception as e:
         raise ConfigurationStorageError(
             f"the configuration storage could not flush {what} "
@@ -416,7 +436,13 @@ async def _flush(config: Any, what: str) -> None:
         ) from e
     has_pending = getattr(config, "has_pending_index_ops", None)
     if has_pending is None:
-        return
+        if intact_failure is None:
+            return
+        raise ConfigurationStorageError(
+            f"the configuration storage raised while flushing {what} and "
+            f"cannot say whether the operation is still buffered "
+            f"({type(intact_failure).__name__}: {intact_failure})"
+        ) from intact_failure
     try:
         retained = bool(await has_pending(include_deletes=True))
     except Exception as e:
@@ -425,6 +451,13 @@ async def _flush(config: Any, what: str) -> None:
             f"flushed ({type(e).__name__}: {e})"
         ) from e
     if not retained:
+        if intact_failure is not None:
+            logger.warning(
+                f"The configuration storage raised while flushing {what} but "
+                f"kept nothing buffered, so the write landed and only a step "
+                f"after it failed ({type(intact_failure).__name__}: "
+                f"{intact_failure}); the strict read-back decides."
+            )
         return
     drop = getattr(config, "drop_pending_index_ops", None)
     if drop is not None:
@@ -436,10 +469,11 @@ async def _flush(config: Any, what: str) -> None:
                 f"retained ({type(e).__name__}: {e}); they may replay at shutdown"
             )
     raise ConfigurationStorageError(
-        f"the configuration storage retained {what} after the flush (the "
-        f"backend reported a transient failure and kept the operation "
-        f"buffered); the write is not durable and must not be reported as one"
-    )
+        f"the configuration storage retained {what} after the flush (a "
+        f"transient backend failure kept the operation buffered, whether the "
+        f"flush returned or raised); the write is not durable and must not be "
+        f"reported as one"
+    ) from intact_failure
 
 
 async def _write_baseline_row(

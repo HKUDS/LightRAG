@@ -18,6 +18,7 @@ from lightrag import config_store as cs
 from lightrag.exceptions import (
     ConfigurationStorageError,
     EmbeddingBaselineMismatchError,
+    ReferencesIntactFlushError,
     StorageCapabilityError,
 )
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
@@ -544,6 +545,112 @@ class _RetainingKV(FakeConfigKV):
         self.dropped += 1
         self.pending.clear()
         self.tombstones.clear()
+
+
+class _IntactRaiseKV(FakeConfigKV):
+    """The other OpenSearch shape: the bulk LANDED and only ``indices.refresh``
+    failed, so ``index_done_callback`` raises ``OpenSearchReferencesIntactError``
+    over a write that is already durable and an empty buffer.
+
+    ``ReferencesIntactFlushError`` covers a second situation too -- every
+    operation still buffered after a transport error -- which is why the buffer,
+    not the exception type, is what decides."""
+
+    def __init__(self, rows=None, *, keeps_buffer=False):
+        super().__init__(rows)
+        self.keeps_buffer = keeps_buffer
+        self.dropped = 0
+
+    async def index_done_callback(self):
+        self.calls.append(("flush",))
+        if not self.keeps_buffer:
+            # The commit landed: publish the rows, then fail on the step after.
+            self.visible.update(self.pending)
+            self.pending.clear()
+        raise ReferencesIntactFlushError("refresh failed")
+
+    async def has_pending_index_ops(self, *, include_deletes=False):
+        return bool(self.pending)
+
+    async def drop_pending_index_ops(self):
+        self.dropped += 1
+        self.pending.clear()
+
+
+class TestAnIntactRaiseIsNotAutomaticallyAFailure:
+    """A durable write must never be reported as one that did not happen."""
+
+    async def test_a_refresh_failure_over_a_landed_write_still_claims(self):
+        kv = _IntactRaiseKV()
+
+        baseline = await cs.claim_embedding_baseline(
+            kv,
+            workspace="ws",
+            target="entities",
+            candidate=cs.EmbeddingBaseline("bge-m3", 16, "empty"),
+            embedding_func=_embedding(),
+        )
+
+        assert baseline.model == "bge-m3"
+        key = cs.embedding_baseline_key("ws", "entities")
+        assert kv.visible[key]["value"]["model"] == "bge-m3"
+        assert kv.dropped == 0, "nothing was retained, so nothing may be discarded"
+
+    async def test_the_same_raise_over_a_kept_buffer_is_a_failure(self):
+        """Same exception type, opposite buffer: a transport error left every
+        operation buffered, so the write is not durable."""
+        kv = _IntactRaiseKV(keeps_buffer=True)
+
+        with pytest.raises(ConfigurationStorageError, match="retained"):
+            await cs.claim_embedding_baseline(
+                kv,
+                workspace="ws",
+                target="entities",
+                candidate=cs.EmbeddingBaseline("bge-m3", 16, "empty"),
+                embedding_func=_embedding(),
+            )
+
+        assert kv.dropped == 1
+        assert cs.embedding_baseline_key("ws", "entities") not in kv.visible
+
+    async def test_a_backend_that_cannot_be_asked_keeps_the_raise(self):
+        """No buffer to consult means no way to tell the two situations apart,
+        so the conservative reading of the raise stands."""
+
+        class _Unaskable(FakeConfigKV):
+            async def index_done_callback(self):
+                self.calls.append(("flush",))
+                raise ReferencesIntactFlushError("refresh failed")
+
+        kv = _Unaskable()
+        assert not hasattr(kv, "has_pending_index_ops")
+
+        with pytest.raises(ConfigurationStorageError, match="cannot say"):
+            await cs.claim_embedding_baseline(
+                kv,
+                workspace="ws",
+                target="entities",
+                candidate=cs.EmbeddingBaseline("bge-m3", 16, "empty"),
+                embedding_func=_embedding(),
+            )
+
+    async def test_a_rebuild_record_survives_a_refresh_failure(self):
+        """The caller that pays most for a false failure: a whole re-embed
+        reported as failed over a write that landed."""
+        kv = _IntactRaiseKV()
+
+        stored = await cs.record_embedding_baseline(
+            kv,
+            workspace="ws",
+            target="chunks",
+            embedding_func=_embedding(),
+        )
+
+        assert stored.model == "bge-m3"
+        assert (
+            kv.visible[cs.embedding_baseline_key("ws", "chunks")]["value"]["model"]
+            == "bge-m3"
+        )
 
 
 class TestRetainedFlush:
