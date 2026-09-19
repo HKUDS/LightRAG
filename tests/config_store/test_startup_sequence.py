@@ -677,6 +677,50 @@ async def test_a_failed_configuration_flush_is_sticky(tmp_path):
     await rag.finalize_storages()
 
 
+async def test_a_failure_before_anything_opens_leaves_the_instance_retryable(
+    tmp_path, monkeypatch
+):
+    """The boundary of the sticky rule, asserted rather than assumed.
+
+    Stickiness exists to stop two things: a later call early-returning on a
+    status that says INITIALIZED, and re-running steps against storages a
+    rollback has closed. Before the guarded phase neither is possible -- no
+    storage has been touched, ``started`` does not exist yet and the status is
+    still CREATED -- so a failure there is an ordinary failure and the retry is
+    a real one that re-runs every check. Making it sticky would kill an
+    instance over a transient shared-storage hiccup for no safety gain.
+    """
+    from lightrag.kg import shared_storage
+
+    real = shared_storage.initialize_pipeline_status
+    calls = {"n": 0}
+
+    async def _fail_once(workspace=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("shared storage unreachable")
+        return await real(workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "initialize_pipeline_status", _fail_once)
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    with pytest.raises(ConnectionError):
+        await rag.initialize_storages()
+
+    assert rag._storages_status is StoragesStatus.CREATED
+    assert rag._startup_refusal is None, (
+        "nothing was opened and no verdict was reached, so there is nothing to "
+        "retain -- the next call must re-run every step"
+    )
+
+    await rag.initialize_storages()
+
+    assert calls["n"] == 2
+    assert rag._storages_status is StoragesStatus.INITIALIZED
+    assert set(_records(tmp_path)) == set(cs.EMBEDDING_TARGETS)
+    await rag.finalize_storages()
+
+
 async def test_a_refresh_failure_over_landed_claims_still_starts(tmp_path):
     """The final flush of step 8 must read its own raise the way the per-claim
     flushes do. A backend that committed and then failed only on the step after
