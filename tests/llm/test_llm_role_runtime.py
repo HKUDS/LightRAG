@@ -119,6 +119,26 @@ ROLE_MAX_ASYNC_ENV_KEYS = (
 
 
 @pytest.mark.asyncio
+async def test_worker_timeout_explains_how_to_adjust_provider_budget():
+    async def slow_func(**_kwargs):
+        await asyncio.sleep(0.05)
+
+    wrapped = priority_limit_async_func_call(
+        1,
+        max_execution_timeout=0.01,
+        queue_name="extract LLM func",
+    )(slow_func)
+
+    with pytest.raises(
+        TimeoutError,
+        match="increase the configured LLM timeout or reduce provider work",
+    ):
+        await wrapped()
+
+    await wrapped.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_priority_queue_stats_track_running_and_queued():
     started = asyncio.Event()
     release = asyncio.Event()
