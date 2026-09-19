@@ -539,19 +539,6 @@ class RedisKVStorage(BaseKVStorage):
         """
         await self.close()
 
-    async def release_unstarted(self) -> None:
-        """Give back the pool reference ``__post_init__`` took, unstarted.
-
-        This backend is the one that acquires in its constructor rather than
-        in ``initialize()``, so a startup that fails before its turn leaves a
-        reference nothing else will ever release: ``finalize()`` is only
-        reached by storages the rollback list names, and those are the ones
-        whose ``initialize()`` had begun. ``close()`` covers the started case
-        too, so this stays correct if the acquisition later moves into
-        ``initialize()``.
-        """
-        await self.close()
-
     async def __aenter__(self):
         """Support for async context manager."""
         return self
@@ -1198,15 +1185,6 @@ class RedisDocStatusStorage(DocStatusStorage):
         release-on-finalize contract of the other DocStatus backends.
         ``close()`` is best-effort and idempotent, so double-finalize and
         finalize-after-error are both safe.
-        """
-        await self.close()
-
-    async def release_unstarted(self) -> None:
-        """Give back the pool reference ``__post_init__`` took, unstarted.
-
-        Same reason as ``RedisKVStorage.release_unstarted``: the reference is
-        taken in the constructor, and a startup that fails before this
-        storage initializes never routes it to ``finalize()``.
         """
         await self.close()
 
