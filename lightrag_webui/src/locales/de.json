@@ -4,7 +4,12 @@
     "theme": "Design",
     "light": "Hell",
     "dark": "Dunkel",
-    "system": "System"
+    "system": "System",
+    "langfuseTracing": "Langfuse-Tracing",
+    "langfuseTracingDescription": "Exportiert OpenAI-kompatible LLM-Traces über die vom Betreiber konfigurierte Langfuse-Verbindung.",
+    "langfuseUnavailable": "Installieren Sie das Observability-Extra und konfigurieren Sie die Langfuse-Zugangsdaten, um diesen Schalter zu verwenden.",
+    "langfuseLoadFailed": "Der Langfuse-Tracing-Status konnte nicht geladen werden.",
+    "langfuseUpdateFailed": "Langfuse-Tracing konnte nicht aktualisiert werden."
   },
   "header": {
     "documents": "Dokumente",
