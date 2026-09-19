@@ -2221,10 +2221,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           is what means the instance may serve.
         * A failure before ``INITIALIZED`` releases everything it opened and
           leaves the status ``CREATED``.
-        * EVERY failure is sticky, cancellation included: this method re-raises
-          it on every later call rather than early-returning as initialized or
-          re-running the steps on storages a rollback has closed. Retry with a
-          new instance.
+        * Every failure FROM STEP 1 ON is sticky, cancellation included: this
+          method re-raises it on every later call rather than early-returning
+          as initialized or re-running the steps on storages a rollback has
+          closed. Retry with a new instance. The preamble above step 1 --
+          binding the loop, the default workspace, ``pipeline_status`` -- is
+          deliberately outside that: it opens nothing and moves no status, so
+          a failure there leaves the instance exactly as it was and the next
+          call re-runs every step for real. Making it sticky would kill an
+          instance over a transient shared-storage failure and buy nothing.
         """
         # Sticky. The storages below really are up -- which is why the status
         # says so, and why finalize_storages() can tear them down -- but a
