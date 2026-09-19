@@ -203,24 +203,6 @@ class StorageNameSpace(ABC):
         """Finalize the storage"""
         pass
 
-    async def release_unstarted(self) -> None:
-        """Release what CONSTRUCTION took, for an instance that never initialized.
-
-        Almost every backend takes nothing until ``initialize()``, so the
-        default releases nothing. Override it only where ``__post_init__``
-        already holds a process-wide resource -- the Redis backends take a
-        reference on the shared connection pool there -- because such an
-        instance is never handed to ``finalize()``: a storage joins the
-        startup rollback list only once its ``initialize()`` has begun, and
-        ``LightRAG.finalize_storages()`` releases nothing at all while the
-        status is still ``CREATED``. A startup that fails before that
-        backend's turn would otherwise strand the reference for the life of
-        the process.
-
-        Must be safe on an instance that never initialized, and idempotent.
-        """
-        return None
-
     @abstractmethod
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing.
