@@ -275,7 +275,9 @@ entity probe reads `entities_vdb`.
 5.  mark INITIALIZED
 6.  run the existing coverage gate and the entity adoption probe
 7.  establish the baselines remembered in step 3
-8.  flush the configuration storage
+8.  flush the configuration storage -- through the same flush the claims
+    use, never `index_done_callback()` directly, so the rules below apply
+    to it too
 9.  return successfully
 ```
 
@@ -446,7 +448,9 @@ read-back would therefore confirm a claim, a rebuild record or a drop the server
 never saw. So every configuration flush asks
 `has_pending_index_ops(include_deletes=True)` afterwards; a retained operation
 drops the buffer (what the caller reports is then what is true) and raises
-`ConfigurationStorageError`. Only after that does the strict read-back confirm
+`ConfigurationStorageError`. **Every** flush means every one: the claims, the
+rebuild record, the drop, and step 8's final guard, which is why none of them
+calls `index_done_callback()` directly. Only after that does the strict read-back confirm
 anything, and it is then a read of the server. Backends without a buffer answer
 `False` and pay nothing.
 

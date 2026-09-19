@@ -395,7 +395,7 @@ def precheck_embedding_baselines(
 # ---------------------------------------------------------------------------
 
 
-async def _flush(config: Any, what: str) -> None:
+async def flush_configuration_storage(config: Any, what: str) -> None:
     """Flush, and let the BUFFER decide what the flush did -- not the return.
 
     Two ways a flush misreports itself, and one question separates them.
@@ -548,7 +548,7 @@ async def claim_embedding_baseline(
                 baseline=candidate,
                 updated_by=updated_by,
             )
-            await _flush(config, f"the baseline claim for {key!r}")
+            await flush_configuration_storage(config, f"the baseline claim for {key!r}")
             row = await read_config_row_strict(config, key)
             if row is None:
                 raise ConfigurationStorageError(
@@ -600,7 +600,7 @@ async def record_embedding_baseline(
         baseline=baseline,
         updated_by=updated_by,
     )
-    await _flush(config, f"the baseline record for {key!r}")
+    await flush_configuration_storage(config, f"the baseline record for {key!r}")
     row = await read_config_row_strict(config, key)
     if row is None:
         raise ConfigurationStorageError(
@@ -638,7 +638,9 @@ async def delete_workspace_configuration(config: Any, workspace: str) -> None:
             f"could not delete the configuration rows of workspace {workspace!r} "
             f"({type(e).__name__}: {e})"
         ) from e
-    await _flush(config, f"the configuration rows of workspace {workspace!r}")
+    await flush_configuration_storage(
+        config, f"the configuration rows of workspace {workspace!r}"
+    )
     surviving = [
         key for key in keys if await read_config_row_strict(config, key) is not None
     ]
