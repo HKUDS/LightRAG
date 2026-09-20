@@ -47,6 +47,7 @@ verdict.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -62,7 +63,7 @@ from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
     SERVER_CONFIG_SCOPE,
     NameSpace,
-    default_config_dir,  # noqa: F401  -- re-exported: this module owns the policy
+    default_config_dir,
 )
 from lightrag.utils import logger
 
@@ -341,6 +342,41 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
             f"the next start, and only on a positive adoption probe."
         )
     return kv_storage
+
+
+def resolve_config_dir(config_dir: str | None, working_dir: str) -> str:
+    """The absolute directory a file-backed configuration storage uses.
+
+    Absolute for the same reason ``working_dir`` is: the single-server claim
+    keys on the REALPATH, so a relative spelling from a differently-rooted
+    process would open a second descriptor on the same lock file and refuse
+    itself.
+    """
+    return os.path.abspath(
+        (config_dir or "").strip() or default_config_dir(working_dir)
+    )
+
+
+def configuration_selection_from_env(
+    *, kv_storage: str, working_dir: str
+) -> tuple[str, str]:
+    """``(config_storage, config_dir)`` as the environment resolves them.
+
+    The one answer three call sites must agree on: ``LightRAG`` (from its own
+    fields), ``lightrag-rebuild-vdb``, and the **Gunicorn master**, which takes
+    the directory claim before forking. They must not drift: a master that
+    claims a different directory than its workers hands them no inheritable
+    claim, and each worker then opens its own descriptor -- the first wins and
+    every other one is refused at startup.
+
+    Raises ``ValueError`` when the selection is outside the category.
+    """
+    config_storage = resolve_configuration_storage(
+        os.environ.get("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv_storage
+    )
+    return config_storage, resolve_config_dir(
+        os.environ.get("LIGHTRAG_CONFIG_DIR", ""), working_dir
+    )
 
 
 def describe_configuration_container(storage_name: str, config_dir: str) -> str:

@@ -1130,7 +1130,7 @@ select_storage_backends() {
   local vector_default="NanoVectorDBStorage"
   local graph_default="NetworkXStorage"
   local doc_default="JsonDocStatusStorage"
-  local kv_storage vector_storage graph_storage doc_storage
+  local kv_storage vector_storage graph_storage doc_storage config_storage
 
   if [[ "$deployment_type" == "production" ]]; then
     kv_default="PGKVStorage"
@@ -1164,11 +1164,54 @@ select_storage_backends() {
   ENV_VALUES["LIGHTRAG_GRAPH_STORAGE"]="$graph_storage"
   ENV_VALUES["LIGHTRAG_DOC_STATUS_STORAGE"]="$doc_storage"
 
-  for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; do
+  # NOT a command substitution: ``select_config_storage`` writes to
+  # ``ENV_VALUES``, and a subshell would discard that -- the generated .env
+  # would come out without the key the whole function exists to add.
+  select_config_storage "$kv_storage"
+  config_storage="$SELECTED_CONFIG_STORAGE"
+
+  for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage" \
+    "$config_storage"; do
     if [[ -n "${STORAGE_DB_TYPES[$storage]:-}" ]]; then
       REQUIRED_DB_TYPES["${STORAGE_DB_TYPES[$storage]}"]=1
     fi
   done
+}
+
+config_storage_is_admitted() {
+  local candidate="$1" option
+  for option in "${CONFIG_STORAGE_OPTIONS[@]}"; do
+    [[ "$option" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
+select_config_storage() {
+  # The configuration storage is its own category. Unset it FOLLOWS the KV
+  # backend, which is where an existing deployment's records already are, so
+  # an admitted KV selection writes nothing and the .env stays minimal.
+  #
+  # A KV backend the category does NOT admit (RedisKVStorage) is refused at
+  # startup by name, so the wizard has to ask rather than emit an .env that
+  # cannot start. See docs/design/ConfigurationStorage.md.
+  #
+  # The answer comes back in ``SELECTED_CONFIG_STORAGE`` rather than on stdout
+  # so the caller does not need a command substitution: this function also
+  # writes ``ENV_VALUES``, and a subshell would throw that away.
+  local kv_storage="$1"
+
+  if config_storage_is_admitted "$kv_storage"; then
+    unset "ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]"
+    SELECTED_CONFIG_STORAGE="$kv_storage"
+    return 0
+  fi
+
+  log_warn "$kv_storage cannot hold the configuration storage (the embedding" \
+    "baselines); choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
+    "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-JsonKVStorage}" \
+    "${CONFIG_STORAGE_OPTIONS[@]}")"
+  ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
 }
 
 initialize_default_storage_backends() {
@@ -2662,7 +2705,7 @@ env_storage_flow() {
 
   log_step "Storage backend selection"
   select_storage_backends "custom"
-  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-} config=${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-(follows kv)}"
   clear_unused_storage_deployment_markers
 
   log_step "Database configuration"
@@ -2966,7 +3009,7 @@ validate_ssl_runtime_path() {
 validate_env_file() {
   local env_file="${REPO_ROOT}/.env"
   local errors=0
-  local kv vector graph doc_status
+  local kv vector graph doc_status config_storage
   local runtime_target
   local storage db_type
   local -A referenced_db_types=()
@@ -2981,9 +3024,12 @@ validate_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  # Unset, the configuration storage follows the KV backend; that default is
+  # what keeps an existing deployment's records where they already are.
+  config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-$kv}"
   runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
 
-  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+  for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
     if [[ -z "$storage" ]]; then
       continue
     fi
@@ -3009,7 +3055,8 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
+  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status" \
+    "$config_storage"; then
     errors=1
   fi
 
@@ -3106,6 +3153,7 @@ security_check_env_file() {
   local vector=""
   local graph=""
   local doc_status=""
+  local config_storage=""
   local storage=""
   local db_type=""
   local opensearch_in_use="no"
@@ -3126,12 +3174,13 @@ security_check_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-$kv}"
   if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
     whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
     whitelist_is_set="yes"
   fi
 
-  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+  for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
     if [[ -z "$storage" ]]; then
       continue
     fi

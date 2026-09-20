@@ -177,11 +177,11 @@ from lightrag.config_store import (
     claim_embedding_baseline,
     configured_baseline,
     create_configuration_storage,
-    default_config_dir,
     describe_configuration_container,
     flush_configuration_storage,
     precheck_embedding_baselines,
     read_embedding_baselines,
+    resolve_config_dir,
     resolve_configuration_storage,
     warn_about_unrecorded_baselines,
 )
@@ -1852,13 +1852,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self.config_storage = resolve_configuration_storage(
             self.config_storage, kv_storage=self.kv_storage
         )
-        # Resolved to an absolute path for the same reason ``working_dir`` is:
-        # the single-server claim keys on the REALPATH, and a relative spelling
-        # from a differently-rooted process would otherwise open a second
-        # descriptor on the same file and refuse itself.
-        self.config_dir = os.path.abspath(
-            self.config_dir.strip() or default_config_dir(self.working_dir)
-        )
+        # Through the shared resolver, not a second copy of the rule: the
+        # Gunicorn master claims this directory BEFORE forking, and a master
+        # that resolved it differently would hand its workers no inheritable
+        # claim -- the first worker would take the lock and every other one
+        # would be refused at startup.
+        self.config_dir = resolve_config_dir(self.config_dir, self.working_dir)
 
         # Verify storage implementation compatibility and environment variables
         storage_configs = [

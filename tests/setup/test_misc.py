@@ -2180,3 +2180,68 @@ backup_only
     assert "Backed up .env to" in output
     assert "Backed up compose file to" not in output
     assert list(tmp_path.glob("docker-compose.backup*.yml")) == []
+
+
+class TestTheWizardSelectsAValidConfigurationBackend:
+    """``select_storage_backends`` must not emit an .env that cannot start.
+
+    The configuration storage is its own category admitting four backends.
+    Unset it FOLLOWS ``LIGHTRAG_KV_STORAGE``, which is where an existing
+    deployment's records already are -- so an admitted KV selection writes
+    nothing and the generated .env stays minimal. ``RedisKVStorage`` is NOT
+    admitted, and the wizard offers it, so a Redis selection has to name a
+    configuration backend explicitly; otherwise the wizard accepts and
+    validates a selection that is refused by name at startup.
+
+    See docs/design/ConfigurationStorage.md.
+    """
+
+    def _select(self, kv_storage: str, stdin: str = "") -> dict[str, str]:
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+select_config_storage "{kv_storage}"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    @pytest.mark.parametrize(
+        "kv_storage",
+        ["JsonKVStorage", "PGKVStorage", "MongoKVStorage", "OpenSearchKVStorage"],
+    )
+    def test_an_admitted_kv_backend_writes_nothing_and_follows(self, kv_storage):
+        values = self._select(kv_storage)
+        assert values["CHOSEN"] == kv_storage
+        assert values["WRITTEN"] == "<unset>", (
+            "an admitted KV backend must leave the selection to the default, "
+            "which is where the records already are"
+        )
+
+    def test_redis_is_asked_about_and_the_answer_is_written(self):
+        # Empty stdin accepts the prompt's default.
+        values = self._select("RedisKVStorage", stdin="\n")
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage", (
+            "a Redis KV selection that writes no LIGHTRAG_CONFIG_STORAGE "
+            "produces an .env refused at startup"
+        )
+
+    def test_the_offered_backends_are_exactly_the_admitted_four(self):
+        from lightrag.kg import STORAGE_IMPLEMENTATIONS
+
+        offered = run_bash(
+            f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+printf '%s\\n' "${{CONFIG_STORAGE_OPTIONS[@]}}"
+"""
+        ).split()
+        assert sorted(offered) == sorted(
+            STORAGE_IMPLEMENTATIONS["CONFIG_STORAGE"]["implementations"]
+        )

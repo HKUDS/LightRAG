@@ -81,10 +81,10 @@ from lightrag.constants import (
 from lightrag.config_store import (
     EMBEDDING_TARGETS,
     create_configuration_storage,
-    default_config_dir,
     describe_configuration_container,
     read_embedding_baselines,
     record_embedding_baseline,
+    resolve_config_dir,
     resolve_configuration_storage,
 )
 from lightrag.exceptions import (
@@ -743,10 +743,9 @@ class RebuildTool:
         }
 
     def resolve_config_dir(self) -> str:
-        working_dir = os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR)
-        return os.path.abspath(
-            os.getenv("LIGHTRAG_CONFIG_DIR", "").strip()
-            or default_config_dir(working_dir)
+        return resolve_config_dir(
+            os.getenv("LIGHTRAG_CONFIG_DIR", ""),
+            os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
         )
 
     def check_env_vars(self, storage_name: str) -> None:

@@ -423,6 +423,14 @@ class MongoKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        # Before the configuration branch below, not after it: that branch
+        # returns early, and ``upsert`` reads both of these on the very first
+        # baseline claim. Skipping them left a Mongo-backed configuration
+        # storage raising ``AttributeError`` during startup.
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
         if self.namespace == NameSpace.KV_STORE_CONFIG:
             # The configuration container is named in CODE: one fixed
             # collection, no workspace prefix to choose and no
@@ -471,10 +479,6 @@ class MongoKVStorage(BaseKVStorage):
             )
 
         self._collection_name = self.final_namespace
-        (
-            self._max_upsert_payload_bytes,
-            self._max_upsert_records_per_batch,
-        ) = _resolve_upsert_batch_limits()
 
     async def initialize(self):
         async with get_data_init_lock():

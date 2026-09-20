@@ -94,7 +94,11 @@ configuration has to be readable *before* any vector storage initializes
 (step 3 of the startup sequence).
 
 A selection outside the four is refused at construction, **by name**, rather
-than failing later on a missing method.
+than failing later on a missing method. `make env-storage` offers
+`RedisKVStorage` for business KV, so the wizard asks for a configuration
+backend whenever the KV selection is not one of the four, and collects that
+backend's database requirements — otherwise it would write, and validate, an
+`.env` that cannot start.
 
 **Unset, the selection follows `kv_storage`.** That is the only default that
 does not orphan an existing deployment's records: they are already in that
@@ -254,7 +258,12 @@ file it exists to protect. Five properties matter:
 - **`fork` shares it.** The Gunicorn master takes it in `on_starting`, *before*
   forking, and the workers inherit that claim and count themselves in. Taken
   after the fork, each worker would open its own descriptor and all but one
-  would be refused.
+  would be refused. The master must therefore claim **the directory its
+  workers will ask for**: it resolves `config_storage` and `config_dir`
+  through the same `configuration_selection_from_env()` the workers reach via
+  `LightRAG`, and `lightrag-rebuild-vdb` uses it too. A master reading the
+  environment its own way is the same failure as taking the claim late —
+  nothing inheritable, and every worker after the first refused at startup.
 - **It fails open.** Locking is unreliable on NFSv3 without lockd and on
   SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
   deployments. A backend that cannot lock gets a warning and proceeds; refusing
