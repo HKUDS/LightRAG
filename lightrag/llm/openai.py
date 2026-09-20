@@ -1310,6 +1310,7 @@ async def azure_openai_embed(
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
+    max_token_size: int | None = None,
     token_tracker: Any | None = None,
     client_configs: dict[str, Any] | None = None,
     api_version: str | None = None,
@@ -1324,6 +1325,12 @@ async def azure_openai_embed(
 
     All parameters from the underlying openai_embed are exposed to ensure
     full feature parity and API consistency.
+
+    ``max_token_size`` must stay a named parameter here: EmbeddingFunc.__call__
+    injects it from the @wrap_embedding_func_with_attrs decorator only when
+    the wrapped function's own signature declares it, and it is then
+    forwarded to openai_embed.func to truncate oversized texts before they
+    reach the Azure API, exactly as the standard OpenAI binding does.
 
     IMPORTANT - Decorator Usage:
 
@@ -1386,6 +1393,7 @@ async def azure_openai_embed(
         base_url=base_url,
         api_key=api_key,
         embedding_dim=embedding_dim,
+        max_token_size=max_token_size,
         token_tracker=token_tracker,
         client_configs=client_configs,
         use_azure=True,
