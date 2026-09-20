@@ -1,6 +1,10 @@
-"""An exclusive claim on a ``working_dir``, held for the life of a process tree.
+"""An exclusive claim on a directory, held for the life of a process tree.
 
-**Taken for a file-backed CONFIGURATION storage, and only for that.**
+**Taken on ``config_dir`` for a file-backed CONFIGURATION storage, and only
+for that.** The parameter is still spelled ``working_dir`` throughout because
+the claim is on a directory whatever that directory holds; with ``config_dir``
+at its default (``<working_dir>/_lightrag_config``) the two name the same
+deployment either way.
 
 A file-backed storage publishes a namespace by rewriting a whole file from an
 in-memory copy. That copy is shared inside ONE process tree, which is what
@@ -18,10 +22,11 @@ nobody probed, and the protection is gone with nothing in any log.
 Nothing inside a process tree can see that, so the claim has to live where both
 servers can: on the directory itself.
 
-**Accepted residue: business data in the same directory is not protected.** Two
-servers sharing a ``working_dir`` whose configuration is on a server backend but
-whose ``full_docs`` / ``doc_status`` / graph / vectors are file-backed still
-overwrite each other, and lose more than baselines when they do. That is the
+**Accepted residue: business data is not protected.** Two servers sharing a
+``working_dir`` whose configuration is on a server backend (or in a different
+``config_dir``) but whose ``full_docs`` / ``doc_status`` / graph / vectors are
+file-backed still overwrite each other, and lose more than baselines when they
+do. That is the
 long-standing "separate process trees are unsupported" position, unchanged
 here; this claim narrows the blast radius rather than closing it, because the
 baseline is the case whose failure is SILENT. Recovery for the rest is
@@ -56,10 +61,10 @@ from lightrag.utils import logger
 
 LOCK_FILENAME = ".lightrag_storage.lock"
 
-# The storages whose data lives under ``working_dir``. Only a deployment using
-# at least one of them is claiming the directory -- two servers on one
-# ``working_dir`` with server backends share nothing but logs and inputs, and
-# refusing that would be an invention.
+# The storages whose data lives on the local filesystem. Only a deployment
+# whose CONFIGURATION storage is one of them claims a directory -- two servers
+# whose configuration is on a server backend share nothing the claim protects,
+# and refusing that would be an invention.
 FILE_BACKED_STORAGES = frozenset(
     {
         "JsonKVStorage",
