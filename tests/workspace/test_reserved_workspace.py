@@ -1,14 +1,10 @@
-"""The configuration container is unreachable by naming a workspace.
+"""The ``_lightrag*`` workspace-name reservation and its one door.
 
-Slice 1 paid for "configuration is not a tenant" with a reserved ``_lightrag*``
-NAME, defended in ``validate_workspace``, in a context-variable grant, and in
-``validate_workspace_override`` at six backends. The configuration storage is
-now its own category on a container named in CODE, so none of that has to
-exist: there is no name to collide with, and no override can redirect into a
-container no workspace addresses. These tests pin that property -- and that
-the ``*_WORKSPACE`` variables still only move TENANT data.
-
-See docs/design/ConfigurationStorage.md.
+``validate_workspace`` refuses the family; only the configuration-storage
+factory's private grant lets ``_lightrag_config`` through, for one
+construction; and no ``*_WORKSPACE`` environment variable may move a reserved
+workspace onto a tenant's. See *The internal factory* in
+docs/design/ConfigurationStorage.md.
 """
 
 from __future__ import annotations
@@ -18,9 +14,11 @@ import logging
 import pytest
 from types import SimpleNamespace
 
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.namespace import CONFIG_WORKSPACE, RESERVED_WORKSPACE_PREFIX
 from lightrag.utils import (
     WORKSPACE_OVERRIDE_SOURCES,
+    _grant_reserved_workspace,
+    is_reserved_workspace,
     validate_workspace,
     validate_workspace_override,
 )
@@ -31,129 +29,118 @@ pytestmark = pytest.mark.offline
 @pytest.mark.parametrize(
     "name",
     [
-        "",
-        "lightrag",
-        "my_lightrag",
-        "v1.0",
-        "_other",
-        # No longer reserved: there is nothing to reserve it from.
         "_lightrag_config",
-        "_LightRAG_config",
         "_lightrag_server",
+        "_lightragx",
+        # Case variants: OpenSearch lowercases index names, so these would
+        # land on the internal container's index if they were tenant-safe.
+        "_LightRAG_config",
+        "_LIGHTRAG_CONFIG",
+        "_Lightrag_other",
     ],
 )
-def test_every_legal_name_passes_including_the_old_reserved_family(name):
-    assert validate_workspace(name) == name
-
-
-@pytest.mark.parametrize("name", ["a/b", "a\\b", ".", ".."])
-def test_path_traversal_is_still_refused(name):
-    with pytest.raises(ValueError, match="path separators|relative path"):
+def test_the_reserved_family_is_refused(name):
+    assert is_reserved_workspace(name)
+    with pytest.raises(ValueError, match="reserved"):
         validate_workspace(name)
 
 
-def test_the_reserved_machinery_is_gone():
-    """A rule that no longer exists must not linger as dead code someone
-    later re-wires: the grant was the thing that made a public
-    ``allow_reserved`` flag tempting."""
-    import lightrag.namespace as ns
-    import lightrag.utils as utils
-
-    for gone in ("RESERVED_WORKSPACE_PREFIX", "CONFIG_WORKSPACE"):
-        assert not hasattr(ns, gone), gone
-    for gone in ("is_reserved_workspace", "_grant_reserved_workspace"):
-        assert not hasattr(utils, gone), gone
+@pytest.mark.parametrize("name", ["", "lightrag", "my_lightrag", "v1.0", "_other"])
+def test_ordinary_names_still_pass(name):
+    assert not is_reserved_workspace(name)
+    assert validate_workspace(name) == name
 
 
-def test_a_tenant_named_after_the_container_shares_nothing_with_it(tmp_path):
-    """The whole point of the category. A workspace may now legally be called
-    ``_lightrag_config`` and still cannot reach the configuration container --
-    on the JSON backend they are different FILES in the same directory."""
-    from lightrag import config_store as cs
-    from lightrag.kg.json_kv_impl import JsonKVStorage
-
-    global_config = {"working_dir": str(tmp_path)}
-    config = cs.create_configuration_storage(
-        JsonKVStorage, global_config=global_config, embedding_func=None
-    )
-    for namespace in ("full_docs", "text_chunks", "llm_response_cache"):
-        tenant = JsonKVStorage(
-            namespace=namespace,
-            workspace=CONFIG_CONTAINER_TAG,
-            global_config=global_config,
-            embedding_func=None,
-        )
-        assert tenant._file_name != config._file_name
+def test_the_grant_admits_exactly_one_name_and_only_while_held():
+    with _grant_reserved_workspace(CONFIG_WORKSPACE):
+        assert validate_workspace(CONFIG_WORKSPACE) == CONFIG_WORKSPACE
+        with pytest.raises(ValueError):
+            validate_workspace(RESERVED_WORKSPACE_PREFIX + "_other")
+        with pytest.raises(ValueError):
+            # One SPELLING, not one name folded: the grant is exact.
+            validate_workspace(CONFIG_WORKSPACE.upper())
+    with pytest.raises(ValueError):
+        validate_workspace(CONFIG_WORKSPACE)
 
 
-def test_a_public_lightrag_instance_may_take_the_old_reserved_name(tmp_path):
-    """It is an ordinary workspace now. Its data lands beside the
-    configuration file, not in it."""
-    import numpy as np
+def test_the_grant_is_only_for_reserved_names():
+    with pytest.raises(ValueError):
+        _grant_reserved_workspace("tenant")
 
+
+def test_a_public_lightrag_instance_cannot_take_a_reserved_workspace(tmp_path):
+    """Scenario 12, the refusing half: refused at construction, by the rule,
+    before any storage is built."""
     from lightrag import LightRAG
-    from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
-
-    class _StubTokenizer(TokenizerInterface):
-        def encode(self, content: str) -> list[int]:
-            return [ord(c) for c in content]
-
-        def decode(self, tokens: list[int]) -> str:
-            return "".join(chr(t) for t in tokens)
 
     async def _llm(prompt, **kwargs):  # pragma: no cover - never called
         return ""
 
-    async def _embed(texts, **kwargs):  # pragma: no cover - never called
-        return np.zeros((len(texts), 8), dtype=np.float32)
-
-    rag = LightRAG(
-        working_dir=str(tmp_path),
-        workspace=CONFIG_CONTAINER_TAG,
-        llm_model_func=_llm,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=8, max_token_size=1024, func=_embed, model_name="m"
-        ),
-        # The default tokenizer downloads tiktoken data; not this test's
-        # subject, and not available offline.
-        tokenizer=Tokenizer("stub", _StubTokenizer()),
-    )
-    assert rag.workspace == CONFIG_CONTAINER_TAG
-    assert rag.full_docs._file_name != rag.configuration_storage._file_name
+    with pytest.raises(ValueError, match="reserved"):
+        LightRAG(
+            working_dir=str(tmp_path),
+            workspace=CONFIG_WORKSPACE,
+            llm_model_func=_llm,
+        )
 
 
-class TestEnvironmentRemapDoesNotReachTheConfigurationContainer:
-    """``POSTGRES_WORKSPACE`` / ``MONGODB_WORKSPACE`` /
-    ``OPENSEARCH_WORKSPACE`` move TENANT data. The configuration container is
-    named in code and does not consult them -- which is now enforced by the
-    ``config`` NAMESPACE, not by a name."""
+class TestEnvironmentRemapIsIgnoredForReservedNames:
+    """``PG_WORKSPACE`` / ``REDIS_WORKSPACE`` / ``MONGODB_WORKSPACE`` /
+    ``OPENSEARCH_WORKSPACE`` move TENANT data; the configuration container's
+    workspace is fixed, not configured."""
 
     def test_opensearch(self, monkeypatch):
-        from lightrag.kg.opensearch_impl import _build_index_name, _resolve_workspace
+        from lightrag.kg.opensearch_impl import _resolve_workspace
 
         monkeypatch.setenv("OPENSEARCH_WORKSPACE", "prod")
-        assert _resolve_workspace("tenant", "text_chunks") == "prod"
-        assert _resolve_workspace("tenant", "config") == CONFIG_CONTAINER_TAG
-        # Fixed, whatever the caller named.
-        assert (
-            _build_index_name("tenant", "config")[2]
-            == _build_index_name("other", "config")[2]
+        assert _resolve_workspace("tenant", "config") == "prod"
+        assert _resolve_workspace(CONFIG_WORKSPACE, "config") == CONFIG_WORKSPACE
+
+    def test_redis(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lightrag.kg.redis_impl import RedisKVStorage
+
+        monkeypatch.setenv("REDIS_WORKSPACE", "prod")
+        monkeypatch.setattr(
+            "lightrag.kg.redis_impl.RedisConnectionManager.get_pool",
+            lambda redis_url: MagicMock(name="pool"),
         )
+        monkeypatch.setattr(
+            "lightrag.kg.redis_impl.Redis",
+            lambda connection_pool=None, **_: MagicMock(),
+        )
+        with _grant_reserved_workspace(CONFIG_WORKSPACE):
+            storage = RedisKVStorage(
+                namespace="config",
+                workspace=CONFIG_WORKSPACE,
+                global_config={},
+                embedding_func=None,
+            )
+        assert storage.final_namespace == f"{CONFIG_WORKSPACE}_config"
+        tenant = RedisKVStorage(
+            namespace="config",
+            workspace="tenant",
+            global_config={},
+            embedding_func=None,
+        )
+        assert tenant.final_namespace == "prod_config"
 
     def test_mongodb(self, monkeypatch):
         from lightrag.kg.mongo_impl import MongoKVStorage
 
         monkeypatch.setenv("MONGODB_WORKSPACE", "prod")
-        config = MongoKVStorage(
-            namespace="config",
-            global_config={},
-            embedding_func=None,
-            workspace="tenant",
-        )
-        assert config.workspace == CONFIG_CONTAINER_TAG
-        assert config._collection_name == f"{CONFIG_CONTAINER_TAG}_config"
+        with _grant_reserved_workspace(CONFIG_WORKSPACE):
+            storage = MongoKVStorage(
+                namespace="config",
+                global_config={},
+                embedding_func=None,
+                workspace=CONFIG_WORKSPACE,
+            )
+        assert storage.workspace == CONFIG_WORKSPACE
+        assert storage.final_namespace == f"{CONFIG_WORKSPACE}_config"
         tenant = MongoKVStorage(
-            namespace="text_chunks",
+            namespace="config",
             global_config={},
             embedding_func=None,
             workspace="tenant",
@@ -161,6 +148,8 @@ class TestEnvironmentRemapDoesNotReachTheConfigurationContainer:
         assert tenant.workspace == "prod"
 
     async def test_postgresql(self):
+        from types import SimpleNamespace
+
         from lightrag.kg.postgres_impl import PGKVStorage
         from lightrag.kg.shared_storage import (
             finalize_share_data,
@@ -170,17 +159,18 @@ class TestEnvironmentRemapDoesNotReachTheConfigurationContainer:
         initialize_share_data()
         try:
             db = SimpleNamespace(workspace="prod")
-            config = PGKVStorage.__new__(PGKVStorage)
-            config.namespace = "config"
-            config.global_config = {}
-            config.db = db
-            config.workspace = "tenant"
-            config.__post_init__()
-            await config.initialize()
-            assert config.workspace == CONFIG_CONTAINER_TAG
+            storage = PGKVStorage.__new__(PGKVStorage)
+            storage.namespace = "config"
+            storage.global_config = {}
+            storage.db = db
+            with _grant_reserved_workspace(CONFIG_WORKSPACE):
+                storage.workspace = CONFIG_WORKSPACE
+                storage.__post_init__()
+            await storage.initialize()
+            assert storage.workspace == CONFIG_WORKSPACE
 
             tenant = PGKVStorage.__new__(PGKVStorage)
-            tenant.namespace = "text_chunks"
+            tenant.namespace = "config"
             tenant.global_config = {}
             tenant.db = db
             tenant.workspace = "tenant"
@@ -190,40 +180,118 @@ class TestEnvironmentRemapDoesNotReachTheConfigurationContainer:
         finally:
             finalize_share_data()
 
-    def test_json(self, tmp_path):
-        """The JSON backend honors no override at all; what it must not do is
-        follow the workspace into ``working_dir/<workspace>``."""
-        from lightrag.kg.json_kv_impl import JsonKVStorage
 
-        storage = JsonKVStorage(
-            namespace="config",
-            workspace="tenant",
-            global_config={"working_dir": str(tmp_path)},
-            embedding_func=None,
-        )
-        assert storage._file_name == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
-        )
+class TestEnvironmentRemapCannotNameAReservedWorkspace:
+    """The mirror of the class above. The override is applied AFTER
+    ``validate_workspace()`` passed the constructor argument, so without a
+    check of its own ``REDIS_WORKSPACE=_lightrag_config`` would bind tenant
+    data into the reserved family through the front door the reservation
+    exists to close."""
 
-
-class TestTheOverrideValidatorStillValidates:
-    """``validate_workspace_override`` loses its reserved-name check and keeps
-    the rest: the value a ``*_WORKSPACE`` variable supplies is applied INSIDE a
-    constructor, after ``validate_workspace()`` already passed the constructor
-    argument, so this is the only place it is ever checked."""
-
-    def test_it_strips_and_passes_ordinary_values(self):
+    def test_the_validator_refuses_the_family_and_strips_the_rest(self):
         assert validate_workspace_override("X_WORKSPACE", " prod ") == "prod"
         assert validate_workspace_override("X_WORKSPACE", None) is None
         assert validate_workspace_override("X_WORKSPACE", "") == ""
-        assert validate_workspace_override("X_WORKSPACE", CONFIG_CONTAINER_TAG) == (
-            CONFIG_CONTAINER_TAG
-        )
+        with pytest.raises(ValueError, match="X_WORKSPACE.*reserved"):
+            validate_workspace_override("X_WORKSPACE", CONFIG_WORKSPACE)
+        with pytest.raises(ValueError, match="reserved"):
+            validate_workspace_override("X_WORKSPACE", "_LightRAG_config")
 
-    @pytest.mark.parametrize("value", ["../etc", "a/b", "..", "a\\b"])
-    def test_a_traversing_override_is_refused_and_names_the_variable(self, value):
-        with pytest.raises(ValueError, match="X_WORKSPACE"):
-            validate_workspace_override("X_WORKSPACE", value)
+    def test_opensearch(self, monkeypatch):
+        from lightrag.kg.opensearch_impl import _resolve_workspace
+
+        monkeypatch.setenv("OPENSEARCH_WORKSPACE", CONFIG_WORKSPACE)
+        with pytest.raises(ValueError, match="reserved"):
+            _resolve_workspace("tenant", "text_chunks")
+
+    def test_opensearch_refuses_the_case_variant_its_index_names_fold(
+        self, monkeypatch
+    ):
+        """OpenSearch lowercases index names, so ``_LightRAG_config`` would
+        share the internal container's index. The reservation is
+        case-insensitive for exactly this reason."""
+        from lightrag.kg.opensearch_impl import _resolve_workspace
+
+        monkeypatch.setenv("OPENSEARCH_WORKSPACE", "_LightRAG_config")
+        with pytest.raises(ValueError, match="reserved"):
+            _resolve_workspace("tenant", "config")
+        with pytest.raises(ValueError, match="reserved"):
+            validate_workspace("_LightRAG_config")
+
+    def test_redis(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lightrag.kg.redis_impl import RedisDocStatusStorage, RedisKVStorage
+
+        monkeypatch.setenv("REDIS_WORKSPACE", CONFIG_WORKSPACE)
+        monkeypatch.setattr(
+            "lightrag.kg.redis_impl.RedisConnectionManager.get_pool",
+            lambda redis_url: MagicMock(name="pool"),
+        )
+        monkeypatch.setattr(
+            "lightrag.kg.redis_impl.Redis",
+            lambda connection_pool=None, **_: MagicMock(),
+        )
+        for cls in (RedisKVStorage, RedisDocStatusStorage):
+            with pytest.raises(ValueError, match="reserved"):
+                cls(
+                    namespace="text_chunks",
+                    workspace="tenant",
+                    global_config={},
+                    embedding_func=None,
+                )
+
+    def test_mongodb(self, monkeypatch):
+        from lightrag.kg.mongo_impl import MongoDocStatusStorage, MongoKVStorage
+
+        monkeypatch.setenv("MONGODB_WORKSPACE", CONFIG_WORKSPACE)
+        for cls in (MongoKVStorage, MongoDocStatusStorage):
+            with pytest.raises(ValueError, match="reserved"):
+                cls(
+                    namespace="text_chunks",
+                    global_config={},
+                    embedding_func=None,
+                    workspace="tenant",
+                )
+
+    def test_postgresql_client(self):
+        """One check for every PostgreSQL storage: they all take the override
+        from the shared client, which reads it once."""
+        from lightrag.kg.postgres_impl import PostgreSQLDB
+
+        with pytest.raises(ValueError, match="POSTGRES_WORKSPACE.*reserved"):
+            PostgreSQLDB(
+                {
+                    "host": "localhost",
+                    "port": 5432,
+                    "user": "u",
+                    "password": "p",
+                    "database": "d",
+                    "workspace": CONFIG_WORKSPACE,
+                    "max_connections": 1,
+                    "connection_retry_attempts": 1,
+                    "connection_retry_backoff": 0.1,
+                    "connection_retry_backoff_max": 0.1,
+                    "pool_close_timeout": 1,
+                }
+            )
+
+    def test_milvus_and_qdrant(self, monkeypatch):
+        from lightrag.kg.milvus_impl import MilvusVectorDBStorage
+        from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
+
+        embedding = SimpleNamespace(embedding_dim=8, model_name="m")
+        monkeypatch.setenv("MILVUS_WORKSPACE", CONFIG_WORKSPACE)
+        monkeypatch.setenv("QDRANT_WORKSPACE", CONFIG_WORKSPACE)
+        for cls in (MilvusVectorDBStorage, QdrantVectorDBStorage):
+            storage = cls.__new__(cls)
+            storage.namespace = "entities"
+            storage.workspace = "tenant"
+            storage.global_config = {"vector_db_storage_cls_kwargs": {}}
+            storage.embedding_func = embedding
+            storage.meta_fields = set()
+            with pytest.raises(ValueError, match="reserved"):
+                storage.__post_init__()
 
 
 def test_a_refused_override_leaks_no_configuration_pool_reference(
@@ -234,11 +302,7 @@ def test_a_refused_override_leaks_no_configuration_pool_reference(
     configuration storage been constructed FIRST, the refusal in the first
     ordinary storage's constructor would have left its reference behind,
     growing on every failed construction. It is constructed last, so a refused
-    override acquires nothing.
-
-    ``config_storage`` is named explicitly because Redis is not in the
-    configuration category: leaving it to follow ``kv_storage`` would refuse
-    the construction before any storage is built, which is a different test."""
+    override acquires nothing."""
     pytest.importorskip("redis")
     from unittest.mock import MagicMock
 
@@ -255,7 +319,7 @@ def test_a_refused_override_leaks_no_configuration_pool_reference(
 
     url = f"redis://leak-check-{tmp_path.name}:6379"
     monkeypatch.setenv("REDIS_URI", url)
-    monkeypatch.setenv("REDIS_WORKSPACE", "../escape")
+    monkeypatch.setenv("REDIS_WORKSPACE", CONFIG_WORKSPACE)
     monkeypatch.setattr(
         "lightrag.kg.redis_impl.ConnectionPool.from_url",
         lambda *args, **kwargs: MagicMock(name="pool"),
@@ -267,13 +331,12 @@ def test_a_refused_override_leaks_no_configuration_pool_reference(
     async def _llm(prompt, **kwargs):  # pragma: no cover - never called
         return ""
 
-    with pytest.raises(ValueError, match="REDIS_WORKSPACE"):
+    with pytest.raises(ValueError, match="reserved"):
         LightRAG(
             working_dir=str(tmp_path),
             workspace="tenant",
             llm_model_func=_llm,
             kv_storage="RedisKVStorage",
-            config_storage="JsonKVStorage",
             # The default tokenizer downloads tiktoken data; not this test's
             # subject, and not available offline.
             tokenizer=Tokenizer("stub", _StubTokenizer()),

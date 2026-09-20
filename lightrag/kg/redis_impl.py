@@ -27,6 +27,7 @@ from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
     _cooperative_yield,
+    is_reserved_workspace,
     validate_workspace,
     validate_workspace_override,
 )
@@ -366,6 +367,11 @@ class RedisKVStorage(BaseKVStorage):
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Redis storage instances
         redis_workspace = os.environ.get("REDIS_WORKSPACE")
+        if is_reserved_workspace(self.workspace):
+            # A reserved workspace is fixed, not configured: the configuration
+            # container must stay where every process finds it, whatever the
+            # environment remaps tenant data to.
+            redis_workspace = None
         if redis_workspace and redis_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = validate_workspace_override(

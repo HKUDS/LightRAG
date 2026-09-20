@@ -65,13 +65,14 @@ from ..exceptions import (
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
 )
-from ..namespace import CONFIG_CONTAINER_TAG, NameSpace, is_namespace
+from ..namespace import NameSpace, is_namespace
 from ..utils import (
     logger,
     compute_mdhash_id,
     _cooperative_yield,
     get_env_value,
     performance_timing_log,
+    is_reserved_workspace,
     validate_workspace,
     validate_workspace_override,
 )
@@ -3175,17 +3176,7 @@ class PGKVStorage(BaseKVStorage):
     supports_strict_point_reads: ClassVar[bool] = True
 
     def __post_init__(self):
-        if self.namespace == NameSpace.KV_STORE_CONFIG:
-            # The configuration container is named in CODE. On PostgreSQL that
-            # name is the table ``LIGHTRAG_CONFIG`` plus a fixed value in its
-            # partition column -- which is called ``workspace`` for the DDL's
-            # sake and is NOT one: nothing validates it, no caller chooses it,
-            # and POSTGRES_WORKSPACE does not reach it (see ``initialize``).
-            # Two deployments sharing one database are told apart by the row
-            # KEY, whose scope is the business workspace the row is about.
-            self.workspace = CONFIG_CONTAINER_TAG
-        else:
-            validate_workspace(self.workspace)
+        validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
         (
             self._max_upsert_payload_bytes,
@@ -3201,9 +3192,10 @@ class PGKVStorage(BaseKVStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.namespace == NameSpace.KV_STORE_CONFIG:
-                # Fixed in __post_init__ and not configurable: POSTGRES_WORKSPACE
-                # remaps tenant data, never the configuration container.
+            if is_reserved_workspace(self.workspace):
+                # A reserved workspace is fixed, not configured: the
+                # configuration container must stay where every process finds
+                # it, whatever PG_WORKSPACE remaps tenant data to.
                 pass
             elif self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
@@ -9846,12 +9838,10 @@ TABLES = {
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, id)
                     )"""
     },
-    # The configuration store. ``workspace`` here is NOT a workspace: it is a
-    # fixed partition constant (``CONFIG_CONTAINER_TAG``) that gives the table
-    # the same shape as every other one. The workspace a row is ABOUT is a
-    # field inside ``value``, and ``id`` is TEXT because it carries that
-    # workspace name too -- which is what keeps two deployments sharing one
-    # database on disjoint rows. See docs/design/ConfigurationStorage.md.
+    # The configuration store. ``workspace`` is the CONTAINER's workspace
+    # (always the reserved one); the workspace a row is ABOUT is a field inside
+    # ``value``, and ``id`` is TEXT because it carries that workspace name too.
+    # See docs/design/ConfigurationStorage.md.
     "LIGHTRAG_CONFIG": {
         "ddl": """CREATE TABLE LIGHTRAG_CONFIG (
 	                workspace varchar(255) NOT NULL,

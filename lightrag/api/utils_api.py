@@ -740,10 +740,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.graph_storage}")
     ASCIIColors.white("    ├─ Document Status Storage: ", end="")
     ASCIIColors.yellow(f"{args.doc_status_storage}")
-    ASCIIColors.white("    ├─ Configuration Storage: ", end="")
-    ASCIIColors.yellow(
-        f"{getattr(args, 'config_storage', '') or f'(follows {args.kv_storage})'}"
-    )
     ASCIIColors.white("    └─ Workspace: ", end="")
     ASCIIColors.yellow(f"{args.workspace if args.workspace else '-'}")
 

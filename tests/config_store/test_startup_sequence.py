@@ -33,7 +33,7 @@ from lightrag.kg import json_kv_impl
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.namespace import CONFIG_WORKSPACE
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
@@ -180,7 +180,7 @@ async def _seed(tmp_path, *, model_name, space="A"):
 
 
 def _records(tmp_path) -> dict[str, dict]:
-    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    path = tmp_path / CONFIG_WORKSPACE / "kv_store_config.json"
     if not path.exists():
         return {}
     payload = json.loads(path.read_text())
@@ -540,7 +540,7 @@ async def test_an_unreadable_configuration_file_is_read_again_by_the_next_instan
     handed back instead, so the file is read again and still governs.
     """
     await _seed(tmp_path, model_name="bge-m3")
-    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    config_file = tmp_path / CONFIG_WORKSPACE / "kv_store_config.json"
     recorded = json.loads(config_file.read_text())
     assert _records(tmp_path)["entities"]["model"] == "bge-m3"
 
@@ -657,7 +657,7 @@ async def test_a_cancellation_during_rollback_still_finishes_the_releases(tmp_pa
     assert config_finalize.calls == 1, (
         "the cancellation stopped the rollback before the configuration storage"
     )
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False, (
+    assert holds_working_dir_lock(str(tmp_path)) is False, (
         "the working-directory claim survived the rollback and would refuse a retry"
     )
     assert rag._storages_status is StoragesStatus.CREATED
@@ -681,14 +681,14 @@ async def test_a_cancelled_shutdown_still_gives_the_directory_back(tmp_path):
 
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is True
+    assert holds_working_dir_lock(str(tmp_path)) is True
 
     # The first storage the teardown reaches is cancelled.
     _Spy(rag.full_docs, "finalize", raise_with=asyncio.CancelledError())
 
     await rag.finalize_storages()
 
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False, (
+    assert holds_working_dir_lock(str(tmp_path)) is False, (
         "a cancelled shutdown kept the working-directory claim"
     )
 
@@ -711,7 +711,7 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
 
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is True
+    assert holds_working_dir_lock(str(tmp_path)) is True
 
     _Spy(rag, "_shutdown_model_queues", raise_with=asyncio.CancelledError())
     config_finalize = _Spy(rag.configuration_storage, "finalize")
@@ -720,7 +720,7 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
     with pytest.raises(asyncio.CancelledError):
         await rag.finalize_storages()
 
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False, (
+    assert holds_working_dir_lock(str(tmp_path)) is False, (
         "a cancel in the pre-teardown awaits kept the working-directory claim"
     )
     assert chunks_finalize.calls == 1, (
@@ -773,7 +773,7 @@ async def test_an_external_cancel_mid_teardown_finishes_before_unlocking(tmp_pat
     assert config_finalize.calls == 1, (
         "the cancel abandoned the storages after the one it interrupted"
     )
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False
+    assert holds_working_dir_lock(str(tmp_path)) is False
 
 
 async def test_a_cancelled_rollback_release_is_drained_before_unlocking(tmp_path):
@@ -813,7 +813,7 @@ async def test_a_cancelled_rollback_release_is_drained_before_unlocking(tmp_path
     assert finished == ["full_docs"], (
         "the rollback gave the directory back with a release still detached"
     )
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False
+    assert holds_working_dir_lock(str(tmp_path)) is False
 
 
 async def test_a_gate_refusal_leaves_everything_releasable(tmp_path):

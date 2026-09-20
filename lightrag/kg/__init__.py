@@ -45,29 +45,6 @@ STORAGE_IMPLEMENTATIONS = {
         ],
         "required_methods": ["get_docs_by_statuses"],
     },
-    # The configuration storage is its OWN category, selected independently of
-    # the four business ones. Four backends, and the list is closed:
-    #
-    # * ``RedisKVStorage`` is deliberately absent. Redis is being retired from
-    #   business storage, and the configuration path must not be the reason
-    #   its enumeration surface is kept alive.
-    # * **No vector storage may serve here.** None appears in any KV list
-    #   today, and this records it as a rule: a vector container's name is
-    #   derived from the embedding configuration, which is exactly the
-    #   assertion the baselines exist to be independent of -- and the
-    #   configuration storage has to be readable BEFORE any vector storage
-    #   initializes (step 3 of the startup sequence).
-    #
-    # See docs/design/ConfigurationStorage.md.
-    "CONFIG_STORAGE": {
-        "implementations": [
-            "JsonKVStorage",
-            "MongoKVStorage",
-            "PGKVStorage",
-            "OpenSearchKVStorage",
-        ],
-        "required_methods": ["get_by_id_strict", "upsert", "iter_rows"],
-    },
 }
 
 # Storage implementation environment variable without default value

@@ -81,11 +81,8 @@ from lightrag.constants import (
 from lightrag.config_store import (
     EMBEDDING_TARGETS,
     create_configuration_storage,
-    default_config_dir,
-    describe_configuration_container,
     read_embedding_baselines,
     record_embedding_baseline,
-    resolve_configuration_storage,
 )
 from lightrag.exceptions import (
     ConfigurationStorageError,
@@ -708,10 +705,9 @@ class RebuildTool:
         # recorded AFTER that target's rebuild is durable and verified, and
         # never before. See docs/design/ConfigurationStorage.md.
         self.configuration_storage = None
-        # Whether this run holds the configuration-directory claim; see
+        # Whether this run holds the working-directory claim; see
         # ``setup_storages``.
         self._holds_working_dir = False
-        self.config_dir = ""
         self.global_config: Dict[str, Any] = {}
         self.embedding_func: EmbeddingFunc | None = None
         self.embedding_available = False
@@ -729,25 +725,11 @@ class RebuildTool:
     # ------------------------------------------------------------------
 
     def resolve_storage_names(self) -> Dict[str, str]:
-        kv = os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
         return {
             "graph": os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),
             "vector": os.getenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"),
-            "kv": kv,
-            # Its own category, resolved exactly as the server resolves it --
-            # the tool must open the SAME container the server records into,
-            # or its post-rebuild baseline lands where nothing reads it.
-            "config": resolve_configuration_storage(
-                os.getenv("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv
-            ),
+            "kv": os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
         }
-
-    def resolve_config_dir(self) -> str:
-        working_dir = os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR)
-        return os.path.abspath(
-            os.getenv("LIGHTRAG_CONFIG_DIR", "").strip()
-            or default_config_dir(working_dir)
-        )
 
     def check_env_vars(self, storage_name: str) -> None:
         """Warn about missing env vars (initialization is the real validation)."""
@@ -794,9 +776,6 @@ class RebuildTool:
             "kv_storage": self.storage_names["kv"],
             "vector_storage": self.storage_names["vector"],
             "graph_storage": self.storage_names["graph"],
-            # Read by the JSON backend when it opens the configuration
-            # container; ignored by the server backends.
-            "config_dir": self.config_dir,
             "embedding_batch_num": get_env_value(
                 "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
             ),
@@ -828,7 +807,6 @@ class RebuildTool:
         from lightrag.kg.factory import get_storage_class
 
         self.storage_names = self.resolve_storage_names()
-        self.config_dir = self.resolve_config_dir()
         self.workspace = os.getenv("WORKSPACE", "")
 
         # Claim the working directory FIRST, before building anything. This
@@ -841,10 +819,10 @@ class RebuildTool:
         # this asks the filesystem. Taken on the resolved storage NAME so the
         # refusal precedes the environment checks and the embedding function:
         # the answer does not depend on them, so neither should the wait.
-        self._holds_working_dir = uses_working_dir(self.storage_names["config"])
+        self._holds_working_dir = uses_working_dir(self.storage_names["kv"])
         if self._holds_working_dir:
             try:
-                acquire_working_dir_lock(self.config_dir)
+                acquire_working_dir_lock(os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR))
             except WorkingDirectoryInUseError as e:
                 self._holds_working_dir = False
                 print(f"\n✗ {e}")
@@ -881,7 +859,6 @@ class RebuildTool:
         graph_cls = get_storage_class(self.storage_names["graph"])
         vector_cls = get_storage_class(self.storage_names["vector"])
         kv_cls = get_storage_class(self.storage_names["kv"])
-        config_cls = get_storage_class(self.storage_names["config"])
 
         # Namespaces and meta_fields must match LightRAG's own storage setup
         self.graph = graph_cls(
@@ -918,7 +895,7 @@ class RebuildTool:
             embedding_func=self.embedding_func,
         )
         self.configuration_storage = create_configuration_storage(
-            config_cls,
+            kv_cls,
             global_config=self.global_config,
             embedding_func=self.embedding_func,
         )
@@ -956,10 +933,6 @@ class RebuildTool:
         print(f"- Graph Storage:  {self.storage_names['graph']}")
         print(f"- Vector Storage: {self.storage_names['vector']}")
         print(f"- KV Storage:     {self.storage_names['kv']}")
-        print(
-            f"- Configuration:  "
-            f"{describe_configuration_container(self.storage_names['config'], self.config_dir)}"
-        )
         print(f"- Workspace:      {self.workspace if self.workspace else '(default)'}")
         print(f"- Working Dir:    {self.global_config['working_dir']}")
         print("- Connection Status: ✓ Success")
@@ -1469,7 +1442,7 @@ class RebuildTool:
             # Last, after every storage that writes under it is down.
             if self._holds_working_dir:
                 self._holds_working_dir = False
-                release_working_dir_lock(self.config_dir)
+                release_working_dir_lock(os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR))
 
 
 async def async_main() -> bool:
