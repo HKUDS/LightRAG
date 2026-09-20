@@ -171,6 +171,40 @@ refused with `WorkingDirectoryInUseError`. Four properties matter:
   would overwrite. The confirmation prompt is not a substitute: it asks the
   operator, the claim asks the filesystem.
 
+#### The claim goes back last, and only after the teardown
+
+Handing the claim back is not the only thing shutdown owes: handing it back
+**while this process is still up** is the exact combination the claim exists to
+prevent. The next server opens the same files while this one still holds the
+shared-namespace holds and whatever it has not flushed, and the two rewrite
+each other's namespaces — the failure the claim was added to close, now caused
+by the release rather than by its absence.
+
+So `finalize_storages()` orders its own cancellation:
+
+- **the queue drains stay interruptible.** `_shutdown_model_queues()` waits on
+  whatever is in flight, so a shutdown timeout escalating to a cancel lands
+  there more often than anywhere else, and a wedged queue must not wedge the
+  shutdown. The cancellation is **absorbed**, not propagated;
+- **the storage teardown does not.** Once it has begun it runs as a shielded
+  task that is drained to completion, so no cancellation can leave it half-done
+  — every await inside it, the cache-pair commit included, would otherwise be
+  its own exit;
+- **the claim is released after that task has completed**, in a `finally`
+  because it is the one release nothing else can perform: a retry returns early
+  on the status, so a claim left held by a process on its way out refuses the
+  next server for nothing;
+- **the cancellation is re-raised** once all of that is done, so the caller
+  still sees a cancelled shutdown.
+
+The startup rollback owes the same ordering for the same reason, and pays it
+differently: it shields each release so a cancel cannot stop it moving to the
+next storage. But `asyncio.shield` only keeps a release **alive** — awaiting a
+shielded task returns the moment the awaiting task is cancelled, which
+*detaches* the release rather than finishing it. A detached release races the
+event loop's own shutdown and loses exactly what it was called to hand back. So
+every release a cancellation detached is **drained before the claim goes back**.
+
 **Accepted residue.** A deployment whose configuration is on a server backend
 but whose business data is file-backed is *not* protected: two servers there
 still overwrite each other's `full_docs`, `doc_status`, graph and vectors, and
@@ -727,6 +761,14 @@ residues are not symmetric:
 That asymmetry is the whole reason for the ordering, and it is why a partial
 drop must not opportunistically delete "the records for the parts that did
 drop".
+
+**A cancelled drop is a drop that did not happen.** The endpoint runs the drops
+through `asyncio.gather(..., return_exceptions=True)`, which hands a cancelled
+child back as a `CancelledError` **object in the results list** — and that
+inherits from `BaseException`, not `Exception`. Classified on `Exception` alone
+it reads as a success, "every drop landed" becomes true, and the records go with
+the second residue above. The results are therefore classified on
+`BaseException`.
 
 "Every data storage" includes the opt-in LLM cache drop that `/documents/clear`
 runs after the storage drops: the records are deleted after it, and a failed
