@@ -9,6 +9,16 @@ declare -ag KV_STORAGE_OPTIONS=(
   "RedisKVStorage"
 )
 
+# The configuration storage is its own category and admits four backends.
+# RedisKVStorage is deliberately absent, so a Redis KV selection has to name
+# one of these explicitly -- see docs/design/ConfigurationStorage.md.
+declare -ag CONFIG_STORAGE_OPTIONS=(
+  "JsonKVStorage"
+  "PGKVStorage"
+  "MongoKVStorage"
+  "OpenSearchKVStorage"
+)
+
 declare -ag GRAPH_STORAGE_OPTIONS=(
   "NetworkXStorage"
   "PGTableGraphStorage"

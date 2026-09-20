@@ -147,20 +147,30 @@ def on_starting(server):
 
     warn_about_workspace_overrides()
 
-    # Claim the working directory HERE, in the master, before the fork. The
-    # claim is held by the open file description, which forked workers inherit
-    # -- so they find it already taken by their own tree and count themselves
-    # in, instead of opening a second descriptor and refusing each other. Taken
-    # after the fork it would admit exactly one worker.
+    # Claim the configuration directory HERE, in the master, before the fork.
+    # The claim is held by the open file description, which forked workers
+    # inherit -- so they find it already taken by their own tree and count
+    # themselves in, instead of opening a second descriptor and refusing each
+    # other. Taken after the fork it would admit exactly one worker.
+    #
+    # It must be the SAME directory the workers ask for, resolved the same way,
+    # or the master's claim is on a path nobody inherits and every worker after
+    # the first is refused at startup. Hence the shared resolver rather than a
+    # second reading of the environment here.
+    from lightrag.config_store import configuration_selection_from_env
     from lightrag.kg.working_dir_lock import (
         acquire_working_dir_lock,
         uses_working_dir,
     )
 
-    # The configuration storage is bound to the KV backend, so that is the one
-    # that decides whether this directory is claimed at all.
-    if uses_working_dir(get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage")):
-        acquire_working_dir_lock(resolved_working_dir())
+    config_storage, config_dir = configuration_selection_from_env(
+        kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+        working_dir=resolved_working_dir(),
+    )
+    # The CONFIGURATION storage decides whether a directory is claimed at all;
+    # a server-backed one claims nothing.
+    if uses_working_dir(config_storage):
+        acquire_working_dir_lock(config_dir)
 
     print("Gunicorn initialization complete, forking workers...\n")
 
@@ -179,13 +189,25 @@ def on_exit(server):
 
     # The master took the directory claim before forking, so the master gives
     # it back -- a worker's own finalize only decrements its inherited count.
+    # Resolved through the same helper ``on_starting`` used, so the release
+    # cannot name a different directory than the claim.
+    from lightrag.config_store import configuration_selection_from_env
     from lightrag.kg.working_dir_lock import (
         release_working_dir_lock,
         uses_working_dir,
     )
 
-    if uses_working_dir(get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage")):
-        release_working_dir_lock(resolved_working_dir())
+    try:
+        config_storage, config_dir = configuration_selection_from_env(
+            kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+            working_dir=resolved_working_dir(),
+        )
+    except ValueError:
+        # An unusable selection refused in ``on_starting``, so nothing was
+        # claimed and there is nothing to give back.
+        config_storage, config_dir = "", ""
+    if config_storage and uses_working_dir(config_storage):
+        release_working_dir_lock(config_dir)
 
     print("Gunicorn shutdown complete")
     print("=" * 80)
