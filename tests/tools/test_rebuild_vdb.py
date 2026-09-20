@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag.exceptions import VectorSpaceMismatchError
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
-from lightrag.namespace import CONFIG_WORKSPACE, NameSpace
+from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace
 from lightrag.tools.rebuild_vdb import (
     check_vdb_consistency,
     rebuild_chunks_vdb,
@@ -1096,14 +1096,14 @@ def _tool_with_storages(entities, relationships, chunks):
     tool = rebuild_vdb.RebuildTool()
     tool.graph = SimpleNamespace(initialize=AsyncMock())
     tool.text_chunks = SimpleNamespace(initialize=AsyncMock())
-    tool.configuration_storage = _FakeConfigStorage(workspace=CONFIG_WORKSPACE)
+    tool.configuration_storage = _FakeConfigStorage(workspace=CONFIG_CONTAINER_TAG)
     tool.entities_vdb = entities
     tool.relationships_vdb = relationships
     tool.chunks_vdb = chunks
     for vdb in (entities, relationships, chunks):
         if not hasattr(vdb, "initialize"):
             vdb.initialize = AsyncMock()
-    tool.storage_names = {"graph": "g", "vector": "v", "kv": "k"}
+    tool.storage_names = {"graph": "g", "vector": "v", "kv": "k", "config": "c"}
     tool.embedding_func = SimpleNamespace(
         model_name="new-model", embedding_dim=1024, max_token_size=None
     )

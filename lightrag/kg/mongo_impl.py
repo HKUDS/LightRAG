@@ -39,10 +39,10 @@ from ..utils import (
     _cooperative_yield,
     merge_source_ids,
     validate_interpreted_attribute_names,
-    is_reserved_workspace,
     validate_workspace,
     validate_workspace_override,
 )
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -423,15 +423,21 @@ class MongoKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        if self.namespace == NameSpace.KV_STORE_CONFIG:
+            # The configuration container is named in CODE: one fixed
+            # collection, no workspace prefix to choose and no
+            # MONGODB_WORKSPACE remap. Two deployments sharing one database
+            # share this collection and are kept apart by the row KEY, whose
+            # scope is the business workspace the row is about.
+            # See docs/design/ConfigurationStorage.md.
+            self.workspace = CONFIG_CONTAINER_TAG
+            self.final_namespace = f"{CONFIG_CONTAINER_TAG}_{self.namespace}"
+            self._collection_name = self.final_namespace
+            return
         validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
-        if is_reserved_workspace(self.workspace):
-            # A reserved workspace is fixed, not configured: the configuration
-            # container must stay where every process finds it, whatever the
-            # environment remaps tenant data to.
-            mongodb_workspace = None
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = validate_workspace_override(

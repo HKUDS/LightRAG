@@ -635,6 +635,11 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
+    # The configuration storage is its own category. Both are passed through
+    # UNRESOLVED: empty means "follow kv_storage" / "the default config_dir",
+    # and LightRAG resolves them once so there is a single answer to report.
+    args.config_storage = get_env_value("LIGHTRAG_CONFIG_STORAGE", "")
+    args.config_dir = get_env_value("LIGHTRAG_CONFIG_DIR", "")
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(
