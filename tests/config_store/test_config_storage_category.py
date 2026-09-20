@@ -361,3 +361,45 @@ class TestTheClaimFollowsTheConfigurationStorage:
         finally:
             await rag.finalize_storages()
         assert holds_working_dir_lock(str(elsewhere)) is False
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_named_like_the_server_scope_gets_its_own_baselines(tmp_path):
+    """Retiring the reserved family made ``_lightrag_server`` a legal tenant
+    name -- and the server SCOPE was a string with that spelling, so keying a
+    baseline for that tenant raised and the startup died on a legal name.
+
+    The scope is an object now, so a name cannot be one. The rows still
+    render under the same prefix, which is harmless: a suffix belongs to
+    exactly one scope, so no tenant key can be a server-global key.
+    """
+    from lightrag.namespace import SERVER_CONFIG_SCOPE, SERVER_SCOPE
+
+    tenant = SERVER_CONFIG_SCOPE
+
+    for target in cs.EMBEDDING_TARGETS:
+        assert cs.embedding_baseline_key(tenant, target) == (
+            f"{tenant}/embedding/{target}"
+        )
+
+    # The sentinel is refused for a per-workspace suffix; the NAME is not.
+    with pytest.raises(ValueError, match="not a workspace"):
+        cs.config_key(SERVER_SCOPE, cs.embedding_baseline_suffix("entities"))
+
+    rag = LightRAG(
+        working_dir=str(tmp_path),
+        workspace=tenant,
+        llm_model_func=_mock_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=_DIM, max_token_size=4096, func=_embed, model_name="bge-m3"
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizer()),
+    )
+    await rag.initialize_storages()
+    try:
+        recorded = await cs.read_embedding_baselines(
+            rag.configuration_storage, workspace=tenant
+        )
+        assert {t for t, row in recorded.items() if row} == set(cs.EMBEDDING_TARGETS)
+    finally:
+        await rag.finalize_storages()

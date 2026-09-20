@@ -62,7 +62,9 @@ from lightrag.kg.vector_space import declared_dimension, declared_model_name
 from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
     SERVER_CONFIG_SCOPE,
+    SERVER_SCOPE,
     NameSpace,
+    _ServerScope,
     default_config_dir,
 )
 from lightrag.utils import logger
@@ -162,24 +164,37 @@ def registry_spec(suffix: str) -> ConfigKeySpec:
         ) from None
 
 
-def config_key(scope_workspace: str, suffix: str) -> str:
-    """Build a key. ``scope_workspace`` is a workspace name or
-    ``SERVER_CONFIG_SCOPE``; the suffix must be registered."""
+def scope_prefix(scope_workspace: str | _ServerScope) -> str:
+    """What a scope is written as in a key and in the row's ``workspace``
+    field: a workspace's own name, or the server prefix for ``SERVER_SCOPE``."""
+    return SERVER_CONFIG_SCOPE if scope_workspace is SERVER_SCOPE else scope_workspace
+
+
+def config_key(scope_workspace: str | _ServerScope, suffix: str) -> str:
+    """Build a key. ``scope_workspace`` is a workspace NAME or ``SERVER_SCOPE``;
+    the suffix must be registered.
+
+    A workspace named like the server prefix is an ordinary tenant and gets
+    its own per-workspace keys: the scope is the sentinel object, never the
+    string, so no name can reach a server-global key (see ``_ServerScope``).
+    """
     spec = registry_spec(suffix)
-    if spec.scope is ConfigScope.SERVER and scope_workspace != SERVER_CONFIG_SCOPE:
+    is_server = scope_workspace is SERVER_SCOPE
+    if spec.scope is ConfigScope.SERVER and not is_server:
         raise ValueError(
             f"{suffix!r} is a server-global key and must be filed under "
-            f"{SERVER_CONFIG_SCOPE!r}, not {scope_workspace!r}"
+            f"SERVER_SCOPE, not {scope_workspace!r}"
         )
-    if spec.scope is ConfigScope.WORKSPACE and scope_workspace == SERVER_CONFIG_SCOPE:
+    if spec.scope is ConfigScope.WORKSPACE and is_server:
         raise ValueError(
-            f"{suffix!r} is a per-workspace key; {SERVER_CONFIG_SCOPE!r} is not a workspace"
+            f"{suffix!r} is a per-workspace key; SERVER_SCOPE is not a workspace"
         )
-    if KEY_SEPARATOR in scope_workspace:
+    prefix = scope_prefix(scope_workspace)
+    if KEY_SEPARATOR in prefix:
         raise ValueError(
-            f"a workspace name cannot contain {KEY_SEPARATOR!r}: {scope_workspace!r}"
+            f"a workspace name cannot contain {KEY_SEPARATOR!r}: {prefix!r}"
         )
-    return f"{scope_workspace}{KEY_SEPARATOR}{suffix}"
+    return f"{prefix}{KEY_SEPARATOR}{suffix}"
 
 
 def embedding_baseline_key(workspace: str, target: str) -> str:
@@ -189,7 +204,7 @@ def embedding_baseline_key(workspace: str, target: str) -> str:
 
 def make_config_row(
     *,
-    scope_workspace: str,
+    scope_workspace: str | _ServerScope,
     suffix: str,
     value: dict[str, Any],
     updated_by: str,
@@ -209,7 +224,7 @@ def make_config_row(
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     return {
         "schema_version": spec.schema_version,
-        "workspace": scope_workspace,
+        "workspace": scope_prefix(scope_workspace),
         "updated_at": stamp,
         "updated_by": updated_by,
         "value": dict(value),

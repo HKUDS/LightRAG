@@ -22,7 +22,11 @@ from lightrag.exceptions import (
     StorageCapabilityError,
 )
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG, SERVER_CONFIG_SCOPE
+from lightrag.namespace import (
+    CONFIG_CONTAINER_TAG,
+    SERVER_CONFIG_SCOPE,
+    SERVER_SCOPE,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -146,8 +150,23 @@ class TestKeysAndRows:
             )
 
     def test_a_per_workspace_key_is_not_filed_under_the_server_scope(self):
-        with pytest.raises(ValueError):
-            cs.config_key(SERVER_CONFIG_SCOPE, cs.embedding_baseline_suffix("entities"))
+        with pytest.raises(ValueError, match="not a workspace"):
+            cs.config_key(SERVER_SCOPE, cs.embedding_baseline_suffix("entities"))
+
+    def test_the_server_scope_is_an_object_so_no_workspace_name_can_be_it(self):
+        """``_lightrag_server`` is a legal tenant name now that the reserved
+        family is gone, so a string sentinel would refuse that tenant its own
+        baseline. The scope is an object; the string is only how it renders."""
+        assert cs.config_key(
+            SERVER_CONFIG_SCOPE, cs.embedding_baseline_suffix("entities")
+        ) == f"{SERVER_CONFIG_SCOPE}/embedding/entities"
+        row = cs.make_config_row(
+            scope_workspace=SERVER_CONFIG_SCOPE,
+            suffix=cs.embedding_baseline_suffix("entities"),
+            value={"model": "m", "dim": 8, "origin": "probe"},
+            updated_by="t",
+        )
+        assert row["workspace"] == SERVER_CONFIG_SCOPE
 
     def test_the_registry_declares_the_five_fields_for_every_key(self):
         assert set(cs.CONFIG_KEY_REGISTRY) == {

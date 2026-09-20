@@ -283,7 +283,19 @@ file it exists to protect. Five properties matter:
   through the same `configuration_selection_from_env()` the workers reach via
   `LightRAG`, and `lightrag-rebuild-vdb` uses it too. A master reading the
   environment its own way is the same failure as taking the claim late —
-  nothing inheritable, and every worker after the first refused at startup.
+  nothing inheritable, and every worker after the first refused at startup. The directory it feeds that resolver is the
+  **parsed** one: `--working-dir` overrides `WORKING_DIR` for the workers and
+  is never written back to the environment, so `run_with_gunicorn` hands the
+  parsed value to the config module and `resolved_working_dir()` prefers it.
+- **It also reaches back to the slice-1 path, for now.** Slice 1 kept the
+  configuration file in `<working_dir>/_lightrag_config/` but locked
+  `<working_dir>`. Unrelated files mean no mutual exclusion, so a server from
+  each version could start on one deployment and both rewrite that one file —
+  the failure this section opens with, arriving through an upgrade. While
+  `config_dir` is the default, the claim takes the old path too
+  (`_legacy_lock_path`); a `LIGHTRAG_CONFIG_DIR` is new here and has no older
+  holder to refuse. Transitional: remove it once no deployment can still be
+  running a build that predates the move.
 - **It fails open.** Locking is unreliable on NFSv3 without lockd and on
   SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
   deployments. A backend that cannot lock gets a warning and proceeds; refusing
@@ -365,6 +377,15 @@ kind of shortcut that gets reintroduced by a later patch.
 fixed, so two deployments sharing one server backend share it; what keeps their
 rows disjoint is this scope. See *What discriminates two deployments on one
 server*.
+
+**`_lightrag_server` is a spelling, not an identity.** With the reserved name
+family retired, a tenant may legally be called `_lightrag_server` — so a server
+scope that WAS that string would be a scope a workspace name can reach, and the
+tenant asking for its own baseline would be refused a legal name at startup.
+The scope is `SERVER_SCOPE`, an object; `config_key()` compares identity and
+renders the prefix afterwards. Two rows can therefore render under the same
+prefix, which is harmless: a suffix is registered with exactly one scope, so a
+tenant key and a server-global key can never be the same key.
 
 ## Row shape
 

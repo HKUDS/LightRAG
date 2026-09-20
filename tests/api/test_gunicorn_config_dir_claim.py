@@ -184,3 +184,46 @@ def test_on_exit_releases_what_on_starting_claimed(
     capsys.readouterr()
 
     assert holds_working_dir_lock(str(elsewhere)) is False
+
+
+def test_the_master_follows_the_parsed_working_dir_over_the_environment(
+    gunicorn_config, monkeypatch, tmp_path, capsys
+):
+    """``--working-dir`` is parsed into ``global_args`` and handed to every
+    worker's ``LightRAG``; nothing writes it back to ``WORKING_DIR``.
+
+    A master that read the environment claimed the directory the workers do
+    NOT use: its claim was on a path nobody inherits, the first worker took
+    the real one for itself, and every worker after it was refused. Same
+    defect as the one this file opens with, reached through the CLI instead
+    of through the config category.
+    """
+    from lightrag.config_store import default_config_dir
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    parsed = tmp_path / "from-cli"
+    parsed.mkdir()
+    environment = tmp_path / "from-env"
+    environment.mkdir()
+
+    _env(monkeypatch, environment)
+    monkeypatch.setattr(gunicorn_config, "working_dir", str(parsed), raising=False)
+
+    assert gunicorn_config.resolved_working_dir() == str(parsed)
+
+    gunicorn_config.on_starting(object())
+    capsys.readouterr()
+
+    assert holds_working_dir_lock(default_config_dir(str(parsed))) is True
+    assert holds_working_dir_lock(default_config_dir(str(environment))) is False
+
+
+def test_the_environment_is_the_fallback_when_nothing_parsed_a_directory(
+    gunicorn_config, monkeypatch, tmp_path
+):
+    """A master started some other way than ``lightrag-gunicorn`` sets no
+    module attribute, and the environment is all there is."""
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(gunicorn_config, "working_dir", None, raising=False)
+
+    assert gunicorn_config.resolved_working_dir() == str(tmp_path)

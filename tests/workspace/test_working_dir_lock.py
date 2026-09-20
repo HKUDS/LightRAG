@@ -15,10 +15,12 @@ inherit rather than fight it.
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
 from lightrag.exceptions import WorkingDirectoryInUseError
+from lightrag.namespace import CONFIG_CONTAINER_TAG
 from lightrag.kg import working_dir_lock as wdl
 from lightrag.kg.working_dir_lock import (
     LOCK_FILENAME,
@@ -162,3 +164,73 @@ def test_a_filesystem_that_cannot_lock_warns_and_proceeds(tmp_path, monkeypatch)
 def test_releasing_without_a_claim_is_a_no_op(tmp_path):
     release_working_dir_lock(str(tmp_path))
     assert holds_working_dir_lock(str(tmp_path)) is False
+
+
+def test_a_slice_one_holder_of_the_parent_still_refuses_this_one(tmp_path):
+    """The lock MOVED in this slice: slice 1 kept the configuration file in
+    ``<working_dir>/_lightrag_config/`` but locked ``<working_dir>``.
+
+    Two unrelated files mean no mutual exclusion, so a server from each
+    version could run on one deployment and both rewrite that one file from a
+    private copy -- losing baselines, which read back as absent, which is what
+    lets a start bootstrap. The new claim reaches back to the old path for as
+    long as a build that predates the move can still be running.
+    """
+    config_dir = tmp_path / CONFIG_CONTAINER_TAG
+    config_dir.mkdir()
+
+    # A slice-1 process holds the parent, and knows nothing about config_dir.
+    acquire_working_dir_lock(str(tmp_path))
+
+    assert _foreign_attempt(config_dir) == "REFUSED"
+
+
+def test_the_legacy_claim_goes_back_with_the_real_one(tmp_path):
+    config_dir = tmp_path / CONFIG_CONTAINER_TAG
+    config_dir.mkdir()
+
+    acquire_working_dir_lock(str(config_dir))
+    assert _foreign_attempt(tmp_path) == "REFUSED"
+
+    release_working_dir_lock(str(config_dir))
+    assert _foreign_attempt(tmp_path) == "ADMITTED"
+    assert _foreign_attempt(config_dir) == "ADMITTED"
+
+
+def test_a_custom_configuration_directory_reaches_back_to_nothing(tmp_path):
+    """Only the DEFAULT directory has a slice-1 spelling. One named by
+    ``LIGHTRAG_CONFIG_DIR`` is new here, so there is no older holder to
+    refuse and the parent is not claimed on its behalf."""
+    elsewhere = tmp_path / "conf"
+    elsewhere.mkdir()
+
+    acquire_working_dir_lock(str(elsewhere))
+
+    assert _foreign_attempt(tmp_path) == "ADMITTED"
+
+
+def test_a_refusal_over_the_legacy_path_leaves_nothing_held(tmp_path):
+    """The real path was free and got locked before the old one was tried.
+    A refusal has to give that back, or this directory stays claimed by a
+    process that did not start."""
+    config_dir = tmp_path / CONFIG_CONTAINER_TAG
+    config_dir.mkdir()
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - runs in the child
+        os.close(read_fd)
+        wdl._claims.clear()
+        acquire_working_dir_lock(str(tmp_path))  # the slice-1 holder
+        os.write(write_fd, b"HELD")
+        time.sleep(5)  # hold it while the parent has its turn
+        os._exit(0)
+    os.close(write_fd)
+    assert os.read(read_fd, 8).decode() == "HELD"
+    os.close(read_fd)
+
+    with pytest.raises(WorkingDirectoryInUseError):
+        acquire_working_dir_lock(str(config_dir))
+
+    assert holds_working_dir_lock(str(config_dir)) is False
+    assert wdl._claims == {}
