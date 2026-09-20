@@ -10,6 +10,7 @@ docs/design/ConfigurationStorage.md.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 from uuid import uuid4
@@ -41,6 +42,24 @@ class _FailingStorage:
 
     async def drop(self):
         return {"status": "error", "message": "backend refused the drop"}
+
+
+class _CancelledStorage:
+    """A drop whose task is cancelled while the others run.
+
+    ``asyncio.gather(..., return_exceptions=True)`` hands such a child back as
+    a ``CancelledError`` OBJECT in the results list, not as a raise -- and that
+    inherits from ``BaseException``, not ``Exception``.
+    """
+
+    namespace = "cancelled"
+
+    async def drop(self):
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        await asyncio.sleep(0)
+        raise AssertionError("the drop was expected to be cancelled")
 
 
 class _FakeConfigKV:
@@ -78,6 +97,7 @@ class _ClearRag:
         workspace: str,
         *,
         failing_chunks: bool = False,
+        cancelled_chunks: bool = False,
         failing_cache: bool = False,
     ):
         self.workspace = workspace
@@ -85,8 +105,8 @@ class _ClearRag:
         self.cache_cleared = 0
         storage = _NoopStorage()
         storage.workspace = workspace
-        if failing_chunks:
-            chunks = _FailingStorage()
+        if failing_chunks or cancelled_chunks:
+            chunks = _FailingStorage() if failing_chunks else _CancelledStorage()
             chunks.workspace = workspace
             self.text_chunks = chunks
         else:
@@ -205,3 +225,30 @@ async def test_a_successful_cache_drop_still_lets_the_records_go(tmp_path):
     assert rag.cache_cleared == 1
     assert rag.configuration_storage.rows == {}
     assert len(rag.configuration_storage.deleted) == 1
+
+
+async def test_a_cancelled_drop_keeps_all_three_records(tmp_path):
+    """A cancelled drop is a drop that did not happen.
+
+    ``gather(return_exceptions=True)`` returns the cancellation as a value,
+    and ``CancelledError`` is a ``BaseException``. Classified on
+    ``Exception`` alone it reads as a SUCCESS, the endpoint concludes every
+    drop landed, and the three records go -- leaving the one residue the
+    ordering exists to prevent: configuration gone, data still there, and the
+    next startup free to bootstrap a baseline over it.
+    """
+    workspace = f"clear-config-cancelled-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+    rag = _ClearRag(workspace, cancelled_chunks=True)
+
+    response = await _clear_endpoint(rag, tmp_path)(clear_llm_cache=True)
+
+    assert response.status == "partial_success"
+    config = rag.configuration_storage
+    assert config.deleted == [], (
+        "a cancelled drop was counted as a success and the records went with it"
+    )
+    assert len(config.rows) == 3
+    assert rag.cache_cleared == 0, (
+        "a cancelled drop was counted as a success and the LLM cache went too"
+    )

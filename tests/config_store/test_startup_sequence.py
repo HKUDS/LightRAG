@@ -699,6 +699,13 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
     A cancel delivered there sits ABOVE everything the teardown does, so a
     guard that starts after it protects nothing: no storage is finalized and
     the directory stays claimed by a process on its way out.
+
+    Giving the directory back is only half of it. Handing it back while the
+    storages are still UP is the one combination the claim exists to prevent:
+    the next server opens the same files while this process still holds the
+    shared-namespace holds and whatever it has not flushed. So the cancel is
+    absorbed, the teardown runs to the end, and only then is the cancellation
+    re-raised.
     """
     from lightrag.kg.working_dir_lock import holds_working_dir_lock
 
@@ -707,6 +714,8 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
     assert holds_working_dir_lock(str(tmp_path)) is True
 
     _Spy(rag, "_shutdown_model_queues", raise_with=asyncio.CancelledError())
+    config_finalize = _Spy(rag.configuration_storage, "finalize")
+    chunks_finalize = _Spy(rag.text_chunks, "finalize")
 
     with pytest.raises(asyncio.CancelledError):
         await rag.finalize_storages()
@@ -714,6 +723,97 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
     assert holds_working_dir_lock(str(tmp_path)) is False, (
         "a cancel in the pre-teardown awaits kept the working-directory claim"
     )
+    assert chunks_finalize.calls == 1, (
+        "a cancel in the pre-teardown awaits skipped the business storages"
+    )
+    assert config_finalize.calls == 1, (
+        "a cancel in the pre-teardown awaits skipped the configuration storage"
+    )
+    assert rag._storages_status is StoragesStatus.FINALIZED, (
+        "the teardown reported itself unfinished after absorbing the cancel"
+    )
+
+
+async def test_an_external_cancel_mid_teardown_finishes_before_unlocking(tmp_path):
+    """A cancel delivered WHILE a storage is being released.
+
+    ``asyncio.shield`` keeps a release alive, but awaiting a shielded task
+    returns the moment the awaiting task is cancelled -- so a teardown that
+    moves on has only DETACHED the release. Detached, it races the loop's own
+    shutdown, and the directory claim can go back while a flush is still in
+    flight. The release must be complete before the claim is.
+    """
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+
+    started = asyncio.Event()
+    finished: list[str] = []
+    original = rag.text_chunks.finalize
+
+    async def slow_finalize(*args, **kwargs):
+        started.set()
+        await asyncio.sleep(0.05)
+        await original(*args, **kwargs)
+        finished.append("text_chunks")
+
+    rag.text_chunks.finalize = slow_finalize
+    config_finalize = _Spy(rag.configuration_storage, "finalize")
+
+    task = asyncio.ensure_future(rag.finalize_storages())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished == ["text_chunks"], (
+        "the working-directory claim went back while a release was still running"
+    )
+    assert config_finalize.calls == 1, (
+        "the cancel abandoned the storages after the one it interrupted"
+    )
+    assert holds_working_dir_lock(str(tmp_path)) is False
+
+
+async def test_a_cancelled_rollback_release_is_drained_before_unlocking(tmp_path):
+    """The same rule on the startup rollback.
+
+    The rollback shields each release and carries on to the next one. What it
+    may not do is report itself done -- and give the directory back -- while
+    one of those shielded releases is still running.
+    """
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    boom = RuntimeError("entities_vdb refused to come up")
+    _Spy(rag.entities_vdb, "initialize", raise_with=boom)
+
+    finished: list[str] = []
+    original = rag.full_docs.finalize
+    rolling_back = asyncio.current_task()
+    assert rolling_back is not None
+
+    async def detached_finalize(*args, **kwargs):
+        # Cancels the task AWAITING the shield, not this release: the shield
+        # is what keeps the release alive, and the drain is what finishes it.
+        # Without the drain, the rollback moves straight on to the directory
+        # claim while this coroutine is still suspended below.
+        rolling_back.cancel()
+        await asyncio.sleep(0.05)
+        await original(*args, **kwargs)
+        finished.append("full_docs")
+
+    rag.full_docs.finalize = detached_finalize
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await rag.initialize_storages()
+
+    assert excinfo.value is boom
+    assert finished == ["full_docs"], (
+        "the rollback gave the directory back with a release still detached"
+    )
+    assert holds_working_dir_lock(str(tmp_path)) is False
 
 
 async def test_a_gate_refusal_leaves_everything_releasable(tmp_path):

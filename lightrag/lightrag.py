@@ -578,6 +578,43 @@ class _PurgeRecoveryProof:
         ) >= _KG_PURGE_PHASE_ORDER.index(phase)
 
 
+async def _drain_detached_releases(
+    detached: list[asyncio.Future], *, workspace: str
+) -> None:
+    """Wait for shielded ``finalize()`` calls a cancellation left running.
+
+    ``asyncio.shield`` keeps the child alive when the awaiting task is
+    cancelled, but the ``await`` on it returns immediately -- so a caller that
+    moves on has DETACHED the release, not completed it. The detached task
+    then races the event loop's own shutdown, and what it was called to hand
+    back is what gets lost: a flush still in flight, or a shared-namespace
+    hold whose next claimer is refused by a process that has already exited.
+
+    So every detached release is awaited here before the caller reports its
+    teardown done and gives back the working-directory claim. Cancellations
+    delivered while draining are absorbed for the same reason they were
+    absorbed above, and a release that fails is logged, never raised: this
+    runs from a ``finally`` that must not replace the exception on its way
+    out.
+    """
+    for release in detached:
+        while not release.done():
+            try:
+                await asyncio.shield(release)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if release.cancelled():
+            continue
+        error = release.exception()
+        if error is not None:
+            logger.error(
+                f"[{workspace}] A storage release that a cancellation detached "
+                f"failed after it was drained: {error}"
+            )
+
+
 def _run_sync(
     coro_factory: Callable[[], Coroutine[Any, Any, _SyncResultT]],
     *,
@@ -2132,6 +2169,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         See *Cleanup before INITIALIZED exists* in
         docs/design/ConfigurationStorage.md.
         """
+        detached: list[asyncio.Future] = []
         try:
             for name, storage in reversed(started):
                 if storage is None:
@@ -2147,10 +2185,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 try:
                     await asyncio.shield(release)
                 except asyncio.CancelledError:
+                    # The shield kept the release ALIVE; it did not finish it.
+                    # Awaiting a shielded task returns the moment the awaiting
+                    # task is cancelled, so moving on here would only DETACH
+                    # the release -- and a detached release racing the loop's
+                    # own shutdown loses exactly what it was called to hand
+                    # back (a flush still in flight, a shared-namespace hold).
+                    # So it is remembered and drained below, before the
+                    # directory claim goes back.
+                    detached.append(release)
                     logger.error(
                         f"[{self.workspace}] Cancelled while releasing {name} "
                         f"during startup rollback; the release itself was "
-                        f"shielded and continues"
+                        f"shielded and is awaited before the rollback returns"
                     )
                 except Exception as teardown_error:
                     logger.error(
@@ -2158,10 +2205,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         f"out of a failed startup: {teardown_error}"
                     )
         finally:
+            await _drain_detached_releases(detached, workspace=self.workspace)
             # The directory claim is taken before step 1, so it outlives every
             # storage in the rollback list and is given back last -- in a
             # ``finally`` because it is the one release nothing else can
-            # perform, and leaving it held would refuse the retry.
+            # perform, and leaving it held would refuse the retry. It goes
+            # back only after the drain above, so no other server takes the
+            # directory while a release of ours is still running.
             if self._holds_working_dir:
                 self._holds_working_dir = False
                 release_working_dir_lock(self.working_dir)
@@ -2580,101 +2630,146 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         written while the cache publishes in full. See *LLM extraction cache
         reachability* in ``docs/design/PurgeRecoveryContract.md``, whose
         residue table records what this still cannot close.
+
+        Cancellation-safe by construction: the queue drains stay
+        interruptible, but the storage teardown runs as a shielded task that
+        is drained to completion, and the working-directory claim is handed
+        back only after it. A cancellation is re-raised once that is done.
         """
         self._shutdown_parser_executor()
+        cancelled: asyncio.CancelledError | None = None
         # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
         try:
-            await self._cancel_admin_release_drives()
-            # These wrappers own long-lived worker and health-check tasks. Drain
-            # them while the response cache and other storages are still usable;
-            # otherwise closing an asyncio.run()/manual loop after finalize leaves
-            # their queue.get() coroutines pending on the destroyed event loop.
-            await self._shutdown_model_queues()
-            if self._storages_status == StoragesStatus.INITIALIZED:
-                await self._commit_cache_pair_before_finalize()
-                storages = [
-                    ("full_docs", self.full_docs),
-                    ("text_chunks", self.text_chunks),
-                    ("full_entities", self.full_entities),
-                    ("full_relations", self.full_relations),
-                    ("entity_chunks", self.entity_chunks),
-                    ("relation_chunks", self.relation_chunks),
-                    ("entities_vdb", self.entities_vdb),
-                    ("relationships_vdb", self.relationships_vdb),
-                    ("chunks_vdb", self.chunks_vdb),
-                    ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
-                    ("llm_response_cache", self.llm_response_cache),
-                    ("doc_status", self.doc_status),
-                    # Initialized first, released last: a business storage's
-                    # final flush may still want it open. Exactly once -- the
-                    # early-failure rollback only runs while the status is
-                    # CREATED, which never reaches this branch.
-                    ("configuration_storage", self.configuration_storage),
-                ]
-
-                # Finalize each storage individually to ensure one failure doesn't prevent others from closing
-                successful_finalizations = []
-                failed_finalizations = []
-
-                for storage_name, storage in storages:
-                    if storage:
-                        try:
-                            if storage is self.llm_response_cache:
-                                await self._quarantine_cache_before_finalize(
-                                    chunks_finalize_failed=(
-                                        "text_chunks" in failed_finalizations
-                                    )
-                                )
-                            # Shielded, and the cancellation absorbed, for the
-                            # reason the startup rollback shields its releases:
-                            # a cancel delivered here would abandon every
-                            # storage after this one, and an unfinalized
-                            # file-backed storage keeps its hold on the shared
-                            # namespace -- so the next server is refused by a
-                            # process that was already shutting down.
-                            release = asyncio.ensure_future(storage.finalize())
-                            try:
-                                await asyncio.shield(release)
-                            except asyncio.CancelledError:
-                                logger.error(
-                                    f"Cancelled while finalizing {storage_name}; "
-                                    f"the release itself was shielded and continues"
-                                )
-                                failed_finalizations.append(storage_name)
-                                continue
-                            successful_finalizations.append(storage_name)
-                            logger.debug(f"Successfully finalized {storage_name}")
-                        except Exception as e:
-                            error_msg = f"Failed to finalize {storage_name}: {e}"
-                            logger.error(error_msg)
-                            failed_finalizations.append(storage_name)
-
-                # Log summary of finalization results
-                if successful_finalizations:
-                    logger.info(
-                        f"Successfully finalized {len(successful_finalizations)} storages"
-                    )
-
-                if failed_finalizations:
-                    logger.error(
-                        f"Failed to finalize {len(failed_finalizations)} storages: {', '.join(failed_finalizations)}"
-                    )
-                else:
-                    logger.debug("All storages finalized successfully")
-
-                self._storages_status = StoragesStatus.FINALIZED
+            try:
+                await self._cancel_admin_release_drives()
+                # These wrappers own long-lived worker and health-check tasks. Drain
+                # them while the response cache and other storages are still usable;
+                # otherwise closing an asyncio.run()/manual loop after finalize leaves
+                # their queue.get() coroutines pending on the destroyed event loop.
+                await self._shutdown_model_queues()
+            except asyncio.CancelledError as exc:
+                # Absorbed HERE and re-raised at the end, rather than left to
+                # propagate: draining an LLM queue waits on whatever is in
+                # flight, so a shutdown timeout escalating to a cancel lands
+                # in these two awaits more often than anywhere else -- and
+                # letting it out would skip the storage teardown below while
+                # the ``finally`` still hands back the directory claim. That
+                # is the one combination the claim exists to prevent: another
+                # server takes the directory while this process still holds
+                # shared-namespace holds and unflushed writes. The drains stay
+                # interruptible (a wedged queue must not wedge the shutdown);
+                # what follows them does not.
+                cancelled = exc
+                logger.error(
+                    f"[{self.workspace}] Cancelled while draining the queues at "
+                    f"shutdown; the storages are released before the "
+                    f"cancellation is re-raised"
+                )
+            # Shielded and drained to completion, for the same reason: once
+            # the storage teardown has begun, no cancellation may leave it
+            # half-done with the directory claim already handed back. Every
+            # await below -- the cache-pair commit, each storage's finalize --
+            # would otherwise be its own exit.
+            teardown = asyncio.ensure_future(self._finalize_storages_impl())
+            while not teardown.done():
+                try:
+                    await asyncio.shield(teardown)
+                except asyncio.CancelledError as exc:
+                    if cancelled is None:
+                        cancelled = exc
         finally:
-            # Outside the status guard AND above the first teardown
-            # await: draining the model queues can legitimately block,
-            # so a cancel delivered there would otherwise skip every
-            # release below it -- leaving the directory claimed by a
-            # process on its way out, which nothing can undo (a retry
-            # returns early on the status).
+            # Last, and in a ``finally``: the claim outlives every storage,
+            # and it is the one release nothing else can perform -- a retry
+            # returns early on the status, so a claim left held by a process
+            # on its way out refuses the next server for nothing. Reached
+            # only once the teardown task above has completed, so the
+            # directory is never handed to another server while this one
+            # still holds shared-namespace holds or unflushed writes.
             if self._holds_working_dir:
                 self._holds_working_dir = False
                 release_working_dir_lock(self.working_dir)
+        if cancelled is not None:
+            raise cancelled
+
+    async def _finalize_storages_impl(self) -> None:
+        """Release every storage, in order, absorbing each failure.
+
+        Runs as its own task that ``finalize_storages`` shields and drains, so
+        a cancellation delivered to the caller cannot stop it part-way. Sets
+        ``FINALIZED`` only once every release has been attempted.
+        """
+        if self._storages_status == StoragesStatus.INITIALIZED:
+            await self._commit_cache_pair_before_finalize()
+            storages = [
+                ("full_docs", self.full_docs),
+                ("text_chunks", self.text_chunks),
+                ("full_entities", self.full_entities),
+                ("full_relations", self.full_relations),
+                ("entity_chunks", self.entity_chunks),
+                ("relation_chunks", self.relation_chunks),
+                ("entities_vdb", self.entities_vdb),
+                ("relationships_vdb", self.relationships_vdb),
+                ("chunks_vdb", self.chunks_vdb),
+                ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
+                ("llm_response_cache", self.llm_response_cache),
+                ("doc_status", self.doc_status),
+                # Initialized first, released last: a business storage's
+                # final flush may still want it open. Exactly once -- the
+                # early-failure rollback only runs while the status is
+                # CREATED, which never reaches this branch.
+                ("configuration_storage", self.configuration_storage),
+            ]
+
+            # Finalize each storage individually to ensure one failure doesn't prevent others from closing
+            successful_finalizations = []
+            failed_finalizations = []
+
+            for storage_name, storage in storages:
+                if storage:
+                    try:
+                        if storage is self.llm_response_cache:
+                            await self._quarantine_cache_before_finalize(
+                                chunks_finalize_failed=(
+                                    "text_chunks" in failed_finalizations
+                                )
+                            )
+                        await storage.finalize()
+                        successful_finalizations.append(storage_name)
+                        logger.debug(f"Successfully finalized {storage_name}")
+                    except asyncio.CancelledError:
+                        # Reachable only from inside the release itself --
+                        # this task is shielded, so the caller's cancel does
+                        # not arrive here. Absorbed either way: a cancel must
+                        # not abandon every storage after this one, and an
+                        # unfinalized file-backed storage keeps its hold on
+                        # the shared namespace, so the next server would be
+                        # refused by a process that was already shutting down.
+                        logger.error(
+                            f"Cancelled while finalizing {storage_name}; "
+                            f"the remaining storages are still released"
+                        )
+                        failed_finalizations.append(storage_name)
+                    except Exception as e:
+                        error_msg = f"Failed to finalize {storage_name}: {e}"
+                        logger.error(error_msg)
+                        failed_finalizations.append(storage_name)
+
+            # Log summary of finalization results
+            if successful_finalizations:
+                logger.info(
+                    f"Successfully finalized {len(successful_finalizations)} storages"
+                )
+
+            if failed_finalizations:
+                logger.error(
+                    f"Failed to finalize {len(failed_finalizations)} storages: {', '.join(failed_finalizations)}"
+                )
+            else:
+                logger.debug("All storages finalized successfully")
+
+            self._storages_status = StoragesStatus.FINALIZED
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()

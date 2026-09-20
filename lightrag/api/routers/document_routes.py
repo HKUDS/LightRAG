@@ -6092,8 +6092,19 @@ def create_document_routes(
 
             for i, result in enumerate(drop_results):
                 storage_name = storages[i].__class__.__name__
-                if isinstance(result, Exception):
-                    error_msg = f"Error dropping {storage_name}: {str(result)}"
+                # ``BaseException``, not ``Exception``: ``return_exceptions``
+                # hands a CANCELLED child back as a ``CancelledError`` OBJECT
+                # in this list, and that inherits from ``BaseException``. Read
+                # as anything but a failure it would count a drop that never
+                # ran as a success -- and the configuration records below are
+                # deleted only when every drop succeeded, so the next startup
+                # would bootstrap a baseline over whatever the cancelled drop
+                # left behind. A cancelled drop is a drop that did not happen.
+                if isinstance(result, BaseException):
+                    # ``repr``, not ``str``: a ``CancelledError`` stringifies
+                    # to the empty string, which would log a drop failure with
+                    # no cause at all.
+                    error_msg = f"Error dropping {storage_name}: {result!r}"
                     errors.append(error_msg)
                     error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
