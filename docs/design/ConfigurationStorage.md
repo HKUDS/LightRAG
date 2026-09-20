@@ -94,11 +94,21 @@ configuration has to be readable *before* any vector storage initializes
 (step 3 of the startup sequence).
 
 A selection outside the four is refused at construction, **by name**, rather
-than failing later on a missing method. `make env-storage` offers
-`RedisKVStorage` for business KV, so the wizard asks for a configuration
-backend whenever the KV selection is not one of the four, and collects that
-backend's database requirements — otherwise it would write, and validate, an
-`.env` that cannot start.
+than failing later on a missing method. The setup wizard follows the same
+rule at both ends: `make env-storage` asks for a configuration backend
+whenever the KV selection is not one of the four and collects that backend's
+database requirements, and `make env-validate` refuses an `.env` whose
+configuration backend — explicit or inherited — is outside them, because
+validation that approves a file the server then refuses is worse than no
+validation.
+
+An **explicit** `LIGHTRAG_CONFIG_STORAGE` already in an `.env` is never
+dropped by a later wizard run, even when the KV backend would be admitted.
+Dropping it moves the container to another backend without migrating the rows,
+and they then read as absent — the same silent bootstrap the `config_dir`
+default exists to prevent, and it would additionally let the wizard's marker
+cleanup tear down the managed service that backend runs on. Moving
+configuration is an explicit edit plus a rebuild, never a side effect.
 
 **Unset, the selection follows `kv_storage`.** That is the only default that
 does not orphan an existing deployment's records: they are already in that
