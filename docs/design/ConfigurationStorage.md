@@ -102,12 +102,18 @@ configuration backend — explicit or inherited — is outside them, because
 validation that approves a file the server then refuses is worse than no
 validation.
 
-The wizard never moves the container as a side effect, by either route. An
-**implicit** selection follows `kv_storage`, which is safe only while that
-backend does not move — so when a rerun CHANGES an admitted KV backend the
-wizard asks, defaulting to the one the records are already in and writing the
-answer down. An **explicit** `LIGHTRAG_CONFIG_STORAGE` already in an `.env` is
-never dropped by a later run, even when the KV backend would be admitted.
+The wizard never moves the container as a side effect, by any route. There are
+three of them — dropping an explicit selection, following a `kv_storage` that
+changed, and falling through to the generic prompt when the new KV backend is
+not admitted — so `select_config_storage` computes **where the records are**
+once, from the previous `.env` (its explicit selection, or the KV backend an
+implicit one followed), and every branch reads that one answer. An explicit
+`LIGHTRAG_CONFIG_STORAGE` is never dropped by a later run; a changed KV backend
+prompts rather than taking the container with it; and every prompt defaults to
+the backend the baselines are in, because a KV backend leaving the category
+does not take them with it either. A first run, an unchanged backend, and a
+previous backend the category never admitted all leave the key unset — nothing
+admitted holds records, so there is nothing to strand.
 Dropping it moves the container to another backend without migrating the rows,
 and they then read as absent — the same silent bootstrap the `config_dir`
 default exists to prevent, and it would additionally let the wizard's marker

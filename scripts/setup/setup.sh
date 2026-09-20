@@ -1187,27 +1187,42 @@ config_storage_is_admitted() {
 }
 
 select_config_storage() {
-  # The configuration storage is its own category. Unset it FOLLOWS the KV
-  # backend, which is where an existing deployment's records already are, so
-  # an admitted KV selection writes nothing and the .env stays minimal.
+  # The configuration storage is its own category, and this function exists to
+  # answer ONE question: is the container about to move, and does the operator
+  # know? Moving it without migrating the baseline rows leaves them where
+  # nothing reads them -- they then read as ABSENT, which is the one answer
+  # that lets a start bootstrap over vectors nobody probed.
   #
-  # A KV backend the category does NOT admit (RedisKVStorage) is refused at
-  # startup by name, so the wizard has to ask rather than emit an .env that
-  # cannot start. See docs/design/ConfigurationStorage.md.
+  # There are three ways a rerun can move it -- dropping an explicit
+  # selection, following a KV backend that changed, and falling through to the
+  # generic prompt when the new KV backend is not admitted -- so the answer is
+  # computed ONCE, as ``records_in``, and every branch below reads it rather
+  # than re-deriving it. See docs/design/ConfigurationStorage.md.
   #
   # The answer comes back in ``SELECTED_CONFIG_STORAGE`` rather than on stdout
   # so the caller does not need a command substitution: this function also
   # writes ``ENV_VALUES``, and a subshell would throw that away.
   local kv_storage="$1"
   local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local previous_config="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+  local records_in="" default_choice="JsonKVStorage"
+
+  # Where the baselines are NOW, as far as the previous .env can say: the
+  # explicit selection it carried, or the KV backend an implicit one followed.
+  # Empty on a first run, and empty when the previous backend is one the
+  # category never admitted -- in both cases no admitted container holds
+  # records, so there is nothing to strand.
+  if [[ -n "$previous_config" ]]; then
+    config_storage_is_admitted "$previous_config" && records_in="$previous_config"
+  elif [[ -n "$previous_kv" ]]; then
+    config_storage_is_admitted "$previous_kv" && records_in="$previous_kv"
+  fi
+  [[ -n "$records_in" ]] && default_choice="$records_in"
 
   # An EXPLICIT selection already in .env is kept, even when the KV backend
-  # would be admitted. Dropping it moves the configuration container to
-  # another backend WITHOUT migrating the rows, and the records then read as
-  # absent -- the one answer that lets a start bootstrap over vectors nobody
-  # probed. It would also let the later marker cleanup tear down the managed
-  # service that backend runs on. Changing it is an explicit edit, not a side
-  # effect of re-running this wizard.
+  # would be admitted: changing it is an explicit edit, not a side effect of
+  # re-running this wizard.
   if [[ -n "$existing" ]] && config_storage_is_admitted "$existing"; then
     SELECTED_CONFIG_STORAGE="$existing"
     if [[ "$existing" != "$kv_storage" ]]; then
@@ -1219,32 +1234,29 @@ select_config_storage() {
   fi
 
   if [[ -z "$existing" ]] && config_storage_is_admitted "$kv_storage"; then
-    # Nothing was set, so the selection FOLLOWS the KV backend -- and that is
-    # only safe while the KV backend does not MOVE. Changing it (PostgreSQL to
-    # MongoDB, say) would relocate the configuration container along with it
-    # and leave the baseline rows in the old one, where nothing reads them:
-    # the same silent bootstrap an explicit selection is protected from, via
-    # the implicit one. So when the previous KV backend was admitted and
-    # differs, ask, defaulting to leaving the records where they are.
-    local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
-    if [[ -n "$previous_kv" && "$previous_kv" != "$kv_storage" ]] &&
-      config_storage_is_admitted "$previous_kv"; then
+    if [[ -n "$records_in" && "$records_in" != "$kv_storage" ]]; then
+      # Nothing is set, so the selection FOLLOWS the KV backend -- and that is
+      # only safe while the KV backend does not MOVE.
       log_warn "The configuration storage follows LIGHTRAG_KV_STORAGE, which" \
-        "is changing from $previous_kv to $kv_storage. The embedding" \
-        "baselines are in $previous_kv and are NOT migrated; leaving them" \
-        "there keeps them readable, and moving them makes the next start" \
-        "re-establish them from evidence."
+        "is changing to $kv_storage. The embedding baselines are in" \
+        "$records_in and are NOT migrated; leaving them there keeps them" \
+        "readable, and moving them makes the next start re-establish them" \
+        "from evidence."
       SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
-        "$previous_kv" "${CONFIG_STORAGE_OPTIONS[@]}")"
+        "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
       ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
       return 0
     fi
-    # First run, or the KV backend is unchanged: leave it unset so the
-    # selection follows it, which is where the records already are.
+    # First run, or the KV backend already holds the records: leave it unset
+    # so the selection follows it, which is where they already are.
     SELECTED_CONFIG_STORAGE="$kv_storage"
     return 0
   fi
 
+  # The new KV backend cannot hold configuration, or the explicit selection
+  # is not one the category admits. Either way the operator has to name one --
+  # and the default is still the backend the records are in, because a KV
+  # backend that is leaving the category does not take them with it.
   if [[ -n "$existing" ]]; then
     log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
       "storage backend; choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
@@ -1252,8 +1264,12 @@ select_config_storage() {
     log_warn "$kv_storage cannot hold the configuration storage (the embedding" \
       "baselines); choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
   fi
+  if [[ -n "$records_in" ]]; then
+    log_warn "The baselines are in $records_in and are NOT migrated; keeping" \
+      "that backend leaves them readable."
+  fi
   SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
-    "JsonKVStorage" "${CONFIG_STORAGE_OPTIONS[@]}")"
+    "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
   ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
 }
 

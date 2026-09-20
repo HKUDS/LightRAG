@@ -2321,6 +2321,81 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         assert values["CHOSEN"] == "PGKVStorage"
         assert values["WRITTEN"] == "<unset>"
 
+    def _select_with_previous(
+        self,
+        new_kv: str,
+        previous_kv: str = "",
+        previous_config: str = "",
+        existing_config: str = "",
+        stdin: str = "\n",
+    ) -> dict[str, str]:
+        lines = [f'ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]="{previous_kv}"']
+        if previous_config:
+            lines.append(
+                f'ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="{previous_config}"'
+            )
+        if existing_config:
+            lines.append(f'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="{existing_config}"')
+        setup = "\n".join(lines)
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+{setup}
+select_config_storage "{new_kv}"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    def test_switching_to_an_unadmitted_kv_still_defaults_to_the_records(self):
+        """The third door onto the same rule. Changing PostgreSQL KV to Redis
+        skips the follows-the-KV-backend branch entirely -- Redis is not
+        admitted -- and lands on the generic prompt. Defaulting that prompt to
+        JsonKVStorage strands the baselines in PostgreSQL, which is the
+        relocation this whole function exists to prevent."""
+        values = self._select_with_previous("RedisKVStorage", previous_kv="PGKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "PGKVStorage"
+
+    def test_an_unadmitted_explicit_value_defaults_to_the_records(self):
+        """Same prompt, reached by the other route: the explicit selection is
+        not one of the four, so it is re-asked -- and the default is still
+        where an implicitly-followed container would be."""
+        values = self._select_with_previous(
+            "PGKVStorage",
+            previous_kv="MongoKVStorage",
+            existing_config="RedisKVStorage",
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+
+    def test_a_previous_explicit_selection_outranks_the_previous_kv_backend(self):
+        """``records_in`` prefers what the old .env SAID over what it would
+        have followed: with PostgreSQL KV and an explicit MongoDB
+        configuration, the rows are in MongoDB."""
+        values = self._select_with_previous(
+            "RedisKVStorage",
+            previous_kv="PGKVStorage",
+            previous_config="MongoKVStorage",
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+
+    def test_no_previous_deployment_still_defaults_to_json(self):
+        """Nothing admitted held records, so there is nothing to keep."""
+        values = self._select_with_previous("RedisKVStorage")
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    def test_a_previous_redis_kv_backend_held_no_records(self):
+        values = self._select_with_previous(
+            "RedisKVStorage", previous_kv="RedisKVStorage"
+        )
+        assert values["CHOSEN"] == "JsonKVStorage"
+
     def test_the_offered_backends_are_exactly_the_admitted_four(self):
         from lightrag.kg import STORAGE_IMPLEMENTATIONS
 
