@@ -157,9 +157,10 @@ class TestKeysAndRows:
         """``_lightrag_server`` is a legal tenant name now that the reserved
         family is gone, so a string sentinel would refuse that tenant its own
         baseline. The scope is an object; the string is only how it renders."""
-        assert cs.config_key(
-            SERVER_CONFIG_SCOPE, cs.embedding_baseline_suffix("entities")
-        ) == f"{SERVER_CONFIG_SCOPE}/embedding/entities"
+        assert (
+            cs.config_key(SERVER_CONFIG_SCOPE, cs.embedding_baseline_suffix("entities"))
+            == f"{SERVER_CONFIG_SCOPE}/embedding/entities"
+        )
         row = cs.make_config_row(
             scope_workspace=SERVER_CONFIG_SCOPE,
             suffix=cs.embedding_baseline_suffix("entities"),
