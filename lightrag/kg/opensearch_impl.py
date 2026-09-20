@@ -56,10 +56,10 @@ from ..utils import (
     _cooperative_yield,
     merge_source_ids,
     parse_cache_key,
-    is_reserved_workspace,
     validate_workspace,
     validate_workspace_override,
 )
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -860,12 +860,14 @@ class ClientManager:
 def _resolve_workspace(workspace: str, namespace: str):
     """Resolve effective workspace from env or parameter.
 
-    A reserved workspace is fixed, not configured: the configuration container
-    must stay where every process finds it, whatever the environment remaps
-    tenant data to, so ``OPENSEARCH_WORKSPACE`` is ignored for it.
+    The configuration container is named in CODE, not by a workspace: its
+    index is ``CONFIG_CONTAINER_TAG`` + the ``config`` namespace, and
+    ``OPENSEARCH_WORKSPACE`` is not consulted for it. Nothing else is ever
+    opened on that namespace, which is what makes it a safe marker. See
+    docs/design/ConfigurationStorage.md.
     """
-    if is_reserved_workspace(workspace):
-        return workspace
+    if namespace == NameSpace.KV_STORE_CONFIG:
+        return CONFIG_CONTAINER_TAG
     opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
     if opensearch_workspace and opensearch_workspace.strip():
         effective = validate_workspace_override(
