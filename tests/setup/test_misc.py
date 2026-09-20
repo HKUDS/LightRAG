@@ -2232,6 +2232,47 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
             "produces an .env refused at startup"
         )
 
+    def test_an_explicit_selection_survives_a_rerun(self):
+        """The failure this whole PR exists to prevent, one layer up: an
+        operator with PostgreSQL business KV and MongoDB configuration reruns
+        the wizard, keeps PostgreSQL, and the explicit selection is silently
+        dropped -- moving the container to PostgreSQL without migrating the
+        baseline rows, which then read as absent."""
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="MongoKVStorage"
+select_config_storage "PGKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin="",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+        assert values["WRITTEN"] == "MongoKVStorage"
+
+    def test_an_explicit_selection_outside_the_four_is_re_asked(self):
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="RedisKVStorage"
+select_config_storage "PGKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin="\n",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
+
     def test_the_offered_backends_are_exactly_the_admitted_four(self):
         from lightrag.kg import STORAGE_IMPLEMENTATIONS
 
@@ -2245,3 +2286,85 @@ printf '%s\\n' "${{CONFIG_STORAGE_OPTIONS[@]}}"
         assert sorted(offered) == sorted(
             STORAGE_IMPLEMENTATIONS["CONFIG_STORAGE"]["implementations"]
         )
+
+
+class TestValidationRefusesAConfigurationBackendStartupWouldReject:
+    """``make env-validate`` must not approve an .env the server refuses.
+
+    The configuration storage is its own category and a selection outside it
+    is refused BY NAME at startup. Validation that passes such a file is
+    worse than no validation: it tells the operator the environment is good
+    and the server then refuses it. Both shapes are covered -- an explicit
+    value outside the four, and an unset one inheriting a KV backend outside
+    the four. See docs/design/ConfigurationStorage.md.
+    """
+
+    BASE = [
+        "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+        "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+        "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        "REDIS_URI=redis://localhost:6379",
+    ]
+
+    def _validate(self, tmp_path: Path, lines: list[str]):
+        """Drive the real ``validate_env_file`` over a throwaway .env.
+
+        The signal is the process's exit status plus ``Validation passed.`` --
+        the function ends the shell on failure, so a marker printed after the
+        call proves nothing.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_text_lines(repo / ".env", lines)
+        return run_bash_process(
+            f"""
+set -uo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{repo}"
+validate_env_file
+"""
+        )
+
+    def test_an_inherited_redis_backend_fails_validation(self, tmp_path):
+        result = self._validate(
+            tmp_path, ["LIGHTRAG_KV_STORAGE=RedisKVStorage", *self.BASE]
+        )
+        assert result.returncode != 0
+        assert "Validation passed." not in result.stdout
+        assert "LIGHTRAG_CONFIG_STORAGE" in result.stderr
+        assert "RedisKVStorage" in result.stderr
+
+    def test_an_explicit_unadmitted_backend_fails_validation(self, tmp_path):
+        result = self._validate(
+            tmp_path,
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_CONFIG_STORAGE=NanoVectorDBStorage",
+                *self.BASE,
+            ],
+        )
+        assert result.returncode != 0
+        assert "Validation passed." not in result.stdout
+        assert "NanoVectorDBStorage" in result.stderr
+
+    def test_an_admitted_pairing_still_passes(self, tmp_path):
+        """The guard must not start refusing environments that are fine."""
+        result = self._validate(
+            tmp_path,
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_CONFIG_STORAGE=MongoKVStorage",
+                "MONGO_URI=mongodb://localhost:27017",
+                "MONGO_DATABASE=lightrag",
+                *self.BASE,
+            ],
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Validation passed." in result.stdout
+
+    def test_following_an_admitted_kv_backend_still_passes(self, tmp_path):
+        result = self._validate(
+            tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", *self.BASE]
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Validation passed." in result.stdout

@@ -1199,18 +1199,41 @@ select_config_storage() {
   # so the caller does not need a command substitution: this function also
   # writes ``ENV_VALUES``, and a subshell would throw that away.
   local kv_storage="$1"
+  local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
 
-  if config_storage_is_admitted "$kv_storage"; then
-    unset "ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]"
+  # An EXPLICIT selection already in .env is kept, even when the KV backend
+  # would be admitted. Dropping it moves the configuration container to
+  # another backend WITHOUT migrating the rows, and the records then read as
+  # absent -- the one answer that lets a start bootstrap over vectors nobody
+  # probed. It would also let the later marker cleanup tear down the managed
+  # service that backend runs on. Changing it is an explicit edit, not a side
+  # effect of re-running this wizard.
+  if [[ -n "$existing" ]] && config_storage_is_admitted "$existing"; then
+    SELECTED_CONFIG_STORAGE="$existing"
+    if [[ "$existing" != "$kv_storage" ]]; then
+      log_info "Keeping LIGHTRAG_CONFIG_STORAGE=$existing (configuration is" \
+        "its own category; edit .env to move it, and rebuild afterwards --" \
+        "the baseline rows are not migrated)"
+    fi
+    return 0
+  fi
+
+  if [[ -z "$existing" ]] && config_storage_is_admitted "$kv_storage"; then
+    # Nothing was set and the KV backend is admitted: leave it unset so the
+    # selection FOLLOWS it, which is where the records already are.
     SELECTED_CONFIG_STORAGE="$kv_storage"
     return 0
   fi
 
-  log_warn "$kv_storage cannot hold the configuration storage (the embedding" \
-    "baselines); choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  if [[ -n "$existing" ]]; then
+    log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
+      "storage backend; choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  else
+    log_warn "$kv_storage cannot hold the configuration storage (the embedding" \
+      "baselines); choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  fi
   SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
-    "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-JsonKVStorage}" \
-    "${CONFIG_STORAGE_OPTIONS[@]}")"
+    "JsonKVStorage" "${CONFIG_STORAGE_OPTIONS[@]}")"
   ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
 }
 
@@ -3046,6 +3069,23 @@ validate_env_file() {
   if [[ -z "$kv" || -z "$vector" || -z "$graph" || -z "$doc_status" ]]; then
     format_error "Storage selections are missing in .env" "Set LIGHTRAG_*_STORAGE variables."
     return 1
+  fi
+
+  # The configuration storage is its own category, and the server refuses a
+  # selection outside it BY NAME at startup. Validation that passes such a
+  # file is worse than no validation: it tells the operator the environment
+  # is good and the server then refuses it.
+  if ! config_storage_is_admitted "$config_storage"; then
+    if [[ -n "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+      format_error \
+        "LIGHTRAG_CONFIG_STORAGE=$config_storage is not a configuration storage backend" \
+        "Set it to one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+    else
+      format_error \
+        "LIGHTRAG_CONFIG_STORAGE is unset, so it follows LIGHTRAG_KV_STORAGE=$kv, which cannot hold the configuration storage" \
+        "Set LIGHTRAG_CONFIG_STORAGE to one of: ${CONFIG_STORAGE_OPTIONS[*]} (the records already in $kv are not migrated)"
+    fi
+    errors=1
   fi
 
   if ! validate_mongo_vector_storage_config \
