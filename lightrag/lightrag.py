@@ -762,29 +762,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
 
-    config_storage: str = field(
-        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_STORAGE", "")
-    )
-    """Storage backend for the configuration storage -- its own category.
-
-    Admits ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
-    ``OpenSearchKVStorage``; anything else is refused by name at construction.
-    Left empty it FOLLOWS ``kv_storage``, which is where an existing
-    deployment's records already are. See
-    docs/design/ConfigurationStorage.md.
-    """
-
-    config_dir: str = field(
-        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_DIR", "")
-    )
-    """Directory a file-backed configuration storage keeps its file in.
-
-    Empty resolves to ``<working_dir>/_lightrag_config``, which is where that
-    file already is. Ignored by the server backends, which name their
-    container in code instead. This is also the directory the single-server
-    claim is taken on when the configuration storage is file-backed.
-    """
-
     # Workspace
     # ---
 
@@ -1466,6 +1443,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     claim attached to the program that makes it true.
 
     See ``docs/design/VectorSpaceProvenance.md``.
+    """
+
+    # Declared last for the same reason as every field above: new fields go at
+    # the END of this dataclass, never mid-class. Their logical home is beside
+    # ``kv_storage``, and putting them there shifted 55 of the constructor's
+    # positional parameters -- caught by
+    # ``tests/test_dataclass_positional_compatibility.py``.
+    config_storage: str = field(
+        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_STORAGE", "")
+    )
+    """Storage backend for the configuration storage -- its own category.
+
+    Admits ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
+    ``OpenSearchKVStorage``; anything else is refused by name at construction.
+    Left empty it FOLLOWS ``kv_storage``, which is where an existing
+    deployment's records already are. See
+    docs/design/ConfigurationStorage.md.
+    """
+
+    config_dir: str = field(
+        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_DIR", "")
+    )
+    """Directory a file-backed configuration storage keeps its file in.
+
+    Empty resolves to ``<working_dir>/_lightrag_config``, which is where that
+    file already is. Ignored by the server backends, which name their
+    container in code instead. This is also the directory the single-server
+    claim is taken on when the configuration storage is file-backed.
     """
 
     def _mark_addon_params_dirty(self) -> None:
