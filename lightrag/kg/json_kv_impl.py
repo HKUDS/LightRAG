@@ -8,11 +8,6 @@ from lightrag.base import (
     BaseKVStorage,
 )
 from lightrag.file_atomic import reap_orphan_tmp_files
-from lightrag.namespace import (
-    CONFIG_CONTAINER_TAG,
-    NameSpace,
-    default_config_dir,
-)
 from lightrag.utils import (
     _cooperative_yield,
     load_json,
@@ -74,33 +69,16 @@ class JsonKVStorage(BaseKVStorage):
     supports_strict_point_reads: ClassVar[bool] = True
 
     def __post_init__(self):
+        # Reject path traversal before using workspace in a file path
+        validate_workspace(self.workspace)
         working_dir = self.global_config["working_dir"]
-        if self.namespace == NameSpace.KV_STORE_CONFIG:
-            # The configuration container is a DIRECTORY named in code, never
-            # ``working_dir/<workspace>``: the configuration storage is its
-            # own category and no workspace addresses it. ``config_dir``
-            # defaults to ``working_dir/_lightrag_config``, which is exactly
-            # where the reserved workspace used to put this file -- point it
-            # anywhere else and an existing deployment's baselines read as
-            # ABSENT, which is what lets a start bootstrap.
-            # See docs/design/ConfigurationStorage.md.
-            workspace_dir = (
-                self.global_config.get("config_dir") or ""
-            ).strip() or default_config_dir(working_dir)
-            # Not a workspace: only the shared-namespace bookkeeping below
-            # (the init claim, the namespace lock, the orphan sweep) reads it,
-            # and it must be the same constant in every process.
-            self.workspace = CONFIG_CONTAINER_TAG
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
         else:
-            # Reject path traversal before using workspace in a file path
-            validate_workspace(self.workspace)
-            if self.workspace:
-                # Include workspace in the file path for data isolation
-                workspace_dir = os.path.join(working_dir, self.workspace)
-            else:
-                # Default behavior when workspace is empty
-                workspace_dir = working_dir
-                self.workspace = ""
+            # Default behavior when workspace is empty
+            workspace_dir = working_dir
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")

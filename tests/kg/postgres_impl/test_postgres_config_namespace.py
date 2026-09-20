@@ -23,7 +23,8 @@ from lightrag.kg.postgres_impl import (
     _config_row_payload,
     namespace_to_table_name,
 )
-from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace
+from lightrag.namespace import CONFIG_WORKSPACE, NameSpace
+from lightrag.utils import _grant_reserved_workspace
 
 pytestmark = pytest.mark.offline
 
@@ -105,15 +106,16 @@ def test_row_shaping_round_trips_the_payload():
 def _storage(query_side_effect):
     storage = PGKVStorage.__new__(PGKVStorage)
     storage.namespace = "config"
-    storage.workspace = CONFIG_CONTAINER_TAG
+    storage.workspace = CONFIG_WORKSPACE
     storage.global_config = {}
     db = MagicMock()
     db.query = AsyncMock(side_effect=query_side_effect)
     db.workspace = None
     storage.db = db
-    # ``__post_init__`` pins the container itself: the ``config`` namespace
-    # fixes the partition constant whatever workspace the caller named.
-    storage.__post_init__()
+    # The reserved container workspace only passes validation under the
+    # factory's grant; this helper stands in for the factory.
+    with _grant_reserved_workspace(CONFIG_WORKSPACE):
+        storage.__post_init__()
     return storage, db
 
 
@@ -152,7 +154,7 @@ async def test_upsert_builds_the_config_tuple():
     sql, rows = captured[0]
     assert sql == SQL_TEMPLATES["upsert_config"]
     workspace, key, payload = rows[0]
-    assert (workspace, key) == (CONFIG_CONTAINER_TAG, "ws/embedding/chunks")
+    assert (workspace, key) == (CONFIG_WORKSPACE, "ws/embedding/chunks")
     decoded = json.loads(payload)
     assert decoded["value"] == {"model": "m", "dim": 8, "origin": "rebuild"}
     assert "create_time" not in decoded and "_id" not in decoded
@@ -174,7 +176,7 @@ async def test_iter_rows_pages_the_ids_and_reads_each_page_through_get_by_ids():
     async def query(sql, params=None, multirows=False, **kwargs):
         if sql.startswith("SELECT id FROM LIGHTRAG_CONFIG"):
             workspace, last_id, limit = params
-            assert workspace == CONFIG_CONTAINER_TAG
+            assert workspace == CONFIG_WORKSPACE
             page_calls.append((last_id, limit))
             remaining = [k for k in sorted(table) if last_id is None or k > last_id]
             return [{"id": k} for k in remaining[:limit]]

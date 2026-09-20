@@ -24,7 +24,7 @@ import pytest
 from lightrag.config_store import create_configuration_storage
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.namespace import CONFIG_WORKSPACE
 from lightrag.utils import EmbeddingFunc
 
 pytestmark = pytest.mark.offline
@@ -53,7 +53,7 @@ def _config_storage(working_dir):
 
 
 def _config_file(working_dir):
-    return working_dir / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    return working_dir / CONFIG_WORKSPACE / "kv_store_config.json"
 
 
 async def test_two_tenants_in_one_process_read_and_write_their_own_rows(tmp_path):
