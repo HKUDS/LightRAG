@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Iterable
 
 
@@ -21,22 +22,42 @@ class NameSpace:
 
     DOC_STATUS = "doc_status"
 
-    # The server's own configuration, and every workspace's. Held in ONE fixed,
-    # reserved workspace rather than following the knowledge base it
-    # configures -- see docs/design/ConfigurationStorage.md.
+    # The server's own configuration, and every workspace's. Held in ONE fixed
+    # container of its own rather than following the knowledge base it
+    # configures. This namespace is ALSO the marker every backend keys its
+    # fixed-container rule on: nothing else is ever opened on it.
+    # See docs/design/ConfigurationStorage.md.
     KV_STORE_CONFIG = "config"
 
 
-# The workspace-name family LightRAG keeps for itself. ``validate_workspace``
-# refuses every name starting with it unless the configuration-storage factory
-# is the one binding it, so a tenant can never collide with an internal
-# container. Reserved from the first release that has the container: a
-# reservation made later cannot reclaim a name already in use.
-RESERVED_WORKSPACE_PREFIX = "_lightrag"
+# The fixed tag every backend names the configuration container after.
+#
+# **It is not a workspace.** Nothing validates it as one, no ``*_WORKSPACE``
+# variable may remap it, and no caller may choose it: the configuration
+# storage is its own category, and its container is named in code. The four
+# backends compose it into their own container name -- PostgreSQL writes it
+# into ``LIGHTRAG_CONFIG``'s partition column, MongoDB and OpenSearch prefix
+# their collection / index with it, and the JSON backend ignores it entirely
+# in favour of ``config_dir``.
+#
+# The spelling is slice 1's reserved workspace name on purpose: keeping it
+# means an existing deployment's rows are read where they already are rather
+# than reading as ABSENT, which is the one answer that lets a start bootstrap.
+# See docs/design/ConfigurationStorage.md.
+CONFIG_CONTAINER_TAG = "_lightrag_config"
 
-# The one reserved workspace that exists today: the container every
-# configuration row lives in, whatever workspace that row is ABOUT.
-CONFIG_WORKSPACE = "_lightrag_config"
+
+def default_config_dir(working_dir: str) -> str:
+    """Where a file-backed configuration storage keeps its file by default.
+
+    ``<working_dir>/_lightrag_config`` -- **exactly** where slice 1's reserved
+    workspace put it. The default is chosen for that and nothing else: point
+    it anywhere new and every baseline of an existing deployment reads as
+    ABSENT on the first start after an upgrade, which is the one answer that
+    lets a start bootstrap. Nothing in any log would say so.
+    """
+    return os.path.join(working_dir, CONFIG_CONTAINER_TAG)
+
 
 # The scope a server-global configuration key is filed under, so its rows sort
 # beside the per-workspace ones without being mistaken for a tenant's.

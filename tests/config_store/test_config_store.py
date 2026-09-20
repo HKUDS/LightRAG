@@ -22,7 +22,7 @@ from lightrag.exceptions import (
     StorageCapabilityError,
 )
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_WORKSPACE, SERVER_CONFIG_SCOPE
+from lightrag.namespace import CONFIG_CONTAINER_TAG, SERVER_CONFIG_SCOPE
 
 pytestmark = pytest.mark.offline
 
@@ -730,8 +730,9 @@ class TestEnumeration:
 
 
 class TestFactory:
-    def test_the_factory_binds_the_reserved_workspace(self, tmp_path):
-        """Scenario 12, the accepting half."""
+    def test_the_factory_opens_the_default_config_dir(self, tmp_path):
+        """Scenario 12. The default resolves to slice 1's location, which is
+        what keeps an upgrade from reading every baseline as absent."""
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
         storage = cs.create_configuration_storage(
@@ -739,11 +740,47 @@ class TestFactory:
             global_config={"working_dir": str(tmp_path)},
             embedding_func=_embedding(),
         )
-        assert storage.workspace == CONFIG_WORKSPACE
+        assert storage.workspace == CONFIG_CONTAINER_TAG
         assert storage.namespace == "config"
-        assert (tmp_path / CONFIG_WORKSPACE).is_dir()
+        assert (tmp_path / CONFIG_CONTAINER_TAG).is_dir()
+        assert storage._file_name == str(
+            tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+        )
 
-    def test_a_backend_that_remaps_the_workspace_is_refused(self):
+    def test_config_dir_moves_the_file_and_nothing_else(self, tmp_path):
+        from lightrag.kg.json_kv_impl import JsonKVStorage
+
+        elsewhere = tmp_path / "conf"
+        storage = cs.create_configuration_storage(
+            JsonKVStorage,
+            global_config={
+                "working_dir": str(tmp_path),
+                "config_dir": str(elsewhere),
+            },
+            embedding_func=_embedding(),
+        )
+        assert storage._file_name == str(elsewhere / "kv_store_config.json")
+        assert not (tmp_path / CONFIG_CONTAINER_TAG).exists()
+
+    def test_the_workspace_argument_does_not_reach_the_container(self, tmp_path):
+        """The container is named in CODE. A caller naming a workspace lands
+        nowhere near it -- which is what retires the reserved-name family."""
+        from lightrag.kg.json_kv_impl import JsonKVStorage
+
+        tenant = JsonKVStorage(
+            namespace="full_docs",
+            workspace=CONFIG_CONTAINER_TAG,
+            global_config={"working_dir": str(tmp_path)},
+            embedding_func=_embedding(),
+        )
+        config = cs.create_configuration_storage(
+            JsonKVStorage,
+            global_config={"working_dir": str(tmp_path)},
+            embedding_func=_embedding(),
+        )
+        assert tenant._file_name != config._file_name
+
+    def test_a_backend_that_remaps_the_container_is_refused(self):
         class Remapping:
             def __init__(self, **kwargs):
                 self.workspace = "prod"
@@ -753,18 +790,34 @@ class TestFactory:
                 Remapping, global_config={}, embedding_func=_embedding()
             )
 
-    def test_the_grant_does_not_outlive_the_construction(self, tmp_path):
-        from lightrag.kg.json_kv_impl import JsonKVStorage
 
-        cs.create_configuration_storage(
-            JsonKVStorage,
-            global_config={"working_dir": str(tmp_path)},
-            embedding_func=_embedding(),
-        )
-        with pytest.raises(ValueError, match="reserved"):
-            JsonKVStorage(
-                namespace="config",
-                workspace=CONFIG_WORKSPACE,
-                global_config={"working_dir": str(tmp_path)},
-                embedding_func=_embedding(),
+class TestCategory:
+    """The configuration storage is its own selection, and the list is closed."""
+
+    def test_unset_follows_the_business_kv_backend(self):
+        for name in ("JsonKVStorage", "PGKVStorage", "MongoKVStorage"):
+            assert cs.resolve_configuration_storage("", kv_storage=name) == name
+
+    def test_a_vector_storage_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="NanoVectorDBStorage"):
+            cs.resolve_configuration_storage(
+                "NanoVectorDBStorage", kv_storage="JsonKVStorage"
             )
+
+    def test_redis_is_refused_by_name_when_it_would_be_inherited(self):
+        with pytest.raises(ValueError, match="RedisKVStorage"):
+            cs.resolve_configuration_storage("", kv_storage="RedisKVStorage")
+
+    def test_an_explicit_selection_is_independent_of_the_business_backend(self):
+        assert (
+            cs.resolve_configuration_storage("PGKVStorage", kv_storage="JsonKVStorage")
+            == "PGKVStorage"
+        )
+
+    def test_no_vector_backend_is_admitted(self):
+        from lightrag.kg import STORAGE_IMPLEMENTATIONS
+
+        admitted = set(cs.configuration_storage_implementations())
+        vectors = set(STORAGE_IMPLEMENTATIONS["VECTOR_STORAGE"]["implementations"])
+        assert admitted & vectors == set()
+        assert "RedisKVStorage" not in admitted

@@ -464,8 +464,10 @@ The key is `workspace:namespace`. It says nothing about which FILE backs it,
 and for the JSON pair the container's identity *is* the file — so two
 `working_dir` roots in one process tree meet on one in-memory copy. Ordinary
 namespaces hide this behind the workspace (two tenants under different names
-never collide), but the `config` namespace is pinned to one reserved workspace,
-so every instance lands on the same key however its tenants are named.
+never collide), but the `config` namespace is pinned to one fixed container
+tag, so every instance lands on the same key however its tenants are named —
+and its file is chosen by `config_dir`, not by the workspace, so two roots in
+one process tree really do meet there.
 
 What that cost, before the claim asserted it: the second instance skipped the
 load, read its own file's rows as **absent**, and then published the union into

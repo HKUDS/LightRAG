@@ -77,6 +77,10 @@ async def test_a_startup_refused_at_step_1_holds_no_pool_reference(tmp_path, red
             ),
             kv_storage="RedisKVStorage",
             doc_status_storage="RedisDocStatusStorage",
+            # The configuration storage is its own category and does not admit
+            # Redis; a Redis business deployment names one of the four. The
+            # subject here is the Redis CONSTRUCTORS, which is unaffected.
+            config_storage="JsonKVStorage",
             tokenizer=Tokenizer("stub", _StubTokenizer()),
         )
         assert redis_url not in RedisConnectionManager._pool_refs, (
