@@ -4,7 +4,41 @@ Pytest configuration for LightRAG tests.
 This file provides command-line options and fixtures for test configuration.
 """
 
+import logging
+
 import pytest
+
+
+@pytest.fixture
+def lightrag_log_records():
+    """Records the ``lightrag`` logger emits during the test.
+
+    ``lightrag.utils`` sets ``propagate = False`` on that logger, so caplog's
+    root handler never sees its records. Tests have worked around that by
+    turning propagation back on for the duration of the assertion, but pytest
+    9.1 attaches its own capture handler to non-propagating loggers: with
+    propagation re-enabled a record then reaches caplog twice — once through
+    the handler pytest attached to ``lightrag``, once through root — and any
+    assertion on an exact count fails. The lockfile pins pytest 9.0.3, so CI
+    does not see it; a contributor who installs pytest from PyPI does.
+
+    Collecting from a handler on the logger itself is independent of both
+    behaviours, so the assertion pins how many records the code emitted rather
+    than how many handlers observed them.
+    """
+    logger = logging.getLogger("lightrag")
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collector()
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
 
 
 @pytest.fixture(autouse=True)
