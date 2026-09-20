@@ -2273,6 +2273,54 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         assert values["CHOSEN"] == "JsonKVStorage"
         assert values["WRITTEN"] == "JsonKVStorage"
 
+    def _select_after_kv_change(
+        self, previous_kv: str, new_kv: str, stdin: str = "\n"
+    ) -> dict[str, str]:
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]="{previous_kv}"
+select_config_storage "{new_kv}"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    def test_a_kv_change_does_not_move_the_records_implicitly(self):
+        """The implicit mirror of the explicit case: with nothing set, the
+        selection FOLLOWS the KV backend -- so changing that backend would
+        relocate the container and leave the baselines in the old one, where
+        nothing reads them. The default keeps them where they are."""
+        values = self._select_after_kv_change("PGKVStorage", "MongoKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "PGKVStorage", (
+            "following a CHANGED kv_storage silently moves the configuration "
+            "container away from the rows"
+        )
+
+    def test_an_unchanged_kv_backend_still_writes_nothing(self):
+        values = self._select_after_kv_change("PGKVStorage", "PGKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
+    def test_a_first_run_writes_nothing(self):
+        """No previous value at all: there are no records to strand."""
+        values = self._select_after_kv_change("", "MongoKVStorage")
+        assert values["CHOSEN"] == "MongoKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
+    def test_a_change_away_from_redis_does_not_ask(self):
+        """Redis is not in the category, so nothing admitted held the records
+        and there is nothing to keep them in."""
+        values = self._select_after_kv_change("RedisKVStorage", "PGKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
     def test_the_offered_backends_are_exactly_the_admitted_four(self):
         from lightrag.kg import STORAGE_IMPLEMENTATIONS
 

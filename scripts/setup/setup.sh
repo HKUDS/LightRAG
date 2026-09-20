@@ -1219,8 +1219,28 @@ select_config_storage() {
   fi
 
   if [[ -z "$existing" ]] && config_storage_is_admitted "$kv_storage"; then
-    # Nothing was set and the KV backend is admitted: leave it unset so the
-    # selection FOLLOWS it, which is where the records already are.
+    # Nothing was set, so the selection FOLLOWS the KV backend -- and that is
+    # only safe while the KV backend does not MOVE. Changing it (PostgreSQL to
+    # MongoDB, say) would relocate the configuration container along with it
+    # and leave the baseline rows in the old one, where nothing reads them:
+    # the same silent bootstrap an explicit selection is protected from, via
+    # the implicit one. So when the previous KV backend was admitted and
+    # differs, ask, defaulting to leaving the records where they are.
+    local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+    if [[ -n "$previous_kv" && "$previous_kv" != "$kv_storage" ]] &&
+      config_storage_is_admitted "$previous_kv"; then
+      log_warn "The configuration storage follows LIGHTRAG_KV_STORAGE, which" \
+        "is changing from $previous_kv to $kv_storage. The embedding" \
+        "baselines are in $previous_kv and are NOT migrated; leaving them" \
+        "there keeps them readable, and moving them makes the next start" \
+        "re-establish them from evidence."
+      SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
+        "$previous_kv" "${CONFIG_STORAGE_OPTIONS[@]}")"
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
+      return 0
+    fi
+    # First run, or the KV backend is unchanged: leave it unset so the
+    # selection follows it, which is where the records already are.
     SELECTED_CONFIG_STORAGE="$kv_storage"
     return 0
   fi
