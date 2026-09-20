@@ -556,8 +556,8 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
 
 @pytest.mark.asyncio
 async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
-    """One item raises quickly; one already completed; one would have
-    taken longer. analyze_multimodal must not wait for the slow item,
+    """One item raises; one already completed; one waits for release.
+    analyze_multimodal must not wait for the blocked item,
     must preserve the completed item's result in the sidecar, and must
     raise MultimodalAnalysisError (not PipelineCancelledException)."""
     from .test_pipeline_analyze_multimodal import PNG_BYTES
@@ -590,12 +590,14 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
     parsed_data = {"blocks_path": str(blocks_path)}
 
     # Per-call behaviour: call 1 succeeds quickly (~0.05s), call 2 fails
-    # quickly (~0.1s), call 3 would take 5s — we want to prove fail-fast
-    # cancels call 3 rather than wait. Ordering by call_count rather than
+    # quickly (~0.1s), call 3 cannot finish until teardown releases it.
+    # Fail-fast must cancel call 3 rather than wait. Order by call_count rather than
     # by item identifier because the VLM role wrapper does not surface
     # the item filename in its kwargs (only image_inputs bytes).
     call_count = {"n": 0}
     call_lock = asyncio.Lock()
+    release_slow = asyncio.Event()
+    slow_completed = asyncio.Event()
 
     async def vlm_func(prompt, **kwargs):
         async with call_lock:
@@ -607,10 +609,8 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         if seq == 2:
             await asyncio.sleep(0.1)
             raise MultimodalAnalysisError("forced failure")
-        # 1.2s instead of 5s: still proves fail-fast doesn't wait (test
-        # checks elapsed < 0.8s) but keeps post-analyze cleanup bounded
-        # since the worker keeps running this sleep until completion.
-        await asyncio.sleep(1.2)
+        await release_slow.wait()
+        slow_completed.set()
         return json.dumps({"name": "late", "type": "Chart", "description": "late"})
 
     rag = _build_rag(tmp_path, vlm_func=vlm_func)
@@ -624,7 +624,6 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         }
         pipeline_status_lock = asyncio.Lock()
 
-        start = time.monotonic()
         with pytest.raises(MultimodalAnalysisError):
             await asyncio.wait_for(
                 rag.analyze_multimodal(
@@ -637,12 +636,9 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
                 ),
                 timeout=15.0,
             )
-        elapsed = time.monotonic() - start
-
-        # Without fail-fast we'd have waited for the 1.2s sleep on the
-        # third call. 0.8s gives the second-call failure path room
-        # while still catching any regression that waits for call 3.
-        assert elapsed < 0.8, f"fail-fast still waited {elapsed:.2f}s for slow task"
+        # The slow call cannot complete before teardown. A regression that
+        # records cancellation but still waits for it hits the timeout above.
+        assert not slow_completed.is_set(), "fail-fast waited for the slow task"
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         statuses = sorted(
@@ -674,6 +670,9 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         ]
         assert len(forced_items) == 1
     finally:
+        # Cancelling the caller can leave the role worker running the VLM.
+        # Release it before shutdown so teardown never waits on slow work.
+        release_slow.set()
         await _shutdown_role_workers(rag)
         await rag.finalize_storages()
 
