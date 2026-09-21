@@ -576,7 +576,7 @@ async def test_an_unreadable_configuration_file_is_read_again_by_the_next_instan
 async def test_a_business_storage_failing_in_step_4_rolls_back_in_reverse(
     tmp_path, position
 ):
-    """Scenario 22. The configuration storage, the storage that raised and
+    """Scenario 27. The configuration storage, the storage that raised and
     every storage initialized before it are each released exactly once; the
     storages the loop never reached are not touched; the original exception
     is what propagates; the status stays CREATED."""

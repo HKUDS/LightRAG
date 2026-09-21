@@ -171,7 +171,7 @@ def on_starting(server):
     # The CONFIGURATION storage decides whether a directory is claimed at all;
     # a server-backed one claims nothing.
     if uses_working_dir(config_storage):
-        acquire_working_dir_lock(config_dir, legacy_working_dir=resolved_working_dir())
+        acquire_working_dir_lock(config_dir)
 
     print("Gunicorn initialization complete, forking workers...\n")
 

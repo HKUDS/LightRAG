@@ -751,8 +751,8 @@ class TestEnumeration:
 
 class TestFactory:
     def test_the_factory_opens_the_default_config_dir(self, tmp_path):
-        """Scenario 12. The default resolves to slice 1's location, which is
-        what keeps an upgrade from reading every baseline as absent."""
+        """Scenario 12. With no ``config_dir`` configured the factory opens
+        the default one, beside the data it describes."""
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
         storage = cs.create_configuration_storage(

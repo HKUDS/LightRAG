@@ -842,10 +842,7 @@ class RebuildTool:
         self._holds_working_dir = uses_working_dir(self.storage_names["config"])
         if self._holds_working_dir:
             try:
-                acquire_working_dir_lock(
-                    self.config_dir,
-                    legacy_working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
-                )
+                acquire_working_dir_lock(self.config_dir)
             except WorkingDirectoryInUseError as e:
                 self._holds_working_dir = False
                 print(f"\n✗ {e}")
