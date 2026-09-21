@@ -2352,6 +2352,53 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
             ).stdout
         )
 
+    def test_an_omitted_previous_kv_is_the_server_default_not_an_absence(self):
+        """The fourth door, and the quietest one.
+
+        A deployment whose .env never named LIGHTRAG_KV_STORAGE has still been
+        running -- on the server's JsonKVStorage default -- and its baselines
+        are in that container. Reading the omission as "no previous backend"
+        made the wizard treat a rerun as a first run, so picking MongoDB left
+        LIGHTRAG_CONFIG_STORAGE unset, the selection followed the new backend,
+        and the JSON rows were stranded where nothing reads them.
+        """
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+EXISTING_ENV_LOADED=1
+ORIGINAL_ENV_VALUES[EMBEDDING_DIM]="1024"
+select_config_storage "MongoKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin="\n",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    def test_a_genuine_first_run_still_writes_nothing(self):
+        """The counterexample that keeps the fix honest: with no .env loaded
+        there is no deployment and no records, so an admitted selection must
+        still leave the minimal .env alone."""
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+select_config_storage "MongoKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
     def test_switching_to_an_unadmitted_kv_still_defaults_to_the_records(self):
         """The third door onto the same rule. Changing PostgreSQL KV to Redis
         skips the follows-the-KV-backend branch entirely -- Redis is not

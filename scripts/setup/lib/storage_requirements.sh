@@ -9,6 +9,11 @@ declare -ag KV_STORAGE_OPTIONS=(
   "RedisKVStorage"
 )
 
+# What the SERVER uses when .env names no KV backend. A rerun has to know it:
+# an omitted selection is not an absence of one, and the records of such a
+# deployment are in this backend's container.
+declare -g DEFAULT_KV_STORAGE="JsonKVStorage"
+
 # The configuration storage is its own category and admits four backends.
 # RedisKVStorage is deliberately absent, so a Redis KV selection has to name
 # one of these explicitly -- see docs/design/ConfigurationStorage.md.

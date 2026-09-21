@@ -2417,7 +2417,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         )
         if self._holds_working_dir:
             try:
-                acquire_working_dir_lock(self.config_dir)
+                acquire_working_dir_lock(
+                    self.config_dir, legacy_working_dir=self.working_dir
+                )
             except BaseException as e:
                 # Before step 1, so nothing is open yet and nothing is sticky:
                 # a refusal here leaves the instance exactly as it was.

@@ -57,7 +57,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.exceptions import WorkingDirectoryInUseError
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.namespace import default_config_dir
 from lightrag.utils import logger
 
 LOCK_FILENAME = ".lightrag_storage.lock"
@@ -155,7 +155,7 @@ def _unlock(handle) -> None:
         pass
 
 
-def _legacy_lock_path(config_dir: str) -> str | None:
+def _legacy_lock_path(config_dir: str, legacy_working_dir: str | None) -> str | None:
     """The path slice 1 locked for this configuration directory, or ``None``.
 
     Slice 1 kept the configuration file at ``<working_dir>/_lightrag_config/``
@@ -166,27 +166,28 @@ def _legacy_lock_path(config_dir: str) -> str | None:
     the DEFAULT directory has a slice-1 spelling; one named by
     ``LIGHTRAG_CONFIG_DIR`` is new here and has no older holder.
 
+    ``legacy_working_dir`` is the directory this configuration directory was
+    DERIVED from, or ``None`` when the caller was handed one outright. Only
+    the caller knows which: the basename cannot tell a default apart from a
+    ``LIGHTRAG_CONFIG_DIR`` that merely ENDS in the same component, and
+    guessing wrong claims a lock belonging to a different deployment --
+    refusing a server that has every right to start.
+
     Transitional. Remove it once no deployment can still be running a build
     that predates the move, and nothing but this function knows the old path.
     """
-    # Whether this is the DEFAULT directory is decided on the spelling the
-    # caller used, BEFORE any symlink is followed. This module deliberately
-    # resolves symlinks everywhere else -- one directory must produce one key
-    # however it is spelled -- but resolving here first would answer a
-    # different question: a default ``<working_dir>/_lightrag_config`` that is
-    # a symlink to, say, ``/mnt/config`` resolves to a basename that is not
-    # the tag, and the deployment most in need of the transitional claim would
-    # silently not get one.
-    # Whether this is the DEFAULT directory is decided on the spelling the
-    # caller used, BEFORE any symlink is followed. This module deliberately
-    # resolves symlinks everywhere else -- one directory must produce one key
-    # however it is spelled -- but resolving here first would answer a
-    # different question: a default ``<working_dir>/_lightrag_config`` that is
-    # a symlink to, say, ``/mnt/config`` resolves to a basename that is not
-    # the tag, and the deployment most in need of the transitional claim would
-    # silently not get one.
+    if not legacy_working_dir:
+        return None
+    # Compared on the spelling, BEFORE any symlink is followed. This module
+    # deliberately resolves symlinks everywhere else -- one directory must
+    # produce one key however it is spelled -- but resolving first would
+    # answer a different question: a default ``<working_dir>/_lightrag_config``
+    # that is a symlink to, say, ``/mnt/config`` stops looking derived from
+    # its working directory at all, and the deployment most in need of the
+    # transitional claim would silently not get one.
     spelled = os.path.normpath(os.path.abspath(config_dir))
-    if os.path.basename(spelled) != CONFIG_CONTAINER_TAG:
+    default = os.path.normpath(os.path.abspath(default_config_dir(legacy_working_dir)))
+    if spelled != default:
         return None
     # The PATH, though, is resolved: slice 1 locked
     # ``realpath(working_dir)/LOCK_FILENAME``, and this has to name that same
@@ -194,7 +195,7 @@ def _legacy_lock_path(config_dir: str) -> str | None:
     return os.path.join(os.path.realpath(os.path.dirname(spelled)), LOCK_FILENAME)
 
 
-def _acquire_legacy_claim(config_dir: str) -> Any:
+def _acquire_legacy_claim(config_dir: str, legacy_working_dir: str | None) -> Any:
     """Take the slice-1 lock too, or return ``None`` if there is none to take.
 
     Raises ``WorkingDirectoryInUseError`` when a process holding the old path
@@ -203,7 +204,7 @@ def _acquire_legacy_claim(config_dir: str) -> Any:
     fails open here for the same reason it does for the real claim; the caller
     has already warned about it.
     """
-    path = _legacy_lock_path(config_dir)
+    path = _legacy_lock_path(config_dir, legacy_working_dir)
     if path is None:
         return None
 
@@ -232,7 +233,9 @@ def _acquire_legacy_claim(config_dir: str) -> Any:
     return handle
 
 
-def acquire_working_dir_lock(working_dir: str) -> None:
+def acquire_working_dir_lock(
+    working_dir: str, *, legacy_working_dir: str | None = None
+) -> None:
     """Claim ``working_dir`` for this process tree, or refuse.
 
     Idempotent per tree: a second caller here (another ``LightRAG`` instance, a
@@ -269,7 +272,7 @@ def acquire_working_dir_lock(working_dir: str) -> None:
         # would start this server beside an older one holding the only lock
         # either of them is able to take.
         try:
-            legacy_handle = _acquire_legacy_claim(working_dir)
+            legacy_handle = _acquire_legacy_claim(working_dir, legacy_working_dir)
         except BaseException:
             # Nothing was locked on the primary path, so there is nothing to
             # unlock -- only the descriptor to give back.
@@ -292,7 +295,7 @@ def acquire_working_dir_lock(working_dir: str) -> None:
         )
 
     try:
-        legacy_handle = _acquire_legacy_claim(working_dir)
+        legacy_handle = _acquire_legacy_claim(working_dir, legacy_working_dir)
     except BaseException:
         # This directory is free but its slice-1 spelling is not. Give back
         # what was just taken, so a refusal leaves nothing held.
