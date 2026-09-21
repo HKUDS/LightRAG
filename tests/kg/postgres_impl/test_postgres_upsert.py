@@ -18,6 +18,8 @@ from lightrag.kg.postgres_impl import PGDocStatusStorage, PGKVStorage, PGVectorS
 from lightrag.namespace import NameSpace
 from lightrag.utils import EmbeddingFunc
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # Helpers

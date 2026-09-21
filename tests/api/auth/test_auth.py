@@ -11,6 +11,8 @@ from lightrag.api.passwords import BCRYPT_PASSWORD_PREFIX, hash_password
 from lightrag.tools.hash_password import main as hash_password_main
 from lightrag.utils import logger as lightrag_logger
 
+pytestmark = pytest.mark.offline
+
 
 def import_real_api_module(module_name: str):
     sys.modules.pop(module_name, None)

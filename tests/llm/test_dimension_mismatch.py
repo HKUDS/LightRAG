@@ -19,6 +19,8 @@ from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
 from lightrag.exceptions import VectorSpaceMismatchError
 
+pytestmark = pytest.mark.offline
+
 
 # Note: Tests should use proper table names that have DDL templates
 # Valid base tables: LIGHTRAG_VDB_CHUNKS, LIGHTRAG_VDB_ENTITIES, LIGHTRAG_VDB_RELATIONSHIPS,

@@ -15,6 +15,10 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 class TestNoModelSuffixSafety:
     """Test suite for preventing data loss when model_suffix is absent."""

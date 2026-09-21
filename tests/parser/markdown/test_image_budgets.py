@@ -18,6 +18,8 @@ import pytest
 
 from lightrag.parser.markdown import parser as md_parser
 
+pytestmark = pytest.mark.offline
+
 _PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 
 

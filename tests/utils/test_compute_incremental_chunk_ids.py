@@ -8,6 +8,10 @@ that tracking has pruned must stay pruned even when the graph still names them.
 
 from lightrag.utils import compute_incremental_chunk_ids
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 def test_compute_incremental_chunk_ids_standard_update():
     """Removals drop out in place; genuine additions land at the end."""

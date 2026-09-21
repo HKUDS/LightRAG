@@ -3,6 +3,8 @@ from lightrag.base import BaseGraphStorage, BaseVectorStorage, BaseKVStorage
 from lightrag.operate import _rebuild_single_entity, _rebuild_single_relationship
 from lightrag.utils import Tokenizer, TokenizerInterface
 
+pytestmark = pytest.mark.offline
+
 
 class _DummyTokenizer(TokenizerInterface):
     def encode(self, content: str):

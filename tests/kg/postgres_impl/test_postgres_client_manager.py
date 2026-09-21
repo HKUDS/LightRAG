@@ -5,6 +5,8 @@ import pytest
 
 from lightrag.kg.postgres_impl import ClientManager
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.fixture(autouse=True)
 def reset_client_manager_state():

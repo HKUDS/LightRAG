@@ -1,6 +1,8 @@
 import pytest
 from lightrag.operate import extract_entities
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.mark.asyncio
 async def test_extract_entities_empty_chunks():
