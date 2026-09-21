@@ -1011,8 +1011,31 @@ async def async_main() -> bool:
     return await tool.run()
 
 
+USAGE = """usage: lightrag-clear-storage
+
+Takes no options. Configuration comes from .env / the environment exactly as
+the server reads it: WORKSPACE, WORKING_DIR, INPUT_DIR, LIGHTRAG_*_STORAGE,
+EMBEDDING_* and the backend connection settings.
+
+Server flags such as --workspace or --input-dir are refused rather than
+ignored: the embedding function is built through the server's own argument
+parser, which WOULD honor them, while the workspace and directories this tool
+clears come from the environment -- so a flag could select one embedding
+configuration and clear another workspace. See README_CLEAR_STORAGE.md.
+"""
+
+
 def main():
     """Synchronous entry point. Exits non-zero on any failure or partial clear."""
+    if len(sys.argv) > 1:
+        wants_help = sys.argv[1] in ("-h", "--help")
+        print(USAGE, file=sys.stdout if wants_help else sys.stderr)
+        if not wants_help:
+            print(
+                f"error: unrecognized arguments: {' '.join(sys.argv[1:])}",
+                file=sys.stderr,
+            )
+        raise SystemExit(0 if wants_help else 2)
     load_dotenv(dotenv_path=".env", override=False)
     setup_logger("lightrag", level="INFO")
     success = asyncio.run(async_main())

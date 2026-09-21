@@ -1181,3 +1181,58 @@ class TestEndToEndOnJsonBackends:
         assert "Workspace cleared" in out
         assert (workspace_dir / "kv_store_text_chunks.json").read_text() == "{}"
         assert json.loads((config_dir / "kv_store_config.json").read_text()) == {}
+
+
+class TestCommandLine:
+    """The tool takes no options. Server flags are refused rather than
+    ignored: ``global_args`` (parsed when the embedding function is built)
+    would honor ``--workspace`` for the embedding configuration while the
+    workspace and directories being cleared came from the environment."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--workspace", "tenant"],
+            ["--input-dir", "/uploads"],
+            ["--working-dir", "/data", "--workspace", "tenant"],
+            ["extra"],
+        ],
+    )
+    def test_server_flags_are_refused_before_anything_runs(
+        self, monkeypatch, argv, capsys
+    ):
+        ran = []
+        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage", *argv])
+        monkeypatch.setattr(
+            clear_storage, "load_dotenv", lambda **kw: ran.append("env")
+        )
+        monkeypatch.setattr(
+            clear_storage, "asyncio", SimpleNamespace(run=lambda c: ran.append("run"))
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            clear_storage.main()
+
+        assert excinfo.value.code == 2
+        assert ran == []
+        err = capsys.readouterr().err
+        assert "unrecognized arguments" in err
+        assert "takes no options" in err.lower() or "Takes no options" in err
+
+    def test_help_prints_usage_and_exits_clean(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage", "--help"])
+        with pytest.raises(SystemExit) as excinfo:
+            clear_storage.main()
+        assert excinfo.value.code == 0
+        assert "Takes no options" in capsys.readouterr().out
+
+    def test_no_arguments_reaches_the_run(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage"])
+        monkeypatch.setattr(clear_storage, "load_dotenv", lambda **kw: None)
+        monkeypatch.setattr(clear_storage, "setup_logger", lambda *a, **kw: None)
+
+        async def fake_main():
+            return True
+
+        monkeypatch.setattr(clear_storage, "async_main", fake_main)
+        clear_storage.main()  # returns without SystemExit

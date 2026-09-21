@@ -32,6 +32,13 @@ lightrag-clear-storage
 python -m lightrag.tools.clear_storage
 ```
 
+The tool takes no command-line options. Server flags such as `--workspace`
+or `--input-dir` are refused, not ignored: the embedding function is built
+through the server's own argument parser, which would honor them, while the
+workspace and directories the tool clears come from the environment — so a
+flag could select one embedding configuration and clear another workspace.
+Put the values in `.env` instead.
+
 The tool reads the same `.env` / environment configuration as the server
 (`LIGHTRAG_KV_STORAGE`, `LIGHTRAG_VECTOR_STORAGE`, `LIGHTRAG_GRAPH_STORAGE`,
 `LIGHTRAG_DOC_STATUS_STORAGE`, `LIGHTRAG_CONFIG_STORAGE`, `WORKSPACE`,
