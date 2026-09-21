@@ -14,8 +14,8 @@ What it does, in order:
 
 1. shows what is about to be deleted: document counts per status, the ten
    most recently updated documents, whether the text chunk store and each
-   vector index hold anything, the recorded embedding baselines and the
-   input files. A value that cannot be read is shown as UNREADABLE, never as zero;
+   vector index hold anything (both through reads that fail loudly), the
+   recorded embedding baselines and the input files. A value that cannot be read is shown as UNREADABLE, never as zero;
 2. asks the operator to type ``Delete All``;
 3. drops the eleven data storages, then the workspace's configuration
    records (only when EVERY drop succeeded), then the top-level input files.
@@ -90,6 +90,7 @@ from lightrag.kg.working_dir_lock import (
     uses_working_dir,
 )
 from lightrag.namespace import NameSpace
+from lightrag.vector_space_gate import _chunk_source_is_populated
 from lightrag.utils import (
     EmbeddingFunc,
     get_env_value,
@@ -603,14 +604,23 @@ class ClearTool:
         else:
             recent, total = paged
 
-        async def text_chunks_state() -> str:
-            # ``is_empty()`` is the whole of what the base KV contract offers,
-            # and the whole of what the decision needs: an exact row count
-            # would take a backend-specific query per store for a number that
-            # changes nothing about whether to type the phrase.
-            if await self.storages["text_chunks"].is_empty():
-                return "EMPTY"
-            return "has data"
+        async def text_chunks_state() -> Any:
+            # The same strict existence read the startup gate uses to CLAIM a
+            # chunk baseline, not ``BaseKVStorage.is_empty()``: the KV
+            # backends' ``is_empty()`` catch their transport errors and answer
+            # "empty", which here would show a Redis or Mongo outage as an
+            # empty store and let the confirmation drop every healthy sibling
+            # around it -- the partial clear the kind rule refuses. The
+            # strict read raises instead, and ``_read`` applies the rule.
+            populated = await _chunk_source_is_populated(
+                self.storages["text_chunks"], strict=True
+            )
+            if populated is None:
+                return Unreadable(
+                    "the backend cannot enumerate rows and its is_empty() "
+                    "cannot tell an outage from an empty store"
+                )
+            return "has data" if populated else "EMPTY"
 
         vectors: Dict[str, Any] = {}
         for label in VECTOR_LABELS:

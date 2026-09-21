@@ -72,11 +72,14 @@ zero, because zero is exactly what makes an operator clear the wrong workspace.
 Whether an unreadable value stops the run depends on the backend's kind — see
 *Errors: what stops the run and what does not* below.
 
-The text chunk store is only asked whether it is empty (`is_empty()`, the
-whole of the base KV contract): an exact row count would take a
-backend-specific query per store for a number that changes nothing about
-whether to confirm, and enumerating the keys would load every chunk id into
-memory. The status counts are one strict query per status.
+The text chunk store is only asked whether it holds a row, through the same
+strict first-page read the startup gate uses (`iter_rows`, which raises on a
+backend failure) — not `BaseKVStorage.is_empty()`, which on the server
+backends catches its transport errors and answers "empty", so an outage would
+show as an empty store and let the confirmation drop every healthy sibling
+around it. An exact row count would take a backend-specific query per store
+for a number that changes nothing about whether to confirm. The status counts
+are one strict query per status.
 
 ## What is deleted, and what is not
 

@@ -47,14 +47,20 @@ def describe_startup_refusal(
             f"{_RECOVERY_LINES}"
         )
     if isinstance(exc, EmbeddingBaselineMismatchError):
-        targets = ", ".join(str(t) for t in exc.targets)
+        # One line per target: each was adopted under its own baseline, and
+        # the first target's values say nothing about the others'.
+        per_target = "".join(
+            f"  {m.get('target')}: recorded model {m.get('recorded_model')!r} "
+            f"dim {m.get('recorded_dim')}; configured model "
+            f"{m.get('expected_model')!r} dim {m.get('expected_dim')}\n"
+            for m in exc.mismatches
+        )
         return (
             "Startup blocked: the recorded embedding baseline differs from the "
             "configured embedding model.\n"
             f"{header}"
-            f"  Mismatched targets: {targets}\n"
-            f"  Recorded: model {exc.stored_model!r} dim {exc.stored_dim}; "
-            f"configured: model {exc.expected_model!r} dim {exc.expected_dim}.\n"
+            f"  Mismatched targets ({len(exc.mismatches)}):\n"
+            f"{per_target}"
             "  Either restore the previous EMBEDDING_MODEL / EMBEDDING_DIM, or:\n"
             f"{_RECOVERY_LINES}"
         )

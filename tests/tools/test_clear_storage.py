@@ -30,6 +30,7 @@ from lightrag.tools.clear_storage import (
     DATA_STORAGE_LABELS,
     ClearTool,
     DropOutcome,
+    RemoteBackendUnavailableError,
     Unreadable,
     classify_drop_result,
     is_server_backed,
@@ -62,9 +63,25 @@ def make_storage(label: str, *, drop_result=None, drop_error=None, workspace="ws
         drop=drop,
         finalize=AsyncMock(),
         is_empty=AsyncMock(return_value=True),
+        iter_rows=rows_stream([{"_id": "chunk-1"}]),
         persists_vectors=True,
     )
     return storage
+
+
+def rows_stream(rows=(), *, error: BaseException | None = None):
+    """An ``iter_rows`` stand-in: yields ``rows``, or raises ``error`` first."""
+
+    def iter_rows(*, page_size=200):
+        async def gen():
+            if error is not None:
+                raise error
+            for row in rows:
+                yield row
+
+        return gen()
+
+    return iter_rows
 
 
 FILE_BACKED_NAMES = {
@@ -114,7 +131,7 @@ def make_tool(
 
     tool.storages["doc_status"].count_docs_by_statuses = count_docs_by_statuses
     tool.storages["doc_status"].get_docs_paginated = get_docs_paginated
-    tool.storages["text_chunks"].is_empty = AsyncMock(return_value=False)
+    tool.storages["text_chunks"].iter_rows = rows_stream([{"_id": "chunk-1"}])
     tool.configuration_storage = make_storage("config", workspace=workspace)
     return tool
 
@@ -392,33 +409,115 @@ class TestSummary:
         assert isinstance(summary["counts"]["processed"], Unreadable)
         assert "did not open" in summary["counts"]["processed"].reason
 
-    async def test_the_text_chunk_store_is_asked_only_whether_it_is_empty(
+    async def test_the_text_chunk_store_is_read_strictly_not_through_is_empty(
         self, tmp_path, stub_baselines, capsys
     ):
-        """``is_empty()`` is the whole of the base KV contract, and enough for
-        the decision; nothing enumerates or counts the rows."""
+        """``RedisKVStorage`` / ``MongoKVStorage`` / ``PGKVStorage.is_empty``
+        catch their transport errors and answer True. Read through that, an
+        outage shows as an empty store and the confirmation drops every
+        healthy sibling around it. The state comes from the strict first
+        page of ``iter_rows``; ``is_empty()`` is not consulted."""
         tool = make_tool(tmp_path)
-        tool.storages["text_chunks"].is_empty = AsyncMock(return_value=True)
+        kv = tool.storages["text_chunks"]
+        kv.is_empty = AsyncMock(return_value=True)  # would say EMPTY
+        kv.iter_rows = rows_stream([{"_id": "chunk-1"}])
 
         summary = await tool.collect_summary()
         tool.print_summary(summary)
 
-        assert summary["text_chunks"] == "EMPTY"
-        assert "Text chunks: EMPTY" in capsys.readouterr().out
-        tool.storages["text_chunks"].is_empty.assert_awaited_once()
+        assert summary["text_chunks"] == "has data"
+        assert "Text chunks: has data" in capsys.readouterr().out
+        kv.is_empty.assert_not_called()
+
+    async def test_a_clean_end_of_the_row_stream_is_empty(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["text_chunks"].iter_rows = rows_stream([])
+
+        assert (await tool.collect_summary())["text_chunks"] == "EMPTY"
+
+    async def test_a_server_kv_outage_refuses_the_run(self, tmp_path, stub_baselines):
+        """The fix-proof for the kind rule on this read: the outage reaches
+        ``_read`` as a raise and refuses, instead of rendering as EMPTY."""
+        tool = make_tool(tmp_path)
+        tool.storage_names["kv"] = "RedisKVStorage"
+        kv = tool.storages["text_chunks"]
+        kv.is_empty = AsyncMock(return_value=True)
+        kv.iter_rows = rows_stream(error=ConnectionError("redis down"))
+
+        with pytest.raises(RemoteBackendUnavailableError):
+            await tool.collect_summary()
 
     async def test_an_unanswerable_text_chunk_store_is_unreadable_not_fatal(
         self, tmp_path, stub_baselines
     ):
         tool = make_tool(tmp_path)
-        tool.storages["text_chunks"].is_empty = AsyncMock(
-            side_effect=OSError("kv file unreadable")
+        tool.storages["text_chunks"].iter_rows = rows_stream(
+            error=OSError("kv file unreadable")
         )
 
         summary = await tool.collect_summary()
 
         assert isinstance(summary["text_chunks"], Unreadable)
         assert "text_chunks state" in tool.unreadable_items(summary)
+
+    async def test_a_backend_without_enumeration_cannot_prove_emptiness(
+        self, tmp_path, stub_baselines
+    ):
+        """Without ``iter_rows`` the only read left is ``is_empty()``, whose
+        "populated" is trustworthy and whose "empty" is not: the first shows
+        as data, the second as UNREADABLE, never as EMPTY."""
+        from lightrag.exceptions import StorageCapabilityError
+
+        tool = make_tool(tmp_path)
+        kv = tool.storages["text_chunks"]
+        kv.iter_rows = rows_stream(error=StorageCapabilityError("no enumeration"))
+        kv.is_empty = AsyncMock(return_value=True)
+        assert isinstance((await tool.collect_summary())["text_chunks"], Unreadable)
+
+        kv.is_empty = AsyncMock(return_value=False)
+        assert (await tool.collect_summary())["text_chunks"] == "has data"
+
+    async def test_a_baseline_row_that_does_not_parse_is_unreadable_not_fatal(
+        self, tmp_path, monkeypatch
+    ):
+        """``delete_workspace_configuration`` deletes by key without reading
+        the value, so a row the clear will remove anyway must not block it."""
+
+        async def read_config_row_strict(config, key):
+            if key.endswith("/chunks"):
+                return {"value": "not-a-dict", "workspace": "ws", "_id": key}
+            return None
+
+        monkeypatch.setattr(
+            clear_storage, "read_config_row_strict", read_config_row_strict
+        )
+        tool = make_tool(tmp_path)
+
+        summary = await tool.collect_summary()
+
+        assert isinstance(summary["baselines"]["chunks"], Unreadable)
+        assert summary["baselines"]["entities"] is None
+        assert "chunks embedding baseline" in tool.unreadable_items(summary)
+
+    async def test_a_baseline_row_that_cannot_be_fetched_refuses_the_run(
+        self, tmp_path, monkeypatch
+    ):
+        """Transport, not parsing: the records could not be deleted after
+        the clear either."""
+        from lightrag.exceptions import ConfigurationStorageError
+
+        async def read_config_row_strict(config, key):
+            raise ConfigurationStorageError("could not read configuration record")
+
+        monkeypatch.setattr(
+            clear_storage, "read_config_row_strict", read_config_row_strict
+        )
+        tool = make_tool(tmp_path)
+
+        with pytest.raises(RemoteBackendUnavailableError):
+            await tool.collect_summary()
 
 
 class TestInputDirResolution:

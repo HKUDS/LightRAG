@@ -150,7 +150,7 @@ def _lifespan_messages(caplog):
                 ],
             ),
             "recorded embedding baseline differs",
-            "Mismatched targets: chunks",
+            "chunks: recorded model 'old-model' dim 1024",
         ),
         (
             CorruptStorageSnapshotError(
@@ -225,3 +225,40 @@ def test_the_exception_text_itself_names_the_clear_tool(error):
     rewrites them, so the guidance has to live in the message."""
     assert "lightrag-rebuild-vdb" in str(error)
     assert "lightrag-clear-storage" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_a_baseline_refusal_reports_every_target_with_its_own_values(
+    monkeypatch, caplog
+):
+    """``EmbeddingBaselineMismatchError.stored_*`` carry only the FIRST
+    mismatch; a message that listed every target beside those values would
+    send the operator restoring a configuration the other targets still
+    refuse. Each target gets its own line."""
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+    error = EmbeddingBaselineMismatchError(
+        workspace="space1",
+        mismatches=[
+            {
+                "target": "entities",
+                "recorded_model": "model-a",
+                "recorded_dim": 768,
+                "expected_model": "model-c",
+                "expected_dim": 1536,
+            },
+            {
+                "target": "chunks",
+                "recorded_model": "model-b",
+                "recorded_dim": 3072,
+                "expected_model": "model-c",
+                "expected_dim": 1536,
+            },
+        ],
+    )
+    life = driver(make_app(error, []))
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        await life.startup()
+    messages = _lifespan_messages(caplog)
+    assert "Mismatched targets (2)" in messages
+    assert "entities: recorded model 'model-a' dim 768" in messages
+    assert "chunks: recorded model 'model-b' dim 3072" in messages
