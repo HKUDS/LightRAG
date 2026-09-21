@@ -262,7 +262,22 @@ def acquire_working_dir_lock(working_dir: str) -> None:
             f"file-backed storage without any warning; run one at a time, or "
             f"use a server storage backend."
         )
-        _claims[path] = _Claim(handle=handle, enforced=False)
+        # The primary path cannot be enforced -- but the slice-1 path may sit
+        # on a filesystem that CAN enforce one: a configuration directory
+        # symlinked onto a network volume with a local parent is the ordinary
+        # shape of that. Failing open here AND skipping the transitional claim
+        # would start this server beside an older one holding the only lock
+        # either of them is able to take.
+        try:
+            legacy_handle = _acquire_legacy_claim(working_dir)
+        except BaseException:
+            # Nothing was locked on the primary path, so there is nothing to
+            # unlock -- only the descriptor to give back.
+            handle.close()
+            raise
+        _claims[path] = _Claim(
+            handle=handle, enforced=False, legacy_handle=legacy_handle
+        )
         return
 
     if not locked:
