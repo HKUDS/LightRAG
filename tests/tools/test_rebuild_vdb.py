@@ -12,9 +12,9 @@ Covers:
   persistent VDB failure without deleting source entities.
 """
 
+import builtins
 import os
 import pytest
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -1451,130 +1451,61 @@ async def test_corrupt_recovery_is_not_gated_on_one_backend_name(tmp_path, monke
     assert index.read_bytes() == b"truncated"
 
 
-def test_a_backup_that_cannot_be_restricted_is_not_written(tmp_path, monkeypatch):
-    """The control flow the Windows branch depends on, checked everywhere.
+def test_a_source_that_cannot_be_read_aborts_instead_of_being_skipped(
+    tmp_path, monkeypatch
+):
+    """Only FileNotFoundError means "this half of a torn pair is missing".
 
-    ``_restrict_backup_to_owner`` is a no-op verification on POSIX and an
-    ``icacls`` call on Windows, and only the second can realistically fail.
-    Its failure path is therefore untestable on the platform CI runs — so the
-    failure is injected here instead, which pins what the caller does with it:
-    no data reaches the backup, the stub is removed rather than stranded
-    (the next run's O_EXCL could not reuse it), and the original is intact.
+    Every other failure to open a source — a permission fault, a directory
+    that vanished — is a file whose contents still exist and are not being
+    preserved. Skipping it would let the caller drop that container next with
+    nothing holding its rows.
     """
-    from lightrag.tools.rebuild_vdb import BackupNotPrivateError
+    present = tmp_path / "vdb_entities.json"
+    present.write_bytes(b"first")
+    unreadable = tmp_path / "vdb_relationships.json"
+    unreadable.write_bytes(b"second")
+    real_open = builtins.open
 
-    path = tmp_path / "vdb_entities.json"
-    path.write_bytes(b"sensitive rows")
+    def _deny(path, *args, **kwargs):
+        if str(path) == str(unreadable):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
 
-    def _refuse(backup_path, fd):
-        raise BackupNotPrivateError("icacls exited 5")
+    monkeypatch.setattr(builtins, "open", _deny)
+    with pytest.raises(PermissionError):
+        rebuild_vdb.backup_corrupt_snapshot((str(present), str(unreadable)))
 
-    monkeypatch.setattr(rebuild_vdb, "_restrict_backup_to_owner", _refuse)
-    with pytest.raises(BackupNotPrivateError, match="icacls exited 5"):
-        rebuild_vdb.backup_corrupt_snapshot((str(path),))
-
-    assert path.read_bytes() == b"sensitive rows"
-    assert list(tmp_path.glob("*.corrupt-*")) == []
-
-
-def test_a_backup_is_restricted_before_a_single_byte_is_copied(tmp_path, monkeypatch):
-    """Ordering is the whole argument: restricting after the copy would leave
-    the data exposed for the copy's duration. Pinned by observing the file at
-    the moment the restriction runs."""
-    path = tmp_path / "vdb_entities.json"
-    path.write_bytes(b"sensitive rows")
-    seen = {}
-    real = rebuild_vdb._restrict_backup_to_owner
-
-    def _observe(backup_path, fd):
-        seen["size"] = os.path.getsize(backup_path)
-        return real(backup_path, fd)
-
-    monkeypatch.setattr(rebuild_vdb, "_restrict_backup_to_owner", _observe)
-    (backup,) = rebuild_vdb.backup_corrupt_snapshot((str(path),))
-
-    assert seen["size"] == 0
-    assert Path(backup).read_bytes() == b"sensitive rows"
+    assert present.read_bytes() == b"first"
+    assert unreadable.read_bytes() == b"second"
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="checks the Windows ACL the POSIX mode assertion cannot describe",
-)
-def test_a_backup_drops_inherited_access_on_windows(tmp_path, monkeypatch):
-    """What the opt-out still buys: every moment AFTER the open window.
+def test_a_failure_on_the_second_file_keeps_the_first_backup_and_every_source(
+    tmp_path, monkeypatch
+):
+    """A partial recovery must leave more evidence than it started with, not
+    less: the sources are all untouched, the backup that completed is durable,
+    and the one that did not leaves no stub pretending to be a copy."""
+    first = tmp_path / "vdb_entities.json"
+    first.write_bytes(b"first rows")
+    second = tmp_path / "vdb_relationships.json"
+    second.write_bytes(b"second rows")
+    real_copy = rebuild_vdb.shutil.copyfileobj
+    seen = []
 
-    Under ``LIGHTRAG_ALLOW_UNPROTECTED_BACKUP`` the tool proceeds and runs
-    ``icacls /inheritance:r``, which does not close the window a handle
-    opened during creation keeps open (see
-    ``test_windows_refuses_a_backup_it_cannot_make_private``) but does govern
-    every later open. An inherited entry is what its absence is checked
-    against here: ``icacls`` marks those ``(I)``, a tag that does not change
-    with the display language.
+    def _fail_on_second(source, destination, *args, **kwargs):
+        seen.append(source.name)
+        if len(seen) == 2:
+            raise OSError(28, "No space left on device")
+        return real_copy(source, destination, *args, **kwargs)
 
-    NOTE: written from documented ``icacls`` behaviour and not exercised on a
-    native Windows host. A failure here is as likely to be this test's
-    assertion as the code it covers — check the raw output first.
-    """
-    import subprocess
+    monkeypatch.setattr(rebuild_vdb.shutil, "copyfileobj", _fail_on_second)
+    with pytest.raises(OSError, match="No space left"):
+        rebuild_vdb.backup_corrupt_snapshot((str(first), str(second)))
 
-    monkeypatch.setenv("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", "true")
-    path = tmp_path / "vdb_entities.json"
-    path.write_bytes(b"sensitive rows")
-    (backup,) = rebuild_vdb.backup_corrupt_snapshot((str(path),))
-
-    listing = subprocess.run(
-        ["icacls", backup], capture_output=True, text=True, check=True
-    ).stdout
-    entries = [
-        line.strip()
-        for line in listing.splitlines()
-        if ":(" in line and "Successfully processed" not in line
-    ]
-    assert entries, f"icacls reported no ACEs for the backup:\n{listing}"
-    assert not [line for line in entries if "(I)" in line], (
-        f"the backup still carries inherited access:\n{listing}"
-    )
-
-
-@pytest.mark.skipif(
-    sys.platform != "win32", reason="describes the Windows refusal specifically"
-)
-def test_windows_refuses_a_backup_it_cannot_make_private(tmp_path, monkeypatch):
-    """The window this refusal exists for cannot be closed by tightening later.
-
-    Windows checks access when a handle is opened, so a process that opened
-    the backup between its creation and ``icacls`` keeps reading through that
-    handle afterwards — including rows written later. Creating the file empty
-    does not help, and ``O_EXCL`` grants no exclusive access. Until the file
-    is private from the instant it exists (``CreateFileW`` with a security
-    descriptor, or ``dwShareMode=0``), the honest answer is to refuse.
-    """
-    from lightrag.tools.rebuild_vdb import BackupNotPrivateError
-
-    monkeypatch.delenv("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", raising=False)
-    path = tmp_path / "vdb_entities.json"
-    path.write_bytes(b"sensitive rows")
-
-    with pytest.raises(BackupNotPrivateError, match="from the moment it is created"):
-        rebuild_vdb.backup_corrupt_snapshot((str(path),))
-
-    assert path.read_bytes() == b"sensitive rows"
-    assert list(tmp_path.glob("*.corrupt-*")) == []
-
-
-def test_the_windows_refusal_is_opt_out_not_silently_skipped(monkeypatch):
-    """The opt-out must be an explicit "true", not any truthy-looking value.
-
-    Checked by calling the platform branch directly: the refusal is what
-    stands between a Windows operator and a backup other users may already
-    hold a handle to, so a loose parse of the variable would hand that away
-    to a stray "0" or "false" in the environment.
-    """
-    from lightrag.tools.rebuild_vdb import BackupNotPrivateError
-
-    monkeypatch.setattr(rebuild_vdb.os, "name", "nt")
-    for value in ("", "0", "false", "no", "TRUE_ISH", "1"):
-        monkeypatch.setenv("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", value)
-        with pytest.raises(BackupNotPrivateError, match="from the moment"):
-            rebuild_vdb._restrict_backup_to_owner("C:\\\\x\\\\backup", -1)
+    assert first.read_bytes() == b"first rows"
+    assert second.read_bytes() == b"second rows"
+    backups = sorted(p.name for p in tmp_path.glob("*.corrupt-*"))
+    assert len(backups) == 1, backups
+    assert backups[0].startswith("vdb_entities.json.corrupt-")
+    assert (tmp_path / backups[0]).read_bytes() == b"first rows"

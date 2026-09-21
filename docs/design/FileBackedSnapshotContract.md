@@ -96,56 +96,57 @@ only a confirmed, backed-up rebuild, while the reverse silently destroys an
 intact index.
 
 A backup holds the same documents and metadata as the store it copies and is
-kept indefinitely, so it must never be more readable than what it copies. A
-backup that cannot be vouched for deletes its empty stub and aborts recovery
-with the originals intact (`BackupNotPrivateError`).
+kept indefinitely, so it must never be more readable than what it copies —
+and not "eventually": from the instant the file exists. `lightrag/private_file.py`
+owns that, and its rule is that the restriction goes IN to the creation call
+rather than being applied to a file that already exists. A backup that cannot
+be created private, or cannot be proven private, removes itself and aborts the
+recovery with the originals intact (`PrivateFileError`).
 
-**POSIX: settled.** The mode comes from `os.open` (0600, which the umask can
-only narrow), so the file is private from creation, and
-`_restrict_backup_to_owner` verifies that from the open descriptor. Each
-backup is also created empty and written only after that check — belt and
-braces over a file that was never readable anyway.
+On POSIX the mechanism is the mode: `os.open` with 0600, which the umask can
+only narrow, verified from the open descriptor.
 
-**Windows: refused by default, because this tool cannot provide the
-guarantee there.** `os.open`'s mode writes no ACL — it sets the read-only
-ATTRIBUTE — so the file appears carrying the parent directory's inherited
-ACL. Tightening it afterwards does not repair that: Windows checks access
-when a handle is OPENED, so a process that opened the backup during the
-window keeps reading through that handle after `icacls` succeeds, including
-rows written later. Creating the file empty does not help, and `O_EXCL`
+On Windows the mode carries none of this — `os.open` there sets the read-only
+ATTRIBUTE and writes no ACL, so the file would appear carrying the parent
+directory's inherited entries. Tightening afterwards does not repair that,
+and this is the part worth remembering: **Windows checks access when a handle
+is OPENED**, so a process that opened the file during the window keeps reading
+through that handle after any later tightening succeeds, including rows
+written after it. Creating the file empty does not help either, and `O_EXCL`
 refuses to create over an existing file without granting exclusive ACCESS to
-the one it creates. Closing this needs the file to be private from the
-instant it exists — `CreateFileW` with a `SECURITY_ATTRIBUTES` descriptor, or
-`dwShareMode=0` so no second handle can be opened — and neither is reachable
-through `os.open`. Until one of them is implemented and exercised on a
-Windows host, recovery there refuses. `LIGHTRAG_ALLOW_UNPROTECTED_BACKUP=true`
-is the informed opt-out for a directory the operator knows admits no other
-readers; it still runs `icacls /inheritance:r /grant:r`, which governs every
-open after the window, and it warns.
+the one it creates. So the Windows path uses `CreateFileW` with a
+`SECURITY_ATTRIBUTES` descriptor built from `O:<sid>D:P(A;;FA;;;<sid>)` — the
+SID read from the process's own access token, never from `USERNAME` — and
+`dwShareMode=0`, then reads the DACL back off that same handle before handing
+it to Python via `msvcrt.open_osfhandle`. The two settings cover different
+windows and neither substitutes for the other: the DACL governs every open
+after this one, including long after the handle closes, while the share mode
+stops a second handle being opened while the copy is in flight. A filesystem
+that does not persist ACLs fails the read-back and is refused rather than
+silently storing the data unprotected. Two details there are load-bearing and
+easy to get wrong: the SID comes from the thread token and falls back to the
+process token ONLY on `ERROR_NO_TOKEN` (any other failure would grant the file
+to a different identity than the one that owns it), and a failed
+`CreateFileW` is recognised by comparing against `c_void_p(-1).value` rather
+than `-1` — a pointer restype returns the unsigned bit pattern, so the literal
+comparison reads every failure as a success and the cleanup that follows
+deletes whatever file was already at that path.
+
+Which source files exist is decided by OPENING them and catching
+`FileNotFoundError` from that one call, never by a prior `exists()`. Only that
+one exception means "this half of a torn pair is missing"; a permission fault
+or a vanished directory names a file whose rows still exist and are not being
+preserved, so it aborts. A failure partway through leaves every source
+untouched, the backups that completed durable, and no stub for the one that
+did not.
 
 Because the mode carries none of this on Windows, a `0600` assertion proves
-nothing there and `chmod(0)` does not revoke read access, so the tests
-relying on either are POSIX-only. The Windows paths — the refusal, the strict
-parse of the opt-out, and the ACL check — have their own tests, and the ones
-that must run on a Windows host say so. Nothing in the Windows branch has
-been exercised natively; its failure direction is refusal, not a silently
-wide backup.
-
-Faiss degraded instead of refusing until this was fixed: any load failure
-produced a fresh empty `IndexFlatIP` that certified itself as this process's
-embedding space, and the next `index_done_callback` saved that emptiness over
-the bytes it had failed to read. One unreadable file became an empty one,
-permanently, with a new baseline stamped on top and a single WARNING line to
-show for it. **No file-backed storage may answer an unreadable file by
-serving an empty one.**
-
-The offline rebuild tool alone may recover a typed corrupt snapshot: it
-initializes the authoritative sources, enumerates the selected sources, and
-asks the operator to verify their integrity and confirm the rebuild. It then
-copies every file the refusal named (`CorruptStorageSnapshotError.artifacts`
-— one for Nano, the index/meta/marker triple for Faiss) to an exclusive
-`<path>.corrupt-<token>` sibling under one token per recovery, and flushes
-those backups before dropping the originals.
+nothing there and `chmod(0)` does not revoke read access, so the tests relying
+on either are POSIX-only. The native behaviour has its own job,
+`.github/workflows/windows-private-file.yml` on `windows-latest` — the only
+Windows job in the repository — which also fails if its Windows-only tests
+merely skipped. `tests/test_private_file.py` imports no storage so that job
+stays seconds long.
 
 **A refusal's `artifacts` must cover every file that storage's `drop()`
 removes.** That is the whole protocol in one line: the tool backs up

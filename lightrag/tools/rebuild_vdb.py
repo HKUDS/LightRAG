@@ -65,8 +65,6 @@ vectors live in exactly the same embedding space.
 
 import asyncio
 import os
-import stat
-import subprocess
 import sys
 import shutil
 import time
@@ -103,6 +101,7 @@ from lightrag.exceptions import (
     WorkingDirectoryInUseError,
 )
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
+from lightrag.private_file import PrivateFileError, open_private_file
 from lightrag.kg.working_dir_lock import (
     acquire_working_dir_lock,
     release_working_dir_lock,
@@ -177,94 +176,6 @@ async def _drop_vdb(vdb, label: str) -> None:
     logger.info(f"Dropped {label} vector storage")
 
 
-def _remove_quietly(path: str) -> None:
-    """Delete a file we created and no longer want, without masking why."""
-    try:
-        os.remove(path)
-    except OSError as removal_error:
-        logger.warning(f"Could not remove the unused backup {path}: {removal_error}")
-
-
-class BackupNotPrivateError(RuntimeError):
-    """A backup could not be made no more readable than what it copies."""
-
-
-def _restrict_backup_to_owner(path: str, fd: int) -> None:
-    """Confirm a just-created, still-EMPTY backup is private, or refuse.
-
-    POSIX is settled here: the mode came from ``os.open``'s 0600, which the
-    umask can only narrow, so the file was never readable by anyone else and
-    this verifies that from the open descriptor.
-
-    **Windows is not, and this function does not make it so.** ``os.open``'s
-    mode writes no ACL there -- it sets the read-only ATTRIBUTE -- so the file
-    appears carrying the parent directory's inherited ACL, which may admit
-    users the original's own ACL excluded. Worse, tightening the ACL
-    afterwards does not close the hole: Windows checks access when a handle is
-    OPENED, so a process that opened the backup during the window keeps
-    reading through that handle after ``icacls`` succeeds, including the rows
-    written later. ``O_EXCL`` does not help -- it refuses to create over an
-    existing file and grants no exclusive ACCESS.
-
-    Closing that needs the file to be private from the instant it exists:
-    ``CreateFileW`` with a ``SECURITY_ATTRIBUTES`` descriptor, or
-    ``dwShareMode=0`` so no other handle can be opened at all. Neither is
-    reachable through ``os.open``, and neither is implemented here. So on
-    Windows this REFUSES by default rather than claiming a protection it does
-    not provide. An operator who knows the directory admits no other readers
-    can proceed with ``LIGHTRAG_ALLOW_UNPROTECTED_BACKUP=true``, which still
-    runs ``icacls`` (it does close every moment after the window) and warns.
-
-    Raises ``BackupNotPrivateError`` in every case it cannot vouch for. The
-    caller deletes the empty backup and aborts with the originals intact.
-    """
-    if os.name != "nt":
-        mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise BackupNotPrivateError(
-                f"{path} was created mode {oct(mode)}; expected no group or "
-                "other access"
-            )
-        return
-
-    if (
-        os.environ.get("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", "").strip().lower()
-        != "true"
-    ):
-        raise BackupNotPrivateError(
-            f"Refusing to back up {path}: on Windows this tool cannot make a "
-            "backup private from the moment it is created, so another user "
-            "of this directory could hold a read handle to it. Copy the "
-            "corrupt files aside yourself into a location you control and "
-            "re-run, or set LIGHTRAG_ALLOW_UNPROTECTED_BACKUP=true if no "
-            "other user can read this directory."
-        )
-    logger.warning(
-        f"LIGHTRAG_ALLOW_UNPROTECTED_BACKUP is set: {path} is restricted only "
-        "AFTER it is created, so a handle opened in between keeps read access "
-        "to everything written into it. Proceeding on the operator's word "
-        "that this directory admits no other readers."
-    )
-    account = os.environ.get("USERNAME")
-    domain = os.environ.get("USERDOMAIN")
-    if not account:
-        raise BackupNotPrivateError(
-            f"Cannot restrict {path}: USERNAME is not set, so there is no "
-            "account to grant it to"
-        )
-    principal = f"{domain}\\{account}" if domain else account
-    completed = subprocess.run(
-        ["icacls", path, "/inheritance:r", "/grant:r", f"{principal}:(R,W)"],
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise BackupNotPrivateError(
-            f"Cannot restrict {path} to {principal}: icacls exited "
-            f"{completed.returncode} ({completed.stderr.strip() or 'no output'})"
-        )
-
-
 def backup_corrupt_snapshot(paths: tuple[str, ...]) -> List[str]:
     """Preserve every file of a corrupt storage before a confirmed rebuild.
 
@@ -279,47 +190,43 @@ def backup_corrupt_snapshot(paths: tuple[str, ...]) -> List[str]:
     A file that is merely absent from a present set is skipped -- a torn pair
     is exactly the shape some corruption takes.
 
+    "Absent" is decided by OPENING the source and catching ``FileNotFoundError``
+    from that one call, not by a prior ``exists()``. A file that disappears
+    between the check and the open would otherwise abort mid-way through, and,
+    worse, only the open can tell "this half of a torn pair is missing" apart
+    from "the directory is gone" or "this file cannot be read" -- both of which
+    must abort rather than be silently skipped as nothing-to-preserve.
+
     A backup holds the same documents and metadata as the store it copies and
     is kept indefinitely by design, so it must never be more readable than
-    what it copies. Each one is created EMPTY, put through
-    ``_restrict_backup_to_owner``, and only then written into. On POSIX that
-    ordering is belt and braces over a file that was private from creation; on
-    Windows it is NOT sufficient on its own, and that function refuses by
-    default rather than pretend otherwise -- read it before relying on this.
-    A backup that cannot be vouched for deletes its empty stub and aborts with
-    the originals intact.
+    what it copies. ``open_private_file`` is what enforces that, on both
+    platforms and from the instant each file exists -- read it before relying
+    on this. A backup that cannot be created private, or proven private,
+    removes itself and aborts the recovery with the originals intact.
     """
-    present = [os.path.abspath(path) for path in paths if os.path.exists(path)]
-    if not present:
+    token = uuid4().hex[:8]
+    backups: List[str] = []
+    for path in paths:
+        absolute = os.path.abspath(path)
+        try:
+            source = open(absolute, "rb")
+        except FileNotFoundError:
+            # The ONLY tolerated failure, and scoped to the open alone.
+            continue
+        backup = f"{absolute}.corrupt-{token}"
+        with source, open_private_file(backup) as destination:
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        # Appended only once the copy is durable, so the returned list never
+        # names a backup that does not hold its source.
+        backups.append(backup)
+    if not backups:
         raise FileNotFoundError(
             f"Refusing to recover: none of {list(paths)} exists to be backed up"
         )
-    token = uuid4().hex[:8]
-    backups: List[str] = []
-    for path in present:
-        backup = f"{path}.corrupt-{token}"
-        # O_EXCL refuses to create OVER an existing file; it grants no
-        # exclusive access to the one it creates. The 0600 is what makes this
-        # private on POSIX, and the umask can only narrow it. Windows ignores
-        # the mode entirely -- see _restrict_backup_to_owner.
-        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as destination:
-            try:
-                _restrict_backup_to_owner(backup, destination.fileno())
-            except BaseException:
-                # No row has been written and nothing has been destroyed.
-                # Leaving the file would strand a stub the next run's O_EXCL
-                # cannot reuse.
-                destination.close()
-                _remove_quietly(backup)
-                raise
-            backups.append(backup)
-            with open(path, "rb") as source:
-                shutil.copyfileobj(source, destination)
-            destination.flush()
-            os.fsync(destination.fileno())
     if os.name != "nt":
-        for parent in sorted({os.path.dirname(path) for path in present}):
+        for parent in sorted({os.path.dirname(backup) for backup in backups}):
             directory = os.open(parent, os.O_RDONLY)
             try:
                 os.fsync(directory)
@@ -1314,8 +1221,23 @@ class RebuildTool:
                     f"Rebuild {label}: backing up the corrupt files before the "
                     f"rebuild drops them ({', '.join(error.artifacts)})"
                 )
-                for backup in backup_corrupt_snapshot(error.artifacts):
-                    print(f"  ✓ {label}: corrupt file preserved at {backup}")
+                try:
+                    for backup in backup_corrupt_snapshot(error.artifacts):
+                        print(f"  ✓ {label}: corrupt file preserved at {backup}")
+                except PrivateFileError as privacy_error:
+                    # The refusal alone would leave the operator stuck: every
+                    # re-run reaches this same branch. Name the way out that
+                    # actually works -- an absent container reads as a first
+                    # start, so moving the files aside turns this into an
+                    # ordinary rebuild with nothing left to preserve.
+                    raise PrivateFileError(
+                        f"{privacy_error}\n\nNothing has been changed. To "
+                        f"recover {label} by hand, move these files somewhere "
+                        f"you control and re-run this tool -- a container that "
+                        f"is absent reads as a first start, so the rebuild "
+                        f"then proceeds normally:\n"
+                        + "\n".join(f"    {artifact}" for artifact in error.artifacts)
+                    ) from privacy_error
                 await _drop_vdb(targets[label], label)
                 await targets[label].initialize()
                 logger.info(f"Rebuild {label}: corrupt container re-provisioned")
