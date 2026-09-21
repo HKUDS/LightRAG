@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, CorruptStorageSnapshotError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -240,12 +240,26 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         Absent evidence never refuses: a file written before the marker existed
         records no model and still loads.
+
+        A file that is not parseable at all (truncated or overwritten by a
+        crashed or killed writer) raises ``CorruptStorageSnapshotError``
+        instead of the library's bare ``json.JSONDecodeError`` /
+        ``UnicodeDecodeError``: the refusal must name the file and its
+        recovery path, and tools must be able to tell it apart from the
+        dimension refusal above. The corrupt file is never dropped here --
+        see the exception's docstring for why the drop stays manual.
         """
         try:
             client = NanoVectorDB(
                 self.embedding_func.embedding_dim,
                 storage_file=self._client_file_name,
             )
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=self._client_file_name,
+                detail=str(e),
+            ) from e
         except AssertionError as e:
             assert_vector_space_matches(
                 backend=type(self).__name__,

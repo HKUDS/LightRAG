@@ -34,6 +34,16 @@ files may be justified by — or blocked on — it.
 and serializes its full state to one JSON file at
 `working_dir/[workspace/]vdb_<namespace>.json`.
 
+A snapshot that cannot be parsed at all — truncated or overwritten by a
+crashed, killed, or disk-full writer — is a **fail-loud** condition:
+`_build_client` raises `CorruptStorageSnapshotError` (chaining the parse
+error) at startup and on every reader reload, and never drops or rebuilds the
+file itself. The drop stays manual because the file is the only copy of the
+last flushed rows: deleting it before the authoritative sources (graph
+storage and the `text_chunks` KV store) are verified intact loses data they
+cannot rebuild. Recovery: stop every writer, move the corrupt file aside,
+restart to provision a fresh empty store, then run `lightrag-rebuild-vdb`.
+
 `FaissVectorDBStorage` splits its state across two fields — `self._index` (the
 Faiss index) and `self._id_to_meta` (`dict[int_faiss_id, metadata]`) — and two
 files per `(workspace, namespace)`:
