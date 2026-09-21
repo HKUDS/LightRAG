@@ -61,9 +61,12 @@ The run, in order:
    configuration directory for the run, so a server still holding it makes the
    tool refuse before anything else.
 3. Shows what is about to be deleted, then stops for confirmation:
-   - the number of documents in each `doc_status` state, and the total;
+   - the number of documents in each `doc_status` state, and their sum as
+     the total;
    - the ten most recently updated documents (updated time, status, file
-     path, id);
+     path, id) — a listing read, so a page that comes back empty while the
+     strict counts say documents exist is read as the backend's swallowed
+     failure, not as "no documents";
    - whether `text_chunks` holds any data;
    - whether each vector storage is empty, has vectors, or refused to attach;
    - the recorded embedding baselines;

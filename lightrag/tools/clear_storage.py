@@ -600,19 +600,37 @@ class ClearTool:
                 "doc_status", lambda status=status: count(status)
             )
 
+        # The total is the sum of the STRICT counts above, never the page's
+        # own total: ``get_docs_paginated`` is a listing read, and on Redis and
+        # OpenSearch it catches its backend errors and returns ``([], 0)``.
+        strict_total: Any = (
+            Unreadable("one or more status counts could not be read")
+            if any(isinstance(c, Unreadable) for c in counts.values())
+            else sum(counts.values())
+        )
+
         async def page():
-            return await doc_status.get_docs_paginated(
+            rows, _page_total = await doc_status.get_docs_paginated(
                 page=1,
                 page_size=RECENT_DOCS_SHOWN,
                 sort_field="updated_at",
                 sort_direction="desc",
             )
+            # An empty page under a strict count that says documents exist is
+            # the swallowed failure showing through: the backend was reachable
+            # for the counts a moment ago and is not now. Raising here hands
+            # it to ``_read``, which refuses the run on a server backend --
+            # its drop would fail after the healthy siblings were dropped.
+            if not rows and isinstance(strict_total, int) and strict_total > 0:
+                raise RuntimeError(
+                    f"get_docs_paginated returned no rows while the strict "
+                    f"counts report {strict_total} document(s); the listing "
+                    f"read failed silently"
+                )
+            return rows
 
-        paged = await self._read("doc_status", page)
-        if isinstance(paged, Unreadable):
-            recent, total = paged, paged
-        else:
-            recent, total = paged
+        recent = await self._read("doc_status", page)
+        total = strict_total
 
         async def text_chunks_state() -> Any:
             # The same strict existence read the startup gate uses to CLAIM a

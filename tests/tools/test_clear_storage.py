@@ -125,9 +125,16 @@ def make_tool(
         assert strict is True, "the summary must count strictly"
         return counts.get(statuses[0], 0)
 
+    if recent is None:
+        # Consistent with the default counts: a page that lists nothing while
+        # the strict counts say documents exist is read as a silent failure.
+        recent = [
+            ("doc-a", make_doc(DocStatus.PROCESSED, "2026-09-02T00:00:00", "a.txt")),
+            ("doc-b", make_doc(DocStatus.PROCESSED, "2026-09-01T00:00:00", "b.txt")),
+        ]
+
     async def get_docs_paginated(**kwargs):
-        rows = recent or []
-        return rows, len(rows)
+        return list(recent), len(recent)
 
     tool.storages["doc_status"].count_docs_by_statuses = count_docs_by_statuses
     tool.storages["doc_status"].get_docs_paginated = get_docs_paginated
@@ -277,7 +284,7 @@ class TestSummary:
     async def test_the_recent_list_asks_for_the_ten_most_recently_updated(
         self, tmp_path, stub_baselines
     ):
-        tool = make_tool(tmp_path)
+        tool = make_tool(tmp_path, counts={})
         seen = {}
 
         async def get_docs_paginated(**kwargs):
@@ -387,6 +394,74 @@ class TestSummary:
         for label in DATA_STORAGE_LABELS:
             tool.storages[label].drop.assert_not_called()
         assert (tmp_path / "inputs" / "a.txt").exists()
+
+    async def test_the_total_comes_from_the_strict_counts_not_the_page(
+        self, tmp_path, stub_baselines
+    ):
+        """``get_docs_paginated`` is a listing read whose total is not
+        strict; the number the operator sees is the sum of the strict
+        per-status counts."""
+        tool = make_tool(tmp_path, counts={DocStatus.PROCESSED: 5, DocStatus.FAILED: 2})
+
+        async def get_docs_paginated(**kwargs):
+            return [("doc-a", make_doc(DocStatus.PROCESSED, "t", "a.txt"))], 1
+
+        tool.storages["doc_status"].get_docs_paginated = get_docs_paginated
+
+        assert (await tool.collect_summary())["total_docs"] == 7
+
+    async def test_an_empty_page_under_a_positive_strict_count_refuses_on_a_server(
+        self, tmp_path, stub_baselines
+    ):
+        """``RedisDocStatusStorage`` / ``OpenSearchDocStatusStorage.get_docs_paginated``
+        catch backend errors and return ``([], 0)``. If the outage begins
+        after the strict counts, that would show as zero recent documents and
+        permit the confirmation; instead the contradiction is read as the
+        swallowed failure and, on a server backend, refuses the run."""
+        tool = make_tool(tmp_path, counts={DocStatus.PROCESSED: 3})
+        tool.storage_names["doc_status"] = "RedisDocStatusStorage"
+
+        async def swallowed(**kwargs):
+            return [], 0
+
+        tool.storages["doc_status"].get_docs_paginated = swallowed
+
+        with pytest.raises(RemoteBackendUnavailableError):
+            await tool.collect_summary()
+
+    async def test_an_empty_page_under_a_positive_strict_count_is_unreadable_locally(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path, counts={DocStatus.PROCESSED: 3})
+
+        async def swallowed(**kwargs):
+            return [], 0
+
+        tool.storages["doc_status"].get_docs_paginated = swallowed
+
+        summary = await tool.collect_summary()
+
+        assert isinstance(summary["recent"], Unreadable)
+        assert summary["total_docs"] == 3
+        assert "most recently updated documents" in tool.unreadable_items(summary)
+
+    async def test_an_empty_page_under_zero_strict_counts_is_simply_empty(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        tool = make_tool(tmp_path, counts={})
+        tool.storage_names["doc_status"] = "RedisDocStatusStorage"
+
+        async def empty(**kwargs):
+            return [], 0
+
+        tool.storages["doc_status"].get_docs_paginated = empty
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        assert summary["recent"] == []
+        assert summary["total_docs"] == 0
+        assert "(none)" in capsys.readouterr().out
 
     async def test_a_storage_that_did_not_open_is_not_asked(
         self, tmp_path, stub_baselines
