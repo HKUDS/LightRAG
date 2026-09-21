@@ -7,6 +7,9 @@ Covers what the operator relies on:
 - the drop step mirrors ``/documents/clear``: every one of the eleven storages
   is attempted, a ``BaseException`` object or a non-success dict is a failure,
   and the configuration records go only when every drop succeeded;
+- the kind rule: a server backend that cannot be opened or read refuses the
+  run before anything is dropped, a file-backed storage whose file is
+  corrupt is shown as UNREADABLE and dropped anyway;
 - the LLM response cache is never instantiated or dropped;
 - top-level input files go, subdirectories (``__parsed__``) stay;
 - exit status is non-zero on any partial outcome.
@@ -27,7 +30,10 @@ from lightrag.tools.clear_storage import (
     DATA_STORAGE_LABELS,
     ClearTool,
     DropOutcome,
+    RemoteBackendUnavailableError,
+    Unreadable,
     classify_drop_result,
+    is_server_backed,
 )
 
 pytestmark = pytest.mark.offline
@@ -61,6 +67,15 @@ def make_storage(label: str, *, drop_result=None, drop_error=None, workspace="ws
     return storage
 
 
+FILE_BACKED_NAMES = {
+    "graph": "NetworkXStorage",
+    "vector": "NanoVectorDBStorage",
+    "kv": "JsonKVStorage",
+    "doc_status": "JsonDocStatusStorage",
+    "config": "JsonKVStorage",
+}
+
+
 def make_doc(status: DocStatus, updated_at: str, file_path: str):
     return SimpleNamespace(status=status, updated_at=updated_at, file_path=file_path)
 
@@ -82,6 +97,8 @@ def make_tool(
     tool = ClearTool()
     tool.workspace = workspace
     tool.input_dir = str(tmp_path / "inputs")
+    tool.global_config = {"working_dir": str(tmp_path / "wd")}
+    tool.storage_names = dict(FILE_BACKED_NAMES)
     tool.storages = {
         label: storage_overrides.get(label) or make_storage(label, workspace=workspace)
         for label in DATA_STORAGE_LABELS
@@ -113,12 +130,12 @@ def stub_kv_enumeration(monkeypatch):
 
 @pytest.fixture
 def stub_baselines(monkeypatch):
-    async def read_embedding_baselines(config, workspace):
-        return {"entities": None, "relationships": None, "chunks": None}
+    """Every baseline row confirmed absent."""
 
-    monkeypatch.setattr(
-        clear_storage, "read_embedding_baselines", read_embedding_baselines
-    )
+    async def read_config_row_strict(config, key):
+        return None
+
+    monkeypatch.setattr(clear_storage, "read_config_row_strict", read_config_row_strict)
 
 
 @pytest.fixture(autouse=True)
@@ -298,14 +315,38 @@ class TestSummary:
         assert "resolved to workspace(s)" in out
         assert "other" in out and "qdrant-legacy" in out
 
-    async def test_an_unreadable_count_aborts_with_nothing_dropped(
+    async def test_an_unreadable_count_on_a_file_backed_store_is_shown_not_zero(
+        self, tmp_path, stub_kv_enumeration, stub_baselines, capsys
+    ):
+        """The failure this display exists to prevent is a swallowed read
+        rendering as zero documents. A file-backed store that cannot answer
+        is DATA about to be deleted, so the run goes on -- but the value is
+        UNREADABLE on screen, never 0, and the operator is told."""
+        tool = make_tool(tmp_path)
+
+        async def broken_count(statuses, *, strict):
+            raise OSError("doc_status file unreadable")
+
+        tool.storages["doc_status"].count_docs_by_statuses = broken_count
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        out = capsys.readouterr().out
+        assert all(isinstance(c, Unreadable) for c in summary["counts"].values())
+        assert "UNREADABLE" in out
+        assert "could not be read" in out
+        assert "documents in status processed" in out
+
+    async def test_an_unreadable_count_on_a_server_backend_refuses_the_run(
         self, tmp_path, monkeypatch, stub_kv_enumeration, stub_baselines, capsys
     ):
-        """The one failure this display exists to prevent: a swallowed read
-        rendering as zero documents. The read raises, the run stops, no
-        prompt for the phrase is ever shown, and no storage is dropped."""
+        """A server backend that cannot answer a read will not serve the
+        drop either; clearing the others would leave it populated. Nothing
+        is dropped and the phrase is never asked for."""
         seed_input_dir(tmp_path)
         tool = make_tool(tmp_path)
+        tool.storage_names["doc_status"] = "PGDocStatusStorage"
 
         async def broken_count(statuses, *, strict):
             raise ConnectionError("doc_status unreachable")
@@ -322,6 +363,116 @@ class TestSummary:
         for label in DATA_STORAGE_LABELS:
             tool.storages[label].drop.assert_not_called()
         assert (tmp_path / "inputs" / "a.txt").exists()
+
+    async def test_a_storage_that_did_not_open_is_not_asked(
+        self, tmp_path, stub_kv_enumeration, stub_baselines
+    ):
+        """A JSON storage whose load failed still holds an EMPTY shared dict;
+        asking it would render a corrupt file as zero rows."""
+        tool = make_tool(tmp_path)
+        tool.unavailable["doc_status"] = "JSONDecodeError: boom"
+        asked = []
+
+        async def count(statuses, *, strict):
+            asked.append(statuses)
+            return 0
+
+        tool.storages["doc_status"].count_docs_by_statuses = count
+
+        summary = await tool.collect_summary()
+
+        assert asked == []
+        assert isinstance(summary["counts"]["processed"], Unreadable)
+        assert "did not open" in summary["counts"]["processed"].reason
+
+    async def test_a_missing_enumeration_capability_is_unreadable_not_fatal(
+        self, tmp_path, monkeypatch, stub_baselines
+    ):
+        from lightrag.exceptions import StorageCapabilityError
+
+        async def enumerate_kv_keys(kv):
+            raise StorageCapabilityError("no enumeration on this backend")
+
+        monkeypatch.setattr(clear_storage, "enumerate_kv_keys", enumerate_kv_keys)
+        tool = make_tool(tmp_path)
+        tool.storage_names["kv"] = "PGKVStorage"  # server-backed, still tolerated
+
+        summary = await tool.collect_summary()
+
+        assert isinstance(summary["chunk_count"], Unreadable)
+
+    async def test_a_baseline_row_that_does_not_parse_is_unreadable_not_fatal(
+        self, tmp_path, monkeypatch, stub_kv_enumeration
+    ):
+        """``delete_workspace_configuration`` deletes by key without reading
+        the value, so a row the clear will remove anyway must not block it."""
+
+        async def read_config_row_strict(config, key):
+            if key.endswith("/chunks"):
+                return {"value": "not-a-dict", "workspace": "ws", "_id": key}
+            return None
+
+        monkeypatch.setattr(
+            clear_storage, "read_config_row_strict", read_config_row_strict
+        )
+        tool = make_tool(tmp_path)
+
+        summary = await tool.collect_summary()
+
+        assert isinstance(summary["baselines"]["chunks"], Unreadable)
+        assert summary["baselines"]["entities"] is None
+        assert "chunks embedding baseline" in tool.unreadable_items(summary)
+
+    async def test_a_baseline_row_that_cannot_be_fetched_refuses_the_run(
+        self, tmp_path, monkeypatch, stub_kv_enumeration
+    ):
+        """Transport, not parsing: the records could not be deleted after
+        the clear either."""
+        from lightrag.exceptions import ConfigurationStorageError
+
+        async def read_config_row_strict(config, key):
+            raise ConfigurationStorageError("could not read configuration record")
+
+        monkeypatch.setattr(
+            clear_storage, "read_config_row_strict", read_config_row_strict
+        )
+        tool = make_tool(tmp_path)
+
+        with pytest.raises(RemoteBackendUnavailableError):
+            await tool.collect_summary()
+
+
+class TestKindRule:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "JsonKVStorage",
+            "JsonDocStatusStorage",
+            "NetworkXStorage",
+            "NanoVectorDBStorage",
+            "FaissVectorDBStorage",
+        ],
+    )
+    def test_file_backed_backends(self, name):
+        assert is_server_backed(name) is False
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "PGKVStorage",
+            "RedisDocStatusStorage",
+            "Neo4JStorage",
+            "QdrantVectorDBStorage",
+            "MilvusVectorDBStorage",
+            "OpenSearchVectorDBStorage",
+        ],
+    )
+    def test_server_backends(self, name):
+        assert is_server_backed(name) is True
+
+    def test_an_unknown_backend_is_treated_as_a_server(self):
+        """Refusing a run is recoverable; a partial clear is not."""
+        assert is_server_backed("SomeCustomStorage") is True
 
 
 # ---------------------------------------------------------------------------
@@ -525,26 +676,43 @@ class TestClear:
 # ---------------------------------------------------------------------------
 
 
+def setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, *, names=None):
+    """Point ``setup_storages`` at ``fakes`` (label -> storage or exception)."""
+    tool.storage_names = dict(names or FILE_BACKED_NAMES)
+    monkeypatch.setattr(tool, "resolve_storage_names", lambda: tool.storage_names)
+    monkeypatch.setenv("WORKING_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKSPACE", "clearws")
+    monkeypatch.setattr(clear_storage, "uses_working_dir", lambda name: False)
+
+    def build_storage(label, embedding_func):
+        fake = fakes[label]
+        if isinstance(fake, BaseException):
+            raise fake
+        return fake
+
+    monkeypatch.setattr(tool, "build_storage", build_storage)
+    config = make_storage("config")
+    config.initialize = AsyncMock()
+    monkeypatch.setattr(
+        clear_storage, "create_configuration_storage", lambda *a, **k: config
+    )
+    return config
+
+
+def openable_fakes():
+    fakes = {label: make_storage(label) for label in DATA_STORAGE_LABELS}
+    for fake in fakes.values():
+        fake.initialize = AsyncMock()
+    return fakes
+
+
 class TestSetup:
     async def test_a_refused_vector_target_is_recorded_not_fatal(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The two typed refusals are the states this tool exists to clear;
-        anything else from a vector target still aborts."""
+        """The two typed refusals are the states this tool exists to clear,
+        on every backend: ``drop()`` is servable while refused."""
         from lightrag.exceptions import VectorSpaceMismatchError
-
-        tool = ClearTool()
-        tool.storage_names = {
-            "graph": "NetworkXStorage",
-            "vector": "NanoVectorDBStorage",
-            "kv": "JsonKVStorage",
-            "doc_status": "JsonDocStatusStorage",
-            "config": "JsonKVStorage",
-        }
-        monkeypatch.setattr(tool, "resolve_storage_names", lambda: tool.storage_names)
-        monkeypatch.setenv("WORKING_DIR", str(tmp_path))
-        monkeypatch.setenv("WORKSPACE", "clearws")
-        monkeypatch.setattr(clear_storage, "uses_working_dir", lambda name: False)
 
         refusal = VectorSpaceMismatchError(
             backend="FakeVectorStorage",
@@ -554,55 +722,106 @@ class TestSetup:
             stored_model="old-model",
             stored_dim=8,
         )
-        fakes = {label: make_storage(label) for label in DATA_STORAGE_LABELS}
+        fakes = openable_fakes()
         fakes["chunks_vdb"].initialize = AsyncMock(side_effect=refusal)
-        for label, fake in fakes.items():
-            if label != "chunks_vdb":
-                fake.initialize = AsyncMock()
-        monkeypatch.setattr(tool, "build_storages", lambda embedding_func: fakes)
-        config = make_storage("config")
-        config.initialize = AsyncMock()
-        monkeypatch.setattr(
-            clear_storage, "create_configuration_storage", lambda *a, **k: config
-        )
+        tool = ClearTool()
+        names = {**FILE_BACKED_NAMES, "vector": "QdrantVectorDBStorage"}
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, names=names)
 
         ok = await tool.setup_storages()
 
         assert ok is True
         assert list(tool.refused_vdbs) == ["chunks_vdb"]
+        assert tool.unavailable == {}
         assert "refused to attach" in capsys.readouterr().out
         for label in DATA_STORAGE_LABELS:
             fakes[label].initialize.assert_awaited_once()
 
-    async def test_any_other_initialization_failure_aborts(
+    async def test_a_server_backend_that_cannot_open_refuses_the_run(
         self, tmp_path, monkeypatch, capsys
     ):
-        tool = ClearTool()
-        tool.storage_names = {
-            "graph": "NetworkXStorage",
-            "vector": "NanoVectorDBStorage",
-            "kv": "JsonKVStorage",
-            "doc_status": "JsonDocStatusStorage",
-            "config": "JsonKVStorage",
-        }
-        monkeypatch.setattr(tool, "resolve_storage_names", lambda: tool.storage_names)
-        monkeypatch.setenv("WORKING_DIR", str(tmp_path))
-        monkeypatch.setattr(clear_storage, "uses_working_dir", lambda name: False)
-        fakes = {label: make_storage(label) for label in DATA_STORAGE_LABELS}
-        for fake in fakes.values():
-            fake.initialize = AsyncMock()
+        """Clearing the others would leave the unreachable one populated."""
+        fakes = openable_fakes()
         fakes["entities_vdb"].initialize = AsyncMock(
             side_effect=ConnectionError("vector backend down")
         )
-        monkeypatch.setattr(tool, "build_storages", lambda embedding_func: fakes)
-        config = make_storage("config")
-        config.initialize = AsyncMock()
-        monkeypatch.setattr(
-            clear_storage, "create_configuration_storage", lambda *a, **k: config
-        )
+        tool = ClearTool()
+        names = {**FILE_BACKED_NAMES, "vector": "QdrantVectorDBStorage"}
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, names=names)
 
         assert await tool.setup_storages() is False
-        assert "Storage initialization failed" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "refuses the run" in out
+        assert "vector backend down" in out
+
+    async def test_a_file_backed_storage_that_cannot_open_is_dropped_anyway(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A corrupt local file is data the operator is deleting: shown,
+        marked unavailable, and still handed to ``drop()``."""
+        fakes = openable_fakes()
+        fakes["text_chunks"].initialize = AsyncMock(
+            side_effect=ValueError("Expecting value: line 2 column 1")
+        )
+        tool = ClearTool()
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+
+        assert await tool.setup_storages() is True
+        assert list(tool.unavailable) == ["text_chunks"]
+        assert "will be dropped anyway" in capsys.readouterr().out
+
+        outcome = await tool.drop_all()
+
+        fakes["text_chunks"].drop.assert_awaited_once()
+        assert outcome.all_succeeded
+
+    async def test_a_storage_that_cannot_be_constructed_is_a_failed_drop(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """NetworkX parses its file in the constructor, so a corrupt GraphML
+        leaves no instance to drop. Reported as a failed drop -- the records
+        stay, the exit is non-zero -- never silently skipped."""
+        fakes = openable_fakes()
+        fakes["chunk_entity_relation_graph"] = SyntaxError("syntax error: line 1")
+        tool = ClearTool()
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+
+        assert await tool.setup_storages() is True
+        assert tool.storages["chunk_entity_relation_graph"] is None
+        assert "chunk_entity_relation_graph" in tool.unavailable
+
+        outcome = await tool.drop_all()
+
+        failed = dict(outcome.failed)
+        assert "not constructed" in failed["chunk_entity_relation_graph"]
+        assert "by hand" in failed["chunk_entity_relation_graph"]
+        assert len(outcome.succeeded) == 10
+
+    async def test_a_server_backend_that_cannot_be_constructed_refuses_the_run(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        fakes = openable_fakes()
+        fakes["doc_status"] = ConnectionError("cannot resolve host")
+        tool = ClearTool()
+        names = {**FILE_BACKED_NAMES, "doc_status": "PGDocStatusStorage"}
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, names=names)
+
+        assert await tool.setup_storages() is False
+        assert "refuses the run" in capsys.readouterr().out
+
+    async def test_a_configuration_storage_that_cannot_open_refuses_the_run(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The records are deleted LAST; a store that cannot be opened could
+        not take that step, and file-backed or not that is not a clean clear."""
+        fakes = openable_fakes()
+        tool = ClearTool()
+        config = setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+        config.initialize = AsyncMock(side_effect=OSError("config dir unwritable"))
+
+        assert await tool.setup_storages() is False
+        assert "configuration storage could not be opened" in capsys.readouterr().out
+        assert tool.storages == {}
 
     async def test_setup_refuses_while_another_process_tree_holds_the_config_dir(
         self, tmp_path, monkeypatch, capsys
@@ -722,3 +941,47 @@ class TestEndToEndOnJsonBackends:
         assert not (working_dir / "e2e" / "kv_store_llm_response_cache.json").exists()
         assert not (inputs / "a.txt").exists()
         assert (inputs / "__parsed__" / "a.md").exists()
+
+    async def test_corrupt_local_files_are_shown_unreadable_and_still_cleared(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Fix-proof for the kind rule on the real JSON backends: a corrupt
+        ``text_chunks`` file and a baseline row that does not parse used to
+        abort the run with nothing deleted. Both are data the operator is
+        deleting, so the summary shows them UNREADABLE and the clear rewrites
+        the file empty and removes the row."""
+        import json
+
+        working_dir = tmp_path / "wd"
+        workspace_dir = working_dir / "e2e"
+        config_dir = working_dir / CONFIG_CONTAINER_TAG
+        workspace_dir.mkdir(parents=True)
+        config_dir.mkdir(parents=True)
+        (workspace_dir / "kv_store_text_chunks.json").write_text('{"chunk-1": ')
+        (config_dir / "kv_store_config.json").write_text(
+            json.dumps(
+                {"e2e/embedding/chunks": {"value": "not-a-dict", "workspace": "e2e"}}
+            )
+        )
+        monkeypatch.setenv("WORKING_DIR", str(working_dir))
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+        monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
+        monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
+        monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
+        monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
+        monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
+        monkeypatch.setenv("WORKSPACE", "e2e")
+        monkeypatch.setenv("EMBEDDING_MODEL", "dummy")
+        monkeypatch.setenv("EMBEDDING_DIM", "8")
+        answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
+
+        ok = await ClearTool().run()
+        out = capsys.readouterr().out
+
+        assert ok is True
+        assert "text_chunks (JsonKVStorage) could not be opened" in out
+        assert "UNREADABLE" in out
+        assert "chunks embedding baseline" in out
+        assert "Workspace cleared" in out
+        assert (workspace_dir / "kv_store_text_chunks.json").read_text() == "{}"
+        assert json.loads((config_dir / "kv_store_config.json").read_text()) == {}

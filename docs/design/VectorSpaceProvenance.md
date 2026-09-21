@@ -315,10 +315,16 @@ this one's.
 `lightrag/tools/clear_storage.py` is the other way out, for a workspace whose
 data is disposable: it drives the same storages directly, tolerates the same
 two typed refusals on the vector targets, and answers them with `drop()` alone
--- there is nothing to re-initialize for, because the process ends. It never
-consults the coverage gate, and on a named-container backend it clears the
-container named by the CURRENT embedding configuration, leaving a container
-named by a previous one orphaned exactly as a rebuild would.
+-- there is nothing to re-initialize for, because the process ends. Unlike the
+rebuild it also tolerates a FILE-BACKED storage that fails to open for any
+other reason (a corrupt JSON or GraphML file): that file is the data being
+deleted, so it is shown as unreadable and dropped anyway. A SERVER backend
+that fails to open or to answer a read still refuses the run, because it
+would not serve the drop either and clearing its siblings would leave it
+populated. It never consults the coverage gate, and on a named-container
+backend it clears the container named by the CURRENT embedding configuration,
+leaving a container named by a previous one orphaned exactly as a rebuild
+would.
 
 ## The transition: adopting an unmarked container
 

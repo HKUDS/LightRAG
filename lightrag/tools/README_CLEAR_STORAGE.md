@@ -58,9 +58,10 @@ The run, in order:
 5. Drops the eleven data storages, deletes the workspace's configuration
    records, and deletes the top-level input files.
 
-Every read in step 3 is fail-loud: a backend that cannot answer aborts the run
-with nothing deleted. A count that cannot be read is never shown as zero,
-because zero is exactly what makes an operator clear the wrong workspace.
+A value in step 3 that cannot be read is shown as `UNREADABLE`, never as
+zero, because zero is exactly what makes an operator clear the wrong workspace.
+Whether an unreadable value stops the run depends on the backend's kind — see
+*Errors: what stops the run and what does not* below.
 
 The chunk count enumerates every `text_chunks` key, and the status counts are
 one strict query per status, so on a very large workspace the summary takes a
@@ -94,6 +95,36 @@ Preserved:
   in effect, and the workspace a storage resolved to where its backend reports
   it, so check them before you type the phrase.
 
+## Errors: what stops the run and what does not
+
+The rule is the backend's **kind**, decided from whether it needs a connection
+setting (`STORAGE_ENV_REQUIREMENTS`): a backend that does is a server, one
+that does not is file-backed. An unknown backend counts as a server.
+
+| Failure | Server backend (PostgreSQL, Redis, Mongo, Milvus, Qdrant, Neo4j, Memgraph, OpenSearch) | File-backed storage (JSON, NetworkX, Nano, Faiss) |
+|---|---|---|
+| cannot be opened at startup | **refuses the run**, nothing dropped | shown; summary reads `UNREADABLE`; `drop()` still attempted |
+| a summary read fails | **refuses the run**, nothing dropped | that value reads `UNREADABLE`; the run goes on |
+| a vector storage refuses to attach (foreign embedding space, corrupt Nano/Faiss snapshot) | dropped anyway — both are typed data-level refusals and `drop()` is servable | same |
+| the storage lacks a read capability (no key enumeration, no strict count) | that value reads `UNREADABLE`; the run goes on | same |
+| the configuration storage cannot be opened or a baseline row cannot be fetched | **refuses the run** | **refuses the run** (the records are deleted last; a store that cannot take that step is not a clean clear) |
+| a baseline row is fetched but does not parse | shown `UNREADABLE`; the row is deleted by key like any other | same |
+| `drop()` fails on one storage | the others are still dropped; the configuration records stay; exit non-zero | same |
+
+The reasoning: a server backend that cannot be reached will not serve the
+drop either, and clearing the storages that did answer would leave the
+unreachable one populated — a partial clear nobody asked for, and the server's
+next start would find surviving data behind deleted records. A corrupt local
+file, by contrast, *is* the data the operator is about to delete; refusing to
+delete it because it cannot be read would send them to `rm`.
+
+One file-backed storage cannot be dropped through the tool when its file is
+corrupt: `NetworkXStorage` parses its GraphML in the constructor, so there is
+no instance to call `drop()` on. The tool reports that storage as a failed
+drop, keeps the configuration records, exits non-zero, and names the working
+directory; remove `graph_chunk_entity_relation.graphml` from the workspace's
+directory by hand and re-run.
+
 ## Important notes
 
 - **Stop the server first.** Dropping storages under a live pipeline tears
@@ -109,8 +140,8 @@ Preserved:
   refusals — vectors written in another embedding space, or a corrupt local
   snapshot — are the states this tool exists to clear, and `drop()` is
   servable while refused. Nothing is backed up first: the operator is typing
-  the phrase that deletes it. Any other initialization failure (an outage, a
-  bad credential) aborts the run untouched.
+  the phrase that deletes it. An outage or a bad credential on a server
+  backend refuses the run untouched (see the table above).
 - **Named-container backends clear the container the current configuration
   names.** Qdrant and PostgreSQL derive the collection / table from
   `EMBEDDING_MODEL` and `EMBEDDING_DIM`. Run the tool with the `.env` the server

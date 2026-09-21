@@ -15,11 +15,20 @@ What it does, in order:
 1. shows what is about to be deleted: document counts per status, the ten
    most recently updated documents, the number of text chunks, whether each
    vector index is empty, the recorded embedding baselines and the input
-   files -- every read fail-loud, so a backend that cannot answer aborts the
-   run instead of rendering as "nothing here";
+   files. A value that cannot be read is shown as UNREADABLE, never as zero;
 2. asks the operator to type ``Delete All``;
 3. drops the eleven data storages, then the workspace's configuration
    records (only when EVERY drop succeeded), then the top-level input files.
+
+Two kinds of failure are told apart, and the rule is the backend's KIND:
+
+* A **server backend** (PostgreSQL, Redis, Mongo, Milvus, Qdrant, Neo4j,
+  OpenSearch, ...) that cannot be opened or read REFUSES the run before
+  anything is dropped. Clearing the storages that did answer would leave the
+  unreachable one populated -- a partial clear nobody asked for.
+* A **file-backed storage** (JSON, NetworkX, Nano, Faiss) whose file is
+  corrupt is DATA the operator is about to delete. Its failure is shown, its
+  summary line reads UNREADABLE, and its ``drop()`` is still attempted.
 
 What it never touches: the LLM response cache (clear it later through the
 WebUI, once the server is up again), the ``__parsed__`` directory, and any
@@ -39,7 +48,7 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from dotenv import load_dotenv
 
@@ -51,10 +60,12 @@ sys.path.insert(
 from lightrag.base import DocStatus
 from lightrag.config_store import (
     EMBEDDING_TARGETS,
+    EmbeddingBaseline,
     create_configuration_storage,
     delete_workspace_configuration,
     describe_configuration_container,
-    read_embedding_baselines,
+    embedding_baseline_key,
+    read_config_row_strict,
     resolve_config_dir,
     resolve_configuration_storage,
 )
@@ -65,7 +76,9 @@ from lightrag.constants import (
     DEFAULT_WORKING_DIR,
 )
 from lightrag.exceptions import (
+    ConfigurationStorageError,
     CorruptStorageSnapshotError,
+    StorageCapabilityError,
     VectorSpaceMismatchError,
     WorkingDirectoryInUseError,
 )
@@ -110,11 +123,42 @@ DATA_STORAGE_LABELS: Tuple[str, ...] = (
 
 VECTOR_LABELS: Tuple[str, ...] = ("entities_vdb", "relationships_vdb", "chunks_vdb")
 
+# Which configured backend (``resolve_storage_names`` key) each label uses.
+STORAGE_KIND_OF_LABEL: Dict[str, str] = {
+    **{label: "kv" for label in DATA_STORAGE_LABELS[:6]},
+    **{label: "vector" for label in VECTOR_LABELS},
+    "chunk_entity_relation_graph": "graph",
+    "doc_status": "doc_status",
+}
+
 # ANSI color codes for terminal output
 BOLD_CYAN = "\033[1;36m"
 BOLD_RED = "\033[1;31m"
 BOLD_GREEN = "\033[1;32m"
 RESET = "\033[0m"
+
+
+class RemoteBackendUnavailableError(RuntimeError):
+    """A server backend could not be opened or read, so the run is refused.
+
+    Raised before anything is dropped. The alternative -- clearing the
+    storages that did answer -- leaves the unreachable one populated, and a
+    workspace half cleared is worse than one not cleared at all.
+    """
+
+
+def is_server_backed(storage_name: str) -> bool:
+    """Whether a backend is reached over a connection rather than a file.
+
+    Decided from ``STORAGE_ENV_REQUIREMENTS``: a backend that needs a
+    connection setting is a server, one that needs none is file-backed. A
+    name the table does not know is treated as a server, the conservative
+    reading -- refusing a run is recoverable, a partial clear is not.
+    """
+    requirements = STORAGE_ENV_REQUIREMENTS.get(storage_name)
+    if requirements is None:
+        return True
+    return bool(requirements)
 
 
 def classify_drop_result(result: Any) -> str | None:
@@ -136,6 +180,13 @@ def classify_drop_result(result: Any) -> str | None:
     if isinstance(result, dict) and result.get("status") != "success":
         return str(result.get("message", "unknown error"))
     return None
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A summary value that could not be read. Rendered as such, never as 0."""
+
+    reason: str
 
 
 @dataclass
@@ -162,10 +213,17 @@ class ClearTool:
         self.workspace = ""
         self.global_config: Dict[str, Any] = {}
         self.storage_names: Dict[str, str] = {}
-        # Vector targets whose ``initialize()`` refused, label -> diagnostic.
-        # They are dropped like every other storage; nothing is backed up,
-        # because the operator is about to type the phrase that deletes it.
+        # Vector targets whose ``initialize()`` raised one of the two typed
+        # refusals, label -> diagnostic. Dropped like every other storage;
+        # nothing is backed up, because the operator is about to type the
+        # phrase that deletes it.
         self.refused_vdbs: Dict[str, str] = {}
+        # File-backed storages whose construction or ``initialize()`` failed
+        # for any other reason, label -> diagnostic. Their data is unreadable,
+        # which is not a reason to keep it; ``drop()`` is still attempted. A
+        # storage that could not even be constructed is ``None`` in
+        # ``self.storages`` and is reported as a failed drop.
+        self.unavailable: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Configuration / setup
@@ -195,6 +253,10 @@ class ClearTool:
 
     def resolve_input_dir(self) -> str:
         return os.path.abspath(get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR))
+
+    def storage_name_of(self, label: str) -> str:
+        """The configured backend name behind a data storage label."""
+        return self.storage_names[STORAGE_KIND_OF_LABEL[label]]
 
     def check_env_vars(self, storage_name: str) -> None:
         """Warn about missing env vars (initialization is the real validation)."""
@@ -247,82 +309,95 @@ class ClearTool:
             "embedding_func": embedding_func,
         }
 
-    def build_storages(self, embedding_func: EmbeddingFunc) -> Dict[str, Any]:
-        """Instantiate the eleven data storages ``/documents/clear`` drops.
+    def build_storage(self, label: str, embedding_func: EmbeddingFunc):
+        """Instantiate one of the eleven data storages ``/documents/clear`` drops.
 
         Namespaces and ``meta_fields`` match ``LightRAG.__post_init__`` so
         every backend resolves the same container the server writes to.
         """
         from lightrag.kg.factory import get_storage_class
 
-        graph_cls = get_storage_class(self.storage_names["graph"])
-        vector_cls = get_storage_class(self.storage_names["vector"])
-        kv_cls = get_storage_class(self.storage_names["kv"])
-        doc_status_cls = get_storage_class(self.storage_names["doc_status"])
-
-        def kv(namespace: str):
-            return kv_cls(
-                namespace=namespace,
-                workspace=self.workspace,
-                global_config=self.global_config,
-                embedding_func=embedding_func,
-            )
-
-        def vdb(namespace: str, meta_fields: set):
-            return vector_cls(
-                namespace=namespace,
-                workspace=self.workspace,
-                global_config=self.global_config,
-                embedding_func=embedding_func,
-                meta_fields=meta_fields,
-            )
-
-        return {
-            "text_chunks": kv(NameSpace.KV_STORE_TEXT_CHUNKS),
-            "full_docs": kv(NameSpace.KV_STORE_FULL_DOCS),
-            "full_entities": kv(NameSpace.KV_STORE_FULL_ENTITIES),
-            "full_relations": kv(NameSpace.KV_STORE_FULL_RELATIONS),
-            "entity_chunks": kv(NameSpace.KV_STORE_ENTITY_CHUNKS),
-            "relation_chunks": kv(NameSpace.KV_STORE_RELATION_CHUNKS),
-            "entities_vdb": vdb(
+        cls = get_storage_class(self.storage_name_of(label))
+        common = {
+            "workspace": self.workspace,
+            "global_config": self.global_config,
+            "embedding_func": embedding_func,
+        }
+        vector_meta = {
+            "entities_vdb": (
                 NameSpace.VECTOR_STORE_ENTITIES,
                 {"entity_name", "source_id", "content", "file_path"},
             ),
-            "relationships_vdb": vdb(
+            "relationships_vdb": (
                 NameSpace.VECTOR_STORE_RELATIONSHIPS,
                 {"src_id", "tgt_id", "source_id", "content", "file_path"},
             ),
-            "chunks_vdb": vdb(
+            "chunks_vdb": (
                 NameSpace.VECTOR_STORE_CHUNKS,
                 {"full_doc_id", "content", "file_path"},
             ),
-            "chunk_entity_relation_graph": graph_cls(
-                namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
-                workspace=self.workspace,
-                global_config=self.global_config,
-                embedding_func=embedding_func,
-            ),
-            "doc_status": doc_status_cls(
+        }
+        kv_namespaces = {
+            "text_chunks": NameSpace.KV_STORE_TEXT_CHUNKS,
+            "full_docs": NameSpace.KV_STORE_FULL_DOCS,
+            "full_entities": NameSpace.KV_STORE_FULL_ENTITIES,
+            "full_relations": NameSpace.KV_STORE_FULL_RELATIONS,
+            "entity_chunks": NameSpace.KV_STORE_ENTITY_CHUNKS,
+            "relation_chunks": NameSpace.KV_STORE_RELATION_CHUNKS,
+        }
+        if label in vector_meta:
+            namespace, meta_fields = vector_meta[label]
+            return cls(namespace=namespace, meta_fields=meta_fields, **common)
+        if label in kv_namespaces:
+            return cls(namespace=kv_namespaces[label], **common)
+        if label == "chunk_entity_relation_graph":
+            return cls(namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION, **common)
+        if label == "doc_status":
+            return cls(
                 namespace=NameSpace.DOC_STATUS,
                 workspace=self.workspace,
                 global_config=self.global_config,
                 embedding_func=None,
-            ),
-        }
+            )
+        raise ValueError(f"unknown storage label {label!r}")
+
+    async def _open_data_storage(self, label: str, embedding_func: EmbeddingFunc):
+        """Construct and initialize one data storage, applying the kind rule.
+
+        Returns the instance, or ``None`` when a file-backed storage could
+        not even be constructed. Raises ``RemoteBackendUnavailableError``
+        for a server backend that failed for any reason but the two typed
+        vector refusals, which are data-level on every backend and leave
+        ``drop()`` servable.
+        """
+        storage_name = self.storage_name_of(label)
+        storage = None
+        try:
+            storage = self.build_storage(label, embedding_func)
+            await storage.initialize()
+        except (VectorSpaceMismatchError, CorruptStorageSnapshotError) as e:
+            self.refused_vdbs[label] = str(e)
+            print(f"⚠️  {label} refused to attach: {e}")
+        except Exception as e:
+            if is_server_backed(storage_name):
+                raise RemoteBackendUnavailableError(
+                    f"{label} ({storage_name}) could not be opened: {e}"
+                ) from e
+            self.unavailable[label] = f"{type(e).__name__}: {e}"
+            print(
+                f"⚠️  {label} ({storage_name}) could not be opened, its data is "
+                f"unreadable and will be dropped anyway: {e}"
+            )
+        return storage
 
     async def setup_storages(self) -> bool:
         """Instantiate and initialize every storage. Returns False on failure.
 
-        The configuration storage, the KV stores, the graph and doc_status
-        take the server-identical path and any failure aborts: a clear that
-        could not delete its configuration records last is not a clean clear.
-        The three vector targets are initialized one at a time, and ONLY the
-        typed embedding-space refusal and the typed corrupt-snapshot error
-        are tolerated -- they are the states this tool exists to clear, and
-        ``drop()`` is servable while refused. Anything else aborts.
+        The configuration storage takes the server-identical path and any
+        failure aborts: a clear that could not delete its configuration
+        records last is not a clean clear. The data storages follow the
+        kind rule in the module docstring, applied by ``_open_data_storage``.
         """
-        from lightrag.kg.factory import get_storage_class
-
         self.storage_names = self.resolve_storage_names()
         self.config_dir = self.resolve_config_dir()
         self.input_dir = self.resolve_input_dir()
@@ -347,32 +422,36 @@ class ClearTool:
 
         embedding_func = self.build_embedding_stub()
         self.global_config = self.build_global_config(embedding_func)
-        self.storages = self.build_storages(embedding_func)
-        self.configuration_storage = create_configuration_storage(
-            get_storage_class(self.storage_names["config"]),
-            global_config=self.global_config,
-            embedding_func=embedding_func,
-        )
 
         print("\nInitializing storages...")
         try:
+            from lightrag.kg.factory import get_storage_class
+
+            self.configuration_storage = create_configuration_storage(
+                get_storage_class(self.storage_names["config"]),
+                global_config=self.global_config,
+                embedding_func=embedding_func,
+            )
             await self.configuration_storage.initialize()
-            for label in DATA_STORAGE_LABELS:
-                if label in VECTOR_LABELS:
-                    continue
-                await self.storages[label].initialize()
-            for label in VECTOR_LABELS:
-                try:
-                    await self.storages[label].initialize()
-                except (VectorSpaceMismatchError, CorruptStorageSnapshotError) as e:
-                    self.refused_vdbs[label] = str(e)
-                    print(f"⚠️  {label} refused to attach: {e}")
         except Exception as e:
-            print(f"✗ Storage initialization failed: {e}")
-            for storage_name in set(self.storage_names.values()):
-                required = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
-                if required:
-                    print(f"  {storage_name} requires: {', '.join(required)}")
+            print(
+                f"✗ The configuration storage could not be opened, so the "
+                f"workspace records could not be deleted after a clear: {e}"
+            )
+            self._print_env_requirements()
+            return False
+
+        try:
+            for label in DATA_STORAGE_LABELS:
+                self.storages[label] = await self._open_data_storage(
+                    label, embedding_func
+                )
+        except RemoteBackendUnavailableError as e:
+            print(
+                f"\n✗ {e}\n  A server backend that cannot be reached refuses the "
+                f"run: clearing the others would leave this one populated."
+            )
+            self._print_env_requirements()
             return False
 
         print(f"- Graph Storage:      {self.storage_names['graph']}")
@@ -391,6 +470,12 @@ class ClearTool:
         print("- Connection Status:  ✓ Success")
         return True
 
+    def _print_env_requirements(self) -> None:
+        for storage_name in set(self.storage_names.values()):
+            required = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
+            if required:
+                print(f"  {storage_name} requires: {', '.join(required)}")
+
     # ------------------------------------------------------------------
     # Pre-delete summary
     # ------------------------------------------------------------------
@@ -408,50 +493,117 @@ class ClearTool:
             entry.path for entry in os.scandir(self.input_dir) if entry.is_file()
         )
 
+    async def _read(self, label: str, read: Callable[[], Awaitable[Any]]) -> Any:
+        """Run one summary read against the storage behind ``label``.
+
+        A storage that never opened answers ``Unreadable`` without being
+        asked -- a JSON storage whose load failed still holds an EMPTY
+        shared dict, and asking it would render a corrupt file as zero rows.
+        A read that raises is ``Unreadable`` when the backend is file-backed
+        or the storage merely lacks the capability; a server backend that
+        cannot answer refuses the run (``RemoteBackendUnavailableError``),
+        since it will not serve the drop either.
+        """
+        if label in self.unavailable:
+            return Unreadable(f"storage did not open ({self.unavailable[label]})")
+        try:
+            return await read()
+        except (StorageCapabilityError, ValueError) as e:
+            return Unreadable(f"{type(e).__name__}: {e}")
+        except Exception as e:
+            if is_server_backed(self.storage_name_of(label)):
+                raise RemoteBackendUnavailableError(
+                    f"{label} ({self.storage_name_of(label)}) could not be read: {e}"
+                ) from e
+            return Unreadable(f"{type(e).__name__}: {e}")
+
+    async def _read_baselines(self) -> Dict[str, Any]:
+        """The recorded baselines, a parse failure per target as ``Unreadable``.
+
+        Transport is separated from parsing on purpose: a row that cannot be
+        FETCHED means the configuration storage is not serving, and the
+        records could not be deleted after the clear either, so that refuses
+        the run. A row that was fetched but does not PARSE is exactly what
+        the clear removes -- ``delete_workspace_configuration`` deletes by
+        key without reading the value -- so it is shown and not obeyed.
+        """
+        out: Dict[str, Any] = {}
+        for target in EMBEDDING_TARGETS:
+            key = embedding_baseline_key(self.workspace, target)
+            row = await read_config_row_strict(self.configuration_storage, key)
+            if row is None:
+                out[target] = None
+                continue
+            try:
+                out[target] = EmbeddingBaseline.from_row(row, key=key)
+            except ConfigurationStorageError as e:
+                out[target] = Unreadable(str(e))
+        return out
+
     async def collect_summary(self) -> Dict[str, Any]:
         """Read everything the operator sees before confirming.
 
-        Every read here is fail-loud on purpose: a swallowed error that
-        renders as zero documents is exactly what makes an operator delete
-        the wrong workspace. So counts come from
-        ``count_docs_by_statuses(strict=True)``, never the best-effort
-        ``get_status_counts()``, and a raise anywhere aborts the run with
-        nothing touched.
+        Every value is either read or reported ``Unreadable``, never guessed:
+        counts come from ``count_docs_by_statuses(strict=True)``, not the
+        best-effort ``get_status_counts()``, and a storage that did not open
+        is not asked. Raises ``RemoteBackendUnavailableError`` when a server
+        backend cannot answer -- see ``_read``.
         """
         doc_status = self.storages["doc_status"]
-        counts: Dict[str, int] = {}
-        for status in DocStatus:
-            counts[status.value] = await doc_status.count_docs_by_statuses(
-                [status], strict=True
-            )
-        recent, total = await doc_status.get_docs_paginated(
-            page=1,
-            page_size=RECENT_DOCS_SHOWN,
-            sort_field="updated_at",
-            sort_direction="desc",
-        )
-        chunk_count = len(await enumerate_kv_keys(self.storages["text_chunks"]))
 
-        vectors: Dict[str, str] = {}
+        async def count(status: DocStatus) -> int:
+            return await doc_status.count_docs_by_statuses([status], strict=True)
+
+        counts: Dict[str, Any] = {}
+        for status in DocStatus:
+            counts[status.value] = await self._read(
+                "doc_status", lambda status=status: count(status)
+            )
+
+        async def page():
+            return await doc_status.get_docs_paginated(
+                page=1,
+                page_size=RECENT_DOCS_SHOWN,
+                sort_field="updated_at",
+                sort_direction="desc",
+            )
+
+        paged = await self._read("doc_status", page)
+        if isinstance(paged, Unreadable):
+            recent, total = paged, paged
+        else:
+            recent, total = paged
+
+        async def chunk_count() -> int:
+            return len(await enumerate_kv_keys(self.storages["text_chunks"]))
+
+        vectors: Dict[str, Any] = {}
         for label in VECTOR_LABELS:
             vdb = self.storages[label]
             if label in self.refused_vdbs:
                 vectors[label] = "refused to attach (will be dropped)"
-            elif not getattr(vdb, "persists_vectors", True):
+                continue
+            if vdb is not None and not getattr(vdb, "persists_vectors", True):
                 vectors[label] = "no-op backend (nothing stored)"
-            elif await vdb.is_empty():
-                vectors[label] = "EMPTY"
-            else:
-                vectors[label] = "has vectors"
+                continue
 
-        baselines = await read_embedding_baselines(
-            self.configuration_storage, self.workspace
-        )
+            async def is_empty(vdb=vdb) -> str:
+                return "EMPTY" if await vdb.is_empty() else "has vectors"
+
+            vectors[label] = await self._read(label, is_empty)
+
+        try:
+            baselines = await self._read_baselines()
+        except ConfigurationStorageError as e:
+            raise RemoteBackendUnavailableError(
+                f"the configuration storage could not be read: {e}"
+            ) from e
+
         return {
             "counts": counts,
             "total_docs": total,
             "recent": recent,
-            "chunk_count": chunk_count,
+            "chunk_count": await self._read("text_chunks", chunk_count),
             "vectors": vectors,
             "baselines": baselines,
             "input_files": self.input_files(),
@@ -470,11 +622,36 @@ class ClearTool:
                         or ""
                     )
                     for storage in self.storages.values()
+                    if storage is not None
                 }
             ),
         }
 
+    @staticmethod
+    def unreadable_items(summary: Dict[str, Any]) -> List[str]:
+        """Names of the summary items that could not be read."""
+        items: List[str] = []
+        for status_value, count in summary["counts"].items():
+            if isinstance(count, Unreadable):
+                items.append(f"documents in status {status_value}")
+        if isinstance(summary["recent"], Unreadable):
+            items.append("most recently updated documents")
+        if isinstance(summary["chunk_count"], Unreadable):
+            items.append("text chunk count")
+        for label, state in summary["vectors"].items():
+            if isinstance(state, Unreadable):
+                items.append(f"{label} state")
+        for target, baseline in summary["baselines"].items():
+            if isinstance(baseline, Unreadable):
+                items.append(f"{target} embedding baseline")
+        return items
+
     def print_summary(self, summary: Dict[str, Any]) -> None:
+        def show(value: Any) -> str:
+            if isinstance(value, Unreadable):
+                return f"{BOLD_RED}UNREADABLE{RESET} ({value.reason})"
+            return str(value)
+
         print("\n" + "=" * 60)
         print(f"{BOLD_CYAN}What will be deleted{RESET}")
         print("=" * 60)
@@ -494,33 +671,42 @@ class ClearTool:
                 f"\n⚠️  Storages resolved to workspace(s) {', '.join(shown)} "
                 f"(WORKSPACE={self.workspace or '(default)'})"
             )
+        for label, reason in self.unavailable.items():
+            print(f"\n⚠️  {label} did not open: {reason}")
 
-        print(f"\nDocuments by status ({summary['total_docs']} total):")
+        print(f"\nDocuments by status ({show(summary['total_docs'])} total):")
         for status_value, count in summary["counts"].items():
-            print(f"    {status_value:14s} {count}")
+            print(f"    {status_value:14s} {show(count)}")
 
         recent = summary["recent"]
         print(f"\nMost recently updated documents (up to {RECENT_DOCS_SHOWN}):")
-        if not recent:
+        if isinstance(recent, Unreadable):
+            print(f"    {show(recent)}")
+        elif not recent:
             print("    (none)")
-        for doc_id, doc in recent:
-            status = getattr(doc, "status", "")
-            status_value = getattr(status, "value", status)
-            updated_at = getattr(doc, "updated_at", "") or ""
-            file_path = getattr(doc, "file_path", "") or ""
-            print(f"    {updated_at:20s} {status_value:11s} {file_path}  [{doc_id}]")
+        else:
+            for doc_id, doc in recent:
+                status = getattr(doc, "status", "")
+                status_value = getattr(status, "value", status)
+                updated_at = getattr(doc, "updated_at", "") or ""
+                file_path = getattr(doc, "file_path", "") or ""
+                print(
+                    f"    {updated_at:20s} {status_value:11s} {file_path}  [{doc_id}]"
+                )
 
-        print(f"\nText chunks: {summary['chunk_count']}")
+        print(f"\nText chunks: {show(summary['chunk_count'])}")
 
         print("\nVector storages:")
         for label, state in summary["vectors"].items():
-            print(f"    {label:18s} {state}")
+            print(f"    {label:18s} {show(state)}")
 
         print("\nRecorded embedding baselines:")
         for target in EMBEDDING_TARGETS:
             baseline = summary["baselines"].get(target)
             if baseline is None:
                 print(f"    {target:14s} (none recorded)")
+            elif isinstance(baseline, Unreadable):
+                print(f"    {target:14s} {show(baseline)}")
             else:
                 print(
                     f"    {target:14s} model={baseline.model!r} dim={baseline.dim} "
@@ -538,6 +724,14 @@ class ClearTool:
             "\nPreserved: the LLM response cache (clear it later from the "
             "WebUI), the __parsed__ directory, every other workspace."
         )
+
+        unreadable = self.unreadable_items(summary)
+        if unreadable:
+            print(
+                f"\n{BOLD_RED}⚠️  {len(unreadable)} item(s) above could not be "
+                f"read: {'; '.join(unreadable)}.{RESET}\n  What they hold is "
+                f"unknown, and the clear deletes it anyway if you confirm."
+            )
 
     # ------------------------------------------------------------------
     # Confirmation
@@ -576,15 +770,26 @@ class ClearTool:
         Concurrent, ``return_exceptions=True``, classified by
         :func:`classify_drop_result`. Every storage is attempted even when an
         earlier one fails: leaving a storage undropped because a sibling
-        failed only leaves more for the re-run.
+        failed only leaves more for the re-run. A storage that could not be
+        constructed has nothing to call and is a failed drop outright.
         """
-        labels = list(DATA_STORAGE_LABELS)
+        outcome = DropOutcome()
+        droppable = [label for label in DATA_STORAGE_LABELS if self.storages.get(label)]
+        for label in DATA_STORAGE_LABELS:
+            if label not in droppable:
+                reason = (
+                    f"not constructed ({self.unavailable.get(label, 'unknown')}); "
+                    f"remove its files under {self.global_config.get('working_dir')} "
+                    f"by hand"
+                )
+                outcome.failed.append((label, reason))
+                logger.error(f"Cannot drop {label}: {reason}")
+                print(f"  ✗ {label}: {reason}")
         results = await asyncio.gather(
-            *(self.storages[label].drop() for label in labels),
+            *(self.storages[label].drop() for label in droppable),
             return_exceptions=True,
         )
-        outcome = DropOutcome()
-        for label, result in zip(labels, results):
+        for label, result in zip(droppable, results):
             failure = classify_drop_result(result)
             storage_name = type(self.storages[label]).__name__
             if failure is None:
@@ -705,10 +910,10 @@ class ClearTool:
             print("\nReading what the workspace holds...")
             try:
                 summary = await self.collect_summary()
-            except Exception as e:
+            except RemoteBackendUnavailableError as e:
                 print(
-                    f"\n✗ Could not read the workspace, so nothing was deleted: {e}\n"
-                    f"  A count that cannot be read must not be shown as zero."
+                    f"\n✗ {e}\n  A server backend that cannot answer will not "
+                    f"serve the drop either, so nothing was deleted."
                 )
                 return False
             self.print_summary(summary)
