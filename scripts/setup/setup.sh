@@ -15,6 +15,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
+# Whether a .env was loaded at startup. Distinct from "ORIGINAL_ENV_VALUES is
+# non-empty": a deployment whose .env carries only comments still ran a server
+# on the DEFAULTS, and those defaults decide where its records are.
+EXISTING_ENV_LOADED=0
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
@@ -103,6 +107,7 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
+  EXISTING_ENV_LOADED=0
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
   COMPOSE_SERVICE_IMAGE_OVERRIDES=()
@@ -179,6 +184,7 @@ load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
   if [[ -f "$env_file" ]]; then
+    EXISTING_ENV_LOADED=1
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
@@ -1213,6 +1219,18 @@ select_config_storage() {
   # Empty on a first run, and empty when the previous backend is one the
   # category never admitted -- in both cases no admitted container holds
   # records, so there is nothing to strand.
+  # A previous .env that names no KV backend is not a deployment without one:
+  # the server has been running on its default, and the records are in THAT
+  # container. Treating the omission as "nothing to strand" moved them on the
+  # first rerun that picked an admitted backend.
+  # A previous .env that names no KV backend is not a deployment without one:
+  # the server has been running on its default, and the records are in THAT
+  # container. Treating the omission as "nothing to strand" moved them on the
+  # first rerun that picked an admitted backend.
+  if [[ -z "$previous_kv" && "$EXISTING_ENV_LOADED" == "1" ]]; then
+    previous_kv="$DEFAULT_KV_STORAGE"
+  fi
+
   if [[ -n "$previous_config" ]]; then
     config_storage_is_admitted "$previous_config" && records_in="$previous_config"
   elif [[ -n "$previous_kv" ]]; then

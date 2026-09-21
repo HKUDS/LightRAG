@@ -44,7 +44,7 @@ def _no_claims_leak():
     wdl._claims.clear()
 
 
-def _foreign_attempt(path) -> str:
+def _foreign_attempt(path, *, legacy_working_dir: str | None = None) -> str:
     """Acquire from a process that did NOT inherit this tree's bookkeeping."""
     read_fd, write_fd = os.pipe()
     pid = os.fork()
@@ -52,7 +52,7 @@ def _foreign_attempt(path) -> str:
         os.close(read_fd)
         wdl._claims.clear()
         try:
-            acquire_working_dir_lock(str(path))
+            acquire_working_dir_lock(str(path), legacy_working_dir=legacy_working_dir)
             os.write(write_fd, b"ADMITTED")
         except WorkingDirectoryInUseError:
             os.write(write_fd, b"REFUSED")
@@ -182,14 +182,14 @@ def test_a_slice_one_holder_of_the_parent_still_refuses_this_one(tmp_path):
     # A slice-1 process holds the parent, and knows nothing about config_dir.
     acquire_working_dir_lock(str(tmp_path))
 
-    assert _foreign_attempt(config_dir) == "REFUSED"
+    assert _foreign_attempt(config_dir, legacy_working_dir=str(tmp_path)) == "REFUSED"
 
 
 def test_the_legacy_claim_goes_back_with_the_real_one(tmp_path):
     config_dir = tmp_path / CONFIG_CONTAINER_TAG
     config_dir.mkdir()
 
-    acquire_working_dir_lock(str(config_dir))
+    acquire_working_dir_lock(str(config_dir), legacy_working_dir=str(tmp_path))
     assert _foreign_attempt(tmp_path) == "REFUSED"
 
     release_working_dir_lock(str(config_dir))
@@ -204,6 +204,8 @@ def test_a_custom_configuration_directory_reaches_back_to_nothing(tmp_path):
     elsewhere = tmp_path / "conf"
     elsewhere.mkdir()
 
+    # Named outright by ``LIGHTRAG_CONFIG_DIR``: nothing derived it from a
+    # working directory, so there is no slice-1 spelling to reach back to.
     acquire_working_dir_lock(str(elsewhere))
 
     assert _foreign_attempt(tmp_path) == "ADMITTED"
@@ -230,7 +232,7 @@ def test_a_refusal_over_the_legacy_path_leaves_nothing_held(tmp_path):
     os.close(read_fd)
 
     with pytest.raises(WorkingDirectoryInUseError):
-        acquire_working_dir_lock(str(config_dir))
+        acquire_working_dir_lock(str(config_dir), legacy_working_dir=str(tmp_path))
 
     assert holds_working_dir_lock(str(config_dir)) is False
     assert wdl._claims == {}
@@ -258,7 +260,9 @@ def test_a_symlinked_default_directory_still_reaches_back(tmp_path):
     # A slice-1 process holds the working directory, knowing nothing of either.
     acquire_working_dir_lock(str(working_dir))
 
-    assert _foreign_attempt(config_dir) == "REFUSED"
+    assert (
+        _foreign_attempt(config_dir, legacy_working_dir=str(working_dir)) == "REFUSED"
+    )
 
 
 def test_the_legacy_path_is_the_one_slice_one_actually_locked(tmp_path):
@@ -273,7 +277,12 @@ def test_the_legacy_path_is_the_one_slice_one_actually_locked(tmp_path):
 
     acquire_working_dir_lock(str(real_root))  # the slice-1 spelling
 
-    assert _foreign_attempt(working_dir / CONFIG_CONTAINER_TAG) == "REFUSED"
+    assert (
+        _foreign_attempt(
+            working_dir / CONFIG_CONTAINER_TAG, legacy_working_dir=str(working_dir)
+        )
+        == "REFUSED"
+    )
 
 
 def test_a_filesystem_that_cannot_lock_still_asks_the_legacy_path(
@@ -298,7 +307,7 @@ def test_a_filesystem_that_cannot_lock_still_asks_the_legacy_path(
 
     monkeypatch.setattr(wdl, "_try_lock", _only_the_primary_cannot_lock)
 
-    acquire_working_dir_lock(str(config_dir))
+    acquire_working_dir_lock(str(config_dir), legacy_working_dir=str(tmp_path))
 
     # Unenforced on its own path, but holding the slice-1 one.
     assert wdl._claims[wdl._lock_path(str(config_dir))].enforced is False
@@ -321,4 +330,29 @@ def test_an_unlockable_primary_still_refuses_a_slice_one_holder(tmp_path, monkey
 
     monkeypatch.setattr(wdl, "_try_lock", _only_the_primary_cannot_lock)
 
-    assert _foreign_attempt(config_dir) == "REFUSED"
+    assert _foreign_attempt(config_dir, legacy_working_dir=str(tmp_path)) == "REFUSED"
+
+
+def test_an_explicit_directory_that_ends_in_the_tag_is_not_the_default(tmp_path):
+    """The basename cannot answer "is this the default?", and guessing claims
+    a lock that belongs to someone else.
+
+    ``LIGHTRAG_CONFIG_DIR=/srv/configs/_lightrag_config`` ends in the same
+    component as a default without being one. Inferring from that shape
+    claimed ``/srv/configs/.lightrag_storage.lock`` -- which a DIFFERENT
+    deployment, whose configuration directory really is ``/srv/configs``,
+    holds for its own file. That server has every right to be running, and
+    this one was refused because of it. Only the caller knows which case it
+    is in, so only the caller may say.
+    """
+    srv = tmp_path / "srv" / "configs"
+    srv.mkdir(parents=True)
+    explicit = srv / CONFIG_CONTAINER_TAG
+    explicit.mkdir()
+
+    # The other deployment: its config_dir IS /srv/configs, named outright.
+    acquire_working_dir_lock(str(srv))
+
+    # Ours is /srv/configs/_lightrag_config, also named outright -- derived
+    # from no working directory, so it reaches back to nothing and starts.
+    assert _foreign_attempt(explicit) == "ADMITTED"
