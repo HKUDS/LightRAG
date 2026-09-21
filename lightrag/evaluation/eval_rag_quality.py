@@ -524,9 +524,15 @@ class RAGEvaluator:
                     # Calculate RAGAS score (average of all metrics, excluding NaN values)
                     metrics = result["metrics"]
                     valid_metrics = [v for v in metrics.values() if not _is_nan(v)]
-                    ragas_score = (
-                        sum(valid_metrics) / len(valid_metrics) if valid_metrics else 0
-                    )
+                    if not valid_metrics:
+                        # Nothing was scored (e.g. the judge LLM's output could
+                        # not be parsed for any metric). Report a failed case
+                        # rather than a 0.0 "success" that drags the averages
+                        # down as if the RAG answer itself were bad.
+                        raise ValueError(
+                            "All RAGAS metrics returned NaN; no score could be computed"
+                        )
+                    ragas_score = sum(valid_metrics) / len(valid_metrics)
                     result["ragas_score"] = round(ragas_score, 4)
 
                     # Update progress counter
