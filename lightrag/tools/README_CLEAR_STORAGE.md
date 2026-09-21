@@ -54,7 +54,8 @@ The run, in order:
    - the number of text chunks in `text_chunks`;
    - whether each vector storage is empty, has vectors, or refused to attach;
    - the recorded embedding baselines;
-   - the top-level files of the input directory.
+   - the top-level files of this workspace's input directory
+     (`INPUT_DIR/<workspace>`, or `INPUT_DIR` for the default workspace).
 4. Requires the exact phrase `Delete All`. Anything else exits with nothing
    changed.
 5. Drops the eleven data storages, deletes the workspace's configuration
@@ -82,7 +83,7 @@ Deleted, as `/documents/clear` deletes them:
 | `chunk_entity_relation_graph` | the knowledge graph |
 | `doc_status` | document processing status |
 | configuration records | the workspace's three embedding baselines, last, and only when every drop above succeeded |
-| input directory | top-level files only |
+| input directory | top-level files of this workspace's upload directory only: `INPUT_DIR/<workspace>` for a named workspace, `INPUT_DIR` itself for the default one, exactly as the server resolves it |
 
 Preserved:
 

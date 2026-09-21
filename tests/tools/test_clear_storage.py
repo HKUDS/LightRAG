@@ -442,6 +442,31 @@ class TestSummary:
             await tool.collect_summary()
 
 
+class TestInputDirResolution:
+    """``DocumentManager`` keeps a named workspace's uploads under
+    ``INPUT_DIR/<workspace>``; the tool must delete THOSE, not the default
+    workspace's files one level up."""
+
+    def test_a_named_workspace_uses_its_subdirectory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+        tool = ClearTool()
+        tool.workspace = "ws1"
+        assert tool.resolve_input_dir() == str(tmp_path / "inputs" / "ws1")
+
+    def test_the_default_workspace_uses_the_base_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+        tool = ClearTool()
+        tool.workspace = ""
+        assert tool.resolve_input_dir() == str(tmp_path / "inputs")
+
+    def test_a_traversing_workspace_name_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+        tool = ClearTool()
+        tool.workspace = "../other"
+        with pytest.raises(ValueError):
+            tool.resolve_input_dir()
+
+
 class TestKindRule:
     @pytest.mark.parametrize(
         "name",
@@ -878,9 +903,15 @@ class TestEndToEndOnJsonBackends:
         from lightrag.kg.working_dir_lock import release_working_dir_lock
 
         working_dir = tmp_path / "wd"
-        inputs = seed_input_dir(tmp_path)
+        base_inputs = tmp_path / "inputs"
+        inputs = base_inputs / "e2e"
+        (inputs / "__parsed__").mkdir(parents=True)
+        (inputs / "a.txt").write_text("a")
+        (inputs / "__parsed__" / "a.md").write_text("parsed")
+        # The DEFAULT workspace's upload, one level up: not this run's to delete.
+        (base_inputs / "default-ws.txt").write_text("keep")
         monkeypatch.setenv("WORKING_DIR", str(working_dir))
-        monkeypatch.setenv("INPUT_DIR", str(inputs))
+        monkeypatch.setenv("INPUT_DIR", str(base_inputs))
         monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
         monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
         monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
@@ -939,8 +970,12 @@ class TestEndToEndOnJsonBackends:
         assert (working_dir / "e2e" / "kv_store_doc_status.json").read_text() == "{}"
         assert (working_dir / "e2e" / "kv_store_text_chunks.json").read_text() == "{}"
         assert not (working_dir / "e2e" / "kv_store_llm_response_cache.json").exists()
+        assert "e2e" in out.split("Input files to delete")[1].split("\n")[0]
         assert not (inputs / "a.txt").exists()
         assert (inputs / "__parsed__" / "a.md").exists()
+        assert (base_inputs / "default-ws.txt").exists(), (
+            "the default workspace's upload one level up was deleted"
+        )
 
     async def test_corrupt_local_files_are_shown_unreadable_and_still_cleared(
         self, tmp_path, monkeypatch, capsys

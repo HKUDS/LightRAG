@@ -96,6 +96,7 @@ from lightrag.utils import (
     get_env_value,
     logger,
     setup_logger,
+    validate_workspace,
     warn_about_workspace_overrides,
 )
 
@@ -252,7 +253,19 @@ class ClearTool:
         )
 
     def resolve_input_dir(self) -> str:
-        return os.path.abspath(get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR))
+        """The directory the server uploads THIS workspace's files to.
+
+        Mirrors ``DocumentManager.__init__``: a named workspace keeps its
+        uploads under ``INPUT_DIR/<workspace>``, the default workspace under
+        ``INPUT_DIR`` itself. Resolving the base directory for a named
+        workspace would delete the default workspace's files and leave this
+        one's in place to be re-enqueued.
+        """
+        base = os.path.abspath(get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR))
+        if self.workspace:
+            validate_workspace(self.workspace)
+            return os.path.join(base, self.workspace)
+        return base
 
     def storage_name_of(self, label: str) -> str:
         """The configured backend name behind a data storage label."""
@@ -400,8 +413,8 @@ class ClearTool:
         """
         self.storage_names = self.resolve_storage_names()
         self.config_dir = self.resolve_config_dir()
-        self.input_dir = self.resolve_input_dir()
         self.workspace = os.getenv("WORKSPACE", "")
+        self.input_dir = self.resolve_input_dir()
 
         # Claim the configuration directory FIRST, for the reason
         # ``lightrag-rebuild-vdb`` does: a server on the same directory keeps
