@@ -588,11 +588,21 @@ class JsonKVStorage(BaseKVStorage):
         Non-cache namespaces don't need this — their writes already
         flow through pipeline-driven ``_insert_done()`` commits.
         """
-        if self.namespace.endswith("_cache"):
-            await self.index_done_callback()
-
-        # Give up this instance's hold LAST, after anything that still needed
-        # the shared dict: the last holder's release empties it.
-        if self._holds_namespace:
-            self._holds_namespace = False
-            await leave_namespace_init(self.namespace, workspace=self.workspace)
+        try:
+            if self.namespace.endswith("_cache"):
+                await self.index_done_callback()
+        finally:
+            # Give up this instance's hold LAST, after anything that still
+            # needed the shared dict: the last holder's release empties it.
+            #
+            # In a ``finally``, because the flush above can fail (a full disk,
+            # a read-only mount) and ``_finalize_storages_impl`` absorbs that
+            # failure and carries on: the hold would leak silently. A leaked
+            # hold is not a small thing -- it is counted, so no later instance
+            # in this process tree can ever be the last one out, the namespace
+            # is never emptied, and a second ``working_dir`` is refused with
+            # ``SharedNamespaceBackingConflictError`` for the life of the
+            # process. Losing the cache is the lesser of the two.
+            if self._holds_namespace:
+                self._holds_namespace = False
+                await leave_namespace_init(self.namespace, workspace=self.workspace)

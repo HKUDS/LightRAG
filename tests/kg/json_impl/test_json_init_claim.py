@@ -436,3 +436,36 @@ async def test_a_second_cancellation_does_not_return_over_a_live_looking_claim(
 
     assert released == ["drainns"]
     assert await try_initialize_namespace("drainns", workspace="ws") is True
+
+
+async def test_a_failed_cache_flush_still_gives_the_hold_back(tmp_path, monkeypatch):
+    """The hold is released even when the shutdown flush fails.
+
+    ``JsonKVStorage.finalize()`` flushes ``*_cache`` namespaces, and
+    ``_finalize_storages_impl`` ABSORBS a failure there and carries on -- so a
+    flush that raised used to leave the hold behind with nothing said. A
+    leaked hold is counted: no later instance in this process tree can be the
+    last one out, the namespace is never emptied, and a second
+    ``working_dir`` is refused for the life of the process. Losing the cache
+    is the lesser of the two.
+    """
+    storage = _storage(JsonKVStorage, tmp_path, "cachews", "llm_response_cache")
+    await storage.initialize()
+    assert storage._holds_namespace is True
+
+    async def _boom():
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(storage, "index_done_callback", _boom)
+
+    with pytest.raises(OSError):
+        await storage.finalize()
+
+    assert storage._holds_namespace is False
+
+    # The proof that the hold really went back: another root may now claim the
+    # same namespace, which a leaked hold refuses outright.
+    other_root = tmp_path / "second-root"
+    other = _storage(JsonKVStorage, other_root, "cachews", "llm_response_cache")
+    await other.initialize()
+    await other.finalize()
