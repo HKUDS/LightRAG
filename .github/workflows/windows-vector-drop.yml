@@ -1,7 +1,19 @@
 name: Windows Vector Drop
 
 on:
+  push:
+    branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'lightrag/kg/nano_vector_db_impl.py'
+      - 'lightrag/kg/faiss_impl.py'
+      - 'tests/kg/test_vector_drop_errors.py'
+      - 'tests/kg/nano_impl/test_nano_drop.py'
+      - 'tests/kg/faiss_impl/test_faiss_drop.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/windows-vector-drop.yml'
   pull_request:
+    branches: [ main, dev, 'dev-*' ]
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'lightrag/kg/nano_vector_db_impl.py'
@@ -12,10 +24,10 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/windows-vector-drop.yml'
-  workflow_dispatch:
 
 jobs:
   vector-drop:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

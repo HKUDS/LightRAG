@@ -1,10 +1,26 @@
-name: Offline Unit Tests
+name: Backend Offline Unit Tests
 
 on:
   push:
     branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'lightrag/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'env.example'
+      - '.github/workflows/tests.yml'
   pull_request:
     branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'lightrag/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'env.example'
+      - '.github/workflows/tests.yml'
     types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
