@@ -225,7 +225,7 @@ dispatches per namespace (`get_by_id_config`, `get_by_ids_config`,
 
 The table keeps the shape every other one has — `(workspace, id)` primary key —
 and writes the container tag into that column as a **partition constant**. It
-was never a tenant's name even in slice 1; the workspace a row is *about* is a
+was never a tenant's name; the workspace a row is *about* is a
 field inside the payload, and `id` carries it too. Keeping the column means an
 existing deployment's rows are read where they already are, which is the same
 choice the `config_dir` default makes for the same reason. Dropping it would be
@@ -287,28 +287,6 @@ file it exists to protect. Five properties matter:
   **parsed** one: `--working-dir` overrides `WORKING_DIR` for the workers and
   is never written back to the environment, so `run_with_gunicorn` hands the
   parsed value to the config module and `resolved_working_dir()` prefers it.
-- **It also reaches back to the slice-1 path, for now.** Slice 1 kept the
-  configuration file in `<working_dir>/_lightrag_config/` but locked
-  `<working_dir>`. Unrelated files mean no mutual exclusion, so a server from
-  each version could start on one deployment and both rewrite that one file —
-  the failure this section opens with, arriving through an upgrade. While
-  `config_dir` is the default, the claim takes the old path too
-  (`_legacy_lock_path`); a `LIGHTRAG_CONFIG_DIR` is new here and has no older
-  holder to refuse. Three rules decide which old path, and each exists because
-  getting it wrong refuses a server that may start or admits one that may not:
-  *is this the default?* is asked of the CALLER (`legacy_working_dir`), never
-  inferred from the basename, which cannot tell a default apart from an
-  explicit directory ending in the same component; the comparison is made on
-  the path **as spelled**, before symlinks are followed, so a default
-  `_lightrag_config` symlinked onto another volume still looks derived from
-  its working directory; and the claim records these locks **keyed by path**,
-  because one real configuration directory reached through several default
-  spellings has one lock on itself and a DIFFERENT slice-1 parent per
-  spelling — a second caller takes any alias this tree has not already
-  locked, and skips the one it has, since a second descriptor on a file this
-  process already holds would refuse this process itself. Transitional:
-  remove it once no deployment can still be running a build that predates the
-  move.
 - **It fails open.** Locking is unreliable on NFSv3 without lockd and on
   SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
   deployments. A backend that cannot lock gets a warning and proceeds; refusing
@@ -1090,14 +1068,6 @@ discriminates two deployments on one server* for why a deployment id is not the
 fix. Recovery: give them different workspaces and rebuild with
 `lightrag-rebuild-vdb`.
 
-**A `RedisKVStorage` deployment's slice-1 records are not migrated.** Redis is
-not in the configuration category, so such a deployment names one of the four
-and its previous records stay where they are, unread. It is refused at startup
-by name rather than starting on an empty store, and the baselines are
-re-established on the next start — on probe evidence, never on the configured
-model alone. Recovery, if the probe cannot vouch for them:
-`lightrag-rebuild-vdb`.
-
 **Whole-namespace publication on the JSON backend.** `JsonKVStorage` rewrites
 the whole namespace file on flush, so `_lightrag_config` becomes a single write
 point shared by every workspace in the process. Visibility is unaffected (its
@@ -1175,10 +1145,11 @@ The implementation is not complete until these are regression tests.
 21. Concurrent claims are covered only for workers of one Gunicorn master;
     nothing asserts anything about two independent masters, which the contract
     does not support.
-22. A deployment on slice 1's layout upgrades with **every** baseline still
-    read: the recorded model is unchanged, its `origin` is not rewritten, and a
-    mismatching model still refuses. The counterexample is pinned too — the
-    same deployment with `config_dir` pointed elsewhere reads absence.
+22. A deployment whose baselines are already recorded has **every** one of
+    them read by the next start: the recorded model is unchanged, its `origin`
+    is not rewritten, and a mismatching model still refuses. The
+    counterexample is pinned too — the same deployment with `config_dir`
+    pointed elsewhere reads absence.
 23. A configuration backend outside the four is refused at construction with a
     message naming it; a vector storage class in particular, and
     `RedisKVStorage` both when named and when it would be inherited from

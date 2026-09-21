@@ -54,11 +54,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from collections.abc import Mapping
 from typing import Any
 
 from lightrag.exceptions import WorkingDirectoryInUseError
-from lightrag.namespace import default_config_dir
 from lightrag.utils import logger
 
 LOCK_FILENAME = ".lightrag_storage.lock"
@@ -89,15 +87,6 @@ class _Claim:
     holders: int = 1
     enforced: bool = True
     inherited_pid: int = field(default_factory=os.getpid)
-    # The slice-1 lock paths held alongside the real one, keyed BY PATH,
-    # while a deployment running that version can still be on the other side
-    # of an upgrade. One real configuration directory can be reached through
-    # several default spellings -- two working directories whose
-    # ``_lightrag_config`` symlink to one place -- and each spelling has its
-    # OWN slice-1 parent. A claim recording only the first caller's would
-    # leave the others free for exactly the older server this reaches back
-    # for. See ``_acquire_legacy_claim``.
-    legacy_handles: dict[str, Any] = field(default_factory=dict)
 
 
 # Path -> claim. Inherited across ``fork``, which is the point: a worker finds
@@ -161,100 +150,7 @@ def _unlock(handle) -> None:
         pass
 
 
-def _legacy_lock_path(config_dir: str, legacy_working_dir: str | None) -> str | None:
-    """The path slice 1 locked for this configuration directory, or ``None``.
-
-    Slice 1 kept the configuration file at ``<working_dir>/_lightrag_config/``
-    but locked ``<working_dir>``. This slice locks the directory the file is
-    actually in, so the two versions would lock unrelated files: a server from
-    each could start on one deployment, and both rewrite that one file from a
-    private in-memory copy -- exactly what the claim exists to refuse. Only
-    the DEFAULT directory has a slice-1 spelling; one named by
-    ``LIGHTRAG_CONFIG_DIR`` is new here and has no older holder.
-
-    ``legacy_working_dir`` is the directory this configuration directory was
-    DERIVED from, or ``None`` when the caller was handed one outright. Only
-    the caller knows which: the basename cannot tell a default apart from a
-    ``LIGHTRAG_CONFIG_DIR`` that merely ENDS in the same component, and
-    guessing wrong claims a lock belonging to a different deployment --
-    refusing a server that has every right to start.
-
-    Transitional. Remove it once no deployment can still be running a build
-    that predates the move, and nothing but this function knows the old path.
-    """
-    if not legacy_working_dir:
-        return None
-    # Compared on the spelling, BEFORE any symlink is followed. This module
-    # deliberately resolves symlinks everywhere else -- one directory must
-    # produce one key however it is spelled -- but resolving first would
-    # answer a different question: a default ``<working_dir>/_lightrag_config``
-    # that is a symlink to, say, ``/mnt/config`` stops looking derived from
-    # its working directory at all, and the deployment most in need of the
-    # transitional claim would silently not get one.
-    spelled = os.path.normpath(os.path.abspath(config_dir))
-    default = os.path.normpath(os.path.abspath(default_config_dir(legacy_working_dir)))
-    if spelled != default:
-        return None
-    # The PATH, though, is resolved: slice 1 locked
-    # ``realpath(working_dir)/LOCK_FILENAME``, and this has to name that same
-    # file or it claims something the old process never held.
-    return os.path.join(os.path.realpath(os.path.dirname(spelled)), LOCK_FILENAME)
-
-
-def _acquire_legacy_claim(
-    config_dir: str,
-    legacy_working_dir: str | None,
-    already_held: Mapping[str, Any] | None = None,
-) -> tuple[str, Any] | None:
-    """Take the slice-1 lock too, or return ``None`` if there is none to take.
-
-    Returns the path it locked with its handle, so the caller can record it
-    under that path and a later caller reaching the same real directory
-    through a different default spelling can tell its own alias apart from
-    one this tree already holds (``already_held``).
-
-    Raises ``WorkingDirectoryInUseError`` when a process holding the old path
-    is still running -- the refusal this whole module exists to produce, from
-    the one direction the new path cannot see. A filesystem that cannot lock
-    fails open here for the same reason it does for the real claim; the caller
-    has already warned about it.
-    """
-    path = _legacy_lock_path(config_dir, legacy_working_dir)
-    if path is None:
-        return None
-    if already_held is not None and path in already_held:
-        # This tree locked it for an earlier caller; a second descriptor on
-        # the same file would refuse this process its own lock.
-        return None
-
-    try:
-        handle = open(path, "a+")
-    except OSError:
-        # The parent directory may not exist or may not be writable. The real
-        # claim is what protects this deployment; this one only reaches back.
-        return None
-
-    try:
-        locked = _try_lock(handle)
-    except OSError:
-        return path, handle
-
-    if not locked:
-        handle.close()
-        raise WorkingDirectoryInUseError(
-            f"working directory '{os.path.dirname(os.path.realpath(config_dir))}' "
-            f"is already in use by a LightRAG process from before the "
-            f"configuration directory got its own lock. Both would rewrite "
-            f"the same configuration file from a per-process copy, losing "
-            f"each other's embedding baselines. Stop it before starting this "
-            f"one."
-        )
-    return path, handle
-
-
-def acquire_working_dir_lock(
-    working_dir: str, *, legacy_working_dir: str | None = None
-) -> None:
+def acquire_working_dir_lock(working_dir: str) -> None:
     """Claim ``working_dir`` for this process tree, or refuse.
 
     Idempotent per tree: a second caller here (another ``LightRAG`` instance, a
@@ -267,15 +163,6 @@ def acquire_working_dir_lock(
 
     claim = _claims.get(path)
     if claim is not None:
-        # The real directory is already held, but this caller may have
-        # reached it through a DIFFERENT default spelling, whose slice-1
-        # parent is another file entirely. Take that one before counting
-        # this holder in, so a refusal leaves the claim as it was.
-        alias = _acquire_legacy_claim(
-            working_dir, legacy_working_dir, claim.legacy_handles
-        )
-        if alias is not None:
-            claim.legacy_handles[alias[0]] = alias[1]
         claim.holders += 1
         return
 
@@ -293,24 +180,7 @@ def acquire_working_dir_lock(
             f"file-backed storage without any warning; run one at a time, or "
             f"use a server storage backend."
         )
-        # The primary path cannot be enforced -- but the slice-1 path may sit
-        # on a filesystem that CAN enforce one: a configuration directory
-        # symlinked onto a network volume with a local parent is the ordinary
-        # shape of that. Failing open here AND skipping the transitional claim
-        # would start this server beside an older one holding the only lock
-        # either of them is able to take.
-        try:
-            legacy = _acquire_legacy_claim(working_dir, legacy_working_dir)
-        except BaseException:
-            # Nothing was locked on the primary path, so there is nothing to
-            # unlock -- only the descriptor to give back.
-            handle.close()
-            raise
-        _claims[path] = _Claim(
-            handle=handle,
-            enforced=False,
-            legacy_handles=dict([legacy]) if legacy is not None else {},
-        )
+        _claims[path] = _Claim(handle=handle, enforced=False)
         return
 
     if not locked:
@@ -325,15 +195,6 @@ def acquire_working_dir_lock(
         )
 
     try:
-        legacy = _acquire_legacy_claim(working_dir, legacy_working_dir)
-    except BaseException:
-        # This directory is free but its slice-1 spelling is not. Give back
-        # what was just taken, so a refusal leaves nothing held.
-        _unlock(handle)
-        handle.close()
-        raise
-
-    try:
         handle.seek(0)
         handle.truncate()
         handle.write(f"{os.getpid()}\n")
@@ -343,10 +204,7 @@ def acquire_working_dir_lock(
         # deciding whether the lock is held.
         pass
 
-    _claims[path] = _Claim(
-        handle=handle,
-        legacy_handles=dict([legacy]) if legacy is not None else {},
-    )
+    _claims[path] = _Claim(handle=handle)
 
 
 def release_working_dir_lock(working_dir: str) -> None:
@@ -371,18 +229,6 @@ def release_working_dir_lock(working_dir: str) -> None:
         claim.handle.close()
     except OSError:
         pass
-
-    # The transitional claims go back with the real one, never on their own
-    # -- every spelling this tree locked, not just the first one asked for.
-    for legacy_handle in claim.legacy_handles.values():
-        try:
-            _unlock(legacy_handle)
-        except OSError:
-            pass
-        try:
-            legacy_handle.close()
-        except OSError:
-            pass
 
 
 def holds_working_dir_lock(working_dir: str) -> bool:

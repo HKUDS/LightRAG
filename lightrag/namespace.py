@@ -40,21 +40,23 @@ class NameSpace:
 # their collection / index with it, and the JSON backend ignores it entirely
 # in favour of ``config_dir``.
 #
-# The spelling is slice 1's reserved workspace name on purpose: keeping it
-# means an existing deployment's rows are read where they already are rather
-# than reading as ABSENT, which is the one answer that lets a start bootstrap.
-# See docs/design/ConfigurationStorage.md.
+# The leading underscore keeps it out of the space of names a tenant would
+# be given, so a container is recognisable as ours at a glance in a shared
+# PostgreSQL, MongoDB or OpenSearch. See docs/design/ConfigurationStorage.md.
 CONFIG_CONTAINER_TAG = "_lightrag_config"
 
 
 def default_config_dir(working_dir: str) -> str:
     """Where a file-backed configuration storage keeps its file by default.
 
-    ``<working_dir>/_lightrag_config`` -- **exactly** where slice 1's reserved
-    workspace put it. The default is chosen for that and nothing else: point
-    it anywhere new and every baseline of an existing deployment reads as
-    ABSENT on the first start after an upgrade, which is the one answer that
-    lets a start bootstrap. Nothing in any log would say so.
+    ``<working_dir>/_lightrag_config``: beside the data it describes, so one
+    directory is the whole deployment and a backup takes both or neither.
+
+    **Moving it after a deployment has recorded baselines loses them.** They
+    are read from the directory that is configured NOW, so a new one reads
+    ABSENT -- the one answer that lets a start bootstrap, which means the
+    configured model is recorded over vectors nobody probed. Only the
+    announcement at startup would hint at it; nothing refuses.
     """
     return os.path.join(working_dir, CONFIG_CONTAINER_TAG)
 

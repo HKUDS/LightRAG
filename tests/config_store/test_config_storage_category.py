@@ -1,14 +1,13 @@
-"""The configuration storage as its own CATEGORY: selection, ``config_dir``,
-the fixed container names, and the upgrade from slice 1's layout.
+"""The configuration storage as its own CATEGORY: selection, ``config_dir``
+and the fixed container names.
 
-Slice 1 kept configuration in a reserved workspace ``_lightrag_config`` on
-whichever backend the business KV storage used. It is now selected
-independently and lives in a container named in code. The three things that
-carry real risk are pinned here:
+The configuration storage is selected independently of the business backends
+and lives in a container named in code. The three things that carry real risk
+are pinned here:
 
-* the ``config_dir`` default resolves to the file slice 1 already wrote, so an
-  upgrade reads every baseline instead of reading absence -- and absence is the
-  one answer that lets a start bootstrap;
+* ``config_dir`` is where the NEXT start reads its baselines, so a deployment
+  whose directory moves reads absence instead of its own records -- and
+  absence is the one answer that lets a start bootstrap;
 * a fixed container name is SHARED by two deployments on one server, so what
   keeps their baselines apart is the row key's scope;
 * a separately selected backend is a new way to point a running deployment at
@@ -80,12 +79,13 @@ def _rag(tmp_path, *, model_name="bge-m3", **kwargs):
     )
 
 
-def _write_slice_one_layout(tmp_path, workspace, *, model_name, dim=_DIM):
-    """The file exactly as slice 1 wrote it: the reserved workspace's
-    subdirectory under ``working_dir``, one row per target.
+def _write_recorded_baselines(tmp_path, workspace, *, model_name, dim=_DIM):
+    """A deployment that has already recorded its baselines: the file in the
+    default ``config_dir``, one row per target.
 
     Written by hand on purpose -- driving it through today's code would prove
-    only that the code agrees with itself.
+    only that the code agrees with itself, where what is being pinned is that
+    the on-disk shape is the contract and a later start reads it back.
     """
     path = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,19 +110,18 @@ def _stored(path):
     return json.loads(path.read_text())
 
 
-class TestTheUpgradeFromSliceOne:
-    """Deliverable 2 and 7: the default does not orphan a single baseline."""
+class TestTheConfigurationDirectoryIsWhereBaselinesLive:
+    """Deliverable 2 and 7: what is recorded is read back, from that directory
+    and no other."""
 
-    def test_the_default_config_dir_is_slice_ones_location(self, tmp_path):
+    def test_the_default_config_dir_is_under_the_working_dir(self, tmp_path):
         assert default_config_dir(str(tmp_path)) == str(tmp_path / CONFIG_CONTAINER_TAG)
 
-    async def test_every_recorded_baseline_is_still_read_after_the_upgrade(
-        self, tmp_path
-    ):
-        """Start on the old layout, upgrade, and the recorded model is
-        unchanged -- not re-established, not rewritten."""
+    async def test_every_recorded_baseline_is_read_by_the_next_start(self, tmp_path):
+        """A later start reads the recorded model unchanged -- not
+        re-established, not rewritten."""
         workspace = _workspace(tmp_path)
-        path = _write_slice_one_layout(tmp_path, workspace, model_name="bge-m3")
+        path = _write_recorded_baselines(tmp_path, workspace, model_name="bge-m3")
         before = _stored(path)
 
         rag = _rag(tmp_path, model_name="bge-m3")
@@ -144,8 +143,8 @@ class TestTheUpgradeFromSliceOne:
             await rag.finalize_storages()
         assert _stored(path) == before
 
-    async def test_a_mismatching_model_still_refuses_after_the_upgrade(self, tmp_path):
-        _write_slice_one_layout(tmp_path, _workspace(tmp_path), model_name="bge-m3")
+    async def test_a_mismatching_model_still_refuses(self, tmp_path):
+        _write_recorded_baselines(tmp_path, _workspace(tmp_path), model_name="bge-m3")
 
         rag = _rag(tmp_path, model_name="text-embedding-3-large")
         with pytest.raises(EmbeddingBaselineMismatchError) as excinfo:
@@ -154,10 +153,10 @@ class TestTheUpgradeFromSliceOne:
         await rag.finalize_storages()
 
     async def test_a_config_dir_pointed_elsewhere_reads_absence(self, tmp_path):
-        """The counterexample that makes the default load bearing: the very
+        """The counterexample that makes the directory load bearing: the very
         same deployment, one setting different, and every baseline is gone."""
         workspace = _workspace(tmp_path)
-        _write_slice_one_layout(tmp_path, workspace, model_name="bge-m3")
+        _write_recorded_baselines(tmp_path, workspace, model_name="bge-m3")
 
         rag = _rag(tmp_path, config_dir=str(tmp_path / "elsewhere"))
         await rag.initialize_storages()
@@ -315,7 +314,7 @@ class TestTheEmptyStoreGuard:
     async def test_a_started_deployment_with_records_stays_quiet(
         self, tmp_path, warnings_seen
     ):
-        _write_slice_one_layout(tmp_path, _workspace(tmp_path), model_name="bge-m3")
+        _write_recorded_baselines(tmp_path, _workspace(tmp_path), model_name="bge-m3")
         rag = _rag(tmp_path, model_name="bge-m3")
         await rag.initialize_storages()
         try:
@@ -328,7 +327,7 @@ class TestTheEmptyStoreGuard:
     ):
         """The failure this guard exists for: the deployment HAS records, and
         one setting points the instance at a store that does not hold them."""
-        _write_slice_one_layout(tmp_path, _workspace(tmp_path), model_name="bge-m3")
+        _write_recorded_baselines(tmp_path, _workspace(tmp_path), model_name="bge-m3")
         rag = _rag(tmp_path, config_dir=str(tmp_path / "empty-store"))
         await rag.initialize_storages()
         try:

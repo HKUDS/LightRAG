@@ -352,9 +352,7 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
             f"config_storage is unset, so it would follow kv_storage="
             f"{kv_storage!r} -- which the configuration category does not "
             f"admit. Set config_storage (LIGHTRAG_CONFIG_STORAGE) to one of "
-            f"{', '.join(admitted)}. Note that the baselines recorded through "
-            f"{kv_storage!r} are NOT migrated: they will be re-established on "
-            f"the next start, and only on a positive adoption probe."
+            f"{', '.join(admitted)}."
         )
     return kv_storage
 
