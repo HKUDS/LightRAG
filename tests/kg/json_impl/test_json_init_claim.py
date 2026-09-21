@@ -383,3 +383,56 @@ async def test_two_spellings_of_one_directory_are_one_backing(
     assert await second.get_by_id("row-a") is not None, (
         "the same file under a second spelling did not share the namespace"
     )
+
+
+async def test_a_second_cancellation_does_not_return_over_a_live_looking_claim(
+    monkeypatch,
+):
+    """The release has to be DRAINED, not awaited once.
+
+    Returning while it is still pending leaves the flag saying LIVE over a
+    load that has given up. An instance asking in that window is told the
+    namespace is already loaded, so it skips its own file -- and then the
+    release runs, empties the data underneath it, and its next commit
+    publishes that emptiness over every row in the file. That is the failure
+    the claim exists to prevent, reached by cancelling twice.
+    """
+    from lightrag.kg import shared_storage
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    released = []
+    real_release = shared_storage.release_namespace_init
+
+    async def _slow_release(namespace, workspace=None):
+        started.set()
+        await finish.wait()
+        released.append(namespace)
+        await real_release(namespace, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "release_namespace_init", _slow_release)
+
+    async def _cancelled_load():
+        async with namespace_init_claim("drainns", workspace="ws") as need_init:
+            assert need_init is True
+            raise asyncio.CancelledError()
+
+    task = asyncio.ensure_future(_cancelled_load())
+    await started.wait()
+
+    # A second cancellation, delivered while the release is still in flight.
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # The claim must not have been handed back yet -- and the loader must not
+    # have returned, because it is still draining.
+    assert released == []
+    assert task.done() is False
+
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert released == ["drainns"]
+    assert await try_initialize_namespace("drainns", workspace="ws") is True

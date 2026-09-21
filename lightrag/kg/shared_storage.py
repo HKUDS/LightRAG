@@ -4052,12 +4052,24 @@ async def _hand_back_namespace_init(
     )
     _claim_release_tasks.add(release)
     release.add_done_callback(_done)
-    try:
-        await asyncio.shield(release)
-    except BaseException:
-        # Including a cancellation delivered right here: the release itself is
-        # unaffected, and the exception the caller is propagating stands.
-        pass
+    # Drained, however many cancellations arrive, and not merely awaited once.
+    # Returning while the release is still pending leaves the flag saying LIVE
+    # over a load that has already given up: an instance that asks in that
+    # window is told the namespace is loaded, skips reading its file, and then
+    # has the data emptied underneath it when the release finally runs -- and
+    # its next commit publishes that emptiness over every row in the file,
+    # which is the failure this whole claim exists to prevent. Awaiting from a
+    # task that is being cancelled re-raises at once, so the shield is
+    # re-entered rather than waited on once; each attempt still yields to the
+    # loop, so the release makes progress.
+    while not release.done():
+        try:
+            await asyncio.shield(release)
+        except BaseException:
+            # The release itself is unaffected and the exception the caller is
+            # propagating stands; a failure inside the release is reported by
+            # its own callback. Only ``done()`` ends this loop.
+            pass
 
 
 async def get_namespace_data(
