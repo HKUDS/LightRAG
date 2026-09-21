@@ -175,3 +175,38 @@ async def test_the_pending_buffer_alone_is_not_yielded_as_the_listing():
             rows.append(row)
 
     assert rows == []
+
+
+async def test_a_failed_refresh_raises_instead_of_scanning_a_stale_view():
+    """The refresh before the PIT is what makes the frozen view complete.
+
+    A row already durable but not yet in a searchable segment is missed by
+    every page of the scan, so swallowing the refresh failure hands back a
+    clean, empty listing over rows that exist. ``_chunk_source_is_populated``
+    reads a clean end as CONFIRMED empty and the startup writes an
+    ``origin=empty`` baseline from it, while the coverage refusal that should
+    have fired (source populated, container empty) never does.
+    """
+    storage, client = _storage([])
+    client.indices.refresh = AsyncMock(
+        side_effect=OpenSearchException("refresh rejected: too many requests")
+    )
+
+    with pytest.raises(StorageControlPlaneError, match="not yet searchable"):
+        async for _ in storage.iter_rows(page_size=10):
+            pass
+
+    # And it refused BEFORE freezing a view it could not vouch for.
+    client.create_pit.assert_not_awaited()
+
+
+async def test_a_refresh_failure_outside_a_scan_is_still_best_effort():
+    """Only the scan asks for strictness. Every other search-based reader
+    keeps the pre-refresh view it has always had -- turning those into errors
+    would trade a stale listing for a broken one."""
+    storage, client = _storage([])
+    client.indices.refresh = AsyncMock(
+        side_effect=OpenSearchException("refresh rejected: too many requests")
+    )
+
+    await storage._refresh_for_search()  # no raise
