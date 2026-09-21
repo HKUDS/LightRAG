@@ -21,13 +21,11 @@ which matters because it is the part that encodes what "private" means.
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import stat
 import subprocess
 import sys
 import textwrap
-import time
 
 import pytest
 
@@ -287,6 +285,20 @@ _WINDOWS_ONLY = pytest.mark.skipif(
 )
 
 
+def _icacls_entries(path):
+    """The access entries ``icacls`` lists for ``path``, one per element.
+
+    An ACE line is one containing ``:(`` — the same judgement the CI guard
+    uses, and one that does not move with the display language the way
+    "Successfully processed" does.
+    """
+    return [
+        line.replace(str(path), "", 1).strip()
+        for line in _icacls(path).splitlines()
+        if ":(" in line
+    ]
+
+
 def _icacls(path):
     """``icacls`` output, with a failed query treated as a failed test.
 
@@ -365,79 +377,59 @@ def test_the_owner_can_still_read_and_archive_it_afterwards(tmp_path):
 
 
 @_WINDOWS_ONLY
-def test_an_unprivileged_identity_cannot_read_it_after_the_handle_closes(tmp_path):
+def test_the_restriction_persists_after_the_handle_closes(tmp_path):
     """The half sharing mode does NOT cover.
 
-    Sharing is released when the handle closes, so from then on only the DACL
-    stands between the file and another identity. That is what proves the
-    descriptor persisted rather than merely held for the duration.
+    ``dwShareMode=0`` lapses the moment the handle closes, so from then on
+    the DACL is the only thing standing between the file and another
+    identity. This checks that it is still there, still protected, and still
+    naming exactly one account — read back from the closed file, and set
+    against a CONTROL file created normally in the same directory, which
+    shows what that directory hands out by default. Without the control the
+    assertion could pass on a directory that grants nothing to anybody.
 
-    Every part of this is checked rather than inferred. The probe writes a
-    structured verdict to a file, so a launch that never happened fails the
-    test instead of passing it on empty output. It reads a CONTROL file
-    first, created normally in the same directory: if the restricted identity
-    cannot read that either, the run proves nothing about the DACL and says
-    so. And the target must fail with a permission error specifically -- "not
-    found" would mean the probe looked at the wrong path.
+    **What this does not do** is have a second identity attempt the read and
+    be refused. Two ways were tried and neither works here. ``runas
+    /trustlevel:0x20000`` exits 0 on a GitHub Windows runner and starts
+    nothing — no output, no process, no probe verdict after 60s (measured on
+    PR #4025); Secondary Logon does not run in that session. And a token from
+    ``CreateRestrictedToken`` carries the SAME user SID, which this very ACE
+    grants, so an ``AccessCheck`` against it is allowed by construction and
+    tests nothing. Creating a real second account is not something a CI
+    runner should have to do.
 
-    ``runas /trustlevel:0x20000`` drops the current token's groups rather
-    than needing a second account, which a CI runner should not have to
-    create.
+    So the boundary is explicit: this pins that the DACL we wrote is the DACL
+    that persists. That a DACL granting one account denies the others is the
+    operating system's guarantee, not this module's.
     """
     control = tmp_path / "control.bin"
-    control.write_bytes(b"readable by anyone the directory admits")
+    control.write_bytes(b"created the ordinary way, in the same directory")
     target = tmp_path / "copy.bin"
     with open_private_file(str(target)) as destination:
         destination.write(b"sensitive rows")
+    assert target.exists()
 
-    verdict = tmp_path / "verdict.json"
-    probe = tmp_path / "probe.py"
-    probe.write_text(
-        textwrap.dedent(
-            """
-            import json, sys
-            outcome = {}
-            for name, path in (("control", sys.argv[1]), ("target", sys.argv[2])):
-                try:
-                    with open(path, "rb") as handle:
-                        handle.read()
-                    outcome[name] = "opened"
-                except PermissionError:
-                    outcome[name] = "denied"
-                except OSError as error:
-                    outcome[name] = "other:" + type(error).__name__
-            with open(sys.argv[3], "w") as out:
-                json.dump(outcome, out)
-            """
-        ),
-        encoding="utf-8",
-    )
-    # Probe and verdict live beside the control file rather than in the
-    # runner's profile, so the restricted token can reach both.
-    command = f'"{sys.executable}" "{probe}" "{control}" "{target}" "{verdict}"'
-    launch = subprocess.run(
-        ["runas", "/trustlevel:0x20000", command],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    # runas LAUNCHES and returns; the probe runs on its own, so its exit is
-    # not this call's exit. Wait for the verdict rather than for the launcher.
-    deadline = time.monotonic() + 60
-    while not verdict.exists() and time.monotonic() < deadline:
-        time.sleep(0.5)
+    control_entries = _icacls_entries(control)
+    target_entries = _icacls_entries(target)
 
-    assert verdict.exists(), (
-        "the restricted probe never wrote its verdict, so nothing was "
-        f"verified.\nrunas exited {launch.returncode}\n"
-        f"stdout: {launch.stdout!r}\nstderr: {launch.stderr!r}"
+    # The control proves the directory really does hand access to more than
+    # one account, so the target's single entry is this module's doing.
+    assert len(control_entries) > 1, (
+        f"the control file has {len(control_entries)} entries, so this "
+        f"directory grants nothing to compare against: {control_entries}"
     )
-    outcome = json.loads(verdict.read_text(encoding="utf-8"))
-    assert outcome["control"] == "opened", (
-        "the restricted identity could not read the control file either "
-        f"({outcome['control']}), so this run says nothing about the DACL"
+    assert any("(I)" in entry for entry in control_entries), (
+        f"the control file inherited nothing, so there is no inheritance for "
+        f"the target to have escaped: {control_entries}"
     )
-    assert outcome["target"] == "denied", outcome
+
+    assert len(target_entries) == 1, (
+        f"expected exactly one access entry after the handle closed, got "
+        f"{target_entries}"
+    )
+    assert "(I)" not in target_entries[0], (
+        f"the target still carries inherited access: {target_entries[0]}"
+    )
 
 
 @_WINDOWS_ONLY
