@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any
 
 from lightrag.exceptions import WorkingDirectoryInUseError
@@ -88,10 +89,15 @@ class _Claim:
     holders: int = 1
     enforced: bool = True
     inherited_pid: int = field(default_factory=os.getpid)
-    # The slice-1 lock path, held alongside the real one while a deployment
-    # running that version can still be on the other side of an upgrade.
-    # See ``_acquire_legacy_claim``.
-    legacy_handle: Any = None
+    # The slice-1 lock paths held alongside the real one, keyed BY PATH,
+    # while a deployment running that version can still be on the other side
+    # of an upgrade. One real configuration directory can be reached through
+    # several default spellings -- two working directories whose
+    # ``_lightrag_config`` symlink to one place -- and each spelling has its
+    # OWN slice-1 parent. A claim recording only the first caller's would
+    # leave the others free for exactly the older server this reaches back
+    # for. See ``_acquire_legacy_claim``.
+    legacy_handles: dict[str, Any] = field(default_factory=dict)
 
 
 # Path -> claim. Inherited across ``fork``, which is the point: a worker finds
@@ -195,8 +201,17 @@ def _legacy_lock_path(config_dir: str, legacy_working_dir: str | None) -> str | 
     return os.path.join(os.path.realpath(os.path.dirname(spelled)), LOCK_FILENAME)
 
 
-def _acquire_legacy_claim(config_dir: str, legacy_working_dir: str | None) -> Any:
+def _acquire_legacy_claim(
+    config_dir: str,
+    legacy_working_dir: str | None,
+    already_held: Mapping[str, Any] | None = None,
+) -> tuple[str, Any] | None:
     """Take the slice-1 lock too, or return ``None`` if there is none to take.
+
+    Returns the path it locked with its handle, so the caller can record it
+    under that path and a later caller reaching the same real directory
+    through a different default spelling can tell its own alias apart from
+    one this tree already holds (``already_held``).
 
     Raises ``WorkingDirectoryInUseError`` when a process holding the old path
     is still running -- the refusal this whole module exists to produce, from
@@ -206,6 +221,10 @@ def _acquire_legacy_claim(config_dir: str, legacy_working_dir: str | None) -> An
     """
     path = _legacy_lock_path(config_dir, legacy_working_dir)
     if path is None:
+        return None
+    if already_held is not None and path in already_held:
+        # This tree locked it for an earlier caller; a second descriptor on
+        # the same file would refuse this process its own lock.
         return None
 
     try:
@@ -218,7 +237,7 @@ def _acquire_legacy_claim(config_dir: str, legacy_working_dir: str | None) -> An
     try:
         locked = _try_lock(handle)
     except OSError:
-        return handle
+        return path, handle
 
     if not locked:
         handle.close()
@@ -230,7 +249,7 @@ def _acquire_legacy_claim(config_dir: str, legacy_working_dir: str | None) -> An
             f"each other's embedding baselines. Stop it before starting this "
             f"one."
         )
-    return handle
+    return path, handle
 
 
 def acquire_working_dir_lock(
@@ -248,6 +267,15 @@ def acquire_working_dir_lock(
 
     claim = _claims.get(path)
     if claim is not None:
+        # The real directory is already held, but this caller may have
+        # reached it through a DIFFERENT default spelling, whose slice-1
+        # parent is another file entirely. Take that one before counting
+        # this holder in, so a refusal leaves the claim as it was.
+        alias = _acquire_legacy_claim(
+            working_dir, legacy_working_dir, claim.legacy_handles
+        )
+        if alias is not None:
+            claim.legacy_handles[alias[0]] = alias[1]
         claim.holders += 1
         return
 
@@ -272,14 +300,16 @@ def acquire_working_dir_lock(
         # would start this server beside an older one holding the only lock
         # either of them is able to take.
         try:
-            legacy_handle = _acquire_legacy_claim(working_dir, legacy_working_dir)
+            legacy = _acquire_legacy_claim(working_dir, legacy_working_dir)
         except BaseException:
             # Nothing was locked on the primary path, so there is nothing to
             # unlock -- only the descriptor to give back.
             handle.close()
             raise
         _claims[path] = _Claim(
-            handle=handle, enforced=False, legacy_handle=legacy_handle
+            handle=handle,
+            enforced=False,
+            legacy_handles=dict([legacy]) if legacy is not None else {},
         )
         return
 
@@ -295,7 +325,7 @@ def acquire_working_dir_lock(
         )
 
     try:
-        legacy_handle = _acquire_legacy_claim(working_dir, legacy_working_dir)
+        legacy = _acquire_legacy_claim(working_dir, legacy_working_dir)
     except BaseException:
         # This directory is free but its slice-1 spelling is not. Give back
         # what was just taken, so a refusal leaves nothing held.
@@ -313,7 +343,10 @@ def acquire_working_dir_lock(
         # deciding whether the lock is held.
         pass
 
-    _claims[path] = _Claim(handle=handle, legacy_handle=legacy_handle)
+    _claims[path] = _Claim(
+        handle=handle,
+        legacy_handles=dict([legacy]) if legacy is not None else {},
+    )
 
 
 def release_working_dir_lock(working_dir: str) -> None:
@@ -339,14 +372,15 @@ def release_working_dir_lock(working_dir: str) -> None:
     except OSError:
         pass
 
-    # The transitional claim goes back with the real one, never on its own.
-    if claim.legacy_handle is not None:
+    # The transitional claims go back with the real one, never on their own
+    # -- every spelling this tree locked, not just the first one asked for.
+    for legacy_handle in claim.legacy_handles.values():
         try:
-            _unlock(claim.legacy_handle)
+            _unlock(legacy_handle)
         except OSError:
             pass
         try:
-            claim.legacy_handle.close()
+            legacy_handle.close()
         except OSError:
             pass
 

@@ -294,8 +294,21 @@ file it exists to protect. Five properties matter:
   the failure this section opens with, arriving through an upgrade. While
   `config_dir` is the default, the claim takes the old path too
   (`_legacy_lock_path`); a `LIGHTRAG_CONFIG_DIR` is new here and has no older
-  holder to refuse. Transitional: remove it once no deployment can still be
-  running a build that predates the move.
+  holder to refuse. Three rules decide which old path, and each exists because
+  getting it wrong refuses a server that may start or admits one that may not:
+  *is this the default?* is asked of the CALLER (`legacy_working_dir`), never
+  inferred from the basename, which cannot tell a default apart from an
+  explicit directory ending in the same component; the comparison is made on
+  the path **as spelled**, before symlinks are followed, so a default
+  `_lightrag_config` symlinked onto another volume still looks derived from
+  its working directory; and the claim records these locks **keyed by path**,
+  because one real configuration directory reached through several default
+  spellings has one lock on itself and a DIFFERENT slice-1 parent per
+  spelling — a second caller takes any alias this tree has not already
+  locked, and skips the one it has, since a second descriptor on a file this
+  process already holds would refuse this process itself. Transitional:
+  remove it once no deployment can still be running a build that predates the
+  move.
 - **It fails open.** Locking is unreliable on NFSv3 without lockd and on
   SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
   deployments. A backend that cannot lock gets a warning and proceeds; refusing
