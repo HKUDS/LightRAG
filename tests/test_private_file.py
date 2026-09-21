@@ -384,9 +384,15 @@ def test_the_restriction_persists_after_the_handle_closes(tmp_path):
     the DACL is the only thing standing between the file and another
     identity. This checks that it is still there, still protected, and still
     naming exactly one account — read back from the closed file, and set
-    against a CONTROL file created normally in the same directory, which
-    shows what that directory hands out by default. Without the control the
-    assertion could pass on a directory that grants nothing to anybody.
+    against a CONTROL file created normally in the same directory.
+
+    The control is what stops this passing vacuously, and what it shows is
+    worth being precise about. A pytest tmp directory carries no inheritable
+    entries, so an ordinary file there gets the access token's DEFAULT DACL
+    rather than anything inherited — on the runner that is `SYSTEM`,
+    `BUILTIN\Administrators` and `OWNER RIGHTS`, all explicit, none marked
+    ``(I)``. So the comparison is not "escaped inheritance" but the stronger
+    "every principal the platform would have added is absent".
 
     **What this does not do** is have a second identity attempt the read and
     be refused. Two ways were tried and neither works here. ``runas
@@ -412,23 +418,27 @@ def test_the_restriction_persists_after_the_handle_closes(tmp_path):
     control_entries = _icacls_entries(control)
     target_entries = _icacls_entries(target)
 
-    # The control proves the directory really does hand access to more than
-    # one account, so the target's single entry is this module's doing.
-    assert len(control_entries) > 1, (
-        f"the control file has {len(control_entries)} entries, so this "
-        f"directory grants nothing to compare against: {control_entries}"
-    )
-    assert any("(I)" in entry for entry in control_entries), (
-        f"the control file inherited nothing, so there is no inheritance for "
-        f"the target to have escaped: {control_entries}"
-    )
+    def principals(entries):
+        return {entry.split(":", 1)[0] for entry in entries}
 
+    # Without this the rest could pass on a platform that grants nothing to
+    # anybody, which would say nothing about what this module removed.
+    assert len(control_entries) > 1, (
+        f"an ordinary file here has {len(control_entries)} entries, so there "
+        f"is nothing to compare against: {control_entries}"
+    )
     assert len(target_entries) == 1, (
         f"expected exactly one access entry after the handle closed, got "
         f"{target_entries}"
     )
     assert "(I)" not in target_entries[0], (
-        f"the target still carries inherited access: {target_entries[0]}"
+        f"the target carries inherited access: {target_entries[0]}"
+    )
+    # Every principal the platform would have granted is gone.
+    removed = principals(control_entries) - principals(target_entries)
+    assert removed, (
+        f"the target grants the same principals an ordinary file does, so "
+        f"nothing was restricted: {target_entries} vs {control_entries}"
     )
 
 
