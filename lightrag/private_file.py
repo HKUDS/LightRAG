@@ -323,6 +323,13 @@ def _declare_windows_signatures(kernel32, advapi32, wintypes) -> None:
     advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = (
         wintypes.BOOL
     )
+    advapi32.ConvertStringSidToSidW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.EqualSid.restype = wintypes.BOOL
     advapi32.GetSecurityInfo.argtypes = [
         wintypes.HANDLE,
         ctypes.c_int,
@@ -477,10 +484,46 @@ def _windows_verify_dacl(
             kernel32.LocalFree(text)
     finally:
         kernel32.LocalFree(descriptor)
-    assert_dacl_grants_only(actual, sid, path)
+    assert_dacl_grants_only(
+        actual,
+        sid,
+        path,
+        sid_matches=lambda field: _windows_sids_equal(
+            kernel32, advapi32, ctypes, field, sid
+        ),
+    )
 
 
-def assert_dacl_grants_only(sddl: str, sid: str, path: str) -> None:
+def _windows_sids_equal(kernel32, advapi32, ctypes, left: str, right: str) -> bool:
+    """Compare two SDDL SID fields by value, whatever they are spelled as.
+
+    ``ConvertStringSidToSidW`` accepts both forms -- a full ``S-1-...`` string
+    and a well-known alias like ``LA`` or ``BA`` -- and resolves the alias
+    against this machine, which is the same machine that owns the file. So
+    this answers "is this the same account", which the text never did.
+    """
+
+    def to_sid(text: str):
+        sid = ctypes.c_void_p()
+        if not advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)):
+            raise PrivateFileError(
+                f"Could not resolve the SID {text!r} read back from the file's "
+                f"DACL: {ctypes.WinError(ctypes.get_last_error())}"
+            )
+        return sid
+
+    first = to_sid(left)
+    try:
+        second = to_sid(right)
+        try:
+            return bool(advapi32.EqualSid(first, second))
+        finally:
+            kernel32.LocalFree(second)
+    finally:
+        kernel32.LocalFree(first)
+
+
+def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) -> None:
     """Refuse a DACL that is not exactly "protected, this SID alone".
 
     Split out from the Win32 calls so it can be exercised anywhere: it is the
@@ -493,7 +536,24 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str) -> None:
     is a second audience, whatever it grants. And that entry must be an allow
     for this SID, because an entry for anyone else is the whole failure this
     guards.
+
+    ``sid_matches`` decides the last one, and Windows callers MUST supply it.
+    An SDDL SID field is not a stable spelling: the string this process wrote
+    comes back abbreviated to a two-letter alias whenever the account has one,
+    so a store created by the built-in Administrator (RID 500) is written as
+    ``S-1-5-21-...-500`` and read back as ``LA``. Comparing the text refuses
+    every such file -- while passing for an ordinary user, whose SID has no
+    alias, which is exactly the shape of bug that survives local testing and
+    fails on someone else's machine. The Windows path therefore compares by
+    VALUE, through ``ConvertStringSidToSidW`` and ``EqualSid``. The default
+    here is text equality, for callers testing the structural rules with SIDs
+    they control.
     """
+    if sid_matches is None:
+
+        def sid_matches(field: str) -> bool:
+            return field == sid
+
     dacl = sddl.strip()
     if not dacl.startswith("D:"):
         raise PrivateFileError(f"{path}: expected a DACL, got {sddl!r}")
@@ -510,7 +570,7 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str) -> None:
             f"({sddl!r})"
         )
     fields = entries[0].rstrip(")").split(";")
-    if len(fields) < 6 or fields[0] != "A" or fields[5] != sid:
+    if len(fields) < 6 or fields[0] != "A" or not sid_matches(fields[5]):
         raise PrivateFileError(
             f"{path}: its only access entry is not an allow for {sid} ({sddl!r})"
         )

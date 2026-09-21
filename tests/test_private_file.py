@@ -208,6 +208,39 @@ def test_a_dacl_that_is_not_exactly_this_sid_is_refused(sddl, reason):
         assert_dacl_grants_only(sddl, SID, "x")
 
 
+def test_a_well_known_sid_read_back_as_its_alias_is_still_this_sid():
+    """The failure that only appears on some accounts (PR #4025 Windows CI).
+
+    An SDDL SID field has no stable spelling. Windows abbreviates any account
+    with a well-known alias on the way out, so a file created by the built-in
+    Administrator (RID 500) is WRITTEN as ``S-1-5-21-...-500`` and READ BACK
+    as ``LA`` — and comparing the text refuses every file that account
+    creates. It passes for an ordinary user, whose SID has no alias, which is
+    why local runs were green and the Windows runner (``runneradmin``, RID
+    500) failed on every single creation.
+
+    ``sid_matches`` is what the Windows path injects to compare by value
+    instead; here it stands in for ``EqualSid``.
+    """
+    administrator = "S-1-5-21-3699639565-2515463329-295617607-500"
+    aliases = {"LA": administrator}
+
+    def by_value(field):
+        return aliases.get(field, field) == administrator
+
+    assert_dacl_grants_only("D:P(A;;FA;;;LA)", administrator, "x", sid_matches=by_value)
+    # The structural rules still apply through the comparer.
+    with pytest.raises(PrivateFileError, match="not protected"):
+        assert_dacl_grants_only(
+            "D:(A;;FA;;;LA)", administrator, "x", sid_matches=by_value
+        )
+    # And a DIFFERENT well-known account is still a different audience.
+    with pytest.raises(PrivateFileError):
+        assert_dacl_grants_only(
+            "D:P(A;;FA;;;BA)", administrator, "x", sid_matches=by_value
+        )
+
+
 def test_an_inheritable_entry_for_the_right_sid_is_still_refused():
     """``D:`` without ``P`` takes whatever the parent dictates TODAY. The
     single correct-looking entry says nothing about tomorrow's."""

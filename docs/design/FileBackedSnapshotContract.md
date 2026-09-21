@@ -123,14 +123,20 @@ windows and neither substitutes for the other: the DACL governs every open
 after this one, including long after the handle closes, while the share mode
 stops a second handle being opened while the copy is in flight. A filesystem
 that does not persist ACLs fails the read-back and is refused rather than
-silently storing the data unprotected. Two details there are load-bearing and
-easy to get wrong: the SID comes from the thread token and falls back to the
-process token ONLY on `ERROR_NO_TOKEN` (any other failure would grant the file
-to a different identity than the one that owns it), and a failed
+silently storing the data unprotected. Three details there are load-bearing and each
+was got wrong once. The SID comes from the thread token and falls back to the
+process token ONLY on `ERROR_NO_TOKEN` — any other failure would grant the
+file to a different identity than the one that owns it. A failed
 `CreateFileW` is recognised by comparing against `c_void_p(-1).value` rather
-than `-1` — a pointer restype returns the unsigned bit pattern, so the literal
+than `-1`: a pointer restype returns the unsigned bit pattern, so the literal
 comparison reads every failure as a success and the cleanup that follows
-deletes whatever file was already at that path.
+deletes whatever file was already at that path. And the SID in the DACL read
+back is compared by VALUE (`ConvertStringSidToSidW` + `EqualSid`), never as
+text: Windows abbreviates any account with a well-known alias on the way out,
+so a file created by the built-in Administrator is written as
+`S-1-5-21-…-500` and read back as `LA`. Text comparison refuses every file
+that account creates while passing for an ordinary user whose SID has no
+alias — green locally, red on the runner.
 
 Which source files exist is decided by OPENING them and catching
 `FileNotFoundError` from that one call, never by a prior `exists()`. Only that
