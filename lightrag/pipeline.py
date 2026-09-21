@@ -40,6 +40,7 @@ from lightrag.base import (
     SourceUnique,
 )
 from lightrag.constants import (
+    DEFAULT_INPUT_DIR,
     ENQUEUE_SERIALIZE_LOCK_NAMESPACE,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
@@ -6771,21 +6772,23 @@ class _PipelineMixin:
         # Common local defaults used by API server.
         cwd = Path.cwd()
         if workspace:
-            candidates.append(cwd / "inputs" / workspace / name)
-            candidates.append(cwd / "inputs" / workspace / PARSED_DIR_NAME / name)
-            roots.append(cwd / "inputs" / workspace)
-            roots.append(cwd / "inputs" / workspace / PARSED_DIR_NAME)
+            candidates.append(cwd / DEFAULT_INPUT_DIR / workspace / name)
+            candidates.append(
+                cwd / DEFAULT_INPUT_DIR / workspace / PARSED_DIR_NAME / name
+            )
+            roots.append(cwd / DEFAULT_INPUT_DIR / workspace)
+            roots.append(cwd / DEFAULT_INPUT_DIR / workspace / PARSED_DIR_NAME)
         candidates.extend(
             [
-                cwd / "inputs" / name,
-                cwd / "inputs" / PARSED_DIR_NAME / name,
+                cwd / DEFAULT_INPUT_DIR / name,
+                cwd / DEFAULT_INPUT_DIR / PARSED_DIR_NAME / name,
                 cwd / PARSED_DIR_NAME / name,
             ]
         )
         roots.extend(
             [
-                cwd / "inputs",
-                cwd / "inputs" / PARSED_DIR_NAME,
+                cwd / DEFAULT_INPUT_DIR,
+                cwd / DEFAULT_INPUT_DIR / PARSED_DIR_NAME,
                 cwd / PARSED_DIR_NAME,
             ]
         )
