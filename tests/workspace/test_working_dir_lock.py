@@ -274,3 +274,51 @@ def test_the_legacy_path_is_the_one_slice_one_actually_locked(tmp_path):
     acquire_working_dir_lock(str(real_root))  # the slice-1 spelling
 
     assert _foreign_attempt(working_dir / CONFIG_CONTAINER_TAG) == "REFUSED"
+
+
+def test_a_filesystem_that_cannot_lock_still_asks_the_legacy_path(
+    tmp_path, monkeypatch
+):
+    """Failing open on the primary path must not skip the transitional claim.
+
+    The two paths can be on different filesystems -- a configuration
+    directory symlinked onto a network volume with a local parent is the
+    ordinary shape of it. Skipping the old path there starts this server
+    beside an older one that holds the only lock either of them can take.
+    """
+    config_dir = tmp_path / CONFIG_CONTAINER_TAG
+    config_dir.mkdir()
+
+    real_try_lock = wdl._try_lock
+
+    def _only_the_primary_cannot_lock(handle):
+        if handle.name == str(config_dir / LOCK_FILENAME):
+            raise OSError("no locks available")
+        return real_try_lock(handle)
+
+    monkeypatch.setattr(wdl, "_try_lock", _only_the_primary_cannot_lock)
+
+    acquire_working_dir_lock(str(config_dir))
+
+    # Unenforced on its own path, but holding the slice-1 one.
+    assert wdl._claims[wdl._lock_path(str(config_dir))].enforced is False
+    assert _foreign_attempt(tmp_path) == "REFUSED"
+
+
+def test_an_unlockable_primary_still_refuses_a_slice_one_holder(tmp_path, monkeypatch):
+    config_dir = tmp_path / CONFIG_CONTAINER_TAG
+    config_dir.mkdir()
+
+    # The slice-1 process holds the parent; this one cannot lock its own path.
+    acquire_working_dir_lock(str(tmp_path))
+
+    real_try_lock = wdl._try_lock
+
+    def _only_the_primary_cannot_lock(handle):
+        if handle.name == str(config_dir / LOCK_FILENAME):
+            raise OSError("no locks available")
+        return real_try_lock(handle)
+
+    monkeypatch.setattr(wdl, "_try_lock", _only_the_primary_cannot_lock)
+
+    assert _foreign_attempt(config_dir) == "REFUSED"
