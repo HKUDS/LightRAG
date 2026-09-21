@@ -2491,3 +2491,44 @@ validate_env_file
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert "Validation passed." in result.stdout
+
+
+def test_every_shipped_preset_that_names_an_unadmitted_kv_backend_names_a_config_storage() -> (
+    None
+):
+    """A preset an operator uncomments has to start.
+
+    The configuration selection FOLLOWS ``LIGHTRAG_KV_STORAGE`` when it is
+    unset, and a backend outside the four is refused by name during
+    construction — so a shipped Redis preset without an explicit
+    ``LIGHTRAG_CONFIG_STORAGE`` hands the operator a server that will not
+    start, from our own documentation. This walks the presets rather than
+    naming them, so a new one cannot quietly reintroduce it.
+    """
+    from lightrag.config_store import configuration_storage_implementations
+
+    admitted = set(configuration_storage_implementations())
+
+    presets = {
+        "env.docker-compose-full": (REPO_ROOT / "env.docker-compose-full"),
+        "k8s values.yaml": (REPO_ROOT / "k8s-deploy" / "lightrag" / "values.yaml"),
+    }
+
+    for name, path in presets.items():
+        text = path.read_text(encoding="utf-8")
+        kv_lines = [
+            line
+            for line in text.splitlines()
+            if "LIGHTRAG_KV_STORAGE" in line and not line.strip().startswith("###")
+        ]
+        assert kv_lines, f"{name}: no KV selection found; did the file move?"
+
+        for line in kv_lines:
+            backend = line.split("LIGHTRAG_KV_STORAGE", 1)[1].lstrip(":= ").strip()
+            if backend in admitted:
+                continue
+            assert "LIGHTRAG_CONFIG_STORAGE" in text, (
+                f"{name} offers {backend!r}, which the configuration category "
+                f"does not admit, and names no LIGHTRAG_CONFIG_STORAGE: "
+                f"uncommenting that preset yields a server refused at startup"
+            )
