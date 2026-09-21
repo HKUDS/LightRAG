@@ -234,3 +234,43 @@ def test_a_refusal_over_the_legacy_path_leaves_nothing_held(tmp_path):
 
     assert holds_working_dir_lock(str(config_dir)) is False
     assert wdl._claims == {}
+
+
+def test_a_symlinked_default_directory_still_reaches_back(tmp_path):
+    """Whether a directory is the DEFAULT is a question about its spelling,
+    not about where it points.
+
+    This module resolves symlinks everywhere else, so one directory produces
+    one key however it is spelled. Resolving before the basename check
+    answered a different question: a default ``_lightrag_config`` that is a
+    symlink to somewhere else resolves to a basename that is not the tag, and
+    the deployment silently lost its transitional claim -- the mixed-version
+    window this closes, reopened for exactly the deployments that moved their
+    configuration onto another volume.
+    """
+    elsewhere = tmp_path / "mnt-config"
+    elsewhere.mkdir()
+    working_dir = tmp_path / "rag"
+    working_dir.mkdir()
+    config_dir = working_dir / CONFIG_CONTAINER_TAG
+    config_dir.symlink_to(elsewhere, target_is_directory=True)
+
+    # A slice-1 process holds the working directory, knowing nothing of either.
+    acquire_working_dir_lock(str(working_dir))
+
+    assert _foreign_attempt(config_dir) == "REFUSED"
+
+
+def test_the_legacy_path_is_the_one_slice_one_actually_locked(tmp_path):
+    """Slice 1 locked ``realpath(working_dir)``, so a symlinked WORKING
+    directory must still meet it: claiming the unresolved parent would hold a
+    different file from the one the old process holds."""
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    working_dir = tmp_path / "linked-root"
+    working_dir.symlink_to(real_root, target_is_directory=True)
+    (working_dir / CONFIG_CONTAINER_TAG).mkdir()
+
+    acquire_working_dir_lock(str(real_root))  # the slice-1 spelling
+
+    assert _foreign_attempt(working_dir / CONFIG_CONTAINER_TAG) == "REFUSED"

@@ -169,10 +169,29 @@ def _legacy_lock_path(config_dir: str) -> str | None:
     Transitional. Remove it once no deployment can still be running a build
     that predates the move, and nothing but this function knows the old path.
     """
-    resolved = os.path.realpath(config_dir)
-    if os.path.basename(resolved) != CONFIG_CONTAINER_TAG:
+    # Whether this is the DEFAULT directory is decided on the spelling the
+    # caller used, BEFORE any symlink is followed. This module deliberately
+    # resolves symlinks everywhere else -- one directory must produce one key
+    # however it is spelled -- but resolving here first would answer a
+    # different question: a default ``<working_dir>/_lightrag_config`` that is
+    # a symlink to, say, ``/mnt/config`` resolves to a basename that is not
+    # the tag, and the deployment most in need of the transitional claim would
+    # silently not get one.
+    # Whether this is the DEFAULT directory is decided on the spelling the
+    # caller used, BEFORE any symlink is followed. This module deliberately
+    # resolves symlinks everywhere else -- one directory must produce one key
+    # however it is spelled -- but resolving here first would answer a
+    # different question: a default ``<working_dir>/_lightrag_config`` that is
+    # a symlink to, say, ``/mnt/config`` resolves to a basename that is not
+    # the tag, and the deployment most in need of the transitional claim would
+    # silently not get one.
+    spelled = os.path.normpath(os.path.abspath(config_dir))
+    if os.path.basename(spelled) != CONFIG_CONTAINER_TAG:
         return None
-    return os.path.join(os.path.dirname(resolved), LOCK_FILENAME)
+    # The PATH, though, is resolved: slice 1 locked
+    # ``realpath(working_dir)/LOCK_FILENAME``, and this has to name that same
+    # file or it claims something the old process never held.
+    return os.path.join(os.path.realpath(os.path.dirname(spelled)), LOCK_FILENAME)
 
 
 def _acquire_legacy_claim(config_dir: str) -> Any:
