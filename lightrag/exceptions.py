@@ -804,6 +804,52 @@ class VectorSpaceMismatchError(RuntimeError):
         self.stored_dim = stored_dim
 
 
+class CorruptStorageSnapshotError(RuntimeError):
+    """A file-backed storage snapshot exists but cannot be parsed.
+
+    Raised when a storage's on-disk snapshot file (e.g. a NanoVectorDB
+    ``vdb_*.json``) is not readable in its serialized format -- typically a
+    write interrupted by a crash, a kill, or a full disk. The storage refuses
+    to attach rather than serving an empty or partial view that callers could
+    mistake for the real one: a durable write must never be reported as one
+    that did not happen, and a missing snapshot must never look like an empty
+    store.
+
+    It is a distinct type for the same reason ``VectorSpaceMismatchError`` is:
+    tools must be able to tell it apart. ``lightrag-rebuild-vdb`` tolerates
+    only the typed embedding-space refusal, and a corrupt snapshot must still
+    abort any automatic drop -- deleting the file before the authoritative
+    sources (graph storage and the ``text_chunks`` KV store) are verified
+    intact loses data those sources cannot rebuild.
+
+    Recovery is manual: stop every writer, move the corrupt file aside (do not
+    delete it before the sources are checked), restart so a fresh empty store
+    is provisioned, then run ``lightrag-rebuild-vdb`` to rebuild the vectors
+    from the authoritative sources.
+
+    Args:
+        backend: Storage class name, e.g. ``"NanoVectorDBStorage"``.
+        container: The snapshot file that could not be parsed.
+        detail: The underlying parse error, chained as ``__cause__`` by the
+            raiser.
+    """
+
+    def __init__(self, *, backend: str, container: str, detail: str) -> None:
+        super().__init__(
+            f"{backend} refuses to serve '{container}': the snapshot file is "
+            f"corrupt and cannot be parsed ({detail}). A previous write was "
+            f"likely interrupted (crash, kill, or full disk). The contents of "
+            f"this file are derived data: the authoritative sources (graph "
+            f"storage and the text_chunks KV store) are unaffected. To recover, "
+            f"stop every writer, move the corrupt file aside, restart so a "
+            f"fresh empty store is provisioned, then run "
+            f"`lightrag-rebuild-vdb` to rebuild from those sources."
+        )
+        self.backend = backend
+        self.container = container
+        self.detail = detail
+
+
 class ConfigurationStorageError(RuntimeError):
     """The configuration storage could not complete a read, a write or a claim.
 
