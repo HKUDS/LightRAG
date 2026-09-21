@@ -84,6 +84,53 @@ I/O or permission failure, which propagates as itself — the recovery below
 destroys a container, and data that was merely unreachable for a moment must
 not be destroyed.
 
+Telling those last two apart cannot be done on exception type alone. Nano
+reads through Python, so a permission failure arrives as `PermissionError`
+and falls outside its caught set by construction. `faiss.read_index` runs in
+C++ and reports EVERY failure as a bare `RuntimeError` — a truncated index
+and one the OS refused to open are the same type with different text — so
+that path re-asks the question in Python (`_raise_if_unreadable`) before it
+labels anything corrupt. Residue: the probe runs after the failure, so a
+fault that clears in between reads as corruption; that direction still costs
+only a confirmed, backed-up rebuild, while the reverse silently destroys an
+intact index.
+
+A backup holds the same documents and metadata as the store it copies and is
+kept indefinitely, so it must never be more readable than what it copies. A
+backup that cannot be vouched for deletes its empty stub and aborts recovery
+with the originals intact (`BackupNotPrivateError`).
+
+**POSIX: settled.** The mode comes from `os.open` (0600, which the umask can
+only narrow), so the file is private from creation, and
+`_restrict_backup_to_owner` verifies that from the open descriptor. Each
+backup is also created empty and written only after that check — belt and
+braces over a file that was never readable anyway.
+
+**Windows: refused by default, because this tool cannot provide the
+guarantee there.** `os.open`'s mode writes no ACL — it sets the read-only
+ATTRIBUTE — so the file appears carrying the parent directory's inherited
+ACL. Tightening it afterwards does not repair that: Windows checks access
+when a handle is OPENED, so a process that opened the backup during the
+window keeps reading through that handle after `icacls` succeeds, including
+rows written later. Creating the file empty does not help, and `O_EXCL`
+refuses to create over an existing file without granting exclusive ACCESS to
+the one it creates. Closing this needs the file to be private from the
+instant it exists — `CreateFileW` with a `SECURITY_ATTRIBUTES` descriptor, or
+`dwShareMode=0` so no second handle can be opened — and neither is reachable
+through `os.open`. Until one of them is implemented and exercised on a
+Windows host, recovery there refuses. `LIGHTRAG_ALLOW_UNPROTECTED_BACKUP=true`
+is the informed opt-out for a directory the operator knows admits no other
+readers; it still runs `icacls /inheritance:r /grant:r`, which governs every
+open after the window, and it warns.
+
+Because the mode carries none of this on Windows, a `0600` assertion proves
+nothing there and `chmod(0)` does not revoke read access, so the tests
+relying on either are POSIX-only. The Windows paths — the refusal, the strict
+parse of the opt-out, and the ACL check — have their own tests, and the ones
+that must run on a Windows host say so. Nothing in the Windows branch has
+been exercised natively; its failure direction is refusal, not a silently
+wide backup.
+
 Faiss degraded instead of refusing until this was fixed: any load failure
 produced a fresh empty `IndexFlatIP` that certified itself as this process's
 embedding space, and the next `index_done_callback` saved that emptiness over

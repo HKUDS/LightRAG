@@ -62,6 +62,30 @@ class _PendingFaissDoc:
     vector: np.ndarray | None = None
 
 
+def _raise_if_unreadable(path: str) -> None:
+    """Re-ask in Python whether a file's bytes are reachable at all.
+
+    ``faiss.read_index`` runs in C++ and reports EVERY failure as a bare
+    ``RuntimeError``: a truncated index and one the OS refused to open are the
+    same exception type with different text. Only the first may be labelled
+    corruption, because that label routes to a recovery that backs the
+    container up and DROPS it -- a healthy index that was merely unreadable
+    for a moment would be destroyed and re-embedded for nothing, and rebuilt
+    from sources that may hold fewer rows than it did.
+
+    So the failure path asks the question the C++ error cannot answer. Any
+    ``OSError`` here propagates as itself; reaching the end means the bytes
+    are readable and the payload is what is wrong.
+
+    Residue: the probe runs after the failure, so a fault that clears in
+    between reads as corruption. That direction is survivable -- recovery
+    still needs the operator's confirmation and a successful backup -- while
+    the reverse, labelling an I/O fault as corruption silently, is not.
+    """
+    with open(path, "rb") as handle:
+        handle.read(1)
+
+
 @final
 @dataclass
 class FaissVectorDBStorage(BaseVectorStorage):
@@ -1585,15 +1609,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
             )
-            if isinstance(e, OSError) and not isinstance(e, FileNotFoundError):
-                # An I/O or permission failure says nothing about the bytes.
-                # Dropping this pair would destroy readable data.
-                raise
             missing = (
-                (getattr(e, "filename", None) or self._meta_file)
+                getattr(e, "filename", None)
                 if isinstance(e, FileNotFoundError)
                 else None
             )
+            if missing != self._meta_file:
+                # Not the torn pair handled below. An I/O or permission
+                # failure says nothing about the bytes, and dropping this pair
+                # would destroy readable data -- so it propagates as itself.
+                if isinstance(e, OSError):
+                    raise
+                if isinstance(e, RuntimeError):
+                    # faiss hides I/O failures in this type too; ask directly.
+                    _raise_if_unreadable(self._faiss_index_file)
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
                 container=missing or self._faiss_index_file,

@@ -16,6 +16,9 @@ merely unreadable for a moment would destroy readable data.
 from __future__ import annotations
 
 import builtins
+import os
+import stat
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -268,3 +271,98 @@ async def test_a_marker_that_was_never_written_still_attaches(tmp_path):
     fresh = _make_storage(tmp_path)
     await fresh.initialize()
     assert (await fresh.get_by_id("v1"))["content"] == "hello"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod(0) cannot revoke read access on Windows; it sets the "
+    "read-only attribute, so the index would still load and this test would "
+    "fail on a platform whose behaviour it does not describe. The Windows "
+    "equivalent needs a denying ACL or a sharing lock.",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses the file mode this test relies on",
+)
+@pytest.mark.asyncio
+async def test_an_unreadable_index_is_not_labelled_corrupt(tmp_path):
+    """A HEALTHY index the OS would not open must not become a drop target.
+
+    ``faiss.read_index`` runs in C++ and answers a permission failure with the
+    same bare ``RuntimeError`` it uses for a truncated file, so classifying on
+    the exception type alone registered an intact index as recoverable
+    corruption. The tool would then offer to back it up, drop it and
+    re-embed — paying for embeddings to replace rows that were never lost, and
+    ending with however many rows the sources still hold.
+    """
+    storage = await _seeded_storage(tmp_path)
+    index = Path(storage._faiss_index_file)
+    healthy = index.read_bytes()
+    index.chmod(0o000)
+
+    fresh = _make_storage(tmp_path)
+    try:
+        with pytest.raises(PermissionError):
+            await fresh.initialize()
+    finally:
+        index.chmod(0o600)
+
+    # Intact all along, and readable again once the fault clears.
+    assert index.read_bytes() == healthy
+    recovered = _make_storage(tmp_path)
+    await recovered.initialize()
+    assert (await recovered.get_by_id("v1"))["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_index_is_still_labelled_corrupt(tmp_path):
+    """The probe must not blunt the refusal it guards: readable bytes that
+    are not a Faiss index are corruption, exactly as before."""
+    storage = await _seeded_storage(tmp_path)
+    _truncate(storage._faiss_index_file)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError):
+        await fresh.initialize()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="st_mode carries no ACL on Windows, so a 0600 assertion there "
+    "would prove nothing about who can read the backup; the Windows "
+    "restriction is icacls and needs its own ACL check",
+)
+@pytest.mark.asyncio
+async def test_a_backup_is_never_more_readable_than_what_it_copies(tmp_path):
+    """Backups hold the documents and metadata of the store they copy and are
+    kept indefinitely, so their mode must not come from the process umask."""
+    from lightrag.tools.rebuild_vdb import RebuildTool
+
+    storage = await _seeded_storage(tmp_path)
+    Path(storage._faiss_index_file).chmod(0o600)
+    Path(storage._meta_file).chmod(0o600)
+    _truncate(storage._faiss_index_file)
+
+    refused = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as caught:
+        await refused.initialize()
+    tool = RebuildTool()
+    tool.entities_vdb = refused
+    tool.corrupt_vdbs = {"entities": caught.value}
+    tool.incompatible_vdbs = {"entities": str(caught.value)}
+    # Pin the permissive-but-common umask rather than inherit the runner's:
+    # a 077 runner would make a mode derived from the umask look correct and
+    # this test pass on an environment instead of on the behaviour. The
+    # process-wide set is safe here — pytest runs this serially, and xdist
+    # workers are separate processes.
+    saved_umask = os.umask(0o022)
+    try:
+        await tool.recover_incompatible(["entities"])
+    finally:
+        os.umask(saved_umask)
+
+    backups = list(Path(storage._faiss_index_file).parent.glob("*.corrupt-*"))
+    assert backups
+    for backup in backups:
+        mode = stat.S_IMODE(backup.stat().st_mode)
+        assert mode == 0o600, f"{backup.name} is {oct(mode)}"

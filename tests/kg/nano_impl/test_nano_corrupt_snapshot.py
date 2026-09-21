@@ -17,6 +17,8 @@ raising the bare library error this test module exists to abolish.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -206,3 +208,41 @@ async def test_a_dimension_mismatch_is_not_reported_as_corruption(tmp_path):
     )
     with pytest.raises(VectorSpaceMismatchError):
         await wider.initialize()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod(0) sets the read-only attribute on Windows rather than "
+    "revoking read access, so the snapshot would still load",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses the file mode this test relies on",
+)
+@pytest.mark.asyncio
+async def test_an_unreadable_snapshot_is_not_labelled_corrupt(tmp_path):
+    """A healthy file the OS would not open is not a drop target.
+
+    This backend reads through Python, so a permission failure arrives as
+    ``PermissionError`` and falls outside the caught set by construction --
+    unlike Faiss, whose C++ layer reports the same fault as ``RuntimeError``
+    and needs an explicit probe. Pinned anyway: widening this catch to
+    ``Exception`` would register an intact snapshot as recoverable
+    corruption, and the tool would back it up, drop it and re-embed.
+    """
+    storage = await _seeded_storage(tmp_path)
+    path = Path(storage._client_file_name)
+    healthy = path.read_bytes()
+    path.chmod(0o000)
+
+    fresh = _make_storage(tmp_path)
+    try:
+        with pytest.raises(PermissionError):
+            await fresh.initialize()
+    finally:
+        path.chmod(0o600)
+
+    assert path.read_bytes() == healthy
+    recovered = _make_storage(tmp_path)
+    await recovered.initialize()
+    assert (await recovered.get_by_id("v1"))["content"] == "hello"

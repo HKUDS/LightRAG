@@ -14,6 +14,7 @@ Covers:
 
 import os
 import pytest
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -1448,3 +1449,132 @@ async def test_corrupt_recovery_is_not_gated_on_one_backend_name(tmp_path, monke
     assert tool.corrupt_vdbs == {"entities": error}
     vdb.drop.assert_not_awaited()
     assert index.read_bytes() == b"truncated"
+
+
+def test_a_backup_that_cannot_be_restricted_is_not_written(tmp_path, monkeypatch):
+    """The control flow the Windows branch depends on, checked everywhere.
+
+    ``_restrict_backup_to_owner`` is a no-op verification on POSIX and an
+    ``icacls`` call on Windows, and only the second can realistically fail.
+    Its failure path is therefore untestable on the platform CI runs — so the
+    failure is injected here instead, which pins what the caller does with it:
+    no data reaches the backup, the stub is removed rather than stranded
+    (the next run's O_EXCL could not reuse it), and the original is intact.
+    """
+    from lightrag.tools.rebuild_vdb import BackupNotPrivateError
+
+    path = tmp_path / "vdb_entities.json"
+    path.write_bytes(b"sensitive rows")
+
+    def _refuse(backup_path, fd):
+        raise BackupNotPrivateError("icacls exited 5")
+
+    monkeypatch.setattr(rebuild_vdb, "_restrict_backup_to_owner", _refuse)
+    with pytest.raises(BackupNotPrivateError, match="icacls exited 5"):
+        rebuild_vdb.backup_corrupt_snapshot((str(path),))
+
+    assert path.read_bytes() == b"sensitive rows"
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+def test_a_backup_is_restricted_before_a_single_byte_is_copied(tmp_path, monkeypatch):
+    """Ordering is the whole argument: restricting after the copy would leave
+    the data exposed for the copy's duration. Pinned by observing the file at
+    the moment the restriction runs."""
+    path = tmp_path / "vdb_entities.json"
+    path.write_bytes(b"sensitive rows")
+    seen = {}
+    real = rebuild_vdb._restrict_backup_to_owner
+
+    def _observe(backup_path, fd):
+        seen["size"] = os.path.getsize(backup_path)
+        return real(backup_path, fd)
+
+    monkeypatch.setattr(rebuild_vdb, "_restrict_backup_to_owner", _observe)
+    (backup,) = rebuild_vdb.backup_corrupt_snapshot((str(path),))
+
+    assert seen["size"] == 0
+    assert Path(backup).read_bytes() == b"sensitive rows"
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="checks the Windows ACL the POSIX mode assertion cannot describe",
+)
+def test_a_backup_drops_inherited_access_on_windows(tmp_path, monkeypatch):
+    """What the opt-out still buys: every moment AFTER the open window.
+
+    Under ``LIGHTRAG_ALLOW_UNPROTECTED_BACKUP`` the tool proceeds and runs
+    ``icacls /inheritance:r``, which does not close the window a handle
+    opened during creation keeps open (see
+    ``test_windows_refuses_a_backup_it_cannot_make_private``) but does govern
+    every later open. An inherited entry is what its absence is checked
+    against here: ``icacls`` marks those ``(I)``, a tag that does not change
+    with the display language.
+
+    NOTE: written from documented ``icacls`` behaviour and not exercised on a
+    native Windows host. A failure here is as likely to be this test's
+    assertion as the code it covers — check the raw output first.
+    """
+    import subprocess
+
+    monkeypatch.setenv("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", "true")
+    path = tmp_path / "vdb_entities.json"
+    path.write_bytes(b"sensitive rows")
+    (backup,) = rebuild_vdb.backup_corrupt_snapshot((str(path),))
+
+    listing = subprocess.run(
+        ["icacls", backup], capture_output=True, text=True, check=True
+    ).stdout
+    entries = [
+        line.strip()
+        for line in listing.splitlines()
+        if ":(" in line and "Successfully processed" not in line
+    ]
+    assert entries, f"icacls reported no ACEs for the backup:\n{listing}"
+    assert not [line for line in entries if "(I)" in line], (
+        f"the backup still carries inherited access:\n{listing}"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="describes the Windows refusal specifically"
+)
+def test_windows_refuses_a_backup_it_cannot_make_private(tmp_path, monkeypatch):
+    """The window this refusal exists for cannot be closed by tightening later.
+
+    Windows checks access when a handle is opened, so a process that opened
+    the backup between its creation and ``icacls`` keeps reading through that
+    handle afterwards — including rows written later. Creating the file empty
+    does not help, and ``O_EXCL`` grants no exclusive access. Until the file
+    is private from the instant it exists (``CreateFileW`` with a security
+    descriptor, or ``dwShareMode=0``), the honest answer is to refuse.
+    """
+    from lightrag.tools.rebuild_vdb import BackupNotPrivateError
+
+    monkeypatch.delenv("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", raising=False)
+    path = tmp_path / "vdb_entities.json"
+    path.write_bytes(b"sensitive rows")
+
+    with pytest.raises(BackupNotPrivateError, match="from the moment it is created"):
+        rebuild_vdb.backup_corrupt_snapshot((str(path),))
+
+    assert path.read_bytes() == b"sensitive rows"
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+def test_the_windows_refusal_is_opt_out_not_silently_skipped(monkeypatch):
+    """The opt-out must be an explicit "true", not any truthy-looking value.
+
+    Checked by calling the platform branch directly: the refusal is what
+    stands between a Windows operator and a backup other users may already
+    hold a handle to, so a loose parse of the variable would hand that away
+    to a stray "0" or "false" in the environment.
+    """
+    from lightrag.tools.rebuild_vdb import BackupNotPrivateError
+
+    monkeypatch.setattr(rebuild_vdb.os, "name", "nt")
+    for value in ("", "0", "false", "no", "TRUE_ISH", "1"):
+        monkeypatch.setenv("LIGHTRAG_ALLOW_UNPROTECTED_BACKUP", value)
+        with pytest.raises(BackupNotPrivateError, match="from the moment"):
+            rebuild_vdb._restrict_backup_to_owner("C:\\\\x\\\\backup", -1)
