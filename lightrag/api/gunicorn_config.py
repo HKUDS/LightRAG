@@ -27,6 +27,10 @@ bind = None
 loglevel = None
 certfile = None
 keyfile = None
+# The PARSED working directory, which is not always what ``WORKING_DIR`` says:
+# ``--working-dir`` overrides it for the workers, so a master that read the
+# environment here would claim a directory nobody asks for (see on_starting).
+working_dir = None
 
 # Enable preload_app option
 preload_app = True
@@ -93,6 +97,23 @@ logconfig_dict = {
 }
 
 
+def resolved_working_dir() -> str:
+    """The working directory the WORKERS will use.
+
+    ``--working-dir`` is parsed into ``global_args`` and handed to every
+    worker's ``LightRAG``; nothing writes it back to the environment. So a
+    master reading ``WORKING_DIR`` here would resolve one directory while its
+    workers resolve another -- the master's claim would then be on a path
+    nobody inherits, the first worker would take the real one for itself, and
+    every worker after it would be refused at startup. ``run_with_gunicorn``
+    sets the parsed value on this module before Gunicorn starts; the
+    environment is only the fallback for a master started another way.
+    """
+    if working_dir:
+        return working_dir
+    return get_env_value("WORKING_DIR", "./rag_storage")
+
+
 def on_starting(server):
     """
     Executed when Gunicorn starts, before forking the first worker processes
@@ -136,11 +157,10 @@ def on_starting(server):
         uses_working_dir,
     )
 
-    working_dir = get_env_value("WORKING_DIR", "./rag_storage")
     # The configuration storage is bound to the KV backend, so that is the one
     # that decides whether this directory is claimed at all.
     if uses_working_dir(get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage")):
-        acquire_working_dir_lock(working_dir)
+        acquire_working_dir_lock(resolved_working_dir())
 
     print("Gunicorn initialization complete, forking workers...\n")
 
@@ -165,7 +185,7 @@ def on_exit(server):
     )
 
     if uses_working_dir(get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage")):
-        release_working_dir_lock(get_env_value("WORKING_DIR", "./rag_storage"))
+        release_working_dir_lock(resolved_working_dir())
 
     print("Gunicorn shutdown complete")
     print("=" * 80)
