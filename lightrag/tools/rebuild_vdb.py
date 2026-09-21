@@ -77,6 +77,7 @@ sys.path.insert(
 from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_WORKING_DIR,
 )
 from lightrag.config_store import (
     EMBEDDING_TARGETS,
@@ -110,8 +111,6 @@ from lightrag.utils import (
     safe_vdb_operation_with_exception,
     setup_logger,
 )
-
-DEFAULT_WORKING_DIR = "./rag_storage"
 
 # NOTE: .env loading and logger setup are deferred to main() so that importing
 # this module as a library (see README "Library usage") has no side effects on
