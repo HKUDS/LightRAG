@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.fixture
 def fake_voyage_response():

@@ -33,6 +33,8 @@ import pytest
 from fastapi import APIRouter, HTTPException
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.offline
+
 # A stand-in exception message stuffed with the kind of internal detail that
 # must never reach a client (mirrors a real asyncpg connection failure).
 _SECRET = (

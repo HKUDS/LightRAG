@@ -13,6 +13,8 @@ from qdrant_client import models  # noqa: E402
 
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage  # noqa: E402
 
+pytestmark = pytest.mark.offline
+
 
 def _make_point(point_id: str, content: str) -> models.PointStruct:
     return models.PointStruct(

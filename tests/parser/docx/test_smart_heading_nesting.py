@@ -18,6 +18,10 @@ from lightrag.parser.docx.smart_heading.heading_flow import (
 )
 from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 def _d(idx, text, level, *, size=12.0, outline=None, plain=False, anchored=False):
     return HeadingDecision(

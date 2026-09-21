@@ -33,6 +33,8 @@ from lightrag.api.ui_customization import (
     resolve_ui_customization_snapshot,
 )
 
+pytestmark = pytest.mark.offline
+
 PLACEHOLDER = "<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
 
 _ENV_VARS_TO_ISOLATE = (

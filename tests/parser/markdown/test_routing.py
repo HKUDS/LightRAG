@@ -12,6 +12,10 @@ from lightrag.parser import registry
 from lightrag.parser.native_dispatch import NativeParser
 from lightrag.parser.routing import resolve_file_parser_directives
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 def _engine(path: str, rules: str = "") -> str:
     return resolve_file_parser_directives(path, parser_rules=rules)[0]

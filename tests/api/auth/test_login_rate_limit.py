@@ -8,6 +8,10 @@ from lightrag.api.login_rate_limit import (
     LoginRateLimiter,
 )
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 def _capture_warnings(monkeypatch):
     """Redirect the module logger's WARNING output into a list for assertions."""

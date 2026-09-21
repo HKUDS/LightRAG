@@ -36,6 +36,8 @@ from lightrag.parser.exceptions import ParsePipelineCancelled
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
+pytestmark = pytest.mark.offline
+
 # The listener emits a byte every _TRICKLE_INTERVAL, comfortably inside the
 # socket timeout, so a per-socket-operation timeout never fires.
 _TRICKLE_INTERVAL = 0.25

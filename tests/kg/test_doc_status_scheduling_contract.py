@@ -46,6 +46,8 @@ from lightrag.exceptions import SourceConflictRepairCASError
 
 from .conftest_scheduling_backends import BACKEND_PARAMS
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.fixture(params=BACKEND_PARAMS)
 async def doc_status(request, tmp_path):

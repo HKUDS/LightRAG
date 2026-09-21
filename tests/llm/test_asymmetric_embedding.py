@@ -24,6 +24,8 @@ import pytest
 
 from lightrag.api import config as api_config
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # wrap_embedding_func_with_attrs auto-detection
