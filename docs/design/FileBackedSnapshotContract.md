@@ -34,27 +34,6 @@ files may be justified by — or blocked on — it.
 and serializes its full state to one JSON file at
 `working_dir/[workspace/]vdb_<namespace>.json`.
 
-A snapshot that cannot be parsed at all — truncated or overwritten by a
-crashed, killed, or disk-full writer — is a **fail-loud** condition:
-`_build_client` raises `CorruptStorageSnapshotError` (chaining the parse
-error) at startup and on every reader reload, and never drops or rebuilds the
-file itself. The offline rebuild tool alone may recover a typed corrupt Nano snapshot:
-it initializes the authoritative sources, enumerates the selected sources,
-and asks the operator to verify their integrity and confirm the rebuild.
-It then copies each selected corrupt file to an exclusive `.corrupt-*` sibling
-and flushes that backup before dropping the original. A backup failure aborts
-without deleting the original. Backups survive failed and successful rebuilds;
-operators decide when they can be removed. An accessible source is not proof
-that it contains every original row. Keep every writer stopped throughout;
-restart only after the rebuilt data and its embedding baseline are committed.
-No manual file move or preliminary server restart is required.
-
-Accepted residue: a failed backup may leave a partial backup sibling, while
-the original stays intact. A failure after a successful backup/drop may leave
-an empty or partially rebuilt vector target; its original backup is retained,
-its baseline is not advanced on failure, and rerunning the offline rebuild
-converges. Normal startup and reader reloads never perform this recovery.
-
 `FaissVectorDBStorage` splits its state across two fields — `self._index` (the
 Faiss index) and `self._id_to_meta` (`dict[int_faiss_id, metadata]`) — and two
 files per `(workspace, namespace)`:
@@ -80,6 +59,77 @@ tolerates both directions: `meta > index` rows are dropped silently;
 auto-repaired, so orphan vectors remain in the loaded index, unreachable through
 custom-id lookups. Repair semantics (truncate index vs rebuild meta) are
 deliberately left to a follow-up.
+
+### Unreadable state is fail-loud (Nano and Faiss)
+
+State that exists but cannot be read back — truncated or overwritten by a
+crashed, killed, or disk-full writer — is a **fail-loud** condition in both
+vector storages: `_build_client` / `_load_faiss_index` raise
+`CorruptStorageSnapshotError` (chaining the underlying error) at startup and
+on every reader reload, and never drop or rebuild the files themselves.
+
+The bar is reconstituting the payload, not parsing one layer of it. Nano
+refuses a damaged base64 matrix and a matrix whose length no longer divides
+the row width exactly as it refuses malformed JSON; Faiss refuses whatever
+`faiss.read_index` rejects, an unparseable `.meta.json`, and a `.meta.json`
+that is ABSENT beside a present index (the metadata is the pair's commit
+marker, so its absence contradicts the index that is there). It also refuses a
+`.space.json` provenance marker that is present but not JSON: reading that one
+as "not recorded" is the single answer that lets a same-dimension model swap
+through, on the very file kept to catch it. What is not corruption: no index
+at all (a first start), an ABSENT `.space.json` or a marker payload this
+version cannot interpret (absent evidence never refuses, or every pre-upgrade
+store is refused), an embedding-space mismatch (its own typed refusal), and an
+I/O or permission failure, which propagates as itself — the recovery below
+destroys a container, and data that was merely unreachable for a moment must
+not be destroyed.
+
+Faiss degraded instead of refusing until this was fixed: any load failure
+produced a fresh empty `IndexFlatIP` that certified itself as this process's
+embedding space, and the next `index_done_callback` saved that emptiness over
+the bytes it had failed to read. One unreadable file became an empty one,
+permanently, with a new baseline stamped on top and a single WARNING line to
+show for it. **No file-backed storage may answer an unreadable file by
+serving an empty one.**
+
+The offline rebuild tool alone may recover a typed corrupt snapshot: it
+initializes the authoritative sources, enumerates the selected sources, and
+asks the operator to verify their integrity and confirm the rebuild. It then
+copies every file the refusal named (`CorruptStorageSnapshotError.artifacts`
+— one for Nano, the index/meta/marker triple for Faiss) to an exclusive
+`<path>.corrupt-<token>` sibling under one token per recovery, and flushes
+those backups before dropping the originals.
+
+**A refusal's `artifacts` must cover every file that storage's `drop()`
+removes.** That is the whole protocol in one line: the tool backs up
+`artifacts` and then calls `drop()`, so a file in the second set and not the
+first is destroyed with nothing holding it. `artifacts` is therefore stated by
+each raiser, never derived from `container` — the two answer different
+questions, and Faiss refusing on its marker names one file as the container
+and three as the scope. The field has no default for that reason: a storage
+that grows a sidecar must say so rather than inherit a guess that was only
+ever right for a single-file store. A backup failure aborts without
+deleting anything. A refusal that names NO local file is refused recovery
+outright: nothing can be preserved, so nothing may be destroyed. Backups
+survive failed and successful rebuilds; operators decide when they can be
+removed. An accessible source is not proof that it contains every original
+row. Keep every writer stopped throughout; restart only after the rebuilt
+data and its embedding baseline are committed. No manual file move or
+preliminary server restart is required.
+
+Accepted residues:
+
+* A failed backup may leave a partial backup sibling, while the originals stay
+  intact. A member that does not exist is skipped, not fabricated.
+* A failure after a successful backup/drop may leave an empty or partially
+  rebuilt vector target; its backups are retained, its baseline is not
+  advanced on failure, and rerunning the offline rebuild converges.
+* Faiss's reload path resets `_index` to an empty index *before* it loads, so
+  a refusal there leaves that empty index in the field. It is never served:
+  the refusal happens before the fingerprint is adopted and before the
+  `storage_updated` flag is consumed, so every later access re-enters the
+  reload and raises again. Normal startup and reader reloads never perform the
+  recovery above.
 
 ### Concurrency invariants
 

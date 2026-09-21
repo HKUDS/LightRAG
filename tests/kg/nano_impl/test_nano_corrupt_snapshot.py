@@ -6,6 +6,12 @@ path and no recovery path. The storage must instead refuse to attach with a
 typed ``CorruptStorageSnapshotError`` that names the corrupt file and explains
 how to rebuild — and it must do so both at startup (``initialize``) and when a
 reader reloads a snapshot a peer process left corrupt.
+
+The refusal covers every way the payload can fail to come back, not only the
+JSON layer: ``NanoVectorDB`` decodes a base64 matrix and reshapes it after
+``json.load`` returns, and a file that fails there is no more readable than
+one that fails to parse. Catching only the JSON errors left those modes
+raising the bare library error this test module exists to abolish.
 """
 
 from __future__ import annotations
@@ -18,7 +24,10 @@ import pytest
 
 nano_vectordb = pytest.importorskip("nano_vectordb")
 
-from lightrag.exceptions import CorruptStorageSnapshotError  # noqa: E402
+from lightrag.exceptions import (  # noqa: E402
+    CorruptStorageSnapshotError,
+    VectorSpaceMismatchError,
+)
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage  # noqa: E402
 from lightrag.kg.shared_storage import (  # noqa: E402
     finalize_share_data,
@@ -138,3 +147,62 @@ async def test_offline_recovery_backs_up_and_rebuilds_real_nano(tmp_path):
     await fresh.initialize()
     assert (await fresh.get_by_id("restored"))["content"] == "hello"
     assert backups[0].read_bytes() == original
+
+
+# Every payload here is structurally valid JSON that NanoVectorDB still cannot
+# turn back into a snapshot, so each one escaped a JSON-only catch. The error
+# each raises is named for the record; the test pins the refusal, not the
+# library's internals.
+UNREADABLE_PAYLOADS = {
+    "damaged-base64-matrix": b'{"embedding_dim": 8, "data": [], "matrix": "!!not-b64!"}',
+    "matrix-shorter-than-a-row": b'{"embedding_dim": 8, "data": [], "matrix": "AAAAAA=="}',
+    "matrix-not-a-string": b'{"embedding_dim": 8, "data": [], "matrix": 5}',
+    "no-matrix-at-all": b"{}",
+    "not-an-object": b"[1, 2, 3]",
+    "json-null": b"null",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload", UNREADABLE_PAYLOADS.values(), ids=UNREADABLE_PAYLOADS
+)
+async def test_initialize_refuses_a_snapshot_it_cannot_reconstitute(tmp_path, payload):
+    """Valid JSON is not the bar — reconstituting the snapshot is."""
+    storage = await _seeded_storage(tmp_path)
+    client_file = storage._client_file_name
+    Path(client_file).write_bytes(payload)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert client_file in str(exc_info.value)
+    assert "lightrag-rebuild-vdb" in str(exc_info.value)
+    assert exc_info.value.__cause__ is not None
+    assert Path(client_file).read_bytes() == payload
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_mismatch_is_not_reported_as_corruption(tmp_path):
+    """The widened catch must not swallow the refusal that owns dimensions.
+
+    ``NanoVectorDB`` asserts on the dimension, and the branch below the
+    corruption catch turns that into ``VectorSpaceMismatchError``. A catch
+    wide enough to take ``ValueError`` must still leave ``AssertionError``
+    to it, or a model swap starts reading as a corrupt file and the operator
+    is sent to back up and drop a container that is perfectly readable.
+    """
+    storage = await _seeded_storage(tmp_path)
+
+    wider = NanoVectorDBStorage(
+        namespace="test_vectors",
+        workspace="ws",
+        global_config=storage.global_config,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=DIM * 2, max_token_size=512, func=_embed
+        ),
+        meta_fields={"content"},
+    )
+    with pytest.raises(VectorSpaceMismatchError):
+        await wider.initialize()

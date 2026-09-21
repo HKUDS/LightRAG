@@ -26,10 +26,11 @@ this tool exists to clear. So the three vector targets are initialized
 individually and a typed refusal is *recorded* rather than aborting the run;
 the rebuild then opens with ``drop()`` on the refused container, which
 re-provisions it in the current embedding space, and re-initializes it. A typed
-corrupt Nano snapshot also permits entering the menu, but is backed up before
-any confirmed rebuild drops it. Source checks and user confirmation
-precede recovery; normal startup still refuses corruption. Other failures,
-including outages and bad credentials, abort without dropping anything.
+corrupt file-backed snapshot also permits entering the menu, but every file it
+names is backed up before any confirmed rebuild drops it. Source checks and
+user confirmation precede recovery; normal startup still refuses corruption.
+Other failures, including outages and bad credentials, abort without dropping
+anything.
 
 The authoritative SOURCES (graph storage and the ``text_chunks`` KV store) keep
 the server-identical init path and still abort the run on any failure -- they
@@ -66,8 +67,8 @@ import asyncio
 import os
 import sys
 import shutil
-import tempfile
 import time
+from uuid import uuid4
 from typing import Any, Callable, Dict, List
 
 from dotenv import load_dotenv
@@ -174,29 +175,46 @@ async def _drop_vdb(vdb, label: str) -> None:
     logger.info(f"Dropped {label} vector storage")
 
 
-def backup_corrupt_snapshot(path: str) -> str:
-    """Preserve a corrupt snapshot before a confirmed offline rebuild.
+def backup_corrupt_snapshot(paths: tuple[str, ...]) -> List[str]:
+    """Preserve every file of a corrupt storage before a confirmed rebuild.
 
-    Copy to an exclusive sibling and flush it before the caller may drop the
-    original. Any error aborts recovery with the original untouched. Backups
-    are never automatically deleted, including after failed rebuilds.
+    Copies each path that exists to an exclusive ``<path>.corrupt-<token>``
+    sibling and flushes it before the caller may drop the originals. One token
+    per recovery, so a multi-file storage's backups read as one set. Any error
+    aborts recovery with the originals untouched. Backups are never deleted
+    automatically, including after a failed rebuild.
+
+    A storage whose files have all vanished is REFUSED rather than reported as
+    backed up: there is nothing left to preserve, so nothing may be destroyed.
+    A file that is merely absent from a present set is skipped -- a torn pair
+    is exactly the shape some corruption takes.
     """
-    fd, backup = tempfile.mkstemp(
-        prefix=os.path.basename(path) + ".corrupt-",
-        dir=os.path.dirname(os.path.abspath(path)),
-    )
-    with os.fdopen(fd, "wb") as destination:
-        with open(path, "rb") as source:
-            shutil.copyfileobj(source, destination)
-        destination.flush()
-        os.fsync(destination.fileno())
+    present = [os.path.abspath(path) for path in paths if os.path.exists(path)]
+    if not present:
+        raise FileNotFoundError(
+            f"Refusing to recover: none of {list(paths)} exists to be backed up"
+        )
+    token = uuid4().hex[:8]
+    backups: List[str] = []
+    for path in present:
+        backup = f"{path}.corrupt-{token}"
+        # "xb", not mkstemp: exclusive all the same, but it keeps the original
+        # name as the prefix and does not impose mkstemp's 0600 on a file the
+        # operator is expected to read and archive.
+        with open(backup, "xb") as destination:
+            backups.append(backup)
+            with open(path, "rb") as source:
+                shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
     if os.name != "nt":
-        directory = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    return backup
+        for parent in sorted({os.path.dirname(path) for path in present}):
+            directory = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    return backups
 
 
 async def clear_vector_space_refusal(vdb, label: str) -> None:
@@ -747,7 +765,8 @@ class RebuildTool:
         self.batch_size = DEFAULT_BATCH_SIZE
         self.storage_names: Dict[str, str] = {}
         # Vector targets that refused initialization, label -> diagnostic.
-        # Corrupt Nano targets additionally retain the typed error for backup.
+        # Corrupt targets additionally retain the typed error, whose
+        # ``artifacts`` name the files the recovery must preserve first.
         # Entries are cleared after confirmed recovery reinitializes a target.
         self.incompatible_vdbs: Dict[str, str] = {}
         self.corrupt_vdbs: Dict[str, CorruptStorageSnapshotError] = {}
@@ -962,15 +981,18 @@ class RebuildTool:
             for storage in (self.configuration_storage, self.graph, self.text_chunks):
                 await storage.initialize()
             # Vector targets, one at a time, tolerating ONLY the typed
-            # embedding-space refusal or a typed corrupt Nano snapshot.
+            # embedding-space refusal or a typed corrupt snapshot.
             # Neither is deleted during setup. Corrupt files require a backup
             # after source checks and explicit rebuild confirmation.
             for label, vdb in self.vector_targets().items():
                 try:
                     await vdb.initialize()
                 except CorruptStorageSnapshotError as e:
-                    # Only Nano's local snapshot has the backup protocol below.
-                    if e.backend != "NanoVectorDBStorage":
+                    # Recovery DESTROYS the container, so it is offered only to
+                    # a raiser that named the local files to preserve first.
+                    # A raiser with none (a server-backed store) cannot be
+                    # preserved, so it must not be destroyed either.
+                    if not e.artifacts:
                         raise
                     self.corrupt_vdbs[label] = e
                     self.incompatible_vdbs[label] = str(e)
@@ -1164,7 +1186,7 @@ class RebuildTool:
         """Drop + re-initialize each named target that refused to attach.
 
         The caller must check sources and obtain explicit confirmation first.
-        Corrupt Nano snapshots are backed up before any destructive action.
+        A corrupt target's files are backed up before any destructive action.
         Runs immediately before the rebuild of those targets, so a refused
         container is destroyed only once the operator has confirmed the
         rebuild. The rebuild helpers drop again straight after; ``drop()`` is
@@ -1177,13 +1199,20 @@ class RebuildTool:
                 continue
             if label in self.corrupt_vdbs:
                 error = self.corrupt_vdbs[label]
-                backup = backup_corrupt_snapshot(error.container)
-                print(f"  ✓ {label}: corrupt snapshot preserved at {backup}")
+                logger.warning(
+                    f"Rebuild {label}: backing up the corrupt files before the "
+                    f"rebuild drops them ({', '.join(error.artifacts)})"
+                )
+                for backup in backup_corrupt_snapshot(error.artifacts):
+                    print(f"  ✓ {label}: corrupt file preserved at {backup}")
                 await _drop_vdb(targets[label], label)
                 await targets[label].initialize()
+                logger.info(f"Rebuild {label}: corrupt container re-provisioned")
                 del self.corrupt_vdbs[label]
-            else:
-                await clear_vector_space_refusal(targets[label], label)
+                del self.incompatible_vdbs[label]
+                print(f"  ✓ {label}: corrupt container dropped and re-provisioned")
+                continue
+            await clear_vector_space_refusal(targets[label], label)
             del self.incompatible_vdbs[label]
             print(f"  ✓ {label}: incompatible container dropped and re-provisioned")
 
@@ -1281,9 +1310,11 @@ class RebuildTool:
             for label, message in incompatible.items():
                 print(f"    - {label}: {message}")
             print(
-                "\n  These targets are incompatible or corrupt, so missing counts\n"
-                "  cannot diagnose drift. A rebuild\n"
-                "  (menu options 2-4) is required, not optional."
+                "\n  Their containers hold another embedding space's vectors, or\n"
+                "  cannot be read back at all, so every record is unreachable by\n"
+                "  construction and a 'missing' count for them would say nothing\n"
+                "  about drift. A rebuild (menu options 2-4) is required, not\n"
+                "  optional."
             )
         print(f"  Graph entities:    {report['graph_entities']:,}")
         print(f"  Graph relations:   {report['graph_relations']:,}")
@@ -1330,7 +1361,7 @@ class RebuildTool:
         print("significant embedding API cost and time on large datasets.")
         print("If interrupted, simply re-run this tool (sources are read-only).")
         if self.corrupt_vdbs:
-            print("Selected corrupt snapshots will be backed up before deletion.")
+            print("Selected corrupt files will be backed up before deletion.")
             print("Verify the source counts and source integrity before proceeding;")
             print("a readable source is not proof that it contains every lost row.")
         confirm = input("\nProceed with the rebuild? (yes/no): ").strip().lower()

@@ -12,7 +12,9 @@ Covers:
   persistent VDB failure without deleting source entities.
 """
 
+import os
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1276,7 +1278,10 @@ def _corrupt_target(tmp_path):
     path = tmp_path / "vdb_entities.json"
     path.write_bytes(b'{"matrix": "truncated')
     error = CorruptStorageSnapshotError(
-        backend="NanoVectorDBStorage", container=str(path), detail="invalid JSON"
+        backend="NanoVectorDBStorage",
+        container=str(path),
+        detail="invalid JSON",
+        artifacts=(str(path),),
     )
     vdb = MockVDB()
     vdb.initialize = AsyncMock(side_effect=[error, None])
@@ -1362,3 +1367,84 @@ async def test_corrupt_unselected_target_is_not_backed_up_or_dropped(tmp_path):
     vdb.drop.assert_not_awaited()
     assert path.exists()
     assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_corrupt_without_artifacts_aborts_setup(tmp_path, monkeypatch):
+    """Recovery is offered only to a raiser that named files to preserve.
+
+    ``artifacts`` is what the backup copies. A raiser with none — a storage
+    whose state is not a set of local files — cannot be preserved, so the
+    tool must not enter the menu that ends in ``drop()``.
+    """
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    error = CorruptStorageSnapshotError(
+        backend="SomeRemoteStorage",
+        container="collection://entities",
+        detail="unreadable",
+        artifacts=(),
+    )
+    vdb = MockVDB()
+    vdb.initialize = AsyncMock(side_effect=error)
+    vdb.drop = AsyncMock(return_value={"status": "success"})
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+
+    assert await _setup_with(tool, monkeypatch) is False
+    assert tool.corrupt_vdbs == {}
+    vdb.drop.assert_not_awaited()
+
+
+def test_backup_preserves_every_artifact_under_one_token(tmp_path):
+    """A multi-file storage's backups must read as one set, not three strays."""
+    paths = []
+    for name, payload in (("a.index", b"AAA"), ("a.meta.json", b"BB")):
+        path = tmp_path / name
+        path.write_bytes(payload)
+        paths.append(str(path))
+    absent = str(tmp_path / "a.space.json")
+
+    backups = rebuild_vdb.backup_corrupt_snapshot((*paths, absent))
+
+    assert len(backups) == 2
+    assert len({Path(b).name.rsplit("-", 1)[1] for b in backups}) == 1
+    assert [Path(b).read_bytes() for b in backups] == [b"AAA", b"BB"]
+    assert all(os.path.exists(p) for p in paths)
+    # A skipped member leaves no empty stand-in behind.
+    assert not os.path.exists(absent + ".corrupt-" + Path(backups[0]).name[-8:])
+
+
+def test_backup_refuses_when_nothing_is_left_to_preserve(tmp_path):
+    """Nothing to back up means nothing may be dropped."""
+    with pytest.raises(FileNotFoundError, match="none of"):
+        rebuild_vdb.backup_corrupt_snapshot((str(tmp_path / "gone.index"),))
+
+
+@pytest.mark.asyncio
+async def test_corrupt_recovery_is_not_gated_on_one_backend_name(tmp_path, monkeypatch):
+    """A non-Nano file-backed storage reaches the recovery menu too.
+
+    The gate used to compare ``e.backend`` against the single string
+    ``"NanoVectorDBStorage"``, so a corrupt Faiss pair aborted the run and the
+    operator was back to deleting files by hand. What licenses recovery is
+    having named the files to preserve, not being a particular class.
+    """
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    index = tmp_path / "faiss_index_entities.index"
+    index.write_bytes(b"truncated")
+    error = CorruptStorageSnapshotError(
+        backend="FaissVectorDBStorage",
+        container=str(index),
+        detail="read error",
+        artifacts=(str(index), str(tmp_path / "meta.json")),
+    )
+    vdb = MockVDB()
+    vdb.initialize = AsyncMock(side_effect=error)
+    vdb.drop = AsyncMock(return_value={"status": "success"})
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+
+    assert await _setup_with(tool, monkeypatch) is True
+    assert tool.corrupt_vdbs == {"entities": error}
+    vdb.drop.assert_not_awaited()
+    assert index.read_bytes() == b"truncated"

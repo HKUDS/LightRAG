@@ -241,24 +241,36 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Absent evidence never refuses: a file written before the marker existed
         records no model and still loads.
 
-        A file that is not parseable at all (truncated or overwritten by a
-        crashed or killed writer) raises ``CorruptStorageSnapshotError``
-        instead of the library's bare ``json.JSONDecodeError`` /
-        ``UnicodeDecodeError``: the refusal must name the file and its
-        recovery path, and tools must be able to tell it apart from the
-        dimension refusal above. The corrupt file is never dropped here --
-        see the exception's docstring for why the drop stays manual.
+        A file whose CONTENT cannot be read back as this storage's format
+        raises ``CorruptStorageSnapshotError`` instead of the library's bare
+        error: the refusal must name the file and its recovery path, and tools
+        must be able to tell it apart from the dimension refusal above. The
+        corrupt file is never dropped here -- see the exception's docstring
+        for why the drop stays manual.
+
+        The caught set is every way ``load_storage`` can fail to reconstitute
+        the payload, not just the JSON layer: a truncated file raises
+        ``json.JSONDecodeError``, a damaged base64 matrix ``binascii.Error``,
+        a matrix whose length no longer divides the row width a reshape
+        ``ValueError`` (all three are ``ValueError``), and a payload that is
+        not this format's object shape at all ``TypeError`` / ``KeyError``.
+        A dimension mismatch is an ``AssertionError`` and is NOT in this set,
+        so the branch below still owns it.
         """
         try:
             client = NanoVectorDB(
                 self.embedding_func.embedding_dim,
                 storage_file=self._client_file_name,
             )
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (ValueError, TypeError, KeyError) as e:
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
                 container=self._client_file_name,
-                detail=str(e),
+                detail=f"{type(e).__name__}: {e}",
+                # This storage's whole state is one file, and it is the only
+                # one ``drop()`` removes -- the provenance marker rides inside
+                # the same JSON. Stated, not inherited: see the exception.
+                artifacts=(self._client_file_name,),
             ) from e
         except AssertionError as e:
             assert_vector_space_matches(

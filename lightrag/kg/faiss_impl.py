@@ -8,7 +8,11 @@ import json
 import numpy as np
 from dataclasses import dataclass
 
-from lightrag.exceptions import CommitBookkeepingError, VectorSpaceMismatchError
+from lightrag.exceptions import (
+    CommitBookkeepingError,
+    CorruptStorageSnapshotError,
+    VectorSpaceMismatchError,
+)
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -79,7 +83,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
     renames are independent, so a crash between them can leave the pair
     describing different snapshots. ``_load_faiss_index`` drops ``meta > index``
     rows silently and warns on ``index > meta`` without repairing it, so orphan
-    vectors stay in the loaded index, unreachable by custom-id lookup.
+    vectors stay in the loaded index, unreachable by custom-id lookup. A pair
+    it cannot read back AT ALL is different in kind: it raises
+    ``CorruptStorageSnapshotError`` and never degrades to an empty index,
+    because the next save would publish that emptiness over the unread bytes.
 
     The three invariants this class is correct only while they hold: **single
     writer per workspace** (the pipeline's ``busy`` reservation), **eventual
@@ -1368,16 +1375,39 @@ class FaissVectorDBStorage(BaseVectorStorage):
     def _read_vector_space_file(self) -> tuple[str | None, int | None]:
         """The recorded ``(model, dim)``, or ``(None, None)``.
 
-        Every way this can fail reads as "not recorded": no file (a store
-        written before the marker existed, or one whose sidecar write did not
-        land), unreadable JSON, a payload this version cannot parse. Absent
+        ABSENT reads as "not recorded": no file (a store written before the
+        marker existed, or one whose sidecar write did not land) and a payload
+        this version cannot interpret (``read_vector_space_marker`` is tolerant
+        on purpose, so a future format never wedges an old reader). Absent
         evidence never refuses.
+
+        UNREADABLE is not absent. A marker that exists but is not JSON is
+        corruption, and reading it as "not recorded" would hand a
+        same-dimension model swap the one answer that lets it through, on the
+        very file recorded to catch it -- and then let the next save stamp
+        this process's model over rows it cannot vouch for. An I/O failure is
+        neither: it propagates as itself, because the recovery this refusal
+        routes to destroys the container.
         """
         try:
             with open(self._vector_space_file, encoding="utf-8") as f:
-                return read_vector_space_marker(json.load(f))
-        except (OSError, ValueError):
+                payload = json.load(f)
+        except FileNotFoundError:
             return None, None
+        except OSError:
+            raise
+        except ValueError as e:
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=self._vector_space_file,
+                detail=f"{type(e).__name__}: {e}",
+                artifacts=(
+                    self._faiss_index_file,
+                    self._meta_file,
+                    self._vector_space_file,
+                ),
+            ) from e
+        return read_vector_space_marker(payload)
 
     def _write_vector_space_file(self) -> None:
         """Record this instance's embedding space beside the index.
@@ -1433,9 +1463,26 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     def _load_faiss_index(self):
-        """
-        Load the Faiss index + metadata from disk if it exists,
-        and rebuild in-memory structures so we can query.
+        """Load the index + metadata from disk and rebuild in-memory state.
+
+        **Fail-loud.** A pair that exists but cannot be read back raises
+        ``CorruptStorageSnapshotError``; every other failure propagates as
+        itself. Nothing here degrades to an empty index, which is what this
+        method used to do for any exception at all. That degradation was
+        silent data loss on a delay: the empty index certified itself as this
+        process's embedding space, and the next ``index_done_callback`` saved
+        it over the very bytes it had failed to read -- turning an unreadable
+        file into an empty one, permanently, with a fresh baseline stamped on
+        top. Refusing leaves those bytes on disk for the offline rebuild,
+        which is the only path allowed to destroy them.
+
+        Absent files are NOT corruption and never reach the refusal: no index
+        is a first start (handled above), and an unreadable ``.space.json``
+        marker is absent evidence (``_read_vector_space_file`` swallows it).
+        An absent ``.meta.json`` BESIDE a present index is a torn pair -- the
+        metadata is this storage's commit marker (``_fingerprint_paths``), so
+        its absence contradicts the index that is there -- and is reported as
+        corruption so the operator reaches the same recovery path.
         """
         if not os.path.exists(self._faiss_index_file):
             logger.warning(
@@ -1528,16 +1575,39 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.info(
                 f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
             )
+        except CorruptStorageSnapshotError:
+            # Already typed and already naming its own file (the marker read
+            # below raises this). Re-wrapping would relabel it as the index.
+            raise
         except Exception as e:
             if space_mismatch:
                 raise
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
             )
-            logger.warning(f"[{self.workspace}] Starting with an empty Faiss index.")
-            self._index = faiss.IndexFlatIP(self._dim)
-            self._id_to_meta = {}
-            self._vector_space_certified = True
+            if isinstance(e, OSError) and not isinstance(e, FileNotFoundError):
+                # An I/O or permission failure says nothing about the bytes.
+                # Dropping this pair would destroy readable data.
+                raise
+            missing = (
+                (getattr(e, "filename", None) or self._meta_file)
+                if isinstance(e, FileNotFoundError)
+                else None
+            )
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=missing or self._faiss_index_file,
+                detail=(
+                    f"{missing} is missing beside a present index"
+                    if missing
+                    else f"{type(e).__name__}: {e}"
+                ),
+                artifacts=(
+                    self._faiss_index_file,
+                    self._meta_file,
+                    self._vector_space_file,
+                ),
+            ) from e
 
     async def vector_space_adoption_pending(self) -> bool:
         """Whether this index holds vectors whose embedding model is unrecorded.
