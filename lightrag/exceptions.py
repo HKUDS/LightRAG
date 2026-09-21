@@ -812,20 +812,14 @@ class CorruptStorageSnapshotError(RuntimeError):
     write interrupted by a crash, a kill, or a full disk. The storage refuses
     to attach rather than serving an empty or partial view that callers could
     mistake for the real one: a durable write must never be reported as one
-    that did not happen, and a missing snapshot must never look like an empty
+    that did not happen, and an unreadable snapshot must never look like an empty
     store.
 
-    It is a distinct type for the same reason ``VectorSpaceMismatchError`` is:
-    tools must be able to tell it apart. ``lightrag-rebuild-vdb`` tolerates
-    only the typed embedding-space refusal, and a corrupt snapshot must still
-    abort any automatic drop -- deleting the file before the authoritative
-    sources (graph storage and the ``text_chunks`` KV store) are verified
-    intact loses data those sources cannot rebuild.
-
-    Recovery is manual: stop every writer, move the corrupt file aside (do not
-    delete it before the sources are checked), restart so a fresh empty store
-    is provisioned, then run ``lightrag-rebuild-vdb`` to rebuild the vectors
-    from the authoritative sources.
+    Normal startup and reader reloads refuse to attach and preserve the file.
+    Offline recovery belongs to ``lightrag-rebuild-vdb``: after source checks
+    and explicit confirmation it backs up the corrupt Nano snapshot before
+    dropping and rebuilding it. Keep all writers stopped until verification
+    completes. Source integrity is a prerequisite, not implied by this error.
 
     Args:
         backend: Storage class name, e.g. ``"NanoVectorDBStorage"``.
@@ -838,12 +832,12 @@ class CorruptStorageSnapshotError(RuntimeError):
         super().__init__(
             f"{backend} refuses to serve '{container}': the snapshot file is "
             f"corrupt and cannot be parsed ({detail}). A previous write was "
-            f"likely interrupted (crash, kill, or full disk). The contents of "
-            f"this file are derived data: the authoritative sources (graph "
-            f"storage and the text_chunks KV store) are unaffected. To recover, "
-            f"stop every writer, move the corrupt file aside, restart so a "
-            f"fresh empty store is provisioned, then run "
-            f"`lightrag-rebuild-vdb` to rebuild from those sources."
+            f"likely interrupted (crash, kill, or full disk). Stop every writer "
+            f"and verify the authoritative graph storage and text_chunks KV "
+            f"store. Run `lightrag-rebuild-vdb` offline with the same storage "
+            f"and workspace configuration; after confirmation it backs up the "
+            f"corrupt Nano snapshot before rebuilding. Restart the server only "
+            f"after the rebuild succeeds."
         )
         self.backend = backend
         self.container = container

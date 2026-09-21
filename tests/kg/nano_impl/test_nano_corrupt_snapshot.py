@@ -112,3 +112,29 @@ async def test_reader_reload_refuses_a_snapshot_a_peer_left_corrupt(tmp_path):
         await storage.query("hello", top_k=1, query_embedding=[1.0] * DIM)
 
     assert client_file in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_offline_recovery_backs_up_and_rebuilds_real_nano(tmp_path):
+    from lightrag.tools.rebuild_vdb import RebuildTool
+
+    storage = await _seeded_storage(tmp_path)
+    _truncate(storage._client_file_name)
+    original = Path(storage._client_file_name).read_bytes()
+    refused = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as caught:
+        await refused.initialize()
+    tool = RebuildTool()
+    tool.entities_vdb = refused
+    tool.corrupt_vdbs = {"entities": caught.value}
+    tool.incompatible_vdbs = {"entities": str(caught.value)}
+    await tool.recover_incompatible(["entities"])
+    backups = list(Path(refused._client_file_name).parent.glob("*.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    await refused.upsert({"restored": {"content": "hello"}})
+    await refused.index_done_callback()
+    fresh = _make_storage(tmp_path)
+    await fresh.initialize()
+    assert (await fresh.get_by_id("restored"))["content"] == "hello"
+    assert backups[0].read_bytes() == original

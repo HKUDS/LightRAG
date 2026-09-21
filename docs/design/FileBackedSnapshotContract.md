@@ -38,11 +38,22 @@ A snapshot that cannot be parsed at all — truncated or overwritten by a
 crashed, killed, or disk-full writer — is a **fail-loud** condition:
 `_build_client` raises `CorruptStorageSnapshotError` (chaining the parse
 error) at startup and on every reader reload, and never drops or rebuilds the
-file itself. The drop stays manual because the file is the only copy of the
-last flushed rows: deleting it before the authoritative sources (graph
-storage and the `text_chunks` KV store) are verified intact loses data they
-cannot rebuild. Recovery: stop every writer, move the corrupt file aside,
-restart to provision a fresh empty store, then run `lightrag-rebuild-vdb`.
+file itself. The offline rebuild tool alone may recover a typed corrupt Nano snapshot:
+it initializes the authoritative sources, enumerates the selected sources,
+and asks the operator to verify their integrity and confirm the rebuild.
+It then copies each selected corrupt file to an exclusive `.corrupt-*` sibling
+and flushes that backup before dropping the original. A backup failure aborts
+without deleting the original. Backups survive failed and successful rebuilds;
+operators decide when they can be removed. An accessible source is not proof
+that it contains every original row. Keep every writer stopped throughout;
+restart only after the rebuilt data and its embedding baseline are committed.
+No manual file move or preliminary server restart is required.
+
+Accepted residue: a failed backup may leave a partial backup sibling, while
+the original stays intact. A failure after a successful backup/drop may leave
+an empty or partially rebuilt vector target; its original backup is retained,
+its baseline is not advanced on failure, and rerunning the offline rebuild
+converges. Normal startup and reader reloads never perform this recovery.
 
 `FaissVectorDBStorage` splits its state across two fields — `self._index` (the
 Faiss index) and `self._id_to_meta` (`dict[int_faiss_id, metadata]`) — and two

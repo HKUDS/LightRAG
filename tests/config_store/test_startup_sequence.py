@@ -1000,3 +1000,88 @@ async def test_a_dropped_workspace_can_be_recreated_under_the_same_name(tmp_path
     await recreated.initialize_storages()
     await recreated.finalize_storages()
     assert all(r["model"] == "another-model" for r in _records(tmp_path).values())
+
+
+@pytest.mark.parametrize("target", ["entities", "relationships", "chunks"])
+async def test_corrupt_nano_startup_is_sticky_preserves_file_and_releases_claim(
+    tmp_path, target
+):
+    from pathlib import Path
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    await rag.finalize_storages()
+    config_file = tmp_path / "_lightrag_config" / "kv_store_config.json"
+    baseline = config_file.read_bytes()
+    broken = _rag(tmp_path, model_name="bge-m3")
+    path = Path(getattr(broken, target + "_vdb")._client_file_name)
+    path.write_bytes(b'{"matrix": "truncated')
+    for _ in range(2):
+        with pytest.raises(CorruptStorageSnapshotError):
+            await broken.initialize_storages()
+    assert broken._storages_status is StoragesStatus.CREATED
+    assert not broken._holds_working_dir
+    assert path.read_bytes() == b'{"matrix": "truncated'
+    assert config_file.read_bytes() == baseline
+    await broken.finalize_storages()
+
+
+@pytest.mark.parametrize("fail_embedding", [False, True])
+async def test_corrupt_nano_cli_rebuild_preserves_backup_and_commits_baselines_last(
+    tmp_path, monkeypatch, fail_embedding
+):
+    from lightrag.tools.rebuild_vdb import RebuildTool
+
+    await _seed(tmp_path, model_name="bge-m3")
+    baseline_before = _records(tmp_path)
+    files = list((tmp_path / _workspace(tmp_path)).glob("vdb_*.json"))
+    assert len(files) == 3
+    for path in files:
+        path.write_bytes(b'{"matrix": "truncated')
+    monkeypatch.setenv("WORKING_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKSPACE", _workspace(tmp_path))
+    monkeypatch.setenv("LIGHTRAG_CONFIG_DIR", str(tmp_path / "_lightrag_config"))
+    tool = RebuildTool()
+    monkeypatch.setattr(
+        tool,
+        "resolve_storage_names",
+        lambda: {
+            "graph": "NetworkXStorage",
+            "kv": "JsonKVStorage",
+            "config": "JsonKVStorage",
+            "vector": "NanoVectorDBStorage",
+        },
+    )
+    monkeypatch.setattr(
+        tool,
+        "build_embedding_func",
+        lambda: EmbeddingFunc(
+            embedding_dim=_DIM,
+            max_token_size=4096,
+            model_name="bge-m3",
+            func=_embedding_in_space("A", failing=fail_embedding),
+        ),
+    )
+    inputs = iter(["yes", "4", "yes", "0"])
+    monkeypatch.setattr("builtins.input", lambda *args: next(inputs))
+    assert await tool.run() is (not fail_embedding)
+    backups = list((tmp_path / _workspace(tmp_path)).glob("*.corrupt-*"))
+    assert len(backups) == 3
+    assert all(p.read_bytes() == b'{"matrix": "truncated' for p in backups)
+    if fail_embedding:
+        assert _records(tmp_path) == baseline_before
+    else:
+        assert all(
+            record["origin"] == "rebuild" for record in _records(tmp_path).values()
+        )
+        fresh = _rag(tmp_path, model_name="bge-m3")
+        await fresh.initialize_storages()
+        assert await fresh.chunks_vdb.get_by_id("chunk-1") is not None
+        assert (
+            await fresh.entities_vdb.get_by_id(
+                compute_mdhash_id("Alice", prefix="ent-")
+            )
+            is not None
+        )
+        await fresh.finalize_storages()
