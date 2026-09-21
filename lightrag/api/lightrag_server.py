@@ -38,6 +38,7 @@ from lightrag.api.utils_api import (
     internal_server_error,
 )
 from lightrag.api.admission_middleware import AdmissionMiddleware
+from lightrag.api.startup_errors import StartupErrorMiddleware
 from lightrag.api.body_limit_middleware import BodyLimitMiddleware, resolve_body_limits
 from .config import (
     global_args,
@@ -1749,6 +1750,11 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
+    app.add_middleware(
+        StartupErrorMiddleware,
+        workspace=args.workspace,
+        vector_storage=args.vector_storage,
+    )
 
     # Custom validation error handler, shaped per endpoint (see the
     # module-level function for why it is not a closure).
