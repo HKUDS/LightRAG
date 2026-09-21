@@ -62,6 +62,7 @@ async def test_empty_index_is_concise_but_still_fails_and_cleans_up(
     assert "space1" in messages and "FaissVectorDBStorage" in messages
     assert "chunks" in messages and "text chunk storage" in messages
     assert "lightrag-rebuild-vdb" in messages
+    assert "lightrag-clear-storage" in messages
     assert "Traceback" not in messages
     assert ("\033[1;31m" in messages) is colored
     assert "Application startup complete" not in messages

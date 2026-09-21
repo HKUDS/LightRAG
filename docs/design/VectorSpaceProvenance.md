@@ -312,6 +312,14 @@ this one's.
   and the rebuild is mandatory. The report carries the refusal under
   `incompatible` and `consistent` is `False`.
 
+`lightrag/tools/clear_storage.py` is the other way out, for a workspace whose
+data is disposable: it drives the same storages directly, tolerates the same
+two typed refusals on the vector targets, and answers them with `drop()` alone
+-- there is nothing to re-initialize for, because the process ends. It never
+consults the coverage gate, and on a named-container backend it clears the
+container named by the CURRENT embedding configuration, leaving a container
+named by a previous one orphaned exactly as a rebuild would.
+
 ## The transition: adopting an unmarked container
 
 Everything existing is unmarked, so the first start after the upgrade decides

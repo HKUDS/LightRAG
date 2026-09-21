@@ -66,6 +66,11 @@ restart the process after changing the vector backend. Do not start the server
 until the rebuild succeeds; there is currently no persisted vector-index
 readiness marker.
 
+If the workspace's data is disposable -- a test corpus, a workspace being
+decommissioned -- a rebuild is wasted embedding cost. `lightrag-clear-storage`
+(see `README_CLEAR_STORAGE.md`) drops the workspace instead, which also clears
+the startup refusal.
+
 ## Usage
 
 ```bash

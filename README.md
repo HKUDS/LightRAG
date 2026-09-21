@@ -539,11 +539,15 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 ### Maintenance Tools (`lightrag/tools/`)
 
-Storage-facing tools read `.env` and environment variables exactly like the server does, so run them from the project root with the same configuration. Several of them rewrite storage in place — check the linked guide for whether the server (and any other writer) has to be stopped first; `rebuild_vdb` requires it.
+Storage-facing tools read `.env` and environment variables exactly like the server does, so run them from the project root with the same configuration. Several of them rewrite storage in place — check the linked guide for whether the server (and any other writer) has to be stopped first; `rebuild_vdb` and `clear_storage` require it.
 
 **`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
 
 Drops and rebuilds every vector storage from its authoritative source (graph nodes/edges and the `text_chunks` KV store). The recovery path after a failed vector write, and after changing the embedding model or dimension. Also offers a read-only consistency check.
+
+**`clear_storage.py`** — `lightrag-clear-storage` — [README_CLEAR_STORAGE.md](./lightrag/tools/README_CLEAR_STORAGE.md)
+
+Drops every data storage of one workspace offline, exactly as the WebUI *Clear* button does, after showing what it is about to delete and requiring a typed confirmation. The way out of a startup refusal over an empty or unreadable vector index when the data is disposable and a rebuild would be wasted. Never touches the LLM response cache. Requires the server to be stopped.
 
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 

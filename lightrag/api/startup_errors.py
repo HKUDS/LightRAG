@@ -50,7 +50,9 @@ class StartupErrorMiddleware:
                         "  Check the storage backend, workspace and data directory.\n"
                         "  To rebuild: stop all writers, run lightrag-rebuild-vdb\n"
                         "  with the current embedding configuration, and select [4]\n"
-                        "  to rebuild ALL vector storages. Then restart the server."
+                        "  to rebuild ALL vector storages. Then restart the server.\n"
+                        "  If the data is disposable: run lightrag-clear-storage\n"
+                        "  instead to drop this workspace without re-embedding."
                     )
                     if sys.stderr.isatty() and "NO_COLOR" not in os.environ:
                         message = f"\033[1;31m{message}\033[0m"

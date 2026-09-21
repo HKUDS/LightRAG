@@ -921,6 +921,13 @@ cache drop keeps them exactly as a failed storage drop does. The cache rows
 that survive are workspace data too, and the endpoint's history entry names
 which drop kept the records.
 
+`/documents/clear` and the offline `lightrag-clear-storage` tool
+(`lightrag/tools/clear_storage.py`) are the two callers of
+`delete_workspace_configuration`, and both follow this ordering: the tool
+drops the same eleven data storages, classifies each result on
+`BaseException`, and deletes the records only when every drop succeeded. It
+never drops the LLM cache, so "every data storage" for it is those eleven.
+
 Workspace names becoming UUIDs later reduces the accepted residue to orphan rows
 and a misleading inventory rather than a wrong refusal, but does not remove the
 obligation: `LightRAG(workspace=...)` is a library call too, and the
