@@ -403,3 +403,39 @@ async def test_a_tenant_named_like_the_server_scope_gets_its_own_baselines(tmp_p
         assert {t for t, row in recorded.items() if row} == set(cs.EMBEDDING_TARGETS)
     finally:
         await rag.finalize_storages()
+
+
+def test_the_public_init_table_documents_every_storage_selection():
+    """A storage category a caller can choose has to be in the SDK's own
+    parameter table.
+
+    ``config_storage`` is a public constructor field that REFUSES a value
+    ``kv_storage`` advertises (``RedisKVStorage``), and it defaults by
+    following that same field — so a table that lists the other four and not
+    this one sends an SDK reader straight into a construction error with no
+    documented remedy. Walks the storage fields rather than naming them, so a
+    sixth category cannot be added without documenting it.
+    """
+    from pathlib import Path
+
+    table = (
+        Path(__file__).resolve().parents[2] / "docs" / "ProgramingWithCore.md"
+    ).read_text(encoding="utf-8")
+
+    for field in (
+        "kv_storage",
+        "vector_storage",
+        "graph_storage",
+        "doc_status_storage",
+        "config_storage",
+        "config_dir",
+    ):
+        assert f"| **{field}** |" in table, (
+            f"{field} is a public LightRAG parameter with no row in the "
+            f"LightRAG Init Parameters table"
+        )
+
+    # And the one thing a Redis user has to be told, since the default would
+    # otherwise inherit a backend this category refuses.
+    row = next(line for line in table.splitlines() if "| **config_storage** |" in line)
+    assert "RedisKVStorage" in row and "follows `kv_storage`" in row
