@@ -13,9 +13,9 @@ the same ordering, without a running server.
 What it does, in order:
 
 1. shows what is about to be deleted: document counts per status, the ten
-   most recently updated documents, the number of text chunks, whether each
-   vector index is empty, the recorded embedding baselines and the input
-   files. A value that cannot be read is shown as UNREADABLE, never as zero;
+   most recently updated documents, whether the text chunk store and each
+   vector index hold anything, the recorded embedding baselines and the
+   input files. A value that cannot be read is shown as UNREADABLE, never as zero;
 2. asks the operator to type ``Delete All``;
 3. drops the eleven data storages, then the workspace's configuration
    records (only when EVERY drop succeeded), then the top-level input files.
@@ -180,63 +180,6 @@ def classify_drop_result(result: Any) -> str | None:
     if isinstance(result, dict) and result.get("status") != "success":
         return str(result.get("message", "unknown error"))
     return None
-
-
-async def count_kv_rows(kv) -> int:
-    """Count the rows of a KV storage without materializing them.
-
-    ``BaseKVStorage`` has no count API, so the backends the server ships are
-    asked the way each counts cheaply (same pattern as
-    ``rebuild_vdb.enumerate_kv_keys``, which this deliberately does NOT reuse:
-    that one returns every key, and a workspace with millions of chunks would
-    exhaust this process before the confirmation prompt). Any other backend
-    is counted through the streaming ``iter_rows``, which is bounded in
-    memory; one that lacks it raises ``StorageCapabilityError`` and the
-    summary shows the count as unreadable.
-    """
-    storage_name = type(kv).__name__
-
-    if storage_name == "JsonKVStorage":
-        async with kv._storage_lock:
-            return len(kv._data)
-
-    if storage_name == "RedisKVStorage":
-        total = 0
-        async with kv._get_redis_connection() as redis:
-            cursor = 0
-            while True:
-                cursor, batch = await redis.scan(
-                    cursor, match=f"{kv.final_namespace}:*", count=1000
-                )
-                total += len(batch)
-                if cursor == 0:
-                    break
-        return total
-
-    if storage_name == "PGKVStorage":
-        from lightrag.kg.postgres_impl import namespace_to_table_name
-
-        table_name = namespace_to_table_name(kv.namespace)
-        row = await kv.db.query(
-            f"SELECT COUNT(*) AS n FROM {table_name} WHERE workspace = $1",
-            [kv.workspace],
-        )
-        return int(row["n"]) if row else 0
-
-    if storage_name == "MongoKVStorage":
-        return int(await kv._data.count_documents({}))
-
-    if storage_name == "OpenSearchKVStorage":
-        # Counts read from searchable segments; refresh first so rows written
-        # just before the server stopped are not under-reported.
-        await kv._refresh_for_search(strict=True)
-        response = await kv.client.count(index=kv._index_name)
-        return int(response["count"])
-
-    total = 0
-    async for _row in kv.iter_rows(page_size=1000):
-        total += 1
-    return total
 
 
 @dataclass(frozen=True)
@@ -660,8 +603,14 @@ class ClearTool:
         else:
             recent, total = paged
 
-        async def chunk_count() -> int:
-            return await count_kv_rows(self.storages["text_chunks"])
+        async def text_chunks_state() -> str:
+            # ``is_empty()`` is the whole of what the base KV contract offers,
+            # and the whole of what the decision needs: an exact row count
+            # would take a backend-specific query per store for a number that
+            # changes nothing about whether to type the phrase.
+            if await self.storages["text_chunks"].is_empty():
+                return "EMPTY"
+            return "has data"
 
         vectors: Dict[str, Any] = {}
         for label in VECTOR_LABELS:
@@ -689,7 +638,7 @@ class ClearTool:
             "counts": counts,
             "total_docs": total,
             "recent": recent,
-            "chunk_count": await self._read("text_chunks", chunk_count),
+            "text_chunks": await self._read("text_chunks", text_chunks_state),
             "vectors": vectors,
             "baselines": baselines,
             "input_files": self.input_files(),
@@ -722,8 +671,8 @@ class ClearTool:
                 items.append(f"documents in status {status_value}")
         if isinstance(summary["recent"], Unreadable):
             items.append("most recently updated documents")
-        if isinstance(summary["chunk_count"], Unreadable):
-            items.append("text chunk count")
+        if isinstance(summary["text_chunks"], Unreadable):
+            items.append("text_chunks state")
         for label, state in summary["vectors"].items():
             if isinstance(state, Unreadable):
                 items.append(f"{label} state")
@@ -780,7 +729,7 @@ class ClearTool:
                     f"    {updated_at:20s} {status_value:11s} {file_path}  [{doc_id}]"
                 )
 
-        print(f"\nText chunks: {show(summary['chunk_count'])}")
+        print(f"\nText chunks: {show(summary['text_chunks'])}")
 
         print("\nVector storages:")
         for label, state in summary["vectors"].items():

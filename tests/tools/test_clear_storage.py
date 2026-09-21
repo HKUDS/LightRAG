@@ -30,10 +30,8 @@ from lightrag.tools.clear_storage import (
     DATA_STORAGE_LABELS,
     ClearTool,
     DropOutcome,
-    RemoteBackendUnavailableError,
     Unreadable,
     classify_drop_result,
-    count_kv_rows,
     is_server_backed,
 )
 from lightrag.utils import EmbeddingFunc
@@ -87,7 +85,6 @@ def make_tool(
     *,
     counts=None,
     recent=None,
-    chunk_keys=("chunk-1", "chunk-2"),
     workspace="ws",
     **storage_overrides,
 ) -> ClearTool:
@@ -117,17 +114,9 @@ def make_tool(
 
     tool.storages["doc_status"].count_docs_by_statuses = count_docs_by_statuses
     tool.storages["doc_status"].get_docs_paginated = get_docs_paginated
-    tool.storages["text_chunks"]._keys = list(chunk_keys)
+    tool.storages["text_chunks"].is_empty = AsyncMock(return_value=False)
     tool.configuration_storage = make_storage("config", workspace=workspace)
     return tool
-
-
-@pytest.fixture
-def stub_kv_count(monkeypatch):
-    async def count_kv_rows(kv):
-        return len(kv._keys)
-
-    monkeypatch.setattr(clear_storage, "count_kv_rows", count_kv_rows)
 
 
 async def _never_embed(*_args, **_kwargs):
@@ -238,7 +227,7 @@ class TestClassifyDropResult:
 
 class TestSummary:
     async def test_it_shows_counts_recent_docs_chunks_and_input_files(
-        self, tmp_path, stub_kv_count, stub_baselines, capsys
+        self, tmp_path, stub_baselines, capsys
     ):
         seed_input_dir(tmp_path)
         recent = [
@@ -249,7 +238,6 @@ class TestSummary:
             tmp_path,
             counts={DocStatus.PROCESSED: 1, DocStatus.FAILED: 1},
             recent=recent,
-            chunk_keys=("c1", "c2", "c3"),
         )
 
         summary = await tool.collect_summary()
@@ -259,18 +247,18 @@ class TestSummary:
         assert summary["counts"]["processed"] == 1
         assert summary["counts"]["failed"] == 1
         assert summary["total_docs"] == 2
-        assert summary["chunk_count"] == 3
+        assert summary["text_chunks"] == "has data"
         assert [p.rsplit("/", 1)[-1] for p in summary["input_files"]] == [
             "a.txt",
             "b.pdf",
         ], "only top-level files; __parsed__ contents are preserved"
         assert "two.pdf" in out and "one.txt" in out
-        assert "Text chunks: 3" in out
+        assert "Text chunks: has data" in out
         assert "processed      1" in out
         assert "LLM response cache" in out, "the operator is told what survives"
 
     async def test_the_recent_list_asks_for_the_ten_most_recently_updated(
-        self, tmp_path, stub_kv_count, stub_baselines
+        self, tmp_path, stub_baselines
     ):
         tool = make_tool(tmp_path)
         seen = {}
@@ -288,7 +276,7 @@ class TestSummary:
         assert seen["sort_direction"] == "desc"
 
     async def test_vector_states_name_refused_empty_and_populated(
-        self, tmp_path, stub_kv_count, stub_baselines
+        self, tmp_path, stub_baselines
     ):
         tool = make_tool(tmp_path)
         tool.refused_vdbs["entities_vdb"] = "foreign space"
@@ -301,7 +289,7 @@ class TestSummary:
         assert summary["vectors"]["chunks_vdb"] == "EMPTY"
 
     async def test_a_workspace_override_in_effect_is_named(
-        self, tmp_path, monkeypatch, stub_kv_count, stub_baselines, capsys
+        self, tmp_path, monkeypatch, stub_baselines, capsys
     ):
         """A backend ``*_WORKSPACE`` variable outranks ``WORKSPACE`` inside the
         storage constructor, and Redis / Qdrant never write the effective
@@ -320,7 +308,7 @@ class TestSummary:
         assert "Workspace override(s) in effect: REDIS_WORKSPACE" in out
 
     async def test_a_resolved_workspace_that_differs_is_flagged(
-        self, tmp_path, stub_kv_count, stub_baselines, capsys
+        self, tmp_path, stub_baselines, capsys
     ):
         """Backends that write the effective workspace back (PostgreSQL,
         MongoDB, Milvus) or expose it (Qdrant) are reported by name too."""
@@ -335,7 +323,7 @@ class TestSummary:
         assert "other" in out and "qdrant-legacy" in out
 
     async def test_an_unreadable_count_on_a_file_backed_store_is_shown_not_zero(
-        self, tmp_path, stub_kv_count, stub_baselines, capsys
+        self, tmp_path, stub_baselines, capsys
     ):
         """The failure this display exists to prevent is a swallowed read
         rendering as zero documents. A file-backed store that cannot answer
@@ -358,7 +346,7 @@ class TestSummary:
         assert "documents in status processed" in out
 
     async def test_an_unreadable_count_on_a_server_backend_refuses_the_run(
-        self, tmp_path, monkeypatch, stub_kv_count, stub_baselines, capsys
+        self, tmp_path, monkeypatch, stub_baselines, capsys
     ):
         """A server backend that cannot answer a read will not serve the
         drop either; clearing the others would leave it populated. Nothing
@@ -384,7 +372,7 @@ class TestSummary:
         assert (tmp_path / "inputs" / "a.txt").exists()
 
     async def test_a_storage_that_did_not_open_is_not_asked(
-        self, tmp_path, stub_kv_count, stub_baselines
+        self, tmp_path, stub_baselines
     ):
         """A JSON storage whose load failed still holds an EMPTY shared dict;
         asking it would render a corrupt file as zero rows."""
@@ -404,122 +392,33 @@ class TestSummary:
         assert isinstance(summary["counts"]["processed"], Unreadable)
         assert "did not open" in summary["counts"]["processed"].reason
 
-    async def test_a_missing_count_capability_is_unreadable_not_fatal(
-        self, tmp_path, monkeypatch, stub_baselines
+    async def test_the_text_chunk_store_is_asked_only_whether_it_is_empty(
+        self, tmp_path, stub_baselines, capsys
     ):
-        from lightrag.exceptions import StorageCapabilityError
-
-        async def count_kv_rows(kv):
-            raise StorageCapabilityError("no row enumeration on this backend")
-
-        monkeypatch.setattr(clear_storage, "count_kv_rows", count_kv_rows)
+        """``is_empty()`` is the whole of the base KV contract, and enough for
+        the decision; nothing enumerates or counts the rows."""
         tool = make_tool(tmp_path)
-        tool.storage_names["kv"] = "PGKVStorage"  # server-backed, still tolerated
+        tool.storages["text_chunks"].is_empty = AsyncMock(return_value=True)
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        assert summary["text_chunks"] == "EMPTY"
+        assert "Text chunks: EMPTY" in capsys.readouterr().out
+        tool.storages["text_chunks"].is_empty.assert_awaited_once()
+
+    async def test_an_unanswerable_text_chunk_store_is_unreadable_not_fatal(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["text_chunks"].is_empty = AsyncMock(
+            side_effect=OSError("kv file unreadable")
+        )
 
         summary = await tool.collect_summary()
 
-        assert isinstance(summary["chunk_count"], Unreadable)
-
-
-class TestCountKvRows:
-    """The chunk count must not materialize every key: a workspace with
-    millions of chunks would exhaust the process before the prompt."""
-
-    async def test_an_unknown_backend_is_counted_through_the_row_stream(self):
-        seen_page_sizes = []
-
-        class StreamingKV:
-            def iter_rows(self, *, page_size):
-                seen_page_sizes.append(page_size)
-
-                async def rows():
-                    for i in range(2500):
-                        yield {"_id": f"chunk-{i}"}
-
-                return rows()
-
-        assert await count_kv_rows(StreamingKV()) == 2500
-        assert seen_page_sizes == [1000]
-
-    async def test_a_backend_without_a_row_stream_raises_the_capability_error(self):
-        from lightrag.base import BaseKVStorage
-        from lightrag.exceptions import StorageCapabilityError
-
-        class BareKV:
-            iter_rows = BaseKVStorage.iter_rows
-
-        with pytest.raises(StorageCapabilityError):
-            await count_kv_rows(BareKV())
-
-    async def test_the_json_backend_is_counted_without_copying_its_keys(self):
-        import asyncio as _asyncio
-
-        class JsonKVStorage:
-            def __init__(self):
-                self._storage_lock = _asyncio.Lock()
-                self._data = {f"chunk-{i}": {} for i in range(7)}
-
-        assert await count_kv_rows(JsonKVStorage()) == 7
-
-    async def test_the_redis_backend_is_counted_by_scanning_not_collecting(self):
-        from contextlib import asynccontextmanager
-
-        class FakeRedis:
-            def __init__(self):
-                self.pages = [(5, ["a", "b", "c"]), (0, ["d"])]
-
-            async def scan(self, cursor, *, match, count):
-                assert match == "ws_text_chunks:*"
-                return self.pages.pop(0)
-
-        class RedisKVStorage:
-            final_namespace = "ws_text_chunks"
-
-            @asynccontextmanager
-            async def _get_redis_connection(self):
-                yield FakeRedis()
-
-        assert await count_kv_rows(RedisKVStorage()) == 4
-
-    async def test_a_baseline_row_that_does_not_parse_is_unreadable_not_fatal(
-        self, tmp_path, monkeypatch, stub_kv_count
-    ):
-        """``delete_workspace_configuration`` deletes by key without reading
-        the value, so a row the clear will remove anyway must not block it."""
-
-        async def read_config_row_strict(config, key):
-            if key.endswith("/chunks"):
-                return {"value": "not-a-dict", "workspace": "ws", "_id": key}
-            return None
-
-        monkeypatch.setattr(
-            clear_storage, "read_config_row_strict", read_config_row_strict
-        )
-        tool = make_tool(tmp_path)
-
-        summary = await tool.collect_summary()
-
-        assert isinstance(summary["baselines"]["chunks"], Unreadable)
-        assert summary["baselines"]["entities"] is None
-        assert "chunks embedding baseline" in tool.unreadable_items(summary)
-
-    async def test_a_baseline_row_that_cannot_be_fetched_refuses_the_run(
-        self, tmp_path, monkeypatch, stub_kv_count
-    ):
-        """Transport, not parsing: the records could not be deleted after
-        the clear either."""
-        from lightrag.exceptions import ConfigurationStorageError
-
-        async def read_config_row_strict(config, key):
-            raise ConfigurationStorageError("could not read configuration record")
-
-        monkeypatch.setattr(
-            clear_storage, "read_config_row_strict", read_config_row_strict
-        )
-        tool = make_tool(tmp_path)
-
-        with pytest.raises(RemoteBackendUnavailableError):
-            await tool.collect_summary()
+        assert isinstance(summary["text_chunks"], Unreadable)
+        assert "text_chunks state" in tool.unreadable_items(summary)
 
 
 class TestInputDirResolution:
@@ -608,7 +507,6 @@ class TestConfirmation:
         self,
         tmp_path,
         monkeypatch,
-        stub_kv_count,
         stub_baselines,
         recorded_config_delete,
     ):
@@ -1131,7 +1029,7 @@ class TestEndToEndOnJsonBackends:
         assert ok is True
         assert "processed      1" in out and "failed         1" in out
         assert "two.txt" in out and "one.txt" in out
-        assert "Text chunks: 3" in out
+        assert "Text chunks: has data" in out
         assert "Workspace cleared" in out
         assert (working_dir / "e2e" / "kv_store_doc_status.json").read_text() == "{}"
         assert (working_dir / "e2e" / "kv_store_text_chunks.json").read_text() == "{}"

@@ -57,7 +57,7 @@ The run, in order:
    - the number of documents in each `doc_status` state, and the total;
    - the ten most recently updated documents (updated time, status, file
      path, id);
-   - the number of text chunks in `text_chunks`;
+   - whether `text_chunks` holds any data;
    - whether each vector storage is empty, has vectors, or refused to attach;
    - the recorded embedding baselines;
    - the top-level files of this workspace's input directory
@@ -72,12 +72,11 @@ zero, because zero is exactly what makes an operator clear the wrong workspace.
 Whether an unreadable value stops the run depends on the backend's kind — see
 *Errors: what stops the run and what does not* below.
 
-The chunk count asks the backend for a count (a `COUNT(*)`, a
-`count_documents`, an index count, a Redis `SCAN` that only tallies) or, on a
-backend without one, streams the rows a page at a time; it never loads every
-chunk id into memory. The status counts are one strict query per status. On a
-very large workspace the summary still takes a moment, and a small fraction
-of what a rebuild would cost.
+The text chunk store is only asked whether it is empty (`is_empty()`, the
+whole of the base KV contract): an exact row count would take a
+backend-specific query per store for a number that changes nothing about
+whether to confirm, and enumerating the keys would load every chunk id into
+memory. The status counts are one strict query per status.
 
 ## What is deleted, and what is not
 
