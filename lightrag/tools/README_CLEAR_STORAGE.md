@@ -7,10 +7,12 @@ LLM response cache.
 
 ## When do I need this?
 
-The server refuses to start a workspace whose vector index is empty or
-unreadable while the graph or `text_chunks` still hold data. The message names
-`lightrag-rebuild-vdb`, which re-embeds every record from the authoritative
-sources. That is the right recovery when the data matters.
+The server refuses to start a workspace whose vector index is empty,
+corrupt, written in another embedding space, or recorded under another
+embedding baseline while the graph or `text_chunks` still hold data. Every
+such refusal names two ways out: `lightrag-rebuild-vdb`, which re-embeds every
+record from the authoritative sources and is the right recovery when the data
+matters, and this tool.
 
 When the data does **not** matter — a test corpus, a workspace being
 decommissioned, a deployment you only want to wipe and start over — a rebuild

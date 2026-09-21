@@ -730,6 +730,17 @@ class MultimodalAnalysisError(RuntimeError):
     """
 
 
+# Appended to every startup-time vector refusal below. A rebuild re-embeds
+# every record from the authoritative sources; when the workspace's data is
+# disposable that is wasted cost, and the WebUI's own Clear sits behind the
+# server that refuses to start -- so the refusal names the offline clear too.
+CLEAR_STORAGE_ALTERNATIVE = (
+    "If this workspace's data is disposable, run `lightrag-clear-storage` "
+    "instead: it drops the workspace offline without re-embedding, which "
+    "also clears this refusal."
+)
+
+
 class VectorSpaceMismatchError(RuntimeError):
     """The persisted vectors were written in a different embedding space.
 
@@ -791,7 +802,8 @@ class VectorSpaceMismatchError(RuntimeError):
             f"nothing, or confidently wrong neighbours. Rebuild the vector "
             f"storages from the knowledge graph with `lightrag-rebuild-vdb` "
             f"(run it with this embedding configuration), or point this instance "
-            f"back at the previous embedding configuration."
+            f"back at the previous embedding configuration. "
+            f"{CLEAR_STORAGE_ALTERNATIVE}"
         )
         if detail:
             message = f"{message} {detail}"
@@ -862,7 +874,7 @@ class CorruptStorageSnapshotError(RuntimeError):
             f"store. Run `lightrag-rebuild-vdb` offline with the same storage "
             f"and workspace configuration; after confirmation it backs up this "
             f"storage's files before rebuilding. Restart the server only "
-            f"after the rebuild succeeds."
+            f"after the rebuild succeeds. {CLEAR_STORAGE_ALTERNATIVE}"
         )
         self.backend = backend
         self.container = container
@@ -935,7 +947,7 @@ class EmbeddingBaselineMismatchError(VectorSpaceMismatchError):
             "confidently wrong neighbours. Rebuild them with "
             "`lightrag-rebuild-vdb` (run with this embedding configuration), "
             "or point this instance back at the previous embedding "
-            "configuration."
+            "configuration. " + CLEAR_STORAGE_ALTERNATIVE
         )
         RuntimeError.__init__(self, message)
         first = mismatches[0]
@@ -1009,7 +1021,8 @@ class VectorStorageEmptyError(RuntimeError):
             f"provisioned a new, empty one. Rebuild the vector storages from "
             f"the knowledge graph with `lightrag-rebuild-vdb` (run it with this "
             f"embedding configuration), or point this instance back at the "
-            f"configuration whose vectors are still there."
+            f"configuration whose vectors are still there. "
+            f"{CLEAR_STORAGE_ALTERNATIVE}"
         )
         super().__init__(message)
         self.vdb_name = vdb_name

@@ -5,7 +5,81 @@ import sys
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from lightrag.exceptions import VectorStorageEmptyError
+from lightrag.exceptions import (
+    CorruptStorageSnapshotError,
+    EmbeddingBaselineMismatchError,
+    VectorSpaceMismatchError,
+    VectorStorageEmptyError,
+)
+
+# The two ways out of every refusal below, in the order an operator should
+# consider them. A rebuild keeps the data; the clear is for data nobody needs,
+# and it is the ONLY way out that does not start by re-embedding everything.
+_RECOVERY_LINES = (
+    "  To keep the data: stop all writers, run lightrag-rebuild-vdb with the\n"
+    "  current embedding configuration, and select [4] to rebuild ALL vector\n"
+    "  storages. Then restart the server.\n"
+    "  If the data is disposable: run lightrag-clear-storage instead to drop\n"
+    "  this workspace without re-embedding. Then restart the server."
+)
+
+
+def describe_startup_refusal(
+    exc: BaseException, *, workspace: str, vector_storage: str
+) -> str | None:
+    """The concise message for an expected vector refusal, or ``None``.
+
+    Classified on the exception's TYPE, never on its text. Every message
+    ends with the same two recovery paths, because every one of these
+    refusals is cleared by either: a rebuild re-embeds from the sources, a
+    clear drops the workspace, and both remove the condition the server
+    refused on.
+    """
+    header = f"  Workspace: {workspace or '(default)'}\n  Storage: {vector_storage}\n"
+    if isinstance(exc, VectorStorageEmptyError):
+        where = f" ({exc.container})" if exc.container else ""
+        return (
+            "Startup blocked: vector index is empty.\n"
+            f"{header}"
+            f"  Missing index: {exc.vdb_name}{where}\n"
+            f"  Source still contains data: {exc.source}.\n"
+            "  Check the storage backend, workspace and data directory.\n"
+            f"{_RECOVERY_LINES}"
+        )
+    if isinstance(exc, EmbeddingBaselineMismatchError):
+        targets = ", ".join(str(t) for t in exc.targets)
+        return (
+            "Startup blocked: the recorded embedding baseline differs from the "
+            "configured embedding model.\n"
+            f"{header}"
+            f"  Mismatched targets: {targets}\n"
+            f"  Recorded: model {exc.stored_model!r} dim {exc.stored_dim}; "
+            f"configured: model {exc.expected_model!r} dim {exc.expected_dim}.\n"
+            "  Either restore the previous EMBEDDING_MODEL / EMBEDDING_DIM, or:\n"
+            f"{_RECOVERY_LINES}"
+        )
+    if isinstance(exc, VectorSpaceMismatchError):
+        return (
+            "Startup blocked: a vector storage holds vectors from a different "
+            "embedding space.\n"
+            f"{header}"
+            f"  Container: {exc.container} ({exc.backend})\n"
+            f"  Stored: model {exc.stored_model!r} dim {exc.stored_dim}; "
+            f"configured: model {exc.expected_model!r} dim {exc.expected_dim}.\n"
+            "  Either restore the previous EMBEDDING_MODEL / EMBEDDING_DIM, or:\n"
+            f"{_RECOVERY_LINES}"
+        )
+    if isinstance(exc, CorruptStorageSnapshotError):
+        return (
+            "Startup blocked: a vector storage snapshot is corrupt.\n"
+            f"{header}"
+            f"  File: {exc.container} ({exc.backend})\n"
+            f"  Parse error: {exc.detail}\n"
+            "  A previous write was likely interrupted. Stop every writer and\n"
+            "  verify the graph storage and text_chunks first.\n"
+            f"{_RECOVERY_LINES}"
+        )
+    return None
 
 
 class StartupErrorMiddleware:
@@ -39,21 +113,10 @@ class StartupErrorMiddleware:
             await self.app(scope, receive, capture)
         except BaseException as exc:
             if failure is not None:
-                if isinstance(exc, VectorStorageEmptyError):
-                    where = f" ({exc.container})" if exc.container else ""
-                    message = (
-                        "Startup blocked: vector index is empty.\n"
-                        f"  Workspace: {self.workspace or '(default)'}\n"
-                        f"  Storage: {self.vector_storage}\n"
-                        f"  Missing index: {exc.vdb_name}{where}\n"
-                        f"  Source still contains data: {exc.source}.\n"
-                        "  Check the storage backend, workspace and data directory.\n"
-                        "  To rebuild: stop all writers, run lightrag-rebuild-vdb\n"
-                        "  with the current embedding configuration, and select [4]\n"
-                        "  to rebuild ALL vector storages. Then restart the server.\n"
-                        "  If the data is disposable: run lightrag-clear-storage\n"
-                        "  instead to drop this workspace without re-embedding."
-                    )
+                message = describe_startup_refusal(
+                    exc, workspace=self.workspace, vector_storage=self.vector_storage
+                )
+                if message is not None:
                     if sys.stderr.isatty() and "NO_COLOR" not in os.environ:
                         message = f"\033[1;31m{message}\033[0m"
                     failure = {**failure, "message": message}
