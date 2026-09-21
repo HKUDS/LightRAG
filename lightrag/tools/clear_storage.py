@@ -72,8 +72,6 @@ from lightrag.config_store import (
 from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
-    DEFAULT_INPUT_DIR,
-    DEFAULT_WORKING_DIR,
 )
 from lightrag.exceptions import (
     ConfigurationStorageError,
@@ -211,6 +209,7 @@ class ClearTool:
         self._holds_working_dir = False
         self.config_dir = ""
         self.input_dir = ""
+        self.working_dir = ""
         self.workspace = ""
         self.global_config: Dict[str, Any] = {}
         self.storage_names: Dict[str, str] = {}
@@ -230,29 +229,46 @@ class ClearTool:
     # Configuration / setup
     # ------------------------------------------------------------------
 
-    def resolve_storage_names(self) -> Dict[str, str]:
-        kv = os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
+    def server_args(self):
+        """The server's own parsed configuration, or ``None`` without the api.
+
+        Workspace, directories and backend names are taken from here and
+        never from the raw environment, because the server does not use the
+        raw environment either: its parser sanitizes ``WORKSPACE`` (every
+        character but ``[A-Za-z0-9_]`` becomes ``_``, so ``customer-prod``
+        stores under ``customer_prod``) and makes the directories absolute.
+        A tool reading ``WORKSPACE`` raw would summarize and drop a
+        workspace the server never wrote to, and could destroy one created
+        through the library under the raw name. The tool refuses every
+        command-line argument (see ``main``), so what the parser sees is
+        exactly the environment the server would see.
+        """
+        try:
+            from lightrag.api.config import global_args
+        except ImportError as e:
+            print(f"\n✗ Could not import the LightRAG API package: {e}")
+            print(
+                '  This tool needs the api extra: pip install "lightrag-hku[api]".\n'
+                "  Without it neither the workspace nor the embedding model and "
+                "dimension the server uses can be resolved."
+            )
+            return None
+        return global_args
+
+    def resolve_storage_names(self, args) -> Dict[str, str]:
         return {
-            "graph": os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),
-            "vector": os.getenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"),
-            "kv": kv,
-            "doc_status": os.getenv(
-                "LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage"
-            ),
+            "graph": args.graph_storage,
+            "vector": args.vector_storage,
+            "kv": args.kv_storage,
+            "doc_status": args.doc_status_storage,
             # Resolved exactly as the server resolves it: the records this
             # tool deletes last live in the container the server reads.
             "config": resolve_configuration_storage(
-                os.getenv("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv
+                args.config_storage, kv_storage=args.kv_storage
             ),
         }
 
-    def resolve_config_dir(self) -> str:
-        return resolve_config_dir(
-            os.getenv("LIGHTRAG_CONFIG_DIR", ""),
-            os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
-        )
-
-    def resolve_input_dir(self) -> str:
+    def resolve_input_dir(self, base_input_dir: str) -> str:
         """The directory the server uploads THIS workspace's files to.
 
         Mirrors ``DocumentManager.__init__``: a named workspace keeps its
@@ -261,7 +277,7 @@ class ClearTool:
         workspace would delete the default workspace's files and leave this
         one's in place to be re-enqueued.
         """
-        base = os.path.abspath(get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR))
+        base = os.path.abspath(base_input_dir)
         if self.workspace:
             validate_workspace(self.workspace)
             return os.path.join(base, self.workspace)
@@ -318,7 +334,7 @@ class ClearTool:
 
     def build_global_config(self, embedding_func: EmbeddingFunc) -> Dict[str, Any]:
         return {
-            "working_dir": os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+            "working_dir": self.working_dir,
             # Backend selection, mirroring LightRAG._build_global_config: PG
             # storages derive enable_vector from global_config["vector_storage"].
             "kv_storage": self.storage_names["kv"],
@@ -436,10 +452,14 @@ class ClearTool:
         records last is not a clean clear. The data storages follow the
         kind rule in the module docstring, applied by ``_open_data_storage``.
         """
-        self.storage_names = self.resolve_storage_names()
-        self.config_dir = self.resolve_config_dir()
-        self.workspace = os.getenv("WORKSPACE", "")
-        self.input_dir = self.resolve_input_dir()
+        args = self.server_args()
+        if args is None:
+            return False
+        self.storage_names = self.resolve_storage_names(args)
+        self.workspace = args.workspace or ""
+        self.working_dir = args.working_dir
+        self.config_dir = resolve_config_dir(args.config_dir, args.working_dir)
+        self.input_dir = self.resolve_input_dir(args.input_dir)
 
         # Claim the configuration directory FIRST, for the reason
         # ``lightrag-rebuild-vdb`` does: a server on the same directory keeps

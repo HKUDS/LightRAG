@@ -16,6 +16,8 @@ Covers what the operator relies on:
 """
 
 import asyncio
+import os
+import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -152,9 +154,35 @@ def fixed_embedding_func(dim: int = 8, model_name: str = "dummy") -> EmbeddingFu
     return EmbeddingFunc(embedding_dim=dim, func=_never_embed, model_name=model_name)
 
 
+def fake_server_args(**overrides):
+    """What ``lightrag.api.config.global_args`` would carry for this env,
+    without parsing argv. ``WORKSPACE`` is sanitized the way the server's
+    parser sanitizes it, so a test that wants the raw value must override."""
+    workspace = os.getenv("WORKSPACE", "")
+    args = SimpleNamespace(
+        workspace=re.sub(r"[^a-zA-Z0-9_]", "_", workspace) if workspace else "",
+        working_dir=os.path.abspath(os.getenv("WORKING_DIR", "./rag_storage")),
+        input_dir=os.path.abspath(os.getenv("INPUT_DIR", "./inputs")),
+        kv_storage=os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+        graph_storage=os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),
+        vector_storage=os.getenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"),
+        doc_status_storage=os.getenv(
+            "LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage"
+        ),
+        config_storage=os.getenv("LIGHTRAG_CONFIG_STORAGE", ""),
+        config_dir=os.getenv("LIGHTRAG_CONFIG_DIR", ""),
+        embedding_binding="openai",
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
 @pytest.fixture
-def stub_embedding_factory(monkeypatch):
-    """Pin the server factory's output so end-to-end runs need no argv/env."""
+def stub_server_api(monkeypatch):
+    """Pin both touchpoints of the api package -- the parsed arguments and
+    the embedding factory -- so end-to-end runs need no argv."""
+    monkeypatch.setattr(ClearTool, "server_args", lambda self: fake_server_args())
     monkeypatch.setattr(
         ClearTool, "build_embedding_func", lambda self: fixed_embedding_func()
     )
@@ -600,24 +628,23 @@ class TestInputDirResolution:
     ``INPUT_DIR/<workspace>``; the tool must delete THOSE, not the default
     workspace's files one level up."""
 
-    def test_a_named_workspace_uses_its_subdirectory(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+    def test_a_named_workspace_uses_its_subdirectory(self, tmp_path):
         tool = ClearTool()
         tool.workspace = "ws1"
-        assert tool.resolve_input_dir() == str(tmp_path / "inputs" / "ws1")
+        base = str(tmp_path / "inputs")
+        assert tool.resolve_input_dir(base) == str(tmp_path / "inputs" / "ws1")
 
-    def test_the_default_workspace_uses_the_base_directory(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+    def test_the_default_workspace_uses_the_base_directory(self, tmp_path):
         tool = ClearTool()
         tool.workspace = ""
-        assert tool.resolve_input_dir() == str(tmp_path / "inputs")
+        base = str(tmp_path / "inputs")
+        assert tool.resolve_input_dir(base) == str(tmp_path / "inputs")
 
-    def test_a_traversing_workspace_name_is_refused(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+    def test_a_traversing_workspace_name_is_refused(self, tmp_path):
         tool = ClearTool()
         tool.workspace = "../other"
         with pytest.raises(ValueError):
-            tool.resolve_input_dir()
+            tool.resolve_input_dir(str(tmp_path / "inputs"))
 
 
 class TestKindRule:
@@ -855,10 +882,18 @@ class TestClear:
 
 def setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, *, names=None):
     """Point ``setup_storages`` at ``fakes`` (label -> storage or exception)."""
-    tool.storage_names = dict(names or FILE_BACKED_NAMES)
-    monkeypatch.setattr(tool, "resolve_storage_names", lambda: tool.storage_names)
-    monkeypatch.setenv("WORKING_DIR", str(tmp_path))
-    monkeypatch.setenv("WORKSPACE", "clearws")
+    names = dict(names or FILE_BACKED_NAMES)
+    args = fake_server_args(
+        workspace="clearws",
+        working_dir=str(tmp_path),
+        input_dir=str(tmp_path / "inputs"),
+        kv_storage=names["kv"],
+        graph_storage=names["graph"],
+        vector_storage=names["vector"],
+        doc_status_storage=names["doc_status"],
+        config_storage=names["config"],
+    )
+    monkeypatch.setattr(tool, "server_args", lambda: args)
     monkeypatch.setattr(clear_storage, "uses_working_dir", lambda name: False)
 
     def build_storage(label, embedding_func):
@@ -1057,6 +1092,59 @@ class TestSetup:
         for fake in fakes.values():
             fake.initialize.assert_not_called()
 
+    async def test_the_workspace_is_the_servers_sanitized_one_not_the_raw_env(
+        self, tmp_path, monkeypatch
+    ):
+        """The server's parser rewrites every character but [A-Za-z0-9_] to
+        ``_``, so ``WORKSPACE=customer-prod`` stores under ``customer_prod``.
+        Read raw, the tool would summarize and drop ``customer-prod`` -- a
+        workspace the server never wrote to -- and leave the real one."""
+        monkeypatch.setenv("WORKSPACE", "customer-prod")
+        fakes = openable_fakes()
+        tool = ClearTool()
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+        # What the real parser hands back for that environment.
+        args = fake_server_args(
+            working_dir=str(tmp_path), input_dir=str(tmp_path / "in")
+        )
+        assert args.workspace == "customer_prod"
+        monkeypatch.setattr(tool, "server_args", lambda: args)
+        seen_workspaces = []
+
+        def build_storage(label, embedding_func):
+            seen_workspaces.append(tool.workspace)
+            return fakes[label]
+
+        monkeypatch.setattr(tool, "build_storage", build_storage)
+
+        assert await tool.setup_storages() is True
+        assert tool.workspace == "customer_prod"
+        assert set(seen_workspaces) == {"customer_prod"}
+        assert tool.input_dir == str(tmp_path / "in" / "customer_prod")
+        assert tool.working_dir == str(tmp_path)
+
+    def test_the_real_server_parser_sanitizes_the_workspace_the_tool_reads(
+        self, tmp_path, monkeypatch
+    ):
+        """Through the real ``lightrag.api.config`` parser, re-initialized on
+        this environment: the value the tool receives is the sanitized one."""
+        import lightrag.api.config as api_config
+
+        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage"])
+        monkeypatch.setenv("WORKSPACE", "customer-prod")
+        monkeypatch.setenv("WORKING_DIR", str(tmp_path / "wd"))
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "in"))
+        monkeypatch.delenv("AUTH_ACCOUNTS", raising=False)
+        saved = (api_config._global_args, api_config._initialized)
+        try:
+            api_config.initialize_config(force=True)
+            args = ClearTool().server_args()
+            assert args.workspace == "customer_prod"
+            assert args.working_dir == str(tmp_path / "wd")
+            assert args.input_dir == str(tmp_path / "in")
+        finally:
+            api_config._global_args, api_config._initialized = saved
+
     async def test_the_import_failure_message_names_the_extra(
         self, monkeypatch, capsys
     ):
@@ -1071,8 +1159,9 @@ class TestSetup:
 
         monkeypatch.setattr(builtins, "__import__", refuse_api)
 
+        assert ClearTool().server_args() is None
         assert ClearTool().build_embedding_func() is None
-        assert "lightrag-hku[api]" in capsys.readouterr().out
+        assert capsys.readouterr().out.count("lightrag-hku[api]") == 2
 
     async def test_a_configuration_storage_that_cannot_open_refuses_the_run(
         self, tmp_path, monkeypatch, capsys
@@ -1097,8 +1186,8 @@ class TestSetup:
         opened."""
         from lightrag.kg import working_dir_lock as wdl
 
-        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage"])
         monkeypatch.setenv("WORKING_DIR", str(tmp_path))
+        monkeypatch.setattr(ClearTool, "server_args", lambda self: fake_server_args())
         monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
         monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
         monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
@@ -1131,7 +1220,7 @@ class TestSetup:
 
 class TestEndToEndOnJsonBackends:
     async def test_a_seeded_workspace_is_summarized_then_emptied(
-        self, tmp_path, monkeypatch, capsys, stub_embedding_factory
+        self, tmp_path, monkeypatch, capsys, stub_server_api
     ):
         """The real JSON storages, seeded through the tool's own construction:
         the summary reports the seeded rows, the phrase empties them, the
@@ -1216,7 +1305,7 @@ class TestEndToEndOnJsonBackends:
         )
 
     async def test_corrupt_local_files_are_shown_unreadable_and_still_cleared(
-        self, tmp_path, monkeypatch, capsys, stub_embedding_factory
+        self, tmp_path, monkeypatch, capsys, stub_server_api
     ):
         """Fix-proof for the kind rule on the real JSON backends: a corrupt
         ``text_chunks`` file and a baseline row that does not parse used to

@@ -43,7 +43,11 @@ The tool reads the same `.env` / environment configuration as the server
 (`LIGHTRAG_KV_STORAGE`, `LIGHTRAG_VECTOR_STORAGE`, `LIGHTRAG_GRAPH_STORAGE`,
 `LIGHTRAG_DOC_STATUS_STORAGE`, `LIGHTRAG_CONFIG_STORAGE`, `WORKSPACE`,
 `WORKING_DIR`, `INPUT_DIR`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, backend
-connection settings). It never embeds anything and needs no reachable
+connection settings) — through the server's own argument parser, so it sees
+exactly what the server sees, its normalization included: the parser rewrites
+every character of `WORKSPACE` outside `[A-Za-z0-9_]` to `_` (a server
+configured with `WORKSPACE=customer-prod` stores under `customer_prod`, and so
+does this tool) and makes the directories absolute. It never embeds anything and needs no reachable
 embedding service, but it does need the `api` extra (`pip install
 "lightrag-hku[api]"`): the embedding function is built through the server's
 own factory, exactly as `lightrag-rebuild-vdb` builds it, because Qdrant,
