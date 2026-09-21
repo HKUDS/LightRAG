@@ -1,0 +1,58 @@
+name: Windows Vector Drop
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'lightrag/kg/nano_vector_db_impl.py'
+      - 'lightrag/kg/faiss_impl.py'
+      - 'tests/kg/test_vector_drop_errors.py'
+      - 'tests/kg/nano_impl/test_nano_drop.py'
+      - 'tests/kg/faiss_impl/test_faiss_drop.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/windows-vector-drop.yml'
+  workflow_dispatch:
+
+jobs:
+  vector-drop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install locked test dependencies
+        run: uv sync --frozen --python 3.12 --extra pytest
+      - name: Install vector backends
+        run: uv pip install faiss-cpu nano-vectordb
+      - name: Run deletion tests
+        run: >-
+          uv run --no-sync pytest tests/kg/test_vector_drop_errors.py
+          tests/kg/nano_impl/test_nano_drop.py tests/kg/faiss_impl/test_faiss_drop.py
+          --junitxml=windows-vector-drop.xml -v --tb=short
+      - name: Require native deletion cases
+        if: always()
+        shell: pwsh
+        run: |
+          [xml]$report = Get-Content windows-vector-drop.xml -ErrorAction Stop
+          $required = @(
+            'test_windows_occupied_data_file_refuses_then_retries[nano]',
+            'test_windows_occupied_data_file_refuses_then_retries[faiss]',
+            'test_windows_readonly_data_file_refuses_then_retries[nano]',
+            'test_windows_readonly_data_file_refuses_then_retries[faiss]',
+            'test_windows_faiss_partial_drop_and_marker_cleanup[faiss]'
+          )
+          foreach ($name in $required) {
+            $cases = @($report.SelectNodes('//testcase') | Where-Object { $_.name -eq $name })
+            if ($cases.Count -ne 1) { throw "Missing or duplicate native test: $name" }
+            if ($cases[0].SelectSingleNode('skipped|failure|error')) {
+              throw "Native test did not pass: $name"
+            }
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-vector-drop-report
+          path: windows-vector-drop.xml
+          retention-days: 7
