@@ -148,11 +148,10 @@ did not.
 
 Because the mode carries none of this on Windows, a `0600` assertion proves
 nothing there and `chmod(0)` does not revoke read access, so the tests relying
-on either are POSIX-only. The native behaviour has its own job,
-`.github/workflows/windows-private-file.yml` on `windows-latest` — the only
-Windows job in the repository — which also fails if its Windows-only tests
-merely skipped. `tests/test_private_file.py` imports no storage so that job
-stays seconds long.
+on either are POSIX-only. The native behaviour runs alongside the vector deletion tests in
+`.github/workflows/windows-storage.yml` on `windows-latest`. Both groups share
+one dependency setup and run serially. The job also fails if a required
+Windows-only case is missing, skipped or failed in the combined JUnit report.
 
 **A refusal's `artifacts` must cover every file that storage's `drop()`
 removes.** That is the whole protocol in one line: the tool backs up
@@ -526,7 +525,7 @@ successful drop retries its removal. Post-deletion notification failures retain
 the existing success semantics documented by each backend's `drop()`.
 
 `tests/kg/test_vector_drop_errors.py` covers hidden existence errors and retry
-semantics. `.github/workflows/windows-vector-drop.yml` additionally exercises
+semantics. `.github/workflows/windows-storage.yml` additionally exercises
 real Windows handles without `FILE_SHARE_DELETE`, read-only files and Faiss
 partial deletion. The native tests require no second account or assumed ACL
 layout, and their JUnit report must contain the named cases without skips.

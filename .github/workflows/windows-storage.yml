@@ -1,9 +1,12 @@
-name: Windows Vector Drop
+name: Windows Storage Tests
 
 on:
   push:
     branches: [ main, dev, 'dev-*' ]
     paths:
+      - 'lightrag/private_file.py'
+      - 'tests/test_private_file.py'
+      - 'lightrag/tools/rebuild_vdb.py'
       - 'lightrag/kg/nano_vector_db_impl.py'
       - 'lightrag/kg/faiss_impl.py'
       - 'tests/kg/test_vector_drop_errors.py'
@@ -11,11 +14,14 @@ on:
       - 'tests/kg/faiss_impl/test_faiss_drop.py'
       - 'pyproject.toml'
       - 'uv.lock'
-      - '.github/workflows/windows-vector-drop.yml'
+      - '.github/workflows/windows-storage.yml'
   pull_request:
     branches: [ main, dev, 'dev-*' ]
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
+      - 'lightrag/private_file.py'
+      - 'tests/test_private_file.py'
+      - 'lightrag/tools/rebuild_vdb.py'
       - 'lightrag/kg/nano_vector_db_impl.py'
       - 'lightrag/kg/faiss_impl.py'
       - 'tests/kg/test_vector_drop_errors.py'
@@ -23,10 +29,10 @@ on:
       - 'tests/kg/faiss_impl/test_faiss_drop.py'
       - 'pyproject.toml'
       - 'uv.lock'
-      - '.github/workflows/windows-vector-drop.yml'
+      - '.github/workflows/windows-storage.yml'
 
 jobs:
-  vector-drop:
+  storage-tests:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: windows-latest
     steps:
@@ -38,17 +44,25 @@ jobs:
         run: uv sync --frozen --python 3.12 --extra pytest
       - name: Install vector backends
         run: uv pip install faiss-cpu nano-vectordb
-      - name: Run deletion tests
+      - name: Run private-file and deletion tests
+        # Run serially: native tests hold handles and change file permissions.
         run: >-
-          uv run --no-sync pytest tests/kg/test_vector_drop_errors.py
+          uv run --no-sync pytest tests/test_private_file.py
+          tests/kg/test_vector_drop_errors.py
           tests/kg/nano_impl/test_nano_drop.py tests/kg/faiss_impl/test_faiss_drop.py
-          --junitxml=windows-vector-drop.xml -v --tb=short
-      - name: Require native deletion cases
+          --junitxml=windows-storage.xml -v --tb=short -p no:cacheprovider
+      - name: Require native Windows cases
         if: always()
         shell: pwsh
+        # Missing, skipped or failed native cases must never produce a green job.
         run: |
-          [xml]$report = Get-Content windows-vector-drop.xml -ErrorAction Stop
+          [xml]$report = Get-Content windows-storage.xml -ErrorAction Stop
           $required = @(
+            'test_a_wide_parent_directory_does_not_widen_the_file',
+            'test_no_second_handle_can_be_opened_while_the_copy_is_in_flight',
+            'test_the_owner_can_still_read_and_archive_it_afterwards',
+            'test_the_restriction_persists_after_the_handle_closes',
+            'test_a_refusal_removes_the_file_it_had_already_created',
             'test_windows_occupied_data_file_refuses_then_retries[nano]',
             'test_windows_occupied_data_file_refuses_then_retries[faiss]',
             'test_windows_readonly_data_file_refuses_then_retries[nano]',
@@ -65,6 +79,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-vector-drop-report
-          path: windows-vector-drop.xml
+          name: windows-storage-report
+          path: windows-storage.xml
           retention-days: 7
