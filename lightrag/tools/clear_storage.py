@@ -402,6 +402,16 @@ class ClearTool:
         storage = None
         try:
             storage = self.build_storage(label, embedding_func)
+            # The server-identical path, one-time migrations included: on a
+            # named-container backend whose legacy (unsuffixed) container
+            # exists while the current one does not, this copies the legacy
+            # vectors into the current container -- before the summary, so
+            # before the phrase. Accepted, as ``lightrag-rebuild-vdb`` accepts
+            # it: the migration moves data the clear is about to drop into
+            # the container the clear drops, loses nothing, and leaves the
+            # state a server start would have produced; a cancelled run keeps
+            # that state. No backend offers a non-mutating attach, and
+            # dropping without attaching is not servable on every backend.
             await storage.initialize()
         except (VectorSpaceMismatchError, CorruptStorageSnapshotError) as e:
             self.refused_vdbs[label] = str(e)
@@ -801,7 +811,7 @@ class ClearTool:
         )
         answer = input(f'Type "{CONFIRMATION_PHRASE}" to confirm: ').strip()
         if answer != CONFIRMATION_PHRASE:
-            print("\n✓ Operation cancelled - nothing was deleted")
+            print("\n✓ Operation cancelled - no workspace data was deleted")
             return False
         return True
 
@@ -939,6 +949,9 @@ class ClearTool:
         print("=" * 60)
         print("\nRunning this while the server (or any other writer) is active")
         print("tears storage down under a live pipeline and loses data.")
+        print("\nOpening the storages runs the same one-time migrations a server")
+        print("start would (e.g. moving legacy vectors into the current container)")
+        print("before anything is shown or asked; that moves data, never deletes it.")
 
     async def run(self) -> bool:
         """Returns True on a clean clear or a deliberate cancellation."""

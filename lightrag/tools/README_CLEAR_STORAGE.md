@@ -142,6 +142,19 @@ directory by hand and re-run.
 
 - **Stop the server first.** Dropping storages under a live pipeline tears
   them down out from under the writer and loses data, on every backend.
+- **Opening the storages runs the server's one-time migrations, before the
+  summary.** The tool initializes every storage exactly as the server does,
+  and on Qdrant, PostgreSQL and Milvus that includes migrating a legacy
+  (unsuffixed) vector container into the current model-named one when only
+  the legacy one exists — a copy that can take a while on a large workspace,
+  and that happens before anything is shown or confirmed. This is accepted,
+  as `lightrag-rebuild-vdb` accepts the same thing: the migration moves data
+  into the very container the clear then drops, loses nothing, and leaves
+  exactly the state a server start would have produced; a run cancelled at
+  the prompt keeps that state, which is why the cancellation says no
+  workspace data was *deleted*. Avoiding it would need a non-mutating attach
+  path that no backend offers, or dropping without attaching, which not
+  every backend can serve.
 - **A partial drop keeps the configuration records.** If any storage fails to
   drop, the workspace's embedding baselines stay on record, the tool exits
   non-zero, and the summary says which drop failed. Fix the cause and re-run;
