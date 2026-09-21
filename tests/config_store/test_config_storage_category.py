@@ -438,3 +438,29 @@ def test_the_public_init_table_documents_every_storage_selection():
     # otherwise inherit a backend this category refuses.
     row = next(line for line in table.splitlines() if "| **config_storage** |" in line)
     assert "RedisKVStorage" in row and "follows `kv_storage`" in row
+
+
+def test_the_api_server_guide_documents_the_category_it_advertises_around():
+    """The same rule for the guide an OPERATOR follows rather than a caller.
+
+    That guide's storage table advertises ``RedisKVStorage`` by name, and a
+    server configured from it alone is refused at construction -- the category
+    does not admit Redis, and unset it follows the KV selection. Every surface
+    that advertises a KV backend has to say what configuration backend goes
+    with it; this is the third one that did not.
+    """
+    from pathlib import Path
+
+    guide = (
+        Path(__file__).resolve().parents[2] / "docs" / "LightRAG-API-Server.md"
+    ).read_text(encoding="utf-8")
+
+    assert "LIGHTRAG_CONFIG_STORAGE" in guide
+    assert "LIGHTRAG_CONFIG_DIR" in guide
+    for admitted in cs.configuration_storage_implementations():
+        assert f"`{admitted}`" in guide, (
+            f"{admitted} is an admitted configuration backend the API server "
+            f"guide never names"
+        )
+    # And the refusal an operator reaches by following the KV table.
+    assert "RedisKVStorage` is not admitted" in guide

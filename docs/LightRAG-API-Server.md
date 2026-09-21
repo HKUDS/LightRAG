@@ -914,6 +914,16 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 
 For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
+**Configuration Storage — a fifth category, selected separately.** Besides the four storage types above, the server keeps a small **configuration storage**: one namespace holding each workspace's embedding baselines, the record that lets a start refuse a changed embedding model *before* it writes vectors the existing ones cannot be compared with. It is chosen with `LIGHTRAG_CONFIG_STORAGE` and admits four implementations:
+
+| Storage Type | Available Implementations |
+|---|---|
+| CONFIG_STORAGE | `JsonKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
+
+* **Left unset it follows `LIGHTRAG_KV_STORAGE`**, so an ordinary deployment configures nothing and needs no new connection variables — the records go to the backend that is already configured.
+* **`RedisKVStorage` is not admitted.** A deployment that selects it for `LIGHTRAG_KV_STORAGE` must therefore name a configuration backend explicitly, or the server is refused at startup with a message saying so. `JsonKVStorage` is the choice that needs no new connection settings: it writes one small file under `WORKING_DIR`, and nothing stops a Redis (or Postgres, or Mongo) deployment from using it for configuration alone.
+* `LIGHTRAG_CONFIG_DIR` moves that file, which defaults to `<WORKING_DIR>/_lightrag_config`. **Moving it after a deployment has recorded its baselines loses them**: they are read from the directory configured now, and a directory with no records is indistinguishable from a first start — so the configured model would be recorded over vectors nobody checked it against. In a container the directory must be on a **mounted** volume for the same reason; the default is, one that is not lives inside the container and disappears when it is recreated.
+
 **PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
 
 * **No extension to install.** `PGGraphStorage` requires the Apache AGE extension, which most managed PostgreSQL services (Amazon RDS, Cloud SQL, Supabase, Neon) do not offer — so the graph layer frequently could not run on the same database as the other three storage types. `PGTableGraphStorage` runs on any stock PostgreSQL 14+ and creates the tables it needs during `initialize()`. For a Docker deployment this means the official `pgvector/pgvector:pg18` image is sufficient; the AGE-bundled `gzdaniel/postgres-for-rag:pg18-age-pgvector` image is only needed by `PGGraphStorage`.
@@ -947,6 +957,9 @@ LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
 LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+# Configuration storage follows LIGHTRAG_KV_STORAGE when unset, as it does here.
+# Name one explicitly when the KV selection is RedisKVStorage, which it does not admit:
+# LIGHTRAG_CONFIG_STORAGE=JsonKVStorage
 ```
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `env.example` file.
