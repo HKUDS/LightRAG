@@ -33,8 +33,10 @@ from lightrag.tools.clear_storage import (
     RemoteBackendUnavailableError,
     Unreadable,
     classify_drop_result,
+    count_kv_rows,
     is_server_backed,
 )
+from lightrag.utils import EmbeddingFunc
 
 pytestmark = pytest.mark.offline
 
@@ -121,11 +123,28 @@ def make_tool(
 
 
 @pytest.fixture
-def stub_kv_enumeration(monkeypatch):
-    async def enumerate_kv_keys(kv):
-        return list(kv._keys)
+def stub_kv_count(monkeypatch):
+    async def count_kv_rows(kv):
+        return len(kv._keys)
 
-    monkeypatch.setattr(clear_storage, "enumerate_kv_keys", enumerate_kv_keys)
+    monkeypatch.setattr(clear_storage, "count_kv_rows", count_kv_rows)
+
+
+async def _never_embed(*_args, **_kwargs):
+    raise AssertionError("the clear tool must never embed")
+
+
+def fixed_embedding_func(dim: int = 8, model_name: str = "dummy") -> EmbeddingFunc:
+    """What the server factory would hand back, without importing the api."""
+    return EmbeddingFunc(embedding_dim=dim, func=_never_embed, model_name=model_name)
+
+
+@pytest.fixture
+def stub_embedding_factory(monkeypatch):
+    """Pin the server factory's output so end-to-end runs need no argv/env."""
+    monkeypatch.setattr(
+        ClearTool, "build_embedding_func", lambda self: fixed_embedding_func()
+    )
 
 
 @pytest.fixture
@@ -219,7 +238,7 @@ class TestClassifyDropResult:
 
 class TestSummary:
     async def test_it_shows_counts_recent_docs_chunks_and_input_files(
-        self, tmp_path, stub_kv_enumeration, stub_baselines, capsys
+        self, tmp_path, stub_kv_count, stub_baselines, capsys
     ):
         seed_input_dir(tmp_path)
         recent = [
@@ -251,7 +270,7 @@ class TestSummary:
         assert "LLM response cache" in out, "the operator is told what survives"
 
     async def test_the_recent_list_asks_for_the_ten_most_recently_updated(
-        self, tmp_path, stub_kv_enumeration, stub_baselines
+        self, tmp_path, stub_kv_count, stub_baselines
     ):
         tool = make_tool(tmp_path)
         seen = {}
@@ -269,7 +288,7 @@ class TestSummary:
         assert seen["sort_direction"] == "desc"
 
     async def test_vector_states_name_refused_empty_and_populated(
-        self, tmp_path, stub_kv_enumeration, stub_baselines
+        self, tmp_path, stub_kv_count, stub_baselines
     ):
         tool = make_tool(tmp_path)
         tool.refused_vdbs["entities_vdb"] = "foreign space"
@@ -282,7 +301,7 @@ class TestSummary:
         assert summary["vectors"]["chunks_vdb"] == "EMPTY"
 
     async def test_a_workspace_override_in_effect_is_named(
-        self, tmp_path, monkeypatch, stub_kv_enumeration, stub_baselines, capsys
+        self, tmp_path, monkeypatch, stub_kv_count, stub_baselines, capsys
     ):
         """A backend ``*_WORKSPACE`` variable outranks ``WORKSPACE`` inside the
         storage constructor, and Redis / Qdrant never write the effective
@@ -301,7 +320,7 @@ class TestSummary:
         assert "Workspace override(s) in effect: REDIS_WORKSPACE" in out
 
     async def test_a_resolved_workspace_that_differs_is_flagged(
-        self, tmp_path, stub_kv_enumeration, stub_baselines, capsys
+        self, tmp_path, stub_kv_count, stub_baselines, capsys
     ):
         """Backends that write the effective workspace back (PostgreSQL,
         MongoDB, Milvus) or expose it (Qdrant) are reported by name too."""
@@ -316,7 +335,7 @@ class TestSummary:
         assert "other" in out and "qdrant-legacy" in out
 
     async def test_an_unreadable_count_on_a_file_backed_store_is_shown_not_zero(
-        self, tmp_path, stub_kv_enumeration, stub_baselines, capsys
+        self, tmp_path, stub_kv_count, stub_baselines, capsys
     ):
         """The failure this display exists to prevent is a swallowed read
         rendering as zero documents. A file-backed store that cannot answer
@@ -339,7 +358,7 @@ class TestSummary:
         assert "documents in status processed" in out
 
     async def test_an_unreadable_count_on_a_server_backend_refuses_the_run(
-        self, tmp_path, monkeypatch, stub_kv_enumeration, stub_baselines, capsys
+        self, tmp_path, monkeypatch, stub_kv_count, stub_baselines, capsys
     ):
         """A server backend that cannot answer a read will not serve the
         drop either; clearing the others would leave it populated. Nothing
@@ -365,7 +384,7 @@ class TestSummary:
         assert (tmp_path / "inputs" / "a.txt").exists()
 
     async def test_a_storage_that_did_not_open_is_not_asked(
-        self, tmp_path, stub_kv_enumeration, stub_baselines
+        self, tmp_path, stub_kv_count, stub_baselines
     ):
         """A JSON storage whose load failed still holds an EMPTY shared dict;
         asking it would render a corrupt file as zero rows."""
@@ -385,15 +404,15 @@ class TestSummary:
         assert isinstance(summary["counts"]["processed"], Unreadable)
         assert "did not open" in summary["counts"]["processed"].reason
 
-    async def test_a_missing_enumeration_capability_is_unreadable_not_fatal(
+    async def test_a_missing_count_capability_is_unreadable_not_fatal(
         self, tmp_path, monkeypatch, stub_baselines
     ):
         from lightrag.exceptions import StorageCapabilityError
 
-        async def enumerate_kv_keys(kv):
-            raise StorageCapabilityError("no enumeration on this backend")
+        async def count_kv_rows(kv):
+            raise StorageCapabilityError("no row enumeration on this backend")
 
-        monkeypatch.setattr(clear_storage, "enumerate_kv_keys", enumerate_kv_keys)
+        monkeypatch.setattr(clear_storage, "count_kv_rows", count_kv_rows)
         tool = make_tool(tmp_path)
         tool.storage_names["kv"] = "PGKVStorage"  # server-backed, still tolerated
 
@@ -401,8 +420,69 @@ class TestSummary:
 
         assert isinstance(summary["chunk_count"], Unreadable)
 
+
+class TestCountKvRows:
+    """The chunk count must not materialize every key: a workspace with
+    millions of chunks would exhaust the process before the prompt."""
+
+    async def test_an_unknown_backend_is_counted_through_the_row_stream(self):
+        seen_page_sizes = []
+
+        class StreamingKV:
+            def iter_rows(self, *, page_size):
+                seen_page_sizes.append(page_size)
+
+                async def rows():
+                    for i in range(2500):
+                        yield {"_id": f"chunk-{i}"}
+
+                return rows()
+
+        assert await count_kv_rows(StreamingKV()) == 2500
+        assert seen_page_sizes == [1000]
+
+    async def test_a_backend_without_a_row_stream_raises_the_capability_error(self):
+        from lightrag.base import BaseKVStorage
+        from lightrag.exceptions import StorageCapabilityError
+
+        class BareKV:
+            iter_rows = BaseKVStorage.iter_rows
+
+        with pytest.raises(StorageCapabilityError):
+            await count_kv_rows(BareKV())
+
+    async def test_the_json_backend_is_counted_without_copying_its_keys(self):
+        import asyncio as _asyncio
+
+        class JsonKVStorage:
+            def __init__(self):
+                self._storage_lock = _asyncio.Lock()
+                self._data = {f"chunk-{i}": {} for i in range(7)}
+
+        assert await count_kv_rows(JsonKVStorage()) == 7
+
+    async def test_the_redis_backend_is_counted_by_scanning_not_collecting(self):
+        from contextlib import asynccontextmanager
+
+        class FakeRedis:
+            def __init__(self):
+                self.pages = [(5, ["a", "b", "c"]), (0, ["d"])]
+
+            async def scan(self, cursor, *, match, count):
+                assert match == "ws_text_chunks:*"
+                return self.pages.pop(0)
+
+        class RedisKVStorage:
+            final_namespace = "ws_text_chunks"
+
+            @asynccontextmanager
+            async def _get_redis_connection(self):
+                yield FakeRedis()
+
+        assert await count_kv_rows(RedisKVStorage()) == 4
+
     async def test_a_baseline_row_that_does_not_parse_is_unreadable_not_fatal(
-        self, tmp_path, monkeypatch, stub_kv_enumeration
+        self, tmp_path, monkeypatch, stub_kv_count
     ):
         """``delete_workspace_configuration`` deletes by key without reading
         the value, so a row the clear will remove anyway must not block it."""
@@ -424,7 +504,7 @@ class TestSummary:
         assert "chunks embedding baseline" in tool.unreadable_items(summary)
 
     async def test_a_baseline_row_that_cannot_be_fetched_refuses_the_run(
-        self, tmp_path, monkeypatch, stub_kv_enumeration
+        self, tmp_path, monkeypatch, stub_kv_count
     ):
         """Transport, not parsing: the records could not be deleted after
         the clear either."""
@@ -528,7 +608,7 @@ class TestConfirmation:
         self,
         tmp_path,
         monkeypatch,
-        stub_kv_enumeration,
+        stub_kv_count,
         stub_baselines,
         recorded_config_delete,
     ):
@@ -716,6 +796,7 @@ def setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, *, names=None):
         return fake
 
     monkeypatch.setattr(tool, "build_storage", build_storage)
+    monkeypatch.setattr(tool, "build_embedding_func", lambda: fixed_embedding_func())
     config = make_storage("config")
     config.initialize = AsyncMock()
     monkeypatch.setattr(
@@ -834,6 +915,93 @@ class TestSetup:
         assert await tool.setup_storages() is False
         assert "refuses the run" in capsys.readouterr().out
 
+    async def test_the_storages_receive_the_server_factory_embedding_function(
+        self, tmp_path, monkeypatch
+    ):
+        """Qdrant, PostgreSQL and Milvus name their container after the
+        model and dimension, and the server derives an omitted EMBEDDING_DIM
+        from the provider default. The tool must hand every storage exactly
+        the factory's function -- a guessed dimension opens, and drops, a
+        container the server never wrote to."""
+        monkeypatch.delenv("EMBEDDING_DIM", raising=False)
+        received = []
+        fakes = openable_fakes()
+        tool = ClearTool()
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+        from_factory = fixed_embedding_func(
+            dim=1536, model_name="text-embedding-3-small"
+        )
+        monkeypatch.setattr(tool, "build_embedding_func", lambda: from_factory)
+
+        def build_storage(label, embedding_func):
+            received.append(embedding_func)
+            return fakes[label]
+
+        monkeypatch.setattr(tool, "build_storage", build_storage)
+
+        assert await tool.setup_storages() is True
+        assert len(received) == len(DATA_STORAGE_LABELS)
+        assert all(f is from_factory for f in received)
+        assert tool.global_config["embedding_func"] is from_factory
+
+    async def test_build_embedding_func_uses_the_server_factory(self, monkeypatch):
+        """Same factory as the server and lightrag-rebuild-vdb, called on the
+        server's parsed arguments, so model and dimension can only agree."""
+        # Importing the server package parses argv once for the process;
+        # pytest's own arguments would make argparse exit.
+        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage"])
+        import lightrag.api.config as api_config
+        import lightrag.api.lightrag_server as server
+
+        fake_args = SimpleNamespace(embedding_binding="openai")
+        from_factory = fixed_embedding_func(
+            dim=1536, model_name="text-embedding-3-small"
+        )
+        seen = []
+
+        def factory(args):
+            seen.append(args)
+            return from_factory
+
+        monkeypatch.setattr(api_config, "global_args", fake_args)
+        monkeypatch.setattr(server, "create_embedding_function_from_args", factory)
+
+        assert ClearTool().build_embedding_func() is from_factory
+        assert seen == [fake_args]
+
+    async def test_without_the_api_extra_the_run_is_refused(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """No stub fallback, unlike the rebuild's check-only mode: the tool
+        is destructive, and a dimension it cannot resolve is a container it
+        cannot name."""
+        fakes = openable_fakes()
+        tool = ClearTool()
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+        monkeypatch.setattr(tool, "build_embedding_func", lambda: None)
+
+        assert await tool.setup_storages() is False
+        assert tool.storages == {}
+        for fake in fakes.values():
+            fake.initialize.assert_not_called()
+
+    async def test_the_import_failure_message_names_the_extra(
+        self, monkeypatch, capsys
+    ):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def refuse_api(name, *args, **kwargs):
+            if name.startswith("lightrag.api"):
+                raise ImportError("No module named 'fastapi'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", refuse_api)
+
+        assert ClearTool().build_embedding_func() is None
+        assert "lightrag-hku[api]" in capsys.readouterr().out
+
     async def test_a_configuration_storage_that_cannot_open_refuses_the_run(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -891,7 +1059,7 @@ class TestSetup:
 
 class TestEndToEndOnJsonBackends:
     async def test_a_seeded_workspace_is_summarized_then_emptied(
-        self, tmp_path, monkeypatch, capsys
+        self, tmp_path, monkeypatch, capsys, stub_embedding_factory
     ):
         """The real JSON storages, seeded through the tool's own construction:
         the summary reports the seeded rows, the phrase empties them, the
@@ -918,8 +1086,6 @@ class TestEndToEndOnJsonBackends:
         monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
         monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
         monkeypatch.setenv("WORKSPACE", "e2e")
-        monkeypatch.setenv("EMBEDDING_MODEL", "dummy")
-        monkeypatch.setenv("EMBEDDING_DIM", "8")
 
         # Seed through a first tool instance, then release everything it held.
         initialize_share_data(workers=1)
@@ -978,7 +1144,7 @@ class TestEndToEndOnJsonBackends:
         )
 
     async def test_corrupt_local_files_are_shown_unreadable_and_still_cleared(
-        self, tmp_path, monkeypatch, capsys
+        self, tmp_path, monkeypatch, capsys, stub_embedding_factory
     ):
         """Fix-proof for the kind rule on the real JSON backends: a corrupt
         ``text_chunks`` file and a baseline row that does not parse used to
@@ -1006,8 +1172,6 @@ class TestEndToEndOnJsonBackends:
         monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
         monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
         monkeypatch.setenv("WORKSPACE", "e2e")
-        monkeypatch.setenv("EMBEDDING_MODEL", "dummy")
-        monkeypatch.setenv("EMBEDDING_DIM", "8")
         answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
 
         ok = await ClearTool().run()

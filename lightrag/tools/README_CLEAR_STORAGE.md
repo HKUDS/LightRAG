@@ -36,10 +36,16 @@ The tool reads the same `.env` / environment configuration as the server
 (`LIGHTRAG_KV_STORAGE`, `LIGHTRAG_VECTOR_STORAGE`, `LIGHTRAG_GRAPH_STORAGE`,
 `LIGHTRAG_DOC_STATUS_STORAGE`, `LIGHTRAG_CONFIG_STORAGE`, `WORKSPACE`,
 `WORKING_DIR`, `INPUT_DIR`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, backend
-connection settings). It never embeds anything, so it does not need the `api`
-extra or a reachable embedding service; `EMBEDDING_MODEL` / `EMBEDDING_DIM`
-still matter because Qdrant and PostgreSQL name their vector containers after
-them (see *Important notes*).
+connection settings). It never embeds anything and needs no reachable
+embedding service, but it does need the `api` extra (`pip install
+"lightrag-hku[api]"`): the embedding function is built through the server's
+own factory, exactly as `lightrag-rebuild-vdb` builds it, because Qdrant,
+PostgreSQL and Milvus name their vector containers after the embedding model
+and dimension and the server derives an omitted `EMBEDDING_DIM` from the
+provider's default. A tool that guessed the dimension would open — and drop —
+a container the server never wrote to, then delete the configuration records
+while the real vectors survived. Without the `api` extra the tool refuses to
+run rather than guess.
 
 The run, in order:
 
@@ -66,10 +72,12 @@ zero, because zero is exactly what makes an operator clear the wrong workspace.
 Whether an unreadable value stops the run depends on the backend's kind — see
 *Errors: what stops the run and what does not* below.
 
-The chunk count enumerates every `text_chunks` key, and the status counts are
-one strict query per status, so on a very large workspace the summary takes a
-moment. That is the same read `lightrag-rebuild-vdb` performs before a
-rebuild, and a small fraction of what the rebuild itself would cost.
+The chunk count asks the backend for a count (a `COUNT(*)`, a
+`count_documents`, an index count, a Redis `SCAN` that only tallies) or, on a
+backend without one, streams the rows a page at a time; it never loads every
+chunk id into memory. The status counts are one strict query per status. On a
+very large workspace the summary still takes a moment, and a small fraction
+of what a rebuild would cost.
 
 ## What is deleted, and what is not
 
@@ -146,10 +154,10 @@ directory by hand and re-run.
   the phrase that deletes it. An outage or a bad credential on a server
   backend refuses the run untouched (see the table above).
 - **Named-container backends clear the container the current configuration
-  names.** Qdrant and PostgreSQL derive the collection / table from
-  `EMBEDDING_MODEL` and `EMBEDDING_DIM`. Run the tool with the `.env` the server
-  uses; a container named by a previous embedding configuration is left
-  orphaned, exactly as a rebuild leaves it.
+  names.** Qdrant, PostgreSQL and Milvus derive the collection / table from the
+  embedding model and dimension, resolved through the server's factory. Run
+  the tool with the `.env` the server uses; a container named by a previous
+  embedding configuration is left orphaned, exactly as a rebuild leaves it.
 - **The coverage gate is never consulted.** The tool drives the storages
   directly, like `lightrag-rebuild-vdb`, so the refusal that keeps the server
   from starting does not keep this tool from running.

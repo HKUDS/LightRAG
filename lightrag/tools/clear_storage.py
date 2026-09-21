@@ -90,7 +90,6 @@ from lightrag.kg.working_dir_lock import (
     uses_working_dir,
 )
 from lightrag.namespace import NameSpace
-from lightrag.tools.rebuild_vdb import enumerate_kv_keys
 from lightrag.utils import (
     EmbeddingFunc,
     get_env_value,
@@ -181,6 +180,63 @@ def classify_drop_result(result: Any) -> str | None:
     if isinstance(result, dict) and result.get("status") != "success":
         return str(result.get("message", "unknown error"))
     return None
+
+
+async def count_kv_rows(kv) -> int:
+    """Count the rows of a KV storage without materializing them.
+
+    ``BaseKVStorage`` has no count API, so the backends the server ships are
+    asked the way each counts cheaply (same pattern as
+    ``rebuild_vdb.enumerate_kv_keys``, which this deliberately does NOT reuse:
+    that one returns every key, and a workspace with millions of chunks would
+    exhaust this process before the confirmation prompt). Any other backend
+    is counted through the streaming ``iter_rows``, which is bounded in
+    memory; one that lacks it raises ``StorageCapabilityError`` and the
+    summary shows the count as unreadable.
+    """
+    storage_name = type(kv).__name__
+
+    if storage_name == "JsonKVStorage":
+        async with kv._storage_lock:
+            return len(kv._data)
+
+    if storage_name == "RedisKVStorage":
+        total = 0
+        async with kv._get_redis_connection() as redis:
+            cursor = 0
+            while True:
+                cursor, batch = await redis.scan(
+                    cursor, match=f"{kv.final_namespace}:*", count=1000
+                )
+                total += len(batch)
+                if cursor == 0:
+                    break
+        return total
+
+    if storage_name == "PGKVStorage":
+        from lightrag.kg.postgres_impl import namespace_to_table_name
+
+        table_name = namespace_to_table_name(kv.namespace)
+        row = await kv.db.query(
+            f"SELECT COUNT(*) AS n FROM {table_name} WHERE workspace = $1",
+            [kv.workspace],
+        )
+        return int(row["n"]) if row else 0
+
+    if storage_name == "MongoKVStorage":
+        return int(await kv._data.count_documents({}))
+
+    if storage_name == "OpenSearchKVStorage":
+        # Counts read from searchable segments; refresh first so rows written
+        # just before the server stopped are not under-reported.
+        await kv._refresh_for_search(strict=True)
+        response = await kv.client.count(index=kv._index_name)
+        return int(response["count"])
+
+    total = 0
+    async for _row in kv.iter_rows(page_size=1000):
+        total += 1
+    return total
 
 
 @dataclass(frozen=True)
@@ -281,25 +337,40 @@ class ClearTool:
                 f"{', '.join(missing_vars)} (may be provided via config.ini)"
             )
 
-    def build_embedding_stub(self) -> EmbeddingFunc:
-        """An embedding function that names the server's model but never embeds.
+    def build_embedding_func(self) -> EmbeddingFunc | None:
+        """Build the embedding function through the server's own factory.
 
-        Nothing here computes a vector, so the api extra is not needed. The
-        model name and dimension still matter: Qdrant and PostgreSQL derive
-        the collection / table name from them, so an unnamed stub would open
-        -- and clear -- the wrong container.
+        The tool never embeds, but the function's ``model_name`` and
+        ``embedding_dim`` decide WHICH container Qdrant, PostgreSQL and
+        Milvus open -- they put both in the container name -- and the server
+        derives an omitted ``EMBEDDING_DIM`` from the provider's default. A
+        stub that guessed a dimension would open, and drop, a container the
+        server never wrote to, then delete the configuration records while
+        the real vectors survived. So the factory is the only source, as in
+        ``lightrag-rebuild-vdb``, and unlike that tool there is no check-only
+        fallback: returns ``None`` when the api extra is unavailable, and the
+        caller refuses the run.
         """
-
-        async def _no_embedding(*_args, **_kwargs):
-            raise RuntimeError(
-                "lightrag-clear-storage never embeds; a storage asked it to"
+        try:
+            from lightrag.api.config import global_args
+            from lightrag.api.lightrag_server import (
+                create_embedding_function_from_args,
             )
-
-        return EmbeddingFunc(
-            embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
-            func=_no_embedding,
-            model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True),
+        except ImportError as e:
+            print(f"\n✗ Could not import the LightRAG API package: {e}")
+            print(
+                '  This tool needs the api extra: pip install "lightrag-hku[api]".\n'
+                "  Without it the embedding model and dimension the server uses "
+                "cannot be resolved, and a guessed dimension would clear the "
+                "wrong vector container."
+            )
+            return None
+        embedding_func = create_embedding_function_from_args(global_args)
+        print(
+            f"- Embedding: binding={global_args.embedding_binding} "
+            f"model={embedding_func.model_name} dim={embedding_func.embedding_dim}"
         )
+        return embedding_func
 
     def build_global_config(self, embedding_func: EmbeddingFunc) -> Dict[str, Any]:
         return {
@@ -433,7 +504,9 @@ class ClearTool:
         for storage_name in set(self.storage_names.values()):
             self.check_env_vars(storage_name)
 
-        embedding_func = self.build_embedding_stub()
+        embedding_func = self.build_embedding_func()
+        if embedding_func is None:
+            return False
         self.global_config = self.build_global_config(embedding_func)
 
         print("\nInitializing storages...")
@@ -588,7 +661,7 @@ class ClearTool:
             recent, total = paged
 
         async def chunk_count() -> int:
-            return len(await enumerate_kv_keys(self.storages["text_chunks"]))
+            return await count_kv_rows(self.storages["text_chunks"])
 
         vectors: Dict[str, Any] = {}
         for label in VECTOR_LABELS:
