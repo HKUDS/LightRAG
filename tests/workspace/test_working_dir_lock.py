@@ -356,3 +356,67 @@ def test_an_explicit_directory_that_ends_in_the_tag_is_not_the_default(tmp_path)
     # Ours is /srv/configs/_lightrag_config, also named outright -- derived
     # from no working directory, so it reaches back to nothing and starts.
     assert _foreign_attempt(explicit) == "ADMITTED"
+
+
+def test_every_default_spelling_of_one_directory_is_claimed_back(tmp_path):
+    """One real configuration directory can be reached through more than one
+    DEFAULT spelling, and each spelling has its own slice-1 parent lock.
+
+    Two working directories whose ``_lightrag_config`` both symlink to one
+    shared directory resolve to a single real path, so the second caller in
+    this tree counts itself into the first one's claim. But the slice-1 lock
+    it would have taken is a different file -- its own parent -- and a server
+    from before the move, started on that second working directory, holds
+    exactly that one. Both would then rewrite the shared configuration file
+    from a private copy, which is the loss this claim exists to refuse.
+    """
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / CONFIG_CONTAINER_TAG).symlink_to(shared, target_is_directory=True)
+    (second / CONFIG_CONTAINER_TAG).symlink_to(shared, target_is_directory=True)
+
+    acquire_working_dir_lock(
+        str(first / CONFIG_CONTAINER_TAG), legacy_working_dir=str(first)
+    )
+    acquire_working_dir_lock(
+        str(second / CONFIG_CONTAINER_TAG), legacy_working_dir=str(second)
+    )
+
+    # Both slice-1 spellings are held, not just the first one asked for.
+    assert _foreign_attempt(first) == "REFUSED"
+    assert _foreign_attempt(second) == "REFUSED"
+
+    release_working_dir_lock(str(second / CONFIG_CONTAINER_TAG))
+    # One holder left, so the transitional claims stay with the real one.
+    assert _foreign_attempt(second) == "REFUSED"
+
+    release_working_dir_lock(str(first / CONFIG_CONTAINER_TAG))
+    assert _foreign_attempt(first) == "ADMITTED"
+    assert _foreign_attempt(second) == "ADMITTED"
+
+
+def test_the_same_spelling_twice_does_not_refuse_itself(tmp_path):
+    """The other half of tracking aliases: a second caller with the SAME
+    default spelling must find its legacy path already held and leave it
+    alone.
+
+    ``flock`` belongs to the open file description, so opening that one file
+    a second time in this process and locking it again is refused exactly as
+    another tree would be -- turning an ordinary second ``LightRAG`` instance
+    into a startup failure.
+    """
+    config_dir = tmp_path / CONFIG_CONTAINER_TAG
+    config_dir.mkdir()
+
+    acquire_working_dir_lock(str(config_dir), legacy_working_dir=str(tmp_path))
+    acquire_working_dir_lock(str(config_dir), legacy_working_dir=str(tmp_path))
+
+    assert _foreign_attempt(tmp_path) == "REFUSED"
+
+    release_working_dir_lock(str(config_dir))
+    release_working_dir_lock(str(config_dir))
+    assert _foreign_attempt(tmp_path) == "ADMITTED"
