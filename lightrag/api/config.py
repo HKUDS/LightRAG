@@ -22,6 +22,8 @@ import sys
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
+    DEFAULT_WORKING_DIR,
+    DEFAULT_INPUT_DIR,
     DEFAULT_TIMEOUT,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
@@ -375,13 +377,13 @@ def parse_args() -> argparse.Namespace:
     # Directory configuration
     parser.add_argument(
         "--working-dir",
-        default=get_env_value("WORKING_DIR", "./rag_storage"),
-        help="Working directory for RAG storage (default: from env or ./rag_storage)",
+        default=get_env_value("WORKING_DIR", DEFAULT_WORKING_DIR),
+        help=f"Working directory for RAG storage (default: from env or {DEFAULT_WORKING_DIR})",
     )
     parser.add_argument(
         "--input-dir",
-        default=get_env_value("INPUT_DIR", "./inputs"),
-        help="Directory containing input documents (default: from env or ./inputs)",
+        default=get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR),
+        help=f"Directory containing input documents (default: from env or {DEFAULT_INPUT_DIR})",
     )
 
     parser.add_argument(
@@ -635,6 +637,11 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
+    # The configuration storage is its own category. Both are passed through
+    # UNRESOLVED: empty means "follow kv_storage" / "the default config_dir",
+    # and LightRAG resolves them once so there is a single answer to report.
+    args.config_storage = get_env_value("LIGHTRAG_CONFIG_STORAGE", "")
+    args.config_dir = get_env_value("LIGHTRAG_CONFIG_DIR", "")
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(

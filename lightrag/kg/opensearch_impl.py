@@ -47,6 +47,7 @@ from ..exceptions import (
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
+    StorageNotInitializedError,
     StorageRecordNotFoundError,
 )
 from ..utils import (
@@ -56,7 +57,9 @@ from ..utils import (
     merge_source_ids,
     parse_cache_key,
     validate_workspace,
+    validate_workspace_override,
 )
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -67,6 +70,7 @@ from ..constants import (
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..kg.vector_space import (
     assert_vector_space_matches,
+    declared_model_name,
     read_vector_space_marker,
     vector_space_marker,
 )
@@ -854,10 +858,21 @@ class ClientManager:
 
 
 def _resolve_workspace(workspace: str, namespace: str):
-    """Resolve effective workspace from env or parameter."""
+    """Resolve effective workspace from env or parameter.
+
+    The configuration container is named in CODE, not by a workspace: its
+    index is ``CONFIG_CONTAINER_TAG`` + the ``config`` namespace, and
+    ``OPENSEARCH_WORKSPACE`` is not consulted for it. Nothing else is ever
+    opened on that namespace, which is what makes it a safe marker. See
+    docs/design/ConfigurationStorage.md.
+    """
+    if namespace == NameSpace.KV_STORE_CONFIG:
+        return CONFIG_CONTAINER_TAG
     opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
     if opensearch_workspace and opensearch_workspace.strip():
-        effective = opensearch_workspace.strip()
+        effective = validate_workspace_override(
+            "OPENSEARCH_WORKSPACE", opensearch_workspace
+        )
         logger.info(
             f"Using OPENSEARCH_WORKSPACE: '{effective}' (overriding '{workspace}/{namespace}')"
         )
@@ -1184,10 +1199,28 @@ class OpenSearchKVStorage(BaseKVStorage):
         Refreshes before opening the PIT: the point-in-time freezes the view
         for the whole scan, so a row that is written but not yet in a
         searchable segment when it opens is missed by every page.
+
+        A missing index RAISES here rather than ending the scan, for the same
+        reason ``get_by_id_strict`` refuses to answer in that state: after
+        ``initialize()`` the index always exists, so a scan that finds it gone
+        cannot tell an empty namespace from a dropped one, and the base
+        ``iter_rows`` contract forbids presenting a partial listing as a
+        complete one.
+
+        A FAILED REFRESH raises for that same reason, which is why this one
+        asks for the strict variant: the refresh above is not a courtesy here,
+        it is what makes the frozen view complete, so swallowing its failure
+        would hand back a clean empty scan over rows that are already durable.
+        The startup source verdict reads a clean end as confirmed absence and
+        writes a baseline from it.
         """
-        await self._refresh_for_search()
+        await self._refresh_for_search(strict=True)
         if not self._index_ready:
-            return
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] {self.namespace} index "
+                f"'{self._index_name}' is not ready; a scan cannot tell an "
+                f"empty namespace from a dropped one"
+            )
 
         try:
             pit = await self.client.create_pit(
@@ -1224,7 +1257,11 @@ class OpenSearchKVStorage(BaseKVStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' unexpectedly missing mid-scan; the "
+                    f"rows yielded so far are not a complete listing"
+                ) from e
             logger.error(f"[{self.workspace}] Error scanning documents: {e}")
             raise
 
@@ -1742,18 +1779,26 @@ class OpenSearchKVStorage(BaseKVStorage):
         async with self._flush_lock:
             return _discard(self._pending_upserts)
 
-    async def has_pending_index_ops(self) -> bool:
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         """Whether buffered UPSERTS remain (retryable failures are retained).
 
-        Deletes are excluded on purpose -- see the base docstring: a retained
-        tombstone carries no reference to another namespace's rows.
+        Deletes are excluded by default -- see the base docstring: a retained
+        tombstone carries no reference to another namespace's rows. With
+        ``include_deletes=True`` a retained tombstone counts too, for the
+        caller that needs to know whether a delete reached the server.
         """
-        if self._flush_lock is None:  # see drop_pending_index_ops
-            return bool(self._pending_upserts)
-        async with self._flush_lock:
-            return bool(self._pending_upserts)
 
-    async def _refresh_for_search(self) -> None:
+        def _answer() -> bool:
+            if self._pending_upserts:
+                return True
+            return include_deletes and bool(self._pending_kv_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
+    async def _refresh_for_search(self, *, strict: bool = False) -> None:
         """Publish prior writes to a search-based read of this index.
 
         Call this from every reader that goes through ``search`` / ``count``
@@ -1769,6 +1814,16 @@ class OpenSearchKVStorage(BaseKVStorage):
         caller the pre-refresh view -- what every one of these readers got
         unconditionally before. It must never turn a read into an error.
 
+        ``strict=True`` is the exception, and only a scan that must not
+        mistake staleness for absence may ask for it: the failure is raised
+        instead. A reader whose empty result would be read as CONFIRMED empty
+        -- ``_iter_raw_docs`` behind the base ``iter_rows`` contract -- cannot
+        accept the pre-refresh view, because rows already durable but not yet
+        in a searchable segment are indistinguishable from no rows at all, and
+        the startup that reads that verdict writes a baseline from it. A
+        missing index is NOT raised here even then: it is recorded, and the
+        caller refuses on its own readiness check with the better message.
+
         It must not settle the commit path's refresh debt either: those
         counters record what this storage's own commits owe, and a best-effort
         call must not retire an obligation on their behalf.
@@ -1781,6 +1836,13 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
+            if strict:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] Refresh before a scan of "
+                    f"{self._index_name} failed, so a scan cannot tell rows "
+                    f"that are durable but not yet searchable from no rows at "
+                    f"all: {e}"
+                ) from e
             logger.warning(
                 f"[{self.workspace}] Refresh before a search read of "
                 f"{self._index_name} failed; reading a possibly stale view: {e}"
@@ -1837,6 +1899,46 @@ class OpenSearchKVStorage(BaseKVStorage):
             # not quarantine rows naming them over a visibility round trip.
             raise OpenSearchReferencesIntactError(str(e)) from e
         self._refreshed_generation = owed
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) over a PIT scan, read-your-writes.
+
+        The pending buffer is snapshotted under ``_flush_lock`` first, so a
+        buffered upsert of this process is yielded in place of (or in
+        addition to) its indexed version and a buffered delete hides its
+        row, matching what ``get_by_ids`` would answer for the same ids.
+
+        Raises ``StorageControlPlaneError`` when the index is gone -- the
+        scan never ends early to signal "empty". The refusal precedes every
+        row, the buffered ones included: ``_iter_raw_docs`` does not flush
+        (``_refresh_for_search`` is best-effort and returns on a missing
+        index), so the indexed side is unknown, and yielding the buffer alone
+        would be exactly the partial listing the base contract forbids.
+        """
+        if self._flush_lock is None:
+            raise StorageNotInitializedError("OpenSearchKVStorage")
+        async with self._flush_lock:
+            pending = dict(self._pending_upserts)
+            deleted = set(self._pending_kv_deletes)
+        seen_pending: set[str] = set()
+        async for hits in self._iter_raw_docs(batch_size=max(1, int(page_size))):
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if doc_id is None or doc_id in deleted:
+                    continue
+                if doc_id in pending:
+                    seen_pending.add(doc_id)
+                    yield self._materialize_pending_kv_doc(doc_id, pending[doc_id])
+                    continue
+                data = dict(hit.get("_source") or {})
+                data.pop("__mirrored_id", None)
+                data["_id"] = doc_id
+                data.setdefault("create_time", 0)
+                data.setdefault("update_time", 0)
+                yield data
+        for doc_id, source in pending.items():
+            if doc_id not in seen_pending and doc_id not in deleted:
+                yield self._materialize_pending_kv_doc(doc_id, source)
 
     async def is_empty(self) -> bool:
         """Return True if the index (plus pending buffer) contains no docs.
@@ -6263,6 +6365,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # this lock to keep in-process readers race-free during a flush and
         # to order cross-worker flushes against the same OpenSearch index.
         self._flush_lock = None
+        # Whether the index records an embedding model: True / False once
+        # ``_assert_index_is_usable`` has read the mapping, None while this is
+        # still unknown -- which includes an index THIS instance created, whose
+        # marker went in with the create body. Only an explicit False means
+        # there is something to adopt.
+        self._vector_space_marked: bool | None = None
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
@@ -6305,6 +6413,67 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if not self._index_ready:
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this index holds vectors whose embedding model is unrecorded.
+
+        ``_assert_index_is_usable`` records the answer from the mapping it
+        already read at attach, so this asks the cluster nothing.
+
+        Unlike the file backends, an *empty* unmarked index also reports
+        pending: nothing here writes the marker outside ``indices.create``, so
+        emptiness cannot mark itself. The probe then finds no sample and lands
+        inconclusive, which leaves the index exactly where it was and costs one
+        retry per start until rows arrive. Accepted rather than special-cased,
+        because an unmarked index that is also empty only exists where a
+        pre-marker deployment created one and never wrote to it.
+        """
+        return (
+            self._vector_space_marked is False
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model in the index ``_meta``.
+
+        ``put_mapping`` replaces ``_meta`` wholesale, so the existing keys are
+        merged rather than overwritten -- dropping them would strip the
+        workspace identity that ``_claim_index_for_workspace`` depends on and
+        hand the index to any folding-equivalent deployment.
+
+        Never raises, per the base contract, and for the reason
+        ``_claim_index_for_workspace`` already gives: a read-only account, a
+        restored snapshot or ``index.blocks.write`` must not turn a safeguard
+        into a startup failure. The index simply stays unmarked, which is
+        where every index was before this feature existed.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+            await self.client.indices.put_mapping(
+                index=self._index_name,
+                body={
+                    "_meta": {
+                        **_index_meta(mapping, self._index_name),
+                        **vector_space_marker(self.embedding_func),
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                f"[{self.workspace}] Could not record the embedding-space marker "
+                f"on index '{self._index_name}' ({e}); it stays unmarked, so a "
+                f"later swap to a different model of the same dimension cannot "
+                f"be detected"
+            )
+            return False
+        self._vector_space_marked = True
+        logger.info(
+            f"[{self.workspace}] Adopted pre-existing index '{self._index_name}' "
+            f"for embedding model '{declared_model_name(self.embedding_func)}'"
+        )
+        return True
 
     def _mark_index_missing(self):
         """Mark the vector index as unavailable for subsequent read short-circuiting.
@@ -6365,6 +6534,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             stored_model=stored_model,
             stored_dim=mapping_dim if mapping_dim is not None else marker_dim,
         )
+        # Remembered from the mapping already in hand so
+        # ``vector_space_adoption_pending`` costs no round trip of its own.
+        self._vector_space_marked = stored_model is not None
 
     async def _recheck_index_presence(self) -> None:
         """Lift a stale missing-index mark when OUR index is back. Never creates.
@@ -6968,6 +7140,28 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
 
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
+        """Whether buffered vector UPSERTS remain (retryable ones are retained).
+
+        The vector side needs its own answer for the same reason the KV side
+        does: ``_flush_pending_vector_ops`` keeps per-doc 408/429/5xx failures
+        buffered and returns normally, so a successful ``index_done_callback``
+        is not proof that every staged vector reached the server. The base
+        default would answer ``False`` over a non-empty buffer.
+
+        Deletes are excluded by default, as in the base docstring.
+        """
+
+        def _answer() -> bool:
+            if self._pending_vector_docs:
+                return True
+            return include_deletes and bool(self._pending_vector_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
     async def index_done_callback(self) -> None:
         """Flush pending vector ops and refresh the index for k-NN visibility.
 
@@ -7001,6 +7195,38 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             # storage layer's, not one namespace's, and a backend that
             # answers only where it is asked drifts.
             raise OpenSearchReferencesIntactError(str(e)) from e
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        An index this instance has never seen ready is reported empty only
+        after ``_recheck_index_presence`` has been allowed to fail loudly --
+        unlike the reads below it, which swallow that probe.
+        """
+        await self._recheck_index_presence()
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            index_ready = self._index_ready
+        if not index_ready:
+            return True
+        # `count` is search-based, so a flush that has not been refreshed yet
+        # would read as empty. `_refresh_for_search` lives on the KV class
+        # only, so the refresh is issued directly here.
+        await self.client.indices.refresh(index=self._index_name)
+        response = await self.client.count(index=self._index_name)
+        return response["count"] == 0
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.

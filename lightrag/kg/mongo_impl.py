@@ -10,7 +10,7 @@ import numpy as np
 import configparser
 import asyncio
 
-from typing import Any, ClassVar, Sequence, Union, final
+from typing import Any, AsyncIterator, ClassVar, Sequence, Union, final
 
 from ..base import (
     CURSOR_END,
@@ -40,7 +40,9 @@ from ..utils import (
     merge_source_ids,
     validate_interpreted_attribute_names,
     validate_workspace,
+    validate_workspace_override,
 )
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -50,7 +52,9 @@ from ..constants import (
 )
 from ..exceptions import (
     SourceConflictRepairCASError,
+    StorageCapabilityError,
     StorageControlPlaneError,
+    StorageNotInitializedError,
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
 )
@@ -58,6 +62,7 @@ from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..kg.vector_space import (
     assert_vector_space_matches,
+    declared_model_name,
     read_vector_space_marker,
     vector_space_marker,
 )
@@ -418,13 +423,34 @@ class MongoKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        # Before the configuration branch below, not after it: that branch
+        # returns early, and ``upsert`` reads both of these on the very first
+        # baseline claim. Skipping them left a Mongo-backed configuration
+        # storage raising ``AttributeError`` during startup.
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
+        if self.namespace == NameSpace.KV_STORE_CONFIG:
+            # The configuration container is named in CODE: one fixed
+            # collection, no workspace prefix to choose and no
+            # MONGODB_WORKSPACE remap. Two deployments sharing one database
+            # share this collection and are kept apart by the row KEY, whose
+            # scope is the business workspace the row is about.
+            # See docs/design/ConfigurationStorage.md.
+            self.workspace = CONFIG_CONTAINER_TAG
+            self.final_namespace = f"{CONFIG_CONTAINER_TAG}_{self.namespace}"
+            self._collection_name = self.final_namespace
+            return
         validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -453,10 +479,6 @@ class MongoKVStorage(BaseKVStorage):
             )
 
         self._collection_name = self.final_namespace
-        (
-            self._max_upsert_payload_bytes,
-            self._max_upsert_records_per_batch,
-        ) = _resolve_upsert_batch_limits()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -589,6 +611,20 @@ class MongoKVStorage(BaseKVStorage):
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
 
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) through a server cursor whose
+        batch size bounds what is in memory at once. ``_id`` is the document
+        key already; the time defaults match ``get_by_ids``."""
+        if self._data is None:
+            raise StorageNotInitializedError("MongoKVStorage")
+        cursor = self._data.find({}, batch_size=max(1, int(page_size)))
+        async for doc in cursor:
+            if not doc:
+                continue
+            doc.setdefault("create_time", 0)
+            doc.setdefault("update_time", 0)
+            yield doc
+
     async def delete(self, ids: list[str]) -> None:
         """Delete documents with specified IDs
 
@@ -704,7 +740,9 @@ class MongoDocStatusStorage(DocStatusStorage):
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -1782,7 +1820,9 @@ class MongoGraphStorage(BaseGraphStorage):
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -4239,7 +4279,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MONGODB_WORKSPACE", mongodb_workspace
+            )
             logger.info(
                 f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -4282,6 +4324,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
         self._collection_name = self.final_namespace
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        # Whether the collection records an embedding model: True / False once
+        # ``_assert_collection_is_usable`` has read the validator, None while
+        # this is still unknown -- which includes a collection THIS instance
+        # created, whose marker went in with the create. Only an explicit False
+        # means there is something to adopt.
+        self._vector_space_marked: bool | None = None
 
         # Flush-time batching limits (see module-level DEFAULT_MONGO_* constants).
         # A non-positive value disables that splitting dimension. The upsert and
@@ -4367,6 +4415,50 @@ class MongoVectorDBStorage(BaseVectorStorage):
             stored_model=stored_model,
             stored_dim=index_dim if index_dim is not None else marker_dim,
         )
+        # Remembered from the validator already read, so
+        # ``vector_space_adoption_pending`` costs no round trip of its own.
+        self._vector_space_marked = stored_model is not None
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this collection holds documents whose model is unrecorded.
+
+        ``_assert_collection_is_usable`` records the answer from the validator
+        it already read at attach, so this asks Mongo nothing.
+
+        Unlike the file backends, an *empty* unmarked collection also reports
+        pending: nothing here writes the marker outside collection creation and
+        ``drop()``, so emptiness cannot mark itself. The probe then finds no
+        sample and lands inconclusive, which leaves the collection exactly
+        where it was. Accepted rather than special-cased -- an unmarked
+        collection that is also empty only exists where a pre-marker
+        deployment created one and never wrote to it.
+        """
+        return (
+            self._vector_space_marked is False
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model in the collection validator.
+
+        Never raises, per the base contract. ``_record_vector_space_marker``
+        already reports a denied ``collMod`` rather than raising it, and here
+        that denial is unambiguously benign: this path runs only over a
+        collection recording NO model, so a failed write leaves it unmarked --
+        where every collection was before this feature existed. (The drop path
+        cannot say that, which is why it inspects the result instead.)
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+        if not await self._record_vector_space_marker():
+            return False
+        self._vector_space_marked = True
+        logger.info(
+            f"[{self.workspace}] Adopted pre-existing collection "
+            f"'{self._collection_name}' for embedding model "
+            f"'{declared_model_name(self.embedding_func)}'"
+        )
+        return True
 
     async def _read_search_index_dimension(self) -> int | None:
         """``numDimensions`` of the Atlas vector index, or ``None``.
@@ -4931,6 +5023,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.debug(
                 f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            if self._data is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] MongoDB collection is not connected, "
+                    f"so {self.namespace} cannot be read for emptiness"
+                )
+            collection = self._data
+
+        return await collection.count_documents({}, limit=1) == 0
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer.

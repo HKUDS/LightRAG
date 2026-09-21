@@ -468,3 +468,91 @@ async def test_drop_reprovisions_the_index_in_the_current_space(global_config, c
         await storage.initialize()
 
     assert storage._index_ready is True
+
+
+# ---------------------------------------------------------------------------
+# Adoption: the evidence-carrying backfill the attach path refuses to do
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unmarked_index_reports_adoption_pending(global_config, cluster):
+    """The state ``test_attaching_is_not_a_backfill`` leaves behind. Someone
+    has to end that silence, and it is the probe one layer up."""
+    cluster.seed_index(INDEX, model=None, dim=8)
+    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+
+    assert await storage.vector_space_adoption_pending() is True
+
+
+@pytest.mark.asyncio
+async def test_a_marked_index_reports_nothing_pending(global_config, cluster):
+    cluster.seed_index(INDEX, model="bge-m3", dim=8)
+    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_an_index_this_process_created_reports_nothing_pending(
+    global_config, cluster
+):
+    """Its marker went in with the create body, so there is nothing to adopt
+    and no mapping read to pay for."""
+    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_a_process_with_no_model_has_nothing_to_adopt(global_config, cluster):
+    cluster.seed_index(INDEX, model=None, dim=8)
+    storage = await _initialize(_storage(global_config, _Embed(None, 8)), cluster)
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_adoption_records_the_marker_and_ends_the_silence(global_config, cluster):
+    cluster.seed_index(INDEX, model=None, dim=8)
+    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+
+    assert await storage.adopt_vector_space() is True
+    assert cluster.meta_of(INDEX)[VECTOR_SPACE_MODEL_KEY] == "bge-m3"
+    assert await storage.vector_space_adoption_pending() is False
+
+    peer = _storage(global_config, _Embed("e5-large", 8))
+    with pytest.raises(VectorSpaceMismatchError):
+        await _initialize(peer, cluster)
+
+
+@pytest.mark.asyncio
+async def test_adoption_keeps_the_workspace_identity(global_config, cluster):
+    """``put_mapping`` replaces ``_meta`` wholesale. Dropping the existing keys
+    would strip the workspace ownership marker and hand the index to any
+    folding-equivalent deployment."""
+    cluster.seed_index(INDEX, model=None, dim=8)
+    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+
+    await storage.adopt_vector_space()
+
+    meta = cluster.meta_of(INDEX)
+    assert meta[_WORKSPACE_META_KEY] == "ws"
+    assert meta[_FINAL_NAMESPACE_META_KEY] == "ws_entities"
+
+
+@pytest.mark.asyncio
+async def test_a_denied_mapping_write_reports_failure_instead_of_raising(
+    global_config, cluster
+):
+    """Adoption must never take the process down: a read-only account, a
+    restored snapshot or ``index.blocks.write`` leaves the index unmarked,
+    which is where every index was before this feature existed."""
+    cluster.seed_index(INDEX, model=None, dim=8)
+    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+    storage.client.indices.put_mapping = AsyncMock(
+        side_effect=RuntimeError("cluster_block_exception")
+    )
+
+    assert await storage.adopt_vector_space() is False
+    assert VECTOR_SPACE_MODEL_KEY not in cluster.meta_of(INDEX)

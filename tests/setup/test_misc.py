@@ -2180,3 +2180,402 @@ backup_only
     assert "Backed up .env to" in output
     assert "Backed up compose file to" not in output
     assert list(tmp_path.glob("docker-compose.backup*.yml")) == []
+
+
+class TestTheWizardSelectsAValidConfigurationBackend:
+    """``select_storage_backends`` must not emit an .env that cannot start.
+
+    The configuration storage is its own category admitting four backends.
+    Unset it FOLLOWS ``LIGHTRAG_KV_STORAGE``, which is where an existing
+    deployment's records already are -- so an admitted KV selection writes
+    nothing and the generated .env stays minimal. ``RedisKVStorage`` is NOT
+    admitted, and the wizard offers it, so a Redis selection has to name a
+    configuration backend explicitly; otherwise the wizard accepts and
+    validates a selection that is refused by name at startup.
+
+    See docs/design/ConfigurationStorage.md.
+    """
+
+    def _select(self, kv_storage: str, stdin: str = "") -> dict[str, str]:
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+select_config_storage "{kv_storage}"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    @pytest.mark.parametrize(
+        "kv_storage",
+        ["JsonKVStorage", "PGKVStorage", "MongoKVStorage", "OpenSearchKVStorage"],
+    )
+    def test_an_admitted_kv_backend_writes_nothing_and_follows(self, kv_storage):
+        values = self._select(kv_storage)
+        assert values["CHOSEN"] == kv_storage
+        assert values["WRITTEN"] == "<unset>", (
+            "an admitted KV backend must leave the selection to the default, "
+            "which is where the records already are"
+        )
+
+    def test_redis_is_asked_about_and_the_answer_is_written(self):
+        # Empty stdin accepts the prompt's default.
+        values = self._select("RedisKVStorage", stdin="\n")
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage", (
+            "a Redis KV selection that writes no LIGHTRAG_CONFIG_STORAGE "
+            "produces an .env refused at startup"
+        )
+
+    def test_an_explicit_selection_survives_a_rerun(self):
+        """The failure this whole PR exists to prevent, one layer up: an
+        operator with PostgreSQL business KV and MongoDB configuration reruns
+        the wizard, keeps PostgreSQL, and the explicit selection is silently
+        dropped -- moving the container to PostgreSQL without migrating the
+        baseline rows, which then read as absent."""
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="MongoKVStorage"
+select_config_storage "PGKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin="",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+        assert values["WRITTEN"] == "MongoKVStorage"
+
+    def test_an_explicit_selection_outside_the_four_is_re_asked(self):
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="RedisKVStorage"
+select_config_storage "PGKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin="\n",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    def _select_after_kv_change(
+        self, previous_kv: str, new_kv: str, stdin: str = "\n"
+    ) -> dict[str, str]:
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]="{previous_kv}"
+select_config_storage "{new_kv}"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    def test_a_kv_change_does_not_move_the_records_implicitly(self):
+        """The implicit mirror of the explicit case: with nothing set, the
+        selection FOLLOWS the KV backend -- so changing that backend would
+        relocate the container and leave the baselines in the old one, where
+        nothing reads them. The default keeps them where they are."""
+        values = self._select_after_kv_change("PGKVStorage", "MongoKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "PGKVStorage", (
+            "following a CHANGED kv_storage silently moves the configuration "
+            "container away from the rows"
+        )
+
+    def test_an_unchanged_kv_backend_still_writes_nothing(self):
+        values = self._select_after_kv_change("PGKVStorage", "PGKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
+    def test_a_first_run_writes_nothing(self):
+        """No previous value at all: there are no records to strand."""
+        values = self._select_after_kv_change("", "MongoKVStorage")
+        assert values["CHOSEN"] == "MongoKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
+    def test_a_change_away_from_redis_does_not_ask(self):
+        """Redis is not in the category, so nothing admitted held the records
+        and there is nothing to keep them in."""
+        values = self._select_after_kv_change("RedisKVStorage", "PGKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
+    def _select_with_previous(
+        self,
+        new_kv: str,
+        previous_kv: str = "",
+        previous_config: str = "",
+        existing_config: str = "",
+        stdin: str = "\n",
+    ) -> dict[str, str]:
+        lines = [f'ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]="{previous_kv}"']
+        if previous_config:
+            lines.append(
+                f'ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="{previous_config}"'
+            )
+        if existing_config:
+            lines.append(f'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="{existing_config}"')
+        setup = "\n".join(lines)
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+{setup}
+select_config_storage "{new_kv}"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    def test_an_omitted_previous_kv_is_the_server_default_not_an_absence(self):
+        """The fourth door, and the quietest one.
+
+        A deployment whose .env never named LIGHTRAG_KV_STORAGE has still been
+        running -- on the server's JsonKVStorage default -- and its baselines
+        are in that container. Reading the omission as "no previous backend"
+        made the wizard treat a rerun as a first run, so picking MongoDB left
+        LIGHTRAG_CONFIG_STORAGE unset, the selection followed the new backend,
+        and the JSON rows were stranded where nothing reads them.
+        """
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+EXISTING_ENV_LOADED=1
+ORIGINAL_ENV_VALUES[EMBEDDING_DIM]="1024"
+select_config_storage "MongoKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin="\n",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    def test_a_genuine_first_run_still_writes_nothing(self):
+        """The counterexample that keeps the fix honest: with no .env loaded
+        there is no deployment and no records, so an admitted selection must
+        still leave the minimal .env alone."""
+        values = parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+select_config_storage "MongoKVStorage"
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+            ).stdout
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+        assert values["WRITTEN"] == "<unset>"
+
+    def test_switching_to_an_unadmitted_kv_still_defaults_to_the_records(self):
+        """The third door onto the same rule. Changing PostgreSQL KV to Redis
+        skips the follows-the-KV-backend branch entirely -- Redis is not
+        admitted -- and lands on the generic prompt. Defaulting that prompt to
+        JsonKVStorage strands the baselines in PostgreSQL, which is the
+        relocation this whole function exists to prevent."""
+        values = self._select_with_previous("RedisKVStorage", previous_kv="PGKVStorage")
+        assert values["CHOSEN"] == "PGKVStorage"
+        assert values["WRITTEN"] == "PGKVStorage"
+
+    def test_an_unadmitted_explicit_value_defaults_to_the_records(self):
+        """Same prompt, reached by the other route: the explicit selection is
+        not one of the four, so it is re-asked -- and the default is still
+        where an implicitly-followed container would be."""
+        values = self._select_with_previous(
+            "PGKVStorage",
+            previous_kv="MongoKVStorage",
+            existing_config="RedisKVStorage",
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+
+    def test_a_previous_explicit_selection_outranks_the_previous_kv_backend(self):
+        """``records_in`` prefers what the old .env SAID over what it would
+        have followed: with PostgreSQL KV and an explicit MongoDB
+        configuration, the rows are in MongoDB."""
+        values = self._select_with_previous(
+            "RedisKVStorage",
+            previous_kv="PGKVStorage",
+            previous_config="MongoKVStorage",
+        )
+        assert values["CHOSEN"] == "MongoKVStorage"
+
+    def test_no_previous_deployment_still_defaults_to_json(self):
+        """Nothing admitted held records, so there is nothing to keep."""
+        values = self._select_with_previous("RedisKVStorage")
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    def test_a_previous_redis_kv_backend_held_no_records(self):
+        values = self._select_with_previous(
+            "RedisKVStorage", previous_kv="RedisKVStorage"
+        )
+        assert values["CHOSEN"] == "JsonKVStorage"
+
+    def test_the_offered_backends_are_exactly_the_admitted_four(self):
+        from lightrag.kg import STORAGE_IMPLEMENTATIONS
+
+        offered = run_bash(
+            f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+printf '%s\\n' "${{CONFIG_STORAGE_OPTIONS[@]}}"
+"""
+        ).split()
+        assert sorted(offered) == sorted(
+            STORAGE_IMPLEMENTATIONS["CONFIG_STORAGE"]["implementations"]
+        )
+
+
+class TestValidationRefusesAConfigurationBackendStartupWouldReject:
+    """``make env-validate`` must not approve an .env the server refuses.
+
+    The configuration storage is its own category and a selection outside it
+    is refused BY NAME at startup. Validation that passes such a file is
+    worse than no validation: it tells the operator the environment is good
+    and the server then refuses it. Both shapes are covered -- an explicit
+    value outside the four, and an unset one inheriting a KV backend outside
+    the four. See docs/design/ConfigurationStorage.md.
+    """
+
+    BASE = [
+        "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+        "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+        "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        "REDIS_URI=redis://localhost:6379",
+    ]
+
+    def _validate(self, tmp_path: Path, lines: list[str]):
+        """Drive the real ``validate_env_file`` over a throwaway .env.
+
+        The signal is the process's exit status plus ``Validation passed.`` --
+        the function ends the shell on failure, so a marker printed after the
+        call proves nothing.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_text_lines(repo / ".env", lines)
+        return run_bash_process(
+            f"""
+set -uo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{repo}"
+validate_env_file
+"""
+        )
+
+    def test_an_inherited_redis_backend_fails_validation(self, tmp_path):
+        result = self._validate(
+            tmp_path, ["LIGHTRAG_KV_STORAGE=RedisKVStorage", *self.BASE]
+        )
+        assert result.returncode != 0
+        assert "Validation passed." not in result.stdout
+        assert "LIGHTRAG_CONFIG_STORAGE" in result.stderr
+        assert "RedisKVStorage" in result.stderr
+
+    def test_an_explicit_unadmitted_backend_fails_validation(self, tmp_path):
+        result = self._validate(
+            tmp_path,
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_CONFIG_STORAGE=NanoVectorDBStorage",
+                *self.BASE,
+            ],
+        )
+        assert result.returncode != 0
+        assert "Validation passed." not in result.stdout
+        assert "NanoVectorDBStorage" in result.stderr
+
+    def test_an_admitted_pairing_still_passes(self, tmp_path):
+        """The guard must not start refusing environments that are fine."""
+        result = self._validate(
+            tmp_path,
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_CONFIG_STORAGE=MongoKVStorage",
+                "MONGO_URI=mongodb://localhost:27017",
+                "MONGO_DATABASE=lightrag",
+                *self.BASE,
+            ],
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Validation passed." in result.stdout
+
+    def test_following_an_admitted_kv_backend_still_passes(self, tmp_path):
+        result = self._validate(
+            tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", *self.BASE]
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Validation passed." in result.stdout
+
+
+def test_every_shipped_preset_that_names_an_unadmitted_kv_backend_names_a_config_storage() -> (
+    None
+):
+    """A preset an operator uncomments has to start.
+
+    The configuration selection FOLLOWS ``LIGHTRAG_KV_STORAGE`` when it is
+    unset, and a backend outside the four is refused by name during
+    construction — so a shipped Redis preset without an explicit
+    ``LIGHTRAG_CONFIG_STORAGE`` hands the operator a server that will not
+    start, from our own documentation. This walks the presets rather than
+    naming them, so a new one cannot quietly reintroduce it.
+    """
+    from lightrag.config_store import configuration_storage_implementations
+
+    admitted = set(configuration_storage_implementations())
+
+    presets = {
+        "env.docker-compose-full": (REPO_ROOT / "env.docker-compose-full"),
+        "k8s values.yaml": (REPO_ROOT / "k8s-deploy" / "lightrag" / "values.yaml"),
+    }
+
+    for name, path in presets.items():
+        text = path.read_text(encoding="utf-8")
+        kv_lines = [
+            line
+            for line in text.splitlines()
+            if "LIGHTRAG_KV_STORAGE" in line and not line.strip().startswith("###")
+        ]
+        assert kv_lines, f"{name}: no KV selection found; did the file move?"
+
+        for line in kv_lines:
+            backend = line.split("LIGHTRAG_KV_STORAGE", 1)[1].lstrip(":= ").strip()
+            if backend in admitted:
+                continue
+            assert "LIGHTRAG_CONFIG_STORAGE" in text, (
+                f"{name} offers {backend!r}, which the configuration category "
+                f"does not admit, and names no LIGHTRAG_CONFIG_STORAGE: "
+                f"uncommenting that preset yields a server refused at startup"
+            )

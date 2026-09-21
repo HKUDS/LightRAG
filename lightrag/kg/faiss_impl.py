@@ -8,7 +8,7 @@ import json
 import numpy as np
 from dataclasses import dataclass
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, VectorSpaceMismatchError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -573,6 +573,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
         committed snapshot until some other method triggers a reload.
         """
         return {"data": list(self._id_to_meta.values())}
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        Same shape as ``NanoVectorDBStorage.is_empty`` and for the same
+        reasons: no transport to fail, a pending upsert counts as non-empty,
+        and ``_pending_deletes`` is not subtracted because ``True`` is the only
+        answer here that can refuse a deployment.
+
+        ``_reload_index_from_disk_locked`` is called directly rather than
+        through ``_get_index``: ``_storage_lock`` is non-reentrant.
+        """
+        async with self._storage_lock:
+            if self._pending_upserts:
+                return False
+            self._reload_index_from_disk_locked()
+            return not self._id_to_meta
 
     async def delete(self, ids: list[str]):
         """Delete vectors for the provided custom IDs.
@@ -1521,6 +1538,57 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
             self._vector_space_certified = True
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this index holds vectors whose embedding model is unrecorded.
+
+        Read straight off ``_vector_space_certified``, which
+        ``_load_faiss_index`` already derived from the files it loaded: it is
+        ``False`` exactly when the index had vectors AND the sidecar named no
+        model, which is the transitional state the adoption probe exists to
+        resolve. An empty index certifies itself, so it never reports pending
+        -- there are no vectors to misdescribe.
+        """
+        return (
+            self._index is not None
+            and not self._vector_space_certified
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model beside the loaded index.
+
+        Writes the sidecar directly rather than republishing the fenced
+        ``.index`` / ``.meta.json`` pair: the marker is deliberately not part
+        of that publication (see ``_vector_space_file``), so adopting costs one
+        small file and leaves the pair -- and its fingerprint -- untouched. A
+        peer therefore has nothing to reload because of this.
+
+        Never raises, per the base contract. ``_write_vector_space_file``
+        re-reads the sidecar and raises ``VectorSpaceMismatchError`` when the
+        stored marker contradicts this process; that is not an adoption
+        failure to swallow quietly but a probe that reached the wrong verdict,
+        so it propagates -- the caller is the only place that can tell the
+        operator the two disagree.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+
+        async with self._storage_lock:
+            try:
+                self._write_vector_space_file()
+            except VectorSpaceMismatchError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not record the embedding-space "
+                    f"marker in '{self._vector_space_file}': {e}"
+                )
+                return False
+            # Only now: a later save may keep stamping this sidecar, and the
+            # claim is only true once the sidecar actually says so.
+            self._vector_space_certified = True
+        return True
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts on an aborting batch.

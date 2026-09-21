@@ -46,6 +46,7 @@ from lightrag.prompt import (
 )
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
+    DEFAULT_WORKING_DIR,
     DEFAULT_MAX_GLEANING,
     DEFAULT_MAX_EXTRACTION_RECORDS,
     DEFAULT_MAX_EXTRACTION_ENTITIES,
@@ -105,6 +106,11 @@ from lightrag.kg import (
 )
 
 
+from lightrag.kg.working_dir_lock import (
+    acquire_working_dir_lock,
+    release_working_dir_lock,
+    uses_working_dir,
+)
 from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     acquire_reservation,
@@ -166,6 +172,20 @@ from lightrag.utils_pipeline import (
     require_doc_status_record,
 )
 from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.vector_space_gate import StartupEvidence, check_vector_space_at_startup
+from lightrag.config_store import (
+    BaselineOrigin,
+    claim_embedding_baseline,
+    configured_baseline,
+    create_configuration_storage,
+    describe_configuration_container,
+    flush_configuration_storage,
+    precheck_embedding_baselines,
+    read_embedding_baselines,
+    resolve_config_dir,
+    resolve_configuration_storage,
+    warn_about_unrecorded_baselines,
+)
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
@@ -193,6 +213,7 @@ from lightrag.utils import (
     get_extract_cache_fence,
     convert_to_user_format,
     logger,
+    validate_workspace,
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
@@ -562,6 +583,43 @@ class _PurgeRecoveryProof:
         ) >= _KG_PURGE_PHASE_ORDER.index(phase)
 
 
+async def _drain_detached_releases(
+    detached: list[asyncio.Future], *, workspace: str
+) -> None:
+    """Wait for shielded ``finalize()`` calls a cancellation left running.
+
+    ``asyncio.shield`` keeps the child alive when the awaiting task is
+    cancelled, but the ``await`` on it returns immediately -- so a caller that
+    moves on has DETACHED the release, not completed it. The detached task
+    then races the event loop's own shutdown, and what it was called to hand
+    back is what gets lost: a flush still in flight, or a shared-namespace
+    hold whose next claimer is refused by a process that has already exited.
+
+    So every detached release is awaited here before the caller reports its
+    teardown done and gives back the working-directory claim. Cancellations
+    delivered while draining are absorbed for the same reason they were
+    absorbed above, and a release that fails is logged, never raised: this
+    runs from a ``finally`` that must not replace the exception on its way
+    out.
+    """
+    for release in detached:
+        while not release.done():
+            try:
+                await asyncio.shield(release)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if release.cancelled():
+            continue
+        error = release.exception()
+        if error is not None:
+            logger.error(
+                f"[{workspace}] A storage release that a cancellation detached "
+                f"failed after it was drained: {error}"
+            )
+
+
 def _run_sync(
     coro_factory: Callable[[], Coroutine[Any, Any, _SyncResultT]],
     *,
@@ -687,7 +745,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # Directory
     # ---
 
-    working_dir: str = field(default="./rag_storage")
+    working_dir: str = field(default=DEFAULT_WORKING_DIR)
     """Directory where cache and temporary files are stored."""
 
     # Storage
@@ -1360,6 +1418,62 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     shifted 43 of them. See ``tests/test_dataclass_positional_compatibility.py``.
     """
 
+    # Declared last for the same reason as the fields above: new fields go at
+    # the END of this dataclass, never mid-class. Placing this one next to the
+    # other startup-behaviour flags shifted 55 of the constructor's parameters.
+    # See ``tests/test_dataclass_positional_compatibility.py``.
+    rebuilding_vector_storage: bool = field(default=False)
+    """Declare that this instance exists to REPOPULATE the vector storages.
+
+    Startup normally refuses a vector storage that holds nothing while the graph
+    holds entities and at least one document is PROCESSED — the shape a changed
+    embedding model leaves on a backend that names its container after the
+    model, and equally the shape of a deleted vector file. An in-process rebuild
+    starts from exactly that state on purpose, so it has to say so.
+
+    ``lightrag/tools/rebuild_vdb.py`` does NOT need this: it drives the storages
+    directly and never reaches the check. A program that rebuilds through a
+    ``LightRAG`` instance does -- including the supported switch from
+    ``NoopVectorDBStorage`` (graph-only ingestion, which writes no vectors by
+    design) to a real vector backend.
+
+    Constructor-only, deliberately: there is no environment variable. A
+    fail-closed check whose bypass can be exported in a shell is one an operator
+    silences at 3am and never revisits, and what it silences is a deployment
+    that answers every vector query with nothing. Declaring it in code keeps the
+    claim attached to the program that makes it true.
+
+    See ``docs/design/VectorSpaceProvenance.md``.
+    """
+
+    # Declared last for the same reason as every field above: new fields go at
+    # the END of this dataclass, never mid-class. Their logical home is beside
+    # ``kv_storage``, and putting them there shifted 55 of the constructor's
+    # positional parameters -- caught by
+    # ``tests/test_dataclass_positional_compatibility.py``.
+    config_storage: str = field(
+        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_STORAGE", "")
+    )
+    """Storage backend for the configuration storage -- its own category.
+
+    Admits ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
+    ``OpenSearchKVStorage``; anything else is refused by name at construction.
+    Left empty it FOLLOWS ``kv_storage``, which is where an existing
+    deployment's records already are. See
+    docs/design/ConfigurationStorage.md.
+    """
+
+    config_dir: str = field(
+        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_DIR", "")
+    )
+    """Directory a file-backed configuration storage keeps its file in.
+
+    Empty resolves to ``<working_dir>/_lightrag_config``, which is where that
+    file already is. Ignored by the server backends, which name their
+    container in code instead. This is also the directory the single-server
+    claim is taken on when the configuration storage is file-backed.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1652,6 +1766,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
 
+        # A post-INITIALIZED startup failure, once raised, so a retry re-raises
+        # it instead of taking initialize_storages()'s already-initialized
+        # early return: the embedding-space refusals, and every failure of the
+        # configuration steps that follow them. A plain attribute, not a
+        # dataclass field: field order here is public API (see
+        # rebuilding_vector_storage) and this is internal state, never a
+        # constructor argument.
+        self._startup_refusal: Exception | None = None
+        # Whether THIS instance holds a claim on ``config_dir``; see
+        # ``lightrag/kg/working_dir_lock.py``. Set at the top of
+        # ``initialize_storages``, cleared by whichever path gives it back.
+        self._holds_working_dir: bool = False
+
+        # Refused here, before any storage is built, so the message names the
+        # rule rather than whichever backend happened to construct first. Path
+        # traversal only: there is no reserved name family, because the
+        # configuration container is not addressed by a workspace.
+        validate_workspace(self.workspace)
+
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
         # behaviour); a negative value is a misconfiguration, fail fast.
         if self.pipeline_scheduling_page_size < 0:
@@ -1712,12 +1845,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
 
+        # The configuration storage is its OWN category, resolved before the
+        # verification loop below so an unusable selection is refused by name
+        # here rather than at the first missing method. Unset, it follows
+        # ``kv_storage``: that is where an existing deployment's records are,
+        # and any other default would read them as absent.
+        self.config_storage = resolve_configuration_storage(
+            self.config_storage, kv_storage=self.kv_storage
+        )
+        # Through the shared resolver, not a second copy of the rule: the
+        # Gunicorn master claims this directory BEFORE forking, and a master
+        # that resolved it differently would hand its workers no inheritable
+        # claim -- the first worker would take the lock and every other one
+        # would be refused at startup.
+        self.config_dir = resolve_config_dir(self.config_dir, self.working_dir)
+
         # Verify storage implementation compatibility and environment variables
         storage_configs = [
             ("KV_STORAGE", self.kv_storage),
             ("VECTOR_STORAGE", self.vector_storage),
             ("GRAPH_STORAGE", self.graph_storage),
             ("DOC_STATUS_STORAGE", self.doc_status_storage),
+            ("CONFIG_STORAGE", self.config_storage),
         ]
 
         for storage_type, storage_name in storage_configs:
@@ -1981,48 +2130,345 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._rebuild_role_llm_funcs()
         self._log_llm_role_config("initialized")
 
+        # The configuration storage: its own backend, on a container named in
+        # code -- a directory for the JSON backend, a fixed table / collection
+        # / index for the other three. No workspace addresses it. Initialized
+        # FIRST (step 1) and finalized with the rest, but CONSTRUCTED as the
+        # LAST thing here that can raise: a storage may take a shared-pool
+        # reference in its constructor, this method is synchronous with no
+        # teardown reachable, and every constructor and validation above may
+        # refuse (a missing ``llm_model_func``, a bad role config) -- so
+        # nothing this storage holds may precede any of them. See *Cleanup
+        # before INITIALIZED exists* in docs/design/ConfigurationStorage.md.
+        self.config_storage_cls: type[BaseKVStorage] = get_storage_class(
+            self.config_storage
+        )  # type: ignore
+        self.configuration_storage: BaseKVStorage = create_configuration_storage(
+            self.config_storage_cls,
+            global_config=global_config,
+            embedding_func=self.embedding_func,
+        )
+
         self._storages_status = StoragesStatus.CREATED
 
-    async def initialize_storages(self):
-        """Storage initialization must be called one by one to prevent deadlock"""
-        if self._storages_status == StoragesStatus.CREATED:
-            # Record the loop the storages (and their shared_storage locks) bind
-            # to, so the synchronous wrappers can fail fast if later driven from a
-            # different loop (run_in_executor / a loop on another thread).
-            self._owning_loop = asyncio.get_running_loop()
+    def _business_storages(self) -> list[tuple[str, Any]]:
+        """Every storage but the configuration one, in initialization order."""
+        return [
+            ("full_docs", self.full_docs),
+            ("text_chunks", self.text_chunks),
+            ("full_entities", self.full_entities),
+            ("full_relations", self.full_relations),
+            ("entity_chunks", self.entity_chunks),
+            ("relation_chunks", self.relation_chunks),
+            ("entities_vdb", self.entities_vdb),
+            ("relationships_vdb", self.relationships_vdb),
+            ("chunks_vdb", self.chunks_vdb),
+            ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
+            ("llm_response_cache", self.llm_response_cache),
+            ("doc_status", self.doc_status),
+        ]
 
-            # Set the first initialized workspace will set the default workspace
-            # Allows namespace operation without specifying workspace for backward compatibility
-            default_workspace = get_default_workspace()
-            if default_workspace is None:
-                set_default_workspace(self.workspace)
-            elif default_workspace != self.workspace:
-                logger.info(
-                    f"Creating LightRAG instance with workspace='{self.workspace}' "
-                    f"while default workspace is set to '{default_workspace}'"
+    def _embedding_baselines_apply(self) -> bool:
+        """Whether this instance keeps per-target embedding baselines at all.
+
+        Not for a vector backend that persists no vectors (there is no space
+        to record), and not when the embedding function declares no model
+        name (nothing to record and nothing to compare -- the same rule the
+        per-container marker follows).
+        """
+        if self.entities_vdb is None or not getattr(
+            self.entities_vdb, "persists_vectors", True
+        ):
+            return False
+        return (
+            configured_baseline(self.embedding_func, origin=BaselineOrigin.EMPTY)
+            is not None
+        )
+
+    def _retain_startup_failure(self, failure: BaseException) -> None:
+        """Make ``failure`` the reason every later ``initialize_storages()`` raises.
+
+        An ``Exception`` is retained as itself. A ``BaseException`` that is
+        not one -- ``asyncio.CancelledError``, ``KeyboardInterrupt``,
+        ``SystemExit`` -- is not re-raisable on a later, unrelated call, so a
+        ``RuntimeError`` naming the interruption stands in for it.
+        """
+        if isinstance(failure, Exception):
+            self._startup_refusal = failure
+        else:
+            self._startup_refusal = RuntimeError(
+                f"initialize_storages() was interrupted by "
+                f"{type(failure).__name__} before its startup checks completed; "
+                f"this instance must not serve. Finalize it and start again "
+                f"with a new instance."
+            )
+
+    async def _release_after_early_failure(
+        self, started: list[tuple[str, Any]]
+    ) -> None:
+        """Best-effort teardown for a failure BEFORE ``INITIALIZED``.
+
+        ``finalize_storages()`` releases nothing while the status is still
+        ``CREATED``, so the storages that are up must be released here: in
+        reverse order, the configuration storage last, every failure logged and
+        none of them allowed to replace the exception that is propagating.
+
+        Only the storages the rollback list names need releasing. No backend
+        acquires a process-wide resource before its ``initialize()`` runs, so
+        one the loop never reached is holding nothing -- and ``finalize()`` on
+        it would not be an option anyway, since no backend promises that works
+        on an instance that never initialized.
+        See *Cleanup before INITIALIZED exists* in
+        docs/design/ConfigurationStorage.md.
+        """
+        detached: list[asyncio.Future] = []
+        try:
+            for name, storage in reversed(started):
+                if storage is None:
+                    continue
+                # Shielded, and the cancellation absorbed: a cancel delivered
+                # while backing out (shutdown, a timeout escalating) must not
+                # stop the releases that have not run yet, and must not become
+                # the exception the caller sees instead of why the startup
+                # failed. The startup failure is what propagates and what is
+                # retained as sticky; a teardown cancellation is reported and
+                # dropped, exactly as a teardown error is.
+                release = asyncio.ensure_future(storage.finalize())
+                try:
+                    await asyncio.shield(release)
+                except asyncio.CancelledError:
+                    # The shield kept the release ALIVE; it did not finish it.
+                    # Awaiting a shielded task returns the moment the awaiting
+                    # task is cancelled, so moving on here would only DETACH
+                    # the release -- and a detached release racing the loop's
+                    # own shutdown loses exactly what it was called to hand
+                    # back (a flush still in flight, a shared-namespace hold).
+                    # So it is remembered and drained below, before the
+                    # directory claim goes back.
+                    detached.append(release)
+                    logger.error(
+                        f"[{self.workspace}] Cancelled while releasing {name} "
+                        f"during startup rollback; the release itself was "
+                        f"shielded and is awaited before the rollback returns"
+                    )
+                except Exception as teardown_error:
+                    logger.error(
+                        f"[{self.workspace}] Could not release {name} while backing "
+                        f"out of a failed startup: {teardown_error}"
+                    )
+        finally:
+            await _drain_detached_releases(detached, workspace=self.workspace)
+            # The directory claim is taken before step 1, so it outlives every
+            # storage in the rollback list and is given back last -- in a
+            # ``finally`` because it is the one release nothing else can
+            # perform, and leaving it held would refuse the retry. It goes
+            # back only after the drain above, so no other server takes the
+            # directory while a release of ours is still running.
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(self.config_dir)
+
+    async def _establish_embedding_baselines(
+        self, bootstrap_targets: list[str], evidence: StartupEvidence
+    ) -> None:
+        """Step 7: claim a baseline for each target whose record was absent.
+
+        What gets written depends on the evidence, per target: a source that
+        is EMPTY records the configured space (``origin=empty``) only when
+        that target's vector container is confirmed empty too; a populated
+        source records only on a POSITIVE probe of THAT target
+        (``origin=probe``). Every other case -- source or container
+        unreadable, vectors surviving behind an empty source, probe
+        inconclusive or unable to run -- writes NOTHING and is retried on the
+        next start. No target is ever recorded on a sibling's verdict. See
+        *Establishing a baseline* in docs/design/ConfigurationStorage.md.
+        """
+        for target in bootstrap_targets:
+            populated = evidence.source_populated.get(target)
+            if populated is False:
+                index_empty = evidence.index_empty.get(target)
+                if index_empty is False:
+                    logger.warning(
+                        f"[{self.workspace}] The embedding baseline for "
+                        f"{target} stays unrecorded: its source holds no data "
+                        f"but its vector storage still holds vectors, and "
+                        f"nothing can vouch for the model they were written "
+                        f"in. Rebuild them with lightrag-rebuild-vdb or clear "
+                        f"the workspace; retried on the next start."
+                    )
+                    continue
+                if index_empty is not True:
+                    logger.warning(
+                        f"[{self.workspace}] The embedding baseline for "
+                        f"{target} stays unrecorded: whether its vector "
+                        f"storage is empty could not be established. Retried "
+                        f"on the next start."
+                    )
+                    continue
+                origin = BaselineOrigin.EMPTY
+            elif populated is True:
+                if evidence.probes.get(target) is not True:
+                    logger.warning(
+                        f"[{self.workspace}] The embedding baseline for "
+                        f"{target} stays unrecorded: the adoption probe could "
+                        f"not vouch for the stored vectors "
+                        f"({evidence.probe_details.get(target) or 'no verdict'}). "
+                        f"Retried on the next start."
+                    )
+                    continue
+                origin = BaselineOrigin.PROBE
+            else:
+                logger.warning(
+                    f"[{self.workspace}] The embedding baseline for {target} "
+                    f"stays unrecorded: whether its source holds data could not "
+                    f"be established. Retried on the next start."
                 )
+                continue
+            candidate = configured_baseline(self.embedding_func, origin=origin)
+            if candidate is None:  # pragma: no cover - guarded by the caller
+                return
+            await claim_embedding_baseline(
+                self.configuration_storage,
+                workspace=self.workspace,
+                target=target,
+                candidate=candidate,
+                embedding_func=self.embedding_func,
+            )
 
-            # Auto-initialize pipeline_status for this workspace
-            from lightrag.kg.shared_storage import initialize_pipeline_status
+    async def initialize_storages(self):
+        """Bring every storage up, in the order the contract fixes.
 
-            await initialize_pipeline_status(workspace=self.workspace)
+        Nine steps (``docs/design/ConfigurationStorage.md``, *Startup
+        sequence*): the configuration storage first; a strict read of this
+        workspace's three embedding baselines; a PRECHECK that refuses on a
+        recorded mismatch BEFORE any vector storage initializes; the business
+        storages, with a reverse-order rollback if one of them fails; the
+        ``INITIALIZED`` mark; the coverage gate and the entity adoption probe;
+        the baselines that were absent; a flush of the configuration storage.
 
-            for storage in (
-                self.full_docs,
-                self.text_chunks,
-                self.full_entities,
-                self.full_relations,
-                self.entity_chunks,
-                self.relation_chunks,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.chunk_entity_relation_graph,
-                self.llm_response_cache,
-                self.doc_status,
-            ):
+        Rules a caller can rely on:
+
+        * ``INITIALIZED`` means the resources exist and ``finalize_storages()``
+          must release them -- NOT that the checks passed. A successful return
+          is what means the instance may serve.
+        * A failure before ``INITIALIZED`` releases everything it opened and
+          leaves the status ``CREATED``.
+        * Every failure FROM STEP 1 ON is sticky, cancellation included: this
+          method re-raises it on every later call rather than early-returning
+          as initialized or re-running the steps on storages a rollback has
+          closed. Retry with a new instance. The preamble above step 1 --
+          binding the loop, the default workspace, ``pipeline_status`` -- is
+          deliberately outside that: it opens nothing and moves no status, so
+          a failure there leaves the instance exactly as it was and the next
+          call re-runs every step for real. Making it sticky would kill an
+          instance over a transient shared-storage failure and buy nothing.
+        """
+        # Sticky. The storages below really are up -- which is why the status
+        # says so, and why finalize_storages() can tear them down -- but a
+        # verdict was NEGATIVE (or a claim or flush failed), and nothing about
+        # calling this again changes that. Without this, a retry would take
+        # the `status != CREATED` early return and come back successful
+        # WITHOUT re-running anything, turning a fail-closed gate into a
+        # one-shot one.
+        if self._startup_refusal is not None:
+            raise self._startup_refusal
+        if self._storages_status != StoragesStatus.CREATED:
+            return
+
+        # Record the loop the storages (and their shared_storage locks) bind
+        # to, so the synchronous wrappers can fail fast if later driven from a
+        # different loop (run_in_executor / a loop on another thread).
+        self._owning_loop = asyncio.get_running_loop()
+
+        # Set the first initialized workspace will set the default workspace
+        # Allows namespace operation without specifying workspace for backward compatibility
+        default_workspace = get_default_workspace()
+        if default_workspace is None:
+            set_default_workspace(self.workspace)
+        elif default_workspace != self.workspace:
+            logger.info(
+                f"Creating LightRAG instance with workspace='{self.workspace}' "
+                f"while default workspace is set to '{default_workspace}'"
+            )
+
+        # Auto-initialize pipeline_status for this workspace
+        from lightrag.kg.shared_storage import initialize_pipeline_status
+
+        await initialize_pipeline_status(workspace=self.workspace)
+
+        # Claim the CONFIGURATION DIRECTORY when the configuration storage is
+        # file-backed, and only then. Such a storage shares its in-memory copy
+        # inside ONE process tree and publishes by rewriting the whole file, so
+        # a second server on this directory would overwrite this one's
+        # baselines with neither able to see it happen -- and an overwritten
+        # baseline reads as ABSENT, which is the one answer that lets a start
+        # bootstrap over vectors nobody probed.
+        #
+        # Taken on ``config_dir`` rather than on ``working_dir``: the claim
+        # exists for the configuration file and now follows it, so a
+        # deployment that moves configuration to a server backend stops
+        # claiming anything and one that gives it its own directory claims
+        # that. With ``config_dir`` at its default the two are the same
+        # deployment either way. What this deliberately does NOT do is refuse
+        # a deployment whose business data is file-backed while its
+        # configuration is not: see the residue in working_dir_lock.py.
+        self._holds_working_dir = uses_working_dir(
+            type(self.configuration_storage).__name__
+        )
+        if self._holds_working_dir:
+            try:
+                acquire_working_dir_lock(self.config_dir)
+            except BaseException as e:
+                # Before step 1, so nothing is open yet and nothing is sticky:
+                # a refusal here leaves the instance exactly as it was.
+                self._holds_working_dir = False
+                raise e
+
+        # From here until INITIALIZED, `started` is the list of what must be
+        # released if a step fails. A storage is appended BEFORE its
+        # initialize() runs: one that raises may already have allocated, and
+        # the rollback owes it a finalize() too.
+        started: list[tuple[str, Any]] = []
+        baselines_apply = self._embedding_baselines_apply()
+        bootstrap_targets: list[str] = []
+        try:
+            # Step 1. The configuration storage, before anything that depends
+            # on what it records.
+            started.append(("configuration_storage", self.configuration_storage))
+            await self.configuration_storage.initialize()
+
+            # Steps 2 and 3. Strict-read the three baselines and compare the
+            # ones that exist. A mismatch refuses HERE, before any vector
+            # storage initializes -- ahead of the legacy-container migration
+            # Milvus, Qdrant and PostgreSQL run inside initialize(). A read
+            # that could not complete is a startup failure, never "absent".
+            if baselines_apply:
+                recorded = await read_embedding_baselines(
+                    self.configuration_storage, self.workspace
+                )
+                bootstrap_targets = precheck_embedding_baselines(
+                    recorded, self.embedding_func, workspace=self.workspace
+                )
+                # A separately selected configuration backend is a new way to
+                # point a running deployment at an empty store, and an empty
+                # store reads exactly like a first start. Announced, not
+                # enforced -- the protection stays where it already is: an
+                # absent baseline is established only on positive evidence.
+                warn_about_unrecorded_baselines(
+                    bootstrap_targets,
+                    workspace=self.workspace,
+                    container=describe_configuration_container(
+                        self.config_storage, self.config_dir
+                    ),
+                )
+            else:
+                bootstrap_targets = []
+
+            # Step 4. The business storages, one at a time to prevent
+            # deadlock.
+            for name, storage in self._business_storages():
                 if storage:
-                    # logger.debug(f"Initializing storage: {storage}")
+                    started.append((name, storage))
                     await storage.initialize()
 
             # After initialize(), so a backend that derives capabilities during
@@ -2032,9 +2478,86 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status,
                 require=bool(self.pipeline_require_strict_storage_reads),
             )
+        except BaseException as failure:
+            # Nothing above is covered by finalize_storages() -- the status
+            # is still CREATED -- so release it here, in reverse order, the
+            # configuration storage last. The original exception propagates;
+            # a teardown failure is logged and never replaces it. Sticky too:
+            # not every backend's finalize() is safe to undo (OpenSearch's
+            # flushes its pending buffer ahead of its own client guard), so a
+            # retry on this object could neither succeed honestly nor re-run
+            # from step 1. A new instance is the retry.
+            self._retain_startup_failure(failure)
+            await self._release_after_early_failure(started)
+            raise
 
-            self._storages_status = StoragesStatus.INITIALIZED
-            logger.debug("All storage types initialized")
+        # Step 5. Marked INITIALIZED before the checks, not after. Every
+        # storage above has completed initialize(), so they hold clients,
+        # pools and locks -- and finalize_storages() skips the whole teardown
+        # unless the status says so. A caller that catches a refusal below
+        # (to report it, or to run a rebuild) would otherwise leak every one
+        # of them, and a retry on the same object would initialize them
+        # twice.
+        self._storages_status = StoragesStatus.INITIALIZED
+
+        try:
+            # Step 6. The two checks no single storage can make for itself: a
+            # vector storage holding nothing while the data it INDEXES is not
+            # empty (an index that does not cover its source -- never built,
+            # lost, half rebuilt, or replaced by an empty container after a
+            # model change on a backend that names its container after the
+            # model), and an unmarked container that has to be adopted before
+            # its silence can end. Deliberately NOT in a backend's
+            # initialize(): the first takes a source storage and its index
+            # together, and `lightrag-rebuild-vdb` drives the storages
+            # directly, so the tool that FIXES these conditions is never
+            # blocked by them. See docs/design/VectorSpaceProvenance.md.
+            evidence = StartupEvidence()
+            if (
+                self.entities_vdb is not None
+                and self.chunk_entity_relation_graph is not None
+            ):
+                evidence = await check_vector_space_at_startup(
+                    graph=self.chunk_entity_relation_graph,
+                    entities_vdb=self.entities_vdb,
+                    relationships_vdb=self.relationships_vdb,
+                    chunks_vdb=self.chunks_vdb,
+                    text_chunks=self.text_chunks,
+                    doc_status=self.doc_status,
+                    embedding_func=self.embedding_func,
+                    expect_empty_vector_storage=self.rebuilding_vector_storage,
+                    # The absent baselines. A probe's verdict is the only
+                    # evidence one can be established on, whatever the
+                    # container's own marker says -- one probe per absent
+                    # target -- and their sources are read strictly, which
+                    # the targets already recorded neither need nor pay for.
+                    baseline_targets=bootstrap_targets,
+                )
+
+            # Steps 7 and 8. Claim the baselines that were absent, then flush
+            # the configuration storage so the claims are durable before this
+            # returns.
+            if baselines_apply and bootstrap_targets:
+                await self._establish_embedding_baselines(bootstrap_targets, evidence)
+            # Through the store's own flush, not index_done_callback()
+            # directly: each claim above already flushed inside its lock, so
+            # this one is the guard that nothing is left buffered when startup
+            # returns -- and a raise from it must not be read as a failed write
+            # when the buffer is empty (the commit landed and only the refresh
+            # after it failed). See *A flush that retained anything is a failed
+            # flush here* in docs/design/ConfigurationStorage.md.
+            await flush_configuration_storage(
+                self.configuration_storage, "the startup claims"
+            )
+        except BaseException as failure:
+            # Sticky (see the top of this method), cancellation included: a
+            # CancelledError here leaves the status INITIALIZED with the checks
+            # never completed, and only a retained failure keeps the next call
+            # from early-returning as ready. The storages stay up so the
+            # caller can finalize them.
+            self._retain_startup_failure(failure)
+            raise
+        logger.debug("All storage types initialized")
 
     def _get_parse_native_executor(self) -> ThreadPoolExecutor:
         """Lazily build the per-instance native-parser thread pool.
@@ -2174,17 +2697,76 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         written while the cache publishes in full. See *LLM extraction cache
         reachability* in ``docs/design/PurgeRecoveryContract.md``, whose
         residue table records what this still cannot close.
+
+        Cancellation-safe by construction: the queue drains stay
+        interruptible, but the storage teardown runs as a shielded task that
+        is drained to completion, and the working-directory claim is handed
+        back only after it. A cancellation is re-raised once that is done.
         """
         self._shutdown_parser_executor()
+        cancelled: asyncio.CancelledError | None = None
         # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
-        await self._cancel_admin_release_drives()
-        # These wrappers own long-lived worker and health-check tasks. Drain
-        # them while the response cache and other storages are still usable;
-        # otherwise closing an asyncio.run()/manual loop after finalize leaves
-        # their queue.get() coroutines pending on the destroyed event loop.
-        await self._shutdown_model_queues()
+        try:
+            try:
+                await self._cancel_admin_release_drives()
+                # These wrappers own long-lived worker and health-check tasks. Drain
+                # them while the response cache and other storages are still usable;
+                # otherwise closing an asyncio.run()/manual loop after finalize leaves
+                # their queue.get() coroutines pending on the destroyed event loop.
+                await self._shutdown_model_queues()
+            except asyncio.CancelledError as exc:
+                # Absorbed HERE and re-raised at the end, rather than left to
+                # propagate: draining an LLM queue waits on whatever is in
+                # flight, so a shutdown timeout escalating to a cancel lands
+                # in these two awaits more often than anywhere else -- and
+                # letting it out would skip the storage teardown below while
+                # the ``finally`` still hands back the directory claim. That
+                # is the one combination the claim exists to prevent: another
+                # server takes the directory while this process still holds
+                # shared-namespace holds and unflushed writes. The drains stay
+                # interruptible (a wedged queue must not wedge the shutdown);
+                # what follows them does not.
+                cancelled = exc
+                logger.error(
+                    f"[{self.workspace}] Cancelled while draining the queues at "
+                    f"shutdown; the storages are released before the "
+                    f"cancellation is re-raised"
+                )
+            # Shielded and drained to completion, for the same reason: once
+            # the storage teardown has begun, no cancellation may leave it
+            # half-done with the directory claim already handed back. Every
+            # await below -- the cache-pair commit, each storage's finalize --
+            # would otherwise be its own exit.
+            teardown = asyncio.ensure_future(self._finalize_storages_impl())
+            while not teardown.done():
+                try:
+                    await asyncio.shield(teardown)
+                except asyncio.CancelledError as exc:
+                    if cancelled is None:
+                        cancelled = exc
+        finally:
+            # Last, and in a ``finally``: the claim outlives every storage,
+            # and it is the one release nothing else can perform -- a retry
+            # returns early on the status, so a claim left held by a process
+            # on its way out refuses the next server for nothing. Reached
+            # only once the teardown task above has completed, so the
+            # directory is never handed to another server while this one
+            # still holds shared-namespace holds or unflushed writes.
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(self.config_dir)
+        if cancelled is not None:
+            raise cancelled
+
+    async def _finalize_storages_impl(self) -> None:
+        """Release every storage, in order, absorbing each failure.
+
+        Runs as its own task that ``finalize_storages`` shields and drains, so
+        a cancellation delivered to the caller cannot stop it part-way. Sets
+        ``FINALIZED`` only once every release has been attempted.
+        """
         if self._storages_status == StoragesStatus.INITIALIZED:
             await self._commit_cache_pair_before_finalize()
             storages = [
@@ -2200,6 +2782,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
                 ("llm_response_cache", self.llm_response_cache),
                 ("doc_status", self.doc_status),
+                # Initialized first, released last: a business storage's
+                # final flush may still want it open. Exactly once -- the
+                # early-failure rollback only runs while the status is
+                # CREATED, which never reaches this branch.
+                ("configuration_storage", self.configuration_storage),
             ]
 
             # Finalize each storage individually to ensure one failure doesn't prevent others from closing
@@ -2218,6 +2805,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         await storage.finalize()
                         successful_finalizations.append(storage_name)
                         logger.debug(f"Successfully finalized {storage_name}")
+                    except asyncio.CancelledError:
+                        # Reachable only from inside the release itself --
+                        # this task is shielded, so the caller's cancel does
+                        # not arrive here. Absorbed either way: a cancel must
+                        # not abandon every storage after this one, and an
+                        # unfinalized file-backed storage keeps its hold on
+                        # the shared namespace, so the next server would be
+                        # refused by a process that was already shutting down.
+                        logger.error(
+                            f"Cancelled while finalizing {storage_name}; "
+                            f"the remaining storages are still released"
+                        )
+                        failed_finalizations.append(storage_name)
                     except Exception as e:
                         error_msg = f"Failed to finalize {storage_name}: {e}"
                         logger.error(error_msg)

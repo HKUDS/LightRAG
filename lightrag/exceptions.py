@@ -108,6 +108,37 @@ class StorageCapabilityError(RuntimeError):
     """
 
 
+class WorkingDirectoryInUseError(RuntimeError):
+    """Another process tree already holds this ``working_dir``.
+
+    The file-backed storages rewrite whole files from an in-memory copy that is
+    shared inside one process tree and nowhere else, so two servers on one
+    directory each accumulate a private view and each publish it over the
+    other's. Nothing inside either tree can observe that, which is why the
+    claim lives on the directory. See ``lightrag/kg/working_dir_lock.py``.
+    """
+
+
+class SharedNamespaceBackingConflictError(RuntimeError):
+    """Two file-backed storages in one process tree claimed one namespace
+    while backed by DIFFERENT files.
+
+    The five file-backed storages publish a namespace by rewriting a whole
+    file, and the JSON pair share one in-memory copy per process tree keyed by
+    ``workspace:namespace`` — a key that says nothing about which file backs
+    it. When both coincide the sharing is correct and required. When they do
+    not, the second storage silently inherits the first's rows, reads its own
+    file's contents as ABSENT, and then publishes the union into whichever
+    file flushes first — the other never being written at all.
+
+    Absence is the one answer that lets a start bootstrap, so for the
+    configuration namespace that silence would record the configured model
+    over vectors nobody probed. Refusing is the only reading that does not
+    turn a divergence into a durable claim. See *One file per namespace per
+    process tree* in ``docs/design/FileBackedSnapshotContract.md``.
+    """
+
+
 class StorageControlPlaneError(RuntimeError):
     """A storage control-plane read failed (e.g. an index that must exist is
     unexpectedly absent, or a not-yet-ready index during rebuild/recovery).
@@ -817,3 +848,150 @@ class CorruptStorageSnapshotError(RuntimeError):
         self.backend = backend
         self.container = container
         self.detail = detail
+
+
+class ConfigurationStorageError(RuntimeError):
+    """The configuration storage could not complete a read, a write or a claim.
+
+    Raised by ``lightrag.config_store`` when a record that decides whether the
+    instance may serve cannot be read to a definite answer (a transport
+    failure, a backend that cannot promise strict point reads, a row whose
+    shape does not parse), when a claim's read-back does not return the row
+    that was just written, or when a flush that had to land did not.
+
+    It is a STARTUP FAILURE, deliberately distinct from "the record is absent".
+    Absent means bootstrap; this means stop. Treating one as the other is the
+    defect the strict-read rule exists to prevent: a store that could not be
+    reached must never be mistaken for a store that holds nothing. See *Reads
+    are strict* in docs/design/ConfigurationStorage.md.
+    """
+
+
+class EmbeddingBaselineMismatchError(VectorSpaceMismatchError):
+    """A recorded per-target embedding baseline disagrees with the configuration.
+
+    Raised at step 3 of ``LightRAG.initialize_storages()`` -- BEFORE any vector
+    storage initializes -- when at least one of a workspace's three baseline
+    records (``entities``, ``relationships``, ``chunks``) names a model or a
+    dimension other than the one this process is configured with. One raise
+    lists every mismatched target: an operator planning a rebuild needs the
+    whole list, not the first entry.
+
+    A ``VectorSpaceMismatchError`` subclass so callers that already answer that
+    refusal (report it, run ``lightrag-rebuild-vdb``) answer this one the same
+    way. Unlike the parent, nothing physical refused here: the baseline is a
+    record kept in the configuration storage, and the container name on the
+    backends that carry one may well agree with the configuration -- that is
+    precisely the case this record exists to catch.
+
+    Args:
+        workspace: the workspace whose baselines were compared.
+        mismatches: one entry per target that differs, each a mapping with
+            ``target``, ``recorded_model``, ``recorded_dim``,
+            ``expected_model`` and ``expected_dim``.
+    """
+
+    def __init__(self, *, workspace: str, mismatches: list[dict]) -> None:
+        if not mismatches:
+            raise ValueError(
+                "EmbeddingBaselineMismatchError needs at least one mismatch"
+            )
+        lines = []
+        for m in mismatches:
+            lines.append(
+                f"{m.get('target')}: recorded model "
+                f"{m.get('recorded_model')!r} dim {m.get('recorded_dim')}, "
+                f"configured model {m.get('expected_model')!r} dim "
+                f"{m.get('expected_dim')}"
+            )
+        shown = workspace if workspace else "(default)"
+        message = (
+            f"Workspace {shown!r} refuses to start: the recorded embedding "
+            f"baseline differs from the configured embedding function for "
+            f"{len(mismatches)} vector target(s) -- "
+            + "; ".join(lines)
+            + ". The vectors in those targets were adopted under another "
+            "embedding space, so serving them would return nothing, or "
+            "confidently wrong neighbours. Rebuild them with "
+            "`lightrag-rebuild-vdb` (run with this embedding configuration), "
+            "or point this instance back at the previous embedding "
+            "configuration."
+        )
+        RuntimeError.__init__(self, message)
+        first = mismatches[0]
+        self.backend = "configuration storage"
+        self.container = workspace
+        self.expected_model = first.get("expected_model")
+        self.expected_dim = first.get("expected_dim")
+        self.stored_model = first.get("recorded_model")
+        self.stored_dim = first.get("recorded_dim")
+        self.workspace = workspace
+        self.mismatches = [dict(m) for m in mismatches]
+        self.targets = [m.get("target") for m in mismatches]
+
+
+class VectorStorageEmptyError(RuntimeError):
+    """A vector storage holds nothing while the data it indexes is not empty.
+
+    Raised at startup by the cross-storage gate in
+    ``LightRAG.initialize_storages()``. It is a *refusal to serve*: every
+    retrieval mode but ``naive`` would silently return nothing, which reads as
+    "no relevant context" rather than as a broken deployment.
+
+    Why it is not ``VectorSpaceMismatchError``: no vectors were written in
+    another embedding space, because there are no vectors at all. The
+    distinction is load-bearing for ``lightrag-rebuild-vdb``, which answers
+    that type by DROPPING the container -- pointless here, and a tool that
+    conflated the two would report a destruction it did not need to perform.
+    The remedy is the same rebuild, but it starts at the rebuild, not at a drop.
+
+    This is a COVERAGE failure, not an identity one, and it has a family of
+    causes: a container dropped or a volume not mounted, a rebuild that stopped
+    halfway, the vector backend switched without migrating the data, a
+    workspace prefix that does not match the one the vectors were written
+    under. Milvus, Qdrant and PostgreSQL reach it by one more route -- they
+    encode the embedding model in the container NAME, so changing the model
+    provisions a NEW, EMPTY, correctly-named container that no marker can fire
+    on. That route is an identity question showing up as a coverage symptom;
+    the recorded per-workspace embedding space answers it directly, and this
+    error keeps the causes it is the only evidence for.
+
+    The condition self-clears. Once a rebuild populates the container the
+    question answers itself, which is why the gate asks it fresh at every
+    startup rather than recording anything.
+
+    Args:
+        vdb_name: the vector storage that came back empty, e.g. ``"entities"``.
+        container: the physical container, when the backend can name it.
+        source: the data this storage indexes, named as an operator would
+            recognise it, e.g. ``"knowledge graph entities"``. It is the other
+            half of the evidence: an empty container is only a defect because
+            something it indexes is NOT empty.
+    """
+
+    def __init__(
+        self,
+        *,
+        vdb_name: str,
+        container: str | None = None,
+        source: str = "the data it indexes",
+    ) -> None:
+        where = f" ('{container}')" if container else ""
+        message = (
+            f"The {vdb_name} vector storage{where} holds no vectors, but "
+            f"{source} is not empty. Serving this "
+            f"would return no context for every query mode that uses vectors. "
+            f"The index does not cover its source: it was never built, it was "
+            f"lost (a dropped container, a volume that is not mounted), a "
+            f"rebuild stopped part way, the vector backend was changed without "
+            f"migrating the data, or -- on Milvus, Qdrant and PostgreSQL, which "
+            f"put the embedding model in the container name -- a model change "
+            f"provisioned a new, empty one. Rebuild the vector storages from "
+            f"the knowledge graph with `lightrag-rebuild-vdb` (run it with this "
+            f"embedding configuration), or point this instance back at the "
+            f"configuration whose vectors are still there."
+        )
+        super().__init__(message)
+        self.vdb_name = vdb_name
+        self.container = container
+        self.source = source

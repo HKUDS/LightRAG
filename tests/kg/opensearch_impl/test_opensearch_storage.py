@@ -24,7 +24,11 @@ from opensearchpy.exceptions import (  # type: ignore
     ConflictError,
 )
 import lightrag.kg.opensearch_impl
-from lightrag.exceptions import VectorSpaceMismatchError, flush_may_have_lost_reference
+from lightrag.exceptions import (
+    StorageControlPlaneError,
+    VectorSpaceMismatchError,
+    flush_may_have_lost_reference,
+)
 from lightrag.kg.opensearch_impl import (
     OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
@@ -877,16 +881,26 @@ class TestKVStorage:
             mock_client.delete_pit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_iter_raw_docs_missing_index_demotes_readiness(
+    async def test_iter_raw_docs_missing_index_demotes_readiness_and_raises(
         self, global_config, embed_func, mock_client
     ):
+        """The scan marks the index missing and then REFUSES.
+
+        It used to end cleanly, which made an index that vanished mid-scan
+        indistinguishable from an empty namespace -- and ``iter_rows``'
+        caller reads a clean end as "confirmed empty", the verdict that
+        records a durable ``origin=empty`` embedding baseline.
+        """
         mock_client.search = AsyncMock(side_effect=_missing_index_error())
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
 
-            batches = [batch async for batch in s._iter_raw_docs(batch_size=2)]
+            batches = []
+            with pytest.raises(StorageControlPlaneError, match="unexpectedly missing"):
+                async for batch in s._iter_raw_docs(batch_size=2):
+                    batches.append(batch)
 
             assert batches == []
             assert s._index_ready is False
@@ -1036,6 +1050,10 @@ class TestKVStorageBatching:
 
             await s.delete(["gone-1"])
             assert await s.has_pending_index_ops() is False
+            # The configuration store asks with tombstones included: a
+            # buffered delete answers its strict read-back as "gone" before
+            # the server agrees.
+            assert await s.has_pending_index_ops(include_deletes=True) is True
 
     @pytest.mark.asyncio
     async def test_repeated_kv_upserts_flush_in_single_bulk_call(

@@ -17,6 +17,7 @@ from lightrag.utils import (
     _consume_future_exception,
     _wait_deferring_cancellation,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..base import BaseVectorStorage
 from ..constants import (
@@ -25,7 +26,7 @@ from ..constants import (
     GRAPH_FIELD_SEP,
     MILVUS_SUBMIT_LIMIT,
 )
-from ..exceptions import VectorSpaceMismatchError
+from ..exceptions import StorageCapabilityError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -2453,7 +2454,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
         if milvus_workspace and milvus_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MILVUS_WORKSPACE", milvus_workspace
+            )
             logger.info(
                 f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -3221,6 +3224,43 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         row_bytes = embedding_dim * 4 + MILVUS_QUERY_ROW_OVERHEAD_BYTES
         page_size = MILVUS_QUERY_MAX_RESPONSE_BYTES // row_bytes
         return max(1, min(page_size, MILVUS_QUERY_MAX_RECORDS_PER_BATCH))
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            if self._client is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] Milvus client is not connected, so "
+                    f"{self.final_namespace} cannot be read for emptiness"
+                )
+
+        await self._run_gated(self._ensure_collection_loaded)
+        # `id != ""` rather than an empty filter: every row carries a non-empty
+        # varchar primary key, so this matches all of them on every pymilvus
+        # version, while an empty `filter` needs a `limit` the older clients
+        # reject.
+        rows = await self._run_gated(
+            self._client.query,
+            collection_name=self.final_namespace,
+            filter='id != ""',
+            output_fields=["id"],
+            limit=1,
+        )
+        return not rows
 
     async def _query_rows_by_ids(
         self,

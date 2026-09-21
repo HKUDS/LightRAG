@@ -440,6 +440,49 @@ async def test_nano_rechecks_provenance_when_reloading_a_peer_commit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nano_adoption_does_not_save_over_a_peer_commit(tmp_path):
+    """Nano only: adoption rewrites the WHOLE namespace, because the marker
+    lives in the same JSON object as the rows.
+
+    The adopting process reaches this call right after an embedding probe that
+    may take 30 seconds, so a peer has an unusually wide window to commit into.
+    Saving the pre-probe in-memory snapshot would publish the file as it looked
+    before that commit and drop the peer's rows -- and losing data is never an
+    accepted residue. The write path has to reload and replay like every other
+    one (file-backed contract, *Why these backends never decline a stale
+    write*)."""
+    backend = _Backend("nano")
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    assert await storage.vector_space_adoption_pending() is True
+
+    # A peer commits while this process is busy probing.
+    peer = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await peer.initialize()
+    await peer.upsert({"peer-row": {"content": "written during the probe"}})
+    await peer.index_done_callback()
+
+    # Stand in for the cross-process notification: this harness stubs
+    # set_all_update_flags, and the file channel is off in single-process mode
+    # (file_fingerprint.fence_enabled), so neither would fire on its own. Same
+    # device the peer-reload test above uses.
+    storage.storage_updated.value = True
+
+    assert await storage.adopt_vector_space() is True
+
+    # Both survive: the peer's row and the marker the probe earned.
+    reader = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await reader.initialize()
+    assert await reader.get_by_id("peer-row") is not None, (
+        "adoption saved a stale snapshot over the peer's commit"
+    )
+    assert await reader.get_by_id("v1") is not None
+    assert backend.read_marker(tmp_path) == ("bge-m3", 8)
+
+
+@pytest.mark.asyncio
 async def test_faiss_refuses_to_publish_beside_a_contradicting_marker(tmp_path):
     """FAISS only: an unwritable marker must not wedge the rebuild.
 
@@ -478,3 +521,113 @@ async def test_faiss_refuses_to_publish_beside_a_contradicting_marker(tmp_path):
     ):
         with pytest.raises(VectorSpaceMismatchError, match="'bge-m3' -> 'e5-large'"):
             await storage.index_done_callback()
+
+
+# ---------------------------------------------------------------------------
+# Adoption: ending the silence on a container written before the marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_legacy_store_reports_adoption_pending(backend, tmp_path):
+    """A store with rows but no recorded model is the transitional state.
+
+    Left alone it stays that way forever -- *absent evidence never refuses*
+    means the silence cannot end by itself.
+    """
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is True
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_marked_store_reports_nothing_pending(backend, tmp_path):
+    """Once recorded, the probe never runs again -- the cost is zero forever."""
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_an_empty_store_is_never_pending(backend, tmp_path):
+    """It certifies itself: there are no rows to misdescribe, so it needs no
+    evidence from one layer up."""
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_process_with_no_model_has_nothing_to_adopt(backend, tmp_path):
+    """Pending must mean "someone can act on this". A process that cannot name
+    its own model would otherwise invite a probe no one can use the result of.
+    """
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed(None, 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_adoption_records_the_model_and_ends_the_silence(backend, tmp_path):
+    """The payoff: after adoption a same-dimension swap is finally refused.
+
+    Before it, the peer below attaches happily and serves the previous model's
+    neighbours -- which is the whole defect issue #3978 is about.
+    """
+    await _seed(backend, tmp_path, _Embed(None, 8))
+    assert backend.read_marker(tmp_path) == (None, 8)
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    assert await storage.adopt_vector_space() is True
+    assert backend.read_marker(tmp_path) == ("bge-m3", 8)
+
+    peer = backend.storage(tmp_path, _Embed("e5-large", 8))
+    with pytest.raises(VectorSpaceMismatchError):
+        await peer.initialize()
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_adoption_survives_a_reattach(backend, tmp_path):
+    """The marker has to be on DISK, not just in the adopting process: the
+    next start is what has to see it."""
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    await storage.adopt_vector_space()
+
+    reattached = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await reattached.initialize()
+    assert await reattached.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_adoption_keeps_the_rows_readable(backend, tmp_path):
+    """Adoption is metadata. It must not disturb, reorder or drop a single row."""
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    await storage.adopt_vector_space()
+
+    rows = await storage.get_by_ids(["v1"])
+    assert [row["id"] for row in rows] == ["v1"]
+    assert rows[0]["content"] == "hello"

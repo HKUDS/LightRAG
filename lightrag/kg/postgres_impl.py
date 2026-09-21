@@ -7,7 +7,17 @@ import re
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, ClassVar, Sequence, TypeVar, Union, final
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    ClassVar,
+    Sequence,
+    TypeVar,
+    Union,
+    final,
+)
 import numpy as np
 import configparser
 import ssl
@@ -55,7 +65,7 @@ from ..exceptions import (
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
 )
-from ..namespace import NameSpace, is_namespace
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace, is_namespace
 from ..utils import (
     logger,
     compute_mdhash_id,
@@ -63,6 +73,7 @@ from ..utils import (
     get_env_value,
     performance_timing_log,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -424,7 +435,13 @@ class PostgreSQLDB:
         self.user = config["user"]
         self.password = config["password"]
         self.database = config["database"]
-        self.workspace = config["workspace"]
+        # One check for every PostgreSQL storage: they all take the
+        # override from this shared client. POSTGRES_WORKSPACE (or the
+        # config.ini value) may remap tenant data, never into the reserved
+        # family the configuration container lives in.
+        self.workspace = validate_workspace_override(
+            "POSTGRES_WORKSPACE", config["workspace"]
+        )
         self.max = int(config["max_connections"])
         self.increment = 1
         self.pool: Pool | None = None
@@ -3116,6 +3133,40 @@ class ClientManager:
                         await db.pool.close()
 
 
+_CONFIG_ROW_COLUMNS = frozenset({"_id", "create_time", "update_time"})
+
+
+def _config_row_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """The part of a configuration KV row that goes into the JSONB column.
+
+    The storage-managed timestamps and the ``_id`` mirror are columns on
+    ``LIGHTRAG_CONFIG``; everything else (``schema_version``, ``workspace``,
+    ``updated_at``, ``updated_by``, ``value``) is the payload, kept whole so a
+    key added to the row shape later needs no DDL.
+    """
+    return {k: v for k, v in row.items() if k not in _CONFIG_ROW_COLUMNS}
+
+
+def _config_row_from_pg(row: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the KV row a caller expects from a ``LIGHTRAG_CONFIG`` result."""
+    payload = row.get("value")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    create_time = row.get("create_time", 0) or 0
+    update_time = row.get("update_time", 0) or 0
+    rebuilt = dict(payload)
+    rebuilt["id"] = row.get("id")
+    rebuilt["_id"] = row.get("id")
+    rebuilt["create_time"] = create_time
+    rebuilt["update_time"] = create_time if update_time == 0 else update_time
+    return rebuilt
+
+
 @final
 @dataclass
 class PGKVStorage(BaseKVStorage):
@@ -3124,7 +3175,17 @@ class PGKVStorage(BaseKVStorage):
     supports_strict_point_reads: ClassVar[bool] = True
 
     def __post_init__(self):
-        validate_workspace(self.workspace)
+        if self.namespace == NameSpace.KV_STORE_CONFIG:
+            # The configuration container is named in CODE. On PostgreSQL that
+            # name is the table ``LIGHTRAG_CONFIG`` plus a fixed value in its
+            # partition column -- which is called ``workspace`` for the DDL's
+            # sake and is NOT one: nothing validates it, no caller chooses it,
+            # and POSTGRES_WORKSPACE does not reach it (see ``initialize``).
+            # Two deployments sharing one database are told apart by the row
+            # KEY, whose scope is the business workspace the row is about.
+            self.workspace = CONFIG_CONTAINER_TAG
+        else:
+            validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
         (
             self._max_upsert_payload_bytes,
@@ -3140,7 +3201,11 @@ class PGKVStorage(BaseKVStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
+            if self.namespace == NameSpace.KV_STORE_CONFIG:
+                # Fixed in __post_init__ and not configurable: POSTGRES_WORKSPACE
+                # remaps tenant data, never the configuration container.
+                pass
+            elif self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
                 logger.info(
                     f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
@@ -3300,6 +3365,9 @@ class PGKVStorage(BaseKVStorage):
             update_time = response.get("update_time", 0)
             response["create_time"] = create_time
             response["update_time"] = create_time if update_time == 0 else update_time
+
+        if response and is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            response = _config_row_from_pg(response)
 
         return response if response else None
 
@@ -3483,6 +3551,9 @@ class PGKVStorage(BaseKVStorage):
                 update_time = result.get("update_time", 0)
                 result["create_time"] = create_time
                 result["update_time"] = create_time if update_time == 0 else update_time
+
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            results = [_config_row_from_pg(row) if row else row for row in results]
 
         return _order_results(results)
 
@@ -3672,6 +3743,16 @@ class PGKVStorage(BaseKVStorage):
                     )
                 )
                 await _cooperative_yield(i)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            upsert_sql = SQL_TEMPLATES["upsert_config"]
+            for i, (k, v) in enumerate(data.items(), start=1):
+                # Tuple order must match SQL: (workspace, id, value). The row
+                # payload travels whole in the JSONB column; the storage-managed
+                # timestamps and the ``_id`` mirror are columns, not payload.
+                batch_values.append(
+                    (self.workspace, k, json.dumps(_config_row_payload(v)))
+                )
+                await _cooperative_yield(i)
         else:
             logger.error(f"Unknown namespace: {self.namespace}")
             raise ValueError(f"Unknown namespace: {self.namespace}")
@@ -3772,6 +3853,36 @@ class PGKVStorage(BaseKVStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) by keyset-paging the ids and
+        reading each page through ``get_by_ids``, so every namespace's rows
+        come out with the same per-namespace shaping a point read applies.
+        Two round trips per page, and never a whole-table read."""
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+        page_size = max(1, int(page_size))
+        page_sql = (
+            f"SELECT id FROM {table_name} WHERE workspace=$1 "
+            f"AND ($2::text IS NULL OR id > $2::text) ORDER BY id LIMIT $3"
+        )
+        last_id: str | None = None
+        while True:
+            id_rows = await self.db.query(
+                page_sql, [self.workspace, last_id, page_size], multirows=True
+            )
+            if not id_rows:
+                return
+            ids = [str(r["id"]) for r in id_rows if r and r.get("id") is not None]
+            for row_id, row in zip(ids, await self.get_by_ids(ids)):
+                if row is None:
+                    continue
+                row.setdefault("_id", row_id)
+                yield row
+            if len(id_rows) < page_size:
+                return
+            last_id = ids[-1]
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -5126,6 +5237,45 @@ class PGVectorStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error deleting relations for entity {entity_name}: {e}"
             )
             raise
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        Scoped by ``workspace``, not just by table: PostgreSQL isolates
+        workspaces with a column, so an unfiltered read would report a sibling
+        workspace's rows as this one's. The table name already carries the
+        embedding model and dimension, which is exactly why this backend needs
+        the check -- a model change lands in a different, empty table.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+
+        query = (
+            f"SELECT EXISTS(SELECT 1 FROM {self.table_name} WHERE workspace=$1) "
+            f"AS has_data"
+        )
+        result = await self.db.query(query, [self.workspace])
+        if not result or "has_data" not in result:
+            # `SELECT EXISTS(...)` always produces exactly one row, so no row
+            # means the read did not do what it claims. Raising keeps that out
+            # of the "empty" answer, which is the only one that can refuse.
+            raise RuntimeError(
+                f"[{self.workspace}] emptiness check on {self.table_name} "
+                f"returned no row"
+            )
+        return not result["has_data"]
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
@@ -9582,6 +9732,7 @@ NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_ENTITY_CHUNKS: "LIGHTRAG_ENTITY_CHUNKS",
     NameSpace.KV_STORE_RELATION_CHUNKS: "LIGHTRAG_RELATION_CHUNKS",
     NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LIGHTRAG_LLM_CACHE",
+    NameSpace.KV_STORE_CONFIG: "LIGHTRAG_CONFIG",
     NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_VDB_CHUNKS",
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
     NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_VDB_RELATION",
@@ -9693,6 +9844,22 @@ TABLES = {
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    # The configuration store. ``workspace`` here is NOT a workspace: it is a
+    # fixed partition constant (``CONFIG_CONTAINER_TAG``) that gives the table
+    # the same shape as every other one. The workspace a row is ABOUT is a
+    # field inside ``value``, and ``id`` is TEXT because it carries that
+    # workspace name too -- which is what keeps two deployments sharing one
+    # database on disjoint rows. See docs/design/ConfigurationStorage.md.
+    "LIGHTRAG_CONFIG": {
+        "ddl": """CREATE TABLE LIGHTRAG_CONFIG (
+	                workspace varchar(255) NOT NULL,
+	                id TEXT NOT NULL,
+                    value JSONB NOT NULL,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	                CONSTRAINT LIGHTRAG_CONFIG_PK PRIMARY KEY (workspace, id)
                     )"""
     },
     "LIGHTRAG_DOC_STATUS": {
@@ -9855,6 +10022,16 @@ SQL_TEMPLATES = {
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
+    "get_by_id_config": """SELECT id, value,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_CONFIG WHERE workspace=$1 AND id=$2
+                            """,
+    "get_by_ids_config": """SELECT id, value,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_CONFIG WHERE workspace=$1 AND id = ANY($2)
+                            """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     # Pipeline-derived columns (sidecar_location / parse_format / content_hash /
     # process_options / chunk_options / parse_engine) are guarded with COALESCE
@@ -9925,6 +10102,12 @@ SQL_TEMPLATES = {
                       heading=EXCLUDED.heading,
                       sidecar=EXCLUDED.sidecar,
                       update_time = EXCLUDED.update_time
+                     """,
+    "upsert_config": """INSERT INTO LIGHTRAG_CONFIG (workspace, id, value)
+                      VALUES ($1, $2, $3)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET value=EXCLUDED.value,
+                      update_time = CURRENT_TIMESTAMP
                      """,
     "upsert_full_entities": """INSERT INTO LIGHTRAG_FULL_ENTITIES (workspace, id, entity_names, count,
                       create_time, update_time)

@@ -273,7 +273,7 @@ class StorageNameSpace(ABC):
         """
         return None
 
-    async def has_pending_index_ops(self) -> bool:
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         """Whether buffered upserts are still waiting for a commit.
 
         For a caller that is about to DROP this buffer, or to publish another
@@ -290,16 +290,24 @@ class StorageNameSpace(ABC):
         gate can quarantine it has already put the row on disk, where no
         quarantine reaches it.
 
-        UPSERTS only. A retained tombstone carries no reference and does not
-        make another namespace's rows unreachable.
+        UPSERTS only by default. A retained tombstone carries no reference and
+        does not make another namespace's rows unreachable, which is all the
+        reachability caller asks. ``include_deletes=True`` counts retained
+        tombstones too, for a caller that must know whether a DELETE landed:
+        the configuration store confirms a drop by strict read-back, and a
+        buffered tombstone answers that read as "gone" before the server
+        agrees (*Claiming a baseline atomically* in
+        ``docs/design/ConfigurationStorage.md``).
 
         The default is ``False``, which is the truth for an immediate-write or
         snapshot backend (no per-operation buffer, nothing to retain) and an
-        UNIMPLEMENTED answer for the deferred per-item vector storages, which
-        do buffer and do retain. Only ``OpenSearchKVStorage`` overrides it,
-        because only the KV side is asked today. Before querying this on a
-        vector storage, implement it there -- a confident ``False`` over a
-        non-empty buffer is worse than no method at all.
+        UNIMPLEMENTED answer for a deferred per-item backend, which does buffer
+        and does retain. The two OpenSearch storages that are asked today --
+        ``OpenSearchKVStorage`` (the configuration store's flush) and
+        ``OpenSearchVectorDBStorage`` (the rebuild tool, before it records a
+        baseline) -- override it. Before querying this on any other buffering
+        backend, implement it there: a confident ``False`` over a non-empty
+        buffer is worse than no method at all.
         """
         return False
 
@@ -495,6 +503,81 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors at all.
+
+        **This is the opposite contract from** ``BaseKVStorage.is_empty`` and
+        the difference is not cosmetic. That one catches its errors and answers
+        ``True``; this one MUST answer ``True`` only when it positively read
+        the container and found nothing, and MUST raise otherwise. The reason
+        is the direction each answer is used in: the startup gate refuses a
+        deployment on ``True`` here, so an error reported as "empty" is a
+        false outage, while the same error on the source side merely skips a
+        check. Never borrow a KV implementation for this.
+
+        The same rule rules out ``get_by_ids`` as a substitute: every
+        server-backed implementation catches its transport errors, logs, and
+        returns an empty list, so a miss and an outage arrive as one value.
+
+        The default raises :class:`~lightrag.exceptions.StorageCapabilityError`
+        -- the fail-closed compatibility rule used by ``iter_labels`` and
+        ``iter_edges``. A backend that has not implemented this is one the gate
+        cannot question, which is where every backend stood before the gate
+        existed; it must never be read as an answer.
+
+        Returns:
+            ``True`` if the container holds no vectors, ``False`` if it holds
+            at least one.
+
+        Raises:
+            StorageCapabilityError: this backend cannot answer the question.
+            Exception: the container could not be read. The caller treats any
+                raise as "no evidence" and does not refuse on it.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support emptiness checks"
+        )
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this container holds vectors whose embedding model is unrecorded.
+
+        Answered from state ``initialize()`` already computed, so asking is
+        cheap enough for every startup. ``True`` means two things at once: the
+        container records no model, AND this process can name one -- a process
+        with no ``model_name`` has nothing to record and must answer ``False``,
+        or it would invite a caller to pay for evidence no one can act on.
+
+        The default is ``False``, which is the right answer for every backend
+        whose container NAME carries the model (Milvus, Qdrant, PostgreSQL):
+        there is no marker to adopt, and a second copy of a fact the name
+        already carries would only drift.
+
+        Read ``docs/design/VectorSpaceProvenance.md`` before changing what
+        counts as pending. In particular this must NOT report a container that
+        is merely empty: an empty container is adopted by the backend itself,
+        without evidence, because there are no vectors to misdescribe.
+        """
+        return False
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model over a container recording none.
+
+        Called by ``LightRAG.initialize_storages()`` only after a round-trip
+        probe has confirmed the stored vectors really came from this model.
+        Never call it on unexamined evidence: the recorded name is believed by
+        every later start, so a false one disables the gate permanently.
+
+        MUST NOT raise. A marker this process cannot write (a read-only
+        account, a denied ``collMod``, a full disk) leaves the container
+        exactly where it was -- unmarked, which is where every container was
+        before this feature existed. Returning ``False`` costs one more probe
+        at the next start; raising would turn a safety feature into an outage.
+
+        Returns:
+            Whether the container now records this process's embedding model.
+        """
+        return False
+
 
 def normalize_kv_create_time(value: Any) -> int:
     """Coerce a stored ``create_time`` into the int the KV contract promises.
@@ -665,6 +748,37 @@ class BaseKVStorage(StorageNameSpace, ABC):
         Returns:
             bool: True if storage contains no data, False otherwise
         """
+
+    def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row of this namespace, a page at a time.
+
+        The enumeration surface the configuration inventory consumes (see
+        *Enumeration, and what the inventory really costs* in
+        ``docs/design/ConfigurationStorage.md``). Rules for implementers:
+
+        * never materialize the whole namespace -- read ``page_size`` rows per
+          backend round trip and yield them as they arrive;
+        * yield rows in the same shape ``get_by_id`` returns, ``_id`` included;
+        * a row inserted or deleted while the scan runs may or may not be
+          seen -- callers get a best-effort snapshot, not isolation;
+        * raise on a backend failure rather than ending the stream early, so
+          a partial listing is never mistaken for a complete one.
+
+        The default raises ``StorageCapabilityError`` on first iteration. It
+        is NOT a hot-path API: a startup path must never scan a namespace.
+
+        Returns:
+            An async iterator over row dicts. ``page_size`` bounds the rows
+            fetched per round trip, not the total.
+        """
+
+        async def _unsupported() -> AsyncIterator[dict[str, Any]]:
+            raise StorageCapabilityError(
+                f"{type(self).__name__} does not support row enumeration"
+            )
+            yield {}  # pragma: no cover - makes this an async generator
+
+        return _unsupported()
 
 
 @dataclass

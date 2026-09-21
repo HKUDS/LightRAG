@@ -99,7 +99,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from lightrag.base import CURSOR_END, CURSOR_START, SourceConflictSummary
-from lightrag.constants import ENQUEUE_SERIALIZE_LOCK_NAMESPACE
+from lightrag.constants import DEFAULT_WORKING_DIR, ENQUEUE_SERIALIZE_LOCK_NAMESPACE
 from lightrag.exceptions import (
     SourceConflictPrimaryUnusableError,
     SourceConflictRepairCASError,
@@ -749,7 +749,7 @@ async def _async_main(args: argparse.Namespace) -> bool:
 
     initialize_share_data(workers=1)
     rag = LightRAG(
-        working_dir=os.getenv("WORKING_DIR", "./rag_storage"),
+        working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
         workspace=args.workspace,
         llm_model_func=_noop_llm,
         embedding_func=EmbeddingFunc(

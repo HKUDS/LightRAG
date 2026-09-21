@@ -15,6 +15,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
+# Whether a .env was loaded at startup. Distinct from "ORIGINAL_ENV_VALUES is
+# non-empty": a deployment whose .env carries only comments still ran a server
+# on the DEFAULTS, and those defaults decide where its records are.
+EXISTING_ENV_LOADED=0
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
@@ -103,6 +107,7 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
+  EXISTING_ENV_LOADED=0
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
   COMPOSE_SERVICE_IMAGE_OVERRIDES=()
@@ -179,6 +184,7 @@ load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
   if [[ -f "$env_file" ]]; then
+    EXISTING_ENV_LOADED=1
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
@@ -1130,7 +1136,7 @@ select_storage_backends() {
   local vector_default="NanoVectorDBStorage"
   local graph_default="NetworkXStorage"
   local doc_default="JsonDocStatusStorage"
-  local kv_storage vector_storage graph_storage doc_storage
+  local kv_storage vector_storage graph_storage doc_storage config_storage
 
   if [[ "$deployment_type" == "production" ]]; then
     kv_default="PGKVStorage"
@@ -1164,11 +1170,125 @@ select_storage_backends() {
   ENV_VALUES["LIGHTRAG_GRAPH_STORAGE"]="$graph_storage"
   ENV_VALUES["LIGHTRAG_DOC_STATUS_STORAGE"]="$doc_storage"
 
-  for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; do
+  # NOT a command substitution: ``select_config_storage`` writes to
+  # ``ENV_VALUES``, and a subshell would discard that -- the generated .env
+  # would come out without the key the whole function exists to add.
+  select_config_storage "$kv_storage"
+  config_storage="$SELECTED_CONFIG_STORAGE"
+
+  for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage" \
+    "$config_storage"; do
     if [[ -n "${STORAGE_DB_TYPES[$storage]:-}" ]]; then
       REQUIRED_DB_TYPES["${STORAGE_DB_TYPES[$storage]}"]=1
     fi
   done
+}
+
+config_storage_is_admitted() {
+  local candidate="$1" option
+  for option in "${CONFIG_STORAGE_OPTIONS[@]}"; do
+    [[ "$option" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
+select_config_storage() {
+  # The configuration storage is its own category, and this function exists to
+  # answer ONE question: is the container about to move, and does the operator
+  # know? Moving it without migrating the baseline rows leaves them where
+  # nothing reads them -- they then read as ABSENT, which is the one answer
+  # that lets a start bootstrap over vectors nobody probed.
+  #
+  # There are three ways a rerun can move it -- dropping an explicit
+  # selection, following a KV backend that changed, and falling through to the
+  # generic prompt when the new KV backend is not admitted -- so the answer is
+  # computed ONCE, as ``records_in``, and every branch below reads it rather
+  # than re-deriving it. See docs/design/ConfigurationStorage.md.
+  #
+  # The answer comes back in ``SELECTED_CONFIG_STORAGE`` rather than on stdout
+  # so the caller does not need a command substitution: this function also
+  # writes ``ENV_VALUES``, and a subshell would throw that away.
+  local kv_storage="$1"
+  local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local previous_config="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+  local records_in="" default_choice="JsonKVStorage"
+
+  # Where the baselines are NOW, as far as the previous .env can say: the
+  # explicit selection it carried, or the KV backend an implicit one followed.
+  # Empty on a first run, and empty when the previous backend is one the
+  # category never admitted -- in both cases no admitted container holds
+  # records, so there is nothing to strand.
+  # A previous .env that names no KV backend is not a deployment without one:
+  # the server has been running on its default, and the records are in THAT
+  # container. Treating the omission as "nothing to strand" moved them on the
+  # first rerun that picked an admitted backend.
+  # A previous .env that names no KV backend is not a deployment without one:
+  # the server has been running on its default, and the records are in THAT
+  # container. Treating the omission as "nothing to strand" moved them on the
+  # first rerun that picked an admitted backend.
+  if [[ -z "$previous_kv" && "$EXISTING_ENV_LOADED" == "1" ]]; then
+    previous_kv="$DEFAULT_KV_STORAGE"
+  fi
+
+  if [[ -n "$previous_config" ]]; then
+    config_storage_is_admitted "$previous_config" && records_in="$previous_config"
+  elif [[ -n "$previous_kv" ]]; then
+    config_storage_is_admitted "$previous_kv" && records_in="$previous_kv"
+  fi
+  [[ -n "$records_in" ]] && default_choice="$records_in"
+
+  # An EXPLICIT selection already in .env is kept, even when the KV backend
+  # would be admitted: changing it is an explicit edit, not a side effect of
+  # re-running this wizard.
+  if [[ -n "$existing" ]] && config_storage_is_admitted "$existing"; then
+    SELECTED_CONFIG_STORAGE="$existing"
+    if [[ "$existing" != "$kv_storage" ]]; then
+      log_info "Keeping LIGHTRAG_CONFIG_STORAGE=$existing (configuration is" \
+        "its own category; edit .env to move it, and rebuild afterwards --" \
+        "the baseline rows are not migrated)"
+    fi
+    return 0
+  fi
+
+  if [[ -z "$existing" ]] && config_storage_is_admitted "$kv_storage"; then
+    if [[ -n "$records_in" && "$records_in" != "$kv_storage" ]]; then
+      # Nothing is set, so the selection FOLLOWS the KV backend -- and that is
+      # only safe while the KV backend does not MOVE.
+      log_warn "The configuration storage follows LIGHTRAG_KV_STORAGE, which" \
+        "is changing to $kv_storage. The embedding baselines are in" \
+        "$records_in and are NOT migrated; leaving them there keeps them" \
+        "readable, and moving them makes the next start re-establish them" \
+        "from evidence."
+      SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
+        "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
+      return 0
+    fi
+    # First run, or the KV backend already holds the records: leave it unset
+    # so the selection follows it, which is where they already are.
+    SELECTED_CONFIG_STORAGE="$kv_storage"
+    return 0
+  fi
+
+  # The new KV backend cannot hold configuration, or the explicit selection
+  # is not one the category admits. Either way the operator has to name one --
+  # and the default is still the backend the records are in, because a KV
+  # backend that is leaving the category does not take them with it.
+  if [[ -n "$existing" ]]; then
+    log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
+      "storage backend; choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  else
+    log_warn "$kv_storage cannot hold the configuration storage (the embedding" \
+      "baselines); choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  fi
+  if [[ -n "$records_in" ]]; then
+    log_warn "The baselines are in $records_in and are NOT migrated; keeping" \
+      "that backend leaves them readable."
+  fi
+  SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
+    "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
+  ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
 }
 
 initialize_default_storage_backends() {
@@ -2662,7 +2782,7 @@ env_storage_flow() {
 
   log_step "Storage backend selection"
   select_storage_backends "custom"
-  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-} config=${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-(follows kv)}"
   clear_unused_storage_deployment_markers
 
   log_step "Database configuration"
@@ -2966,7 +3086,7 @@ validate_ssl_runtime_path() {
 validate_env_file() {
   local env_file="${REPO_ROOT}/.env"
   local errors=0
-  local kv vector graph doc_status
+  local kv vector graph doc_status config_storage
   local runtime_target
   local storage db_type
   local -A referenced_db_types=()
@@ -2981,9 +3101,12 @@ validate_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  # Unset, the configuration storage follows the KV backend; that default is
+  # what keeps an existing deployment's records where they already are.
+  config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-$kv}"
   runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
 
-  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+  for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
     if [[ -z "$storage" ]]; then
       continue
     fi
@@ -3002,6 +3125,23 @@ validate_env_file() {
     return 1
   fi
 
+  # The configuration storage is its own category, and the server refuses a
+  # selection outside it BY NAME at startup. Validation that passes such a
+  # file is worse than no validation: it tells the operator the environment
+  # is good and the server then refuses it.
+  if ! config_storage_is_admitted "$config_storage"; then
+    if [[ -n "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+      format_error \
+        "LIGHTRAG_CONFIG_STORAGE=$config_storage is not a configuration storage backend" \
+        "Set it to one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+    else
+      format_error \
+        "LIGHTRAG_CONFIG_STORAGE is unset, so it follows LIGHTRAG_KV_STORAGE=$kv, which cannot hold the configuration storage" \
+        "Set LIGHTRAG_CONFIG_STORAGE to one of: ${CONFIG_STORAGE_OPTIONS[*]} (the records already in $kv are not migrated)"
+    fi
+    errors=1
+  fi
+
   if ! validate_mongo_vector_storage_config \
     "$vector" \
     "${ENV_VALUES[MONGO_URI]:-}" \
@@ -3009,7 +3149,8 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
+  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status" \
+    "$config_storage"; then
     errors=1
   fi
 
@@ -3106,6 +3247,7 @@ security_check_env_file() {
   local vector=""
   local graph=""
   local doc_status=""
+  local config_storage=""
   local storage=""
   local db_type=""
   local opensearch_in_use="no"
@@ -3126,12 +3268,13 @@ security_check_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-$kv}"
   if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
     whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
     whitelist_is_set="yes"
   fi
 
-  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+  for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
     if [[ -z "$storage" ]]; then
       continue
     fi

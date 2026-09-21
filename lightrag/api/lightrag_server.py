@@ -80,7 +80,7 @@ from lightrag.api.ui_customization import (
     resolve_ui_customization_snapshot,
 )
 
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.utils import logger, set_verbose_debug, warn_about_workspace_overrides
 from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
@@ -2534,6 +2534,8 @@ def create_app(args):
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
+            config_storage=args.config_storage,
+            config_dir=args.config_dir,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -3010,6 +3012,11 @@ def create_app(args):
                         "doc_status_storage": args.doc_status_storage,
                         "graph_storage": args.graph_storage,
                         "vector_storage": args.vector_storage,
+                        # The RESOLVED selection, not the raw setting: unset
+                        # follows kv_storage, and an operator checking where
+                        # the baselines live wants the answer, not the input.
+                        "config_storage": getattr(rag, "config_storage", None),
+                        "config_dir": getattr(rag, "config_dir", None),
                         "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                         "enable_llm_cache": args.enable_llm_cache,
                         "vlm_process_enable": args.vlm_process_enable,
@@ -3439,6 +3446,7 @@ def main():
 
     # Configure logging before parsing args
     configure_logging()
+    warn_about_workspace_overrides()
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
 
