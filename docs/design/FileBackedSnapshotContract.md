@@ -508,6 +508,29 @@ in-memory state may be stale relative to disk. What a replay deliberately does
 *not* restore is a row another writer has since superseded with a strictly newer
 one.
 
+### Deleting vector snapshots
+
+Nano and Faiss attempt each removal directly and ignore only
+`FileNotFoundError`. An `exists()` preflight is not a deletion verdict: a
+permission failure during its stat can look like absence and would skip the
+removal while reporting a successful drop. All other removal errors keep the
+existing failure path, without clearing buffers or publishing a successful
+reset. This includes Windows sharing violations and read-only attributes;
+release the conflicting handle or correct the attribute, then retry.
+
+Faiss still deletes the index before the metadata. Failure on the second file
+is a partial deletion, reported as an error, not rolled back. Marker cleanup
+is best-effort after both data files are gone: an orphan marker produces a
+warning without changing the completed data deletion to a failure. A later
+successful drop retries its removal. Post-deletion notification failures retain
+the existing success semantics documented by each backend's `drop()`.
+
+`tests/kg/test_vector_drop_errors.py` covers hidden existence errors and retry
+semantics. `.github/workflows/windows-vector-drop.yml` additionally exercises
+real Windows handles without `FILE_SHARE_DELETE`, read-only files and Faiss
+partial deletion. The native tests require no second account or assumed ACL
+layout, and their JUnit report must contain the named cases without skips.
+
 ### Non-pipeline write paths
 
 The pipeline's `busy` gate serializes `upsert` / `delete` /
