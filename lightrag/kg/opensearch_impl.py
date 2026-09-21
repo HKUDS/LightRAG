@@ -1206,8 +1206,15 @@ class OpenSearchKVStorage(BaseKVStorage):
         cannot tell an empty namespace from a dropped one, and the base
         ``iter_rows`` contract forbids presenting a partial listing as a
         complete one.
+
+        A FAILED REFRESH raises for that same reason, which is why this one
+        asks for the strict variant: the refresh above is not a courtesy here,
+        it is what makes the frozen view complete, so swallowing its failure
+        would hand back a clean empty scan over rows that are already durable.
+        The startup source verdict reads a clean end as confirmed absence and
+        writes a baseline from it.
         """
-        await self._refresh_for_search()
+        await self._refresh_for_search(strict=True)
         if not self._index_ready:
             raise StorageControlPlaneError(
                 f"[{self.workspace}] {self.namespace} index "
@@ -1791,7 +1798,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         async with self._flush_lock:
             return _answer()
 
-    async def _refresh_for_search(self) -> None:
+    async def _refresh_for_search(self, *, strict: bool = False) -> None:
         """Publish prior writes to a search-based read of this index.
 
         Call this from every reader that goes through ``search`` / ``count``
@@ -1807,6 +1814,16 @@ class OpenSearchKVStorage(BaseKVStorage):
         caller the pre-refresh view -- what every one of these readers got
         unconditionally before. It must never turn a read into an error.
 
+        ``strict=True`` is the exception, and only a scan that must not
+        mistake staleness for absence may ask for it: the failure is raised
+        instead. A reader whose empty result would be read as CONFIRMED empty
+        -- ``_iter_raw_docs`` behind the base ``iter_rows`` contract -- cannot
+        accept the pre-refresh view, because rows already durable but not yet
+        in a searchable segment are indistinguishable from no rows at all, and
+        the startup that reads that verdict writes a baseline from it. A
+        missing index is NOT raised here even then: it is recorded, and the
+        caller refuses on its own readiness check with the better message.
+
         It must not settle the commit path's refresh debt either: those
         counters record what this storage's own commits owe, and a best-effort
         call must not retire an obligation on their behalf.
@@ -1819,6 +1836,13 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
+            if strict:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] Refresh before a scan of "
+                    f"{self._index_name} failed, so a scan cannot tell rows "
+                    f"that are durable but not yet searchable from no rows at "
+                    f"all: {e}"
+                ) from e
             logger.warning(
                 f"[{self.workspace}] Refresh before a search read of "
                 f"{self._index_name} failed; reading a possibly stale view: {e}"
