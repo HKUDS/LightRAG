@@ -1267,3 +1267,98 @@ async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
     # Option 2 rebuilds entities + relationships only, so only those are
     # recovered; chunks stays refused until its own rebuild.
     tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
+
+
+# Corruption is recoverable only after confirmation and a successful backup.
+def _corrupt_target(tmp_path):
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    path = tmp_path / "vdb_entities.json"
+    path.write_bytes(b'{"matrix": "truncated')
+    error = CorruptStorageSnapshotError(
+        backend="NanoVectorDBStorage", container=str(path), detail="invalid JSON"
+    )
+    vdb = MockVDB()
+    vdb.initialize = AsyncMock(side_effect=[error, None])
+    vdb.drop = AsyncMock(return_value={"status": "success"})
+    return path, error, vdb
+
+
+@pytest.mark.asyncio
+async def test_corrupt_setup_preserves_snapshot_until_confirmed(tmp_path, monkeypatch):
+    path, error, vdb = _corrupt_target(tmp_path)
+    original = path.read_bytes()
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+    assert await _setup_with(tool, monkeypatch) is True
+    assert tool.corrupt_vdbs == {"entities": error}
+    vdb.drop.assert_not_awaited()
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+    async def drop():
+        backups = list(tmp_path.glob("*.corrupt-*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
+        path.unlink()
+        return {"status": "success"}
+
+    vdb.drop.side_effect = drop
+    await tool.recover_incompatible(["entities"])
+    assert tool.corrupt_vdbs == {}
+    assert tool.incompatible_vdbs == {}
+    assert vdb.initialize.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_corrupt_backup_failure_never_drops_original(tmp_path, monkeypatch):
+    path, error, vdb = _corrupt_target(tmp_path)
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+    tool.corrupt_vdbs = {"entities": error}
+    tool.incompatible_vdbs = {"entities": str(error)}
+    original = path.read_bytes()
+
+    def fail_fsync(fd):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rebuild_vdb.os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="disk full"):
+        await tool.recover_incompatible(["entities"])
+    vdb.drop.assert_not_awaited()
+    assert path.read_bytes() == original
+    assert "entities" in tool.corrupt_vdbs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["source", "cancel"])
+async def test_corrupt_run_does_not_recover_before_source_check_and_confirmation(
+    tmp_path, monkeypatch, failure
+):
+    path, error, vdb = _corrupt_target(tmp_path)
+    original = path.read_bytes()
+    tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    tool.entities_vdb = vdb
+    tool.corrupt_vdbs = {"entities": error}
+    tool.incompatible_vdbs = {"entities": str(error)}
+    tool.print_source_counts = AsyncMock(
+        side_effect=OSError("source unreadable") if failure == "source" else None
+    )
+    monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: False)
+    tool.recover_incompatible = AsyncMock()
+    assert await tool.run() is (failure == "cancel")
+    tool.recover_incompatible.assert_not_awaited()
+    vdb.drop.assert_not_awaited()
+    assert path.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_corrupt_unselected_target_is_not_backed_up_or_dropped(tmp_path):
+    path, error, vdb = _corrupt_target(tmp_path)
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+    tool.corrupt_vdbs = {"entities": error}
+    tool.incompatible_vdbs = {"entities": str(error)}
+    await tool.recover_incompatible(["chunks"])
+    vdb.drop.assert_not_awaited()
+    assert path.exists()
+    assert list(tmp_path.glob("*.corrupt-*")) == []

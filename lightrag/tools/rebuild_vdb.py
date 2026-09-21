@@ -25,10 +25,11 @@ stops the server serving an empty or foreign index, and it is the condition
 this tool exists to clear. So the three vector targets are initialized
 individually and a typed refusal is *recorded* rather than aborting the run;
 the rebuild then opens with ``drop()`` on the refused container, which
-re-provisions it in the current embedding space, and re-initializes it. Only
-the typed refusal is tolerated: a cluster outage, a bad credential or a
-corrupt file still aborts, because dropping a vector storage on a false
-positive destroys data the graph may not be able to rebuild.
+re-provisions it in the current embedding space, and re-initializes it. A typed
+corrupt Nano snapshot also permits entering the menu, but is backed up before
+any confirmed rebuild drops it. Source checks and user confirmation
+precede recovery; normal startup still refuses corruption. Other failures,
+including outages and bad credentials, abort without dropping anything.
 
 The authoritative SOURCES (graph storage and the ``text_chunks`` KV store) keep
 the server-identical init path and still abort the run on any failure -- they
@@ -64,6 +65,8 @@ vectors live in exactly the same embedding space.
 import asyncio
 import os
 import sys
+import shutil
+import tempfile
 import time
 from typing import Any, Callable, Dict, List
 
@@ -90,6 +93,7 @@ from lightrag.config_store import (
 )
 from lightrag.exceptions import (
     ConfigurationStorageError,
+    CorruptStorageSnapshotError,
     ReferencesIntactFlushError,
     StorageCapabilityError,
     VectorSpaceMismatchError,
@@ -168,6 +172,31 @@ async def _drop_vdb(vdb, label: str) -> None:
     if not isinstance(drop_result, dict) or drop_result.get("status") != "success":
         raise RuntimeError(f"Failed to drop {label} vector storage: {drop_result}")
     logger.info(f"Dropped {label} vector storage")
+
+
+def backup_corrupt_snapshot(path: str) -> str:
+    """Preserve a corrupt snapshot before a confirmed offline rebuild.
+
+    Copy to an exclusive sibling and flush it before the caller may drop the
+    original. Any error aborts recovery with the original untouched. Backups
+    are never automatically deleted, including after failed rebuilds.
+    """
+    fd, backup = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".corrupt-",
+        dir=os.path.dirname(os.path.abspath(path)),
+    )
+    with os.fdopen(fd, "wb") as destination:
+        with open(path, "rb") as source:
+            shutil.copyfileobj(source, destination)
+        destination.flush()
+        os.fsync(destination.fileno())
+    if os.name != "nt":
+        directory = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    return backup
 
 
 async def clear_vector_space_refusal(vdb, label: str) -> None:
@@ -601,8 +630,8 @@ async def check_vdb_consistency(
     misreported as missing.
 
     ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
-    storage refused to attach because its container holds another embedding
-    space's vectors, mapped to the refusal message. Such a target is NOT
+    storage refused to attach because of incompatible vectors or a corrupt
+    snapshot, mapped to the refusal message. Such a target is NOT
     probed: its storage cannot answer, and probing it anyway would report
     every graph record as missing -- a true statement about that container
     that reads as a routine drift report and buries the one fact that matters,
@@ -717,11 +746,11 @@ class RebuildTool:
         self.workspace = ""
         self.batch_size = DEFAULT_BATCH_SIZE
         self.storage_names: Dict[str, str] = {}
-        # Vector targets whose initialize() refused with
-        # VectorSpaceMismatchError, label -> refusal message. Cleared per
-        # target by clear_vector_space_refusal() once its container has been
-        # dropped and re-provisioned in the current embedding space.
+        # Vector targets that refused initialization, label -> diagnostic.
+        # Corrupt Nano targets additionally retain the typed error for backup.
+        # Entries are cleared after confirmed recovery reinitializes a target.
         self.incompatible_vdbs: Dict[str, str] = {}
+        self.corrupt_vdbs: Dict[str, CorruptStorageSnapshotError] = {}
 
     # ------------------------------------------------------------------
     # Configuration / setup
@@ -933,13 +962,19 @@ class RebuildTool:
             for storage in (self.configuration_storage, self.graph, self.text_chunks):
                 await storage.initialize()
             # Vector targets, one at a time, tolerating ONLY the typed
-            # embedding-space refusal. This is the condition the tool exists to
-            # clear, so aborting on it would leave the operator with no
-            # sanctioned way out; every other failure still aborts, because
-            # dropping a vector storage on a false positive destroys data.
+            # embedding-space refusal or a typed corrupt Nano snapshot.
+            # Neither is deleted during setup. Corrupt files require a backup
+            # after source checks and explicit rebuild confirmation.
             for label, vdb in self.vector_targets().items():
                 try:
                     await vdb.initialize()
+                except CorruptStorageSnapshotError as e:
+                    # Only Nano's local snapshot has the backup protocol below.
+                    if e.backend != "NanoVectorDBStorage":
+                        raise
+                    self.corrupt_vdbs[label] = e
+                    self.incompatible_vdbs[label] = str(e)
+                    print(f"⚠️  {label} snapshot is corrupt: {e}")
                 except VectorSpaceMismatchError as e:
                     self.incompatible_vdbs[label] = str(e)
                     print(f"⚠️  {label} vector storage refused to attach: {e}")
@@ -965,8 +1000,8 @@ class RebuildTool:
             return False
         if self.incompatible_vdbs:
             print(
-                f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) hold "
-                f"vectors from a different embedding space:{RESET}"
+                f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) cannot attach: "
+                f"incompatible vectors or corrupt snapshots{RESET}"
             )
             for label in self.incompatible_vdbs:
                 print(f"    - {label}")
@@ -1128,6 +1163,8 @@ class RebuildTool:
     async def recover_incompatible(self, labels: List[str]) -> None:
         """Drop + re-initialize each named target that refused to attach.
 
+        The caller must check sources and obtain explicit confirmation first.
+        Corrupt Nano snapshots are backed up before any destructive action.
         Runs immediately before the rebuild of those targets, so a refused
         container is destroyed only once the operator has confirmed the
         rebuild. The rebuild helpers drop again straight after; ``drop()`` is
@@ -1138,7 +1175,15 @@ class RebuildTool:
         for label in labels:
             if label not in self.incompatible_vdbs:
                 continue
-            await clear_vector_space_refusal(targets[label], label)
+            if label in self.corrupt_vdbs:
+                error = self.corrupt_vdbs[label]
+                backup = backup_corrupt_snapshot(error.container)
+                print(f"  ✓ {label}: corrupt snapshot preserved at {backup}")
+                await _drop_vdb(targets[label], label)
+                await targets[label].initialize()
+                del self.corrupt_vdbs[label]
+            else:
+                await clear_vector_space_refusal(targets[label], label)
             del self.incompatible_vdbs[label]
             print(f"  ✓ {label}: incompatible container dropped and re-provisioned")
 
@@ -1230,15 +1275,14 @@ class RebuildTool:
         print("=" * 60)
         if incompatible:
             print(
-                f"\n{BOLD_RED}✗ Embedding space mismatch — these vector storages were "
+                f"\n{BOLD_RED}✗ Vector storage refused to attach — these storages were "
                 f"not probed:{RESET}"
             )
             for label, message in incompatible.items():
                 print(f"    - {label}: {message}")
             print(
-                "\n  Their stored vectors belong to a different embedding model or\n"
-                "  dimension, so 'missing' counts for them would say nothing about\n"
-                "  drift — every record is unreachable by construction. A rebuild\n"
+                "\n  These targets are incompatible or corrupt, so missing counts\n"
+                "  cannot diagnose drift. A rebuild\n"
                 "  (menu options 2-4) is required, not optional."
             )
         print(f"  Graph entities:    {report['graph_entities']:,}")
@@ -1285,6 +1329,10 @@ class RebuildTool:
         print("\nAll affected records will be re-embedded, which may incur")
         print("significant embedding API cost and time on large datasets.")
         print("If interrupted, simply re-run this tool (sources are read-only).")
+        if self.corrupt_vdbs:
+            print("Selected corrupt snapshots will be backed up before deletion.")
+            print("Verify the source counts and source integrity before proceeding;")
+            print("a readable source is not proof that it contains every lost row.")
         confirm = input("\nProceed with the rebuild? (yes/no): ").strip().lower()
         if confirm != "yes":
             print("\n✓ Rebuild cancelled")

@@ -221,6 +221,13 @@ cluster outage, an expired credential or a corrupt file. Nothing can tolerate
 this condition safely until it is distinguishable from everything else that can
 go wrong at attach time.
 
+Corrupt Nano snapshots have a separate typed refusal,
+`CorruptStorageSnapshotError`. The offline tool permits recovery only after
+source checks and explicit confirmation, and flushes a retained backup before
+it drops the corrupt original. This never authorizes dropping on a generic
+initialization error. See `FileBackedSnapshotContract.md` for backup and retry
+semantics.
+
 Two rules bind every raiser:
 
 1. **Raise before the first storage mutation.** The refusal must leave the
