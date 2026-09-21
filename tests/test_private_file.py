@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -414,16 +415,22 @@ def test_an_unprivileged_identity_cannot_read_it_after_the_handle_closes(tmp_pat
     # Probe and verdict live beside the control file rather than in the
     # runner's profile, so the restricted token can reach both.
     command = f'"{sys.executable}" "{probe}" "{control}" "{target}" "{verdict}"'
-    subprocess.run(
+    launch = subprocess.run(
         ["runas", "/trustlevel:0x20000", command],
         capture_output=True,
         text=True,
         timeout=120,
     )
+    # runas LAUNCHES and returns; the probe runs on its own, so its exit is
+    # not this call's exit. Wait for the verdict rather than for the launcher.
+    deadline = time.monotonic() + 60
+    while not verdict.exists() and time.monotonic() < deadline:
+        time.sleep(0.5)
 
     assert verdict.exists(), (
         "the restricted probe never wrote its verdict, so nothing was "
-        "verified -- check that runas launched it at all"
+        f"verified.\nrunas exited {launch.returncode}\n"
+        f"stdout: {launch.stdout!r}\nstderr: {launch.stderr!r}"
     )
     outcome = json.loads(verdict.read_text(encoding="utf-8"))
     assert outcome["control"] == "opened", (
