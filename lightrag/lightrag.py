@@ -46,6 +46,7 @@ from lightrag.prompt import (
 )
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
+    DEFAULT_WORKING_DIR,
     DEFAULT_MAX_GLEANING,
     DEFAULT_MAX_EXTRACTION_RECORDS,
     DEFAULT_MAX_EXTRACTION_ENTITIES,
@@ -744,7 +745,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # Directory
     # ---
 
-    working_dir: str = field(default="./rag_storage")
+    working_dir: str = field(default=DEFAULT_WORKING_DIR)
     """Directory where cache and temporary files are stored."""
 
     # Storage

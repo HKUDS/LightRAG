@@ -5,6 +5,7 @@ from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.utils import setup_logger, get_env_value
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_WORKING_DIR,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
 )
@@ -111,7 +112,7 @@ def resolved_working_dir() -> str:
     """
     if working_dir:
         return working_dir
-    return get_env_value("WORKING_DIR", "./rag_storage")
+    return get_env_value("WORKING_DIR", DEFAULT_WORKING_DIR)
 
 
 def on_starting(server):
