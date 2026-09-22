@@ -2088,8 +2088,10 @@ confidently wrong neighbours. Backends whose container name encodes the model
 (Milvus, Qdrant, PostgreSQL, and OpenSearch when the embedding function has a
 model name) land the change on a separate container, so the previous model's
 vectors stay where they are. OpenSearch copies an existing unsuffixed index
-into that container once, when the index belongs to this workspace and the
-recorded model and dimension do not disagree. See
+into that container when the index belongs to this workspace and the recorded
+model and dimension do not disagree, and repeats the copy until the suffixed
+index has at least as many documents as the legacy index. Coverage is a
+document count, not an id set; see
 [`docs/design/VectorSpaceProvenance.md`](design/VectorSpaceProvenance.md) for
-which backend does what, and `lightrag/tools/README_REBUILD_VDB.md` for the
-tool.
+that residue and for which backend does what, and
+`lightrag/tools/README_REBUILD_VDB.md` for the tool.

@@ -6886,10 +6886,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 body={
                     "source": {"index": legacy_index},
                     "dest": {"index": self._index_name},
+                    # Body field. POST /_reindex rejects conflicts as a query param.
+                    "conflicts": "proceed",
                 },
                 refresh=True,
                 wait_for_completion=True,
-                params={"conflicts": "proceed", "request_timeout": timeout},
+                params={"request_timeout": timeout},
             )
         except OpenSearchException as exc:
             await self._discard_partial_migration()
@@ -6962,10 +6964,6 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
         if dest_exists:
             dest_count = await self._index_doc_count(self._index_name)
-            # Any non-empty count is not "already migrated". A killed reindex
-            # leaves a short index, and deleting it is not required before
-            # the retry: document _ids are idempotent. The legacy index is
-            # the only complete copy until this destination covers it.
             if dest_count >= source_count:
                 logger.warning(
                     f"[{self.workspace}] Both '{self._index_name}' "
@@ -6974,6 +6972,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     f"'{legacy}' after verifying the migration."
                 )
                 return False
+            # Reindex in place. Document _ids are idempotent, so a short
+            # destination is not deleted before the retry.
         else:
             await self._create_serving_index()
 

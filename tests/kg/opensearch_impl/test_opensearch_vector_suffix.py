@@ -142,6 +142,10 @@ class Cluster:
     async def reindex(
         self, *, body, params=None, refresh=None, wait_for_completion=None, **kwargs
     ):
+        # OpenSearch reads conflicts from the reindex body. A query param is
+        # rejected as unrecognized before any document is copied.
+        assert body["conflicts"] == "proceed"
+        assert "conflicts" not in (params or {})
         source = body["source"]["index"]
         dest = body["dest"]["index"]
         self.reindex_calls.append((source, dest))
