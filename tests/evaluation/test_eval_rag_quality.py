@@ -1,8 +1,11 @@
+import asyncio
 import builtins
 import json
 
+import pandas as pd
 import pytest
 
+from lightrag.evaluation import eval_rag_quality as module
 from lightrag.evaluation.eval_rag_quality import RAGEvaluator
 
 pytestmark = pytest.mark.offline
@@ -40,28 +43,59 @@ _METRIC_COLUMNS = (
 )
 
 
-async def _evaluate_one_case(monkeypatch, scores: dict[str, float]) -> dict:
-    """Run evaluate_single_case with RAGAS stubbed to return ``scores``."""
-    import asyncio
+def _patch_ragas_stack(monkeypatch, fake_evaluate):
+    """Patch every name the optional `ragas`/`tqdm` imports leave undefined.
 
-    import pandas as pd
-
-    from lightrag.evaluation import eval_rag_quality as module
+    Without the `evaluation` extra installed (as in offline CI), the
+    module-level try/except only sets Dataset/evaluate/LangchainLLMWrapper
+    to None on ImportError — tqdm and the four metric classes stay
+    undefined names, so evaluate_single_case raises NameError before ever
+    reaching the logic under test. Patching only Dataset/evaluate is not
+    enough to make these tests independent of the optional dependency.
+    """
 
     class _FakeDataset:
         @staticmethod
         def from_dict(data):
             return data
 
+    class _FakeMetric:
+        """Stand-in for a RAGAS metric class: only ever instantiated."""
+
+    class _FakeTqdm:
+        """Stand-in for tqdm.auto.tqdm: only .close() is exercised."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    # Dataset/evaluate always exist (the except branch sets them to None),
+    # but tqdm and the four metric classes are never assigned at all when
+    # RAGAS_AVAILABLE is False — plain setattr would itself raise
+    # AttributeError, so those need raising=False.
+    monkeypatch.setattr(module, "Dataset", _FakeDataset)
+    monkeypatch.setattr(module, "evaluate", fake_evaluate)
+    monkeypatch.setattr(module, "tqdm", _FakeTqdm, raising=False)
+    monkeypatch.setattr(module, "Faithfulness", _FakeMetric, raising=False)
+    monkeypatch.setattr(module, "AnswerRelevancy", _FakeMetric, raising=False)
+    monkeypatch.setattr(module, "ContextRecall", _FakeMetric, raising=False)
+    monkeypatch.setattr(module, "ContextPrecision", _FakeMetric, raising=False)
+
+
+async def fake_generate_rag_response(question, client):
+    return {"answer": "an answer", "contexts": ["a context"]}
+
+
+async def _evaluate_one_case(monkeypatch, scores: dict[str, float]) -> dict:
+    """Run evaluate_single_case with RAGAS stubbed to return ``scores``."""
+
     class _FakeResults:
         def to_pandas(self):
             return pd.DataFrame([{name: scores[name] for name in _METRIC_COLUMNS}])
 
-    async def fake_generate_rag_response(question, client):
-        return {"answer": "an answer", "contexts": ["a context"]}
-
-    monkeypatch.setattr(module, "Dataset", _FakeDataset)
-    monkeypatch.setattr(module, "evaluate", lambda **kwargs: _FakeResults())
+    _patch_ragas_stack(monkeypatch, lambda **kwargs: _FakeResults())
 
     evaluator = object.__new__(RAGEvaluator)
     evaluator.eval_llm = None
@@ -121,3 +155,55 @@ def test_benchmark_stats_do_not_average_failed_cases_into_the_ragas_score():
     assert stats["success_rate"] == 50.0
     assert stats["average_metrics"]["ragas_score"] == 0.8
     assert stats["min_ragas_score"] == 0.8
+
+
+def test_benchmark_stats_all_failed_still_has_the_success_path_keys():
+    """Regression test: previously this branch omitted average_metrics,
+    min_ragas_score and max_ragas_score, and run() reads them
+    unconditionally — see test_run_completes_when_every_case_is_all_nan."""
+    evaluator = object.__new__(RAGEvaluator)
+    failed = {"error": "boom", "metrics": {}, "ragas_score": 0}
+
+    stats = evaluator._calculate_benchmark_stats([failed])
+
+    assert stats["successful_tests"] == 0
+    assert stats["failed_tests"] == 1
+    assert stats["average_metrics"] == {
+        "faithfulness": 0.0,
+        "answer_relevance": 0.0,
+        "context_recall": 0.0,
+        "context_precision": 0.0,
+        "ragas_score": 0.0,
+    }
+    assert stats["min_ragas_score"] == 0
+    assert stats["max_ragas_score"] == 0
+
+
+async def test_run_completes_when_every_case_is_all_nan(tmp_path, monkeypatch):
+    """Regression test for the run() KeyError when every case fails.
+
+    Before the fix, an all-NaN RAGAS result made every case fail, which
+    made _calculate_benchmark_stats omit average_metrics / min_ragas_score
+    / max_ragas_score, and run() reads those keys unconditionally.
+    """
+
+    class _AllNanResults:
+        def to_pandas(self):
+            return pd.DataFrame([dict.fromkeys(_METRIC_COLUMNS, NAN)])
+
+    _patch_ragas_stack(monkeypatch, lambda **kwargs: _AllNanResults())
+    monkeypatch.setenv("EVAL_MAX_CONCURRENT", "1")
+
+    evaluator = object.__new__(RAGEvaluator)
+    evaluator.eval_llm = None
+    evaluator.eval_embeddings = None
+    evaluator.results_dir = tmp_path
+    evaluator.test_cases = [{"question": "q", "ground_truth": "gt", "project": "p"}]
+    evaluator.generate_rag_response = fake_generate_rag_response
+
+    summary = await evaluator.run()
+
+    stats = summary["benchmark_stats"]
+    assert stats["successful_tests"] == 0
+    assert stats["failed_tests"] == 1
+    assert stats["average_metrics"]["ragas_score"] == 0.0

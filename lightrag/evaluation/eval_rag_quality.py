@@ -112,6 +112,17 @@ def _is_nan(value: Any) -> bool:
     return isinstance(value, float) and math.isnan(value)
 
 
+#: Metric names averaged in benchmark stats, shared so the all-failed and
+#: has-successes branches of _calculate_benchmark_stats agree on the keys.
+_METRIC_NAMES = (
+    "faithfulness",
+    "answer_relevance",
+    "context_recall",
+    "context_precision",
+    "ragas_score",
+)
+
+
 class RAGEvaluator:
     """Evaluate RAG system quality using RAGAS metrics"""
 
@@ -794,22 +805,25 @@ class RAGEvaluator:
         failed_tests = total_tests - successful_tests
 
         if not valid_results:
+            # Every case failed (e.g. an all-NaN RAGAS result, or every RAG
+            # call raised). Keep the same keys the success path returns —
+            # zeroed rather than omitted — so callers like run() can read
+            # average_metrics / min_ragas_score / max_ragas_score
+            # unconditionally instead of branching on whether anything
+            # succeeded.
             return {
                 "total_tests": total_tests,
                 "successful_tests": 0,
                 "failed_tests": failed_tests,
                 "success_rate": 0.0,
+                "average_metrics": dict.fromkeys(_METRIC_NAMES, 0.0),
+                "min_ragas_score": 0,
+                "max_ragas_score": 0,
             }
 
         # Calculate averages for each metric (handling NaN values correctly)
         # Track both sum and count for each metric to handle NaN values properly
-        metrics_data = {
-            "faithfulness": {"sum": 0.0, "count": 0},
-            "answer_relevance": {"sum": 0.0, "count": 0},
-            "context_recall": {"sum": 0.0, "count": 0},
-            "context_precision": {"sum": 0.0, "count": 0},
-            "ragas_score": {"sum": 0.0, "count": 0},
-        }
+        metrics_data = {name: {"sum": 0.0, "count": 0} for name in _METRIC_NAMES}
 
         for result in valid_results:
             metrics = result.get("metrics", {})
