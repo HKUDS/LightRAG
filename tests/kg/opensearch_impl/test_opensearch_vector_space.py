@@ -1,10 +1,11 @@
 """Embedding-space provenance on the OpenSearch vector index.
 
-The index name on this backend carries no model information, so an operator who
-swaps to a *different model of the same dimension* silently keeps querying the
-previous model's vectors — confidently wrong neighbours, detected by nothing.
-The fix is a marker in the index mapping's ``_meta`` and one choke point,
-``_assert_index_is_usable``, that every attach path runs.
+When the embedding function has a ``model_name``, the index name carries the
+folded model and dimension, so a different model lands in a different index.
+The marker in ``_meta`` and ``_assert_index_is_usable`` stay necessary: the
+suffix is absent without ``model_name``, and folding cannot tell
+``text-embedding-3-large`` from ``text_embedding_3_large``. Every attach path
+runs that one choke point.
 
 Three of those paths exist, and on ``main`` they checked different things; the
 loser of an ``indices.create`` race checked neither dimension nor model, so
@@ -214,12 +215,16 @@ INDEX = "ws_entities"
 
 @pytest.mark.asyncio
 async def test_every_created_index_records_its_embedding_space(global_config, cluster):
-    await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    await _initialize(storage, cluster)
 
-    meta = cluster.meta_of(INDEX)
+    assert storage._index_name == "ws_entities_bge_m3_8d"
+    meta = cluster.meta_of(storage._index_name)
     assert meta[VECTOR_SPACE_MODEL_KEY] == "bge-m3"
     assert meta[VECTOR_SPACE_DIM_KEY] == 8
-    # The ownership identity the marker rides alongside must survive.
+    # The ownership identity the marker rides alongside must survive, and it
+    # stays the unsuffixed workspace/namespace join — the suffix is the index
+    # name, not a second owner.
     assert meta[_WORKSPACE_META_KEY] == "ws"
     assert meta[_FINAL_NAMESPACE_META_KEY] == "ws_entities"
 
@@ -228,7 +233,10 @@ async def test_every_created_index_records_its_embedding_space(global_config, cl
 async def test_an_unknown_model_records_no_model_key(global_config, cluster):
     # A recorded None would be indistinguishable from "written before the
     # marker existed", making the never-refuse rule permanent for this index.
-    await _initialize(_storage(global_config, _Embed(None, 8)), cluster)
+    # No model_name also means no suffix: the index keeps the legacy name.
+    storage = _storage(global_config, _Embed(None, 8))
+    assert storage._index_name == INDEX
+    await _initialize(storage, cluster)
 
     meta = cluster.meta_of(INDEX)
     assert VECTOR_SPACE_MODEL_KEY not in meta
@@ -241,17 +249,23 @@ async def test_an_unknown_model_records_no_model_key(global_config, cluster):
 
 
 @pytest.mark.asyncio
-async def test_attaching_refuses_an_index_built_by_another_model(
-    global_config, cluster
-):
-    """The defect: same dimension, different model, nothing notices."""
-    cluster.seed_index(INDEX, model="bge-m3", dim=8)
+async def test_attaching_refuses_a_fold_equivalent_model(global_config, cluster):
+    """Folding puts two model names on one index; the marker still refuses.
+
+    ``text-embedding-3-large`` and ``text_embedding_3_large`` share a suffix.
+    The index name cannot see the difference. The marker can.
+    """
+    left = _storage(global_config, _Embed("text-embedding-3-large", 8))
+    right = _storage(global_config, _Embed("text_embedding_3_large", 8))
+    assert left._index_name == right._index_name
+
+    cluster.seed_index(left._index_name, model="text-embedding-3-large", dim=8)
 
     with pytest.raises(VectorSpaceMismatchError) as excinfo:
-        await _initialize(_storage(global_config, _Embed("e5-large", 8)), cluster)
+        await _initialize(right, cluster)
 
     message = str(excinfo.value)
-    assert "'bge-m3' -> 'e5-large'" in message
+    assert "'text-embedding-3-large' -> 'text_embedding_3_large'" in message
     assert "lightrag-rebuild-vdb" in message
     # Never a raw repair command: put_mapping replaces _meta wholesale, so a
     # hand-run PUT carrying only the new keys would strip the ownership
@@ -261,16 +275,18 @@ async def test_attaching_refuses_an_index_built_by_another_model(
 
 @pytest.mark.asyncio
 async def test_attaching_accepts_the_same_model(global_config, cluster):
-    cluster.seed_index(INDEX, model="bge-m3", dim=8)
-    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    cluster.seed_index(storage._index_name, model="bge-m3", dim=8)
+    storage = await _initialize(storage, cluster)
     assert storage._index_ready is True
 
 
 @pytest.mark.asyncio
 async def test_an_index_predating_the_marker_is_still_servable(global_config, cluster):
     """Absent evidence never refuses, or every pre-upgrade index is refused."""
-    cluster.seed_index(INDEX, model=None, dim=8)
-    storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    cluster.seed_index(storage._index_name, model=None, dim=8)
+    storage = await _initialize(storage, cluster)
     assert storage._index_ready is True
 
 
@@ -282,19 +298,24 @@ async def test_attaching_is_not_a_backfill(global_config, cluster):
     vectors for an operator who upgrades and swaps models in one step — a lie
     recorded permanently, after which the gate can never fire. Backfill needs
     evidence that the vectors really came from this model, and that evidence is
-    gathered one layer up.
+    gathered one layer up. Copying an unsuffixed legacy index into a new
+    suffixed index is a different path and is covered with the migration tests.
     """
-    cluster.seed_index(INDEX, model=None, dim=8)
-    await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
-    assert VECTOR_SPACE_MODEL_KEY not in cluster.meta_of(INDEX)
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    cluster.seed_index(storage._index_name, model=None, dim=8)
+    await _initialize(storage, cluster)
+    assert VECTOR_SPACE_MODEL_KEY not in cluster.meta_of(storage._index_name)
 
 
 @pytest.mark.asyncio
 async def test_attaching_refuses_a_foreign_dimension(global_config, cluster):
-    cluster.seed_index(INDEX, model="bge-m3", dim=16)
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    # The suffix says 8d because that is what this process would provision.
+    # The mapping says 16. The name is not the physical truth.
+    cluster.seed_index(storage._index_name, model="bge-m3", dim=16)
 
     with pytest.raises(VectorSpaceMismatchError, match="16 -> 8"):
-        await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
+        await _initialize(storage, cluster)
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +420,9 @@ async def test_presence_recheck_refuses_a_foreign_model(global_config, cluster):
     """
     storage = await _initialize(_storage(global_config, _Embed("bge-m3", 8)), cluster)
     storage._mark_index_missing()
-    # The index came back — rebuilt by a different embedding configuration.
-    cluster.seed_index(INDEX, model="e5-large", dim=8)
+    # The index came back — rebuilt by a different embedding configuration
+    # that folded onto this same name.
+    cluster.seed_index(storage._index_name, model="e5-large", dim=8)
 
     with pytest.raises(VectorSpaceMismatchError, match="'e5-large' -> 'bge-m3'"):
         await storage.query("anything", top_k=5)
@@ -431,8 +453,8 @@ async def test_a_refused_instance_can_still_drop(global_config, cluster):
     operator then had to delete the index through the OpenSearch API by hand —
     exactly the out-of-band step lightrag-rebuild-vdb exists to avoid.
     """
-    cluster.seed_index(INDEX, model="bge-m3", dim=8)
     storage = _storage(global_config, _Embed("e5-large", 8))
+    cluster.seed_index(storage._index_name, model="bge-m3", dim=8)
 
     with patch.object(ClientManager, "get_client", return_value=cluster.client()):
         with pytest.raises(VectorSpaceMismatchError):
@@ -449,8 +471,8 @@ async def test_a_refused_instance_can_still_drop(global_config, cluster):
 @pytest.mark.asyncio
 async def test_drop_reprovisions_the_index_in_the_current_space(global_config, cluster):
     """drop() + initialize() is the tool's whole recovery; it must converge."""
-    cluster.seed_index(INDEX, model="bge-m3", dim=8)
     storage = _storage(global_config, _Embed("e5-large", 16))
+    cluster.seed_index(storage._index_name, model="bge-m3", dim=8)
     client = cluster.client()
 
     with patch.object(ClientManager, "get_client", return_value=client):
@@ -459,10 +481,13 @@ async def test_drop_reprovisions_the_index_in_the_current_space(global_config, c
 
         assert (await storage.drop())["status"] == "success"
 
-        meta = cluster.meta_of(INDEX)
+        meta = cluster.meta_of(storage._index_name)
         assert meta[VECTOR_SPACE_MODEL_KEY] == "e5-large"
         assert meta[VECTOR_SPACE_DIM_KEY] == 16
-        assert cluster.mappings[INDEX]["properties"]["vector"]["dimension"] == 16
+        assert (
+            cluster.mappings[storage._index_name]["properties"]["vector"]["dimension"]
+            == 16
+        )
 
         # The second attach is the ordinary path and no longer refuses.
         await storage.initialize()

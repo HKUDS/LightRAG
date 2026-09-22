@@ -2084,9 +2084,12 @@ What happens if you just restart the server depends on the backend, and the
 direction this is moving in is *fail closed*: a backend that can tell its stored
 vectors came from a different embedding model refuses to serve and names
 `lightrag-rebuild-vdb` in the error, rather than silently returning nothing or
-confidently wrong neighbours. Backends whose collection or table name already
-encodes the model (Milvus, Qdrant, PostgreSQL) land the change on a separate
-container, so the previous model's vectors stay where they are. See
+confidently wrong neighbours. Backends whose container name encodes the model
+(Milvus, Qdrant, PostgreSQL, and OpenSearch when the embedding function has a
+model name) land the change on a separate container, so the previous model's
+vectors stay where they are. OpenSearch copies an existing unsuffixed index
+into that container once, when the index belongs to this workspace and the
+recorded model and dimension do not disagree. See
 [`docs/design/VectorSpaceProvenance.md`](design/VectorSpaceProvenance.md) for
 which backend does what, and `lightrag/tools/README_REBUILD_VDB.md` for the
 tool.

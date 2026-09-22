@@ -1,0 +1,491 @@
+"""Model-suffix isolation for OpenSearch vector indexes.
+
+Every index created before the suffix is legacy. Startup copies it once when
+this workspace owns it and the recorded dimension and model do not disagree.
+A mismatch is skipped, not raised. ``drop`` deletes the owned legacy index
+so the next startup does not copy the cleared corpus back.
+
+See ``docs/design/VectorSpaceProvenance.md``.
+"""
+
+import asyncio
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+pytest.importorskip(
+    "opensearchpy",
+    reason="opensearchpy is required for OpenSearch storage tests",
+)
+
+from opensearchpy.exceptions import NotFoundError, OpenSearchException, RequestError
+
+from lightrag.exceptions import DataMigrationError, VectorSpaceMismatchError
+from lightrag.kg.opensearch_impl import (
+    ClientManager,
+    OpenSearchVectorDBStorage,
+    _FINAL_NAMESPACE_META_KEY,
+    _WORKSPACE_META_KEY,
+)
+from lightrag.kg.vector_space import VECTOR_SPACE_DIM_KEY, VECTOR_SPACE_MODEL_KEY
+
+pytestmark = pytest.mark.offline
+
+
+@asynccontextmanager
+async def _mock_lock():
+    yield
+
+
+def _mock_lock_factory(*args, **kwargs):
+    return _mock_lock()
+
+
+@pytest.fixture(autouse=True)
+def patch_locks():
+    cache: dict[tuple, asyncio.Lock] = {}
+
+    def namespace_lock(namespace, workspace=None, enable_logging=False):
+        return cache.setdefault((namespace, workspace), asyncio.Lock())
+
+    with (
+        patch(
+            "lightrag.kg.opensearch_impl.get_data_init_lock",
+            side_effect=_mock_lock_factory,
+        ),
+        patch(
+            "lightrag.kg.opensearch_impl.get_namespace_lock",
+            side_effect=namespace_lock,
+        ),
+    ):
+        yield
+
+
+class _Embed:
+    max_token_size = 100
+
+    def __init__(self, model_name="bge-m3", embedding_dim=8):
+        self.model_name = model_name
+        self.embedding_dim = embedding_dim
+
+    async def __call__(self, texts, **kwargs):
+        return [[0.0] * self.embedding_dim for _ in texts]
+
+
+class Cluster:
+    """One OpenSearch cluster, just enough for index create / reindex / drop."""
+
+    def __init__(self):
+        self.indices: dict[str, dict] = {}
+        self.reindex_calls: list[tuple[str, str]] = []
+        self.fail_reindex = False
+
+    def client(self):
+        from opensearchpy import AsyncOpenSearch
+
+        client = AsyncMock(spec=AsyncOpenSearch)
+        client.indices = AsyncMock()
+        client.indices.exists = AsyncMock(side_effect=self.exists)
+        client.indices.create = AsyncMock(side_effect=self.create)
+        client.indices.get_mapping = AsyncMock(side_effect=self.get_mapping)
+        client.indices.put_mapping = AsyncMock(side_effect=self.put_mapping)
+        client.indices.delete = AsyncMock(side_effect=self.delete)
+        client.count = AsyncMock(side_effect=self.count)
+        client.reindex = AsyncMock(side_effect=self.reindex)
+        return client
+
+    async def exists(self, index):
+        return index in self.indices
+
+    async def create(self, index, body=None):
+        if index in self.indices:
+            raise RequestError(
+                400,
+                "resource_already_exists_exception",
+                {"error": "resource_already_exists_exception"},
+            )
+        self.indices[index] = {
+            "mappings": dict((body or {}).get("mappings") or {}),
+            "docs": {},
+        }
+
+    async def get_mapping(self, index):
+        if index not in self.indices:
+            raise NotFoundError(404, "index_not_found_exception", "no such index")
+        return {index: {"mappings": self.indices[index]["mappings"]}}
+
+    async def put_mapping(self, index, body):
+        mappings = self.indices[index]["mappings"]
+        if "_meta" in body:
+            mappings["_meta"] = body["_meta"]
+
+    async def delete(self, index, **kwargs):
+        if index not in self.indices:
+            raise NotFoundError(404, "index_not_found_exception", "no such index")
+        del self.indices[index]
+
+    async def count(self, index=None, **kwargs):
+        return {"count": len(self.indices[index]["docs"])}
+
+    async def reindex(
+        self, *, body, params=None, refresh=None, wait_for_completion=None, **kwargs
+    ):
+        source = body["source"]["index"]
+        dest = body["dest"]["index"]
+        self.reindex_calls.append((source, dest))
+        if self.fail_reindex:
+            self.indices[dest]["docs"]["partial"] = {"content": "partial"}
+            raise OpenSearchException("reindex failed")
+        created = 0
+        for doc_id, source_doc in self.indices[source]["docs"].items():
+            self.indices[dest]["docs"][doc_id] = dict(source_doc)
+            created += 1
+        return {
+            "total": created,
+            "created": created,
+            "updated": 0,
+            "failures": [],
+            "timed_out": False,
+        }
+
+    def seed(
+        self,
+        index: str,
+        *,
+        workspace: str = "ws",
+        final_namespace: str = "ws_entities",
+        model: str | None = None,
+        dim: int | None = 8,
+        docs: dict | None = None,
+        include_meta: bool = True,
+    ):
+        meta = {
+            _WORKSPACE_META_KEY: workspace,
+            _FINAL_NAMESPACE_META_KEY: final_namespace,
+        }
+        if model is not None:
+            meta[VECTOR_SPACE_MODEL_KEY] = model
+        if dim is not None:
+            meta[VECTOR_SPACE_DIM_KEY] = dim
+        mappings: dict = {"properties": {}}
+        if dim is not None:
+            mappings["properties"]["vector"] = {
+                "type": "knn_vector",
+                "dimension": dim,
+            }
+        if include_meta:
+            mappings["_meta"] = meta
+        self.indices[index] = {"mappings": mappings, "docs": dict(docs or {})}
+
+    def meta(self, index: str) -> dict:
+        return self.indices[index]["mappings"].get("_meta") or {}
+
+    def doc_ids(self, index: str) -> set[str]:
+        return set(self.indices[index]["docs"])
+
+
+@pytest.fixture
+def cluster():
+    return Cluster()
+
+
+@pytest.fixture
+def global_config():
+    return {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+    }
+
+
+def _storage(global_config, embed=None, workspace="ws", namespace="entities"):
+    return OpenSearchVectorDBStorage(
+        namespace=namespace,
+        global_config=global_config,
+        embedding_func=embed or _Embed(),
+        workspace=workspace,
+    )
+
+
+async def _init(storage, cluster):
+    with patch.object(ClientManager, "get_client", return_value=cluster.client()):
+        await storage.initialize()
+    return storage
+
+
+def test_suffix_is_applied_when_model_name_is_present(global_config):
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    assert storage.model_suffix == "bge_m3_8d"
+    assert storage._legacy_index_name == "ws_entities"
+    assert storage.final_namespace == "ws_entities"
+    assert storage._index_name == "ws_entities_bge_m3_8d"
+
+
+def test_suffix_is_absent_without_model_name(global_config):
+    storage = _storage(global_config, _Embed(None, 8))
+    assert storage.model_suffix is None
+    assert storage._index_name == "ws_entities"
+    assert storage._legacy_index_name == "ws_entities"
+
+
+def test_distinct_models_do_not_share_an_index(global_config):
+    first = _storage(global_config, _Embed("bge-m3", 8))
+    second = _storage(global_config, _Embed("e5-large", 8))
+    assert first._index_name != second._index_name
+
+
+def test_index_name_over_255_bytes_is_rejected(global_config):
+    with pytest.raises(ValueError, match="255"):
+        _storage(global_config, _Embed("m" * 300, 8))
+
+
+@pytest.mark.asyncio
+async def test_fresh_index_records_model_and_dimension(global_config, cluster):
+    storage = await _init(_storage(global_config), cluster)
+
+    meta = cluster.meta(storage._index_name)
+    assert meta[VECTOR_SPACE_MODEL_KEY] == "bge-m3"
+    assert meta[VECTOR_SPACE_DIM_KEY] == 8
+    assert meta[_WORKSPACE_META_KEY] == "ws"
+    assert meta[_FINAL_NAMESPACE_META_KEY] == "ws_entities"
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_model", [None, "bge-m3"])
+async def test_owned_legacy_index_is_copied_once(global_config, cluster, legacy_model):
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._legacy_index_name,
+        model=legacy_model,
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+        include_meta=legacy_model is not None,
+    )
+
+    await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"a", "b"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b"}
+    assert cluster.reindex_calls == [(storage._legacy_index_name, storage._index_name)]
+    assert cluster.meta(storage._index_name)[VECTOR_SPACE_MODEL_KEY] == "bge-m3"
+    # The legacy index keeps its own provenance. Adoption may record the
+    # workspace, and it must not stamp a model onto an index that did not
+    # already name one.
+    legacy_meta = cluster.meta(storage._legacy_index_name)
+    if legacy_model is None:
+        assert VECTOR_SPACE_MODEL_KEY not in legacy_meta
+        assert legacy_meta[_WORKSPACE_META_KEY] == "ws"
+        assert legacy_meta[_FINAL_NAMESPACE_META_KEY] == "ws_entities"
+    else:
+        assert legacy_meta[VECTOR_SPACE_MODEL_KEY] == "bge-m3"
+
+    restarted = _storage(global_config)
+    await _init(restarted, cluster)
+    assert cluster.reindex_calls == [(storage._legacy_index_name, storage._index_name)]
+    assert cluster.doc_ids(storage._index_name) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_model_mismatch_skips_without_raising(global_config, cluster):
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    cluster.seed(
+        storage._legacy_index_name,
+        model="e5-large",
+        dim=8,
+        docs={"a": {"content": "a"}},
+    )
+
+    await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert cluster.reindex_calls == []
+    assert (
+        cluster.meta(storage._legacy_index_name)[VECTOR_SPACE_MODEL_KEY] == "e5-large"
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_dimension_mismatch_skips_without_raising(global_config, cluster):
+    storage = _storage(global_config, _Embed("bge-m3", 8))
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=16,
+        docs={"a": {"content": "a"}},
+    )
+
+    await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_ownership_mismatch_skips_and_does_not_rewrite_meta(
+    global_config, cluster
+):
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._legacy_index_name,
+        workspace="other",
+        final_namespace="other_entities",
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}},
+    )
+    before = dict(cluster.meta(storage._legacy_index_name))
+
+    await _init(storage, cluster)
+
+    assert cluster.meta(storage._legacy_index_name) == before
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_legacy_index_is_deleted(global_config, cluster):
+    storage = _storage(global_config)
+    cluster.seed(storage._legacy_index_name, model=None, dim=8, docs={})
+
+    await _init(storage, cluster)
+
+    assert storage._legacy_index_name not in cluster.indices
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_suffixed_index_still_receives_the_legacy_copy(
+    global_config, cluster
+):
+    """An empty suffixed index is not 'already migrated'.
+
+    ``drop`` recreates that empty index. If it left the legacy index behind,
+    the next startup would copy the cleared corpus back.
+    """
+    storage = _storage(global_config)
+    cluster.seed(storage._index_name, model="bge-m3", dim=8, docs={})
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}},
+    )
+
+    await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"a"}
+    assert cluster.reindex_calls == [(storage._legacy_index_name, storage._index_name)]
+
+
+@pytest.mark.asyncio
+async def test_nonempty_suffixed_index_is_not_copied_into_again(global_config, cluster):
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"kept": {"content": "kept"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"legacy": {"content": "legacy"}},
+    )
+
+    await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"kept"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"legacy"}
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+async def test_failed_copy_raises_and_removes_the_partial_destination(
+    global_config, cluster
+):
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}},
+    )
+    cluster.fail_reindex = True
+
+    with pytest.raises(DataMigrationError, match=storage._index_name):
+        await _init(storage, cluster)
+
+    assert storage._index_name not in cluster.indices
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_legacy_so_the_next_start_does_not_resurrect(
+    global_config, cluster
+):
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+    await _init(storage, cluster)
+    assert cluster.doc_ids(storage._index_name) == {"a", "b"}
+
+    assert (await storage.drop())["status"] == "success"
+    assert storage._legacy_index_name not in cluster.indices
+    assert cluster.doc_ids(storage._index_name) == set()
+
+    restarted = await _init(_storage(global_config), cluster)
+    assert cluster.doc_ids(restarted._index_name) == set()
+    assert cluster.reindex_calls == [(storage._legacy_index_name, storage._index_name)]
+
+
+@pytest.mark.asyncio
+async def test_drop_leaves_a_legacy_index_owned_by_another_workspace(
+    global_config, cluster
+):
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._legacy_index_name,
+        workspace="other",
+        final_namespace="other_entities",
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}},
+    )
+    await _init(storage, cluster)
+
+    assert (await storage.drop())["status"] == "success"
+
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert cluster.meta(storage._legacy_index_name)[_WORKSPACE_META_KEY] == "other"
+    assert cluster.doc_ids(storage._index_name) == set()
+
+    await _init(_storage(global_config), cluster)
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+async def test_dimension_guard_still_refuses_without_model_name(global_config, cluster):
+    """No model_name means no suffix, so the guard is the only backstop."""
+    storage = _storage(global_config, _Embed(None, 8))
+    assert storage._index_name == "ws_entities"
+    cluster.seed(storage._index_name, model="bge-m3", dim=16, docs={"a": {}})
+
+    with pytest.raises(VectorSpaceMismatchError, match="16 -> 8"):
+        await _init(storage, cluster)
+
+    assert storage._flush_lock is not None
+    assert (await storage.drop())["status"] == "success"
+    assert cluster.meta(storage._index_name)[VECTOR_SPACE_DIM_KEY] == 8
+    assert VECTOR_SPACE_MODEL_KEY not in cluster.meta(storage._index_name)

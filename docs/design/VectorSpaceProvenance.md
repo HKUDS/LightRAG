@@ -31,17 +31,23 @@ that question is already answered by the container's **name**:
 | backend | workspace isolation | model isolation | name answers "which model?" |
 | --- | --- | --- | --- |
 | Nano, FAISS | subdirectory under `working_dir` | none | ❌ |
-| MongoDB, OpenSearch | collection / index name prefix | none | ❌ |
+| MongoDB | collection name prefix | none | ❌ |
+| OpenSearch | index name prefix | index name suffix when `model_name` is set, otherwise none | folded name only; the `_meta` marker still records the unfolded name |
 | Milvus | collection name prefix | collection name suffix | ✅ |
 | Qdrant | point-id salting + `workspace_id` payload filter | collection name suffix | ✅ |
 | PostgreSQL | `workspace` column | table name suffix | ✅ |
 
 The split in the last column is the whole design:
 
-- **Nano, FAISS, MongoDB, OpenSearch carry no model information in the container
-  name.** A same-dimension model swap reuses the *same* container and nothing
-  notices. These four need a recorded marker — they are the only backends where
-  the marker is load-bearing.
+- **Nano, FAISS and MongoDB carry no model information in the container name.**
+  A same-dimension model swap reuses the *same* container and nothing notices.
+  These three need a recorded marker — they are backends where the marker is
+  load-bearing.
+- **OpenSearch appends `{folded_model}_{dim}d` when `model_name` is set, and
+  keeps the `_meta` marker.** The suffix is `None` without `model_name`, and
+  it folds characters the marker does not (`text-embedding-3-large` and
+  `text_embedding_3_large` share a suffix). The marker stays load-bearing.
+  See *OpenSearch model-suffix migration* below.
 - **Milvus, Qdrant and PostgreSQL already encode `{folded_model}_{dim}d` in the
   container name.** A model change lands in a different container by
   construction. **They record no separate marker**: a second copy of a fact the
@@ -287,6 +293,48 @@ refusal: the suffixed collection does not exist yet, so nothing is being served
 out of the wrong space. The legacy collection is only a migration source, and an
 incompatible source is skipped. That case is the coverage gate's, not
 this one's.
+
+### OpenSearch model-suffix migration
+
+OpenSearch vector indexes are named `{sanitized workspace_namespace}` and, when
+the embedding function has a `model_name`,
+`{sanitized workspace_namespace}_{folded_model}_{dim}d` from
+`BaseVectorStorage._generate_collection_suffix`. Every index created before
+that suffix is legacy. There is no older naming scheme to special-case, and
+OpenSearch does not use Qdrant's three-state workspace-field probe: an index
+is already per-workspace, so the `_meta` ownership marker settles it.
+
+On startup, when the suffixed index is missing or empty:
+
+- The legacy index is copied with `_reindex` only after
+  `_claim_index_for_workspace` accepts it. A mismatch is logged and skipped.
+  It does not raise. Refusing to start is the wedge the suffix removes.
+- A legacy mapping whose dimension or recorded model disagrees with this
+  process is also skipped, not refused. Nothing is being served from that
+  index. An unreadable dimension is skipped for the same reason: a copy that
+  cannot be shown to fit must not block startup and must not be attempted
+  blind.
+- An unmarked legacy index (no model recorded) is copied. That is the upgrade
+  path for every existing deployment. Accepted residue: a same-dimension model
+  change made in the same step as the upgrade is not detectable, and the new
+  index's marker then names the model configured now. Recovery is
+  `lightrag-rebuild-vdb`. `drop()` deletes the legacy index when this workspace
+  owns it, so that clear does not migrate the old vectors back.
+- The legacy index is kept after a successful copy. An empty one is deleted.
+  When both indexes already hold documents, the copy is not repeated.
+- A copy that starts and does not finish raises `DataMigrationError` and
+  deletes the destination, which was empty before the attempt, so the next
+  start retries. The legacy source is left untouched.
+
+`drop()` deletes the owned legacy index *before* it deletes and recreates the
+suffixed index. The next startup would otherwise see an empty suffixed index
+and copy the just-cleared corpus back. A legacy index whose marker names
+another workspace is not deleted.
+
+The `_meta` marker stays on the index this process creates. The dimension
+guard and the readiness probe still refuse a container this process must not
+serve: the suffix is absent when `model_name` is absent, and folding cannot
+see through a shared suffix.
 
 ## The recovery protocol
 
@@ -857,13 +905,17 @@ workspace with a recorded baseline: the per-target embedding baseline
 the two spellings compare unequal at the precheck and the second refuses to
 start. Still open for a workspace whose baseline is absent -- the first start
 after the upgrade, or a probe that could not run -- until the record is
-established. Recovery: `lightrag-rebuild-vdb`.
+established. Recovery: `lightrag-rebuild-vdb`. OpenSearch folds the suffix the
+same way, but its `_meta` marker records the unfolded name, so two
+fold-equivalent models that share a suffix are refused rather than served.
 
-**No `EMBEDDING_MODEL` configured.** Milvus, Qdrant and PostgreSQL fall back to
-an un-suffixed container (`qdrant_impl.py`, `milvus_impl.py`,
-`postgres_impl.py` each log a warning today), which carries no model
-information — so those deployments get no embedding-space gate at all, exactly as
-today. On Qdrant this also means one un-suffixed collection can host tenants
+**No `EMBEDDING_MODEL` configured.** Milvus, Qdrant, PostgreSQL and OpenSearch
+fall back to an un-suffixed container (`qdrant_impl.py`, `milvus_impl.py`,
+`postgres_impl.py`, `opensearch_impl.py` each log a warning), which carries no
+model information in the name. Milvus, Qdrant and PostgreSQL then have no
+embedding-space gate at all, exactly as today. OpenSearch still has the `_meta`
+marker and the dimension guard, which are the only isolation left when the
+suffix is absent. On Qdrant this also means one un-suffixed collection can host tenants
 running different models; point-id salting and the workspace filter still keep
 them from reading or overwriting each other, so each tenant's own retrieval stays
 correct. Recovery: set `EMBEDDING_MODEL` and run `lightrag-rebuild-vdb` — the

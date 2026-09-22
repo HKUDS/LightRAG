@@ -4666,7 +4666,10 @@ class TestVectorStorage:
     @pytest.mark.asyncio
     async def test_index_name(self, global_config, embed_func):
         s = self._make(global_config, embed_func)
-        assert s._index_name == "test_entities"
+        assert s.model_suffix == "mock_embed_128d"
+        assert s._legacy_index_name == "test_entities"
+        assert s.final_namespace == "test_entities"
+        assert s._index_name == "test_entities_mock_embed_128d"
 
     @pytest.mark.asyncio
     async def test_cosine_threshold_required(self, embed_func):
@@ -5371,11 +5374,11 @@ class TestVectorStorage:
     ):
         """Ownership is only half of what makes an index usable by this instance.
 
-        The index name carries no model suffix on this backend, so an index
-        rebuilt under a different embedding model keeps this workspace's
-        marker and differs only in the vector dimension. Restoring readiness
-        on the marker alone would let upsert skip _ensure_index_ready, which
-        is the path that raises something an operator can act on.
+        A peer can rebuild this index in place with a different dimension.
+        The suffix does not help a read that is already pointed at that
+        index. Restoring readiness on the ownership marker alone would let
+        upsert skip _ensure_index_ready, which is the path that raises
+        something an operator can act on.
 
         The refusal is typed: lightrag-rebuild-vdb responds to it by DROPPING
         the index, so it must be distinguishable from a cluster outage or a bad
