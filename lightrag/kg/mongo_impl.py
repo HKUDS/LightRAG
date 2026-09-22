@@ -1053,7 +1053,8 @@ class MongoDocStatusStorage(DocStatusStorage):
             status_filter: Filter by document status, None for all statuses
             page: Page number (1-based)
             page_size: Number of documents per page (10-200)
-            sort_field: Field to sort by ('created_at', 'updated_at', '_id')
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path').
+                The legacy '_id' alias is also accepted.
             sort_direction: Sort direction ('asc' or 'desc')
 
         Returns:
@@ -1071,6 +1072,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             page_size = 10
         elif page_size > 200:
             page_size = 200
+
+        if sort_field == "id":
+            sort_field = "_id"
 
         if sort_field not in ["created_at", "updated_at", "_id", "file_path"]:
             sort_field = "updated_at"
