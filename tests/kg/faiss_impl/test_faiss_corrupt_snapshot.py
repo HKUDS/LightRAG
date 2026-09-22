@@ -341,6 +341,40 @@ async def test_a_marker_that_exists_but_cannot_be_read_is_not_absent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_marker_the_parser_could_not_finish_names_the_marker(
+    tmp_path, monkeypatch
+):
+    """The marker read has its own refusal so it can name its own file.
+
+    A `RecursionError` out of the parse is the same kind of statement about
+    the bytes as the `ValueError` beside it, and uncaught it reaches the
+    loader's handler, where the file being read is the METADATA -- which is
+    intact. Injected rather than written as a nested file, because whether a
+    depth exhausts the stack depends on the interpreter.
+    """
+    storage = await _seeded_storage(tmp_path)
+    marker = Path(storage._vector_space_file)
+    marker_bytes = marker.read_bytes()
+    import json as json_module
+
+    real_load = json_module.load
+
+    def too_deep_for_the_marker(fp, *args, **kwargs):
+        if getattr(fp, "name", "") == storage._vector_space_file:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_load(fp, *args, **kwargs)
+
+    monkeypatch.setattr(json_module, "load", too_deep_for_the_marker)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert exc_info.value.container == storage._vector_space_file
+    assert marker.read_bytes() == marker_bytes
+
+
+@pytest.mark.asyncio
 async def test_a_marker_that_was_never_written_still_attaches(tmp_path):
     """Absent evidence still never refuses -- the pre-marker store loads."""
     storage = await _seeded_storage(tmp_path)

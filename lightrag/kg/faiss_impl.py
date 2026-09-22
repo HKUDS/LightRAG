@@ -1420,7 +1420,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return None, None
         except OSError:
             raise
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:
+            # `RecursionError` is the parser saying the document is nested
+            # past the interpreter's limit -- a statement about these bytes,
+            # like the `ValueError` beside it. Uncaught it would reach the
+            # loader's own handler, where the file being read is the METADATA,
+            # and name that instead of the marker that failed.
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
                 container=self._vector_space_file,
