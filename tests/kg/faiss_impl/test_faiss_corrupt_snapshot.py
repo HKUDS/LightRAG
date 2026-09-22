@@ -148,6 +148,48 @@ async def test_unparsable_metadata_names_the_metadata_file(tmp_path, payload):
 
 
 @pytest.mark.asyncio
+async def test_a_heap_that_ran_out_is_not_a_corrupt_snapshot(tmp_path, monkeypatch):
+    """`CorruptStorageSnapshotError` is what the rebuild tool reads as
+    permission to back up and DROP. A `MemoryError` says nothing about the
+    bytes -- a large but healthy snapshot on a small container raises it --
+    so it must reach the caller as itself, exactly like the I/O failures."""
+    storage = await _seeded_storage(tmp_path)
+    import json as json_module
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("cannot allocate the metadata")
+
+    monkeypatch.setattr(json_module, "load", out_of_memory)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(MemoryError):
+        await fresh.initialize()
+    assert Path(storage._meta_file).exists()
+    assert Path(storage._faiss_index_file).exists()
+
+
+@pytest.mark.asyncio
+async def test_metadata_nested_past_the_parser_names_the_metadata(
+    tmp_path, monkeypatch
+):
+    """`RecursionError` is a `RuntimeError` subclass, and the attribution rule
+    hands `RuntimeError` to the index because faiss is what raises it. The
+    parser raises this one, about the metadata."""
+    storage = await _seeded_storage(tmp_path)
+    import json as json_module
+
+    def too_deep(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(json_module, "load", too_deep)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+    assert exc_info.value.container == storage._meta_file
+
+
+@pytest.mark.asyncio
 async def test_initialize_refuses_an_index_whose_metadata_vanished(tmp_path):
     """The metadata is the commit marker; its absence contradicts the index."""
     storage = await _seeded_storage(tmp_path)
