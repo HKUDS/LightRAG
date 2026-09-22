@@ -26,6 +26,7 @@ pytest.importorskip(
 
 from opensearchpy.exceptions import OpenSearchException  # type: ignore  # noqa: E402
 
+from lightrag.namespace import CONFIG_CONTAINER_TAG  # noqa: E402
 from lightrag.kg.opensearch_impl import (  # noqa: E402
     ClientManager,
     OpenSearchDocStatusStorage,
@@ -37,6 +38,7 @@ from lightrag.kg.opensearch_impl import (  # noqa: E402
     _FINAL_NAMESPACE_META_KEY,
     _WORKSPACE_META_KEY,
     _claim_index_for_workspace,
+    _build_index_name,
     _sanitize_index_name,
 )
 
@@ -502,3 +504,51 @@ class TestUnwritableMapping:
                 client, "teama_text_chunks", "TeamA", "TeamA_text_chunks"
             )
         client.indices.put_mapping.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "alias", [".lightrag_config", "x_lightrag_config", "+LightRAG_config", "ordinary"]
+)
+@pytest.mark.parametrize("via_env", [False, True])
+def test_no_workspace_spelling_moves_the_configuration_container(
+    monkeypatch, alias, via_env
+):
+    """The container is named in code, so a spelling cannot reach or move it.
+
+    Sanitization is lossy, so `.lightrag_config` and `x_lightrag_config`
+    normalize onto the same index as `_lightrag_config` -- which is why the
+    reserved-name layout had to refuse them. With the container keyed on the
+    `config` NAMESPACE, the workspace is not consulted at all: every spelling,
+    from the caller or from `OPENSEARCH_WORKSPACE`, lands on the one container.
+    Nothing has to be refused because nothing can be reached.
+    """
+    monkeypatch.delenv("OPENSEARCH_WORKSPACE", raising=False)
+    if via_env:
+        monkeypatch.setenv("OPENSEARCH_WORKSPACE", alias)
+    effective, final_ns, index_name = _build_index_name(
+        "ordinary" if via_env else alias, "config"
+    )
+    assert effective == CONFIG_CONTAINER_TAG
+    assert final_ns == "_lightrag_config_config"
+    assert index_name == "x_lightrag_config_config"
+
+
+def test_a_non_configuration_open_may_not_normalize_onto_the_container():
+    """The one collision the ownership markers could not repair.
+
+    No namespace shipped today can produce the container's index name, so this
+    guard is unreachable through the public surface -- it is checked with a
+    namespace spelled by hand, because what it defends against is a namespace
+    added later, not one that exists.
+    """
+    with pytest.raises(ValueError, match="configuration container's index"):
+        _build_index_name("_lightrag", "config_config")
+
+
+def test_ordinary_names_and_a_tenant_named_after_the_tag_remain_available():
+    """A tenant may now legally be called `_lightrag_config` and share nothing."""
+    assert _build_index_name("v1.0", "text_chunks")[2] == "v1_0_text_chunks"
+    assert (
+        _build_index_name("_lightrag_config", "text_chunks")[2]
+        == "x_lightrag_config_text_chunks"
+    )

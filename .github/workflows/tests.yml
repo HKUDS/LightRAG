@@ -1,26 +1,15 @@
 name: Backend Offline Unit Tests
 
 on:
+  # No paths filter on either trigger: the suite reads files from all over the
+  # tree (docs, WebUI source, compose and k8s presets), and an allowlist of
+  # them drifts silently as tests are added. Every PR runs the full backend
+  # suite (AGENTS.md, Testing), and so does every push, which is what catches
+  # two PRs that pass separately but break together.
   push:
     branches: [ main, dev, 'dev-*' ]
-    paths:
-      - 'lightrag/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'env.example'
-      - '.github/workflows/tests.yml'
   pull_request:
     branches: [ main, dev, 'dev-*' ]
-    paths:
-      - 'lightrag/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'env.example'
-      - '.github/workflows/tests.yml'
     types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:

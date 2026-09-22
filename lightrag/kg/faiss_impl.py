@@ -1420,7 +1420,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return None, None
         except OSError:
             raise
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:
+            # `RecursionError` is the parser saying the document is nested
+            # past the interpreter's limit -- a statement about these bytes,
+            # like the `ValueError` beside it. Uncaught it would reach the
+            # loader's own handler, where the file being read is the METADATA,
+            # and name that instead of the marker that failed.
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
                 container=self._vector_space_file,
@@ -1517,11 +1522,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return
 
         space_mismatch = False
+        # Which file the code below is reading. `container` is the operator's
+        # DIAGNOSIS -- the file that could not be read -- and most parse
+        # failures cannot be attributed after the fact: `json.JSONDecodeError`
+        # carries no `filename`, so a `.meta.json` full of garbage would
+        # otherwise be reported as the `.index`, which is intact, and send the
+        # operator to inspect the wrong artifact. The recovery SCOPE is
+        # unaffected either way: `artifacts` always names all three files.
+        reading = self._faiss_index_file
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
 
-            # Load metadata
+            # Load metadata. Everything from here on reads the metadata --
+            # its bytes, then its shape -- except the `reconstruct` calls in
+            # the row loop, which are the index's and which faiss reports as
+            # `RuntimeError` (attributed below).
+            reading = self._meta_file
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
 
@@ -1609,6 +1626,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
             )
+            if isinstance(e, MemoryError):
+                # A heap this process could not satisfy says nothing about the
+                # bytes on disk -- a large but healthy snapshot on a small
+                # container raises it. `CorruptStorageSnapshotError` is what
+                # the rebuild tool reads as permission to back up and DROP,
+                # and a transient shortage must never buy that. Same rule as
+                # the I/O failures below, one resource up.
+                raise
             missing = (
                 getattr(e, "filename", None)
                 if isinstance(e, FileNotFoundError)
@@ -1623,9 +1648,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 if isinstance(e, RuntimeError):
                     # faiss hides I/O failures in this type too; ask directly.
                     _raise_if_unreadable(self._faiss_index_file)
+            # `RuntimeError` is faiss's own -- only the index can raise it --
+            # so it names the index whatever was being read around it.
+            # `RecursionError` is the exception: it is a `RuntimeError`
+            # subclass the JSON parser raises on a document nested past the
+            # interpreter's limit, which is the metadata's problem, not the
+            # index's.
+            failed = (
+                self._faiss_index_file
+                if isinstance(e, RuntimeError) and not isinstance(e, RecursionError)
+                else reading
+            )
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
-                container=missing or self._faiss_index_file,
+                container=missing or failed,
                 detail=(
                     f"{missing} is missing beside a present index"
                     if missing

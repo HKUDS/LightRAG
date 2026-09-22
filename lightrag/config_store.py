@@ -248,9 +248,20 @@ class EmbeddingBaseline:
         return {"model": self.model, "dim": self.dim, "origin": self.origin}
 
     @classmethod
-    def from_row(cls, row: dict[str, Any], *, key: str) -> "EmbeddingBaseline":
+    def from_row(
+        cls, row: dict[str, Any], *, key: str, target: str
+    ) -> "EmbeddingBaseline":
         """Parse a stored row. A row that does not parse is UNREADABLE, which
         is a startup failure, not an absence."""
+        expected_version = registry_spec(
+            embedding_baseline_suffix(target)
+        ).schema_version
+        version = row.get("schema_version") if isinstance(row, dict) else None
+        if type(version) is not int or version != expected_version:
+            raise ConfigurationStorageError(
+                f"configuration row {key!r} has unsupported schema_version "
+                f"{version!r}; expected integer {expected_version}"
+            )
         value = row.get("value") if isinstance(row, dict) else None
         if not isinstance(value, dict):
             raise ConfigurationStorageError(
@@ -512,7 +523,11 @@ async def read_embedding_baselines(
     for target in EMBEDDING_TARGETS:
         key = embedding_baseline_key(workspace, target)
         row = await read_config_row_strict(config, key)
-        out[target] = None if row is None else EmbeddingBaseline.from_row(row, key=key)
+        out[target] = (
+            None
+            if row is None
+            else EmbeddingBaseline.from_row(row, key=key, target=target)
+        )
     return out
 
 
@@ -722,7 +737,7 @@ async def claim_embedding_baseline(
                 f"[{workspace}] Recorded the embedding baseline for {target}: "
                 f"model={candidate.model!r} dim={candidate.dim} origin={candidate.origin}"
             )
-        recorded = EmbeddingBaseline.from_row(row, key=key)
+        recorded = EmbeddingBaseline.from_row(row, key=key, target=target)
         if recorded.differs_from(embedding_func):
             raise EmbeddingBaselineMismatchError(
                 workspace=workspace,
@@ -769,7 +784,7 @@ async def record_embedding_baseline(
             f"the configuration storage read back nothing for {key!r} right "
             f"after writing it"
         )
-    stored = EmbeddingBaseline.from_row(row, key=key)
+    stored = EmbeddingBaseline.from_row(row, key=key, target=target)
     if stored.model != baseline.model or (
         stored.dim is not None
         and baseline.dim is not None
