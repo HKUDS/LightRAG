@@ -4930,6 +4930,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "source_id": str,        # Source chunk references
                             "file_path": str,        # Origin file path
                             "created_at": str,       # Creation timestamp
+                            "vector_score": float | None,  # See "vector_score" below
                             "reference_id": str      # Reference identifier for citations
                         }
                     ],
@@ -4943,6 +4944,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "source_id": str,        # Source chunk references
                             "file_path": str,        # Origin file path
                             "created_at": str,       # Creation timestamp
+                            "vector_score": float | None,  # See "vector_score" below
                             "reference_id": str      # Reference identifier for citations
                         }
                     ],
@@ -4951,6 +4953,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": str,          # Document chunk content
                             "file_path": str,        # Origin file path
                             "chunk_id": str,         # Unique chunk identifier
+                            "vector_score": float | None,  # See "vector_score" below
                             "reference_id": str      # Reference identifier for citations
                         }
                     ],
@@ -4986,6 +4989,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             - **mix**: Includes knowledge graph data plus vector-retrieved document chunks
             - **naive**: Only vector-retrieved chunks, entities and relationships arrays are empty
             - **bypass**: All data arrays are empty, used for direct LLM queries
+
+            **vector_score:** the score the record's own vector search returned, so
+            clients can threshold or rerank without re-embedding. Chunks are scored
+            against the query, entities against the low-level keywords, relationships
+            against the high-level keywords. ``None`` when the record was reached only
+            through the graph (e.g. a chunk selected from an entity's sources) or the
+            backend returns no score (PostgreSQL). The scale is the backend's own:
+            cosine similarity for NanoVectorDB, Faiss and Qdrant; Milvus's configured
+            metric (COSINE/IP similarity, or L2 distance where lower is closer); the
+            engine's normalised search score for MongoDB and OpenSearch. Compare
+            scores only within one backend.
 
             ** processing_info is optional and may not be present in all responses, especially when query result is empty**
 
