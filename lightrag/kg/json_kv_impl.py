@@ -22,7 +22,11 @@ from lightrag.utils import (
     commit_in_storage_io,
     write_json,
 )
-from lightrag.exceptions import CommitBookkeepingError, StorageNotInitializedError
+from lightrag.exceptions import (
+    CommitBookkeepingError,
+    CorruptStorageRecordError,
+    StorageNotInitializedError,
+)
 from .shared_storage import (
     get_namespace_data,
     get_namespace_lock,
@@ -300,9 +304,29 @@ class JsonKVStorage(BaseKVStorage):
                         "retries them.",
                     )
 
+    def _as_row(self, key: str, value: Any) -> Any:
+        """Refuse a stored payload that is not a row, naming it.
+
+        Every read below normalises the row it hands back (``create_time``,
+        ``update_time``, ``_id``), so it calls mapping methods on whatever the
+        file held. A key mapped to a string or a number -- a hand-edited file,
+        a truncated one repaired by hand, a foreign writer -- therefore escaped
+        as ``AttributeError: 'str' object has no attribute 'setdefault'`` from
+        inside this class, which the layer above reads as the STORE failing
+        rather than one row being damaged. Raise the damage by name instead,
+        and let whoever knows the schema decide what it means.
+        """
+        if value is not None and not isinstance(value, dict):
+            raise CorruptStorageRecordError(
+                f"[{self.workspace}] {self.namespace} record {key!r} in "
+                f"{self._file_name} is {type(value).__name__}, not a mapping: "
+                f"{value!r}"
+            )
+        return value
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
-            result = self._data.get(id)
+            result = self._as_row(id, self._data.get(id))
             if result:
                 # Deep-copy so nested mutable fields (e.g. text_chunks'
                 # llm_cache_list) don't alias the live storage row — a
@@ -330,7 +354,7 @@ class JsonKVStorage(BaseKVStorage):
         async with self._storage_lock:
             results = []
             for id in ids:
-                data = self._data.get(id, None)
+                data = self._as_row(id, self._data.get(id, None))
                 if data:
                     # Deep-copy — see get_by_id for why a shallow copy isn't
                     # enough to protect nested mutable fields.
@@ -489,7 +513,11 @@ class JsonKVStorage(BaseKVStorage):
             page: list[dict[str, Any]] = []
             async with self._storage_lock:
                 for key in keys[start : start + page_size]:
-                    data = self._data.get(key)
+                    # Raises on a damaged row rather than yielding it: the base
+                    # contract requires this stream to raise on a failure, and
+                    # a caller that got a string where a row belongs would fail
+                    # further away with nothing naming the key.
+                    data = self._as_row(key, self._data.get(key))
                     if data is None:
                         continue
                     row = copy.deepcopy(data)

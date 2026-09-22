@@ -755,6 +755,33 @@ class TestSummary:
         with pytest.raises(RemoteBackendUnavailableError):
             await tool.collect_summary()
 
+    async def test_a_baseline_record_that_is_not_a_row_is_unreadable_not_fatal(
+        self, tmp_path, monkeypatch
+    ):
+        """Damage at the OUTER depth, the mirror of the test above it: the
+        key maps to a string rather than to a row, so ``from_row`` is never
+        reached. The store answered and can still delete the record by key,
+        so this is corruption the clear removes -- it used to refuse the run
+        with nothing deleted, in the one situation the tool exists for."""
+        from lightrag.exceptions import ConfigurationRecordMalformedError
+
+        async def read_config_row_strict(config, key):
+            if key.endswith("/chunks"):
+                raise ConfigurationRecordMalformedError(
+                    f"configuration record {key!r} is not a mapping: 'garbage'"
+                )
+            return None
+
+        monkeypatch.setattr(
+            clear_storage, "read_config_row_strict", read_config_row_strict
+        )
+        tool = make_tool(tmp_path)
+
+        summary = await tool.collect_summary()
+
+        assert isinstance(summary["baselines"]["chunks"], Unreadable)
+        assert "chunks embedding baseline" in tool.unreadable_items(summary)
+
 
 class TestInputDirResolution:
     """``DocumentManager`` keeps a named workspace's uploads under
@@ -1480,6 +1507,49 @@ class TestEndToEndOnJsonBackends:
         assert "chunks embedding baseline" in out
         assert "Workspace cleared" in out
         assert (workspace_dir / "kv_store_text_chunks.json").read_text() == "{}"
+        assert json.loads((config_dir / "kv_store_config.json").read_text()) == {}
+
+    async def test_a_baseline_record_that_is_not_a_row_still_clears(
+        self, tmp_path, monkeypatch, capsys, stub_server_api
+    ):
+        """The outer-depth damage, end to end on the real JSON backend --
+        where the sibling test's inner-depth damage never reaches.
+
+        ``JsonKVStorage`` normalises every row it returns, so a key mapped to
+        a STRING used to raise ``AttributeError`` from inside the backend;
+        ``read_config_row_strict`` wrapped that as "could not read
+        configuration record", the tool read it as the configuration store not
+        serving, and refused the run with nothing deleted -- on a workspace
+        whose corrupt configuration is precisely why the operator reached for
+        this tool. The record is deleted by key, so it is shown and removed.
+        """
+        import json
+
+        working_dir = tmp_path / "wd"
+        workspace_dir = working_dir / "e2e"
+        config_dir = working_dir / CONFIG_CONTAINER_TAG
+        workspace_dir.mkdir(parents=True)
+        config_dir.mkdir(parents=True)
+        (config_dir / "kv_store_config.json").write_text(
+            json.dumps({"e2e/embedding/chunks": "garbage"})
+        )
+        monkeypatch.setenv("WORKING_DIR", str(working_dir))
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
+        monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
+        monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
+        monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
+        monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
+        monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
+        monkeypatch.setenv("WORKSPACE", "e2e")
+        answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
+
+        ok = await ClearTool().run()
+        out = capsys.readouterr().out
+
+        assert ok is True
+        assert "is not a mapping" in out
+        assert "chunks embedding baseline" in out
+        assert "Workspace cleared" in out
         assert json.loads((config_dir / "kv_store_config.json").read_text()) == {}
 
 

@@ -825,6 +825,26 @@ than assume it, since `BaseKVStorage` defaults it to `False`.
 A configuration store that was deliberately emptied reads as confirmed absent
 and bootstraps again, which is correct. A store that cannot be reached does not.
 
+**One failure is typed apart, and it does not weaken the table above.** A
+record that was FETCHED but is not a row — the key maps to a string, a number,
+a list, because somebody hand-edited the file — raises
+`ConfigurationRecordMalformedError`, a `ConfigurationStorageError` subclass.
+Every caller that must stop still stops, because it inherits the parent. What
+the type buys is the caller that may legitimately go on:
+`lightrag-clear-storage` shows such a record as UNREADABLE and drops the
+workspace anyway, since the store answered — it is serving — and
+`delete_workspace_configuration` removes the record by key without ever
+reading its value. A workspace whose configuration is corrupt is exactly the
+one an operator is trying to clear, so refusing there refuses the recovery.
+
+Classifying this needs the backend's help, which is why `JsonKVStorage` raises
+`CorruptStorageRecordError` for a non-mapping payload instead of letting it
+escape as an `AttributeError` from inside its own row normalisation: an
+unrecognised exception out of a point read is indistinguishable from an
+outage, and `read_config_row_strict` would have reported one damaged row as a
+configuration backend that could not answer. The shape check on the RETURNED
+value cannot cover this — the JSON backend never gets far enough to return it.
+
 **Strictness has to survive the layer below the read, too.** On the JSON
 backend the file is read once per process tree and shared: the first instance
 to ask wins a claim, loads the file into the shared namespace dict, and every

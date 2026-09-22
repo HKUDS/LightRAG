@@ -146,8 +146,15 @@ that does not is file-backed. An unknown backend counts as a server.
 | a vector storage refuses to attach (foreign embedding space, corrupt Nano/Faiss snapshot) | dropped anyway — both are typed data-level refusals and `drop()` is servable | same |
 | the storage lacks a read capability (no key enumeration, no strict count) | that value reads `UNREADABLE`; the run goes on | same |
 | the configuration storage cannot be opened or a baseline row cannot be fetched | **refuses the run** | **refuses the run** (the records are deleted last; a store that cannot take that step is not a clean clear) |
-| a baseline row is fetched but does not parse | shown `UNREADABLE`; the row is deleted by key like any other | same |
+| a baseline record is fetched but does not parse — at either depth: the record is not a mapping at all, or it is one whose `value` is not | shown `UNREADABLE`; the record is deleted by key like any other | same |
 | `drop()` fails on one storage | the others are still dropped; the configuration records stay; exit non-zero | same |
+
+Both depths of a damaged baseline record parse as damage, and the distinction
+that decides it is *fetched* versus *not fetched*, never *readable* versus
+*not readable*: the store answered, so it is serving, and
+`delete_workspace_configuration` removes the record by key without ever
+reading its value. A configuration file someone hand-edited into an invalid
+shape is a reason to reach for this tool, not a reason for it to refuse.
 
 The reasoning: a server backend that cannot be reached will not serve the
 drop either, and clearing the storages that did answer would leave the

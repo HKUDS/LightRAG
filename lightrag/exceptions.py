@@ -882,6 +882,24 @@ class CorruptStorageSnapshotError(RuntimeError):
         self.artifacts = artifacts
 
 
+class CorruptStorageRecordError(RuntimeError):
+    """A stored row is not this storage's row shape at all.
+
+    Not "a field is missing" -- that is the caller's schema question. This is
+    the payload under a key being something other than a mapping: a string, a
+    number, a list. A KV backend normalises every row it hands back (time
+    fields, ``_id``), so it reaches for mapping methods before any caller
+    sees the value; without this the corruption escapes as an opaque
+    ``AttributeError`` from deep inside the backend, and a layer above reads
+    it as "the store is not serving" rather than "one row is damaged".
+
+    Raised by the storage, classified by whoever knows the schema. Deliberately
+    NOT a ``ConfigurationStorageError``: this can come from any namespace, and
+    ``lightrag.config_store`` translates it into the configuration-level
+    refusal when it is a configuration row.
+    """
+
+
 class ConfigurationStorageError(RuntimeError):
     """The configuration storage could not complete a read, a write or a claim.
 
@@ -896,6 +914,22 @@ class ConfigurationStorageError(RuntimeError):
     defect the strict-read rule exists to prevent: a store that could not be
     reached must never be mistaken for a store that holds nothing. See *Reads
     are strict* in docs/design/ConfigurationStorage.md.
+    """
+
+
+class ConfigurationRecordMalformedError(ConfigurationStorageError):
+    """A configuration record was FETCHED, but its shape is not a row.
+
+    The distinction this type exists to carry: the store answered, so it is
+    serving and it can still DELETE this record -- deletes go by key and never
+    read the value. Only the payload is damaged.
+
+    Everything that must stop on any unreadable record keeps stopping, because
+    this is a ``ConfigurationStorageError``. What it buys is the caller that
+    can legitimately go on: ``lightrag-clear-storage`` shows such a record as
+    UNREADABLE and drops the workspace anyway, since a workspace whose
+    configuration is corrupt is exactly the one an operator is trying to
+    clear. Read on TYPE, never on message text.
     """
 
 

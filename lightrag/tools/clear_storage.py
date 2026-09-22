@@ -75,6 +75,7 @@ from lightrag.constants import (
     DEFAULT_EMBEDDING_BATCH_NUM,
 )
 from lightrag.exceptions import (
+    ConfigurationRecordMalformedError,
     ConfigurationStorageError,
     CorruptStorageSnapshotError,
     StorageCapabilityError,
@@ -591,11 +592,23 @@ class ClearTool:
         the run. A row that was fetched but does not PARSE is exactly what
         the clear removes -- ``delete_workspace_configuration`` deletes by
         key without reading the value -- so it is shown and not obeyed.
+
+        Damage at EITHER depth parses as damage, and the two are not the same
+        shape: the row may be a mapping whose ``value`` is not one
+        (``EmbeddingBaseline.from_row`` refuses it), or the record under the
+        key may not be a mapping at all (``ConfigurationRecordMalformedError``
+        from the strict read). Only the second used to refuse the run, which
+        left the tool unable to clear a workspace whose configuration file had
+        been hand-damaged -- the case it exists for.
         """
         out: Dict[str, Any] = {}
         for target in EMBEDDING_TARGETS:
             key = embedding_baseline_key(self.workspace, target)
-            row = await read_config_row_strict(self.configuration_storage, key)
+            try:
+                row = await read_config_row_strict(self.configuration_storage, key)
+            except ConfigurationRecordMalformedError as e:
+                out[target] = Unreadable(str(e))
+                continue
             if row is None:
                 out[target] = None
                 continue

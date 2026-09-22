@@ -54,7 +54,9 @@ from enum import Enum
 from typing import Any, AsyncIterator, Callable
 
 from lightrag.exceptions import (
+    ConfigurationRecordMalformedError,
     ConfigurationStorageError,
+    CorruptStorageRecordError,
     EmbeddingBaselineMismatchError,
     ReferencesIntactFlushError,
 )
@@ -494,7 +496,15 @@ def warn_about_unrecorded_baselines(
 
 
 async def read_config_row_strict(config: Any, key: str) -> dict[str, Any] | None:
-    """``None`` means CONFIRMED absent; anything that could not be confirmed raises."""
+    """``None`` means CONFIRMED absent; anything that could not be confirmed raises.
+
+    Two kinds of raise, told apart by TYPE and not by message: the store could
+    not answer (``ConfigurationStorageError``), or it answered with something
+    that is not a row (``ConfigurationRecordMalformedError``). Both stop a
+    start, so nothing that must refuse stops refusing. The difference is for
+    the caller that may legitimately go on -- a record it is about to DELETE
+    by key, which never reads the value.
+    """
     if not getattr(type(config), "supports_strict_point_reads", False):
         raise ConfigurationStorageError(
             f"{type(config).__name__} does not declare strict point reads, so a "
@@ -504,12 +514,20 @@ async def read_config_row_strict(config: Any, key: str) -> dict[str, Any] | None
         row = await config.get_by_id_strict(key)
     except ConfigurationStorageError:
         raise
+    except CorruptStorageRecordError as e:
+        # The backend reached the row and found it was not one. It never got
+        # far enough to RETURN the payload, so the shape check below cannot
+        # see this case -- without this branch it arrives as the generic
+        # "could not read" above and reads as an outage.
+        raise ConfigurationRecordMalformedError(
+            f"configuration record {key!r} is not a mapping: {e}"
+        ) from e
     except Exception as e:
         raise ConfigurationStorageError(
             f"could not read configuration record {key!r} ({type(e).__name__}: {e})"
         ) from e
     if row is not None and not isinstance(row, dict):
-        raise ConfigurationStorageError(
+        raise ConfigurationRecordMalformedError(
             f"configuration record {key!r} is not a mapping: {row!r}"
         )
     return row
