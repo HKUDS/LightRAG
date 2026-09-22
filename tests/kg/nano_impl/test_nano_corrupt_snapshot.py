@@ -110,12 +110,40 @@ async def test_initialize_refuses_a_corrupt_snapshot(tmp_path, corrupt):
 
 
 @pytest.mark.asyncio
-async def test_a_snapshot_nested_past_the_parser_is_corruption(tmp_path):
+async def test_a_parse_that_recursed_away_is_corruption(tmp_path, monkeypatch):
     """Valid JSON the parser cannot finish is still a statement about the
     BYTES, so it belongs to recovery. ``RecursionError`` is a ``RuntimeError``
     subclass, so it escaped the caught set and left `lightrag-rebuild-vdb`
     with a bare exception -- and a target it never registered as corrupt,
-    which is the one path that could have repaired the file."""
+    which is the one path that could have repaired the file.
+
+    Injected rather than written as a deeply nested file: whether a given
+    depth exhausts the stack depends on the interpreter and its recursion
+    limit, and what is pinned here is the CLASSIFICATION, not the parser's.
+    """
+    storage = await _seeded_storage(tmp_path)
+    import lightrag.kg.nano_vector_db_impl as module
+
+    def too_deep(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(module, "NanoVectorDB", too_deep)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert exc_info.value.container == storage._client_file_name
+    assert isinstance(exc_info.value.__cause__, RecursionError)
+    assert Path(storage._client_file_name).exists(), "refusing preserves the file"
+
+
+@pytest.mark.asyncio
+async def test_a_deeply_nested_snapshot_refuses_however_the_parser_fails(tmp_path):
+    """The real file, with no claim about WHICH exception it produces: on one
+    interpreter the stack runs out, on another the parse succeeds and the
+    payload is the wrong shape. Both are corruption, and neither may escape
+    as a bare exception."""
     storage = await _seeded_storage(tmp_path)
     client_file = storage._client_file_name
     depth = sys.getrecursionlimit() * 2
@@ -126,8 +154,7 @@ async def test_a_snapshot_nested_past_the_parser_is_corruption(tmp_path):
         await fresh.initialize()
 
     assert exc_info.value.container == client_file
-    assert isinstance(exc_info.value.__cause__, RecursionError)
-    assert Path(client_file).exists(), "refusing preserves the file"
+    assert Path(client_file).exists()
 
 
 @pytest.mark.asyncio
