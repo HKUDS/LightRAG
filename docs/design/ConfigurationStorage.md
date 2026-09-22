@@ -102,6 +102,16 @@ configuration backend — explicit or inherited — is outside them, because
 validation that approves a file the server then refuses is worse than no
 validation.
 
+**The flows that do not own storage still write the file.** `make env-base`
+and `make env-server` preserve the storage settings they find and then rewrite
+the `.env`, so an unadmitted configuration backend — explicit, or an unset
+selection following `LIGHTRAG_KV_STORAGE` — would be preserved into a file
+reported as successfully written and refused at the next start, with nothing in
+the wizard's output saying why. Both flows therefore run the same admitted
+check before writing, and ask for a backend exactly when the file is otherwise
+unstartable: a sound `.env` is left byte-identical, so the promise those flows
+make about not touching storage holds everywhere it can.
+
 The wizard never moves the container as a side effect, by any route. There are
 three of them — dropping an explicit selection, following a `kv_storage` that
 changed, and falling through to the generic prompt when the new KV backend is
