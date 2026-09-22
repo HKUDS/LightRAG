@@ -254,6 +254,18 @@ def answer_prompts(monkeypatch, *answers):
     monkeypatch.setattr("builtins.input", fake_input)
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(text: str) -> str:
+    """The rendered summary with its colour codes removed.
+
+    Assertions about WHAT is printed use this; the two tests that pin the
+    highlighting look at the raw text on purpose.
+    """
+    return ANSI_RE.sub("", text)
+
+
 def seed_input_dir(tmp_path):
     inputs = tmp_path / "inputs"
     (inputs / "__parsed__").mkdir(parents=True)
@@ -324,9 +336,82 @@ class TestSummary:
             "b.pdf",
         ], "only top-level files; __parsed__ contents are preserved"
         assert "two.pdf" in out and "one.txt" in out
-        assert "Text chunks: has data" in out
-        assert "processed      1" in out
+        assert "Text chunks: has data" in plain(out)
+        assert "processed      1" in plain(out)
         assert "LLM response cache" in out, "the operator is told what survives"
+
+    async def test_every_populated_storage_is_highlighted(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """The point of the colour: an operator scanning a screenful of zeros
+        for the lines that say real data is about to go should not have to
+        read it. Every verdict that means "this holds something" is yellow --
+        the document total and each non-zero status count, text_chunks, the
+        graph, a populated vector index, and the input file count."""
+        seed_input_dir(tmp_path)
+        tool = make_tool(
+            tmp_path,
+            counts={DocStatus.PROCESSED: 4, DocStatus.FAILED: 2},
+        )
+        tool.storages["entities_vdb"].is_empty = AsyncMock(return_value=False)
+
+        tool.print_summary(await tool.collect_summary())
+        out = capsys.readouterr().out
+
+        for populated in (
+            f"{clear_storage.BOLD_YELLOW}6 total{clear_storage.RESET}",
+            f"Text chunks: {clear_storage.BOLD_YELLOW}has data{clear_storage.RESET}",
+            f"Knowledge graph: {clear_storage.BOLD_YELLOW}has entities and "
+            f"relations{clear_storage.RESET}",
+            f"{clear_storage.BOLD_YELLOW}has vectors{clear_storage.RESET}",
+        ):
+            assert populated in out, f"not highlighted: {populated!r}"
+
+        # The per-status breakdown and the input files, same rule.
+        assert f"processed      {clear_storage.BOLD_YELLOW}4" in out
+        assert f"failed         {clear_storage.BOLD_YELLOW}2" in out
+        assert f": {clear_storage.BOLD_YELLOW}2{clear_storage.RESET}\n" in out, (
+            "the input file count is data going away too"
+        )
+
+    async def test_nothing_that_holds_nothing_is_highlighted(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """The mirror, and the half that makes the colour mean anything: a
+        zero, an EMPTY and a "(none recorded)" stay plain, so a yellow line
+        is always a line worth stopping at."""
+        tool = make_tool(tmp_path, counts={})
+        tool.storages["text_chunks"].iter_rows = rows_stream([])
+        tool.storages["chunk_entity_relation_graph"].get_popular_labels = AsyncMock(
+            return_value=[]
+        )
+
+        tool.print_summary(await tool.collect_summary())
+        out = capsys.readouterr().out
+
+        assert clear_storage.BOLD_YELLOW not in out, (
+            "an empty workspace must render with no highlight at all"
+        )
+        assert "Text chunks: EMPTY" in out
+        assert "Knowledge graph: EMPTY" in out
+        assert "(none recorded)" in out
+
+    async def test_an_unreadable_value_stays_red_not_yellow(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """UNREADABLE is not a populated verdict: "unknown" must not borrow
+        the colour that means "present", or the two stop being tellable
+        apart at a glance."""
+        tool = make_tool(tmp_path)
+        tool.storages["text_chunks"].iter_rows = rows_stream(
+            error=OSError("kv file unreadable")
+        )
+
+        tool.print_summary(await tool.collect_summary())
+        out = capsys.readouterr().out
+
+        assert f"Text chunks: {clear_storage.BOLD_RED}UNREADABLE" in out
+        assert f"Text chunks: {clear_storage.BOLD_YELLOW}" not in out
 
     async def test_the_recent_list_asks_for_the_ten_most_recently_updated(
         self, tmp_path, stub_baselines
@@ -548,7 +633,7 @@ class TestSummary:
         tool.print_summary(summary)
 
         assert summary["text_chunks"] == "has data"
-        assert "Text chunks: has data" in capsys.readouterr().out
+        assert "Text chunks: has data" in plain(capsys.readouterr().out)
         kv.is_empty.assert_not_called()
 
     async def test_a_clean_end_of_the_row_stream_is_empty(
@@ -613,7 +698,9 @@ class TestSummary:
         tool.print_summary(summary)
 
         assert summary["graph"] == "has entities and relations"
-        assert "Knowledge graph: has entities and relations" in capsys.readouterr().out
+        assert "Knowledge graph: has entities and relations" in plain(
+            capsys.readouterr().out
+        )
 
     async def test_a_graph_with_entities_but_no_relations_says_so(
         self, tmp_path, stub_baselines
@@ -1450,9 +1537,9 @@ class TestEndToEndOnJsonBackends:
         out = capsys.readouterr().out
 
         assert ok is True
-        assert "processed      1" in out and "failed         1" in out
+        assert "processed      1" in plain(out) and "failed         1" in plain(out)
         assert "two.txt" in out and "one.txt" in out
-        assert "Text chunks: has data" in out
+        assert "Text chunks: has data" in plain(out)
         assert "Knowledge graph: EMPTY" in out, (
             "the real NetworkX storage was seeded with no entities"
         )

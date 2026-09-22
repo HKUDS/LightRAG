@@ -140,7 +140,32 @@ STORAGE_KIND_OF_LABEL: Dict[str, str] = {
 BOLD_CYAN = "\033[1;36m"
 BOLD_RED = "\033[1;31m"
 BOLD_GREEN = "\033[1;32m"
+BOLD_YELLOW = "\033[1;33m"
 RESET = "\033[0m"
+
+# The per-storage verdicts, as constants because the summary PRODUCES them and
+# ``print_summary`` has to RECOGNISE them to highlight -- two string literals
+# that must agree across four hundred lines are two that eventually will not.
+#
+# Every one of these means the same thing: this storage holds something the
+# confirmation is about to destroy. They are the answers an operator scans for
+# before typing the phrase, so they are the ones that get colour; EMPTY, a
+# zero, a no-op backend and "(none recorded)" stay plain, and UNREADABLE keeps
+# red because "unknown" is not "present".
+STATE_HAS_DATA = "has data"
+STATE_HAS_VECTORS = "has vectors"
+STATE_HAS_ENTITIES = "has entities"
+STATE_HAS_ENTITIES_AND_RELATIONS = "has entities and relations"
+STATE_EMPTY = "EMPTY"
+
+POPULATED_STATES: frozenset[str] = frozenset(
+    {
+        STATE_HAS_DATA,
+        STATE_HAS_VECTORS,
+        STATE_HAS_ENTITIES,
+        STATE_HAS_ENTITIES_AND_RELATIONS,
+    }
+)
 
 
 class RemoteBackendUnavailableError(RuntimeError):
@@ -686,7 +711,7 @@ class ClearTool:
                     "the backend cannot enumerate rows and its is_empty() "
                     "cannot tell an outage from an empty store"
                 )
-            return "has data" if populated else "EMPTY"
+            return STATE_HAS_DATA if populated else STATE_EMPTY
 
         async def graph_state() -> Any:
             # The knowledge graph is the most expensive thing this run drops
@@ -699,7 +724,7 @@ class ClearTool:
             # ``get_popular_labels`` is abstract on ``BaseGraphStorage``, so
             # every backend answers it; a failure reaches ``_read``.
             if not await graph_has_nodes(graph):
-                return "EMPTY"
+                return STATE_EMPTY
             try:
                 has_edges = await graph_has_edges(graph)
             except StorageCapabilityError:
@@ -707,8 +732,8 @@ class ClearTool:
                 # implemented it. The entity count already proves the graph
                 # holds data, which is what the confirmation turns on, so the
                 # relation half is simply not reported.
-                return "has entities"
-            return "has entities and relations" if has_edges else "has entities"
+                return STATE_HAS_ENTITIES
+            return STATE_HAS_ENTITIES_AND_RELATIONS if has_edges else STATE_HAS_ENTITIES
 
         vectors: Dict[str, Any] = {}
         for label in VECTOR_LABELS:
@@ -721,7 +746,7 @@ class ClearTool:
                 continue
 
             async def is_empty(vdb=vdb) -> str:
-                return "EMPTY" if await vdb.is_empty() else "has vectors"
+                return STATE_EMPTY if await vdb.is_empty() else STATE_HAS_VECTORS
 
             vectors[label] = await self._read(label, is_empty)
 
@@ -801,10 +826,31 @@ class ClearTool:
         return items
 
     def print_summary(self, summary: Dict[str, Any]) -> None:
+        """Render the summary, colouring the answers the decision turns on.
+
+        Three colours, three meanings, and nothing else is coloured: red for
+        UNREADABLE (unknown), yellow for a storage that HOLDS something, plain
+        for one that does not. The operator is scanning a screenful of mostly
+        zeros for the lines that say real data is about to go, and a wall of
+        uniform text makes that a reading exercise.
+        """
+
         def show(value: Any) -> str:
             if isinstance(value, Unreadable):
                 return f"{BOLD_RED}UNREADABLE{RESET} ({value.reason})"
-            return str(value)
+            text = str(value)
+            if text in POPULATED_STATES:
+                return f"{BOLD_YELLOW}{text}{RESET}"
+            return text
+
+        def show_count(value: Any, suffix: str = "") -> str:
+            """A count, yellow when it is not zero. An UNREADABLE count keeps
+            red: it may well be the largest number on the screen."""
+            if isinstance(value, Unreadable):
+                return f"{show(value)}{suffix}"
+            if isinstance(value, int) and value > 0:
+                return f"{BOLD_YELLOW}{value}{suffix}{RESET}"
+            return f"{value}{suffix}"
 
         print("\n" + "=" * 60)
         print(f"{BOLD_CYAN}What will be deleted{RESET}")
@@ -828,9 +874,9 @@ class ClearTool:
         for label, reason in self.unavailable.items():
             print(f"\n⚠️  {label} did not open: {reason}")
 
-        print(f"\nDocuments by status ({show(summary['total_docs'])} total):")
+        print(f"\nDocuments by status ({show_count(summary['total_docs'], ' total')}):")
         for status_value, count in summary["counts"].items():
-            print(f"    {status_value:14s} {show(count)}")
+            print(f"    {status_value:14s} {show_count(count)}")
 
         recent = summary["recent"]
         print(f"\nMost recently updated documents (up to {RECENT_DOCS_SHOWN}):")
@@ -869,7 +915,12 @@ class ClearTool:
                 )
 
         files = summary["input_files"]
-        print(f"\nInput files to delete (top level of {self.input_dir}): {len(files)}")
+        # Not a storage, but the same question and the same consequence: these
+        # files are deleted too, and a non-zero count is data going away.
+        print(
+            f"\nInput files to delete (top level of {self.input_dir}): "
+            f"{show_count(len(files))}"
+        )
         for path in files[:RECENT_DOCS_SHOWN]:
             print(f"    {os.path.basename(path)}")
         if len(files) > RECENT_DOCS_SHOWN:

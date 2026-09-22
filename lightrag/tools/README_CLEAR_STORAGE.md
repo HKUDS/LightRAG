@@ -87,6 +87,14 @@ zero, because zero is exactly what makes an operator clear the wrong workspace.
 Whether an unreadable value stops the run depends on the backend's kind — see
 *Errors: what stops the run and what does not* below.
 
+The summary uses three colours and nothing else: **yellow** for a storage that
+holds something (`has data`, `has vectors`, `has entities`, a non-zero document
+count or total, a non-zero input file count), **red** for `UNREADABLE`, and
+plain text for everything that holds nothing. Most of the screen is normally
+zeros and `EMPTY`, so the yellow lines are exactly the ones worth stopping at
+before typing the phrase. `UNREADABLE` deliberately does not share that colour:
+unknown is not the same as present.
+
 The text chunk store is only asked whether it holds a row, through the same
 strict first-page read the startup gate uses (`iter_rows`, which raises on a
 backend failure) — not `BaseKVStorage.is_empty()`, which on the server
