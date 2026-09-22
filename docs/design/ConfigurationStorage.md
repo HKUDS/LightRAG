@@ -301,6 +301,31 @@ file it exists to protect. Five properties matter:
   would overwrite. The confirmation prompt is not a substitute: it asks the
   operator, the claim asks the filesystem.
 
+#### There is no claim on a pre-move path, because there is no pre-move server
+
+A claim on `config_dir` excludes a second process tree that asks for the same
+directory. It does **not** exclude a server from an earlier revision that
+claims a different path while writing the same file — which is what a
+compatibility claim on the old path would be for, and there is none here.
+
+The reason is that no such revision exists. Every release through `v1.5.7`,
+`main` and `dev` have no configuration storage at all: no `config` namespace,
+no `kv_store_config.json`, and no directory claim of any kind. The only code
+that ever claimed `<working_dir>` is the unmerged branch this change is stacked
+on, and the two land as one step, so `dev` goes from nothing to this layout.
+A rolling upgrade across that boundary therefore pairs a new server with an old
+one that does not know the file exists and never writes it — the old server can
+lose business data to a concurrent start, which is the unchanged residue at the
+end of this section, but it cannot overwrite a baseline it does not record.
+
+The transitional claim that once covered the old path is gone for that reason,
+and its removal is not a judgement that such a claim is unnecessary in general:
+**if the reserved-workspace layout ever ships on its own, a claim on the
+pre-move path has to come back for one release**, because from then on there
+would be a deployed predecessor writing `_lightrag_config/kv_store_config.json`
+under a different lock. That is the condition to check before removing the
+claim's absence from this document, not the file layout.
+
 #### The claim goes back last, and only after the teardown
 
 Handing the claim back is not the only thing shutdown owes: handing it back
