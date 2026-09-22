@@ -233,6 +233,11 @@ field and enumeration reads the field. The separator rule is the second lock on
 a door the row schema already closes; both stay, because reparsing a key is the
 kind of shortcut that gets reintroduced by a later patch.
 
+OpenSearch also rejects ordinary workspace/namespace names whose normalized
+index name falls into the internal reserved index family, including aliases
+supplied by `OPENSEARCH_WORKSPACE`. This happens before attaching to or creating
+an index; ownership markers remain an additional collision check.
+
 ## Row shape
 
 Uniform, so this namespace stays a configuration store rather than a place to

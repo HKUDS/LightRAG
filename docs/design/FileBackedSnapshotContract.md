@@ -458,6 +458,12 @@ persistent one fails again, loudly, in the next claimer.
 and a caller that uses it directly owes the same release
 (`release_namespace_init`).
 
+Each instance owns at most one claim: repeated `initialize()` calls, including
+concurrent calls and reinitialization after `drop()`, do not acquire extra
+holds. The held-state check and successful acquisition are serialized by the
+initialization lock. After `finalize()` releases the hold, that instance may
+initialize again.
+
 ### One file per namespace per process tree
 
 The key is `workspace:namespace`. It says nothing about which FILE backs it,

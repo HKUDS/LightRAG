@@ -60,6 +60,7 @@ from ..utils import (
     validate_workspace,
     validate_workspace_override,
 )
+from ..namespace import RESERVED_WORKSPACE_PREFIX
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -887,6 +888,16 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
         final_ns = namespace
         effective = ""
     index_name = _sanitize_index_name(final_ns)
+    # Sanitization is lossy: .lightrag_config and x_lightrag_config can
+    # reach the internal index without spelling the reserved workspace.
+    # Reject before opening a client, including environment overrides.
+    if not is_reserved_workspace(effective) and index_name.startswith(
+        _sanitize_index_name(RESERVED_WORKSPACE_PREFIX)
+    ):
+        raise ValueError(
+            f"Workspace {effective!r} and namespace {namespace!r} normalize to "
+            f"reserved LightRAG index {index_name!r}; choose another workspace"
+        )
     return effective, final_ns, index_name
 
 
