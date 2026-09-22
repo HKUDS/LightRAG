@@ -502,9 +502,28 @@ async def openai_complete_if_cache(
         # returned unchanged so upstream tolerant JSON parsing can still
         # salvage them; finish_reason is only inspected when content is empty
         # (see the empty-content diagnostics below).
-        response = await openai_async_client.chat.completions.create(
-            model=api_model, messages=messages, **kwargs
-        )
+        # Streaming responses only carry usage in the final chunk when the
+        # request opts in via stream_options.include_usage; without it the
+        # token tracker records zero for every streamed query (#2325).
+        if kwargs.get("stream") and "stream_options" not in kwargs:
+            kwargs = {**kwargs, "stream_options": {"include_usage": True}}
+        try:
+            response = await openai_async_client.chat.completions.create(
+                model=api_model, messages=messages, **kwargs
+            )
+        except BadRequestError as e:
+            # Some OpenAI-compatible gateways reject stream_options outright;
+            # retry once without it rather than failing the whole query.
+            if "stream_options" in kwargs and "stream_options" in str(e):
+                logger.warning(
+                    "Provider rejected stream_options; retrying without usage reporting"
+                )
+                kwargs.pop("stream_options", None)
+                response = await openai_async_client.chat.completions.create(
+                    model=api_model, messages=messages, **kwargs
+                )
+            else:
+                raise
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         try:
