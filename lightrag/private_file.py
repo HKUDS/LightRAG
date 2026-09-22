@@ -115,7 +115,9 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
       ``.corrupt-<token>`` name no later run will reuse.
 
     POSIX: the mode comes from ``os.open``'s 0600, which the umask can only
-    narrow, and is verified from the open descriptor.
+    narrow -- including past the OWNER's own read bit, which is restored on
+    the descriptor rather than accepted -- and is verified from that
+    descriptor.
 
     Windows: ``os.open``'s mode writes no ACL at all -- it sets the read-only
     ATTRIBUTE -- so the file would appear carrying the parent directory's
@@ -140,11 +142,29 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
             raise
         try:
             mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
+            if not mode & stat.S_IRUSR:
+                # The umask subtracts, and a umask that masks the OWNER's
+                # read bit leaves a file this process can still finish
+                # writing through the open descriptor and nobody can read
+                # afterwards -- including the operator whose only copy of the
+                # data this is once recovery drops the originals. Restoring
+                # it on the descriptor can only ADD the owner bits the umask
+                # removed; it is not the "create then tighten" shape this
+                # module refuses, because the file has never been wider than
+                # 0600 and the check below still has to pass afterwards.
+                os.fchmod(destination.fileno(), 0o600)
+                mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
                 raise PrivateFileError(
                     f"{path} was created mode {oct(mode)}, which grants group "
                     "or other access. The filesystem did not honour the "
                     "requested 0600."
+                )
+            if not mode & stat.S_IRUSR:
+                raise PrivateFileError(
+                    f"{path} is mode {oct(mode)}, which does not let its own "
+                    "owner read it back, and the mode could not be restored. "
+                    "A copy nobody can read is not a preserved copy."
                 )
         except BaseException:
             _discard(destination, path)

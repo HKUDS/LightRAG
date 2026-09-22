@@ -302,6 +302,42 @@ def test_the_file_is_0600_regardless_of_umask(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="st_mode carries no ACL on Windows")
+@pytest.mark.parametrize("umask", [0o477, 0o677, 0o777])
+def test_a_umask_that_masks_the_owner_still_leaves_a_readable_copy(tmp_path, umask):
+    """The umask only SUBTRACTS, which is safe right up until it subtracts the
+    owner's own read bit: the copy is still written through the descriptor
+    already open, and then nobody can read the one copy recovery kept.
+    """
+    target = tmp_path / "copy.bin"
+    saved = os.umask(umask)
+    try:
+        with open_private_file(str(target)) as destination:
+            destination.write(b"sensitive rows")
+    finally:
+        os.umask(saved)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_bytes() == b"sensitive rows"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="st_mode carries no ACL on Windows")
+def test_a_mode_that_cannot_be_restored_refuses_rather_than_reports_success(
+    tmp_path, monkeypatch
+):
+    """Restoring is an attempt, not a guarantee; what must not happen is a
+    successful return over a file its owner cannot read."""
+    target = tmp_path / "copy.bin"
+    monkeypatch.setattr(os, "fchmod", lambda *args: None)
+    saved = os.umask(0o677)
+    try:
+        with pytest.raises(PrivateFileError, match="owner read it back"):
+            with open_private_file(str(target)) as destination:
+                destination.write(b"never reached")
+    finally:
+        os.umask(saved)
+    assert not target.exists(), "a refusal leaves nothing behind"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="st_mode carries no ACL on Windows")
 def test_it_is_private_before_the_first_byte_is_written(tmp_path):
     """Observed from inside the body, which runs before any caller writes."""
     target = tmp_path / "copy.bin"
