@@ -7,15 +7,16 @@ import sys
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from lightrag.exceptions import VectorStorageEmptyError
+from lightrag.utils import logger
 
 
 class StartupDiagnostic(str):
     """Plain text of a startup refusal, marked for console highlighting.
 
-    The middleware sends it as the ASGI failure message and Uvicorn logs it to
-    every handler on ``uvicorn.error``, the log file included. The text itself
-    therefore never carries terminal escapes; only ``ConsoleFormatter`` adds
-    them, on output it writes to an interactive terminal.
+    Logged to every handler on the ``lightrag`` logger, the log file included,
+    so the text itself never carries terminal escapes; only
+    ``ConsoleFormatter`` adds them, on output it writes to an interactive
+    terminal.
     """
 
 
@@ -43,6 +44,11 @@ class StartupErrorMiddleware:
     Starlette sends a traceback in startup.failed before re-raising. Defer that
     message until the exception reaches us so classification uses its type,
     not text matching. Shutdown and unexpected failures retain their traceback.
+
+    The diagnostic goes to the ``lightrag`` logger, not in the ASGI message:
+    Uvicorn logs that message to ``uvicorn.error``, which ``lightrag-gunicorn``
+    silences in every worker (``gunicorn_config.post_fork``), so under Gunicorn
+    it would reach no one.
     """
 
     def __init__(self, app: ASGIApp, *, workspace: str, vector_storage: str):
@@ -86,7 +92,12 @@ class StartupErrorMiddleware:
                         "  with the current embedding configuration, and select [4]\n"
                         "  to rebuild ALL vector storages. Then restart the server."
                     )
-                    failure = {**failure, "message": StartupDiagnostic(message)}
+                    logger.error(StartupDiagnostic(message))
+                    # Without a message Uvicorn logs no second copy, and
+                    # Starlette's traceback text is dropped with it.
+                    failure = {
+                        key: value for key, value in failure.items() if key != "message"
+                    }
                 await send(failure)
             # Preserve the exception for ASGI callers. Uvicorn sees the explicit
             # startup.failed and exits without logging a second traceback.
