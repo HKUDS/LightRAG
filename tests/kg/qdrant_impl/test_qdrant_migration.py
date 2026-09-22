@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 import numpy as np
@@ -61,8 +63,9 @@ async def test_qdrant_collection_naming(mock_qdrant_client, mock_embedding_func)
         workspace="test_ws",
     )
 
-    # Verify collection name contains model suffix
-    expected_suffix = "test_model_768d"
+    # Verify collection name contains model suffix plus the identity digest.
+    digest = hashlib.sha256(b"test-model").hexdigest()[:8]
+    expected_suffix = f"test_model_768d_{digest}"
     assert expected_suffix in storage.final_namespace
     assert storage.final_namespace == f"lightrag_vdb_chunks_{expected_suffix}"
 
@@ -236,8 +239,9 @@ async def test_scenario_1_new_workspace_creation(
     # Initialize storage
     await storage.initialize()
 
-    # Verify: Should create new collection with model suffix
-    expected_collection = "lightrag_vdb_chunks_text_embedding_3_large_3072d"
+    # Verify: Should create new collection with model suffix and digest.
+    digest = hashlib.sha256(b"text-embedding-3-large").hexdigest()[:8]
+    expected_collection = f"lightrag_vdb_chunks_text_embedding_3_large_3072d_{digest}"
     assert storage.final_namespace == expected_collection
 
     # Verify create_collection was called with correct name
@@ -344,7 +348,10 @@ async def test_scenario_2_legacy_upgrade_migration(
     await storage.initialize()
 
     # Verify: New collection should be created
-    expected_new_collection = "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
+    digest = hashlib.sha256(b"text-embedding-ada-002").hexdigest()[:8]
+    expected_new_collection = (
+        f"lightrag_vdb_chunks_text_embedding_ada_002_1536d_{digest}"
+    )
     assert storage.final_namespace == expected_new_collection
 
     # Verify migration steps
@@ -421,11 +428,13 @@ async def test_scenario_3_multi_model_coexistence(mock_qdrant_client):
     assert storage_a.final_namespace != storage_b.final_namespace
 
     # Verify: Model A collection
-    expected_collection_a = "lightrag_vdb_chunks_bge_small_768d"
+    digest_a = hashlib.sha256(b"bge-small").hexdigest()[:8]
+    expected_collection_a = f"lightrag_vdb_chunks_bge_small_768d_{digest_a}"
     assert storage_a.final_namespace == expected_collection_a
 
     # Verify: Model B collection
-    expected_collection_b = "lightrag_vdb_chunks_bge_large_1024d"
+    digest_b = hashlib.sha256(b"bge-large").hexdigest()[:8]
+    expected_collection_b = f"lightrag_vdb_chunks_bge_large_1024d_{digest_b}"
     assert storage_b.final_namespace == expected_collection_b
 
     # Verify: Different embedding dimensions are preserved

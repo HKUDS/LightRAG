@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
+import hashlib
 import os
+import re
 from dotenv import load_dotenv
 from dataclasses import dataclass, field, fields
 from typing import (
@@ -330,6 +332,104 @@ class StorageNameSpace(ABC):
         """
 
 
+# First 8 hex characters of SHA-256. Long enough to separate folded model
+# names in this scheme; short enough to keep the readable prefix.
+_COLLECTION_SUFFIX_DIGEST_HEX_LEN = 8
+
+# PostgreSQL identifiers are 63 bytes. The longest vector base table is
+# LIGHTRAG_VDB_RELATION plus the joining underscore, so every backend shares
+# this cap and one embedding configuration still resolves to one suffix.
+_PG_MAX_IDENTIFIER_LENGTH = 63
+_PG_LONGEST_VECTOR_TABLE_PREFIX = "LIGHTRAG_VDB_RELATION_"
+_MAX_COLLECTION_SUFFIX_LENGTH = _PG_MAX_IDENTIFIER_LENGTH - len(
+    _PG_LONGEST_VECTOR_TABLE_PREFIX
+)
+
+
+def _normalize_collection_model_name(model_name: Any) -> str | None:
+    """Stripped model name, or ``None`` when it cannot identify a container."""
+    if not isinstance(model_name, str):
+        return None
+    model_name = model_name.strip()
+    return model_name or None
+
+
+def _folded_model_token(model_name: str) -> str:
+    """Readable prefix: lowercased, every other character replaced with ``_``."""
+    return re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
+
+
+def _model_name_digest(model_name: str) -> str:
+    """Identity digest of an already-stripped model name."""
+    return hashlib.sha256(model_name.encode("utf-8")).hexdigest()[
+        :_COLLECTION_SUFFIX_DIGEST_HEX_LEN
+    ]
+
+
+def _legacy_folded_suffix(model_name: str, embedding_dim: int) -> str:
+    """Pre-digest suffix ``{folded}_{dim}d``.
+
+    Existing containers were created with this exact string, including when
+    it is longer than a PostgreSQL identifier. Callers look the string up;
+    they must not shorten or re-fold it. ``model_name`` is already stripped.
+    """
+    return f"{_folded_model_token(model_name)}_{embedding_dim}d"
+
+
+def _digested_collection_suffix(model_name: str, embedding_dim: int) -> str:
+    """``{folded}_{dim}d_{digest}``, capped at the PostgreSQL identifier budget.
+
+    Only the folded prefix is shortened. The dimension and the digest stay,
+    so a shortened prefix cannot merge two models or two dimensions.
+    ``model_name`` is already stripped; the digest covers that string, not
+    the folded prefix.
+    """
+    digest = _model_name_digest(model_name)
+    dim_and_digest = f"{embedding_dim}d_{digest}"
+    tail = f"_{dim_and_digest}"
+    folded = _folded_model_token(model_name)
+    budget = _MAX_COLLECTION_SUFFIX_LENGTH - len(tail)
+    if budget > 0 and len(folded) > budget:
+        folded = folded[:budget].rstrip("_")
+    elif budget <= 0:
+        folded = ""
+    suffix = f"{folded}{tail}" if folded else dim_and_digest
+    if len(suffix) <= _MAX_COLLECTION_SUFFIX_LENGTH:
+        return suffix
+    # A pathological dimension crowds out the prefix. Keep the digest at the
+    # end so cutting the head cannot collapse two identities.
+    keep = _MAX_COLLECTION_SUFFIX_LENGTH - len(digest) - 1
+    if keep <= 0:
+        return digest[:_MAX_COLLECTION_SUFFIX_LENGTH]
+    return f"{suffix[:keep].rstrip('_')}_{digest}"
+
+
+def _resolve_pre_digest_container_adoption(
+    *,
+    digested_exists: bool,
+    legacy_exists: bool,
+    legacy_owner: str | None,
+    model_name: str,
+) -> bool:
+    """Whether to attach the digested name to a pre-digest container.
+
+    True means rename it (Milvus, PostgreSQL) or alias the digested name
+    onto it (Qdrant). False means open or create the digested container and
+    leave the pre-digest one untouched.
+
+    A recorded owner other than ``model_name`` is a different embedding
+    identity that only folded to the same prefix. ``legacy_owner is None``
+    means the container predates the record; the first model to initialize
+    may claim it. Residues and the per-backend mechanics are in
+    ``docs/design/VectorSpaceProvenance.md``.
+    """
+    if digested_exists or not legacy_exists:
+        return False
+    if legacy_owner is not None and legacy_owner != model_name:
+        return False
+    return True
+
+
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
     requires_embedding_func: ClassVar[bool] = True
@@ -354,32 +454,53 @@ class BaseVectorStorage(StorageNameSpace, ABC):
                 "Please provide a valid EmbeddingFunc instance."
             )
 
+    def _collection_model_name(self) -> str | None:
+        """Stripped ``embedding_func.model_name``, or ``None`` when unset."""
+        return _normalize_collection_model_name(
+            getattr(self.embedding_func, "model_name", None)
+        )
+
     def _generate_collection_suffix(self) -> str | None:
-        """Generates collection/table suffix from embedding_func.
+        """Suffix that isolates one embedding model and one dimension.
 
-        Return suffix if model_name exists in embedding_func, otherwise return None.
-        Note: embedding_func is guaranteed to exist (validated in __post_init__).
+        ``None`` when ``model_name`` is missing, not a string, or blank after
+        ``strip()``. Otherwise ``{folded}_{dim}d_{digest}``: ``folded`` is the
+        stripped name lowercased with every other character turned into ``_``,
+        and ``digest`` is the first 8 hex characters of SHA-256 over that same
+        stripped name. Case and punctuation are part of the identity. Leading
+        and trailing whitespace are not.
 
-        Returns:
-            str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
+        The folded prefix may be shortened so the suffix still fits in a
+        PostgreSQL identifier after ``LIGHTRAG_VDB_RELATION_``. The dimension
+        and the digest are kept.
+
+        Containers created before the digest are named by
+        ``_legacy_folded_collection_suffix``. Adopting those onto this suffix
+        without orphaning them, and without claiming another model's
+        container, is the caller's job. See
+        ``docs/design/VectorSpaceProvenance.md``.
         """
-        import re
-
-        # Check if model_name exists (model_name is optional in EmbeddingFunc)
-        model_name = getattr(self.embedding_func, "model_name", None)
-        if not isinstance(model_name, str):
+        model_name = _normalize_collection_model_name(
+            getattr(self.embedding_func, "model_name", None)
+        )
+        if model_name is None:
             return None
+        return _digested_collection_suffix(
+            model_name, self.embedding_func.embedding_dim
+        )
 
-        model_name = model_name.strip()
-        if not model_name:
+    def _legacy_folded_collection_suffix(self) -> str | None:
+        """Pre-digest suffix, or ``None`` when no model name is configured.
+
+        Lookup key for containers created before the digest. Distinct raw
+        names can still share it, so it is not a name to allocate.
+        """
+        model_name = _normalize_collection_model_name(
+            getattr(self.embedding_func, "model_name", None)
+        )
+        if model_name is None:
             return None
-
-        # embedding_dim is required in EmbeddingFunc
-        embedding_dim = self.embedding_func.embedding_dim
-
-        # Generate suffix: clean model name and append dimension
-        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
-        return f"{safe_model_name}_{embedding_dim}d"
+        return _legacy_folded_suffix(model_name, self.embedding_func.embedding_dim)
 
     @abstractmethod
     async def query(

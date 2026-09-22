@@ -6,6 +6,7 @@ TestVectorStorageBatching to keep behaviour aligned across backends.
 """
 
 import asyncio
+import hashlib
 import os
 
 import numpy as np
@@ -575,8 +576,11 @@ async def test_env_workspace_override_shares_flush_lock(patch_namespace_lock):
     with patch.dict(os.environ, {"MILVUS_WORKSPACE": "shared_ws"}, clear=False):
         a = _make_storage(embed, workspace="caller_a")
         b = _make_storage(embed, workspace="caller_b")
+        digest = hashlib.sha256(b"mock-embed").hexdigest()[:8]
         assert (
-            a.final_namespace == b.final_namespace == "shared_ws_entities_mock_embed_8d"
+            a.final_namespace
+            == b.final_namespace
+            == f"shared_ws_entities_mock_embed_8d_{digest}"
         )
         assert a._flush_lock is b._flush_lock
         # Sanity: only one lock object was cached for that final_namespace.
@@ -682,7 +686,8 @@ async def test_drop_recreates_empty_without_legacy_migration():
         result = await s.drop()
 
     assert result["status"] == "success"
-    s._client.drop_collection.assert_called_once_with(s.final_namespace)
+    dropped = [call.args[0] for call in s._client.drop_collection.call_args_list]
+    assert dropped == [s._pre_digest_collection_name(), s.final_namespace]
     create_empty.assert_called_once_with(s.final_namespace)
     load.assert_called_once_with()
     # Never the migration-capable path.

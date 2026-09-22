@@ -58,10 +58,8 @@ def test_declared_model_name_normalizes_one_way_for_every_backend(configured, ex
 
 
 def test_marker_records_the_unfolded_model_name():
-    # The collection-name suffix folds this to text_embedding_3_large_3072d;
-    # recording the folded form would lose the distinction from
-    # "text_embedding_3_large", which is the blind spot the marker exists to
-    # close on the suffixed backends.
+    # The marker stores the configured name. A folded collection-name prefix
+    # would not tell "text-embedding-3-large" from "text_embedding_3_large".
     marker = vector_space_marker(
         _Embedder(model_name="text-embedding-3-large", embedding_dim=3072)
     )

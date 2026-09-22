@@ -3,7 +3,7 @@
 Each test drives ``setup_table`` / ``initialize`` / ``drop`` against a mocked
 ``PostgreSQLDB`` -- no running PostgreSQL instance required.
 
-The backend's CONTAINER NAME carries the embedding model (``{base_table}_{folded_model}_{dim}d``), so it
+The backend's CONTAINER NAME carries the embedding model (``{base_table}_{folded_model}_{dim}d_{digest}``), so it
 records no provenance marker: a model change lands in a different container by
 construction. What it still owes issue #3978 is the other half of the contract:
 

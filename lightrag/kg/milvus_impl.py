@@ -18,7 +18,7 @@ from lightrag.utils import (
     _wait_deferring_cancellation,
     validate_workspace,
 )
-from ..base import BaseVectorStorage
+from ..base import BaseVectorStorage, _resolve_pre_digest_container_adoption
 from ..constants import (
     DEFAULT_MAX_FILE_PATH_LENGTH,
     DEFAULT_QUERY_PRIORITY,
@@ -42,6 +42,15 @@ from pymilvus import (  # type: ignore
     FieldSchema,
 )
 from packaging import version
+
+
+class PreDigestAdoptionError(RuntimeError):
+    """Renaming a pre-digest collection failed and its data is still there.
+
+    Must not fall through to the force-create path: that path drops and
+    recreates the digested name, which would permanently shadow the
+    pre-digest collection.
+    """
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -2259,10 +2268,83 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
             raise
 
+    def _pre_digest_collection_name(self) -> str | None:
+        """Collection name used before the suffix digest, or ``None``.
+
+        Milvus puts the workspace in the collection name, so each workspace
+        adopts its own collection.
+        """
+        legacy_suffix = self._legacy_folded_collection_suffix()
+        if not getattr(self, "model_suffix", None) or not legacy_suffix:
+            return None
+        name = f"{self.legacy_namespace}_{legacy_suffix}"
+        if name == self.final_namespace:
+            return None
+        return name
+
+    def _adopt_pre_digest_collection(self) -> None:
+        """Rename a pre-digest collection onto the digested name.
+
+        The rename is the claim. A second model that folds to the same prefix
+        finds the old name gone. A rename that loses that race, and finds the
+        old name gone, returns so the caller can create an empty collection.
+        A rename that fails while the old collection is still there raises
+        ``PreDigestAdoptionError`` instead of letting force-create shadow it.
+        """
+        pre_digest = self._pre_digest_collection_name()
+        model_name = self._collection_model_name()
+        if not pre_digest or not model_name:
+            return
+        if self._client.has_collection(self.final_namespace):
+            return
+        if not self._client.has_collection(pre_digest):
+            return
+        if not _resolve_pre_digest_container_adoption(
+            digested_exists=False,
+            legacy_exists=True,
+            legacy_owner=None,
+            model_name=model_name,
+        ):
+            return
+        logger.warning(
+            "[%s] Adopting pre-digest Milvus collection '%s' as '%s'. "
+            "The digested name isolates model identities that folding used to "
+            "merge. An older build will not see this collection until it is "
+            "renamed back.",
+            self.workspace,
+            pre_digest,
+            self.final_namespace,
+        )
+        try:
+            self._client.rename_collection(pre_digest, self.final_namespace)
+        except Exception as exc:
+            if self._client.has_collection(self.final_namespace):
+                return
+            try:
+                still_there = bool(self._client.has_collection(pre_digest))
+            except Exception:
+                still_there = True
+            if not still_there:
+                logger.warning(
+                    "[%s] Pre-digest collection '%s' was claimed by another "
+                    "model name; creating '%s' empty.",
+                    self.workspace,
+                    pre_digest,
+                    self.final_namespace,
+                )
+                return
+            raise PreDigestAdoptionError(
+                f"Failed to adopt pre-digest Milvus collection '{pre_digest}' "
+                f"as '{self.final_namespace}': {exc}"
+            ) from exc
+
     def _create_collection_if_not_exist(self):
         """Create collection if not exists and check existing collection compatibility"""
 
         try:
+            # Before the existence check, so an absent digested name is renamed
+            # onto rather than created empty beside the pre-digest collection.
+            self._adopt_pre_digest_collection()
             collection_exists = self._client.has_collection(self.final_namespace)
             logger.info(
                 f"[{self.workspace}] VectorDB collection '{self.namespace}' exists check: {collection_exists}"
@@ -2352,9 +2434,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Successfully created Milvus collection: {self.namespace}"
             )
 
-        except RuntimeError:
-            # Re-raise RuntimeError (validation failures) without modification
-            # These are critical errors that should stop execution
+        except (RuntimeError, PreDigestAdoptionError):
+            # Re-raise RuntimeError (validation failures) without modification.
+            # PreDigestAdoptionError means the pre-digest collection is still
+            # the only copy of the vectors; force-create below would shadow it.
             raise
 
         except Exception as e:
@@ -3572,6 +3655,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             legacy data behind) and forces a needless full migration on every
             rebuild/clear.
             """
+            # Drop the pre-digest collection too. A clear before the first
+            # adopting start otherwise leaves it in place, the recreate below
+            # publishes an empty digested collection, and the next initialize
+            # skips adoption because that name already exists.
+            pre_digest = self._pre_digest_collection_name()
+            if pre_digest and self._client.has_collection(pre_digest):
+                self._client.drop_collection(pre_digest)
             if self._client.has_collection(self.final_namespace):
                 self._client.drop_collection(self.final_namespace)
             self._create_collection_with_schema(self.final_namespace)

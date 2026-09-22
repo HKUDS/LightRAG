@@ -32,6 +32,7 @@ from ..base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    _resolve_pre_digest_container_adoption,
     CursorAfter,
     CursorPosition,
     DocProcessingStatus,
@@ -364,6 +365,102 @@ def _safe_index_name(table_name: str, index_suffix: str) -> str:
     shortened_name = f"idx_{table_hash}_{index_suffix}"
 
     return shortened_name
+
+
+_PG_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Index suffixes this storage creates from the table name. Renaming them with
+# the table keeps ``_create_vector_index`` from building a second HNSW index
+# on the first start after the suffix digest is introduced.
+_PRE_DIGEST_INDEX_SUFFIXES = (
+    "id",
+    "workspace_id",
+    *_VECTOR_INDEX_SUFFIXES,
+)
+
+
+def _require_pg_ident(name: str) -> str:
+    """Reject anything that must not be interpolated into DDL."""
+    if not _PG_IDENT_RE.fullmatch(name):
+        raise ValueError(f"Refusing to interpolate unsafe PostgreSQL identifier {name!r}")
+    return name
+
+
+async def _rename_pg_index_if_present(db: Any, old_name: str, new_name: str) -> None:
+    """Rename ``old_name`` to ``new_name`` when only the old index exists."""
+    if old_name == new_name:
+        return
+    if not await db.check_table_exists(old_name):
+        return
+    if await db.check_table_exists(new_name):
+        return
+    await db.execute(
+        f"ALTER INDEX {_require_pg_ident(old_name)} "
+        f"RENAME TO {_require_pg_ident(new_name)}"
+    )
+
+
+async def _adopt_pre_digest_vector_table(
+    db: Any, old_table: str, new_table: str, model_name: str
+) -> bool:
+    """Rename a pre-digest vector table onto its digested name.
+
+    Returns True when this call renamed the table. A digested table that
+    already exists is left untouched, and so is the pre-digest table beside
+    it. A concurrent rename that takes the pre-digest table for a different
+    model leaves this caller to create its own table empty — the vectors
+    stay with the claimant.
+
+    Index names derived from the table are renamed first so a crash between
+    the two steps retries cleanly: the next start finds the new index names
+    already taken and only has the table rename left.
+    """
+    if old_table.lower() == new_table.lower():
+        return False
+    if await db.check_table_exists(new_table):
+        return False
+    if not await db.check_table_exists(old_table):
+        return False
+    if not _resolve_pre_digest_container_adoption(
+        digested_exists=False,
+        legacy_exists=True,
+        legacy_owner=None,
+        model_name=model_name,
+    ):
+        return False
+
+    logger.warning(
+        "PostgreSQL: adopting pre-digest vector table '%s' as '%s'. "
+        "The digested name isolates model identities that folding used to "
+        "merge. An older build will not see this table until it is renamed back.",
+        old_table,
+        new_table,
+    )
+    for suffix in _PRE_DIGEST_INDEX_SUFFIXES:
+        await _rename_pg_index_if_present(
+            db,
+            _safe_index_name(old_table, suffix),
+            _safe_index_name(new_table, suffix),
+        )
+    try:
+        await db.execute(
+            f"ALTER TABLE {_require_pg_ident(old_table)} "
+            f"RENAME TO {_require_pg_ident(new_table)}"
+        )
+    except Exception:
+        if await db.check_table_exists(new_table):
+            return True
+        if not await db.check_table_exists(old_table):
+            logger.warning(
+                "PostgreSQL: pre-digest table '%s' disappeared during adoption; "
+                "'%s' will be created empty. The vectors stayed with whichever "
+                "model claimed the old table.",
+                old_table,
+                new_table,
+            )
+            return False
+        raise
+    return True
 
 
 def _timing_details_suffix(**details: Any) -> str:
@@ -4384,6 +4481,20 @@ class PGVectorStorage(BaseVectorStorage):
                 "PostgreSQL: Manual deletion is required after data migration verification."
             )
 
+    def _pre_digest_table_name(self) -> str | None:
+        """Table name used before the suffix digest, or ``None`` when it matches.
+
+        Shared across workspaces (the workspace is a column). Adoption renames
+        the whole table; ``drop`` deletes only this workspace's rows.
+        """
+        legacy_suffix = self._legacy_folded_collection_suffix()
+        if not getattr(self, "model_suffix", None) or not legacy_suffix:
+            return None
+        name = f"{self.legacy_table_name}_{legacy_suffix}"
+        if name.lower() == self.table_name.lower():
+            return None
+        return name
+
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
@@ -4431,6 +4542,16 @@ class PGVectorStorage(BaseVectorStorage):
             if self._flush_lock is None:
                 self._flush_lock = get_namespace_lock(
                     self.namespace, workspace=self.workspace
+                )
+
+            # Rename a pre-digest table onto the digested name before
+            # setup_table looks at it. Doing it afterwards would create an
+            # empty digested table and leave the existing one unread.
+            pre_digest_table = self._pre_digest_table_name()
+            model_name = self._collection_model_name()
+            if pre_digest_table and model_name:
+                await _adopt_pre_digest_vector_table(
+                    self.db, pre_digest_table, self.table_name, model_name
                 )
 
             # Setup table (create if not exists and handle migration)
@@ -5426,6 +5547,21 @@ class PGVectorStorage(BaseVectorStorage):
                         table_name=self.table_name
                     )
                     await self.db.execute(drop_sql, {"workspace": self.workspace})
+
+                # Adoption renames this table onto the digested name on the next
+                # start. Rows left here would come back under that name, so a
+                # clear has to remove this workspace's rows while the old name
+                # still exists. Other workspaces' rows stay.
+                pre_digest_table = self._pre_digest_table_name()
+                if pre_digest_table and await self.db.check_table_exists(
+                    pre_digest_table
+                ):
+                    pre_digest_sql = SQL_TEMPLATES[
+                        "drop_specifiy_table_workspace"
+                    ].format(table_name=pre_digest_table)
+                    await self.db.execute(
+                        pre_digest_sql, {"workspace": self.workspace}
+                    )
 
                 # Also clear this workspace's rows from the kept legacy table so
                 # the next startup does not re-migrate the just-cleared data

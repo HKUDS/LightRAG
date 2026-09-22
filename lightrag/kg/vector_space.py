@@ -8,9 +8,10 @@ be *recorded* next to the vectors, never inferred from the dimension.
 
 Only the backends whose container NAME carries no model information need this:
 Nano, FAISS, MongoDB and OpenSearch. Milvus, Qdrant and PostgreSQL encode
-``{folded_model}_{dim}d`` in the collection or table name, so a model change
-already lands in a different container and a second copy of that fact would
-only drift.
+``{folded_model}_{dim}d_{digest}`` in the collection or table name (``digest``
+is the first 8 hex characters of SHA-256 over the stripped model name), so a
+model change already lands in a different container and a second copy of that
+fact would only drift.
 
 This module owns the three pieces those four need and nothing else: what "this
 instance's model" means, what gets written into the container's marker, and the
@@ -45,10 +46,9 @@ def declared_model_name(embedding_func: Any) -> str | None:
     with no ``model_name``, an empty or whitespace-only name, or a non-string.
 
     The name is returned **unfolded**: exactly as configured, not lowercased
-    and not character-folded the way ``_generate_collection_suffix`` folds it
-    for a collection name. That folding is what makes the suffix unable to
-    tell ``text-embedding-3-large`` from ``text_embedding_3_large``; recording
-    the folded form here would import the same blind spot.
+    and not character-folded. ``_generate_collection_suffix`` keeps a folded
+    prefix for readability and appends a digest of this same string. The
+    marker stores the configured name, not that filename token.
     """
     model_name = getattr(embedding_func, "model_name", None)
     if not isinstance(model_name, str):

@@ -7,6 +7,8 @@ This test suite validates:
 """
 
 import asyncio
+import hashlib
+
 import pytest
 from unittest.mock import MagicMock, patch
 from lightrag.kg.milvus_impl import (
@@ -269,7 +271,10 @@ class TestMilvusIndexCreation:
         )
 
         assert storage.legacy_namespace == "space1_chunks"
-        assert storage.final_namespace == "space1_chunks_text_embedding_3_large_3072d"
+        digest = hashlib.sha256(b"text-embedding-3-large").hexdigest()[:8]
+        assert storage.final_namespace == (
+            f"space1_chunks_text_embedding_3_large_3072d_{digest}"
+        )
 
     def test_model_suffix_collection_naming_without_workspace(self):
         storage = MilvusVectorDBStorage(
@@ -286,7 +291,10 @@ class TestMilvusIndexCreation:
         )
 
         assert storage.legacy_namespace == "entities"
-        assert storage.final_namespace == "entities_qwen3_embedding_4b_2560d"
+        digest = hashlib.sha256(b"qwen3-embedding:4b").hexdigest()[:8]
+        assert storage.final_namespace == (
+            f"entities_qwen3_embedding_4b_2560d_{digest}"
+        )
 
     @pytest.mark.parametrize("model_name", ["", "   ", 123])
     def test_missing_or_invalid_model_name_keeps_legacy_collection_name(

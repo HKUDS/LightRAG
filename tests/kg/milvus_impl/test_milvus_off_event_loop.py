@@ -502,8 +502,12 @@ async def test_cancelling_drop_defers_until_the_collection_is_recreated():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # The collection was actually rebuilt, not left missing.
-    s._client.drop_collection.assert_called_once()
+    # The collection was actually rebuilt, not left missing. The pre-digest
+    # name is dropped in the same rebuild so a later initialize cannot rename
+    # it back over the empty collection.
+    dropped = [call.args[0] for call in s._client.drop_collection.call_args_list]
+    assert s._pre_digest_collection_name() in dropped
+    assert s.final_namespace in dropped
     s._client.create_collection.assert_called_once()
     s._client.load_collection.assert_called_once()
     assert not s._flush_lock.locked()
@@ -756,7 +760,9 @@ async def test_drop_waits_for_an_in_flight_read_before_removing_the_collection()
     release_read.set()
     assert await asyncio.wait_for(query_task, timeout=5) == []
     assert (await asyncio.wait_for(drop_task, timeout=5))["status"] == "success"
-    assert order == ["search", "drop"]
+    # search finishes before either drop. The second drop is the pre-digest
+    # collection, removed in the same rebuild as the digested one.
+    assert order == ["search", "drop", "drop"]
 
 
 @pytest.mark.asyncio
@@ -805,7 +811,7 @@ async def test_a_shutdown_cancelling_every_task_still_recreates_the_collection()
         if "create" in order:
             break
         await asyncio.sleep(0.01)
-    assert order == ["drop", "create"], (
+    assert order == ["drop", "drop", "create"], (
         "the collection was left missing after a shutdown cancellation"
     )
     s._client.load_collection.assert_called()

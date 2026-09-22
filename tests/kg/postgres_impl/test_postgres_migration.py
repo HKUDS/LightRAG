@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from unittest.mock import patch, AsyncMock
 import numpy as np
@@ -86,8 +88,9 @@ async def test_postgres_table_naming(
         workspace="test_ws",
     )
 
-    # Verify table name contains model suffix
-    expected_suffix = "test_model_768d"
+    # Verify table name contains model suffix plus the identity digest.
+    digest = hashlib.sha256(b"test_model").hexdigest()[:8]
+    expected_suffix = f"test_model_768d_{digest}"
     assert expected_suffix in storage.table_name
     assert storage.table_name == f"LIGHTRAG_VDB_CHUNKS_{expected_suffix}"
 

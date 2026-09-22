@@ -10,7 +10,8 @@ from typing import Any, List, final
 import numpy as np
 import pipmaster as pm
 
-from ..base import BaseVectorStorage
+from ..base import BaseVectorStorage, _resolve_pre_digest_container_adoption
+from ..kg.vector_space import VECTOR_SPACE_MODEL_KEY
 from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
@@ -29,6 +30,23 @@ class _PendingVectorDoc:
     source: dict[str, Any]
     content: str
     vector: list[float] | None = None
+
+
+def _qdrant_collection_model_owner(info: Any) -> str | None:
+    """Raw model name recorded on a collection, or ``None`` when absent.
+
+    A missing or unreadable metadata payload is "not recorded". It is not
+    evidence that some other model owns the collection.
+    """
+    config = getattr(info, "config", None)
+    metadata = getattr(config, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    owner = metadata.get(VECTOR_SPACE_MODEL_KEY)
+    if not isinstance(owner, str):
+        return None
+    owner = owner.strip()
+    return owner or None
 
 
 DEFAULT_WORKSPACE = "_"
@@ -540,7 +558,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         self.model_suffix = self._generate_collection_suffix()
 
         # New naming scheme with model isolation
-        # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
+        # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d_<digest>"
         # Ensure model_suffix is not empty before appending
         if self.model_suffix:
             self.final_namespace = f"lightrag_vdb_{self.namespace}_{self.model_suffix}"
@@ -704,6 +722,118 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         return batches
 
+    def _pre_digest_collection_name(self) -> str | None:
+        """Physical collection name used before the suffix digest.
+
+        Qdrant collections are shared across workspaces, so the name has no
+        workspace in it. ``None`` when there is no separate pre-digest name.
+        """
+        legacy_suffix = self._legacy_folded_collection_suffix()
+        if not getattr(self, "model_suffix", None) or not legacy_suffix:
+            return None
+        name = f"lightrag_vdb_{self.namespace}_{legacy_suffix}"
+        if name == self.final_namespace:
+            return None
+        return name
+
+    def _adopt_pre_digest_collection(self) -> None:
+        """Alias the digested name onto a pre-digest collection.
+
+        Qdrant has no rename. The physical collection keeps the pre-digest
+        name, so a downgrade still opens it, and the digested name is an
+        alias. Collection metadata records the raw model name; a different
+        owner is not aliased. A metadata write the server rejects still
+        aliases — the vectors stay reachable, and the log says a fold
+        collision on this collection cannot be told apart.
+
+        A failure to *read* the collection raises. Creating an empty digested
+        collection beside an unread pre-digest one would orphan it.
+        """
+        physical = self._pre_digest_collection_name()
+        model_name = self._collection_model_name()
+        if not physical or not model_name or self._client is None:
+            return
+        digested_exists = bool(self._client.collection_exists(self.final_namespace))
+        legacy_exists = bool(self._client.collection_exists(physical))
+        owner: str | None = None
+        if legacy_exists and not digested_exists:
+            owner = _qdrant_collection_model_owner(
+                self._client.get_collection(physical)
+            )
+        if not _resolve_pre_digest_container_adoption(
+            digested_exists=digested_exists,
+            legacy_exists=legacy_exists,
+            legacy_owner=owner,
+            model_name=model_name,
+        ):
+            if legacy_exists and not digested_exists and owner not in (None, model_name):
+                logger.warning(
+                    "Qdrant: pre-digest collection '%s' is owned by %r, not %r. "
+                    "Leaving it in place and creating '%s'.",
+                    physical,
+                    owner,
+                    model_name,
+                    self.final_namespace,
+                )
+            return
+
+        metadata_recorded = owner == model_name
+        if not metadata_recorded:
+            try:
+                self._client.update_collection(
+                    collection_name=physical,
+                    metadata={VECTOR_SPACE_MODEL_KEY: model_name},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Qdrant: could not record embedding-model owner on '%s' (%s). "
+                    "Aliasing '%s' onto it so existing vectors stay reachable. "
+                    "A second model name that folds to the same prefix can still "
+                    "share this collection until the vectors are rebuilt.",
+                    physical,
+                    exc,
+                    self.final_namespace,
+                )
+            else:
+                try:
+                    owner = _qdrant_collection_model_owner(
+                        self._client.get_collection(physical)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Qdrant: could not re-read owner of '%s' (%s). "
+                        "Aliasing from the owner known before the write.",
+                        physical,
+                        exc,
+                    )
+                if owner is not None and owner != model_name:
+                    logger.warning(
+                        "Qdrant: pre-digest collection '%s' is owned by %r, not %r. "
+                        "Leaving it in place and creating '%s'.",
+                        physical,
+                        owner,
+                        model_name,
+                        self.final_namespace,
+                    )
+                    return
+
+        self._client.update_collection_aliases(
+            change_aliases_operations=[
+                models.CreateAliasOperation(
+                    create_alias=models.CreateAlias(
+                        collection_name=physical,
+                        alias_name=self.final_namespace,
+                    )
+                )
+            ]
+        )
+        logger.warning(
+            "Qdrant: aliased '%s' to pre-digest collection '%s'. "
+            "The physical name is unchanged, so an older build still opens it.",
+            self.final_namespace,
+            physical,
+        )
+
     async def initialize(self):
         """Initialize Qdrant collection"""
         async with get_data_init_lock():
@@ -725,6 +855,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     logger.debug(
                         f"[{self.workspace}] QdrantClient created successfully"
                     )
+
+                # Alias a pre-digest collection before setup_collection creates
+                # an empty one under the digested name.
+                self._adopt_pre_digest_collection()
 
                 # Setup collection (create if not exists and configure indexes)
                 # Pass namespace and workspace for backward-compatible migration support
@@ -1469,6 +1603,24 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 if self._client.collection_exists(self.final_namespace):
                     self._client.delete(
                         collection_name=self.final_namespace,
+                        points_selector=workspace_selector,
+                        wait=True,
+                    )
+
+                # The digested name may be an alias of this physical collection,
+                # or the physical collection may still be the only copy because
+                # adoption has not run. Deleting this workspace's points under
+                # both names is the same collection when the alias is in place,
+                # and is the pre-digest data when it is not. Never drop the
+                # collection: other workspaces share it.
+                pre_digest = self._pre_digest_collection_name()
+                if (
+                    pre_digest
+                    and pre_digest != self.final_namespace
+                    and self._client.collection_exists(pre_digest)
+                ):
+                    self._client.delete(
+                        collection_name=pre_digest,
                         points_selector=workspace_selector,
                         wait=True,
                     )

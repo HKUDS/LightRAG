@@ -42,10 +42,16 @@ The split in the last column is the whole design:
   name.** A same-dimension model swap reuses the *same* container and nothing
   notices. These four need a recorded marker — they are the only backends where
   the marker is load-bearing.
-- **Milvus, Qdrant and PostgreSQL already encode `{folded_model}_{dim}d` in the
-  container name.** A model change lands in a different container by
-  construction. **They record no separate marker**: a second copy of a fact the
-  name already carries is redundant, and two copies of a fact drift apart.
+- **Milvus, Qdrant and PostgreSQL encode `{folded_model}_{dim}d_{digest}` in the
+  container name.** `digest` is the first 8 hex characters of SHA-256 over the
+  stripped model name, so two names that fold to the same token do not share a
+  container. A model change still lands in a different container by
+  construction. **They record no separate marker on the digested name**: a
+  second copy of a fact the name already carries is redundant, and two copies
+  of a fact drift apart. The exception is a pre-digest Qdrant collection, which
+  cannot be renamed; adoption records the model name in that collection's
+  metadata so a second folded name does not alias onto it. See the residue
+  below.
 
 Qdrant is worth stating explicitly because its collection name carries no
 workspace, which reads like a gap and is not one. It uses Qdrant's own
@@ -80,10 +86,10 @@ recorded next to the vectors** — never inferred.
 | `assert_vector_space_matches(...)` | the verdict, so the backends cannot drift apart on it |
 
 The recorded name is **unfolded** — exactly as configured. The collection-name
-suffix (`BaseVectorStorage._generate_collection_suffix`) lowercases and folds
-every non-alphanumeric character to `_`, so `text-embedding-3-large` and
-`text_embedding_3_large` produce the same suffix. Recording the folded name would
-import that blind spot into the marker.
+suffix (`BaseVectorStorage._generate_collection_suffix`) keeps a folded readable
+prefix and appends a digest of the stripped model name. The prefix alone still
+collapses case and punctuation, so the marker stores the configured name rather
+than that prefix.
 
 ### Absent evidence never refuses
 
@@ -401,13 +407,58 @@ enumerate sibling containers per backend, or ask the cross-storage question,
 Per *Consistency without transactions* in `AGENTS.md`, each of these is a
 decision with a recovery path, not an oversight.
 
-**Fold collision on Milvus / Qdrant / PostgreSQL.** The suffix lowercases and
-folds punctuation, so two models whose names differ only in case or punctuation
-share a container undetected. Accepted because a *harmful* collision needs two
-genuinely different models whose names differ only that way **and** which share a
-dimension; in practice such name pairs are the same model spelled differently by
-different providers or config files, which is benign. Recovery:
-`lightrag-rebuild-vdb`.
+**Pre-digest container names.** Suffixes created before the identity digest are
+`{folded}_{dim}d` with no digest. Allocating only the digested name would make
+every existing Milvus collection, Qdrant collection, and PostgreSQL table
+invisible and serve an empty container beside the one that holds the vectors.
+Adoption runs when the digested container is absent and the pre-digest container
+is present:
+
+- **Milvus** renames the collection onto the digested name. The rename is the
+  claim. A second raw model that folds to the same prefix finds the old name
+  gone and creates its own empty collection. The collection name includes the
+  workspace, so each workspace adopts its own.
+- **PostgreSQL** renames the table and the index names derived from it (`id`,
+  `workspace_id`, and the vector-index suffixes) so startup does not build a
+  second vector index. The rename is the claim, same as Milvus. The table is
+  shared across workspaces; only the name changes.
+- **Qdrant** has no rename. The physical collection keeps the pre-digest name,
+  which is also what a downgrade opens. The digested name is an alias. Before
+  aliasing, collection metadata `lightrag_embedding_model` is set to the raw
+  model name when it is absent. A different recorded owner is not aliased; that
+  model gets a new collection. If the server rejects the metadata write, the
+  alias is still created and a fold collision on that one collection remains
+  shared — the failure is logged, and the vectors are not orphaned. The
+  collection is shared across workspaces, so the alias is too.
+
+`drop()` clears the pre-digest container for this workspace as well. A clear
+before the first adopting start would otherwise leave the old container full.
+Milvus then recreates an empty digested collection, and the next initialize
+skips adoption because that name already exists. PostgreSQL adoption would
+rename the still-full table back into service. Milvus drops the pre-digest
+collection (it is per workspace). PostgreSQL and Qdrant delete this workspace's
+rows or points and leave the shared container for other workspaces. Qdrant
+never drops that collection from a single workspace's clear.
+
+**First claimant of a shared pre-digest container.** A container that already
+held two fold-colliding models cannot be split. Whichever model initializes
+first keeps the vectors. The other starts empty. Recovery: `lightrag-rebuild-vdb`
+for the model that did not keep them.
+
+**Downgrade.** Milvus and PostgreSQL will not see a renamed container. Rename it
+back to the pre-digest name before running an older build, and only when no
+second model has already created its own digested container. Qdrant's physical
+name is unchanged, so a downgrade still opens it; the alias is ignored.
+
+**Simultaneous first adoption on Qdrant.** Two colliding models can both alias
+onto the physical collection if each writes the owner and reads it back before
+the other's write is visible. Recovery: delete the alias that should not own
+the collection and rebuild that model. Milvus and PostgreSQL do not have this
+window; one rename wins and the other finds the source gone.
+
+**Case is part of the identity.** `BAAI/bge-m3` and `baai/bge-m3` no longer share
+a suffix. The spelling configured at the adopting start is the one that keeps
+the existing vectors. Changing only the case afterwards is a new container.
 
 **No `EMBEDDING_MODEL` configured.** Milvus, Qdrant and PostgreSQL fall back to
 an un-suffixed container (`qdrant_impl.py`, `milvus_impl.py`,
