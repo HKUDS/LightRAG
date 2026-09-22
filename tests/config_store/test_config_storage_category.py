@@ -28,7 +28,7 @@ from lightrag import LightRAG, config_store as cs
 from lightrag.exceptions import EmbeddingBaselineMismatchError
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG, default_config_dir
+from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace, default_config_dir
 from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
 pytestmark = pytest.mark.offline
@@ -199,6 +199,61 @@ class TestTheSelectionIsRefusedByName:
         rag = _rag(tmp_path, config_storage="JsonKVStorage")
         assert rag.config_storage == "JsonKVStorage"
         assert type(rag.configuration_storage) is JsonKVStorage
+
+
+class TestTheFactoryIsTheOnlyDoorInThisPackage:
+    """The container is addressed by NAMESPACE, and that is the design.
+
+    Nothing gates a direct ``JsonKVStorage(namespace="config", ...)``: an
+    in-process caller that can construct a backend can equally call the
+    factory, import ``config_store`` and write the rows, or open the file --
+    there is no privilege boundary between them, and the grant token that
+    would pretend otherwise is exactly what this change retired. What CAN be
+    kept true is that the package itself has one door, so the invariant the
+    namespace rests on -- nothing else is ever opened on it -- is a property
+    of the tree rather than a hope.
+    """
+
+    def test_only_the_factory_constructs_a_configuration_storage(self):
+        import ast
+        from pathlib import Path
+
+        package = Path(cs.__file__).parent
+        offenders = []
+        for source in package.rglob("*.py"):
+            tree = ast.parse(source.read_text(encoding="utf-8"), str(source))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg != "namespace":
+                        continue
+                    value = keyword.value
+                    names_it = (
+                        isinstance(value, ast.Constant)
+                        and value.value == NameSpace.KV_STORE_CONFIG
+                    ) or (
+                        isinstance(value, ast.Attribute)
+                        and value.attr == "KV_STORE_CONFIG"
+                    )
+                    if names_it:
+                        offenders.append(f"{source.relative_to(package)}:{node.lineno}")
+        assert offenders and all(
+            offender.startswith("config_store.py") for offender in offenders
+        ), (
+            "the config namespace is constructed outside "
+            f"create_configuration_storage(): {offenders}"
+        )
+
+    def test_the_factory_refuses_a_backend_that_rebinds_the_container(self):
+        class Rebinds:
+            def __init__(self, **kwargs):
+                self.workspace = "somewhere-else"
+
+        with pytest.raises(cs.ConfigurationStorageError, match="must not be remapped"):
+            cs.create_configuration_storage(
+                Rebinds, global_config={}, embedding_func=None
+            )
 
 
 class TestTwoDeploymentsShareTheContainer:

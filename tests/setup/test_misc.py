@@ -2458,6 +2458,165 @@ printf '%s\\n' "${{CONFIG_STORAGE_OPTIONS[@]}}"
         )
 
 
+class TestTheNonStorageFlowsDoNotWriteAnUnstartableFile:
+    """``env-base`` and ``env-server`` do not own storage -- but they WRITE.
+
+    Both preserve the storage settings they find and then rewrite the .env. A
+    file whose configuration backend is outside the four is refused by name at
+    construction, so preserving it and reporting a successful write hands the
+    operator a deployment that goes down on the next restart, with nothing in
+    the wizard's output saying why. The guard asks exactly one question, and
+    only when the file is otherwise unstartable.
+
+    See docs/design/ConfigurationStorage.md.
+    """
+
+    def _ensure(
+        self,
+        *,
+        kv: str = "",
+        existing_config: str = "",
+        previous_kv: str = "",
+        previous_config: str = "",
+        env: dict[str, str] | None = None,
+        stdin: str = "",
+    ) -> dict[str, str]:
+        assignments = [
+            f'ENV_VALUES[{key}]="{value}"' for key, value in (env or {}).items()
+        ]
+        if kv:
+            assignments.append(f'ENV_VALUES[LIGHTRAG_KV_STORAGE]="{kv}"')
+        if existing_config:
+            assignments.append(
+                f'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="{existing_config}"'
+            )
+        if previous_kv:
+            assignments.append(
+                f'ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]="{previous_kv}"'
+            )
+        if previous_config:
+            assignments.append(
+                f'ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]="{previous_config}"'
+            )
+        return parse_lines(
+            run_bash_process(
+                f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+{chr(10).join(assignments)}
+ensure_config_storage_is_startable
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
+""",
+                stdin=stdin,
+            ).stdout
+        )
+
+    @pytest.mark.parametrize(
+        "kv",
+        ["JsonKVStorage", "PGKVStorage", "MongoKVStorage", "OpenSearchKVStorage", ""],
+    )
+    def test_a_startable_file_is_left_exactly_as_it_was(self, kv):
+        """Including a file that names no KV backend: the server's own default
+        is admitted, so there is nothing to ask about and nothing to write."""
+        assert self._ensure(kv=kv)["WRITTEN"] == "<unset>"
+
+    def test_an_admitted_explicit_selection_is_not_re_asked(self):
+        values = self._ensure(kv="RedisKVStorage", existing_config="PGKVStorage")
+        assert values["WRITTEN"] == "PGKVStorage"
+
+    def test_an_inherited_redis_backend_is_asked_about_and_written(self):
+        """The file the server refuses: Redis KV with the selection following
+        it. Empty stdin takes the prompt's default."""
+        values = self._ensure(kv="RedisKVStorage", stdin="\n")
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    def test_an_explicit_value_outside_the_four_is_asked_about(self):
+        values = self._ensure(
+            kv="PGKVStorage", existing_config="RedisKVStorage", stdin="\n"
+        )
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    POSTGRES = {
+        "POSTGRES_USER": "lightrag",
+        "POSTGRES_PASSWORD": "secret",
+        "POSTGRES_DATABASE": "lightrag",
+    }
+
+    def test_the_prompt_defaults_to_where_the_baselines_are(self):
+        """Same rule as ``select_config_storage``: a backend that cannot hold
+        configuration does not take the records with it, so the default is the
+        container that has them rather than the file-backed fallback."""
+        values = self._ensure(
+            kv="RedisKVStorage",
+            previous_kv="PGKVStorage",
+            env=self.POSTGRES,
+            stdin="\n",
+        )
+        assert values["WRITTEN"] == "PGKVStorage"
+
+    def test_only_backends_this_env_is_already_configured_for_are_offered(self):
+        """Neither flow has a database-configuration step.
+
+        Offering a backend whose connection settings are missing swaps one
+        unstartable .env for another -- refused a step later by
+        ``check_storage_env_vars`` instead of by the category. The file-backed
+        backend needs nothing; a server backend qualifies only once this .env
+        carries its variables.
+        """
+        result = run_bash_process(
+            f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ENV_VALUES[MONGO_URI]="mongodb://localhost:27017"
+ENV_VALUES[MONGO_DATABASE]="lightrag"
+for option in "${{CONFIG_STORAGE_OPTIONS[@]}}"; do
+  if config_storage_needs_no_new_settings "$option"; then
+    printf 'OFFERED=%s\\n' "$option"
+  fi
+done
+""",
+        )
+        offered = [
+            line.split("=", 1)[1]
+            for line in result.stdout.splitlines()
+            if line.startswith("OFFERED=")
+        ]
+        assert offered == ["JsonKVStorage", "MongoKVStorage"]
+
+    def test_the_prompt_itself_offers_only_the_configured_backends(self):
+        """The list is what the answer INDEXES, so filtering it is the whole
+        fix: with only JSON and MongoDB configured, the second option must be
+        MongoDB -- on the unfiltered list it is PostgreSQL, which this .env
+        has no credentials for."""
+        values = self._ensure(
+            kv="RedisKVStorage",
+            env={
+                "MONGO_URI": "mongodb://localhost:27017",
+                "MONGO_DATABASE": "lightrag",
+            },
+            stdin="2",
+        )
+        assert values["WRITTEN"] == "MongoKVStorage"
+
+    def test_an_unconfigured_records_backend_is_not_offered_as_the_default(self):
+        """The records are in PostgreSQL, but this .env has no credentials for
+        it -- so it cannot be the answer, and the prompt must not default to a
+        choice it does not offer."""
+        values = self._ensure(
+            kv="RedisKVStorage", previous_kv="PGKVStorage", stdin="\n"
+        )
+        assert values["WRITTEN"] == "JsonKVStorage"
+
+    @pytest.mark.parametrize("flow", ["env_base_flow", "env_server_flow"])
+    def test_both_non_storage_flows_run_the_guard(self, flow):
+        """The guard is only worth anything where it is called from."""
+        source = (REPO_ROOT / "scripts/setup/setup.sh").read_text(encoding="utf-8")
+        body = source.split(f"{flow}() {{", 1)[1].split("\n}\n", 1)[0]
+        assert "ensure_config_storage_is_startable" in body
+
+
 class TestValidationRefusesAConfigurationBackendStartupWouldReject:
     """``make env-validate`` must not approve an .env the server refuses.
 

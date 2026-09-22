@@ -61,14 +61,39 @@ class PrivateFileError(RuntimeError):
     """
 
 
-def _remove_quietly(path: str) -> None:
+def _remove_quietly(path: str, identity=None) -> None:
     """Delete a file WE created and no longer want.
 
     Only ever called on a path this module has just brought into existence.
     A failure is logged, never raised: it is always running while another
     exception is on its way out, and replacing that one with "could not clean
     up" would hide why anything was being cleaned up at all.
+
+    ``identity`` is an ``os.stat_result`` taken from the open descriptor. The
+    delete is by NAME, and the name is only ours while nobody rearranges the
+    directory, so when the identity is known the name is checked against it
+    first and a stranger is left alone -- the same rule
+    ``windows_create_exclusive`` states for the collision case: deleting
+    somebody else's file is the failure worth avoiding, and leaving our own
+    partial one behind is merely untidy. The check narrows the window rather
+    than closing it: nothing here is atomic, and the residue is that a
+    directory another process can write remains a directory where cleanup can
+    lose the race. Without an identity (the Windows path before the handle
+    becomes a descriptor, where ``dwShareMode=0`` keeps the file unopenable
+    while it is held) the delete is unconditional, as before.
     """
+    if identity is not None:
+        try:
+            on_disk = os.lstat(path)
+        except OSError as stat_error:
+            logger.warning(f"Could not check the unused file {path}: {stat_error}")
+            return
+        if (on_disk.st_dev, on_disk.st_ino) != (identity.st_dev, identity.st_ino):
+            logger.warning(
+                f"Not removing {path}: it is no longer the file this process "
+                "created, so deleting it would destroy somebody else's"
+            )
+            return
     try:
         os.remove(path)
     except OSError as removal_error:
@@ -77,11 +102,18 @@ def _remove_quietly(path: str) -> None:
 
 def _discard(destination, path: str) -> None:
     """Close and delete a file we created, without masking the reason."""
+    identity = None
+    try:
+        identity = os.fstat(destination.fileno())
+    except (OSError, ValueError):
+        # Already closed, or a stat that failed: the delete then falls back to
+        # the unconditional one rather than being skipped.
+        pass
     try:
         destination.close()
     except OSError as close_error:
         logger.warning(f"Could not close the unused file {path}: {close_error}")
-    _remove_quietly(path)
+    _remove_quietly(path, identity)
 
 
 @contextlib.contextmanager
@@ -115,7 +147,9 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
       ``.corrupt-<token>`` name no later run will reuse.
 
     POSIX: the mode comes from ``os.open``'s 0600, which the umask can only
-    narrow, and is verified from the open descriptor.
+    narrow -- including past the OWNER's own read bit, which is restored on
+    the descriptor rather than accepted -- and is verified from that
+    descriptor.
 
     Windows: ``os.open``'s mode writes no ACL at all -- it sets the read-only
     ATTRIBUTE -- so the file would appear carrying the parent directory's
@@ -134,17 +168,47 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
         try:
             destination = os.fdopen(fd, "wb")
         except BaseException:
-            # fdopen did not take ownership, so the descriptor is still ours.
+            # fdopen did not take ownership, so the descriptor is still ours,
+            # and it still says which file this name meant.
+            try:
+                identity = os.fstat(fd)
+            except OSError:
+                identity = None
             os.close(fd)
-            _remove_quietly(path)
+            _remove_quietly(path, identity)
             raise
         try:
             mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
+            # The mode the file was CREATED with is the evidence, and it is
+            # read first: a umask only ever subtracts, so a group or other bit
+            # here means the filesystem ignored the requested 0600 outright,
+            # and someone may already hold a descriptor on it. Restoring
+            # anything before this is asked would overwrite the proof and
+            # accept the file.
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
                 raise PrivateFileError(
                     f"{path} was created mode {oct(mode)}, which grants group "
                     "or other access. The filesystem did not honour the "
                     "requested 0600."
+                )
+            if not mode & stat.S_IRUSR:
+                # What the umask CAN do is subtract the owner's own read bit,
+                # which leaves a file this process still finishes writing
+                # through the open descriptor and nobody can read afterwards
+                # -- including the operator whose only copy of the data this
+                # is once recovery drops the originals. Restoring it on the
+                # descriptor can only ADD back what the umask took; it is not
+                # the "create then tighten" shape this module refuses, because
+                # the file has never been wider than 0600 and both checks are
+                # re-asked below.
+                os.fchmod(destination.fileno(), 0o600)
+                mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
+            if mode & (stat.S_IRWXG | stat.S_IRWXO) or not mode & stat.S_IRUSR:
+                raise PrivateFileError(
+                    f"{path} is mode {oct(mode)}, which does not let its own "
+                    "owner read it back without granting anyone else access, "
+                    "and the mode could not be restored. A copy nobody can "
+                    "read is not a preserved copy."
                 )
         except BaseException:
             _discard(destination, path)
@@ -245,8 +309,12 @@ def _open_private_file_windows(path: str) -> IO[bytes]:
     try:
         return os.fdopen(fd, "wb")
     except BaseException:
+        try:
+            identity = os.fstat(fd)
+        except OSError:
+            identity = None
         os.close(fd)
-        _remove_quietly(path)
+        _remove_quietly(path, identity)
         raise
 
 
@@ -523,6 +591,134 @@ def _windows_sids_equal(kernel32, advapi32, ctypes, left: str, right: str) -> bo
         kernel32.LocalFree(first)
 
 
+# The access rights an SDDL mask field can name, by VALUE (from sddl.h and
+# winnt.h). A mask has several spellings -- an alias, a concatenation of
+# two-letter rights, or hex -- so it is parsed rather than compared as text,
+# the same reason the SID field is compared through ``EqualSid``.
+_SDDL_RIGHTS = {
+    # generic
+    "GA": 0x10000000,
+    "GR": 0x80000000,
+    "GW": 0x40000000,
+    "GX": 0x20000000,
+    # standard
+    "SD": 0x00010000,  # DELETE
+    "RC": 0x00020000,  # READ_CONTROL
+    "WD": 0x00040000,  # WRITE_DAC
+    "WO": 0x00080000,  # WRITE_OWNER
+    # object-specific, as SDDL spells them for a file
+    "CC": 0x00000001,
+    "DC": 0x00000002,
+    "LC": 0x00000004,
+    "SW": 0x00000008,
+    "RP": 0x00000010,
+    "WP": 0x00000020,
+    "DT": 0x00000040,
+    "LO": 0x00000080,
+    "CR": 0x00000100,
+    # file
+    "FA": 0x001F01FF,
+    "FR": 0x00120089,
+    "FW": 0x00120116,
+    "FX": 0x001200A0,
+    # registry key, which a file DACL will not carry but SDDL can spell
+    "KA": 0x000F003F,
+    "KR": 0x00020019,
+    "KW": 0x00020006,
+    "KX": 0x00020019,
+}
+
+_DELETE = 0x00010000
+_FILE_ALL_ACCESS = 0x001F01FF
+_FILE_GENERIC_READ = 0x00120089
+_FILE_GENERIC_WRITE = 0x00120116
+_FILE_GENERIC_EXECUTE = 0x001200A0
+_GENERIC_ALL = 0x10000000
+_GENERIC_READ = 0x80000000
+_GENERIC_EXECUTE = 0x20000000
+
+# What the owner must still be able to do with a file this module created:
+# read it back and, eventually, delete it. ``FA`` is what is asked for and
+# carries both; this is the floor the read-back proves, not a bit-for-bit
+# comparison of the request, because the same rights have more than one
+# spelling and not every difference matters.
+_REQUIRED_RIGHTS = _FILE_GENERIC_READ | _DELETE
+
+
+# SDDL ACE-flag tokens. Only one of them decides whether the entry applies to
+# the object it is ON: ``IO``, inherit-only, which hands the rights to
+# children this object does not have and to nothing else. The inheritance
+# flags beside it (``CI``/``OI``/``NP``) describe children too, and a FILE has
+# none, so they change nothing here; ``ID`` says the entry arrived by
+# inheritance, which a protected DACL makes odd but does not make ineffective.
+_SDDL_ACE_FLAGS = frozenset({"CI", "OI", "NP", "IO", "ID", "SA", "FA"})
+_INHERIT_ONLY = "IO"
+
+
+def _ace_applies_to_this_object(field: str) -> bool:
+    """Whether an ACE carrying these flags grants anything to the object.
+
+    ``False`` for an inherit-only entry, and for a flags field this cannot
+    read: an unknown spelling is not evidence that the ACE applies, the same
+    rule the mask parser follows one field over.
+    """
+    text = field.strip().upper()
+    if not text:
+        return True
+    if len(text) % 2:
+        return False
+    tokens = {text[index : index + 2] for index in range(0, len(text), 2)}
+    if not tokens <= _SDDL_ACE_FLAGS:
+        return False
+    return _INHERIT_ONLY not in tokens
+
+
+def _sddl_access_mask(field: str) -> int | None:
+    """The numeric rights an SDDL mask field grants, or ``None`` if unreadable.
+
+    ``None`` is "this cannot be interpreted", which the caller must treat as a
+    refusal: an unknown spelling is not evidence that the rights are there.
+    """
+    text = field.strip()
+    if not text:
+        return None
+    if text[:2].lower() == "0x":
+        try:
+            return int(text, 16)
+        except ValueError:
+            return None
+    if text.isdigit():
+        return int(text, 10)
+    if len(text) % 2:
+        return None
+    mask = 0
+    for index in range(0, len(text), 2):
+        value = _SDDL_RIGHTS.get(text[index : index + 2].upper())
+        if value is None:
+            return None
+        mask |= value
+    return mask
+
+
+def _map_generic_file_rights(mask: int) -> int:
+    """Expand the generic bits into what they mean for a FILE.
+
+    A read-back file DACL normally carries specific rights, because generic
+    ones are mapped when the ACE is applied. A filesystem that answers with
+    ``GA`` anyway is granting full access, not less, so the mapping is applied
+    before the rights are checked rather than refusing the spelling.
+    """
+    for generic, specific in (
+        (_GENERIC_ALL, _FILE_ALL_ACCESS),
+        (_GENERIC_READ, _FILE_GENERIC_READ),
+        (_GENERIC_WRITE, _FILE_GENERIC_WRITE),
+        (_GENERIC_EXECUTE, _FILE_GENERIC_EXECUTE),
+    ):
+        if mask & generic:
+            mask |= specific
+    return mask
+
+
 def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) -> None:
     """Refuse a DACL that is not exactly "protected, this SID alone".
 
@@ -530,12 +726,22 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) ->
     half of the verification that encodes what "private" means, and the half
     most likely to be wrong.
 
-    Three conditions, each for its own reason. ``D:P`` -- without the protect
+    Five conditions, each for its own reason. ``D:P`` -- without the protect
     flag the entries below are whatever the parent directory dictates today
     and can change under the file tomorrow. Exactly one entry -- a second one
-    is a second audience, whatever it grants. And that entry must be an allow
-    for this SID, because an entry for anyone else is the whole failure this
-    guards.
+    is a second audience, whatever it grants. That entry must be an allow for
+    this SID, because an entry for anyone else is the whole failure this
+    guards. It must APPLY to this file -- an inherit-only entry passes every
+    condition above while granting its rights to children a file cannot have.
+    And it must still GRANT the owner read and delete: the first three
+    conditions are all about who is kept out, and a mask the filesystem
+    downgraded satisfies every one of them while leaving a file its owner
+    cannot read back or remove -- these copies are kept indefinitely and the
+    tool drops the originals once they exist, so unusable is its own loss.
+    The mask is read by value, not by text, for the same reason as the SID
+    below: ``FA``, ``0x1f01ff`` and a concatenation of two-letter rights are
+    one answer spelled three ways, and an unreadable spelling refuses rather
+    than passes.
 
     ``sid_matches`` decides the last one, and Windows callers MUST supply it.
     An SDDL SID field is not a stable spelling: the string this process wrote
@@ -573,4 +779,20 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) ->
     if len(fields) < 6 or fields[0] != "A" or not sid_matches(fields[5]):
         raise PrivateFileError(
             f"{path}: its only access entry is not an allow for {sid} ({sddl!r})"
+        )
+    if not _ace_applies_to_this_object(fields[1]):
+        raise PrivateFileError(
+            f"{path}: its only access entry carries the flags {fields[1]!r}, "
+            f"so it does not apply to this file at all -- the rights below it "
+            f"are granted to nothing ({sddl!r})"
+        )
+    granted = _sddl_access_mask(fields[2])
+    if (
+        granted is None
+        or (_map_generic_file_rights(granted) & _REQUIRED_RIGHTS) != _REQUIRED_RIGHTS
+    ):
+        raise PrivateFileError(
+            f"{path}: its only access entry grants {fields[2]!r}, which does "
+            f"not give the owner read and delete, so the file could not be "
+            f"read back or removed ({sddl!r})"
         )

@@ -41,9 +41,9 @@ jobs:
         with:
           enable-cache: true
       - name: Install locked test dependencies
-        run: uv sync --frozen --python 3.12 --extra pytest
-      - name: Install vector backends
-        run: uv pip install faiss-cpu nano-vectordb
+        # offline-storage carries faiss-cpu; installing it through the frozen
+        # sync pins it to uv.lock (nano-vectordb is a core dependency).
+        run: uv sync --frozen --python 3.12 --extra pytest --extra offline-storage
       - name: Run private-file and deletion tests
         # Run serially: native tests hold handles and change file permissions.
         run: >-
