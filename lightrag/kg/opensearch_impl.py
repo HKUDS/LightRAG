@@ -889,6 +889,23 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
         final_ns = namespace
         effective = ""
     index_name = _sanitize_index_name(final_ns)
+    # Sanitization is LOSSY -- `.`, `+` and any other character outside
+    # [a-z0-9_-] all become `_` -- so two different names can normalize to one
+    # index. The configuration container is out of reach of a workspace name
+    # (the `config` namespace never consults one), but that is an argument
+    # about today's namespaces, not a property of this function: a namespace
+    # added later could normalize a tenant's index onto the container's.
+    # Refuse that here, before a client is opened, rather than discovering it
+    # as two stores writing one index. The ownership markers stay the general
+    # collision check; this is the one case they could not repair.
+    if namespace != NameSpace.KV_STORE_CONFIG and index_name == _sanitize_index_name(
+        f"{CONFIG_CONTAINER_TAG}_{NameSpace.KV_STORE_CONFIG}"
+    ):
+        raise ValueError(
+            f"Workspace {effective!r} and namespace {namespace!r} normalize to "
+            f"the LightRAG configuration container's index {index_name!r}; "
+            f"choose another workspace"
+        )
     return effective, final_ns, index_name
 
 

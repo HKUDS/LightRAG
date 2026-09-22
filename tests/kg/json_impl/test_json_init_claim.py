@@ -472,3 +472,56 @@ async def test_a_failed_cache_flush_still_gives_the_hold_back(tmp_path, monkeypa
     other = _storage(JsonKVStorage, other_root, "cachews", "llm_response_cache")
     await other.initialize()
     await other.finalize()
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+@pytest.mark.parametrize("mode", ["sequential", "concurrent", "drop"])
+async def test_reinitialize_owns_one_hold_and_releases_the_backing(
+    tmp_path, cls, module, namespace, mode
+):
+    first = _storage(cls, tmp_path / "first", "reinit", namespace)
+    if mode == "concurrent":
+        await asyncio.gather(first.initialize(), first.initialize())
+    else:
+        await first.initialize()
+        if mode == "drop":
+            await first.drop()
+        await first.initialize()
+    # A separate live instance must still prevent rebinding after first exits.
+    peer = _storage(cls, tmp_path / "first", "reinit", namespace)
+    await peer.initialize()
+    await first.finalize()
+    replacement = _storage(cls, tmp_path / "second", "reinit", namespace)
+    with pytest.raises(SharedNamespaceBackingConflictError):
+        await replacement.initialize()
+    await peer.finalize()
+    await replacement.initialize()
+    await replacement.finalize()
+    # The same instance can acquire a new hold after a complete lifecycle.
+    await first.initialize()
+    await first.finalize()
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_reinitialize_preserves_the_dirty_flag(tmp_path, cls, module, namespace):
+    storage = _storage(cls, tmp_path, "dirty-reinit", namespace)
+    await storage.initialize()
+    flag = storage.storage_updated
+    flag.value = True
+    await storage.initialize()
+    assert storage.storage_updated is flag
+    assert storage.storage_updated.value is True
+    await storage.finalize()
+
+
+async def test_kv_pending_write_survives_reinitialize(tmp_path):
+    storage = _storage(JsonKVStorage, tmp_path, "pending-reinit", "text_chunks")
+    await storage.initialize()
+    await storage.upsert({"row": {"content": "pending data"}})
+    await storage.initialize()
+    await storage.index_done_callback()
+    saved = json.loads(
+        (tmp_path / "pending-reinit" / "kv_store_text_chunks.json").read_text()
+    )
+    assert saved["row"]["content"] == "pending data"
+    await storage.finalize()

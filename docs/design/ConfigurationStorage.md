@@ -378,6 +378,20 @@ renders the prefix afterwards. Two rows can therefore render under the same
 prefix, which is harmless: a suffix is registered with exactly one scope, so a
 tenant key and a server-global key can never be the same key.
 
+**OpenSearch normalizes lossily, and that is now a namespace question rather
+than a name one.** `_sanitize_index_name` maps every character outside
+`[a-z0-9_-]` to `_`, so `.lightrag_config` and `x_lightrag_config` reach the
+same index as `_lightrag_config` — under the reserved-name layout, those
+aliases had to be refused, including one supplied by `OPENSEARCH_WORKSPACE`.
+With the container keyed on the `config` namespace, `_resolve_workspace` does
+not consult a workspace for it at all: every spelling lands on the one
+container, so there is nothing to refuse. What `_build_index_name` still
+refuses, before a client is opened, is the mirror case the ownership markers
+could not repair — a *non-configuration* open whose index name normalizes onto
+the container's. No namespace shipped today can, which is exactly why the check
+is written against the container's own name rather than against today's
+namespace list.
+
 ## Row shape
 
 Uniform, so this namespace stays a configuration store rather than a place to
@@ -394,6 +408,11 @@ drop keys:
 ```
 
 `schema_version` is per key, not global: keys evolve independently.
+Baseline readers require an integer version equal to the key's registered
+version before interpreting its value. Missing, unsupported or incorrectly
+typed versions (including booleans) are unreadable records and raise
+`ConfigurationStorageError`; they are never treated as absent or automatically
+replaced during startup.
 
 ## Key registry
 
