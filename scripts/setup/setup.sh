@@ -1220,6 +1220,17 @@ config_storage_records_in() {
   return 0
 }
 
+config_storage_needs_no_new_settings() {
+  # Whether this backend can be chosen without collecting anything: it
+  # requires no connection variables (the file-backed one), or every variable
+  # it requires is already set in the .env being written.
+  local candidate="$1" var
+  for var in ${STORAGE_ENV_REQUIREMENTS[$candidate]:-}; do
+    [[ -n "${ENV_VALUES[$var]:-}" ]] || return 1
+  done
+  return 0
+}
+
 ensure_config_storage_is_startable() {
   # For the flows that do NOT own storage -- env-base and env-server. They
   # preserve the storage settings they find and then WRITE the file, and a
@@ -1235,32 +1246,51 @@ ensure_config_storage_is_startable() {
   local kv="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
   local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
   local resolved="${existing:-$kv}"
-  local records_in default_choice="JsonKVStorage"
+  local records_in default_choice="JsonKVStorage" option
+  local offered=()
 
   [[ -z "$resolved" ]] && return 0
   config_storage_is_admitted "$resolved" && return 0
 
+  # Only backends that need NOTHING collected. Neither of these flows has a
+  # database-configuration step, so offering a backend whose credentials are
+  # missing would swap one unstartable .env for another -- refused a step
+  # later, by `check_storage_env_vars` instead of by the category. The
+  # file-backed one always qualifies; a server backend qualifies when this
+  # deployment is already configured for it, which is exactly the case where
+  # the records are likely to be in it already.
+  for option in "${CONFIG_STORAGE_OPTIONS[@]}"; do
+    config_storage_needs_no_new_settings "$option" && offered+=("$option")
+  done
+
   records_in="$(config_storage_records_in)"
-  [[ -n "$records_in" ]] && default_choice="$records_in"
+  if [[ -n "$records_in" ]] && config_storage_needs_no_new_settings "$records_in"; then
+    default_choice="$records_in"
+  fi
 
   if [[ -n "$existing" ]]; then
     log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
       "storage backend, so the server refuses this .env at startup;" \
-      "choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+      "choose one of: ${offered[*]}"
   else
     log_warn "LIGHTRAG_KV_STORAGE=$kv cannot hold the configuration storage" \
       "(the embedding baselines), and an unset LIGHTRAG_CONFIG_STORAGE" \
       "follows it, so the server refuses this .env at startup; choose one" \
-      "of: ${CONFIG_STORAGE_OPTIONS[*]}"
+      "of: ${offered[*]}"
   fi
   log_warn "This wizard changes nothing else about storage; it asks because" \
     "writing the file without an answer would hand you one that cannot start."
+  if ((${#offered[@]} < ${#CONFIG_STORAGE_OPTIONS[@]})); then
+    log_warn "Only backends this .env is already configured for are offered;" \
+      "run 'make env-storage' to choose one that needs new connection" \
+      "settings."
+  fi
   if [[ -n "$records_in" ]]; then
     log_warn "The baselines are in $records_in and are NOT migrated; keeping" \
       "that backend leaves them readable."
   fi
   ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$(prompt_choice "Configuration storage" \
-    "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
+    "$default_choice" "${offered[@]}")"
   return 0
 }
 
