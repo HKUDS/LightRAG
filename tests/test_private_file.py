@@ -348,6 +348,38 @@ def test_a_umask_that_masks_the_owner_still_leaves_a_readable_copy(tmp_path, uma
     assert target.read_bytes() == b"sensitive rows"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="injects os.fstat, which only the POSIX branch calls",
+)
+def test_a_wide_creation_mode_is_refused_rather_than_repaired(tmp_path, monkeypatch):
+    """0044: no owner read, and group and other CAN read.
+
+    A umask only ever subtracts, so those bits mean the filesystem ignored
+    the requested 0600 outright and the file was readable by others from the
+    instant it existed -- somebody may already hold a descriptor. Restoring
+    the owner bit first would rewrite the mode to 0600 and erase the only
+    evidence of that, then accept the file. The created mode is therefore
+    read before anything is repaired.
+    """
+    target = tmp_path / "copy.bin"
+    real_fstat = os.fstat
+    repairs = []
+
+    def _wide(fd):
+        real = real_fstat(fd)
+        return os.stat_result((0o100044, *tuple(real)[1:]))
+
+    monkeypatch.setattr(os, "fstat", _wide)
+    monkeypatch.setattr(os, "fchmod", lambda *args: repairs.append(args))
+
+    with pytest.raises(PrivateFileError, match="grants group or other access"):
+        with open_private_file(str(target)) as destination:
+            destination.write(b"never reached")
+    assert repairs == [], "the evidence must be read before anything is repaired"
+    assert not target.exists()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="st_mode carries no ACL on Windows")
 def test_a_mode_that_cannot_be_restored_refuses_rather_than_reports_success(
     tmp_path, monkeypatch

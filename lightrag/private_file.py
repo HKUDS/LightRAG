@@ -142,18 +142,12 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
             raise
         try:
             mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
-            if not mode & stat.S_IRUSR:
-                # The umask subtracts, and a umask that masks the OWNER's
-                # read bit leaves a file this process can still finish
-                # writing through the open descriptor and nobody can read
-                # afterwards -- including the operator whose only copy of the
-                # data this is once recovery drops the originals. Restoring
-                # it on the descriptor can only ADD the owner bits the umask
-                # removed; it is not the "create then tighten" shape this
-                # module refuses, because the file has never been wider than
-                # 0600 and the check below still has to pass afterwards.
-                os.fchmod(destination.fileno(), 0o600)
-                mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
+            # The mode the file was CREATED with is the evidence, and it is
+            # read first: a umask only ever subtracts, so a group or other bit
+            # here means the filesystem ignored the requested 0600 outright,
+            # and someone may already hold a descriptor on it. Restoring
+            # anything before this is asked would overwrite the proof and
+            # accept the file.
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
                 raise PrivateFileError(
                     f"{path} was created mode {oct(mode)}, which grants group "
@@ -161,10 +155,23 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
                     "requested 0600."
                 )
             if not mode & stat.S_IRUSR:
+                # What the umask CAN do is subtract the owner's own read bit,
+                # which leaves a file this process still finishes writing
+                # through the open descriptor and nobody can read afterwards
+                # -- including the operator whose only copy of the data this
+                # is once recovery drops the originals. Restoring it on the
+                # descriptor can only ADD back what the umask took; it is not
+                # the "create then tighten" shape this module refuses, because
+                # the file has never been wider than 0600 and both checks are
+                # re-asked below.
+                os.fchmod(destination.fileno(), 0o600)
+                mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
+            if mode & (stat.S_IRWXG | stat.S_IRWXO) or not mode & stat.S_IRUSR:
                 raise PrivateFileError(
                     f"{path} is mode {oct(mode)}, which does not let its own "
-                    "owner read it back, and the mode could not be restored. "
-                    "A copy nobody can read is not a preserved copy."
+                    "owner read it back without granting anyone else access, "
+                    "and the mode could not be restored. A copy nobody can "
+                    "read is not a preserved copy."
                 )
         except BaseException:
             _discard(destination, path)
