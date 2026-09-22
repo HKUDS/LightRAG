@@ -235,6 +235,39 @@ def test_chunk_repeating_an_earlier_block_maps_to_its_own_block():
 
 
 @pytest.mark.offline
+def test_overlap_at_least_chunk_size_is_rejected_cleanly():
+    """``chunk_overlap_token_size >= chunk_token_size`` must fail closed.
+
+    Regression for a crash reachable from addon_params, direct SDK calls, and
+    persisted per-doc snapshots — none of which pass through the REST layer's
+    ``_OverlapChunkParams`` validator. Without a backstop here, the same
+    invalid combination that validator rejects instead reaches LangChain's
+    ``RecursiveCharacterTextSplitter`` constructor and raises its own
+    uncontrolled ``ValueError``, whose message is an implementation detail of
+    a third-party library rather than a message this codebase controls. The
+    sibling fixed-token chunker (``lightrag/chunker/token_size.py``) already
+    guards this exact case for the same reason.
+    """
+    body = "Alpha section.\n\nBeta section.\n\nGamma section."
+
+    with pytest.raises(
+        ValueError,
+        match=r"chunk_overlap_token_size \(20\) must be < chunk_token_size \(20\)",
+    ):
+        chunking_by_recursive_character(
+            _tok(), body, chunk_token_size=20, chunk_overlap_token_size=20
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=r"chunk_overlap_token_size \(25\) must be < chunk_token_size \(20\)",
+    ):
+        chunking_by_recursive_character(
+            _tok(), body, chunk_token_size=20, chunk_overlap_token_size=25
+        )
+
+
+@pytest.mark.offline
 def test_repeated_block_window_does_not_shift_to_previous_duplicate():
     """A repeated multi-block chunk must not slide back into the prior duplicate."""
     block = "ff hh aa hh ee"
