@@ -33,6 +33,8 @@ from lightrag.parser.routing import (
     validate_parser_routing_config,
 )
 
+pytestmark = pytest.mark.offline
+
 # Importing document_routes runs argparse over sys.argv at import time;
 # neutralise pytest's argv during that first import.
 _original_argv = sys.argv[:]

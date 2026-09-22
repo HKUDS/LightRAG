@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 
 import pytest
 
+pytestmark = pytest.mark.offline
+
 
 # Env vars that the project's `.env` may have populated (via load_dotenv at
 # import time of lightrag.api.config). Tests must be hermetic and not depend
@@ -531,7 +533,45 @@ class TestUvicornRootPathSemantics:
         await app(scope, receive, send)
         return status["code"]
 
-    def _build_app_with_prefix(self, prefix):
+    @staticmethod
+    def _stage_minimal_webui(monkeypatch, tmp_path):
+        """Stage a minimal built-frontend directory and point the server at it.
+
+        ``create_app`` only mounts the WebUI StaticFiles when
+        ``check_frontend_build`` finds ``lightrag/api/webui/index.html``.
+        That file is produced by the bun build of ``lightrag_webui`` and is
+        not part of the sdist, so on a bare checkout the mount is absent and
+        ``/webui/`` falls through to the redirect-to-docs fallback (307) —
+        the failure mode this class was originally written against never
+        reaching the middleware under test. Staging an ``index.html`` next to
+        a fake ``lightrag_server.py`` (the same trick
+        ``test_workspace_entry_mount.py`` uses) keeps the Mount path
+        reachable without building the frontend.
+
+        ``tmp_path`` is a ``pathlib.Path``; returns the webui dir for the
+        caller's assertions if it needs one.
+        """
+        import lightrag.api.lightrag_server as lightrag_server
+
+        webui_dir = tmp_path / "webui"
+        webui_dir.mkdir(exist_ok=True)
+        (webui_dir / "index.html").write_text(
+            "<!doctype html><title>webui</title>", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            lightrag_server, "__file__", str(tmp_path / "lightrag_server.py")
+        )
+        monkeypatch.setattr(
+            lightrag_server, "check_frontend_build", lambda: (True, False)
+        )
+        monkeypatch.setattr(
+            lightrag_server,
+            "check_workspace_frontend_build",
+            lambda: False,
+        )
+        return webui_dir
+
+    def _build_app_with_prefix(self, prefix, monkeypatch=None, tmp_path=None):
         original_argv = sys.argv.copy()
         try:
             sys.argv = ["lightrag-server", "--api-prefix", prefix]
@@ -539,6 +579,8 @@ class TestUvicornRootPathSemantics:
             from lightrag.api.lightrag_server import create_app
 
             args = parse_args()
+            if monkeypatch is not None and tmp_path is not None:
+                self._stage_minimal_webui(monkeypatch, tmp_path)
             with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
                 mock_rag.return_value = MagicMock()
                 return create_app(args)
@@ -565,7 +607,7 @@ class TestUvicornRootPathSemantics:
         assert status == 200
 
     @pytest.mark.asyncio
-    async def test_mount_strip_mode_matches(self):
+    async def test_mount_strip_mode_matches(self, monkeypatch, tmp_path):
         """WebUI Mount, proxy-strip mode: backend receives /webui/.
 
         This is the bug the middleware fixes. Without normalization,
@@ -574,13 +616,17 @@ class TestUvicornRootPathSemantics:
         lookup → 404. With normalization, scope.path becomes
         /site01/webui/ before routing and the lookup resolves to
         index.html.
+
+        Stages a minimal webui build: on a bare checkout the frontend
+        artifacts do not exist, the WebUI mount is skipped, and /webui/
+        would 307 to /docs before the middleware under test is reached.
         """
-        app = self._build_app_with_prefix("/site01")
+        app = self._build_app_with_prefix("/site01", monkeypatch, tmp_path)
         status = await self._call_with_scope(app, "/webui/")
         assert status == 200
 
     @pytest.mark.asyncio
-    async def test_mount_verbatim_mode_matches(self):
+    async def test_mount_verbatim_mode_matches(self, monkeypatch, tmp_path):
         """WebUI Mount, verbatim mode: backend receives /site01/webui/.
 
         Already canonical; the middleware is a no-op for this case. The
@@ -588,7 +634,7 @@ class TestUvicornRootPathSemantics:
         strip — symmetric to test_route_verbatim_mode_matches but exercises
         the Mount path with its nested ``get_route_path`` resolution.
         """
-        app = self._build_app_with_prefix("/site01")
+        app = self._build_app_with_prefix("/site01", monkeypatch, tmp_path)
         status = await self._call_with_scope(app, "/site01/webui/")
         assert status == 200
 
@@ -827,7 +873,16 @@ class TestWhitelistUnderApiPrefix:
         self, _colliding_prefix_args, _default_whitelist, mode
     ):
         """DELETE /documents answered 200 unauthenticated before this fix, in
-        both forwarding modes."""
+        both forwarding modes.
+
+        The property under test is "credentials are required", not a specific
+        challenge code: ``combined_dependency`` (lightrag/api/utils_api.py)
+        has answered 403 "API Key required" when an API key is configured and
+        the request carries none since 2ea2814, while requests in
+        auth-account deployments are challenged with 401. Both close the
+        route; pinning either single code would silently flip whenever the
+        other configured credential type is exercised.
+        """
         with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
             mock_rag.return_value = MagicMock()
             from lightrag.api.lightrag_server import create_app
@@ -835,7 +890,7 @@ class TestWhitelistUnderApiPrefix:
             client = TestClient(create_app(_colliding_prefix_args))
             prefix = "" if mode == "strip" else "/api/v1"
 
-            assert client.delete(f"{prefix}/documents").status_code == 401
+            assert client.delete(f"{prefix}/documents").status_code in (401, 403)
 
     @pytest.mark.parametrize("mode", ["verbatim", "strip"])
     def test_whitelisted_routes_stay_open_under_a_prefix(

@@ -28,6 +28,8 @@ from lightrag.parser.routing import (
     validate_parser_routing_config,
 )
 
+pytestmark = pytest.mark.offline
+
 # Importing document_routes runs an argparse over sys.argv at import time;
 # neutralise pytest's argv during that first import (subsequent imports hit the
 # module cache and skip argparse).  Mirrors tests/api/routes/test_document_routes_chunking.py.

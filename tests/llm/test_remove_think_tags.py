@@ -10,6 +10,10 @@ from lightrag.utils import (
     remove_think_tags,
 )
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 class TestRemoveThinkTags:
     """Test cases for the remove_think_tags function."""

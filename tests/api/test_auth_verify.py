@@ -28,6 +28,8 @@ from tests.api.test_workspace_entry_mount import (
     _stage_build,
 )
 
+pytestmark = pytest.mark.offline
+
 API_KEY = "test-secret-key"
 
 

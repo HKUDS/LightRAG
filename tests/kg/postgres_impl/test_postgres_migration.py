@@ -7,6 +7,8 @@ from lightrag.kg.postgres_impl import (
 )
 from lightrag.namespace import NameSpace
 
+pytestmark = pytest.mark.offline
+
 
 # Mock PostgreSQLDB
 @pytest.fixture

@@ -23,6 +23,8 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.offline
+
 # Fields that must NEVER appear in an unauthenticated response.
 _SENSITIVE_TOP_LEVEL = ("working_directory", "input_directory", "configuration")
 # Liveness fields that must always be present (safe; already exposed by the

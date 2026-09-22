@@ -10,6 +10,10 @@ from lightrag.evaluation.offline_retrieval_check import (
     summarize,
 )
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 class OfflineRetrievalCheckTests(unittest.TestCase):
     def test_expected_document_ranks_first(self):

@@ -23,6 +23,8 @@ from lightrag.kg.postgres_impl import (  # noqa: E402
 )
 from lightrag.namespace import NameSpace  # noqa: E402
 
+pytestmark = pytest.mark.offline
+
 
 class _FakeTransaction:
     async def __aenter__(self):
