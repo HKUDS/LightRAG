@@ -4673,7 +4673,18 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 }
             },
             {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
-            {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+            # Atlas Vector Search normalizes a cosine-similarity index's
+            # vectorSearchScore to (1 + cosine_similarity) / 2, in [0, 1] --
+            # not raw cosine similarity, which every other backend compares
+            # cosine_better_than_threshold against. Rescale the threshold the
+            # same way for the server-side filter; the raw score is
+            # converted back below so "distance" matches the other
+            # backends' raw-cosine convention.
+            {
+                "$match": {
+                    "score": {"$gte": (1 + self.cosine_better_than_threshold) / 2}
+                }
+            },
             {"$project": {"vector": 0}},
         ]
 
@@ -4686,7 +4697,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
             {
                 **doc,
                 "id": doc["_id"],
-                "distance": doc.get("score", None),
+                "distance": 2 * doc["score"] - 1
+                if doc.get("score") is not None
+                else None,
                 "created_at": doc.get("created_at"),  # Include created_at field
             }
             for doc in results
