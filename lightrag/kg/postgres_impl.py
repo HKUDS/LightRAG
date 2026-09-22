@@ -6620,8 +6620,16 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_docs_by_track_id(
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific track_id"""
-        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and track_id=$2"
+        """Get all documents with a specific track_id.
+
+        Ordered by creation so the /documents/track_status response is stable
+        across polls while rows are being UPDATEd during processing (Postgres
+        physical row order is not).
+        """
+        sql = (
+            "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and track_id=$2 "
+            "order by created_at asc, id asc"
+        )
         params = {"workspace": self.workspace, "track_id": track_id}
         result = await self.db.query(sql, list(params.values()), True)
 
@@ -6723,7 +6731,12 @@ class PGDocStatusStorage(DocStatusStorage):
         # that the LIMIT/OFFSET slice boundary and the display order are identical.
         # Without it, DESC defaults to NULLS FIRST: nulls land on earlier pages but
         # are re-sorted to the end by the outer ORDER BY, dropping non-null rows.
-        order_clause = f"ORDER BY {sort_field} {sort_direction.upper()} NULLS LAST"
+        # ``id`` is appended as a unique tie-breaker: the sort key alone leaves
+        # ties (same file_path, identical batch timestamps) in an undefined
+        # order, so LIMIT/OFFSET pages could repeat or skip rows across pages.
+        order_clause = (
+            f"ORDER BY {sort_field} {sort_direction.upper()} NULLS LAST, id ASC"
+        )
 
         # Two-CTE query: total count + page data in a single round-trip.
         #
@@ -6762,7 +6775,7 @@ class PGDocStatusStorage(DocStatusStorage):
             SELECT p.*, t._total_count
             FROM total t
             LEFT JOIN paged p ON true
-            ORDER BY p.{sort_field} {sort_direction.upper()} NULLS LAST
+            ORDER BY p.{sort_field} {sort_direction.upper()} NULLS LAST, p.id ASC
         """
         query_timing_label = f"{self.workspace} PGDocStatusStorage.get_docs_paginated"
         result = await self.db.query(

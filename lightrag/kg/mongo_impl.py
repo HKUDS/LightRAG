@@ -845,8 +845,14 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_docs_by_track_id(
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific track_id"""
-        cursor = self._data.find({"track_id": track_id})
+        """Get all documents with a specific track_id.
+
+        Sorted by creation so the /documents/track_status response is stable
+        across polls (MongoDB natural order is undefined).
+        """
+        cursor = self._data.find({"track_id": track_id}).sort(
+            [("created_at", 1), ("_id", 1)]
+        )
         result = await cursor.to_list()
         processed_result = {}
         for doc in result:
@@ -1093,9 +1099,11 @@ class MongoDocStatusStorage(DocStatusStorage):
         # Calculate skip value
         skip = (page - 1) * page_size
 
-        # Build sort criteria
+        # Build sort criteria. ``_id`` is appended as a unique tie-breaker:
+        # MongoDB leaves the order of equal sort keys undefined, so skip/limit
+        # pagination could repeat or skip documents across pages.
         sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
-        sort_criteria = [(sort_field, sort_direction_value)]
+        sort_criteria = [(sort_field, sort_direction_value), ("_id", 1)]
 
         # Query for paginated data with Chinese collation for file_path sorting
         if sort_field == "file_path":
