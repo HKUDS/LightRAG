@@ -1,15 +1,18 @@
 """Model-suffix isolation for OpenSearch vector indexes.
 
-Every index created before the suffix is legacy. Startup copies it once when
+Every index created before the suffix is legacy. Startup copies it when
 this workspace owns it and the recorded dimension and model do not disagree.
-A mismatch is skipped, not raised. ``drop`` deletes the owned legacy index
-so the next startup does not copy the cleared corpus back.
+A destination with fewer documents than that legacy index is copied again;
+one with at least as many is left in place. A mismatch is skipped, not
+raised. ``drop`` deletes the owned legacy index so the next startup does
+not copy the cleared corpus back.
 
 See ``docs/design/VectorSpaceProvenance.md``.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+import logging
+from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -79,7 +82,12 @@ class Cluster:
     def __init__(self):
         self.indices: dict[str, dict] = {}
         self.reindex_calls: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
         self.fail_reindex = False
+        # None copies every source document. An int copies that many, then
+        # reports success, so a short destination can stay short.
+        self.reindex_copy_limit: int | None = None
+        self.fail_delete = False
 
     def client(self):
         from opensearchpy import AsyncOpenSearch
@@ -121,6 +129,9 @@ class Cluster:
             mappings["_meta"] = body["_meta"]
 
     async def delete(self, index, **kwargs):
+        self.deleted.append(index)
+        if self.fail_delete:
+            raise OpenSearchException("delete failed")
         if index not in self.indices:
             raise NotFoundError(404, "index_not_found_exception", "no such index")
         del self.indices[index]
@@ -139,6 +150,11 @@ class Cluster:
             raise OpenSearchException("reindex failed")
         created = 0
         for doc_id, source_doc in self.indices[source]["docs"].items():
+            if (
+                self.reindex_copy_limit is not None
+                and created >= self.reindex_copy_limit
+            ):
+                break
             self.indices[dest]["docs"][doc_id] = dict(source_doc)
             created += 1
         return {
@@ -196,6 +212,20 @@ def global_config():
         "embedding_batch_num": 10,
         "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
     }
+
+
+@contextmanager
+def _warnings(caplog):
+    """lightrag's logger does not propagate, so caplog needs it turned on."""
+    from lightrag.utils import logger as lightrag_logger
+
+    previous = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger=lightrag_logger.name):
+            yield
+    finally:
+        lightrag_logger.propagate = previous
 
 
 def _storage(global_config, embed=None, workspace="ws", namespace="entities"):
@@ -383,7 +413,13 @@ async def test_empty_suffixed_index_still_receives_the_legacy_copy(
 
 
 @pytest.mark.asyncio
-async def test_nonempty_suffixed_index_is_not_copied_into_again(global_config, cluster):
+async def test_nonempty_suffixed_index_is_not_copied_into_again(
+    global_config, cluster, caplog
+):
+    """Equal counts are already covered, so the legacy index is left alone.
+
+    The operator is told to delete that legacy index only in this case.
+    """
     storage = _storage(global_config)
     cluster.seed(
         storage._index_name,
@@ -398,11 +434,157 @@ async def test_nonempty_suffixed_index_is_not_copied_into_again(global_config, c
         docs={"legacy": {"content": "legacy"}},
     )
 
-    await _init(storage, cluster)
+    with _warnings(caplog):
+        await _init(storage, cluster)
 
     assert cluster.doc_ids(storage._index_name) == {"kept"}
     assert cluster.doc_ids(storage._legacy_index_name) == {"legacy"}
     assert cluster.reindex_calls == []
+    assert "Not copying" in caplog.text
+    assert storage._legacy_index_name in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_larger_destination_is_not_copied_into_again(
+    global_config, cluster, caplog
+):
+    """More destination rows than the legacy index is also already covered."""
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"kept": {"content": "kept"}, "also": {"content": "also"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"legacy": {"content": "legacy"}},
+    )
+
+    with _warnings(caplog):
+        await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"kept", "also"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"legacy"}
+    assert cluster.reindex_calls == []
+    assert storage._index_name not in cluster.deleted
+    assert "Not copying" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_short_destination_is_reindexed_without_dropping_extra_rows(
+    global_config, cluster, caplog
+):
+    """A killed reindex leaves a short index. The next start copies again.
+
+    Document ids are idempotent, so rows that exist only in the destination
+    stay. The legacy index is the complete copy and must not be offered for
+    deletion while the destination is still short.
+    """
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "partial"}, "extra": {"content": "only-here"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={
+            "a": {"content": "a"},
+            "b": {"content": "b"},
+            "c": {"content": "c"},
+        },
+    )
+
+    with _warnings(caplog):
+        await _init(storage, cluster)
+
+    assert storage._index_ready is True
+    assert cluster.doc_ids(storage._index_name) == {"a", "b", "c", "extra"}
+    assert cluster.indices[storage._index_name]["docs"]["a"]["content"] == "a"
+    assert cluster.indices[storage._index_name]["docs"]["extra"]["content"] == (
+        "only-here"
+    )
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b", "c"}
+    assert cluster.reindex_calls == [
+        (storage._legacy_index_name, storage._index_name)
+    ]
+    assert storage._index_name not in cluster.deleted
+    assert storage._legacy_index_name not in cluster.deleted
+    assert "Not copying" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_undeleatable_short_destination_is_refused_until_it_covers(
+    global_config, cluster, caplog
+):
+    """Startup stays failed while a short index cannot be deleted or filled.
+
+    ``_discard_partial_migration`` logs and returns when delete fails. The
+    next start must still refuse that short index instead of attaching, and
+    it must retry the reindex without deleting destination-only rows first.
+    """
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "partial"}, "extra": {"content": "only-here"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={
+            "a": {"content": "a"},
+            "b": {"content": "b"},
+            "c": {"content": "c"},
+        },
+    )
+    cluster.reindex_copy_limit = 0
+    cluster.fail_delete = True
+
+    with _warnings(caplog):
+        with pytest.raises(DataMigrationError, match="verification failed"):
+            await _init(storage, cluster)
+
+    assert storage._index_ready is False
+    assert cluster.doc_ids(storage._index_name) == {"a", "extra"}
+    assert storage._index_name in cluster.indices
+    assert "Not copying" not in caplog.text
+
+    restarted = _storage(global_config)
+    with _warnings(caplog):
+        with pytest.raises(DataMigrationError, match="verification failed"):
+            await _init(restarted, cluster)
+
+    assert restarted._index_ready is False
+    assert cluster.doc_ids(storage._index_name) == {"a", "extra"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b", "c"}
+    assert cluster.reindex_calls == [
+        (storage._legacy_index_name, storage._index_name),
+        (storage._legacy_index_name, storage._index_name),
+    ]
+    assert "Not copying" not in caplog.text
+
+    cluster.reindex_copy_limit = None
+    cluster.fail_delete = False
+    recovered = _storage(global_config)
+    with _warnings(caplog):
+        await _init(recovered, cluster)
+
+    assert recovered._index_ready is True
+    assert cluster.doc_ids(storage._index_name) == {"a", "b", "c", "extra"}
+    assert cluster.indices[storage._index_name]["docs"]["extra"]["content"] == (
+        "only-here"
+    )
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b", "c"}
+    assert "Not copying" not in caplog.text
 
 
 @pytest.mark.asyncio

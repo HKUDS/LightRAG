@@ -304,7 +304,8 @@ that suffix is legacy. There is no older naming scheme to special-case, and
 OpenSearch does not use Qdrant's three-state workspace-field probe: an index
 is already per-workspace, so the `_meta` ownership marker settles it.
 
-On startup, when the suffixed index is missing or empty:
+On startup, when the suffixed index is missing, empty, or holds fewer
+documents than the legacy index:
 
 - The legacy index is copied with `_reindex` only after
   `_claim_index_for_workspace` accepts it. A mismatch is logged and skipped.
@@ -321,10 +322,21 @@ On startup, when the suffixed index is missing or empty:
   `lightrag-rebuild-vdb`. `drop()` deletes the legacy index when this workspace
   owns it, so that clear does not migrate the old vectors back.
 - The legacy index is kept after a successful copy. An empty one is deleted.
-  When both indexes already hold documents, the copy is not repeated.
-- A copy that starts and does not finish raises `DataMigrationError` and
-  deletes the destination, which was empty before the attempt, so the next
-  start retries. The legacy source is left untouched.
+  A destination that already holds at least as many documents as the legacy
+  index is not copied again, and only then is the operator warned to delete
+  the legacy index. A shorter destination is copied again. Document `_id`s
+  are idempotent, so the retry does not delete the destination first, and
+  rows that exist only there are left in place. Accepted residue: coverage
+  is a document count, not an id set, so a destination that already holds as
+  many rows as the legacy index is not recopied even when those rows are a
+  different set. Recovery, while the legacy index is still there, is to
+  delete the suffixed index or run `lightrag-rebuild-vdb`.
+- A copy that does not leave the destination covering the legacy count raises
+  `DataMigrationError`. The destination is deleted when that delete succeeds,
+  so the next start retries from an empty index. When the delete does not
+  succeed, the short index stays and the next start still refuses to attach
+  until a later copy covers the legacy count. The legacy source is left
+  untouched.
 
 `drop()` deletes the owned legacy index *before* it deletes and recreates the
 suffixed index. The next startup would otherwise see an empty suffixed index

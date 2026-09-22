@@ -6856,11 +6856,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
 
     async def _discard_partial_migration(self) -> None:
-        """Drop a destination this attempt filled so the next start retries.
+        """Drop a destination this attempt failed to fill so the next start retries.
 
-        Migration only copies into an empty destination, so the delete
-        discards this attempt's partial copy and leaves the legacy source
-        untouched.
+        The delete leaves the legacy source untouched. If it fails, the short
+        index stays, and the next start still refuses to attach until the
+        destination covers the legacy count. See
+        ``docs/design/VectorSpaceProvenance.md``.
         """
         try:
             await self.client.indices.delete(index=self._index_name)
@@ -6870,7 +6871,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"[{self.workspace}] Could not remove partial index "
                 f"'{self._index_name}' after a failed migration ({exc}). "
-                f"Delete it before restarting so the legacy copy is retried."
+                f"The next start retries the copy while this index holds "
+                f"fewer documents than the legacy source."
             )
 
     async def _copy_legacy_documents(
@@ -6912,25 +6914,31 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             raise DataMigrationError(
                 f"Could not verify OpenSearch migration into '{self._index_name}'"
             ) from exc
-        if dest_count != source_count:
+        # Coverage, not equality. A retry keeps rows that exist only in the
+        # destination, so a finished copy can hold more documents than the
+        # legacy index. Fewer than the source means the copy is still short.
+        if dest_count < source_count:
             await self._discard_partial_migration()
             raise DataMigrationError(
-                f"OpenSearch migration verification failed, expected "
+                f"OpenSearch migration verification failed, expected at least "
                 f"{source_count} documents in '{self._index_name}', "
                 f"got {dest_count}."
             )
 
     async def _migrate_legacy_index(self, *, dest_exists: bool) -> bool:
-        """Copy this workspace's legacy index when the suffixed index is empty.
+        """Copy this workspace's legacy index into the suffixed index.
 
         Returns True when this call created the suffixed index, so the caller
         must not create it again. Returns False when the caller still needs
         to create the index, or when ``dest_exists`` was already true.
 
         An ownership mismatch or an incompatible legacy source is skipped
-        with a warning and does not raise. A copy that starts and does not
-        finish raises ``DataMigrationError`` and removes the partial
-        destination. See ``docs/design/VectorSpaceProvenance.md``.
+        with a warning and does not raise. A destination that already holds
+        at least as many documents as the legacy index is left in place, and
+        only then is the operator warned to delete the legacy index. A shorter
+        destination is copied again without deleting it first. A copy that
+        does not leave the destination covering the legacy count raises
+        ``DataMigrationError``. See ``docs/design/VectorSpaceProvenance.md``.
         """
         legacy = self._legacy_migration_index()
         if legacy is None:
@@ -6954,7 +6962,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
         if dest_exists:
             dest_count = await self._index_doc_count(self._index_name)
-            if dest_count > 0:
+            # Any non-empty count is not "already migrated". A killed reindex
+            # leaves a short index, and deleting it is not required before
+            # the retry: document _ids are idempotent. The legacy index is
+            # the only complete copy until this destination covers it.
+            if dest_count >= source_count:
                 logger.warning(
                     f"[{self.workspace}] Both '{self._index_name}' "
                     f"({dest_count} docs) and legacy '{legacy}' "
@@ -7073,8 +7085,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def _create_knn_index_if_not_exists(self):
         """Provision the k-NN index, or verify the one that is already there.
 
-        When ``model_name`` is set, an unsuffixed index is copied once into
-        the suffixed index (``_migrate_legacy_index``). Every path that
+        When ``model_name`` is set, an unsuffixed index is copied into the
+        suffixed index (``_migrate_legacy_index``). Every path that
         attaches to an index this call did not just build runs
         ``_assert_index_is_usable``, including the loser of the
         ``indices.create`` race.
