@@ -393,6 +393,38 @@ async def test_a_process_without_a_model_name_keeps_no_baselines(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("version", [None, 2])
+async def test_unsupported_baseline_version_refuses_before_business_storages(
+    tmp_path, version
+):
+    await _seed(tmp_path, model_name="bge-m3")
+    config_file = tmp_path / CONFIG_WORKSPACE / "kv_store_config.json"
+    records = json.loads(config_file.read_text())
+    key = cs.embedding_baseline_key(_workspace(tmp_path), "chunks")
+    if version is None:
+        records[key].pop("schema_version")
+    else:
+        records[key]["schema_version"] = version
+    config_file.write_text(json.dumps(records))
+    before = config_file.read_bytes()
+
+    rag = _rag(tmp_path, model_name="bge-m3")
+    config_finalize = _Spy(rag.configuration_storage, "finalize")
+    full_docs_init = _Spy(rag.full_docs, "initialize")
+    config_upsert = _Spy(rag.configuration_storage, "upsert")
+    try:
+        with pytest.raises(
+            ConfigurationStorageError, match="unsupported schema_version"
+        ):
+            await rag.initialize_storages()
+        assert full_docs_init.calls == 0
+        assert config_upsert.calls == 0
+        assert config_finalize.calls == 1
+        assert config_file.read_bytes() == before
+    finally:
+        await rag.finalize_storages()
+
+
 async def test_a_recorded_mismatch_refuses_before_any_vector_storage_initializes(
     tmp_path, monkeypatch
 ):

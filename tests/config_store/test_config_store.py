@@ -182,7 +182,7 @@ class TestKeysAndRows:
 
 class TestEmbeddingBaseline:
     def test_a_stored_row_parses(self):
-        baseline = cs.EmbeddingBaseline.from_row(_row(), key="k")
+        baseline = cs.EmbeddingBaseline.from_row(_row(), key="k", target="entities")
         assert baseline == cs.EmbeddingBaseline("bge-m3", 16, "probe")
 
     @pytest.mark.parametrize(
@@ -197,8 +197,29 @@ class TestEmbeddingBaseline:
         ],
     )
     def test_a_malformed_row_is_unreadable_not_absent(self, row):
+        if isinstance(row, dict):
+            row = {"schema_version": 1, **row}
         with pytest.raises(ConfigurationStorageError):
-            cs.EmbeddingBaseline.from_row(row, key="k")
+            cs.EmbeddingBaseline.from_row(row, key="k", target="entities")
+
+    @pytest.mark.parametrize("version", [None, 0, 2, True, False, "1", 1.0])
+    @pytest.mark.parametrize("target", cs.EMBEDDING_TARGETS)
+    async def test_unsupported_schema_is_unreadable_without_writes(
+        self, version, target
+    ):
+        row = _row(target=target)
+        if version is None:
+            row.pop("schema_version")
+        else:
+            row["schema_version"] = version
+        key = cs.embedding_baseline_key("ws", target)
+        config = FakeConfigKV({key: row})
+        with pytest.raises(
+            ConfigurationStorageError, match="unsupported schema_version"
+        ):
+            await cs.read_embedding_baselines(config, "ws")
+        assert all(call[0] == "read" for call in config.calls)
+        assert config.visible[key] == row
 
     def test_the_model_decides_and_the_dimension_only_when_both_declare_one(self):
         recorded = cs.EmbeddingBaseline("bge-m3", 16, "probe")

@@ -249,6 +249,11 @@ drop keys:
 ```
 
 `schema_version` is per key, not global: keys evolve independently.
+Baseline readers require an integer version equal to the key's registered
+version before interpreting its value. Missing, unsupported or incorrectly
+typed versions (including booleans) are unreadable records and raise
+`ConfigurationStorageError`; they are never treated as absent or automatically
+replaced during startup.
 
 ## Key registry
 
