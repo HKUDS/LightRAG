@@ -1093,9 +1093,11 @@ class MongoDocStatusStorage(DocStatusStorage):
         # Calculate skip value
         skip = (page - 1) * page_size
 
-        # Build sort criteria
+        # Build sort criteria. ``_id`` is appended as a unique tie-breaker:
+        # MongoDB leaves the order of equal sort keys undefined, so skip/limit
+        # pagination could repeat or skip documents across pages.
         sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
-        sort_criteria = [(sort_field, sort_direction_value)]
+        sort_criteria = [(sort_field, sort_direction_value), ("_id", 1)]
 
         # Query for paginated data with Chinese collation for file_path sorting
         if sort_field == "file_path":
