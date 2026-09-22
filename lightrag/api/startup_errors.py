@@ -70,9 +70,14 @@ class StartupErrorMiddleware:
             if failure is not None:
                 if isinstance(exc, VectorStorageEmptyError):
                     where = f" ({exc.container})" if exc.container else ""
+                    # The storage's own workspace: a backend override
+                    # (QDRANT_WORKSPACE, ...) can move it off the server's.
+                    workspace = (
+                        self.workspace if exc.workspace is None else exc.workspace
+                    )
                     message = (
                         "Startup blocked: vector index is empty.\n"
-                        f"  Workspace: {self.workspace or '(default)'}\n"
+                        f"  Workspace: {workspace or '(default)'}\n"
                         f"  Storage: {self.vector_storage}\n"
                         f"  Missing index: {exc.vdb_name}{where}\n"
                         f"  Source still contains data: {exc.source}.\n"
