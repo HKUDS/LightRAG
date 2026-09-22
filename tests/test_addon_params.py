@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from lightrag.addon_params import ObservableAddonParams
+from lightrag.addon_params import ObservableAddonParams, normalize_addon_params
 
 pytestmark = pytest.mark.offline
 
@@ -144,3 +144,24 @@ def test_cache_is_invalidated_on_a_normal_chunker_replacement() -> None:
     owner._addon_params["chunker"] = {"recursive_character": {"separators": ["\n"]}}
 
     assert owner._addon_params_dirty is True
+
+
+def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
+    """Resolving runtime defaults must not write into the caller's config."""
+    from lightrag.lightrag import LightRAG
+
+    supplied = {"chunker": {"fixed_token": {"split_by_character": "|"}}}
+
+    class _OverlayOwner:
+        _apply_chunk_size_overlay = LightRAG._apply_chunk_size_overlay
+
+        def __init__(self) -> None:
+            self._addon_params = normalize_addon_params(supplied)
+            self.chunk_token_size = None
+            self.chunk_overlap_token_size = None
+
+    owner = _OverlayOwner()
+    owner._apply_chunk_size_overlay()
+
+    assert supplied == {"chunker": {"fixed_token": {"split_by_character": "|"}}}
+    assert "chunk_token_size" in owner._addon_params["chunker"]
