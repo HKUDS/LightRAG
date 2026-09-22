@@ -1,6 +1,6 @@
 """Exercise startup diagnostics through FastAPI and Uvicorn's lifespan driver."""
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import logging
 
 from fastapi import FastAPI
@@ -42,19 +42,58 @@ def driver(app):
     return LifespanOn(Config(app, lifespan="on", log_config=None))
 
 
+@pytest.fixture
+def logs(caplog):
+    """caplog over ``uvicorn.error`` AND the ``lightrag`` logger, which does not
+    propagate to the root handler caplog listens on."""
+    lightrag_logger = logging.getLogger("lightrag")
+    lightrag_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+            yield caplog
+    finally:
+        lightrag_logger.removeHandler(caplog.handler)
+
+
+@contextmanager
+def restored_loggers(*prefixes):
+    """Put back every logger a logging configuration under test rewrites."""
+    names = [
+        name
+        for name in logging.root.manager.loggerDict
+        if any(name == p or name.startswith(p + ".") for p in prefixes)
+    ]
+    names += [p for p in prefixes if p not in names]
+    saved = {
+        name: (lg.handlers[:], lg.filters[:], lg.level, lg.propagate)
+        for name in names
+        for lg in [logging.getLogger(name)]
+    }
+    try:
+        yield
+    finally:
+        for name, (handlers, filters, level, propagate) in saved.items():
+            lg = logging.getLogger(name)
+            for handler in lg.handlers:
+                if handler not in handlers:
+                    handler.close()
+            lg.handlers, lg.filters = handlers, filters
+            lg.setLevel(level)
+            lg.propagate = propagate
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tty", [True, False])
 async def test_empty_index_is_concise_but_still_fails_and_cleans_up(
-    monkeypatch, caplog, tty
+    monkeypatch, logs, tty
 ):
     monkeypatch.setattr("sys.stderr.isatty", lambda: tty)
     monkeypatch.delenv("NO_COLOR", raising=False)
     cleaned = []
     error = VectorStorageEmptyError(vdb_name="chunks", source="text chunk storage")
     life = driver(make_app(error, cleaned))
-    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
-        await life.startup()
-    messages = "\n".join(record.getMessage() for record in caplog.records)
+    await life.startup()
+    messages = "\n".join(record.getMessage() for record in logs.records)
     assert life.should_exit and life.startup_failed
     assert cleaned == [True]
     assert "Startup blocked" in messages
@@ -63,11 +102,13 @@ async def test_empty_index_is_concise_but_still_fails_and_cleans_up(
     assert "lightrag-rebuild-vdb" in messages
     assert "Traceback" not in messages
     assert "Application startup complete" not in messages
-    # Uvicorn logs this message to every handler, the log file included, so
-    # the message itself never carries terminal escapes -- even on a TTY.
+    # Logged to every handler, the log file included, so the message itself
+    # never carries terminal escapes -- even on a TTY.
     assert "\033[" not in messages
-    diagnostic = [r for r in caplog.records if "Startup blocked" in r.getMessage()]
+    # Exactly once, and from the lightrag logger: Uvicorn gets no copy.
+    diagnostic = [r for r in logs.records if "Startup blocked" in r.getMessage()]
     assert len(diagnostic) == 1
+    assert diagnostic[0].name == "lightrag"
     assert isinstance(diagnostic[0].msg, StartupDiagnostic)
 
 
@@ -102,52 +143,66 @@ async def test_the_log_file_stays_plain_while_the_terminal_is_highlighted(
     monkeypatch.setattr("sys.argv", ["lightrag-server"])
     from lightrag.api import lightrag_server
 
-    names = ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]
-    saved = {
-        name: (lg.handlers[:], lg.filters[:], lg.level, lg.propagate)
-        for name in names
-        for lg in [logging.getLogger(name)]
-    }
     monkeypatch.setenv("LOG_DIR", str(tmp_path))
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr("sys.stderr.isatty", lambda: True)
-    try:
+    with restored_loggers("uvicorn", "lightrag"):
         lightrag_server.configure_logging()
         life = driver(
             make_app(VectorStorageEmptyError(vdb_name="chunks"), cleaned := [])
         )
         await life.startup()
-        for handler in logging.getLogger("uvicorn.error").handlers:
-            handler.flush()
+        for name in ("uvicorn.error", "lightrag"):
+            for handler in logging.getLogger(name).handlers:
+                handler.flush()
         log_file = (tmp_path / lightrag_server.DEFAULT_LOG_FILENAME).read_text(
             encoding="utf-8"
         )
-    finally:
-        for name, (handlers, filters, level, propagate) in saved.items():
-            lg = logging.getLogger(name)
-            for handler in lg.handlers:
-                if handler not in handlers:
-                    handler.close()
-            lg.handlers, lg.filters = handlers, filters
-            lg.setLevel(level)
-            lg.propagate = propagate
 
+    stderr = capsys.readouterr().err
     assert life.startup_failed and cleaned == [True]
-    assert "Startup blocked" in log_file
+    assert log_file.count("Startup blocked") == 1
     assert "\033[" not in log_file
-    assert "\033[1;31mERROR: Startup blocked" in capsys.readouterr().err
+    assert stderr.count("Startup blocked") == 1
+    assert "\033[1;31mERROR: Startup blocked" in stderr
 
 
 @pytest.mark.asyncio
-async def test_the_storage_workspace_wins_over_the_server_workspace(caplog):
+async def test_gunicorn_workers_still_report_the_refusal(monkeypatch, tmp_path, capsys):
+    """``lightrag-gunicorn``'s ``post_fork`` silences ``uvicorn.error`` in every
+    worker, and Uvicorn logs the ASGI failure message nowhere else. The
+    diagnostic must reach the console and the log file regardless."""
+    from lightrag.api import gunicorn_config
+
+    log_file_path = tmp_path / "lightrag.log"
+    monkeypatch.setattr(gunicorn_config, "log_file_path", str(log_file_path))
+    monkeypatch.setattr(gunicorn_config, "loglevel", "info")
+    with restored_loggers("uvicorn", "lightrag"):
+        gunicorn_config.post_fork(server=None, worker=None)
+        assert logging.getLogger("uvicorn.error").level == logging.CRITICAL
+        life = driver(
+            make_app(VectorStorageEmptyError(vdb_name="chunks"), cleaned := [])
+        )
+        await life.startup()
+        for handler in logging.getLogger("lightrag").handlers:
+            handler.flush()
+        log_file = log_file_path.read_text(encoding="utf-8")
+
+    assert life.startup_failed and cleaned == [True]
+    assert log_file.count("Startup blocked") == 1
+    assert "lightrag-rebuild-vdb" in log_file
+    assert capsys.readouterr().err.count("Startup blocked") == 1
+
+
+@pytest.mark.asyncio
+async def test_the_storage_workspace_wins_over_the_server_workspace(logs):
     """A backend override (QDRANT_WORKSPACE, ...) moves the vector storage
     off the server's workspace; the diagnostic names the one that is empty."""
     error = VectorStorageEmptyError(vdb_name="chunks", workspace="qdrant_scope")
     life = driver(make_app(error, []))
-    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
-        await life.startup()
-    assert "Workspace: qdrant_scope" in caplog.text
-    assert "space1" not in caplog.text
+    await life.startup()
+    assert "Workspace: qdrant_scope" in logs.text
+    assert "space1" not in logs.text
 
 
 @pytest.mark.asyncio
