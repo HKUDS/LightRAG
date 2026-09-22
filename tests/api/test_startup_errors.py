@@ -8,7 +8,11 @@ import pytest
 from uvicorn import Config
 from uvicorn.lifespan.on import LifespanOn
 
-from lightrag.api.startup_errors import StartupErrorMiddleware
+from lightrag.api.startup_errors import (
+    ConsoleFormatter,
+    StartupDiagnostic,
+    StartupErrorMiddleware,
+)
 from lightrag.exceptions import VectorStorageEmptyError
 
 pytestmark = pytest.mark.offline
@@ -39,17 +43,12 @@ def driver(app):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "tty,no_color,colored",
-    [(True, False, True), (False, False, False), (True, True, False)],
-)
+@pytest.mark.parametrize("tty", [True, False])
 async def test_empty_index_is_concise_but_still_fails_and_cleans_up(
-    monkeypatch, caplog, tty, no_color, colored
+    monkeypatch, caplog, tty
 ):
     monkeypatch.setattr("sys.stderr.isatty", lambda: tty)
     monkeypatch.delenv("NO_COLOR", raising=False)
-    if no_color:
-        monkeypatch.setenv("NO_COLOR", "1")
     cleaned = []
     error = VectorStorageEmptyError(vdb_name="chunks", source="text chunk storage")
     life = driver(make_app(error, cleaned))
@@ -63,8 +62,80 @@ async def test_empty_index_is_concise_but_still_fails_and_cleans_up(
     assert "chunks" in messages and "text chunk storage" in messages
     assert "lightrag-rebuild-vdb" in messages
     assert "Traceback" not in messages
-    assert ("\033[1;31m" in messages) is colored
     assert "Application startup complete" not in messages
+    # Uvicorn logs this message to every handler, the log file included, so
+    # the message itself never carries terminal escapes -- even on a TTY.
+    assert "\033[" not in messages
+    diagnostic = [r for r in caplog.records if "Startup blocked" in r.getMessage()]
+    assert len(diagnostic) == 1
+    assert isinstance(diagnostic[0].msg, StartupDiagnostic)
+
+
+@pytest.mark.parametrize(
+    "tty,no_color,colored",
+    [(True, False, True), (False, False, False), (True, True, False)],
+)
+def test_the_console_formatter_highlights_a_diagnostic_only_on_a_terminal(
+    monkeypatch, tty, no_color, colored
+):
+    monkeypatch.setattr("sys.stderr.isatty", lambda: tty)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    formatter = ConsoleFormatter("%(levelname)s: %(message)s")
+
+    def record(msg):
+        return logging.LogRecord("uvicorn.error", logging.ERROR, "", 0, msg, None, None)
+
+    assert ("\033[1;31m" in formatter.format(record(StartupDiagnostic("x")))) is colored
+    # Only the diagnostic is highlighted, never an ordinary error.
+    assert "\033[" not in formatter.format(record("Application startup failed."))
+
+
+@pytest.mark.asyncio
+async def test_the_log_file_stays_plain_while_the_terminal_is_highlighted(
+    monkeypatch, tmp_path, capsys
+):
+    """``configure_logging`` sends ``uvicorn.error`` to the console AND the
+    log file; only the console may carry the highlight."""
+    # Importing the server module parses sys.argv as server arguments.
+    monkeypatch.setattr("sys.argv", ["lightrag-server"])
+    from lightrag.api import lightrag_server
+
+    names = ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]
+    saved = {
+        name: (lg.handlers[:], lg.filters[:], lg.level, lg.propagate)
+        for name in names
+        for lg in [logging.getLogger(name)]
+    }
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    try:
+        lightrag_server.configure_logging()
+        life = driver(
+            make_app(VectorStorageEmptyError(vdb_name="chunks"), cleaned := [])
+        )
+        await life.startup()
+        for handler in logging.getLogger("uvicorn.error").handlers:
+            handler.flush()
+        log_file = (tmp_path / lightrag_server.DEFAULT_LOG_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    finally:
+        for name, (handlers, filters, level, propagate) in saved.items():
+            lg = logging.getLogger(name)
+            for handler in lg.handlers:
+                if handler not in handlers:
+                    handler.close()
+            lg.handlers, lg.filters = handlers, filters
+            lg.setLevel(level)
+            lg.propagate = propagate
+
+    assert life.startup_failed and cleaned == [True]
+    assert "Startup blocked" in log_file
+    assert "\033[" not in log_file
+    assert "\033[1;31mERROR: Startup blocked" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio

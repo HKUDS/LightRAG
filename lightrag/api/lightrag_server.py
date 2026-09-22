@@ -3345,6 +3345,10 @@ def configure_logging():
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {
+                    # Console only: highlights startup refusals on a terminal.
+                    # The file handler keeps "detailed", so no escape reaches
+                    # the log file.
+                    "class": "lightrag.api.startup_errors.ConsoleFormatter",
                     "format": "%(levelname)s: %(message)s",
                 },
                 "detailed": {
