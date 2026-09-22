@@ -1517,11 +1517,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return
 
         space_mismatch = False
+        # Which file the code below is reading. `container` is the operator's
+        # DIAGNOSIS -- the file that could not be read -- and most parse
+        # failures cannot be attributed after the fact: `json.JSONDecodeError`
+        # carries no `filename`, so a `.meta.json` full of garbage would
+        # otherwise be reported as the `.index`, which is intact, and send the
+        # operator to inspect the wrong artifact. The recovery SCOPE is
+        # unaffected either way: `artifacts` always names all three files.
+        reading = self._faiss_index_file
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
 
-            # Load metadata
+            # Load metadata. Everything from here on reads the metadata --
+            # its bytes, then its shape -- except the `reconstruct` calls in
+            # the row loop, which are the index's and which faiss reports as
+            # `RuntimeError` (attributed below).
+            reading = self._meta_file
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
 
@@ -1623,9 +1635,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 if isinstance(e, RuntimeError):
                     # faiss hides I/O failures in this type too; ask directly.
                     _raise_if_unreadable(self._faiss_index_file)
+            # `RuntimeError` is faiss's own -- only the index can raise it --
+            # so it names the index whatever was being read around it.
+            failed = self._faiss_index_file if isinstance(e, RuntimeError) else reading
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
-                container=missing or self._faiss_index_file,
+                container=missing or failed,
                 detail=(
                     f"{missing} is missing beside a present index"
                     if missing

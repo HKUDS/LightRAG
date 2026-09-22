@@ -101,6 +101,11 @@ async def test_initialize_refuses_a_corrupt_pair(tmp_path, target):
 
     assert "lightrag-rebuild-vdb" in str(exc_info.value)
     assert exc_info.value.__cause__ is not None
+    # The DIAGNOSIS names the file that failed, not the one read first. A
+    # truncated `.meta.json` fails in `json.load`, whose `JSONDecodeError`
+    # carries no `filename`: reporting the intact `.index` would send the
+    # operator to inspect a healthy file.
+    assert exc_info.value.container == corrupt_file
     # Every file of the pair is offered to the offline tool, not just the
     # one that failed to parse: a drop removes all three.
     assert set(exc_info.value.artifacts) == {
@@ -109,6 +114,37 @@ async def test_initialize_refuses_a_corrupt_pair(tmp_path, target):
         storage._vector_space_file,
     }
     assert Path(corrupt_file).read_bytes() == on_disk
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload", ["{not json at all", '["a list, not an object"]', '{"x": {}}']
+)
+async def test_unparsable_metadata_names_the_metadata_file(tmp_path, payload):
+    """Three ways the metadata can be unreadable while the index is fine.
+
+    Invalid JSON, valid JSON of the wrong shape, and a row key that is not a
+    faiss id. None of the exceptions they raise carries a filename, so the
+    file being read is what has to be remembered -- otherwise all three
+    report the `.index`, which parsed.
+    """
+    storage = await _seeded_storage(tmp_path)
+    Path(storage._meta_file).write_text(payload, encoding="utf-8")
+    index_bytes = Path(storage._faiss_index_file).read_bytes()
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert exc_info.value.container == storage._meta_file
+    assert set(exc_info.value.artifacts) == {
+        storage._faiss_index_file,
+        storage._meta_file,
+        storage._vector_space_file,
+    }
+    # Refusing preserves both files for the offline rebuild.
+    assert Path(storage._faiss_index_file).read_bytes() == index_bytes
+    assert Path(storage._meta_file).read_text(encoding="utf-8") == payload
 
 
 @pytest.mark.asyncio

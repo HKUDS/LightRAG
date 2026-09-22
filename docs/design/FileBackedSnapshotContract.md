@@ -162,9 +162,16 @@ each raiser, never derived from `container` — the two answer different
 questions, and Faiss refusing on its marker names one file as the container
 and three as the scope. The field has no default for that reason: a storage
 that grows a sidecar must say so rather than inherit a guess that was only
-ever right for a single-file store. A backup failure aborts without
-deleting anything. A refusal that names NO local file is refused recovery
-outright: nothing can be preserved, so nothing may be destroyed. Backups
+ever right for a single-file store. The other half of that separation is
+that `container` must name the file that actually failed, which a multi-file
+store cannot work out after the fact: `json.JSONDecodeError` carries no
+`filename`, so the Faiss load path remembers which file it is reading rather
+than defaulting to the `.index` it opened first — a garbled `.meta.json`
+otherwise sends the operator to inspect an intact index. `RuntimeError` is the
+one thing attributed by type instead, because only faiss raises it.
+
+A backup failure aborts without deleting anything. A refusal that names NO
+local file is refused recovery outright: nothing can be preserved, so nothing may be destroyed. Backups
 survive failed and successful rebuilds; operators decide when they can be
 removed. An accessible source is not proof that it contains every original
 row. Keep every writer stopped throughout; restart only after the rebuilt
