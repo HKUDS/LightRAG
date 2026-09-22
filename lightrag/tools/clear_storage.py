@@ -13,9 +13,10 @@ the same ordering, without a running server.
 What it does, in order:
 
 1. shows what is about to be deleted: document counts per status, the ten
-   most recently updated documents, whether the text chunk store and each
-   vector index hold anything (both through reads that fail loudly), the
-   recorded embedding baselines and the input files. A value that cannot be read is shown as UNREADABLE, never as zero;
+   most recently updated documents, whether the text chunk store, the
+   knowledge graph and each vector index hold anything (all through reads
+   that fail loudly), the recorded embedding baselines and the input files.
+   A value that cannot be read is shown as UNREADABLE, never as zero;
 2. asks the operator to type ``Delete All``;
 3. drops the eleven data storages, then the workspace's configuration
    records (only when EVERY drop succeeded), then the top-level input files.
@@ -88,7 +89,11 @@ from lightrag.kg.working_dir_lock import (
     uses_working_dir,
 )
 from lightrag.namespace import NameSpace
-from lightrag.vector_space_gate import _chunk_source_is_populated
+from lightrag.vector_space_gate import (
+    chunk_source_is_populated,
+    graph_has_edges,
+    graph_has_nodes,
+)
 from lightrag.utils import (
     EmbeddingFunc,
     get_env_value,
@@ -660,7 +665,7 @@ class ClearTool:
             # empty store and let the confirmation drop every healthy sibling
             # around it -- the partial clear the kind rule refuses. The
             # strict read raises instead, and ``_read`` applies the rule.
-            populated = await _chunk_source_is_populated(
+            populated = await chunk_source_is_populated(
                 self.storages["text_chunks"], strict=True
             )
             if populated is None:
@@ -669,6 +674,28 @@ class ClearTool:
                     "cannot tell an outage from an empty store"
                 )
             return "has data" if populated else "EMPTY"
+
+        async def graph_state() -> Any:
+            # The knowledge graph is the most expensive thing this run drops
+            # and the one a rebuild treats as authoritative, so the operator
+            # sees it before typing the phrase. Both probes are the startup
+            # gate's own, and both RAISE on a backend failure rather than
+            # answering "empty" -- so ``_read`` applies the kind rule to a
+            # Neo4j outage exactly as it does to a Redis one.
+            graph = self.storages["chunk_entity_relation_graph"]
+            # ``get_popular_labels`` is abstract on ``BaseGraphStorage``, so
+            # every backend answers it; a failure reaches ``_read``.
+            if not await graph_has_nodes(graph):
+                return "EMPTY"
+            try:
+                has_edges = await graph_has_edges(graph)
+            except StorageCapabilityError:
+                # ``iter_edges`` is fail-closed on a backend that never
+                # implemented it. The entity count already proves the graph
+                # holds data, which is what the confirmation turns on, so the
+                # relation half is simply not reported.
+                return "has entities"
+            return "has entities and relations" if has_edges else "has entities"
 
         vectors: Dict[str, Any] = {}
         for label in VECTOR_LABELS:
@@ -697,15 +724,19 @@ class ClearTool:
             "total_docs": total,
             "recent": recent,
             "text_chunks": await self._read("text_chunks", text_chunks_state),
+            "graph": await self._read("chunk_entity_relation_graph", graph_state),
             "vectors": vectors,
             "baselines": baselines,
             "input_files": self.input_files(),
             # A backend-specific ``*_WORKSPACE`` variable outranks WORKSPACE
             # inside the storage constructor, and nothing above it sees that.
             # Some backends write the effective name back onto ``workspace``
-            # (PostgreSQL, MongoDB, Milvus); others keep it elsewhere (Redis,
-            # Qdrant), so the override list from the environment is the
-            # authoritative signal and the resolved names are a bonus.
+            # (PostgreSQL, MongoDB, Milvus); Qdrant is the only one that
+            # publishes it separately, as ``effective_workspace``. Redis folds
+            # it straight into ``final_namespace`` and exposes no name at all,
+            # so a REDIS_WORKSPACE override is invisible HERE -- which is why
+            # the override list read from the environment is the authoritative
+            # signal and these resolved names are only a bonus.
             "workspace_overrides": warn_about_workspace_overrides(),
             "resolved_workspaces": sorted(
                 {
@@ -720,20 +751,37 @@ class ClearTool:
             ),
         }
 
-    @staticmethod
-    def unreadable_items(summary: Dict[str, Any]) -> List[str]:
-        """Names of the summary items that could not be read."""
-        items: List[str] = []
+    def unreadable_items(self, summary: Dict[str, Any]) -> List[str]:
+        """Names of everything the operator is about to delete unread.
+
+        The storages that never opened come FIRST and are listed here even
+        though they have no summary line of their own: their one-line warning
+        is printed at the top of a summary dozens of lines long, and this list
+        is what sits directly above the prompt. A storage whose whole file
+        could not be parsed is the most important entry in it, not an
+        exception to it.
+        """
+        items: List[str] = [f"{label} (did not open)" for label in self.unavailable]
+
+        def name(label: str, item: str) -> None:
+            # A storage that did not open is already named above, and every
+            # value derived from it is Unreadable for that one reason. Naming
+            # both would pad the list with restatements of its first entry.
+            if label not in self.unavailable:
+                items.append(item)
+
         for status_value, count in summary["counts"].items():
             if isinstance(count, Unreadable):
-                items.append(f"documents in status {status_value}")
+                name("doc_status", f"documents in status {status_value}")
         if isinstance(summary["recent"], Unreadable):
-            items.append("most recently updated documents")
+            name("doc_status", "most recently updated documents")
         if isinstance(summary["text_chunks"], Unreadable):
-            items.append("text_chunks state")
+            name("text_chunks", "text_chunks state")
+        if isinstance(summary["graph"], Unreadable):
+            name("chunk_entity_relation_graph", "knowledge graph state")
         for label, state in summary["vectors"].items():
             if isinstance(state, Unreadable):
-                items.append(f"{label} state")
+                name(label, f"{label} state")
         for target, baseline in summary["baselines"].items():
             if isinstance(baseline, Unreadable):
                 items.append(f"{target} embedding baseline")
@@ -788,6 +836,7 @@ class ClearTool:
                 )
 
         print(f"\nText chunks: {show(summary['text_chunks'])}")
+        print(f"Knowledge graph: {show(summary['graph'])}")
 
         print("\nVector storages:")
         for label, state in summary["vectors"].items():
@@ -867,7 +916,16 @@ class ClearTool:
         constructed has nothing to call and is a failed drop outright.
         """
         outcome = DropOutcome()
-        droppable = [label for label in DATA_STORAGE_LABELS if self.storages.get(label)]
+        # ``is not None``, not truthiness: no storage class defines
+        # ``__bool__``/``__len__`` today, but an empty one that did would
+        # silently drop out of this list and be reported as never
+        # constructed -- keeping the configuration records over data the
+        # run never touched.
+        droppable = [
+            label
+            for label in DATA_STORAGE_LABELS
+            if self.storages.get(label) is not None
+        ]
         for label in DATA_STORAGE_LABELS:
             if label not in droppable:
                 reason = (

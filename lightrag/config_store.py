@@ -90,6 +90,12 @@ CLAIM_LOCK_NAMESPACE = "configuration_embedding_claim"
 UPDATED_BY_STARTUP = "lightrag.initialize_storages"
 UPDATED_BY_REBUILD = "lightrag-rebuild-vdb"
 
+# The two callers that only ever DELETE these rows, named in the registry's
+# ``writers`` so the declared list stays the whole list. Neither stamps an
+# ``updated_by``: a delete leaves no row to carry one.
+DELETED_BY_CLEAR_ENDPOINT = "/documents/clear"
+DELETED_BY_CLEAR_TOOL = "lightrag-clear-storage"
+
 
 class ConfigScope(str, Enum):
     """Whether a key is filed under a workspace or under the server itself."""
@@ -141,8 +147,13 @@ CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {
         scope=ConfigScope.WORKSPACE,
         schema_version=1,
         schema=_EMBEDDING_BASELINE_SCHEMA,
-        readers=(UPDATED_BY_STARTUP, UPDATED_BY_REBUILD),
-        writers=(UPDATED_BY_STARTUP, UPDATED_BY_REBUILD, "/documents/clear"),
+        readers=(UPDATED_BY_STARTUP, UPDATED_BY_REBUILD, DELETED_BY_CLEAR_TOOL),
+        writers=(
+            UPDATED_BY_STARTUP,
+            UPDATED_BY_REBUILD,
+            DELETED_BY_CLEAR_ENDPOINT,
+            DELETED_BY_CLEAR_TOOL,
+        ),
         sensitive=False,
     )
     for target in EMBEDDING_TARGETS
@@ -791,6 +802,10 @@ async def delete_workspace_configuration(config: Any, workspace: str) -> None:
     surviving vectors). Raises ``ConfigurationStorageError`` if a row survives
     the delete -- backends that swallow delete errors would otherwise report a
     removal that did not happen.
+
+    Two callers: ``/documents/clear`` and ``lightrag-clear-storage``. A third
+    one declares itself in ``CONFIG_KEY_REGISTRY``'s ``writers`` before it
+    calls this; nothing enforces that list, which is exactly why it drifts.
     """
     keys = [embedding_baseline_key(workspace, target) for target in EMBEDDING_TARGETS]
     try:

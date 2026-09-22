@@ -927,6 +927,10 @@ which drop kept the records.
 drops the same eleven data storages, classifies each result on
 `BaseException`, and deletes the records only when every drop succeeded. It
 never drops the LLM cache, so "every data storage" for it is those eleven.
+Both are named in `CONFIG_KEY_REGISTRY`'s `writers`, and the tool in its
+`readers` too (it strict-reads the baselines for the pre-delete summary).
+Nothing enforces those tuples, so a new caller declares itself there before
+it touches a row -- `tests/config_store/test_config_store.py` pins the list.
 
 Workspace names becoming UUIDs later reduces the accepted residue to orphan rows
 and a misleading inventory rather than a wrong refusal, but does not remove the

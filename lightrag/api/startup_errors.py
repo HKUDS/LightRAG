@@ -34,6 +34,12 @@ def describe_startup_refusal(
     refusals is cleared by either: a rebuild re-embeds from the sources, a
     clear drops the workspace, and both remove the condition the server
     refused on.
+
+    The ORDER of the checks below is load-bearing:
+    ``EmbeddingBaselineMismatchError`` subclasses ``VectorSpaceMismatchError``
+    and must be tested first, or it silently degrades to the parent's block --
+    which names one container and one pair of values where the baseline
+    refusal has one line per mismatched target. Do not sort these branches.
     """
     header = f"  Workspace: {workspace or '(default)'}\n  Storage: {vector_storage}\n"
     if isinstance(exc, VectorStorageEmptyError):

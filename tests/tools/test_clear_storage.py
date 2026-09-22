@@ -66,6 +66,10 @@ def make_storage(label: str, *, drop_result=None, drop_error=None, workspace="ws
         finalize=AsyncMock(),
         is_empty=AsyncMock(return_value=True),
         iter_rows=rows_stream([{"_id": "chunk-1"}]),
+        # The graph half of the summary: populated by default, so a test that
+        # cares overrides one of the two.
+        get_popular_labels=AsyncMock(return_value=["ENTITY"]),
+        iter_edges=edges_stream([[("a", "b")]]),
         persists_vectors=True,
     )
     return storage
@@ -84,6 +88,21 @@ def rows_stream(rows=(), *, error: BaseException | None = None):
         return gen()
 
     return iter_rows
+
+
+def edges_stream(batches=(), *, error: BaseException | None = None):
+    """An ``iter_edges`` stand-in: yields ``batches``, or raises ``error``."""
+
+    def iter_edges(*, batch_size=1000):
+        async def gen():
+            if error is not None:
+                raise error
+            for batch in batches:
+                yield batch
+
+        return gen()
+
+    return iter_edges
 
 
 FILE_BACKED_NAMES = {
@@ -581,6 +600,120 @@ class TestSummary:
 
         kv.is_empty = AsyncMock(return_value=False)
         assert (await tool.collect_summary())["text_chunks"] == "has data"
+
+    async def test_the_knowledge_graph_state_is_shown_before_the_phrase(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """The graph is the most expensive thing the run drops and the one a
+        rebuild treats as authoritative. It used to be absent from the
+        summary entirely, so the operator confirmed its deletion blind."""
+        tool = make_tool(tmp_path)
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        assert summary["graph"] == "has entities and relations"
+        assert "Knowledge graph: has entities and relations" in capsys.readouterr().out
+
+    async def test_a_graph_with_entities_but_no_relations_says_so(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["chunk_entity_relation_graph"].iter_edges = edges_stream([])
+
+        assert (await tool.collect_summary())["graph"] == "has entities"
+
+    async def test_an_empty_graph_reads_empty_without_probing_edges(
+        self, tmp_path, stub_baselines
+    ):
+        """A graph with no entities has no relations either, so the second
+        probe is a round trip that can only repeat the first one's answer."""
+
+        def refuse_iter_edges(**_kwargs):
+            raise AssertionError("the edge probe ran on a graph with no entities")
+
+        tool = make_tool(tmp_path)
+        graph = tool.storages["chunk_entity_relation_graph"]
+        graph.get_popular_labels = AsyncMock(return_value=[])
+        graph.iter_edges = refuse_iter_edges
+
+        assert (await tool.collect_summary())["graph"] == "EMPTY"
+
+    async def test_a_backend_without_iter_edges_still_reports_its_entities(
+        self, tmp_path, stub_baselines
+    ):
+        """``iter_edges`` is fail-closed on a backend that never implemented
+        it. The entity half already proves the graph holds data, which is what
+        the confirmation turns on, so the run neither aborts nor degrades the
+        whole line to UNREADABLE."""
+        from lightrag.exceptions import StorageCapabilityError
+
+        tool = make_tool(tmp_path)
+        tool.storages["chunk_entity_relation_graph"].iter_edges = edges_stream(
+            error=StorageCapabilityError("no edge enumeration")
+        )
+
+        assert (await tool.collect_summary())["graph"] == "has entities"
+
+    async def test_a_server_graph_outage_refuses_the_run(
+        self, tmp_path, stub_baselines
+    ):
+        """The kind rule on the graph read: Neo4j down is a run refused with
+        nothing dropped, never a graph rendered as EMPTY."""
+        tool = make_tool(tmp_path)
+        tool.storage_names["graph"] = "Neo4JStorage"
+        tool.storages["chunk_entity_relation_graph"].get_popular_labels = AsyncMock(
+            side_effect=ConnectionError("neo4j down")
+        )
+
+        with pytest.raises(RemoteBackendUnavailableError):
+            await tool.collect_summary()
+
+    async def test_a_local_graph_that_cannot_be_read_is_unreadable_not_fatal(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["chunk_entity_relation_graph"].get_popular_labels = AsyncMock(
+            side_effect=OSError("graphml unreadable")
+        )
+
+        summary = await tool.collect_summary()
+
+        assert isinstance(summary["graph"], Unreadable)
+        assert "knowledge graph state" in tool.unreadable_items(summary)
+
+    async def test_a_storage_that_did_not_open_is_named_in_the_last_warning(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """``full_docs`` has no summary line of its own, so a corrupt one used
+        to appear only in a one-line warning at the top of a summary dozens of
+        lines long -- never in the list printed directly above the prompt."""
+        tool = make_tool(tmp_path)
+        tool.storages["full_docs"] = None
+        tool.unavailable["full_docs"] = "JSONDecodeError: bad file"
+
+        summary = await tool.collect_summary()
+        items = tool.unreadable_items(summary)
+        tool.print_summary(summary)
+
+        assert "full_docs (did not open)" in items
+        out = capsys.readouterr().out
+        assert "1 item(s) above could not be read" in out
+        assert "full_docs (did not open)" in out.split("could not be read")[1]
+
+    async def test_a_storage_that_did_not_open_is_named_once_not_twice(
+        self, tmp_path, stub_baselines
+    ):
+        """Every value derived from a storage that never opened is Unreadable
+        for that one reason, so naming both pads the list with restatements of
+        its own first entry."""
+        tool = make_tool(tmp_path)
+        tool.storages["text_chunks"] = None
+        tool.unavailable["text_chunks"] = "JSONDecodeError: bad file"
+
+        items = tool.unreadable_items(await tool.collect_summary())
+
+        assert items == ["text_chunks (did not open)"]
 
     async def test_a_baseline_row_that_does_not_parse_is_unreadable_not_fatal(
         self, tmp_path, monkeypatch
@@ -1293,6 +1426,9 @@ class TestEndToEndOnJsonBackends:
         assert "processed      1" in out and "failed         1" in out
         assert "two.txt" in out and "one.txt" in out
         assert "Text chunks: has data" in out
+        assert "Knowledge graph: EMPTY" in out, (
+            "the real NetworkX storage was seeded with no entities"
+        )
         assert "Workspace cleared" in out
         assert (working_dir / "e2e" / "kv_store_doc_status.json").read_text() == "{}"
         assert (working_dir / "e2e" / "kv_store_text_chunks.json").read_text() == "{}"
@@ -1400,3 +1536,20 @@ class TestCommandLine:
 
         monkeypatch.setattr(clear_storage, "async_main", fake_main)
         clear_storage.main()  # returns without SystemExit
+
+    def test_a_failed_run_exits_nonzero(self, monkeypatch):
+        """The documented exit status: an operator scripting the clear reads
+        it, and a partial clear that exited 0 would be read as a clean one."""
+        monkeypatch.setattr(sys, "argv", ["lightrag-clear-storage"])
+        monkeypatch.setattr(clear_storage, "load_dotenv", lambda **kw: None)
+        monkeypatch.setattr(clear_storage, "setup_logger", lambda *a, **kw: None)
+
+        async def fake_main():
+            return False
+
+        monkeypatch.setattr(clear_storage, "async_main", fake_main)
+
+        with pytest.raises(SystemExit) as excinfo:
+            clear_storage.main()
+
+        assert excinfo.value.code == 1

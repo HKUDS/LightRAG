@@ -324,7 +324,12 @@ would not serve the drop either and clearing its siblings would leave it
 populated. It never consults the coverage gate, and on a named-container
 backend it clears the container named by the CURRENT embedding configuration,
 leaving a container named by a previous one orphaned exactly as a rebuild
-would.
+would. It does reuse the gate's two source probes -- `chunk_source_is_populated`
+and `graph_has_nodes` / `graph_has_edges`, public for that reason -- to show
+what the workspace holds before the confirmation, and for the same motive the
+gate has: each one raises on a backend failure rather than answering "empty",
+so an outage cannot be mistaken for an empty store by the operator any more
+than by a baseline claim.
 
 ## The transition: adopting an unmarked container
 

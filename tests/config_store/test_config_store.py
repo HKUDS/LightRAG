@@ -182,6 +182,23 @@ class TestKeysAndRows:
             assert spec.readers and spec.writers
             assert spec.sensitive is False
 
+    def test_the_registry_names_every_caller_that_touches_a_baseline(self):
+        """Nothing enforces these two tuples, which is exactly why they drift:
+        the offline clear reads the rows and deletes them, and was absent from
+        both for a release. A new caller declares itself here first."""
+        for spec in cs.CONFIG_KEY_REGISTRY.values():
+            assert set(spec.readers) == {
+                cs.UPDATED_BY_STARTUP,
+                cs.UPDATED_BY_REBUILD,
+                cs.DELETED_BY_CLEAR_TOOL,
+            }
+            assert set(spec.writers) == {
+                cs.UPDATED_BY_STARTUP,
+                cs.UPDATED_BY_REBUILD,
+                cs.DELETED_BY_CLEAR_ENDPOINT,
+                cs.DELETED_BY_CLEAR_TOOL,
+            }
+
     def test_the_row_carries_the_scope_as_a_field(self):
         row = _row(workspace="tenant-a")
         assert row["workspace"] == "tenant-a"

@@ -7,7 +7,7 @@ delete hides its row, and a buffered row the index has never seen is yielded
 after the scan.
 
 A missing index RAISES rather than ending the scan: the base contract forbids
-presenting a partial listing as a complete one, and ``_chunk_source_is_populated``
+presenting a partial listing as a complete one, and ``chunk_source_is_populated``
 turns a clean end into "confirmed empty", which is a durable ``origin=empty``
 baseline write.
 """
@@ -122,7 +122,7 @@ async def test_a_dropped_index_raises_instead_of_ending_the_scan():
     """``_index_ready=False`` (post-drop) cannot answer "empty".
 
     Before this was fixed the scan returned zero rows and ended cleanly, which
-    ``_chunk_source_is_populated`` reads as a confirmed-empty chunk source --
+    ``chunk_source_is_populated`` reads as a confirmed-empty chunk source --
     the verdict that records an ``origin=empty`` embedding baseline for a
     container nobody could read.
     """
@@ -182,7 +182,7 @@ async def test_a_failed_refresh_raises_instead_of_scanning_a_stale_view():
 
     A row already durable but not yet in a searchable segment is missed by
     every page of the scan, so swallowing the refresh failure hands back a
-    clean, empty listing over rows that exist. ``_chunk_source_is_populated``
+    clean, empty listing over rows that exist. ``chunk_source_is_populated``
     reads a clean end as CONFIRMED empty and the startup writes an
     ``origin=empty`` baseline from it, while the coverage refusal that should
     have fired (source populated, container empty) never does.

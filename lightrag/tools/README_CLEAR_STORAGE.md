@@ -72,6 +72,7 @@ The run, in order:
      strict counts say documents exist is read as the backend's swallowed
      failure, not as "no documents";
    - whether `text_chunks` holds any data;
+   - whether the knowledge graph holds entities, and relations;
    - whether each vector storage is empty, has vectors, or refused to attach;
    - the recorded embedding baselines;
    - the top-level files of this workspace's input directory
@@ -94,6 +95,16 @@ show as an empty store and let the confirmation drop every healthy sibling
 around it. An exact row count would take a backend-specific query per store
 for a number that changes nothing about whether to confirm. The status counts
 are one strict query per status.
+
+The knowledge graph is read the same way, with the gate's own probes:
+`graph_has_nodes` (`get_popular_labels(limit=1)`, abstract on
+`BaseGraphStorage`, so every backend answers it) and `graph_has_edges`
+(`iter_edges`, bounded, and fail-closed on a backend that never implemented
+it — the line then reads `has entities` and the relation half is simply not
+reported). Both raise on a backend failure, so the kind rule applies to a
+Neo4j outage exactly as it does to a Redis one. The graph is the most
+expensive thing the run drops and the one a rebuild treats as authoritative,
+so it is shown rather than left to be inferred from the document counts.
 
 ## What is deleted, and what is not
 
@@ -154,8 +165,23 @@ directory by hand and re-run.
 
 ## Important notes
 
-- **Stop the server first.** Dropping storages under a live pipeline tears
-  them down out from under the writer and loses data, on every backend.
+- **Stop the server first, and know what does not enforce it.** Dropping
+  storages under a live pipeline tears them down out from under the writer and
+  loses data, on every backend: every `drop()` requires its caller to hold the
+  pipeline's destructive reservation, and that reservation lives in one
+  process's shared memory, so no separate process can take it. What this tool
+  substitutes is partial by design, and the difference is the configuration
+  storage. **File-backed** (the default `JsonKVStorage`): the tool claims
+  `config_dir` for the run (`lightrag/kg/working_dir_lock.py`), so a server
+  still holding it makes the tool refuse before it opens anything.
+  **Server-backed** (PostgreSQL, MongoDB, OpenSearch): nothing is claimed —
+  `uses_working_dir` is false — and the only thing between a live server and a
+  cleared workspace is the "Has the LightRAG Server been shut down?" prompt.
+  That is the same posture as `lightrag-rebuild-vdb`, and it is an accepted
+  residue rather than an oversight: a cross-process claim would have to be
+  taken on something every backend shares, which the storage layer does not
+  have. Recovery if it happens anyway: stop every writer, re-run this tool
+  (the drops are idempotent), then restart the server.
 - **Opening the storages runs the server's one-time migrations, before the
   summary.** The tool initializes every storage exactly as the server does,
   and on Qdrant, PostgreSQL and Milvus that includes migrating a legacy
