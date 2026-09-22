@@ -139,6 +139,18 @@ async def test_the_log_file_stays_plain_while_the_terminal_is_highlighted(
 
 
 @pytest.mark.asyncio
+async def test_the_storage_workspace_wins_over_the_server_workspace(caplog):
+    """A backend override (QDRANT_WORKSPACE, ...) moves the vector storage
+    off the server's workspace; the diagnostic names the one that is empty."""
+    error = VectorStorageEmptyError(vdb_name="chunks", workspace="qdrant_scope")
+    life = driver(make_app(error, []))
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        await life.startup()
+    assert "Workspace: qdrant_scope" in caplog.text
+    assert "space1" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_unexpected_startup_error_keeps_traceback(caplog):
     cleaned = []
     life = driver(make_app(RuntimeError("connection broke"), cleaned))

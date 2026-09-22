@@ -987,6 +987,11 @@ class VectorStorageEmptyError(RuntimeError):
             recognise it, e.g. ``"knowledge graph entities"``. It is the other
             half of the evidence: an empty container is only a defect because
             something it indexes is NOT empty.
+        workspace: the workspace the vector storage actually opened, after
+            any backend override (``QDRANT_WORKSPACE``, ``MILVUS_WORKSPACE``,
+            ...). ``None`` when the raiser could not tell; a diagnostic must
+            not substitute the instance's configured workspace for it
+            silently, because under an override the two differ.
     """
 
     def __init__(
@@ -995,6 +1000,7 @@ class VectorStorageEmptyError(RuntimeError):
         vdb_name: str,
         container: str | None = None,
         source: str = "the data it indexes",
+        workspace: str | None = None,
     ) -> None:
         where = f" ('{container}')" if container else ""
         message = (
@@ -1015,3 +1021,4 @@ class VectorStorageEmptyError(RuntimeError):
         self.vdb_name = vdb_name
         self.container = container
         self.source = source
+        self.workspace = workspace
