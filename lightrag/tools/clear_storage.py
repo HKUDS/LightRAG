@@ -638,7 +638,7 @@ class ClearTool:
                 out[target] = None
                 continue
             try:
-                out[target] = EmbeddingBaseline.from_row(row, key=key)
+                out[target] = EmbeddingBaseline.from_row(row, key=key, target=target)
             except ConfigurationStorageError as e:
                 out[target] = Unreadable(str(e))
         return out
