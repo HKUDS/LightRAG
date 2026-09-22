@@ -523,6 +523,106 @@ def _windows_sids_equal(kernel32, advapi32, ctypes, left: str, right: str) -> bo
         kernel32.LocalFree(first)
 
 
+# The access rights an SDDL mask field can name, by VALUE (from sddl.h and
+# winnt.h). A mask has several spellings -- an alias, a concatenation of
+# two-letter rights, or hex -- so it is parsed rather than compared as text,
+# the same reason the SID field is compared through ``EqualSid``.
+_SDDL_RIGHTS = {
+    # generic
+    "GA": 0x10000000,
+    "GR": 0x80000000,
+    "GW": 0x40000000,
+    "GX": 0x20000000,
+    # standard
+    "SD": 0x00010000,  # DELETE
+    "RC": 0x00020000,  # READ_CONTROL
+    "WD": 0x00040000,  # WRITE_DAC
+    "WO": 0x00080000,  # WRITE_OWNER
+    # object-specific, as SDDL spells them for a file
+    "CC": 0x00000001,
+    "DC": 0x00000002,
+    "LC": 0x00000004,
+    "SW": 0x00000008,
+    "RP": 0x00000010,
+    "WP": 0x00000020,
+    "DT": 0x00000040,
+    "LO": 0x00000080,
+    "CR": 0x00000100,
+    # file
+    "FA": 0x001F01FF,
+    "FR": 0x00120089,
+    "FW": 0x00120116,
+    "FX": 0x001200A0,
+    # registry key, which a file DACL will not carry but SDDL can spell
+    "KA": 0x000F003F,
+    "KR": 0x00020019,
+    "KW": 0x00020006,
+    "KX": 0x00020019,
+}
+
+_DELETE = 0x00010000
+_FILE_ALL_ACCESS = 0x001F01FF
+_FILE_GENERIC_READ = 0x00120089
+_FILE_GENERIC_WRITE = 0x00120116
+_FILE_GENERIC_EXECUTE = 0x001200A0
+_GENERIC_ALL = 0x10000000
+_GENERIC_READ = 0x80000000
+_GENERIC_EXECUTE = 0x20000000
+
+# What the owner must still be able to do with a file this module created:
+# read it back and, eventually, delete it. ``FA`` is what is asked for and
+# carries both; this is the floor the read-back proves, not a bit-for-bit
+# comparison of the request, because the same rights have more than one
+# spelling and not every difference matters.
+_REQUIRED_RIGHTS = _FILE_GENERIC_READ | _DELETE
+
+
+def _sddl_access_mask(field: str) -> int | None:
+    """The numeric rights an SDDL mask field grants, or ``None`` if unreadable.
+
+    ``None`` is "this cannot be interpreted", which the caller must treat as a
+    refusal: an unknown spelling is not evidence that the rights are there.
+    """
+    text = field.strip()
+    if not text:
+        return None
+    if text[:2].lower() == "0x":
+        try:
+            return int(text, 16)
+        except ValueError:
+            return None
+    if text.isdigit():
+        return int(text, 10)
+    if len(text) % 2:
+        return None
+    mask = 0
+    for index in range(0, len(text), 2):
+        value = _SDDL_RIGHTS.get(text[index : index + 2].upper())
+        if value is None:
+            return None
+        mask |= value
+    return mask
+
+
+def _map_generic_file_rights(mask: int) -> int:
+    """Expand the generic bits into what they mean for a FILE.
+
+    A read-back file DACL normally carries specific rights, because generic
+    ones are mapped when the ACE is applied. A filesystem that answers with
+    ``GA`` anyway is granting full access, not less, so the mapping is applied
+    before the rights are checked rather than refusing the spelling.
+    """
+    for generic, specific in (
+        (_GENERIC_ALL, _FILE_ALL_ACCESS),
+        (_GENERIC_READ, _FILE_GENERIC_READ),
+        (_GENERIC_WRITE, _FILE_GENERIC_WRITE),
+        (_GENERIC_EXECUTE, _FILE_GENERIC_EXECUTE),
+    ):
+        if mask & generic:
+            mask |= specific
+    return mask
+
+
 def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) -> None:
     """Refuse a DACL that is not exactly "protected, this SID alone".
 
@@ -530,12 +630,20 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) ->
     half of the verification that encodes what "private" means, and the half
     most likely to be wrong.
 
-    Three conditions, each for its own reason. ``D:P`` -- without the protect
+    Four conditions, each for its own reason. ``D:P`` -- without the protect
     flag the entries below are whatever the parent directory dictates today
     and can change under the file tomorrow. Exactly one entry -- a second one
-    is a second audience, whatever it grants. And that entry must be an allow
-    for this SID, because an entry for anyone else is the whole failure this
-    guards.
+    is a second audience, whatever it grants. That entry must be an allow for
+    this SID, because an entry for anyone else is the whole failure this
+    guards. And it must still GRANT the owner read and delete: the first three
+    conditions are all about who is kept out, and a mask the filesystem
+    downgraded satisfies every one of them while leaving a file its owner
+    cannot read back or remove -- these copies are kept indefinitely and the
+    tool drops the originals once they exist, so unusable is its own loss.
+    The mask is read by value, not by text, for the same reason as the SID
+    below: ``FA``, ``0x1f01ff`` and a concatenation of two-letter rights are
+    one answer spelled three ways, and an unreadable spelling refuses rather
+    than passes.
 
     ``sid_matches`` decides the last one, and Windows callers MUST supply it.
     An SDDL SID field is not a stable spelling: the string this process wrote
@@ -573,4 +681,14 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) ->
     if len(fields) < 6 or fields[0] != "A" or not sid_matches(fields[5]):
         raise PrivateFileError(
             f"{path}: its only access entry is not an allow for {sid} ({sddl!r})"
+        )
+    granted = _sddl_access_mask(fields[2])
+    if (
+        granted is None
+        or (_map_generic_file_rights(granted) & _REQUIRED_RIGHTS) != _REQUIRED_RIGHTS
+    ):
+        raise PrivateFileError(
+            f"{path}: its only access entry grants {fields[2]!r}, which does "
+            f"not give the owner read and delete, so the file could not be "
+            f"read back or removed ({sddl!r})"
         )

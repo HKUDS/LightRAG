@@ -207,6 +207,42 @@ def test_a_dacl_that_is_not_exactly_this_sid_is_refused(sddl, reason):
         assert_dacl_grants_only(sddl, SID, "x")
 
 
+@pytest.mark.parametrize(
+    "mask, reason",
+    [
+        ("FA", "full access, what the file is created with"),
+        ("0x1f01ff", "the same rights in hex"),
+        ("FRSD", "the floor itself: read plus delete"),
+        ("GA", "generic all, which maps to full access on a file"),
+    ],
+)
+def test_a_mask_that_still_lets_the_owner_read_and_delete_is_accepted(mask, reason):
+    assert_dacl_grants_only(f"D:P(A;;{mask};;;{SID})", SID, "x")
+
+
+@pytest.mark.parametrize(
+    "mask, reason",
+    [
+        ("FR", "read but not delete, so the copy can never be removed"),
+        ("FW", "write only, so the copy cannot be read back"),
+        ("SD", "delete but not read"),
+        ("0x0", "nothing at all"),
+        ("ZZ", "a spelling this cannot interpret, which is not evidence"),
+        ("", "no mask field"),
+    ],
+)
+def test_a_downgraded_or_unreadable_mask_is_refused(mask, reason):
+    """The first three conditions are all about who is kept OUT.
+
+    A filesystem or redirector that keeps the protected, owner-only entry but
+    hands back a lesser mask satisfies every one of them, and still leaves a
+    file its owner cannot read back or delete -- which for a backup the tool
+    keeps indefinitely, after dropping the originals, is its own data loss.
+    """
+    with pytest.raises(PrivateFileError):
+        assert_dacl_grants_only(f"D:P(A;;{mask};;;{SID})", SID, "x")
+
+
 def test_a_well_known_sid_read_back_as_its_alias_is_still_this_sid():
     """The failure that only appears on some accounts (PR #4025 Windows CI).
 
