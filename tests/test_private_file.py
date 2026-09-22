@@ -208,6 +208,35 @@ def test_a_dacl_that_is_not_exactly_this_sid_is_refused(sddl, reason):
 
 
 @pytest.mark.parametrize(
+    "flags, reason",
+    [
+        ("IO", "inherit-only: the rights go to children, not to this file"),
+        ("OICIIO", "the same, spelled with the inheritance flags beside it"),
+        ("QQ", "a flag spelling this cannot interpret, which is not evidence"),
+        ("I", "an odd-length flags field, which is not a flag list"),
+    ],
+)
+def test_an_entry_that_does_not_apply_to_the_file_is_refused(flags, reason):
+    """A file has no children, so an inherit-only entry grants its rights to
+    nothing at all -- while passing the protect, single-entry, allow-for-this-
+    SID and full-access conditions one after another."""
+    with pytest.raises(PrivateFileError, match="does not apply to this file"):
+        assert_dacl_grants_only(f"D:P(A;{flags};FA;;;{SID})", SID, "x")
+
+
+@pytest.mark.parametrize(
+    "flags, reason",
+    [
+        ("", "what this module asks for"),
+        ("OICI", "inheritance flags, which describe children a file cannot have"),
+        ("ID", "arrived by inheritance, which does not stop it applying"),
+    ],
+)
+def test_flags_that_leave_the_entry_in_force_are_accepted(flags, reason):
+    assert_dacl_grants_only(f"D:P(A;{flags};FA;;;{SID})", SID, "x")
+
+
+@pytest.mark.parametrize(
     "mask, reason",
     [
         ("FA", "full access, what the file is created with"),

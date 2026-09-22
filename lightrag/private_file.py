@@ -597,6 +597,34 @@ _GENERIC_EXECUTE = 0x20000000
 _REQUIRED_RIGHTS = _FILE_GENERIC_READ | _DELETE
 
 
+# SDDL ACE-flag tokens. Only one of them decides whether the entry applies to
+# the object it is ON: ``IO``, inherit-only, which hands the rights to
+# children this object does not have and to nothing else. The inheritance
+# flags beside it (``CI``/``OI``/``NP``) describe children too, and a FILE has
+# none, so they change nothing here; ``ID`` says the entry arrived by
+# inheritance, which a protected DACL makes odd but does not make ineffective.
+_SDDL_ACE_FLAGS = frozenset({"CI", "OI", "NP", "IO", "ID", "SA", "FA"})
+_INHERIT_ONLY = "IO"
+
+
+def _ace_applies_to_this_object(field: str) -> bool:
+    """Whether an ACE carrying these flags grants anything to the object.
+
+    ``False`` for an inherit-only entry, and for a flags field this cannot
+    read: an unknown spelling is not evidence that the ACE applies, the same
+    rule the mask parser follows one field over.
+    """
+    text = field.strip().upper()
+    if not text:
+        return True
+    if len(text) % 2:
+        return False
+    tokens = {text[index : index + 2] for index in range(0, len(text), 2)}
+    if not tokens <= _SDDL_ACE_FLAGS:
+        return False
+    return _INHERIT_ONLY not in tokens
+
+
 def _sddl_access_mask(field: str) -> int | None:
     """The numeric rights an SDDL mask field grants, or ``None`` if unreadable.
 
@@ -650,12 +678,14 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) ->
     half of the verification that encodes what "private" means, and the half
     most likely to be wrong.
 
-    Four conditions, each for its own reason. ``D:P`` -- without the protect
+    Five conditions, each for its own reason. ``D:P`` -- without the protect
     flag the entries below are whatever the parent directory dictates today
     and can change under the file tomorrow. Exactly one entry -- a second one
     is a second audience, whatever it grants. That entry must be an allow for
     this SID, because an entry for anyone else is the whole failure this
-    guards. And it must still GRANT the owner read and delete: the first three
+    guards. It must APPLY to this file -- an inherit-only entry passes every
+    condition above while granting its rights to children a file cannot have.
+    And it must still GRANT the owner read and delete: the first three
     conditions are all about who is kept out, and a mask the filesystem
     downgraded satisfies every one of them while leaving a file its owner
     cannot read back or remove -- these copies are kept indefinitely and the
@@ -701,6 +731,12 @@ def assert_dacl_grants_only(sddl: str, sid: str, path: str, sid_matches=None) ->
     if len(fields) < 6 or fields[0] != "A" or not sid_matches(fields[5]):
         raise PrivateFileError(
             f"{path}: its only access entry is not an allow for {sid} ({sddl!r})"
+        )
+    if not _ace_applies_to_this_object(fields[1]):
+        raise PrivateFileError(
+            f"{path}: its only access entry carries the flags {fields[1]!r}, "
+            f"so it does not apply to this file at all -- the rights below it "
+            f"are granted to nothing ({sddl!r})"
         )
     granted = _sddl_access_mask(fields[2])
     if (
