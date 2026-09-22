@@ -1310,13 +1310,13 @@ async def azure_openai_embed(
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
-    max_token_size: int | None = None,
     token_tracker: Any | None = None,
     client_configs: dict[str, Any] | None = None,
     api_version: str | None = None,
     context: str = "document",
     query_prefix: str | None = None,
     document_prefix: str | None = None,
+    max_token_size: int | None = None,
 ) -> np.ndarray:
     """Azure OpenAI embedding wrapper function.
 
