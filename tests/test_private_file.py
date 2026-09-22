@@ -312,6 +312,36 @@ def test_an_inheritable_entry_for_the_right_sid_is_still_refused():
         assert_dacl_grants_only(f"D:AI(A;ID;FA;;;{SID})", SID, "x")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="replaces the created file by rename, which the Windows branch's "
+    "dwShareMode=0 prevents while the handle is held",
+)
+def test_cleanup_does_not_delete_a_file_this_process_did_not_create(tmp_path):
+    """The delete is by NAME, and a name is only ours while the directory
+    holds still. If something replaces the file between the failure and the
+    cleanup, removing the name destroys a stranger's file and leaves our
+    partial one -- the same mistake `windows_create_exclusive` exists to
+    refuse for the collision case, on the other side of the lifecycle.
+    """
+    target = tmp_path / "copy.bin"
+    stranger = tmp_path / "somebody-elses.bin"
+    stranger.write_bytes(b"not ours")
+
+    with pytest.raises(RuntimeError, match="source vanished"):
+        with open_private_file(str(target)) as destination:
+            destination.write(b"partial")
+            # Somebody rearranges the directory under us: our file moves
+            # aside and a file we never created takes the name.
+            os.replace(str(target), str(tmp_path / "ours-moved.bin"))
+            os.replace(str(stranger), str(target))
+            raise RuntimeError("source vanished")
+
+    assert target.read_bytes() == b"not ours", (
+        "the file at the name was not ours to delete"
+    )
+
+
 # ---------------------------------------------------------------------------
 # POSIX: the mode is the mechanism
 # ---------------------------------------------------------------------------

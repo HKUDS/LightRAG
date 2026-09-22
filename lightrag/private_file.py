@@ -61,14 +61,39 @@ class PrivateFileError(RuntimeError):
     """
 
 
-def _remove_quietly(path: str) -> None:
+def _remove_quietly(path: str, identity=None) -> None:
     """Delete a file WE created and no longer want.
 
     Only ever called on a path this module has just brought into existence.
     A failure is logged, never raised: it is always running while another
     exception is on its way out, and replacing that one with "could not clean
     up" would hide why anything was being cleaned up at all.
+
+    ``identity`` is an ``os.stat_result`` taken from the open descriptor. The
+    delete is by NAME, and the name is only ours while nobody rearranges the
+    directory, so when the identity is known the name is checked against it
+    first and a stranger is left alone -- the same rule
+    ``windows_create_exclusive`` states for the collision case: deleting
+    somebody else's file is the failure worth avoiding, and leaving our own
+    partial one behind is merely untidy. The check narrows the window rather
+    than closing it: nothing here is atomic, and the residue is that a
+    directory another process can write remains a directory where cleanup can
+    lose the race. Without an identity (the Windows path before the handle
+    becomes a descriptor, where ``dwShareMode=0`` keeps the file unopenable
+    while it is held) the delete is unconditional, as before.
     """
+    if identity is not None:
+        try:
+            on_disk = os.lstat(path)
+        except OSError as stat_error:
+            logger.warning(f"Could not check the unused file {path}: {stat_error}")
+            return
+        if (on_disk.st_dev, on_disk.st_ino) != (identity.st_dev, identity.st_ino):
+            logger.warning(
+                f"Not removing {path}: it is no longer the file this process "
+                "created, so deleting it would destroy somebody else's"
+            )
+            return
     try:
         os.remove(path)
     except OSError as removal_error:
@@ -77,11 +102,18 @@ def _remove_quietly(path: str) -> None:
 
 def _discard(destination, path: str) -> None:
     """Close and delete a file we created, without masking the reason."""
+    identity = None
+    try:
+        identity = os.fstat(destination.fileno())
+    except (OSError, ValueError):
+        # Already closed, or a stat that failed: the delete then falls back to
+        # the unconditional one rather than being skipped.
+        pass
     try:
         destination.close()
     except OSError as close_error:
         logger.warning(f"Could not close the unused file {path}: {close_error}")
-    _remove_quietly(path)
+    _remove_quietly(path, identity)
 
 
 @contextlib.contextmanager
@@ -136,9 +168,14 @@ def open_private_file(path: str) -> Iterator[IO[bytes]]:
         try:
             destination = os.fdopen(fd, "wb")
         except BaseException:
-            # fdopen did not take ownership, so the descriptor is still ours.
+            # fdopen did not take ownership, so the descriptor is still ours,
+            # and it still says which file this name meant.
+            try:
+                identity = os.fstat(fd)
+            except OSError:
+                identity = None
             os.close(fd)
-            _remove_quietly(path)
+            _remove_quietly(path, identity)
             raise
         try:
             mode = stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
@@ -272,8 +309,12 @@ def _open_private_file_windows(path: str) -> IO[bytes]:
     try:
         return os.fdopen(fd, "wb")
     except BaseException:
+        try:
+            identity = os.fstat(fd)
+        except OSError:
+            identity = None
         os.close(fd)
-        _remove_quietly(path)
+        _remove_quietly(path, identity)
         raise
 
 
