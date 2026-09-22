@@ -337,12 +337,18 @@ class StorageNameSpace(ABC):
 _COLLECTION_SUFFIX_DIGEST_HEX_LEN = 8
 
 # PostgreSQL identifiers are 63 bytes. The longest vector base table is
-# LIGHTRAG_VDB_RELATION plus the joining underscore, so every backend shares
-# this cap and one embedding configuration still resolves to one suffix.
+# LIGHTRAG_VDB_RELATION plus the joining underscore. ``_pg_create_table``
+# copies CONSTRAINT {table}_PK into the same namespace, so the table name
+# itself must leave room for ``_PK`` (a 63-byte table makes that constraint
+# truncate onto the table name and CREATE fails). Every backend shares this
+# cap and one embedding configuration still resolves to one suffix.
 _PG_MAX_IDENTIFIER_LENGTH = 63
 _PG_LONGEST_VECTOR_TABLE_PREFIX = "LIGHTRAG_VDB_RELATION_"
-_MAX_COLLECTION_SUFFIX_LENGTH = _PG_MAX_IDENTIFIER_LENGTH - len(
-    _PG_LONGEST_VECTOR_TABLE_PREFIX
+_PG_RELATION_PK_SUFFIX = "_PK"
+_MAX_COLLECTION_SUFFIX_LENGTH = (
+    _PG_MAX_IDENTIFIER_LENGTH
+    - len(_PG_LONGEST_VECTOR_TABLE_PREFIX)
+    - len(_PG_RELATION_PK_SUFFIX)
 )
 
 
@@ -470,9 +476,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         stripped name. Case and punctuation are part of the identity. Leading
         and trailing whitespace are not.
 
-        The folded prefix may be shortened so the suffix still fits in a
-        PostgreSQL identifier after ``LIGHTRAG_VDB_RELATION_``. The dimension
-        and the digest are kept.
+        The folded prefix may be shortened so ``LIGHTRAG_VDB_RELATION_`` plus
+        the suffix plus the ``_PK`` constraint still fits in a PostgreSQL
+        identifier. The dimension and the digest are kept.
 
         Containers created before the digest are named by
         ``_legacy_folded_collection_suffix``. Adopting those onto this suffix

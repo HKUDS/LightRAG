@@ -117,8 +117,37 @@ def test_legacy_suffix_is_not_truncated_but_the_digested_suffix_fits_postgres():
     assert digested != other_digested
     assert digested.endswith(_digest(model))
     assert "1024d" in digested
-    # Worst vector base table plus the joining underscore.
-    assert len("LIGHTRAG_VDB_RELATION_" + digested) <= 63
+    # The relation primary key is ``{table}_PK`` in the same 63-byte namespace.
+    _assert_relation_pk_fits(digested)
+
+
+# Names whose folded form is longer than the prefix budget. A suffix that
+# fills the old 41-character cap makes ``{table}_PK`` truncate onto the table.
+@pytest.mark.parametrize(
+    ("model_name", "dim"),
+    [
+        ("openai/text-embedding-3-large", 3072),
+        ("openai/text-embedding-3-small", 1536),
+        ("intfloat/multilingual-e5-large", 1024),
+        ("alibaba-nlp/gte-qwen2-7b-instruct", 3584),
+    ],
+)
+def test_relation_primary_key_fits_when_the_folded_name_hits_the_cap(
+    model_name, dim
+):
+    suffix = _suffix(model_name, dim)
+
+    assert suffix.endswith(f"{dim}d_{_digest(model_name)}")
+    _assert_relation_pk_fits(suffix)
+
+
+def _assert_relation_pk_fits(suffix: str) -> None:
+    """``CREATE TABLE`` copies ``CONSTRAINT {table}_PK`` from the relation DDL."""
+    table = "LIGHTRAG_VDB_RELATION_" + suffix
+    assert len(table) + len("_PK") <= 63
+    assert _MAX_COLLECTION_SUFFIX_LENGTH <= (
+        63 - len("LIGHTRAG_VDB_RELATION_") - len("_PK")
+    )
 
 
 @pytest.mark.parametrize(

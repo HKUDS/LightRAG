@@ -431,14 +431,23 @@ is present:
   shared — the failure is logged, and the vectors are not orphaned. The
   collection is shared across workspaces, so the alias is too.
 
-`drop()` clears the pre-digest container for this workspace as well. A clear
-before the first adopting start would otherwise leave the old container full.
-Milvus then recreates an empty digested collection, and the next initialize
-skips adoption because that name already exists. PostgreSQL adoption would
-rename the still-full table back into service. Milvus drops the pre-digest
-collection (it is per workspace). PostgreSQL and Qdrant delete this workspace's
-rows or points and leave the shared container for other workspaces. Qdrant
-never drops that collection from a single workspace's clear.
+A clear before the first adopting start must empty an unowned pre-digest
+container. Otherwise Milvus recreates an empty digested collection and the
+next initialize skips adoption because that name already exists, and
+PostgreSQL adoption renames the still-full table back into service. Milvus
+drops the pre-digest collection when that name still exists (it is per
+workspace). PostgreSQL deletes this workspace's rows and leaves the shared
+table. After a successful rename the pre-digest name is gone, so a later
+clear does not see it.
+
+Qdrant never renames, so the physical collection keeps the pre-digest name and
+the digested name is only an alias. `drop()` reads `lightrag_embedding_model`
+on that physical collection before deleting this workspace's points. It
+deletes when the owner is absent or equals this model. Absent is the
+clear-before-adopt case and is still cleared. A different recorded owner is
+the first claimant: its points and the alias stay, and this model's own
+digested collection is what gets cleared. Qdrant never drops the shared
+collection from a single workspace's clear.
 
 **First claimant of a shared pre-digest container.** A container that already
 held two fold-colliding models cannot be split. Whichever model initializes

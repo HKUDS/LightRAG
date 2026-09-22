@@ -5,6 +5,7 @@ aliases the digested name onto the physical pre-digest collection. A
 collection already owned by a different model is left alone.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -131,3 +132,78 @@ async def test_existing_digested_collection_is_not_realiased(_init_lock):
     client.update_collection.assert_not_called()
     client.update_collection_aliases.assert_not_called()
     client.create_collection.assert_not_called()
+
+
+def _deleted_collections(client):
+    return [
+        call.kwargs.get("collection_name", call.args[0] if call.args else None)
+        for call in client.delete.call_args_list
+    ]
+
+
+def _client_for_drop(storage, metadata, *, include_digested=True):
+    """Client whose pre-digest collection exists and records ``metadata``."""
+    physical = storage._pre_digest_collection_name()
+    info = MagicMock()
+    info.config.metadata = metadata
+    names = {physical}
+    if include_digested:
+        names.add(storage.final_namespace)
+    client = MagicMock()
+    client.collection_exists.side_effect = lambda name: name in names
+    client.get_collection.return_value = info
+    storage._client = client
+    # drop() takes the namespace lock. A real NamespaceLock needs shared
+    # storage, which these tests do not start.
+    storage._flush_lock = asyncio.Lock()
+    return client, physical
+
+
+@pytest.mark.asyncio
+async def test_drop_leaves_points_owned_by_another_model():
+    """The model that lost the claim must not wipe the winner's physical collection.
+
+    ``vendor/model:v1`` adopted the pre-digest name and aliased onto it.
+    ``vendor_model/v1`` created its own collection. Its ``drop()`` still sees
+    the shared physical name, and deleting there removes the first claimant's
+    points. Adoption will not run again.
+    """
+    storage = _storage("vendor_model/v1")
+    client, physical = _client_for_drop(
+        storage, {VECTOR_SPACE_MODEL_KEY: "vendor/model:v1"}
+    )
+
+    result = await storage.drop()
+
+    assert result["status"] == "success"
+    deleted = _deleted_collections(client)
+    assert storage.final_namespace in deleted
+    assert physical not in deleted
+    client.delete_collection.assert_not_called()
+    client.update_collection_aliases.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_an_unowned_pre_digest_collection():
+    """A clear before the first adopt must still empty the old container."""
+    storage = _storage("vendor/model:v1")
+    client, physical = _client_for_drop(storage, None, include_digested=False)
+
+    result = await storage.drop()
+
+    assert result["status"] == "success"
+    assert physical in _deleted_collections(client)
+    client.delete_collection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_a_pre_digest_collection_owned_by_this_model():
+    storage = _storage("vendor/model:v1")
+    client, physical = _client_for_drop(
+        storage, {VECTOR_SPACE_MODEL_KEY: "vendor/model:v1"}, include_digested=False
+    )
+
+    result = await storage.drop()
+
+    assert result["status"] == "success"
+    assert physical in _deleted_collections(client)

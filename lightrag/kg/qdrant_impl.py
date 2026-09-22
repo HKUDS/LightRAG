@@ -1551,6 +1551,15 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         workspaces' legacy data and their pending one-time migration stay
         intact.
 
+        The pre-digest collection — the physical name Qdrant keeps, with the
+        digested name as an alias — is cleared the same way only when its
+        recorded ``lightrag_embedding_model`` is absent or equal to this
+        model. A different owner is another embedding identity that only
+        folded to the same prefix. Deleting its points would discard the
+        vectors the first claimant kept, and adoption will not run again.
+        That collection and its alias are left in place. See
+        ``docs/design/VectorSpaceProvenance.md``.
+
         MUST only be called when ``pipeline_status`` is idle (see the
         Pipeline concurrency contract in ``docs/design/PipelineConcurrencyContract.md``); the only
         in-tree caller ``clear_documents`` enforces this.
@@ -1609,21 +1618,35 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
                 # The digested name may be an alias of this physical collection,
                 # or the physical collection may still be the only copy because
-                # adoption has not run. Deleting this workspace's points under
-                # both names is the same collection when the alias is in place,
-                # and is the pre-digest data when it is not. Never drop the
-                # collection: other workspaces share it.
+                # adoption has not run. Delete this workspace's points there
+                # when the recorded owner is absent (clear before the first
+                # adopt) or is this model. A different owner keeps the points
+                # and the alias: this model's own collection was cleared above.
+                # Never drop the collection: other workspaces share it.
                 pre_digest = self._pre_digest_collection_name()
                 if (
                     pre_digest
                     and pre_digest != self.final_namespace
                     and self._client.collection_exists(pre_digest)
                 ):
-                    self._client.delete(
-                        collection_name=pre_digest,
-                        points_selector=workspace_selector,
-                        wait=True,
+                    owner = _qdrant_collection_model_owner(
+                        self._client.get_collection(pre_digest)
                     )
+                    model_name = self._collection_model_name()
+                    if owner is not None and owner != model_name:
+                        logger.warning(
+                            "Qdrant: pre-digest collection '%s' is owned by %r, "
+                            "not %r. Leaving its points and alias in place.",
+                            pre_digest,
+                            owner,
+                            model_name,
+                        )
+                    else:
+                        self._client.delete(
+                            collection_name=pre_digest,
+                            points_selector=workspace_selector,
+                            wait=True,
+                        )
 
                 # Also clear this workspace's data from the kept legacy
                 # collection so the next startup does not re-migrate the
