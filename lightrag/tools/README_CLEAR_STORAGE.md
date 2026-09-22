@@ -110,7 +110,10 @@ The knowledge graph is read the same way, with the gate's own probes:
 (`iter_edges`, bounded, and fail-closed on a backend that never implemented
 it — the line then reads `has entities` and the relation half is simply not
 reported). Both raise on a backend failure, so the kind rule applies to a
-Neo4j outage exactly as it does to a Redis one. The graph is the most
+Neo4j outage exactly as it does to a Redis one. The one backend that answers
+`empty` without raising is OpenSearch, for a *confirmed* missing graph index —
+the truth at this point, since `initialize()` has just recreated both of its
+indices; a transport failure still raises. The graph is the most
 expensive thing the run drops and the one a rebuild treats as authoritative,
 so it is shown rather than left to be inferred from the document counts.
 

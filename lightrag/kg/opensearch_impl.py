@@ -3848,7 +3848,23 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._indices_ready = True
 
     def _mark_indices_missing(self):
-        """Mark graph indices as unavailable for subsequent read short-circuiting."""
+        """Mark graph indices as unavailable for subsequent read short-circuiting.
+
+        One flag covers BOTH indices: every read then answers "empty" until
+        the next write's ``_ensure_indices_ready`` recreates whichever index
+        is gone, with its mapping. That heal is why a read that finds only one
+        index missing must still set the mark -- an unmarked write would let
+        the cluster auto-create the index with dynamic mappings, and the
+        ``terms`` aggregations on its keyword fields would stop working.
+
+        The reads that rank entities (``get_popular_labels`` and the ``*``
+        subgraph) answer the call that discovered a missing EDGE index from
+        the node index before honouring the mark: a missing edge index is an
+        empty edge set, not a missing graph. A repeat call answers empty until
+        a write heals the mark. Accepted: the state is reachable only by an
+        external deletion while the process runs, and ``initialize()``
+        recreates both indices before any read.
+        """
         self._indices_ready = False
         self._nodes_dirty = False
         self._edges_dirty = False
@@ -5581,16 +5597,31 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         },
                     },
                 }
-                resp = await self.client.search(index=self._edges_index, body=body)
-                degree_map = {}
-                for bucket in resp["aggregations"]["src"]["buckets"]:
-                    degree_map[bucket["key"]] = (
-                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                degree_map: dict[str, int] = {}
+                try:
+                    resp = await self.client.search(index=self._edges_index, body=body)
+                except OpenSearchException as e:
+                    if not _is_missing_index_error(e):
+                        raise
+                    # A missing EDGE index is an empty edge set: every entity
+                    # ties at degree 0 and the isolated top-up below fills the
+                    # band from the node index. The rule get_popular_labels
+                    # follows; the edge pass at the end then finds the index
+                    # missing too and returns the nodes it collected.
+                    logger.warning(
+                        f"[{self.workspace}] Edge index {self._edges_index} is "
+                        "missing; ranking entities from the node index alone"
                     )
-                for bucket in resp["aggregations"]["tgt"]["buckets"]:
-                    degree_map[bucket["key"]] = (
-                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                    )
+                    self._mark_indices_missing()
+                else:
+                    for bucket in resp["aggregations"]["src"]["buckets"]:
+                        degree_map[bucket["key"]] = (
+                            degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                        )
+                    for bucket in resp["aggregations"]["tgt"]["buckets"]:
+                        degree_map[bucket["key"]] = (
+                            degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                        )
                 # Degree descending, then label ascending — the BaseGraphStorage
                 # tie-break, and the same ordering get_popular_labels uses.
                 # Sorting on the degree alone is stable, so the equal-degree
@@ -6169,11 +6200,22 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         relations has no document at all, so ranking from the edge side alone
         silently excluded them. NetworkXStorage ranks the whole node set, and a
         graph whose entities carry no relations must not report an empty list.
+
+        A missing EDGE index is an empty edge set, not a missing graph: the
+        ranking then comes from the node scan alone, the way the Mongo backend
+        reads a missing edge collection. Only a missing NODE index answers
+        ``[]``. The mark is still set -- see ``_mark_indices_missing`` for why,
+        and for the repeat-call residue it leaves.
         """
         if not self._indices_ready or limit <= 0:
             return []
         try:
-            await self._refresh_graph_indices_if_dirty(refresh_edges=True)
+            # Nodes as well as edges: the edge branch below may mark the
+            # indices missing, and the mark clears ``_nodes_dirty`` -- the node
+            # scan would otherwise miss an entity written just before.
+            await self._refresh_graph_indices_if_dirty(
+                refresh_nodes=True, refresh_edges=True
+            )
             body = {
                 "size": 0,
                 "aggs": {
@@ -6181,23 +6223,34 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},
                 },
             }
-            response = await self.client.search(index=self._edges_index, body=body)
-            # Keyed on edge ENDPOINTS, so an id with edge documents but no node
-            # document (a dangling endpoint, only reachable as a data-quality
-            # defect — the write path materializes both endpoints) also surfaces
-            # here. Left in deliberately: confirming every ranked id against the
-            # node index costs a round trip on every call, and the worst case is
-            # a picker entry whose entity lookup comes back empty, which the
-            # client reports rather than crashes on.
-            degree_map = {}
-            for bucket in response["aggregations"]["src"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+            degree_map: dict[str, int] = {}
+            try:
+                response = await self.client.search(index=self._edges_index, body=body)
+            except OpenSearchException as e:
+                if not _is_missing_index_error(e):
+                    raise
+                logger.warning(
+                    f"[{self.workspace}] Edge index {self._edges_index} is "
+                    "missing; ranking entities from the node index alone"
                 )
-            for bucket in response["aggregations"]["tgt"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                )
+                self._mark_indices_missing()
+            else:
+                # Keyed on edge ENDPOINTS, so an id with edge documents but no
+                # node document (a dangling endpoint, only reachable as a
+                # data-quality defect — the write path materializes both
+                # endpoints) also surfaces here. Left in deliberately:
+                # confirming every ranked id against the node index costs a
+                # round trip on every call, and the worst case is a picker
+                # entry whose entity lookup comes back empty, which the client
+                # reports rather than crashes on.
+                for bucket in response["aggregations"]["src"]["buckets"]:
+                    degree_map[bucket["key"]] = (
+                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                    )
+                for bucket in response["aggregations"]["tgt"]["buckets"]:
+                    degree_map[bucket["key"]] = (
+                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                    )
             # Ties break on the label, ascending — the ordering the SQL and
             # Cypher backends use, rather than aggregation bucket order.
             sorted_labels = sorted(

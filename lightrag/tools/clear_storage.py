@@ -719,7 +719,11 @@ class ClearTool:
             # sees it before typing the phrase. Both probes are the startup
             # gate's own, and both RAISE on a backend failure rather than
             # answering "empty" -- so ``_read`` applies the kind rule to a
-            # Neo4j outage exactly as it does to a Redis one.
+            # Neo4j outage exactly as it does to a Redis one. The one backend
+            # that answers "empty" without raising is OpenSearch, for a
+            # CONFIRMED missing graph index -- and that is the truth here,
+            # because ``initialize()`` recreated both of its indices before
+            # this read; a transport failure still raises.
             graph = self.storages["chunk_entity_relation_graph"]
             # ``get_popular_labels`` is abstract on ``BaseGraphStorage``, so
             # every backend answers it; a failure reaches ``_read``.
