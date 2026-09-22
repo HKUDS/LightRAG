@@ -394,6 +394,16 @@ A third test requires every `docs/**.md` path named in the package to resolve; n
 - Tailwind utility-first styling
 - ESLint stack: TypeScript-ESLint + React Hooks plugin + Prettier; `@typescript-eslint/no-explicit-any` is disabled (allowed)
 
+## PR Review Guidelines
+
+These apply to every review finding, automated reviews included.
+
+- **Verify before prescribing.** A finding names its trigger, reachable call path, affected behavior and evidence; check dependency behavior, platform semantics and real trust boundaries in source rather than assuming them. An unverified hypothesis is a question, not a defect.
+- **Justify the change, not just the failure.** Showing the current design can fail is not enough: compare it with the smallest sufficient fix and the proposal on likelihood, impact, complexity, compatibility and new failure modes. No abstractions, options or authorization machinery for hypothetical needs; guarding against accidental misuse is not guarding against an adversary.
+- **Respect documented decisions.** A residue or rejected alternative recorded in a contract (see *Consistency without transactions* and `docs/design/`) is a decision; its known limitation is not a new finding. Reopening it needs new evidence that its rationale no longer holds.
+- **Classify honestly.** Only demonstrated correctness problems are findings, and they may block on their impact. Preferences, optional hardening and extensions are non-blocking suggestions, never inflated in severity.
+- **Major redesigns need the author's agreement.** Changes to public APIs, storage formats, lifecycle, concurrency or permission models, or cross-module structure are proposed with evidence, alternatives and costs, and are not implemented in the PR or made a merge condition without the author's explicit agreement.
+
 ## Commit and Pull Request Guidance
 
 - If this repo is a fork of `HKUDS/LightRAG`. Target to `HKUDS/LightRAG` when creating PRs, not the fork's own repo.

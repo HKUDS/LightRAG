@@ -252,17 +252,26 @@ class NanoVectorDBStorage(BaseVectorStorage):
         the payload, not just the JSON layer: a truncated file raises
         ``json.JSONDecodeError``, a damaged base64 matrix ``binascii.Error``,
         a matrix whose length no longer divides the row width a reshape
-        ``ValueError`` (all three are ``ValueError``), and a payload that is
-        not this format's object shape at all ``TypeError`` / ``KeyError``.
+        ``ValueError`` (all three are ``ValueError``), a payload that is not
+        this format's object shape at all ``TypeError`` / ``KeyError``, and a
+        document nested past the interpreter's limit ``RecursionError``.
         A dimension mismatch is an ``AssertionError`` and is NOT in this set,
         so the branch below still owns it.
+
+        ``RecursionError`` is in the set although it is a ``RuntimeError``
+        subclass, and it is the only one that is: what the set admits is a
+        statement about the BYTES, and a document too deep to parse is one.
+        A ``MemoryError`` is not -- it says this process could not allocate,
+        which a healthy snapshot on a small container also produces -- so it
+        stays out and propagates, because this exception is what
+        ``lightrag-rebuild-vdb`` reads as permission to back up and drop.
         """
         try:
             client = NanoVectorDB(
                 self.embedding_func.embedding_dim,
                 storage_file=self._client_file_name,
             )
-        except (ValueError, TypeError, KeyError) as e:
+        except (ValueError, TypeError, KeyError, RecursionError) as e:
             raise CorruptStorageSnapshotError(
                 backend=type(self).__name__,
                 container=self._client_file_name,

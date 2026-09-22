@@ -102,6 +102,16 @@ configuration backend — explicit or inherited — is outside them, because
 validation that approves a file the server then refuses is worse than no
 validation.
 
+**The flows that do not own storage still write the file.** `make env-base`
+and `make env-server` preserve the storage settings they find and then rewrite
+the `.env`, so an unadmitted configuration backend — explicit, or an unset
+selection following `LIGHTRAG_KV_STORAGE` — would be preserved into a file
+reported as successfully written and refused at the next start, with nothing in
+the wizard's output saying why. Both flows therefore run the same admitted
+check before writing, and ask for a backend exactly when the file is otherwise
+unstartable: a sound `.env` is left byte-identical, so the promise those flows
+make about not touching storage holds everywhere it can.
+
 The wizard never moves the container as a side effect, by any route. There are
 three of them — dropping an explicit selection, following a `kv_storage` that
 changed, and falling through to the generic prompt when the new KV backend is
@@ -301,6 +311,31 @@ file it exists to protect. Five properties matter:
   would overwrite. The confirmation prompt is not a substitute: it asks the
   operator, the claim asks the filesystem.
 
+#### There is no claim on a pre-move path, because there is no pre-move server
+
+A claim on `config_dir` excludes a second process tree that asks for the same
+directory. It does **not** exclude a server from an earlier revision that
+claims a different path while writing the same file — which is what a
+compatibility claim on the old path would be for, and there is none here.
+
+The reason is that no such revision exists. Every release through `v1.5.7`,
+`main` and `dev` have no configuration storage at all: no `config` namespace,
+no `kv_store_config.json`, and no directory claim of any kind. The only code
+that ever claimed `<working_dir>` is the unmerged branch this change is stacked
+on, and the two land as one step, so `dev` goes from nothing to this layout.
+A rolling upgrade across that boundary therefore pairs a new server with an old
+one that does not know the file exists and never writes it — the old server can
+lose business data to a concurrent start, which is the unchanged residue at the
+end of this section, but it cannot overwrite a baseline it does not record.
+
+The transitional claim that once covered the old path is gone for that reason,
+and its removal is not a judgement that such a claim is unnecessary in general:
+**if the reserved-workspace layout ever ships on its own, a claim on the
+pre-move path has to come back for one release**, because from then on there
+would be a deployed predecessor writing `_lightrag_config/kv_store_config.json`
+under a different lock. That is the condition to check before removing the
+claim's absence from this document, not the file layout.
+
 #### The claim goes back last, and only after the teardown
 
 Handing the claim back is not the only thing shutdown owes: handing it back
@@ -378,6 +413,20 @@ renders the prefix afterwards. Two rows can therefore render under the same
 prefix, which is harmless: a suffix is registered with exactly one scope, so a
 tenant key and a server-global key can never be the same key.
 
+**OpenSearch normalizes lossily, and that is now a namespace question rather
+than a name one.** `_sanitize_index_name` maps every character outside
+`[a-z0-9_-]` to `_`, so `.lightrag_config` and `x_lightrag_config` reach the
+same index as `_lightrag_config` — under the reserved-name layout, those
+aliases had to be refused, including one supplied by `OPENSEARCH_WORKSPACE`.
+With the container keyed on the `config` namespace, `_resolve_workspace` does
+not consult a workspace for it at all: every spelling lands on the one
+container, so there is nothing to refuse. What `_build_index_name` still
+refuses, before a client is opened, is the mirror case the ownership markers
+could not repair — a *non-configuration* open whose index name normalizes onto
+the container's. No namespace shipped today can, which is exactly why the check
+is written against the container's own name rather than against today's
+namespace list.
+
 ## Row shape
 
 Uniform, so this namespace stays a configuration store rather than a place to
@@ -394,6 +443,11 @@ drop keys:
 ```
 
 `schema_version` is per key, not global: keys evolve independently.
+Baseline readers require an integer version equal to the key's registered
+version before interpreting its value. Missing, unsupported or incorrectly
+typed versions (including booleans) are unreadable records and raise
+`ConfigurationStorageError`; they are never treated as absent or automatically
+replaced during startup.
 
 ## Key registry
 

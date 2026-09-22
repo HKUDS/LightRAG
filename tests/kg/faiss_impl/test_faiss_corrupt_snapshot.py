@@ -101,6 +101,11 @@ async def test_initialize_refuses_a_corrupt_pair(tmp_path, target):
 
     assert "lightrag-rebuild-vdb" in str(exc_info.value)
     assert exc_info.value.__cause__ is not None
+    # The DIAGNOSIS names the file that failed, not the one read first. A
+    # truncated `.meta.json` fails in `json.load`, whose `JSONDecodeError`
+    # carries no `filename`: reporting the intact `.index` would send the
+    # operator to inspect a healthy file.
+    assert exc_info.value.container == corrupt_file
     # Every file of the pair is offered to the offline tool, not just the
     # one that failed to parse: a drop removes all three.
     assert set(exc_info.value.artifacts) == {
@@ -109,6 +114,79 @@ async def test_initialize_refuses_a_corrupt_pair(tmp_path, target):
         storage._vector_space_file,
     }
     assert Path(corrupt_file).read_bytes() == on_disk
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload", ["{not json at all", '["a list, not an object"]', '{"x": {}}']
+)
+async def test_unparsable_metadata_names_the_metadata_file(tmp_path, payload):
+    """Three ways the metadata can be unreadable while the index is fine.
+
+    Invalid JSON, valid JSON of the wrong shape, and a row key that is not a
+    faiss id. None of the exceptions they raise carries a filename, so the
+    file being read is what has to be remembered -- otherwise all three
+    report the `.index`, which parsed.
+    """
+    storage = await _seeded_storage(tmp_path)
+    Path(storage._meta_file).write_text(payload, encoding="utf-8")
+    index_bytes = Path(storage._faiss_index_file).read_bytes()
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert exc_info.value.container == storage._meta_file
+    assert set(exc_info.value.artifacts) == {
+        storage._faiss_index_file,
+        storage._meta_file,
+        storage._vector_space_file,
+    }
+    # Refusing preserves both files for the offline rebuild.
+    assert Path(storage._faiss_index_file).read_bytes() == index_bytes
+    assert Path(storage._meta_file).read_text(encoding="utf-8") == payload
+
+
+@pytest.mark.asyncio
+async def test_a_heap_that_ran_out_is_not_a_corrupt_snapshot(tmp_path, monkeypatch):
+    """`CorruptStorageSnapshotError` is what the rebuild tool reads as
+    permission to back up and DROP. A `MemoryError` says nothing about the
+    bytes -- a large but healthy snapshot on a small container raises it --
+    so it must reach the caller as itself, exactly like the I/O failures."""
+    storage = await _seeded_storage(tmp_path)
+    import json as json_module
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("cannot allocate the metadata")
+
+    monkeypatch.setattr(json_module, "load", out_of_memory)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(MemoryError):
+        await fresh.initialize()
+    assert Path(storage._meta_file).exists()
+    assert Path(storage._faiss_index_file).exists()
+
+
+@pytest.mark.asyncio
+async def test_metadata_nested_past_the_parser_names_the_metadata(
+    tmp_path, monkeypatch
+):
+    """`RecursionError` is a `RuntimeError` subclass, and the attribution rule
+    hands `RuntimeError` to the index because faiss is what raises it. The
+    parser raises this one, about the metadata."""
+    storage = await _seeded_storage(tmp_path)
+    import json as json_module
+
+    def too_deep(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(json_module, "load", too_deep)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+    assert exc_info.value.container == storage._meta_file
 
 
 @pytest.mark.asyncio
@@ -260,6 +338,40 @@ async def test_a_marker_that_exists_but_cannot_be_read_is_not_absent(tmp_path):
 
     assert exc_info.value.container == storage._vector_space_file
     assert marker.read_bytes() == b'{"model": "bge-m3"'
+
+
+@pytest.mark.asyncio
+async def test_a_marker_the_parser_could_not_finish_names_the_marker(
+    tmp_path, monkeypatch
+):
+    """The marker read has its own refusal so it can name its own file.
+
+    A `RecursionError` out of the parse is the same kind of statement about
+    the bytes as the `ValueError` beside it, and uncaught it reaches the
+    loader's handler, where the file being read is the METADATA -- which is
+    intact. Injected rather than written as a nested file, because whether a
+    depth exhausts the stack depends on the interpreter.
+    """
+    storage = await _seeded_storage(tmp_path)
+    marker = Path(storage._vector_space_file)
+    marker_bytes = marker.read_bytes()
+    import json as json_module
+
+    real_load = json_module.load
+
+    def too_deep_for_the_marker(fp, *args, **kwargs):
+        if getattr(fp, "name", "") == storage._vector_space_file:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_load(fp, *args, **kwargs)
+
+    monkeypatch.setattr(json_module, "load", too_deep_for_the_marker)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert exc_info.value.container == storage._vector_space_file
+    assert marker.read_bytes() == marker_bytes
 
 
 @pytest.mark.asyncio
