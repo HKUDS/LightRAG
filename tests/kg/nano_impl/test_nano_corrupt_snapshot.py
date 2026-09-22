@@ -110,6 +110,46 @@ async def test_initialize_refuses_a_corrupt_snapshot(tmp_path, corrupt):
 
 
 @pytest.mark.asyncio
+async def test_a_snapshot_nested_past_the_parser_is_corruption(tmp_path):
+    """Valid JSON the parser cannot finish is still a statement about the
+    BYTES, so it belongs to recovery. ``RecursionError`` is a ``RuntimeError``
+    subclass, so it escaped the caught set and left `lightrag-rebuild-vdb`
+    with a bare exception -- and a target it never registered as corrupt,
+    which is the one path that could have repaired the file."""
+    storage = await _seeded_storage(tmp_path)
+    client_file = storage._client_file_name
+    depth = sys.getrecursionlimit() * 2
+    Path(client_file).write_text("[" * depth + "]" * depth, encoding="utf-8")
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(CorruptStorageSnapshotError) as exc_info:
+        await fresh.initialize()
+
+    assert exc_info.value.container == client_file
+    assert isinstance(exc_info.value.__cause__, RecursionError)
+    assert Path(client_file).exists(), "refusing preserves the file"
+
+
+@pytest.mark.asyncio
+async def test_a_heap_that_ran_out_is_not_a_corrupt_snapshot(tmp_path, monkeypatch):
+    """The other side of the same rule: `MemoryError` says this process could
+    not allocate, which a healthy snapshot on a small container produces too.
+    Routing it to recovery would offer a backed-up DROP over intact data."""
+    storage = await _seeded_storage(tmp_path)
+    import lightrag.kg.nano_vector_db_impl as module
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("cannot allocate the snapshot")
+
+    monkeypatch.setattr(module, "NanoVectorDB", out_of_memory)
+
+    fresh = _make_storage(tmp_path)
+    with pytest.raises(MemoryError):
+        await fresh.initialize()
+    assert Path(storage._client_file_name).exists()
+
+
+@pytest.mark.asyncio
 async def test_reader_reload_refuses_a_snapshot_a_peer_left_corrupt(tmp_path):
     storage = await _seeded_storage(tmp_path)
     client_file = storage._client_file_name
