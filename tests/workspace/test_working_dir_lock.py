@@ -10,15 +10,24 @@ These pin the claim that closes it, including the two properties that make an
 OS lock the right instrument rather than a PID file: the kernel releases it
 when the holder dies, and ``fork`` shares it so a Gunicorn master's workers
 inherit rather than fight it.
+
+Every "other process" here is a real subprocess (``_working_dir_lock_probe.py``
+in a fresh interpreter), never a ``fork`` of the pytest process: a session
+that has run thousands of tests is multi-threaded, and forking it makes CPython
+emit a DeprecationWarning that cannot be promoted to an error, only filtered.
+The probe is single-threaded, so it can assert the warning ABSENT. Each spawn
+costs about a second, which the whole file pays seven times.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from lightrag.exceptions import WorkingDirectoryInUseError
 from lightrag.kg import working_dir_lock as wdl
 from lightrag.kg.working_dir_lock import (
     LOCK_FILENAME,
@@ -42,25 +51,27 @@ def _no_claims_leak():
     wdl._claims.clear()
 
 
+_PROBE = Path(__file__).with_name("_working_dir_lock_probe.py")
+
+
+def _probe(command: str, path) -> subprocess.CompletedProcess:
+    """Run one probe command in a fresh interpreter -- a process tree that did
+    NOT inherit this one's bookkeeping or its lock descriptor."""
+    result = subprocess.run(
+        [sys.executable, str(_PROBE), command, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"probe '{command}' failed (rc={result.returncode})\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    return result
+
+
 def _foreign_attempt(path) -> str:
-    """Acquire from a process that did NOT inherit this tree's bookkeeping."""
-    read_fd, write_fd = os.pipe()
-    pid = os.fork()
-    if pid == 0:  # pragma: no cover - runs in the child
-        os.close(read_fd)
-        wdl._claims.clear()
-        try:
-            acquire_working_dir_lock(str(path))
-            os.write(write_fd, b"ADMITTED")
-        except WorkingDirectoryInUseError:
-            os.write(write_fd, b"REFUSED")
-        finally:
-            os._exit(0)
-    os.close(write_fd)
-    answer = os.read(read_fd, 16).decode()
-    os.close(read_fd)
-    os.waitpid(pid, 0)
-    return answer
+    return _probe("foreign", path).stdout.strip()
 
 
 def test_only_a_file_backed_configuration_storage_claims_the_directory():
@@ -85,6 +96,7 @@ def test_the_directory_is_free_once_the_holder_releases(tmp_path):
     assert _foreign_attempt(tmp_path) == "ADMITTED"
 
 
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
 def test_forked_workers_inherit_the_masters_claim(tmp_path):
     """The Gunicorn shape: the master claims BEFORE forking, so the workers
     find the claim in their own tree and count themselves in.
@@ -92,26 +104,11 @@ def test_forked_workers_inherit_the_masters_claim(tmp_path):
     Taken after the fork instead, each worker would open its own descriptor
     and all but one would be refused -- which is why ``on_starting`` is the
     hook that takes it.
-    """
-    acquire_working_dir_lock(str(tmp_path))
 
-    admitted = []
-    for _ in range(4):
-        read_fd, write_fd = os.pipe()
-        pid = os.fork()
-        if pid == 0:  # pragma: no cover - runs in the child
-            os.close(read_fd)
-            try:
-                acquire_working_dir_lock(str(tmp_path))
-                os.write(write_fd, b"OK")
-            except WorkingDirectoryInUseError:
-                os.write(write_fd, b"REFUSED")
-            finally:
-                os._exit(0)
-        os.close(write_fd)
-        admitted.append(os.read(read_fd, 16).decode())
-        os.close(read_fd)
-        os.waitpid(pid, 0)
+    The master is the probe process, not pytest: the probe also fails if the
+    fork emitted CPython's multi-threaded-fork warning (see its docstring).
+    """
+    admitted = _probe("workers", tmp_path).stdout.split()
 
     assert admitted == ["OK"] * 4
 
@@ -119,12 +116,7 @@ def test_forked_workers_inherit_the_masters_claim(tmp_path):
 def test_a_holder_that_dies_leaves_nothing_to_reap(tmp_path):
     """Why an OS lock and not a PID file: no stale-file cleanup, no
     read-the-PID-then-probe-liveness race. The kernel releases it."""
-    pid = os.fork()
-    if pid == 0:  # pragma: no cover - runs in the child
-        wdl._claims.clear()
-        acquire_working_dir_lock(str(tmp_path))
-        os._exit(0)  # dies holding it, no release, no cleanup
-    os.waitpid(pid, 0)
+    _probe("dying", tmp_path)
 
     # The lock file still exists; that is not what holds the lock.
     assert (tmp_path / LOCK_FILENAME).exists()

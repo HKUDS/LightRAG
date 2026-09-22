@@ -40,7 +40,10 @@ def make_app(error, cleaned, *, shutdown=False):
 
 
 def driver(app):
-    return LifespanOn(Config(app, lifespan="on", log_config=None))
+    # ws="none": these tests drive the lifespan protocol only. The default
+    # ws="auto" imports uvicorn's legacy websockets protocol class, and with
+    # websockets>=14 that import itself emits two DeprecationWarnings.
+    return LifespanOn(Config(app, lifespan="on", log_config=None, ws="none"))
 
 
 @pytest.mark.asyncio
