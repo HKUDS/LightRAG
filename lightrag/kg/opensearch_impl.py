@@ -6687,8 +6687,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             response = await self.client.search(
                 index=self._index_name, body=search_body
             )
+            hits = response["hits"]["hits"]
             results = []
-            for hit in response["hits"]["hits"]:
+            cosine_similarities = []
+            for hit in hits:
                 # OpenSearch k-NN with the lucene engine and cosinesimil space
                 # type scores each hit as (1 + cosine_similarity) / 2, in
                 # [0, 1] -- not raw cosine similarity (Lucene's
@@ -6698,6 +6700,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 # cosine_better_than_threshold, which every other backend
                 # compares against raw cosine similarity.
                 cosine_similarity = 2 * hit["_score"] - 1
+                cosine_similarities.append(cosine_similarity)
 
                 if cosine_similarity >= self.cosine_better_than_threshold:
                     doc = hit["_source"]
@@ -6707,10 +6710,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             logger.info(
                 f"[{self.workspace}] Vector query on {self._index_name}: "
                 f"top_k={top_k}, threshold={self.cosine_better_than_threshold}, "
-                f"total_hits={len(response['hits']['hits'])}, "
+                f"total_hits={len(hits)}, "
                 f"passed_filter={len(results)}, "
-                f"score_range=[{min((h['_score'] for h in response['hits']['hits']), default=0):.4f}, "
-                f"{max((h['_score'] for h in response['hits']['hits']), default=0):.4f}]"
+                f"cosine_range=[{min(cosine_similarities, default=0):.4f}, "
+                f"{max(cosine_similarities, default=0):.4f}]"
             )
             return results
         except OpenSearchException as e:
