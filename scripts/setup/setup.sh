@@ -1192,6 +1192,108 @@ config_storage_is_admitted() {
   return 1
 }
 
+config_storage_records_in() {
+  # Where the baselines are NOW, as far as the previous .env can say: the
+  # explicit selection it carried, or the KV backend an implicit one followed.
+  # Empty on a first run, and empty when the previous backend is one the
+  # category never admitted -- in both cases no admitted container holds
+  # records, so there is nothing to strand.
+  #
+  # A previous .env that names no KV backend is not a deployment without one:
+  # the server has been running on its default, and the records are in THAT
+  # container. Treating the omission as "nothing to strand" moved them on the
+  # first rerun that picked an admitted backend.
+  local previous_config="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+
+  if [[ -z "$previous_kv" && "$EXISTING_ENV_LOADED" == "1" ]]; then
+    previous_kv="$DEFAULT_KV_STORAGE"
+  fi
+
+  if [[ -n "$previous_config" ]]; then
+    config_storage_is_admitted "$previous_config" && printf '%s' "$previous_config"
+  elif [[ -n "$previous_kv" ]]; then
+    config_storage_is_admitted "$previous_kv" && printf '%s' "$previous_kv"
+  fi
+  # Never fail: the caller reads this in a command substitution under `set -e`,
+  # and "no admitted backend holds records" is an answer, not an error.
+  return 0
+}
+
+config_storage_needs_no_new_settings() {
+  # Whether this backend can be chosen without collecting anything: it
+  # requires no connection variables (the file-backed one), or every variable
+  # it requires is already set in the .env being written.
+  local candidate="$1" var
+  for var in ${STORAGE_ENV_REQUIREMENTS[$candidate]:-}; do
+    [[ -n "${ENV_VALUES[$var]:-}" ]] || return 1
+  done
+  return 0
+}
+
+ensure_config_storage_is_startable() {
+  # For the flows that do NOT own storage -- env-base and env-server. They
+  # preserve the storage settings they find and then WRITE the file, and a
+  # file the server refuses at construction is not a successful rewrite: an
+  # .env carrying an unadmitted configuration backend (explicitly, or by an
+  # unset selection following LIGHTRAG_KV_STORAGE) cannot start, so leaving it
+  # untouched hands the operator a deployment that goes down on the next
+  # restart with nothing in the wizard's output to say why.
+  #
+  # It asks ONLY in that case. A sound file -- an admitted backend, or no KV
+  # backend named at all -- writes nothing and is left exactly as it was, so
+  # these flows keep their promise not to touch storage everywhere it holds.
+  local kv="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+  local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local resolved="${existing:-$kv}"
+  local records_in default_choice="JsonKVStorage" option
+  local offered=()
+
+  [[ -z "$resolved" ]] && return 0
+  config_storage_is_admitted "$resolved" && return 0
+
+  # Only backends that need NOTHING collected. Neither of these flows has a
+  # database-configuration step, so offering a backend whose credentials are
+  # missing would swap one unstartable .env for another -- refused a step
+  # later, by `check_storage_env_vars` instead of by the category. The
+  # file-backed one always qualifies; a server backend qualifies when this
+  # deployment is already configured for it, which is exactly the case where
+  # the records are likely to be in it already.
+  for option in "${CONFIG_STORAGE_OPTIONS[@]}"; do
+    config_storage_needs_no_new_settings "$option" && offered+=("$option")
+  done
+
+  records_in="$(config_storage_records_in)"
+  if [[ -n "$records_in" ]] && config_storage_needs_no_new_settings "$records_in"; then
+    default_choice="$records_in"
+  fi
+
+  if [[ -n "$existing" ]]; then
+    log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
+      "storage backend, so the server refuses this .env at startup;" \
+      "choose one of: ${offered[*]}"
+  else
+    log_warn "LIGHTRAG_KV_STORAGE=$kv cannot hold the configuration storage" \
+      "(the embedding baselines), and an unset LIGHTRAG_CONFIG_STORAGE" \
+      "follows it, so the server refuses this .env at startup; choose one" \
+      "of: ${offered[*]}"
+  fi
+  log_warn "This wizard changes nothing else about storage; it asks because" \
+    "writing the file without an answer would hand you one that cannot start."
+  if ((${#offered[@]} < ${#CONFIG_STORAGE_OPTIONS[@]})); then
+    log_warn "Only backends this .env is already configured for are offered;" \
+      "run 'make env-storage' to choose one that needs new connection" \
+      "settings."
+  fi
+  if [[ -n "$records_in" ]]; then
+    log_warn "The baselines are in $records_in and are NOT migrated; keeping" \
+      "that backend leaves them readable."
+  fi
+  ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$(prompt_choice "Configuration storage" \
+    "$default_choice" "${offered[@]}")"
+  return 0
+}
+
 select_config_storage() {
   # The configuration storage is its own category, and this function exists to
   # answer ONE question: is the container about to move, and does the operator
@@ -1210,32 +1312,9 @@ select_config_storage() {
   # writes ``ENV_VALUES``, and a subshell would throw that away.
   local kv_storage="$1"
   local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
-  local previous_config="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
-  local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
-  local records_in="" default_choice="JsonKVStorage"
+  local records_in default_choice="JsonKVStorage"
 
-  # Where the baselines are NOW, as far as the previous .env can say: the
-  # explicit selection it carried, or the KV backend an implicit one followed.
-  # Empty on a first run, and empty when the previous backend is one the
-  # category never admitted -- in both cases no admitted container holds
-  # records, so there is nothing to strand.
-  # A previous .env that names no KV backend is not a deployment without one:
-  # the server has been running on its default, and the records are in THAT
-  # container. Treating the omission as "nothing to strand" moved them on the
-  # first rerun that picked an admitted backend.
-  # A previous .env that names no KV backend is not a deployment without one:
-  # the server has been running on its default, and the records are in THAT
-  # container. Treating the omission as "nothing to strand" moved them on the
-  # first rerun that picked an admitted backend.
-  if [[ -z "$previous_kv" && "$EXISTING_ENV_LOADED" == "1" ]]; then
-    previous_kv="$DEFAULT_KV_STORAGE"
-  fi
-
-  if [[ -n "$previous_config" ]]; then
-    config_storage_is_admitted "$previous_config" && records_in="$previous_config"
-  elif [[ -n "$previous_kv" ]]; then
-    config_storage_is_admitted "$previous_kv" && records_in="$previous_kv"
-  fi
+  records_in="$(config_storage_records_in)"
   [[ -n "$records_in" ]] && default_choice="$records_in"
 
   # An EXPLICIT selection already in .env is kept, even when the KV backend
@@ -2656,6 +2735,8 @@ env_base_flow() {
   fi
   echo ""
 
+  ensure_config_storage_is_startable
+
   finalize_base_setup
 }
 
@@ -2919,6 +3000,8 @@ env_server_flow() {
   log_step "SSL configuration"
   collect_ssl_config
   echo ""
+
+  ensure_config_storage_is_startable
 
   finalize_server_setup
 }

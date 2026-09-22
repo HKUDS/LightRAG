@@ -889,6 +889,23 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
         final_ns = namespace
         effective = ""
     index_name = _sanitize_index_name(final_ns)
+    # Sanitization is LOSSY -- `.`, `+` and any other character outside
+    # [a-z0-9_-] all become `_` -- so two different names can normalize to one
+    # index. The configuration container is out of reach of a workspace name
+    # (the `config` namespace never consults one), but that is an argument
+    # about today's namespaces, not a property of this function: a namespace
+    # added later could normalize a tenant's index onto the container's.
+    # Refuse that here, before a client is opened, rather than discovering it
+    # as two stores writing one index. The ownership markers stay the general
+    # collision check; this is the one case they could not repair.
+    if namespace != NameSpace.KV_STORE_CONFIG and index_name == _sanitize_index_name(
+        f"{CONFIG_CONTAINER_TAG}_{NameSpace.KV_STORE_CONFIG}"
+    ):
+        raise ValueError(
+            f"Workspace {effective!r} and namespace {namespace!r} normalize to "
+            f"the LightRAG configuration container's index {index_name!r}; "
+            f"choose another workspace"
+        )
     return effective, final_ns, index_name
 
 
@@ -7094,24 +7111,33 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             response = await self.client.search(
                 index=self._index_name, body=search_body
             )
+            hits = response["hits"]["hits"]
             results = []
-            for hit in response["hits"]["hits"]:
-                # OpenSearch k-NN with lucene engine and cosinesimil space type
-                # returns scores that can be used directly as similarity measure.
-                score = hit["_score"]
+            cosine_similarities = []
+            for hit in hits:
+                # OpenSearch k-NN with the lucene engine and cosinesimil space
+                # type scores each hit as (1 + cosine_similarity) / 2, in
+                # [0, 1] -- not raw cosine similarity (Lucene's
+                # VectorSimilarityFunction.COSINE requires non-negative
+                # scores, so the plugin rescales rather than returning the
+                # native [-1, 1] range). Convert back before comparing to
+                # cosine_better_than_threshold, which every other backend
+                # compares against raw cosine similarity.
+                cosine_similarity = 2 * hit["_score"] - 1
+                cosine_similarities.append(cosine_similarity)
 
-                if score >= self.cosine_better_than_threshold:
+                if cosine_similarity >= self.cosine_better_than_threshold:
                     doc = hit["_source"]
                     doc["id"] = hit["_id"]
-                    doc["distance"] = score
+                    doc["distance"] = cosine_similarity
                     results.append(doc)
             logger.info(
                 f"[{self.workspace}] Vector query on {self._index_name}: "
                 f"top_k={top_k}, threshold={self.cosine_better_than_threshold}, "
-                f"total_hits={len(response['hits']['hits'])}, "
+                f"total_hits={len(hits)}, "
                 f"passed_filter={len(results)}, "
-                f"score_range=[{min((h['_score'] for h in response['hits']['hits']), default=0):.4f}, "
-                f"{max((h['_score'] for h in response['hits']['hits']), default=0):.4f}]"
+                f"cosine_range=[{min(cosine_similarities, default=0):.4f}, "
+                f"{max(cosine_similarities, default=0):.4f}]"
             )
             return results
         except OpenSearchException as e:

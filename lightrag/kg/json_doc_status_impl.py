@@ -148,13 +148,17 @@ class JsonDocStatusStorage(DocStatusStorage):
         claim so that a failed read is retried by the next process
         instead of leaving the namespace empty but marked loaded.
         """
-        self._storage_lock = get_namespace_lock(
-            self.namespace, workspace=self.workspace
-        )
-        self.storage_updated = await get_update_flag(
-            self.namespace, workspace=self.workspace
-        )
         async with get_data_init_lock():
+            # A repeated (including concurrent) initialize owns no extra hold
+            # or update flag, and must preserve any pending dirty state.
+            if self._holds_namespace:
+                return
+            self._storage_lock = get_namespace_lock(
+                self.namespace, workspace=self.workspace
+            )
+            self.storage_updated = await get_update_flag(
+                self.namespace, workspace=self.workspace
+            )
             # check need_init must before get_namespace_data
             async with namespace_init_claim(
                 self.namespace, workspace=self.workspace, backing=self._file_name
@@ -170,14 +174,14 @@ class JsonDocStatusStorage(DocStatusStorage):
                             f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
                         )
 
-        # Only NOW does this instance hold the namespace. The claim is counted
-        # and the count belongs to whoever took it, so a ``finalize()`` from an
-        # instance that never got one releases somebody else's -- and the last
-        # release empties the shared dict, which the real holder then publishes
-        # over its own file. ``initialize_storages`` adds a storage to its
-        # rollback list BEFORE initializing it, so that finalize is on the
-        # normal path of any refusal here, this claim's own included.
-        self._holds_namespace = True
+            # Only NOW does this instance hold the namespace. The claim is counted
+            # and the count belongs to whoever took it, so a ``finalize()`` from an
+            # instance that never got one releases somebody else's -- and the last
+            # release empties the shared dict, which the real holder then publishes
+            # over its own file. ``initialize_storages`` adds a storage to its
+            # rollback list BEFORE initializing it, so that finalize is on the
+            # normal path of any refusal here, this claim's own included.
+            self._holds_namespace = True
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""

@@ -373,22 +373,23 @@ async def _probe_same_embedding_space(
         return None, f"the embedding call failed ({type(e).__name__}: {e})"
 
     adopted: list[str] = []
+    inconclusive: list[str] = []
     for index, (row_id, _, stored) in enumerate(candidates):
         try:
             fresh_vector = fresh[index]
         except (IndexError, TypeError, KeyError):
-            return (
-                None,
-                f"the embedding function returned no vector for record '{row_id}'",
+            inconclusive.append(
+                f"the embedding function returned no vector for record '{row_id}'"
             )
+            continue
 
         similarity = _cosine(fresh_vector, stored)
         if similarity is None:
-            return (
-                None,
+            inconclusive.append(
                 f"the stored and freshly embedded vectors for record "
-                f"'{row_id}' are not comparable",
+                f"'{row_id}' are not comparable"
             )
+            continue
         if similarity <= REFUSE_COSINE:
             if adopted:
                 return False, (
@@ -399,14 +400,17 @@ async def _probe_same_embedding_space(
                 )
             return False, f"cosine {similarity:.3f} against record '{row_id}'"
         if similarity < ADOPT_COSINE:
-            return (
-                None,
+            inconclusive.append(
                 f"cosine {similarity:.3f} against record '{row_id}' falls "
                 f"between {REFUSE_COSINE} and {ADOPT_COSINE}, which settles "
-                f"nothing",
+                f"nothing"
             )
+            continue
         adopted.append(row_id)
 
+    # Negative evidence anywhere in the batch outranks an inconclusive row.
+    if inconclusive:
+        return None, "; ".join(inconclusive)
     return True, (
         f"{len(adopted)} sampled record(s) reproduced their stored vectors, "
         f"including '{adopted[0]}'"

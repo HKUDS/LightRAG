@@ -32,6 +32,7 @@ from lightrag.vector_space_gate import (
     REFUSE_COSINE,
     SAMPLE_SIZE,
     _cosine,
+    _probe_same_embedding_space,
     _sample_chunk_ids,
     check_vector_space_at_startup,
 )
@@ -1543,3 +1544,33 @@ class TestCosine:
         """0.0 is the strongest possible evidence of a changed model. A
         comparison that says nothing must not be spelled that way."""
         assert _cosine(left, right) is None
+
+
+@pytest.mark.parametrize("first_vector", [[0.8, 0.6], [0.0, 0.0], None])
+@pytest.mark.parametrize("negative_first", [False, True])
+async def test_negative_probe_evidence_outranks_inconclusive_rows(
+    first_vector, negative_first
+):
+    rows = [{"id": "uncertain", "content": "a"}, {"id": "negative", "content": "b"}]
+    if negative_first:
+        rows.reverse()
+
+    async def embed(texts, **kwargs):
+        return [first_vector if text == "a" else [0.0, 1.0] for text in texts]
+
+    verdict, _ = await _probe_same_embedding_space(
+        rows, {row["id"]: [1.0, 0.0] for row in rows}, embed
+    )
+    assert verdict is False
+
+
+async def test_inconclusive_probe_row_prevents_adoption_when_other_rows_match():
+    async def embed(texts, **kwargs):
+        return [[0.8, 0.6], [1.0, 0.0]]
+
+    verdict, _ = await _probe_same_embedding_space(
+        [{"id": "a", "content": "a"}, {"id": "b", "content": "b"}],
+        {"a": [1.0, 0.0], "b": [1.0, 0.0]},
+        embed,
+    )
+    assert verdict is None
