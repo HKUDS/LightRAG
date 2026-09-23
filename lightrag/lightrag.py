@@ -7977,10 +7977,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Rules a caller must know:
 
+        * Modifies of one document run one at a time, and each re-checks the
+          old chunk once it gets its turn. So of two concurrent modifies of the
+          same chunk, the second fails with ``ValueError`` instead of keeping a
+          second replacement.
         * Each half takes the pipeline slot on its own, so other work can run
-          between them, and a query in that window can see both versions. Two
-          concurrent modifies of one chunk can therefore leave both new texts;
-          neither is lost.
+          between them, and a query in that window can see both versions.
         * New text equal to the old text is a no-op that returns
           ``old_chunk_id``.
         * If ``old_chunk_id`` is already gone and the new text is present, the
@@ -7995,7 +7997,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Raises:
             ValueError: ``new_content`` is empty, or ``old_chunk_id`` is not in
-                the document and the new text is not either.
+                the document (never was, or was already replaced or removed)
+                and the new text is not either.
             RuntimeError: Either half was refused or failed; the message says
                 which, and whether the new chunk was already added.
         """
@@ -8006,28 +8009,39 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
         new_hash = compute_text_content_hash(new_text)
 
-        owned, held = await self._doc_chunks_by_content_hash(doc_id)
-        if old_chunk_id not in owned:
-            if new_hash in held:
-                return held[new_hash]
-            raise ValueError(
-                f"Chunk {old_chunk_id} is not part of document {doc_id}, and "
-                "the new text is not either."
-            )
-        if held.get(new_hash) == old_chunk_id:
-            return old_chunk_id
-
-        new_chunk_id = (await self.aadd_chunks_to_doc(doc_id, [new_text]))[0]
-        result = await self.adelete_chunks_from_doc(
-            doc_id, [old_chunk_id], delete_llm_cache=delete_llm_cache
+        # Held across both halves, which take the DocPatch lock themselves (it
+        # is not reentrant, hence a namespace of its own). The ownership check
+        # below runs inside it, so a modify that lost the race to another one
+        # on the same chunk sees the chunk gone and refuses.
+        modify_lock_namespace = (
+            f"{self.workspace}:DocModify" if self.workspace else "DocModify"
         )
-        if result.status != "success":
-            raise RuntimeError(
-                f"Chunk {new_chunk_id} was added to document {doc_id}, but "
-                f"removing chunk {old_chunk_id} failed ({result.status_code}): "
-                f"{result.message} Repeat the call to finish."
+        async with get_storage_keyed_lock(
+            [doc_id], namespace=modify_lock_namespace, enable_logging=False
+        ):
+            owned, held = await self._doc_chunks_by_content_hash(doc_id)
+            if old_chunk_id not in owned:
+                if new_hash in held:
+                    return held[new_hash]
+                raise ValueError(
+                    f"Chunk {old_chunk_id} is not part of document {doc_id} "
+                    "(it may already have been replaced or removed), and the "
+                    "new text is not either."
+                )
+            if held.get(new_hash) == old_chunk_id:
+                return old_chunk_id
+
+            new_chunk_id = (await self.aadd_chunks_to_doc(doc_id, [new_text]))[0]
+            result = await self.adelete_chunks_from_doc(
+                doc_id, [old_chunk_id], delete_llm_cache=delete_llm_cache
             )
-        return new_chunk_id
+            if result.status != "success":
+                raise RuntimeError(
+                    f"Chunk {new_chunk_id} was added to document {doc_id}, but "
+                    f"removing chunk {old_chunk_id} failed ({result.status_code}): "
+                    f"{result.message} Repeat the call to finish."
+                )
+            return new_chunk_id
 
     def modify_chunk_in_doc(
         self,

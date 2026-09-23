@@ -20,6 +20,7 @@ keeps both versions and a repeat finishes the job.
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import numpy as np
@@ -835,6 +836,46 @@ async def test_modify_whose_add_fails_keeps_the_old_text(tmp_path, monkeypatch):
         assert await rag.text_chunks.get_by_id(bob) is not None
         assert bob in (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
         assert await rag.chunk_entity_relation_graph.get_node("BOB") is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_modifies_of_one_chunk_keep_one_replacement(
+    tmp_path, monkeypatch
+):
+    """A second modify started between the first one's add and delete must
+    wait, then refuse, rather than finish in that gap and leave both texts."""
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        bob = _cid("doc-1", "Bob joined Acme")
+        initech = _cid("doc-1", "Bob joined Initech")
+        globex = _cid("doc-1", "Bob joined Globex")
+        original_delete = rag.adelete_chunks_from_doc
+        race: dict = {}
+
+        async def delete_after_a_rival_had_its_chance(*args, **kwargs):
+            if "rival" not in race:
+                race["rival"] = asyncio.ensure_future(
+                    rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Globex")
+                )
+                # Unguarded, the rival completes in this gap.
+                await asyncio.wait({race["rival"]}, timeout=0.5)
+            return await original_delete(*args, **kwargs)
+
+        monkeypatch.setattr(
+            rag, "adelete_chunks_from_doc", delete_after_a_rival_had_its_chance
+        )
+        winner = await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech")
+        assert winner == initech
+        with pytest.raises(ValueError, match="already have been replaced"):
+            await race["rival"]
+
+        chunks = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+        assert initech in chunks
+        assert globex not in chunks
+        assert bob not in chunks
     finally:
         await rag.finalize_storages()
 

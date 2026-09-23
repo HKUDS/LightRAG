@@ -2019,8 +2019,10 @@ it, and `/documents/scan` rolls it back. It raises `RuntimeError` when refused.
 **`amodify_chunk_in_doc`** adds the new text first and then removes the old
 chunk, so a failure between the two leaves both versions, never neither.
 Repeating the call finishes the job, and a repeat after success returns the
-same id. New text equal to the old is a no-op. The two halves take the pipeline
-slot separately, so a query in between can see both versions. It raises
+same id. New text equal to the old is a no-op. Modifies of one document run one
+at a time, so of two concurrent modifies of the same chunk, the second fails
+instead of leaving a second replacement. A query that runs between the two
+halves can briefly see both versions. It raises
 `ValueError` for empty text or a chunk the document does not hold, and
 `RuntimeError` when either half is refused or fails; the message says whether
 the new chunk was already added.
