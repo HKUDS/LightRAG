@@ -32,6 +32,7 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
+from lightrag.constants import DEFAULT_WORKING_DIR
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.namespace import NameSpace
 from lightrag.utils import setup_logger
@@ -302,7 +303,7 @@ class MigrationTool:
 
         # Create global config
         global_config = {
-            "working_dir": os.getenv("WORKING_DIR", "./rag_storage"),
+            "working_dir": os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
             "embedding_batch_num": 10,
         }
 

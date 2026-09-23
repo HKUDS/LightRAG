@@ -804,6 +804,72 @@ class VectorSpaceMismatchError(RuntimeError):
         self.stored_dim = stored_dim
 
 
+class CorruptStorageSnapshotError(RuntimeError):
+    """A file-backed storage snapshot exists but cannot be parsed.
+
+    Raised when a storage's on-disk state (a NanoVectorDB ``vdb_*.json``, a
+    Faiss ``.index`` / ``.meta.json`` pair) is not readable in its serialized
+    format -- typically a write interrupted by a crash, a kill, or a full
+    disk. The storage refuses to attach rather than serving an empty or
+    partial view that callers could mistake for the real one: a durable write
+    must never be reported as one that did not happen, and an unreadable
+    snapshot must never look like an empty store. Serving it as empty is worse
+    than refusing, because the next save publishes that emptiness over the
+    rows that were still on disk.
+
+    Normal startup and reader reloads refuse to attach and preserve every
+    file. Offline recovery belongs to ``lightrag-rebuild-vdb``: after source
+    checks and explicit confirmation it backs up ``artifacts`` before dropping
+    and rebuilding. Keep all writers stopped until verification completes.
+    Source integrity is a prerequisite, not implied by this error.
+
+    ``container`` and ``artifacts`` answer different questions and are NOT
+    interchangeable: ``container`` is the DIAGNOSIS (which file could not be
+    read, for the operator), ``artifacts`` is the RECOVERY SCOPE (which files
+    the tool will destroy, so which it must preserve first). They coincide
+    only for a storage whose whole state is one file. Faiss refusing on its
+    provenance marker names ``.space.json`` as the container and all three of
+    its files as artifacts, so deriving one from the other would silently
+    under-preserve. That is why ``artifacts`` has no default: a raiser must
+    state its recovery scope rather than inherit a guess.
+
+    Args:
+        backend: Storage class name, e.g. ``"NanoVectorDBStorage"``.
+        container: The file whose contents could not be read.
+        detail: The underlying parse error, chained as ``__cause__`` by the
+            raiser.
+        artifacts: Every local file the offline tool must preserve before it
+            drops this storage. It must cover every file that storage's
+            ``drop()`` removes, or recovery destroys something no backup
+            holds. A raiser whose state is NOT a set of local files passes
+            ``()``, which denies the recovery path outright: nothing can be
+            preserved, so nothing may be destroyed.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: str,
+        container: str,
+        detail: str,
+        artifacts: tuple[str, ...],
+    ) -> None:
+        super().__init__(
+            f"{backend} refuses to serve '{container}': the snapshot file is "
+            f"corrupt and cannot be parsed ({detail}). A previous write was "
+            f"likely interrupted (crash, kill, or full disk). Stop every writer "
+            f"and verify the authoritative graph storage and text_chunks KV "
+            f"store. Run `lightrag-rebuild-vdb` offline with the same storage "
+            f"and workspace configuration; after confirmation it backs up this "
+            f"storage's files before rebuilding. Restart the server only "
+            f"after the rebuild succeeds."
+        )
+        self.backend = backend
+        self.container = container
+        self.detail = detail
+        self.artifacts = artifacts
+
+
 class ConfigurationStorageError(RuntimeError):
     """The configuration storage could not complete a read, a write or a claim.
 

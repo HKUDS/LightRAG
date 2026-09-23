@@ -56,11 +56,10 @@ from ..utils import (
     _cooperative_yield,
     merge_source_ids,
     parse_cache_key,
-    is_reserved_workspace,
     validate_workspace,
     validate_workspace_override,
 )
-from ..namespace import RESERVED_WORKSPACE_PREFIX
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -861,12 +860,14 @@ class ClientManager:
 def _resolve_workspace(workspace: str, namespace: str):
     """Resolve effective workspace from env or parameter.
 
-    A reserved workspace is fixed, not configured: the configuration container
-    must stay where every process finds it, whatever the environment remaps
-    tenant data to, so ``OPENSEARCH_WORKSPACE`` is ignored for it.
+    The configuration container is named in CODE, not by a workspace: its
+    index is ``CONFIG_CONTAINER_TAG`` + the ``config`` namespace, and
+    ``OPENSEARCH_WORKSPACE`` is not consulted for it. Nothing else is ever
+    opened on that namespace, which is what makes it a safe marker. See
+    docs/design/ConfigurationStorage.md.
     """
-    if is_reserved_workspace(workspace):
-        return workspace
+    if namespace == NameSpace.KV_STORE_CONFIG:
+        return CONFIG_CONTAINER_TAG
     opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
     if opensearch_workspace and opensearch_workspace.strip():
         effective = validate_workspace_override(
@@ -888,15 +889,22 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
         final_ns = namespace
         effective = ""
     index_name = _sanitize_index_name(final_ns)
-    # Sanitization is lossy: .lightrag_config and x_lightrag_config can
-    # reach the internal index without spelling the reserved workspace.
-    # Reject before opening a client, including environment overrides.
-    if not is_reserved_workspace(effective) and index_name.startswith(
-        _sanitize_index_name(RESERVED_WORKSPACE_PREFIX)
+    # Sanitization is LOSSY -- `.`, `+` and any other character outside
+    # [a-z0-9_-] all become `_` -- so two different names can normalize to one
+    # index. The configuration container is out of reach of a workspace name
+    # (the `config` namespace never consults one), but that is an argument
+    # about today's namespaces, not a property of this function: a namespace
+    # added later could normalize a tenant's index onto the container's.
+    # Refuse that here, before a client is opened, rather than discovering it
+    # as two stores writing one index. The ownership markers stay the general
+    # collision check; this is the one case they could not repair.
+    if namespace != NameSpace.KV_STORE_CONFIG and index_name == _sanitize_index_name(
+        f"{CONFIG_CONTAINER_TAG}_{NameSpace.KV_STORE_CONFIG}"
     ):
         raise ValueError(
             f"Workspace {effective!r} and namespace {namespace!r} normalize to "
-            f"reserved LightRAG index {index_name!r}; choose another workspace"
+            f"the LightRAG configuration container's index {index_name!r}; "
+            f"choose another workspace"
         )
     return effective, final_ns, index_name
 

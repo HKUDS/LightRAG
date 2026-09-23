@@ -1,0 +1,112 @@
+name: Windows Private File
+
+# The only job in this repository that runs on Windows, and it exists for one
+# reason: `lightrag/private_file.py` creates backups of corrupt vector
+# containers through `CreateFileW` with a protected DACL and sharing disabled,
+# and NOTHING about that behaviour can be reproduced on Linux. `st_mode`
+# carries no ACL, `chmod(0)` does not revoke read access, and the failure it
+# guards against — another user opening a handle during the window and reading
+# through it afterwards — is a Windows handle-semantics property.
+#
+# Deliberately narrow. It installs no storage backend, no LLM provider and no
+# database: `tests/test_private_file.py` imports nothing but the module under
+# test, so this stays a job measured in seconds rather than a second copy of
+# the offline suite.
+
+on:
+  push:
+    branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'lightrag/private_file.py'
+      - 'tests/test_private_file.py'
+      - 'lightrag/tools/rebuild_vdb.py'
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/windows-private-file.yml'
+  pull_request:
+    branches: [ main, dev, 'dev-*' ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'lightrag/private_file.py'
+      - 'tests/test_private_file.py'
+      - 'lightrag/tools/rebuild_vdb.py'
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/windows-private-file.yml'
+
+jobs:
+  private-file:
+    name: Private file creation (Windows)
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7  # no floating major tag exists past v7
+      with:
+        enable-cache: true
+
+    - name: Install dependencies (locked)
+      # No --extra: the module under test imports only the standard library
+      # plus lightrag.utils, and the test imports only the module.
+      run: uv sync --frozen --python 3.12 --extra pytest
+
+    - name: Run private-file tests
+      # One run, one machine-readable record of it. Serial by default, which
+      # these need: several hold an exclusive handle or rewrite a directory
+      # ACL, and a sibling doing the same at that moment would make the
+      # result depend on scheduling.
+      run: >-
+        uv run --no-sync pytest tests/test_private_file.py -v --tb=short
+        -p no:cacheprovider --junitxml=windows-private-file.xml
+
+    - name: Confirm the Windows-only tests actually ran
+      # Read from the XML of the run above, not from a second run: a repeat
+      # invocation could pass while the recorded one did not, and matching on
+      # skip-reason prose breaks the moment someone rewords it.
+      #
+      # This exists because the failure it catches is INVISIBLE otherwise: if
+      # the platform guards misfire, every native check skips, pytest exits 0,
+      # and the job is green having verified nothing. Naming the tests here
+      # means adding one requires adding it to this list too.
+      if: always()
+      shell: pwsh
+      run: |
+        [xml]$report = Get-Content windows-private-file.xml
+        $required = @(
+          'test_a_wide_parent_directory_does_not_widen_the_file',
+          'test_no_second_handle_can_be_opened_while_the_copy_is_in_flight',
+          'test_the_owner_can_still_read_and_archive_it_afterwards',
+          'test_the_restriction_persists_after_the_handle_closes',
+          'test_a_refusal_removes_the_file_it_had_already_created'
+        )
+        $cases = $report.SelectNodes('//testcase')
+        $failed = $false
+        foreach ($name in $required) {
+          $case = $cases | Where-Object { $_.name -eq $name }
+          if (-not $case) {
+            Write-Error "Windows-only test '$name' is absent from the report"
+            $failed = $true
+          } elseif ($case.SelectSingleNode('skipped')) {
+            Write-Error "Windows-only test '$name' SKIPPED on a Windows runner"
+            $failed = $true
+          } else {
+            Write-Host "ran: $name"
+          }
+        }
+        if ($failed) { exit 1 }
+
+    - name: Upload test report
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: windows-private-file-report
+        path: windows-private-file.xml
+        retention-days: 7

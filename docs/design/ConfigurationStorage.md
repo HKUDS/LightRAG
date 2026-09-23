@@ -1,13 +1,16 @@
 # Configuration storage contract
 
-Status: **slice 1 implemented** (`lightrag/config_store.py`, the `config` KV
-namespace on all five backends, the nine-step startup in
+Status: **slices 1 and 1b implemented** — slice 1
+([#4006](https://github.com/HKUDS/LightRAG/issues/4006)) built the facility
+(`lightrag/config_store.py`, the `config` KV namespace, the nine-step startup in
 `LightRAG.initialize_storages()`, the rebuild and drop commit protocols, the
-enumeration surface `BaseKVStorage.iter_rows()`); slice 2 and everything under
-*later* in the rollout table are still planned. Tracked in
-[#4006](https://github.com/HKUDS/LightRAG/issues/4006). The acceptance
-scenarios are regression tests under `tests/config_store/`, with the
-per-backend enumeration tests beside each backend under `tests/kg/`.
+enumeration surface `BaseKVStorage.iter_rows()`); slice 1b
+([#4020](https://github.com/HKUDS/LightRAG/issues/4020)) made configuration its
+own storage **category** and retired the reserved workspace name it used to
+live under. Slice 2 and everything under *later* in the rollout table are still
+planned. The acceptance scenarios are regression tests under
+`tests/config_store/`, with the per-backend enumeration tests beside each
+backend under `tests/kg/`.
 
 It builds on the embedding-space work in
 [#3978](https://github.com/HKUDS/LightRAG/issues/3978): the per-container
@@ -49,47 +52,142 @@ with, kept apart from the data that configuration produced.
 | | |
 | --- | --- |
 | KV namespace | `config` |
-| Workspace | `_lightrag_config` (fixed, reserved, internal) |
-| PostgreSQL | new table `LIGHTRAG_CONFIG (workspace, id, value JSONB, create_time, update_time)` |
-| MongoDB / Redis / OpenSearch / JSON | nothing new — a collection, a key prefix, an index, a file named after the namespace |
+| Selected by | `config_storage` / `LIGHTRAG_CONFIG_STORAGE` — its own category |
+| `JsonKVStorage` | `config_dir/kv_store_config.json`, default `<working_dir>/_lightrag_config` |
+| `PGKVStorage` | table `LIGHTRAG_CONFIG (workspace, id, value JSONB, create_time, update_time)`, partition constant `_lightrag_config` |
+| `MongoKVStorage` | collection `_lightrag_config_config` |
+| `OpenSearchKVStorage` | index `x_lightrag_config_config` (the backend's own sanitizer prepends `x`) |
 
 The namespace is a KV namespace on purpose: **KV container names carry no model
 suffix**, so a record kept here does not move when the embedding model changes.
 That is exactly the property the vector container name lacks, and it is the
 reason this record can be evidence where the name cannot.
 
-One fixed workspace holds every row — the server's own configuration *and* every
+One fixed container holds every row — the server's own configuration *and* every
 workspace's. Configuration does not follow the knowledge base it configures.
 
-### The internal factory, and why the reservation cannot be a plain rule
+**No workspace addresses it.** Every name above is written in code. The four
+backends key on the `config` NAMESPACE, which nothing else is ever opened on,
+and `CONFIG_CONTAINER_TAG` is the constant they compose it from — it is not a
+workspace, nothing validates it as one, and no `*_WORKSPACE` variable reaches
+it.
 
-The whole `_lightrag*` workspace-name family is reserved and
-`validate_workspace()` rejects it — **case-insensitively**. OpenSearch
-lowercases index names, so `_LightRAG_config` and `_lightrag_config` are one
-index there, and a reservation that knew only one spelling would let an
-ordinary storage reach the configuration container through the other. The
-grant, by contrast, admits exactly one spelling. That rule, applied naively,
-**rejects the configuration storage itself**: all five KV backends call
-`validate_workspace(self.workspace)` in `__post_init__` (`JsonKVStorage`,
-`RedisKVStorage`, `MongoKVStorage`, `PGKVStorage`, `OpenSearchKVStorage`). So
-the reservation needs a private door, and the
-door has to be one ordinary configuration cannot find:
+### The category, and the four it admits
 
-- public `LightRAG(workspace="_lightrag_config")` is **refused**;
-- an ordinary storage construction cannot reach a reserved name;
-- only the configuration-storage factory may bind `_lightrag_config`, through an
-  internal-only parameter that is not part of the public storage signature;
-- **no `allow_reserved=True`-style flag on the public constructor** — a public
-  bypass is the reservation with extra steps;
-- `PG_WORKSPACE`, `REDIS_WORKSPACE`, `MONGODB_WORKSPACE` and
-  `OPENSEARCH_WORKSPACE` must not remap the internal container onto an ordinary
-  workspace. The configuration container's workspace is fixed, not configured.
-- Nor may any `*_WORKSPACE` variable point tenant data INTO the family: the
-  override is applied after `validate_workspace()` has passed the constructor
-  argument, so every backend that honors one validates the override's value
-  too (`validate_workspace_override`) and refuses a reserved name at
-  construction. Neo4j and Memgraph validate after applying theirs and need no
-  second check.
+Configuration is selected independently of the four business storages:
+
+| backend | why |
+| --- | --- |
+| `JsonKVStorage` | the default, and the only file-backed member |
+| `MongoKVStorage` | fixed collection |
+| `PGKVStorage` | fixed table, transactional, trivially backed up |
+| `OpenSearchKVStorage` | fixed index |
+
+`RedisKVStorage` is **deliberately excluded**: Redis is being retired from
+business storage, and the configuration path must not be the reason its
+enumeration surface is kept alive. **No vector storage may serve here**, and
+that is a rule rather than an accident of today's registry — a vector
+container's name is derived from the embedding configuration
+(`_generate_collection_suffix()` builds `{folded_model}_{dim}d`), which is
+exactly the assertion the baselines exist to be independent of, and
+configuration has to be readable *before* any vector storage initializes
+(step 3 of the startup sequence).
+
+A selection outside the four is refused at construction, **by name**, rather
+than failing later on a missing method. The setup wizard follows the same
+rule at both ends: `make env-storage` asks for a configuration backend
+whenever the KV selection is not one of the four and collects that backend's
+database requirements, and `make env-validate` refuses an `.env` whose
+configuration backend — explicit or inherited — is outside them, because
+validation that approves a file the server then refuses is worse than no
+validation.
+
+**The flows that do not own storage still write the file.** `make env-base`
+and `make env-server` preserve the storage settings they find and then rewrite
+the `.env`, so an unadmitted configuration backend — explicit, or an unset
+selection following `LIGHTRAG_KV_STORAGE` — would be preserved into a file
+reported as successfully written and refused at the next start, with nothing in
+the wizard's output saying why. Both flows therefore run the same admitted
+check before writing, and ask for a backend exactly when the file is otherwise
+unstartable: a sound `.env` is left byte-identical, so the promise those flows
+make about not touching storage holds everywhere it can.
+
+The wizard never moves the container as a side effect, by any route. There are
+three of them — dropping an explicit selection, following a `kv_storage` that
+changed, and falling through to the generic prompt when the new KV backend is
+not admitted — so `select_config_storage` computes **where the records are**
+once, from the previous `.env` (its explicit selection, or the KV backend an
+implicit one followed), and every branch reads that one answer. An explicit
+`LIGHTRAG_CONFIG_STORAGE` is never dropped by a later run; a changed KV backend
+prompts rather than taking the container with it; and every prompt defaults to
+the backend the baselines are in, because a KV backend leaving the category
+does not take them with it either. A first run, an unchanged backend, and a
+previous backend the category never admitted all leave the key unset — nothing
+admitted holds records, so there is nothing to strand.
+Dropping it moves the container to another backend without migrating the rows,
+and they then read as absent — the same silent bootstrap the `config_dir`
+default exists to prevent, and it would additionally let the wizard's marker
+cleanup tear down the managed service that backend runs on. Moving
+configuration is an explicit edit plus a rebuild, never a side effect.
+
+**Unset, the selection follows `kv_storage`.** That is the only default that
+does not orphan an existing deployment's records: they are already in that
+backend's container. A `kv_storage` the category does not admit is refused with
+a message that names it and says the records it holds are not migrated.
+
+Two combinations this buys that were impossible before: business data on
+Milvus/Qdrant with configuration on PostgreSQL, and file-backed business data
+with configuration on a server backend.
+
+### `config_dir`, and why its default is load bearing
+
+The JSON backend puts its file in `config_dir`, not under
+`working_dir/<workspace>/`. `config_dir` defaults to
+`<working_dir>/_lightrag_config` — **exactly** where the reserved workspace put
+it before — and that is the whole reason for the spelling. Point the default
+anywhere new and every baseline of an existing deployment reads as *absent* on
+the first start after an upgrade, which is the one answer that lets a start
+bootstrap; the deployment would then record the currently configured model over
+vectors nobody probed, with nothing in any log to say so. The migration is
+therefore the absence of one, pinned by a test that writes the old layout by
+hand and asserts the recorded model comes back unchanged.
+
+### What retiring the reserved name retired
+
+Slice 1 bought "configuration is not a tenant" with a reserved *name*, and a
+reserved name has to be defended everywhere a name can be chosen. It needed all
+of:
+
+- `validate_workspace()` refusing the whole `_lightrag*` family
+  **case-insensitively**, because OpenSearch lowercases index names, so
+  `_LightRAG_config` and `_lightrag_config` are one index there;
+- a context-variable grant spanning exactly one construction, so the factory
+  could bind the name every backend's `__post_init__` otherwise rejects;
+- `validate_workspace_override()` refusing the family at six backends, so no
+  `*_WORKSPACE` variable could point tenant data *into* it;
+- a standing rule that no public `allow_reserved`-style flag may ever be added.
+
+**None of that exists any more.** Nobody can stray into the configuration
+container because it is not reachable by naming a workspace at all, and no
+override can redirect into it because there is no name to collide with. A
+tenant may now legally be called `_lightrag_config`: on the JSON backend that
+is a different *file* in the same directory, on PostgreSQL a different *table*,
+on MongoDB and OpenSearch a different *collection* and *index*. Nothing is
+shared, so nothing has to be defended.
+
+What stays, and why:
+
+- **`create_configuration_storage()` is still the single door in.** It is where
+  the namespace, the container tag and the post-construction check that no
+  backend re-bound the container live.
+- **`validate_workspace_override()` stays**, with its reserved check removed and
+  a real one in its place: a `*_WORKSPACE` value is applied *inside* a backend's
+  constructor, after `validate_workspace()` has already passed the constructor
+  argument, so this is the only place that value is ever checked at all. It now
+  holds the override to the same rules as a constructor argument.
+- **The `config` namespace is the marker.** Each of the four branches on it
+  rather than on a name. Nothing else is ever opened on that namespace, and a
+  caller cannot ask for it: namespaces are fixed by LightRAG's own construction.
 
 #### `*_WORKSPACE` is legacy compatibility, and baselines do not follow it
 
@@ -124,15 +222,45 @@ moved: point the override back, or rebuild the moved target with
 `lightrag-rebuild-vdb`, which re-embeds from the authoritative sources and
 records the baseline afresh.
 
-Reserving must happen in the **first** slice, before any deployment can create a
-workspace with such a name: a reservation made later cannot reclaim a name
-already in use. Cost: a deployment whose workspace is already named that way
-fails to start, loudly, with a message that names the reason.
+**The configuration container never reaches any of this.** Its name is written
+in code, so no override applies to it, and the announcement above is about
+tenant data only.
 
 PostgreSQL is the only backend needing schema work: `NAMESPACE_TABLE_MAP` gains
 an entry, `TABLES` gains the DDL, and `PGKVStorage` needs the SQL templates it
 dispatches per namespace (`get_by_id_config`, `get_by_ids_config`,
-`upsert_config`). See *Enumeration* for the one thing the other four do owe.
+`upsert_config`). See *Enumeration* for the one thing the other three do owe.
+
+#### The `workspace` column on `LIGHTRAG_CONFIG` is not a workspace
+
+The table keeps the shape every other one has — `(workspace, id)` primary key —
+and writes the container tag into that column as a **partition constant**. It
+was never a tenant's name; the workspace a row is *about* is a
+field inside the payload, and `id` carries it too. Keeping the column means an
+existing deployment's rows are read where they already are, which is the same
+choice the `config_dir` default makes for the same reason. Dropping it would be
+a DDL migration bought for cosmetics.
+
+#### What discriminates two deployments on one server
+
+A fixed container name is, by construction, the **same name for everyone**: two
+independent deployments pointed at one PostgreSQL, MongoDB or OpenSearch land
+in the same table, collection or index. What keeps their baselines apart is the
+row **key**, whose scope is the business workspace the row is about — and the
+contract already requires different LightRAG instances, and different server
+instances, to use different business workspaces. That was already true in slice
+1, where the container's workspace was a constant shared by every deployment
+too; nothing about this change makes it more or less true.
+
+Two deployments that share a server backend **and** a business workspace name
+do overwrite each other's baselines. That is the same unsupported case as two
+servers sharing a `working_dir`, one layer up, and it is listed under *Accepted
+residues*. It is not closed by a deployment id: an id an operator can set is an
+id an operator can copy into a cloned deployment, and one derived from the
+environment moves when the container does — either way the records would read
+as *absent* after an ordinary redeploy, which is the failure this whole
+facility exists to prevent. The requirement that business workspaces differ is
+the cheaper and already-load-bearing rule.
 
 ### One server at a time on a file-backed configuration
 
@@ -148,9 +276,11 @@ The next start does not refuse the model change the baseline existed to refuse;
 it records the configured model over vectors nobody probed, and the protection
 is gone with nothing in any log.
 
-So a file-backed configuration storage **claims its `working_dir`** for the life
+So a file-backed configuration storage **claims its `config_dir`** for the life
 of its process tree (`lightrag/kg/working_dir_lock.py`), and a second tree is
-refused with `WorkingDirectoryInUseError`. Four properties matter:
+refused with `WorkingDirectoryInUseError`. With `config_dir` at its default the
+two name the same deployment either way; where it is set, the claim follows the
+file it exists to protect. Five properties matter:
 
 - **An OS lock, not a PID file.** The kernel releases it when the holder dies,
   so a `SIGKILL`, an OOM kill or a power cut leaves nothing stale to reap and
@@ -158,18 +288,53 @@ refused with `WorkingDirectoryInUseError`. Four properties matter:
 - **`fork` shares it.** The Gunicorn master takes it in `on_starting`, *before*
   forking, and the workers inherit that claim and count themselves in. Taken
   after the fork, each worker would open its own descriptor and all but one
-  would be refused.
+  would be refused. The master must therefore claim **the directory its
+  workers will ask for**: it resolves `config_storage` and `config_dir`
+  through the same `configuration_selection_from_env()` the workers reach via
+  `LightRAG`, and `lightrag-rebuild-vdb` uses it too. A master reading the
+  environment its own way is the same failure as taking the claim late —
+  nothing inheritable, and every worker after the first refused at startup. The directory it feeds that resolver is the
+  **parsed** one: `--working-dir` overrides `WORKING_DIR` for the workers and
+  is never written back to the environment, so `run_with_gunicorn` hands the
+  parsed value to the config module and `resolved_working_dir()` prefers it.
 - **It fails open.** Locking is unreliable on NFSv3 without lockd and on
   SMB/CIFS, and a `working_dir` on a network volume is ordinary in container
   deployments. A backend that cannot lock gets a warning and proceeds; refusing
   would break deployments that work, to protect against a rarer failure.
-- **It is asked of the configuration storage**, not of the four business ones,
-  so the claim follows it if it ever becomes separately configurable.
+- **It is asked of the configuration storage**, not of the four business ones.
+  A deployment that moves configuration to a server backend stops claiming
+  anything at all, and one that keeps JSON configuration claims the directory
+  that file is in.
 - **`lightrag-rebuild-vdb` takes it too**, around its own configuration-storage
   lifecycle. The tool is a second process tree by construction, and the record
   it writes to say the rebuild happened is exactly the one a running server
   would overwrite. The confirmation prompt is not a substitute: it asks the
   operator, the claim asks the filesystem.
+
+#### There is no claim on a pre-move path, because there is no pre-move server
+
+A claim on `config_dir` excludes a second process tree that asks for the same
+directory. It does **not** exclude a server from an earlier revision that
+claims a different path while writing the same file — which is what a
+compatibility claim on the old path would be for, and there is none here.
+
+The reason is that no such revision exists. Every release through `v1.5.7`,
+`main` and `dev` have no configuration storage at all: no `config` namespace,
+no `kv_store_config.json`, and no directory claim of any kind. The only code
+that ever claimed `<working_dir>` is the unmerged branch this change is stacked
+on, and the two land as one step, so `dev` goes from nothing to this layout.
+A rolling upgrade across that boundary therefore pairs a new server with an old
+one that does not know the file exists and never writes it — the old server can
+lose business data to a concurrent start, which is the unchanged residue at the
+end of this section, but it cannot overwrite a baseline it does not record.
+
+The transitional claim that once covered the old path is gone for that reason,
+and its removal is not a judgement that such a claim is unnecessary in general:
+**if the reserved-workspace layout ever ships on its own, a claim on the
+pre-move path has to come back for one release**, because from then on there
+would be a deployed predecessor writing `_lightrag_config/kv_store_config.json`
+under a different lock. That is the condition to check before removing the
+claim's absence from this document, not the file layout.
 
 #### The claim goes back last, and only after the teardown
 
@@ -206,7 +371,8 @@ event loop's own shutdown and loses exactly what it was called to hand back. So
 every release a cancellation detached is **drained before the claim goes back**.
 
 **Accepted residue.** A deployment whose configuration is on a server backend
-but whose business data is file-backed is *not* protected: two servers there
+(or in a `config_dir` of its own) but whose business data is file-backed is
+*not* protected: two servers there
 still overwrite each other's `full_docs`, `doc_status`, graph and vectors, and
 lose more than baselines doing it. That is the long-standing "separate process
 trees are unsupported" position, unchanged. This claim narrows the blast radius
@@ -233,10 +399,33 @@ field and enumeration reads the field. The separator rule is the second lock on
 a door the row schema already closes; both stay, because reparsing a key is the
 kind of shortcut that gets reintroduced by a later patch.
 
-OpenSearch also rejects ordinary workspace/namespace names whose normalized
-index name falls into the internal reserved index family, including aliases
-supplied by `OPENSEARCH_WORKSPACE`. This happens before attaching to or creating
-an index; ownership markers remain an additional collision check.
+**The scope is the container's only discriminator.** The container name is
+fixed, so two deployments sharing one server backend share it; what keeps their
+rows disjoint is this scope. See *What discriminates two deployments on one
+server*.
+
+**`_lightrag_server` is a spelling, not an identity.** With the reserved name
+family retired, a tenant may legally be called `_lightrag_server` — so a server
+scope that WAS that string would be a scope a workspace name can reach, and the
+tenant asking for its own baseline would be refused a legal name at startup.
+The scope is `SERVER_SCOPE`, an object; `config_key()` compares identity and
+renders the prefix afterwards. Two rows can therefore render under the same
+prefix, which is harmless: a suffix is registered with exactly one scope, so a
+tenant key and a server-global key can never be the same key.
+
+**OpenSearch normalizes lossily, and that is now a namespace question rather
+than a name one.** `_sanitize_index_name` maps every character outside
+`[a-z0-9_-]` to `_`, so `.lightrag_config` and `x_lightrag_config` reach the
+same index as `_lightrag_config` — under the reserved-name layout, those
+aliases had to be refused, including one supplied by `OPENSEARCH_WORKSPACE`.
+With the container keyed on the `config` namespace, `_resolve_workspace` does
+not consult a workspace for it at all: every spelling lands on the one
+container, so there is nothing to refuse. What `_build_index_name` still
+refuses, before a client is opened, is the mirror case the ownership markers
+could not repair — a *non-configuration* open whose index name normalizes onto
+the container's. No namespace shipped today can, which is exactly why the check
+is written against the container's own name rather than against today's
+namespace list.
 
 ## Row shape
 
@@ -823,6 +1012,10 @@ Whether the five implementations land in slice 1 or slice 2 is a scheduling
 choice; what is not a choice is pretending PostgreSQL is the only backend with
 work to do.
 
+Only **four** of those five can serve as the configuration storage today; the
+fifth, `RedisKVStorage`, keeps `iter_rows` for business KV until Redis is
+removed, and the configuration path is not the reason it stays.
+
 Startup uses the same surface, and stays inside the same rule, by bounding both
 *what* it reads and *when*: never more than the first page, and only for a
 target whose baseline is absent (*Establishing a baseline*). A backend that
@@ -846,6 +1039,14 @@ independent record -- so it keeps distinct ids only, and spends its budget on
 rows examined rather than ids kept. A duplicated source shrinks the sample; it
 never pads it with copies that would spend the comparison slots without adding
 evidence.
+
+## What the category does not retire
+
+**The working-directory claim stays.** Even with configuration on a server
+backend, two servers sharing one `working_dir` still overwrite each other's
+`full_docs`, `doc_status`, graph and vectors — and lose more than baselines
+doing it. The claim now follows the configuration storage onto `config_dir`,
+which is where the file it protects actually is.
 
 ## What this does not retire
 
@@ -903,7 +1104,23 @@ names are UUIDs.
 
 **A replaced or cleared configuration store loses every baseline.** Reads
 confirm absent, which bootstraps again — the same class as a wiped marker, and
-the same recovery.
+the same recovery. A separately selected backend adds a second way to reach
+this state: point `config_storage` or `config_dir` at an empty or different
+store and the start looks exactly like a first one. Announced rather than
+enforced (`warn_about_unrecorded_baselines()`, the same posture as
+`warn_about_workspace_overrides()`), because the two are indistinguishable from
+inside the process. What is *not* residue: nothing is adopted on the configured
+model alone even then — a baseline is established only for a target whose
+container is confirmed empty or whose stored vectors an adoption probe vouched
+for.
+
+**Two deployments sharing one server backend AND one business workspace name
+overwrite each other's baselines.** The container name is fixed for everyone,
+so the row key's scope is the discriminator, and identical scopes collide. Same
+unsupported case as two servers on one `working_dir`, one layer up; see *What
+discriminates two deployments on one server* for why a deployment id is not the
+fix. Recovery: give them different workspaces and rebuild with
+`lightrag-rebuild-vdb`.
 
 **Whole-namespace publication on the JSON backend.** `JsonKVStorage` rewrites
 the whole namespace file on flush, so `_lightrag_config` becomes a single write
@@ -914,7 +1131,7 @@ validation only" limit.
 
 **Colocation of every workspace's configuration in one container.** PostgreSQL
 already colocates all workspaces in one table per namespace, so this is no
-change there; MongoDB, Redis, OpenSearch and the JSON backends go from separated
+change there; MongoDB, OpenSearch and the JSON backends go from separated
 to combined. Accepted because configuration is server-owned rather than
 tenant-owned, which makes combining it the more correct semantics, not merely
 the more convenient one.
@@ -924,6 +1141,7 @@ the more convenient one.
 | slice | contents |
 | --- | --- |
 | 1 | the `config` namespace across the five KV backends (PostgreSQL DDL + SQL templates; the internal reserved-workspace factory; the enumeration surface), the reserved `_lightrag*` name family, **three** `<workspace>/embedding/<target>` records with their verdicts, the split startup sequence with cleanup on early refusal, the atomic claim, per-target `rebuild_vdb` commits, data-first drop cleanup, key registry |
+| 1b | configuration as its own **category** (`config_storage`, four admitted backends, refusal by name), `config_dir` for the JSON backend with the migration-free default, fixed container names on PostgreSQL / MongoDB / OpenSearch, the single-server claim moved onto `config_dir`, the unrecorded-baseline announcement, and the retirement of the whole reserved-name machinery |
 | 2 | `_lightrag_server/embedding.current` / `.previous` and the startup inventory naming which workspaces still need a rebuild, over the enumeration surface from slice 1 |
 | later | migrating existing environment variables into the store, key by key; a display-name → UUID mapping once workspace names become UUIDs; the secrets policy |
 
@@ -933,7 +1151,10 @@ store — sequentially, since concurrent initialization is unsupported — while
 per-target baseline moves only on a successful rebuild. A value that looks authoritative
 and is not will otherwise be wired into a refusal by someone reading it later.
 
-Slice 1 is a safety property and lands alone.
+Slice 1 is a safety property and lands alone. Slice 1b changes where the
+records live and nothing about what they mean, which is why it can follow
+immediately: every verdict rule, the claim protocol, the rebuild and drop
+orderings are untouched.
 
 ## Acceptance scenarios
 
@@ -956,8 +1177,9 @@ The implementation is not complete until these are regression tests.
     (the operation still buffered) fails the claim, the rebuild record and the
     drop rather than being confirmed from the buffer.
 11. Two workers of one Gunicorn master claim concurrently → exactly one baseline.
-12. A reserved workspace name is refused for a public construction and accepted
-    through the internal factory.
+12. The configuration container is unreachable by naming a workspace: a tenant
+    called `_lightrag_config` starts normally and shares no file, table,
+    collection or index with it.
 13. Any workspace storage fails to drop → all three records are kept.
 14. Every drop succeeds → the three records are deleted, and a workspace of the
     same name can be recreated and started.
@@ -977,7 +1199,24 @@ The implementation is not complete until these are regression tests.
 21. Concurrent claims are covered only for workers of one Gunicorn master;
     nothing asserts anything about two independent masters, which the contract
     does not support.
-22. A storage in step 4 raises — injected at the first, a middle and the last
+22. A deployment whose baselines are already recorded has **every** one of
+    them read by the next start: the recorded model is unchanged, its `origin`
+    is not rewritten, and a mismatching model still refuses. The
+    counterexample is pinned too — the same deployment with `config_dir`
+    pointed elsewhere reads absence.
+23. A configuration backend outside the four is refused at construction with a
+    message naming it; a vector storage class in particular, and
+    `RedisKVStorage` both when named and when it would be inherited from
+    `kv_storage`.
+24. A start on which no baseline is on record announces the container it
+    looked in; a start with records, and a start missing only some of them,
+    stay quiet.
+25. Two deployments sharing one container hold disjoint rows, pinned per
+    backend: one collection on MongoDB, one index on OpenSearch, one partition
+    constant on PostgreSQL, one file on JSON — and keys that differ by scope.
+26. The single-server claim is taken on `config_dir`, not `working_dir`, and
+    only when the configuration storage is file-backed.
+27. A storage in step 4 raises — injected at the first, a middle and the last
     member of the loop. The configuration storage, the storage that raised and
     every storage initialized before it are each released exactly once;
     storages the loop never reached are not touched; the original exception is

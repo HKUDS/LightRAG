@@ -46,6 +46,7 @@ from lightrag.prompt import (
 )
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
+    DEFAULT_WORKING_DIR,
     DEFAULT_MAX_GLEANING,
     DEFAULT_MAX_EXTRACTION_RECORDS,
     DEFAULT_MAX_EXTRACTION_ENTITIES,
@@ -177,9 +178,13 @@ from lightrag.config_store import (
     claim_embedding_baseline,
     configured_baseline,
     create_configuration_storage,
+    describe_configuration_container,
     flush_configuration_storage,
     precheck_embedding_baselines,
     read_embedding_baselines,
+    resolve_config_dir,
+    resolve_configuration_storage,
+    warn_about_unrecorded_baselines,
 )
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
@@ -740,7 +745,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # Directory
     # ---
 
-    working_dir: str = field(default="./rag_storage")
+    working_dir: str = field(default=DEFAULT_WORKING_DIR)
     """Directory where cache and temporary files are stored."""
 
     # Storage
@@ -1441,6 +1446,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     See ``docs/design/VectorSpaceProvenance.md``.
     """
 
+    # Declared last for the same reason as every field above: new fields go at
+    # the END of this dataclass, never mid-class. Their logical home is beside
+    # ``kv_storage``, and putting them there shifted 55 of the constructor's
+    # positional parameters -- caught by
+    # ``tests/test_dataclass_positional_compatibility.py``.
+    config_storage: str = field(
+        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_STORAGE", "")
+    )
+    """Storage backend for the configuration storage -- its own category.
+
+    Admits ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
+    ``OpenSearchKVStorage``; anything else is refused by name at construction.
+    Left empty it FOLLOWS ``kv_storage``, which is where an existing
+    deployment's records already are. See
+    docs/design/ConfigurationStorage.md.
+    """
+
+    config_dir: str = field(
+        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_DIR", "")
+    )
+    """Directory a file-backed configuration storage keeps its file in.
+
+    Empty resolves to ``<working_dir>/_lightrag_config``, which is where that
+    file already is. Ignored by the server backends, which name their
+    container in code instead. This is also the directory the single-server
+    claim is taken on when the configuration storage is file-backed.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1741,14 +1774,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # rebuilding_vector_storage) and this is internal state, never a
         # constructor argument.
         self._startup_refusal: Exception | None = None
-        # Whether THIS instance holds a claim on ``working_dir``; see
+        # Whether THIS instance holds a claim on ``config_dir``; see
         # ``lightrag/kg/working_dir_lock.py``. Set at the top of
         # ``initialize_storages``, cleared by whichever path gives it back.
         self._holds_working_dir: bool = False
 
         # Refused here, before any storage is built, so the message names the
-        # rule rather than whichever backend happened to construct first. The
-        # ``_lightrag*`` family is reserved for LightRAG's own containers.
+        # rule rather than whichever backend happened to construct first. Path
+        # traversal only: there is no reserved name family, because the
+        # configuration container is not addressed by a workspace.
         validate_workspace(self.workspace)
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
@@ -1811,12 +1845,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
 
+        # The configuration storage is its OWN category, resolved before the
+        # verification loop below so an unusable selection is refused by name
+        # here rather than at the first missing method. Unset, it follows
+        # ``kv_storage``: that is where an existing deployment's records are,
+        # and any other default would read them as absent.
+        self.config_storage = resolve_configuration_storage(
+            self.config_storage, kv_storage=self.kv_storage
+        )
+        # Through the shared resolver, not a second copy of the rule: the
+        # Gunicorn master claims this directory BEFORE forking, and a master
+        # that resolved it differently would hand its workers no inheritable
+        # claim -- the first worker would take the lock and every other one
+        # would be refused at startup.
+        self.config_dir = resolve_config_dir(self.config_dir, self.working_dir)
+
         # Verify storage implementation compatibility and environment variables
         storage_configs = [
             ("KV_STORAGE", self.kv_storage),
             ("VECTOR_STORAGE", self.vector_storage),
             ("GRAPH_STORAGE", self.graph_storage),
             ("DOC_STATUS_STORAGE", self.doc_status_storage),
+            ("CONFIG_STORAGE", self.config_storage),
         ]
 
         for storage_type, storage_name in storage_configs:
@@ -2080,19 +2130,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._rebuild_role_llm_funcs()
         self._log_llm_role_config("initialized")
 
-        # The configuration storage: the same KV backend, bound to the fixed
-        # reserved workspace rather than to this instance's. Only the factory
-        # may bind that name. Initialized FIRST (step 1) and finalized with the
-        # rest, but CONSTRUCTED as the LAST thing here that can raise: a Redis
-        # storage takes its shared-pool reference in its constructor, this
-        # method is synchronous with no teardown reachable, and every
-        # constructor and validation above may refuse (a reserved
-        # ``*_WORKSPACE`` override, a missing ``llm_model_func``, a bad role
-        # config) -- so nothing this storage holds may precede any of them.
-        # See *Cleanup before INITIALIZED exists* in
-        # docs/design/ConfigurationStorage.md.
+        # The configuration storage: its own backend, on a container named in
+        # code -- a directory for the JSON backend, a fixed table / collection
+        # / index for the other three. No workspace addresses it. Initialized
+        # FIRST (step 1) and finalized with the rest, but CONSTRUCTED as the
+        # LAST thing here that can raise: a storage may take a shared-pool
+        # reference in its constructor, this method is synchronous with no
+        # teardown reachable, and every constructor and validation above may
+        # refuse (a missing ``llm_model_func``, a bad role config) -- so
+        # nothing this storage holds may precede any of them. See *Cleanup
+        # before INITIALIZED exists* in docs/design/ConfigurationStorage.md.
+        self.config_storage_cls: type[BaseKVStorage] = get_storage_class(
+            self.config_storage
+        )  # type: ignore
         self.configuration_storage: BaseKVStorage = create_configuration_storage(
-            self.key_string_value_json_storage_cls,
+            self.config_storage_cls,
             global_config=global_config,
             embedding_func=self.embedding_func,
         )
@@ -2214,7 +2266,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # directory while a release of ours is still running.
             if self._holds_working_dir:
                 self._holds_working_dir = False
-                release_working_dir_lock(self.working_dir)
+                release_working_dir_lock(self.config_dir)
 
     async def _establish_embedding_baselines(
         self, bootstrap_targets: list[str], evidence: StartupEvidence
@@ -2344,7 +2396,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         await initialize_pipeline_status(workspace=self.workspace)
 
-        # Claim the working directory when the CONFIGURATION storage is
+        # Claim the CONFIGURATION DIRECTORY when the configuration storage is
         # file-backed, and only then. Such a storage shares its in-memory copy
         # inside ONE process tree and publishes by rewriting the whole file, so
         # a second server on this directory would overwrite this one's
@@ -2352,17 +2404,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # baseline reads as ABSENT, which is the one answer that lets a start
         # bootstrap over vectors nobody probed.
         #
-        # Asked of the configuration storage itself rather than of the four
-        # business ones, so the claim follows it if it ever becomes separately
-        # configurable. What this deliberately does NOT do is refuse a
-        # deployment whose business data is file-backed while its
+        # Taken on ``config_dir`` rather than on ``working_dir``: the claim
+        # exists for the configuration file and now follows it, so a
+        # deployment that moves configuration to a server backend stops
+        # claiming anything and one that gives it its own directory claims
+        # that. With ``config_dir`` at its default the two are the same
+        # deployment either way. What this deliberately does NOT do is refuse
+        # a deployment whose business data is file-backed while its
         # configuration is not: see the residue in working_dir_lock.py.
         self._holds_working_dir = uses_working_dir(
             type(self.configuration_storage).__name__
         )
         if self._holds_working_dir:
             try:
-                acquire_working_dir_lock(self.working_dir)
+                acquire_working_dir_lock(self.config_dir)
             except BaseException as e:
                 # Before step 1, so nothing is open yet and nothing is sticky:
                 # a refusal here leaves the instance exactly as it was.
@@ -2393,6 +2448,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 bootstrap_targets = precheck_embedding_baselines(
                     recorded, self.embedding_func, workspace=self.workspace
+                )
+                # A separately selected configuration backend is a new way to
+                # point a running deployment at an empty store, and an empty
+                # store reads exactly like a first start. Announced, not
+                # enforced -- the protection stays where it already is: an
+                # absent baseline is established only on positive evidence.
+                warn_about_unrecorded_baselines(
+                    bootstrap_targets,
+                    workspace=self.workspace,
+                    container=describe_configuration_container(
+                        self.config_storage, self.config_dir
+                    ),
                 )
             else:
                 bootstrap_targets = []
@@ -2689,7 +2756,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # still holds shared-namespace holds or unflushed writes.
             if self._holds_working_dir:
                 self._holds_working_dir = False
-                release_working_dir_lock(self.working_dir)
+                release_working_dir_lock(self.config_dir)
         if cancelled is not None:
             raise cancelled
 

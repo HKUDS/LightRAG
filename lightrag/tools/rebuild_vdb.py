@@ -25,10 +25,12 @@ stops the server serving an empty or foreign index, and it is the condition
 this tool exists to clear. So the three vector targets are initialized
 individually and a typed refusal is *recorded* rather than aborting the run;
 the rebuild then opens with ``drop()`` on the refused container, which
-re-provisions it in the current embedding space, and re-initializes it. Only
-the typed refusal is tolerated: a cluster outage, a bad credential or a
-corrupt file still aborts, because dropping a vector storage on a false
-positive destroys data the graph may not be able to rebuild.
+re-provisions it in the current embedding space, and re-initializes it. A typed
+corrupt file-backed snapshot also permits entering the menu, but every file it
+names is backed up before any confirmed rebuild drops it. Source checks and
+user confirmation precede recovery; normal startup still refuses corruption.
+Other failures, including outages and bad credentials, abort without dropping
+anything.
 
 The authoritative SOURCES (graph storage and the ``text_chunks`` KV store) keep
 the server-identical init path and still abort the run on any failure -- they
@@ -64,7 +66,9 @@ vectors live in exactly the same embedding space.
 import asyncio
 import os
 import sys
+import shutil
 import time
+from uuid import uuid4
 from typing import Any, Callable, Dict, List
 
 from dotenv import load_dotenv
@@ -77,21 +81,27 @@ sys.path.insert(
 from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_WORKING_DIR,
 )
 from lightrag.config_store import (
     EMBEDDING_TARGETS,
     create_configuration_storage,
+    describe_configuration_container,
     read_embedding_baselines,
     record_embedding_baseline,
+    resolve_config_dir,
+    resolve_configuration_storage,
 )
 from lightrag.exceptions import (
     ConfigurationStorageError,
+    CorruptStorageSnapshotError,
     ReferencesIntactFlushError,
     StorageCapabilityError,
     VectorSpaceMismatchError,
     WorkingDirectoryInUseError,
 )
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
+from lightrag.private_file import PrivateFileError, open_private_file
 from lightrag.kg.working_dir_lock import (
     acquire_working_dir_lock,
     release_working_dir_lock,
@@ -107,8 +117,6 @@ from lightrag.utils import (
     safe_vdb_operation_with_exception,
     setup_logger,
 )
-
-DEFAULT_WORKING_DIR = "./rag_storage"
 
 # NOTE: .env loading and logger setup are deferred to main() so that importing
 # this module as a library (see README "Library usage") has no side effects on
@@ -166,6 +174,65 @@ async def _drop_vdb(vdb, label: str) -> None:
     if not isinstance(drop_result, dict) or drop_result.get("status") != "success":
         raise RuntimeError(f"Failed to drop {label} vector storage: {drop_result}")
     logger.info(f"Dropped {label} vector storage")
+
+
+def backup_corrupt_snapshot(paths: tuple[str, ...]) -> List[str]:
+    """Preserve every file of a corrupt storage before a confirmed rebuild.
+
+    Copies each path that exists to an exclusive ``<path>.corrupt-<token>``
+    sibling and flushes it before the caller may drop the originals. One token
+    per recovery, so a multi-file storage's backups read as one set. Any error
+    aborts recovery with the originals untouched. Backups are never deleted
+    automatically, including after a failed rebuild.
+
+    A storage whose files have all vanished is REFUSED rather than reported as
+    backed up: there is nothing left to preserve, so nothing may be destroyed.
+    A file that is merely absent from a present set is skipped -- a torn pair
+    is exactly the shape some corruption takes.
+
+    "Absent" is decided by OPENING the source and catching ``FileNotFoundError``
+    from that one call, not by a prior ``exists()``. A file that disappears
+    between the check and the open would otherwise abort mid-way through, and,
+    worse, only the open can tell "this half of a torn pair is missing" apart
+    from "the directory is gone" or "this file cannot be read" -- both of which
+    must abort rather than be silently skipped as nothing-to-preserve.
+
+    A backup holds the same documents and metadata as the store it copies and
+    is kept indefinitely by design, so it must never be more readable than
+    what it copies. ``open_private_file`` is what enforces that, on both
+    platforms and from the instant each file exists -- read it before relying
+    on this. A backup that cannot be created private, or proven private,
+    removes itself and aborts the recovery with the originals intact.
+    """
+    token = uuid4().hex[:8]
+    backups: List[str] = []
+    for path in paths:
+        absolute = os.path.abspath(path)
+        try:
+            source = open(absolute, "rb")
+        except FileNotFoundError:
+            # The ONLY tolerated failure, and scoped to the open alone.
+            continue
+        backup = f"{absolute}.corrupt-{token}"
+        with source, open_private_file(backup) as destination:
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        # Appended only once the copy is durable, so the returned list never
+        # names a backup that does not hold its source.
+        backups.append(backup)
+    if not backups:
+        raise FileNotFoundError(
+            f"Refusing to recover: none of {list(paths)} exists to be backed up"
+        )
+    if os.name != "nt":
+        for parent in sorted({os.path.dirname(backup) for backup in backups}):
+            directory = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    return backups
 
 
 async def clear_vector_space_refusal(vdb, label: str) -> None:
@@ -599,8 +666,8 @@ async def check_vdb_consistency(
     misreported as missing.
 
     ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
-    storage refused to attach because its container holds another embedding
-    space's vectors, mapped to the refusal message. Such a target is NOT
+    storage refused to attach because of incompatible vectors or a corrupt
+    snapshot, mapped to the refusal message. Such a target is NOT
     probed: its storage cannot answer, and probing it anyway would report
     every graph record as missing -- a true statement about that container
     that reads as a routine drift report and buries the one fact that matters,
@@ -705,31 +772,46 @@ class RebuildTool:
         # recorded AFTER that target's rebuild is durable and verified, and
         # never before. See docs/design/ConfigurationStorage.md.
         self.configuration_storage = None
-        # Whether this run holds the working-directory claim; see
+        # Whether this run holds the configuration-directory claim; see
         # ``setup_storages``.
         self._holds_working_dir = False
+        self.config_dir = ""
         self.global_config: Dict[str, Any] = {}
         self.embedding_func: EmbeddingFunc | None = None
         self.embedding_available = False
         self.workspace = ""
         self.batch_size = DEFAULT_BATCH_SIZE
         self.storage_names: Dict[str, str] = {}
-        # Vector targets whose initialize() refused with
-        # VectorSpaceMismatchError, label -> refusal message. Cleared per
-        # target by clear_vector_space_refusal() once its container has been
-        # dropped and re-provisioned in the current embedding space.
+        # Vector targets that refused initialization, label -> diagnostic.
+        # Corrupt targets additionally retain the typed error, whose
+        # ``artifacts`` name the files the recovery must preserve first.
+        # Entries are cleared after confirmed recovery reinitializes a target.
         self.incompatible_vdbs: Dict[str, str] = {}
+        self.corrupt_vdbs: Dict[str, CorruptStorageSnapshotError] = {}
 
     # ------------------------------------------------------------------
     # Configuration / setup
     # ------------------------------------------------------------------
 
     def resolve_storage_names(self) -> Dict[str, str]:
+        kv = os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
         return {
             "graph": os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),
             "vector": os.getenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"),
-            "kv": os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+            "kv": kv,
+            # Its own category, resolved exactly as the server resolves it --
+            # the tool must open the SAME container the server records into,
+            # or its post-rebuild baseline lands where nothing reads it.
+            "config": resolve_configuration_storage(
+                os.getenv("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv
+            ),
         }
+
+    def resolve_config_dir(self) -> str:
+        return resolve_config_dir(
+            os.getenv("LIGHTRAG_CONFIG_DIR", ""),
+            os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+        )
 
     def check_env_vars(self, storage_name: str) -> None:
         """Warn about missing env vars (initialization is the real validation)."""
@@ -776,6 +858,9 @@ class RebuildTool:
             "kv_storage": self.storage_names["kv"],
             "vector_storage": self.storage_names["vector"],
             "graph_storage": self.storage_names["graph"],
+            # Read by the JSON backend when it opens the configuration
+            # container; ignored by the server backends.
+            "config_dir": self.config_dir,
             "embedding_batch_num": get_env_value(
                 "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
             ),
@@ -807,6 +892,7 @@ class RebuildTool:
         from lightrag.kg.factory import get_storage_class
 
         self.storage_names = self.resolve_storage_names()
+        self.config_dir = self.resolve_config_dir()
         self.workspace = os.getenv("WORKSPACE", "")
 
         # Claim the working directory FIRST, before building anything. This
@@ -819,10 +905,10 @@ class RebuildTool:
         # this asks the filesystem. Taken on the resolved storage NAME so the
         # refusal precedes the environment checks and the embedding function:
         # the answer does not depend on them, so neither should the wait.
-        self._holds_working_dir = uses_working_dir(self.storage_names["kv"])
+        self._holds_working_dir = uses_working_dir(self.storage_names["config"])
         if self._holds_working_dir:
             try:
-                acquire_working_dir_lock(os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR))
+                acquire_working_dir_lock(self.config_dir)
             except WorkingDirectoryInUseError as e:
                 self._holds_working_dir = False
                 print(f"\n✗ {e}")
@@ -859,6 +945,7 @@ class RebuildTool:
         graph_cls = get_storage_class(self.storage_names["graph"])
         vector_cls = get_storage_class(self.storage_names["vector"])
         kv_cls = get_storage_class(self.storage_names["kv"])
+        config_cls = get_storage_class(self.storage_names["config"])
 
         # Namespaces and meta_fields must match LightRAG's own storage setup
         self.graph = graph_cls(
@@ -895,7 +982,7 @@ class RebuildTool:
             embedding_func=self.embedding_func,
         )
         self.configuration_storage = create_configuration_storage(
-            kv_cls,
+            config_cls,
             global_config=self.global_config,
             embedding_func=self.embedding_func,
         )
@@ -912,13 +999,22 @@ class RebuildTool:
             for storage in (self.configuration_storage, self.graph, self.text_chunks):
                 await storage.initialize()
             # Vector targets, one at a time, tolerating ONLY the typed
-            # embedding-space refusal. This is the condition the tool exists to
-            # clear, so aborting on it would leave the operator with no
-            # sanctioned way out; every other failure still aborts, because
-            # dropping a vector storage on a false positive destroys data.
+            # embedding-space refusal or a typed corrupt snapshot.
+            # Neither is deleted during setup. Corrupt files require a backup
+            # after source checks and explicit rebuild confirmation.
             for label, vdb in self.vector_targets().items():
                 try:
                     await vdb.initialize()
+                except CorruptStorageSnapshotError as e:
+                    # Recovery DESTROYS the container, so it is offered only to
+                    # a raiser that named the local files to preserve first.
+                    # A raiser with none (a server-backed store) cannot be
+                    # preserved, so it must not be destroyed either.
+                    if not e.artifacts:
+                        raise
+                    self.corrupt_vdbs[label] = e
+                    self.incompatible_vdbs[label] = str(e)
+                    print(f"⚠️  {label} snapshot is corrupt: {e}")
                 except VectorSpaceMismatchError as e:
                     self.incompatible_vdbs[label] = str(e)
                     print(f"⚠️  {label} vector storage refused to attach: {e}")
@@ -933,6 +1029,10 @@ class RebuildTool:
         print(f"- Graph Storage:  {self.storage_names['graph']}")
         print(f"- Vector Storage: {self.storage_names['vector']}")
         print(f"- KV Storage:     {self.storage_names['kv']}")
+        print(
+            f"- Configuration:  "
+            f"{describe_configuration_container(self.storage_names['config'], self.config_dir)}"
+        )
         print(f"- Workspace:      {self.workspace if self.workspace else '(default)'}")
         print(f"- Working Dir:    {self.global_config['working_dir']}")
         print("- Connection Status: ✓ Success")
@@ -940,8 +1040,8 @@ class RebuildTool:
             return False
         if self.incompatible_vdbs:
             print(
-                f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) hold "
-                f"vectors from a different embedding space:{RESET}"
+                f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) cannot attach: "
+                f"incompatible vectors or corrupt snapshots{RESET}"
             )
             for label in self.incompatible_vdbs:
                 print(f"    - {label}")
@@ -1103,6 +1203,8 @@ class RebuildTool:
     async def recover_incompatible(self, labels: List[str]) -> None:
         """Drop + re-initialize each named target that refused to attach.
 
+        The caller must check sources and obtain explicit confirmation first.
+        A corrupt target's files are backed up before any destructive action.
         Runs immediately before the rebuild of those targets, so a refused
         container is destroyed only once the operator has confirmed the
         rebuild. The rebuild helpers drop again straight after; ``drop()`` is
@@ -1112,6 +1214,36 @@ class RebuildTool:
         targets = self.vector_targets()
         for label in labels:
             if label not in self.incompatible_vdbs:
+                continue
+            if label in self.corrupt_vdbs:
+                error = self.corrupt_vdbs[label]
+                logger.warning(
+                    f"Rebuild {label}: backing up the corrupt files before the "
+                    f"rebuild drops them ({', '.join(error.artifacts)})"
+                )
+                try:
+                    for backup in backup_corrupt_snapshot(error.artifacts):
+                        print(f"  ✓ {label}: corrupt file preserved at {backup}")
+                except PrivateFileError as privacy_error:
+                    # The refusal alone would leave the operator stuck: every
+                    # re-run reaches this same branch. Name the way out that
+                    # actually works -- an absent container reads as a first
+                    # start, so moving the files aside turns this into an
+                    # ordinary rebuild with nothing left to preserve.
+                    raise PrivateFileError(
+                        f"{privacy_error}\n\nNothing has been changed. To "
+                        f"recover {label} by hand, move these files somewhere "
+                        f"you control and re-run this tool -- a container that "
+                        f"is absent reads as a first start, so the rebuild "
+                        f"then proceeds normally:\n"
+                        + "\n".join(f"    {artifact}" for artifact in error.artifacts)
+                    ) from privacy_error
+                await _drop_vdb(targets[label], label)
+                await targets[label].initialize()
+                logger.info(f"Rebuild {label}: corrupt container re-provisioned")
+                del self.corrupt_vdbs[label]
+                del self.incompatible_vdbs[label]
+                print(f"  ✓ {label}: corrupt container dropped and re-provisioned")
                 continue
             await clear_vector_space_refusal(targets[label], label)
             del self.incompatible_vdbs[label]
@@ -1205,16 +1337,17 @@ class RebuildTool:
         print("=" * 60)
         if incompatible:
             print(
-                f"\n{BOLD_RED}✗ Embedding space mismatch — these vector storages were "
+                f"\n{BOLD_RED}✗ Vector storage refused to attach — these storages were "
                 f"not probed:{RESET}"
             )
             for label, message in incompatible.items():
                 print(f"    - {label}: {message}")
             print(
-                "\n  Their stored vectors belong to a different embedding model or\n"
-                "  dimension, so 'missing' counts for them would say nothing about\n"
-                "  drift — every record is unreachable by construction. A rebuild\n"
-                "  (menu options 2-4) is required, not optional."
+                "\n  Their containers hold another embedding space's vectors, or\n"
+                "  cannot be read back at all, so every record is unreachable by\n"
+                "  construction and a 'missing' count for them would say nothing\n"
+                "  about drift. A rebuild (menu options 2-4) is required, not\n"
+                "  optional."
             )
         print(f"  Graph entities:    {report['graph_entities']:,}")
         print(f"  Graph relations:   {report['graph_relations']:,}")
@@ -1260,6 +1393,10 @@ class RebuildTool:
         print("\nAll affected records will be re-embedded, which may incur")
         print("significant embedding API cost and time on large datasets.")
         print("If interrupted, simply re-run this tool (sources are read-only).")
+        if self.corrupt_vdbs:
+            print("Selected corrupt files will be backed up before deletion.")
+            print("Verify the source counts and source integrity before proceeding;")
+            print("a readable source is not proof that it contains every lost row.")
         confirm = input("\nProceed with the rebuild? (yes/no): ").strip().lower()
         if confirm != "yes":
             print("\n✓ Rebuild cancelled")
@@ -1442,7 +1579,7 @@ class RebuildTool:
             # Last, after every storage that writes under it is down.
             if self._holds_working_dir:
                 self._holds_working_dir = False
-                release_working_dir_lock(os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR))
+                release_working_dir_lock(self.config_dir)
 
 
 async def async_main() -> bool:

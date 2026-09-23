@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, CorruptStorageSnapshotError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -240,12 +240,47 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         Absent evidence never refuses: a file written before the marker existed
         records no model and still loads.
+
+        A file whose CONTENT cannot be read back as this storage's format
+        raises ``CorruptStorageSnapshotError`` instead of the library's bare
+        error: the refusal must name the file and its recovery path, and tools
+        must be able to tell it apart from the dimension refusal above. The
+        corrupt file is never dropped here -- see the exception's docstring
+        for why the drop stays manual.
+
+        The caught set is every way ``load_storage`` can fail to reconstitute
+        the payload, not just the JSON layer: a truncated file raises
+        ``json.JSONDecodeError``, a damaged base64 matrix ``binascii.Error``,
+        a matrix whose length no longer divides the row width a reshape
+        ``ValueError`` (all three are ``ValueError``), a payload that is not
+        this format's object shape at all ``TypeError`` / ``KeyError``, and a
+        document nested past the interpreter's limit ``RecursionError``.
+        A dimension mismatch is an ``AssertionError`` and is NOT in this set,
+        so the branch below still owns it.
+
+        ``RecursionError`` is in the set although it is a ``RuntimeError``
+        subclass, and it is the only one that is: what the set admits is a
+        statement about the BYTES, and a document too deep to parse is one.
+        A ``MemoryError`` is not -- it says this process could not allocate,
+        which a healthy snapshot on a small container also produces -- so it
+        stays out and propagates, because this exception is what
+        ``lightrag-rebuild-vdb`` reads as permission to back up and drop.
         """
         try:
             client = NanoVectorDB(
                 self.embedding_func.embedding_dim,
                 storage_file=self._client_file_name,
             )
+        except (ValueError, TypeError, KeyError, RecursionError) as e:
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=self._client_file_name,
+                detail=f"{type(e).__name__}: {e}",
+                # This storage's whole state is one file, and it is the only
+                # one ``drop()`` removes -- the provenance marker rides inside
+                # the same JSON. Stated, not inherited: see the exception.
+                artifacts=(self._client_file_name,),
+            ) from e
         except AssertionError as e:
             assert_vector_space_matches(
                 backend=type(self).__name__,

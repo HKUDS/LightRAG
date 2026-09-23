@@ -16,6 +16,7 @@ Rules pinned here (see ``docs/design/VectorSpaceProvenance.md``):
 - attach refuses a foreign model or dimension, with a TYPED exception;
 - absent evidence never refuses, and attach is not a backfill;
 - a refused instance is constructible, droppable, and drop converges;
+- a refusal names every file its own ``drop()`` destroys;
 - the marker is never a row, so no query can return it.
 
 These run against real files in a tmp directory rather than mocks: the whole
@@ -31,7 +32,10 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from lightrag.exceptions import VectorSpaceMismatchError
+from lightrag.exceptions import (
+    CorruptStorageSnapshotError,
+    VectorSpaceMismatchError,
+)
 from lightrag.kg.vector_space import VECTOR_SPACE_DIM_KEY, VECTOR_SPACE_MODEL_KEY
 
 pytestmark = pytest.mark.offline
@@ -126,6 +130,19 @@ class _Backend:
         if self.name == "faiss":
             return os.path.join(working_dir, "faiss_index_entities.index.space.json")
         return os.path.join(working_dir, "vdb_entities.json")
+
+    def data_path(self, working_dir):
+        """The file holding the rows, which is not always the marker file."""
+        if self.name == "faiss":
+            return os.path.join(working_dir, "faiss_index_entities.index")
+        return self.marker_path(working_dir)
+
+    def corrupt(self, working_dir):
+        """Leave the store unreadable the way a killed writer does."""
+        path = self.data_path(working_dir)
+        payload = open(path, "rb").read()
+        with open(path, "wb") as f:
+            f.write(payload[: len(payload) // 2])
 
     def read_marker(self, working_dir):
         """``(model, dim)`` as recorded on disk, or ``(None, None)``."""
@@ -631,3 +648,62 @@ async def test_adoption_keeps_the_rows_readable(backend, tmp_path):
     rows = await storage.get_by_ids(["v1"])
     assert [row["id"] for row in rows] == ["v1"]
     assert rows[0]["content"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# A refusal's recovery scope covers its own destruction
+# ---------------------------------------------------------------------------
+
+
+def _files(working_dir):
+    return {
+        os.path.join(working_dir, name)
+        for name in os.listdir(working_dir)
+        if os.path.isfile(os.path.join(working_dir, name))
+    }
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_refusal_names_every_file_its_drop_destroys(backend, tmp_path):
+    """``artifacts`` is what the offline tool backs up; ``drop()`` is what it
+    then destroys. A file in the second set but not the first is destroyed
+    with no backup holding it — the one outcome the backup protocol exists to
+    make impossible.
+
+    Pinned per backend rather than asserted once, because the two answer it
+    differently: Nano's whole state is one file, Faiss spreads it over three.
+    A backend that grows a sidecar and forgets to name it turns this red
+    instead of quietly under-preserving.
+    """
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+    backend.corrupt(tmp_path)
+
+    refused = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    with pytest.raises(CorruptStorageSnapshotError) as caught:
+        await refused.initialize()
+
+    before = _files(tmp_path)
+    result = await refused.drop()
+    assert result["status"] == "success"
+    destroyed = before - _files(tmp_path)
+
+    assert destroyed, "drop() removed nothing, so this proves nothing"
+    named = {os.path.abspath(path) for path in caught.value.artifacts}
+    assert {os.path.abspath(path) for path in destroyed} <= named
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_refusal_names_files_and_not_a_placeholder(backend, tmp_path):
+    """An empty scope denies recovery, so a file-backed raiser must not send
+    one: the tool would refuse the very container it exists to clear."""
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+    backend.corrupt(tmp_path)
+
+    refused = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    with pytest.raises(CorruptStorageSnapshotError) as caught:
+        await refused.initialize()
+
+    assert caught.value.artifacts
+    assert caught.value.container in caught.value.artifacts

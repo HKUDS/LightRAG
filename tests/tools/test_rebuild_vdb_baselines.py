@@ -14,6 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from lightrag.namespace import CONFIG_CONTAINER_TAG
+
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag import config_store as cs
 
@@ -287,7 +289,10 @@ class TestTheToolIsASecondProcessTree:
         monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
         monkeypatch.setenv("WORKSPACE", "rebuildws")
 
-        wdl.acquire_working_dir_lock(str(tmp_path))
+        # The claim is on the CONFIGURATION directory, which is where the
+        # file the two would overwrite actually lives.
+        config_dir = str(tmp_path / CONFIG_CONTAINER_TAG)
+        wdl.acquire_working_dir_lock(config_dir)
         holder = dict(wdl._claims)
         wdl._claims.clear()  # the tool must look like a different tree
 
@@ -303,7 +308,7 @@ class TestTheToolIsASecondProcessTree:
             assert tool._holds_working_dir is False
         finally:
             wdl._claims.update(holder)
-            wdl.release_working_dir_lock(str(tmp_path))
+            wdl.release_working_dir_lock(config_dir)
 
     def test_a_server_backed_configuration_claims_nothing(self):
         """Two processes against one PostgreSQL share a container by design;

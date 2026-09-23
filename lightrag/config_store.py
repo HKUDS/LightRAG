@@ -6,15 +6,26 @@ a key, before binding a storage to the configuration workspace, and before
 moving anything out of an environment variable. The rules this module
 enforces, in the order a caller meets them:
 
-* **The container** is the KV namespace ``config`` in the reserved workspace
-  ``_lightrag_config``, and only ``create_configuration_storage()`` may bind
-  it. The reservation is enforced by ``validate_workspace``; this module holds
-  the one grant that lets the reserved name through, for one construction.
+* **The container** is the KV namespace ``config`` in a container named in
+  CODE, never derived from a workspace: the JSON backend puts its file in
+  ``config_dir``, and PostgreSQL, MongoDB and OpenSearch name their table,
+  collection and index after ``CONFIG_CONTAINER_TAG``. No ``*_WORKSPACE``
+  variable reaches it, and no caller can name a workspace that lands on it.
+  ``create_configuration_storage()`` is still the single door in.
+
+* **The backend is its own category.** ``CONFIG_STORAGE`` admits
+  ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
+  ``OpenSearchKVStorage``; anything else -- a vector storage, Redis -- is
+  refused at construction, by name. Unset, the selection follows
+  ``kv_storage`` so an existing deployment lands where its rows already are.
 
 * **Keys** are ``<workspace>/<suffix>`` or ``_lightrag_server/<suffix>``, with
   ``/`` as the separator (a workspace name cannot contain it). They are built
   by ``config_key`` and **never reparsed**: the row carries ``workspace`` as a
-  field, and a reader classifies by the field.
+  field, and a reader classifies by the field. That scope is the CONTAINER's
+  only discriminator -- two deployments sharing one PostgreSQL, MongoDB or
+  OpenSearch share the container and are kept apart by their business
+  workspace names, which the contract already requires to differ.
 
 * **Every key is registered** in ``CONFIG_KEY_REGISTRY`` before it is written.
   An unregistered suffix is a programming error, not a runtime condition.
@@ -36,6 +47,7 @@ verdict.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -47,8 +59,15 @@ from lightrag.exceptions import (
     ReferencesIntactFlushError,
 )
 from lightrag.kg.vector_space import declared_dimension, declared_model_name
-from lightrag.namespace import CONFIG_WORKSPACE, SERVER_CONFIG_SCOPE, NameSpace
-from lightrag.utils import _grant_reserved_workspace, logger
+from lightrag.namespace import (
+    CONFIG_CONTAINER_TAG,
+    SERVER_CONFIG_SCOPE,
+    SERVER_SCOPE,
+    NameSpace,
+    _ServerScope,
+    default_config_dir,
+)
+from lightrag.utils import logger
 
 # The only separator a key may carry between its scope and its suffix. Load
 # bearing: ``validate_workspace`` forbids ``/`` in a workspace name, so a key
@@ -145,24 +164,37 @@ def registry_spec(suffix: str) -> ConfigKeySpec:
         ) from None
 
 
-def config_key(scope_workspace: str, suffix: str) -> str:
-    """Build a key. ``scope_workspace`` is a workspace name or
-    ``SERVER_CONFIG_SCOPE``; the suffix must be registered."""
+def scope_prefix(scope_workspace: str | _ServerScope) -> str:
+    """What a scope is written as in a key and in the row's ``workspace``
+    field: a workspace's own name, or the server prefix for ``SERVER_SCOPE``."""
+    return SERVER_CONFIG_SCOPE if scope_workspace is SERVER_SCOPE else scope_workspace
+
+
+def config_key(scope_workspace: str | _ServerScope, suffix: str) -> str:
+    """Build a key. ``scope_workspace`` is a workspace NAME or ``SERVER_SCOPE``;
+    the suffix must be registered.
+
+    A workspace named like the server prefix is an ordinary tenant and gets
+    its own per-workspace keys: the scope is the sentinel object, never the
+    string, so no name can reach a server-global key (see ``_ServerScope``).
+    """
     spec = registry_spec(suffix)
-    if spec.scope is ConfigScope.SERVER and scope_workspace != SERVER_CONFIG_SCOPE:
+    is_server = scope_workspace is SERVER_SCOPE
+    if spec.scope is ConfigScope.SERVER and not is_server:
         raise ValueError(
             f"{suffix!r} is a server-global key and must be filed under "
-            f"{SERVER_CONFIG_SCOPE!r}, not {scope_workspace!r}"
+            f"SERVER_SCOPE, not {scope_workspace!r}"
         )
-    if spec.scope is ConfigScope.WORKSPACE and scope_workspace == SERVER_CONFIG_SCOPE:
+    if spec.scope is ConfigScope.WORKSPACE and is_server:
         raise ValueError(
-            f"{suffix!r} is a per-workspace key; {SERVER_CONFIG_SCOPE!r} is not a workspace"
+            f"{suffix!r} is a per-workspace key; SERVER_SCOPE is not a workspace"
         )
-    if KEY_SEPARATOR in scope_workspace:
+    prefix = scope_prefix(scope_workspace)
+    if KEY_SEPARATOR in prefix:
         raise ValueError(
-            f"a workspace name cannot contain {KEY_SEPARATOR!r}: {scope_workspace!r}"
+            f"a workspace name cannot contain {KEY_SEPARATOR!r}: {prefix!r}"
         )
-    return f"{scope_workspace}{KEY_SEPARATOR}{suffix}"
+    return f"{prefix}{KEY_SEPARATOR}{suffix}"
 
 
 def embedding_baseline_key(workspace: str, target: str) -> str:
@@ -172,7 +204,7 @@ def embedding_baseline_key(workspace: str, target: str) -> str:
 
 def make_config_row(
     *,
-    scope_workspace: str,
+    scope_workspace: str | _ServerScope,
     suffix: str,
     value: dict[str, Any],
     updated_by: str,
@@ -192,7 +224,7 @@ def make_config_row(
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     return {
         "schema_version": spec.schema_version,
-        "workspace": scope_workspace,
+        "workspace": scope_prefix(scope_workspace),
         "updated_at": stamp,
         "updated_by": updated_by,
         "value": dict(value),
@@ -286,44 +318,174 @@ def configured_baseline(
 
 
 # ---------------------------------------------------------------------------
-# The container
+# The container: its own category, its own directory or fixed name
 # ---------------------------------------------------------------------------
 
 
+# The backends the configuration category admits, in the order an error lists
+# them. Mirrors ``STORAGE_IMPLEMENTATIONS["CONFIG_STORAGE"]``; the registry is
+# the source of truth and this is what reads it.
+def configuration_storage_implementations() -> tuple[str, ...]:
+    """The backend names ``CONFIG_STORAGE`` admits."""
+    from lightrag.kg import STORAGE_IMPLEMENTATIONS
+
+    return tuple(STORAGE_IMPLEMENTATIONS["CONFIG_STORAGE"]["implementations"])
+
+
+def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> str:
+    """The configuration backend to use, refusing anything outside the four.
+
+    Unset, the selection FOLLOWS ``kv_storage`` -- an existing deployment's
+    rows are already in that backend's container, so any other default would
+    orphan them silently. A ``kv_storage`` the category does not admit
+    (``RedisKVStorage`` today) is refused here, by name, rather than failing
+    later on a missing method: the operator picks one of the four explicitly.
+
+    Raises:
+        ValueError: the selection, or the ``kv_storage`` it was derived from,
+            is not one of the four.
+    """
+    admitted = configuration_storage_implementations()
+    name = (selected or "").strip()
+    if name:
+        if name not in admitted:
+            raise ValueError(
+                f"config_storage={name!r} is not a configuration storage "
+                f"backend. The configuration storage is its own category and "
+                f"admits {', '.join(admitted)}. A vector storage cannot serve "
+                f"here (its container is named after the embedding model, "
+                f"which is the assertion the baselines exist to be "
+                f"independent of), and Redis is excluded."
+            )
+        return name
+    if kv_storage not in admitted:
+        raise ValueError(
+            f"config_storage is unset, so it would follow kv_storage="
+            f"{kv_storage!r} -- which the configuration category does not "
+            f"admit. Set config_storage (LIGHTRAG_CONFIG_STORAGE) to one of "
+            f"{', '.join(admitted)}."
+        )
+    return kv_storage
+
+
+def resolve_config_dir(config_dir: str | None, working_dir: str) -> str:
+    """The absolute directory a file-backed configuration storage uses.
+
+    Absolute for the same reason ``working_dir`` is: the single-server claim
+    keys on the REALPATH, so a relative spelling from a differently-rooted
+    process would open a second descriptor on the same lock file and refuse
+    itself.
+    """
+    return os.path.abspath(
+        (config_dir or "").strip() or default_config_dir(working_dir)
+    )
+
+
+def configuration_selection_from_env(
+    *, kv_storage: str, working_dir: str
+) -> tuple[str, str]:
+    """``(config_storage, config_dir)`` as the environment resolves them.
+
+    The one answer three call sites must agree on: ``LightRAG`` (from its own
+    fields), ``lightrag-rebuild-vdb``, and the **Gunicorn master**, which takes
+    the directory claim before forking. They must not drift: a master that
+    claims a different directory than its workers hands them no inheritable
+    claim, and each worker then opens its own descriptor -- the first wins and
+    every other one is refused at startup.
+
+    Raises ``ValueError`` when the selection is outside the category.
+    """
+    config_storage = resolve_configuration_storage(
+        os.environ.get("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv_storage
+    )
+    return config_storage, resolve_config_dir(
+        os.environ.get("LIGHTRAG_CONFIG_DIR", ""), working_dir
+    )
+
+
+def describe_configuration_container(storage_name: str, config_dir: str) -> str:
+    """One operator-readable phrase naming where configuration is kept."""
+    if storage_name in FILE_BACKED_CONFIG_STORAGES:
+        return f"{storage_name} at {config_dir}"
+    return f"{storage_name} ({CONFIG_CONTAINER_TAG})"
+
+
+# The configuration backends that keep their container on the local
+# filesystem, which is what makes the directory claim necessary.
+FILE_BACKED_CONFIG_STORAGES = frozenset({"JsonKVStorage"})
+
+
 def create_configuration_storage(
-    kv_storage_cls: Callable[..., Any],
+    config_storage_cls: Callable[..., Any],
     *,
     global_config: dict[str, Any],
     embedding_func: Any,
 ) -> Any:
-    """Bind a KV storage to the reserved configuration workspace.
+    """Construct the configuration storage on its fixed container.
 
-    The ONLY way to construct a storage on ``_lightrag_config``: the private
-    grant it takes out lets ``validate_workspace`` accept the reserved name
-    for this one construction, and every backend's ``*_WORKSPACE``
-    environment remap is skipped for a reserved name, so the container's
-    workspace is fixed rather than configured. The returned storage is NOT
-    initialized; the caller owns its lifecycle.
+    The single door in. What makes the container unreachable by accident is
+    no longer a reserved NAME defended everywhere a name can be chosen -- it
+    is that the container is not addressed by a workspace at all. Every
+    backend in the category keys off the ``config`` namespace, which nothing
+    else is ever opened on, and names its container in code: a directory for
+    the JSON backend, ``CONFIG_CONTAINER_TAG`` for the other three. No
+    ``*_WORKSPACE`` variable is consulted.
+
+    The returned storage is NOT initialized; the caller owns its lifecycle.
     """
-    with _grant_reserved_workspace(CONFIG_WORKSPACE):
-        storage = kv_storage_cls(
-            namespace=NameSpace.KV_STORE_CONFIG,
-            workspace=CONFIG_WORKSPACE,
-            global_config=global_config,
-            embedding_func=embedding_func,
-        )
+    storage = config_storage_cls(
+        namespace=NameSpace.KV_STORE_CONFIG,
+        workspace=CONFIG_CONTAINER_TAG,
+        global_config=global_config,
+        embedding_func=embedding_func,
+    )
     # A backend that RE-BOUND the container elsewhere is refused. A stand-in
     # that records no workspace at all (test doubles handed to the factory)
     # has not remapped anything; every real backend carries the dataclass
     # field, so ``None`` here is never a real backend's answer.
     bound = getattr(storage, "workspace", None)
-    if bound is not None and bound != CONFIG_WORKSPACE:
+    if bound is not None and bound != CONFIG_CONTAINER_TAG:
         raise ConfigurationStorageError(
             f"{type(storage).__name__} bound the configuration container to "
-            f"workspace {bound!r} instead of {CONFIG_WORKSPACE!r}; the "
-            f"configuration workspace is fixed and must not be remapped"
+            f"{bound!r} instead of {CONFIG_CONTAINER_TAG!r}; the configuration "
+            f"container is named in code and must not be remapped"
         )
     return storage
+
+
+def warn_about_unrecorded_baselines(
+    absent: list[str], *, workspace: str, container: str
+) -> bool:
+    """Announce a start on which NO baseline is on record. Never refuses.
+
+    A separately selected configuration backend is a new way to point a
+    running deployment at an empty store -- a fresh database, a mistyped
+    connection string, a ``config_dir`` that does not exist -- and every
+    baseline then reads as absent, which is what lets a start bootstrap.
+
+    Enforcing is not available: absent is also what a genuine first start
+    looks like, and the two are indistinguishable from here. So this follows
+    ``warn_about_workspace_overrides()`` -- announce, do not enforce -- and
+    the actual protection stays where it already is: an absent baseline is
+    only ever established on POSITIVE evidence (a confirmed-empty container,
+    or an adoption probe that vouched for the stored vectors), never on the
+    configured model alone.
+
+    Returns whether it warned, so a caller (and a test) can tell.
+    """
+    if not absent or len(absent) != len(EMBEDDING_TARGETS):
+        return False
+    logger.warning(
+        f"[{workspace}] No embedding baseline is recorded in {container} for "
+        f"this workspace. On a first start that is expected. If this "
+        f"deployment has run before, check that the configuration storage "
+        f"selection (config_storage / config_dir) still points at the store "
+        f"that recorded them -- an empty or different one reads exactly like "
+        f"a first start. Nothing is adopted on the configured model alone: a "
+        f"baseline is recorded only for a target whose container is confirmed "
+        f"empty or whose stored vectors an adoption probe vouched for."
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------

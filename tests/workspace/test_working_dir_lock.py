@@ -162,3 +162,26 @@ def test_a_filesystem_that_cannot_lock_warns_and_proceeds(tmp_path, monkeypatch)
 def test_releasing_without_a_claim_is_a_no_op(tmp_path):
     release_working_dir_lock(str(tmp_path))
     assert holds_working_dir_lock(str(tmp_path)) is False
+
+
+def test_two_spellings_of_one_directory_are_one_claim(tmp_path):
+    """``_lock_path`` resolves symlinks, and that is load bearing rather than
+    tidiness: a relative path and its absolute form, or a symlink and its
+    target, must produce ONE key. Two keys mean this tree opens a second
+    descriptor on the one file -- and ``flock`` belongs to the open file
+    description, so the process refuses ITSELF.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    acquire_working_dir_lock(str(real))
+    acquire_working_dir_lock(str(link))  # counts in; does not refuse itself
+
+    assert holds_working_dir_lock(str(link)) is True
+    release_working_dir_lock(str(link))
+    assert _foreign_attempt(real) == "REFUSED"
+
+    release_working_dir_lock(str(real))
+    assert _foreign_attempt(real) == "ADMITTED"
