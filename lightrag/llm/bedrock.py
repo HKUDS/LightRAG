@@ -444,17 +444,16 @@ async def bedrock_complete_if_cache(
             ):
                 raise BedrockError("Invalid response structure from Bedrock API")
 
-            # When thinking/reasoning is enabled, the first content block is a
-            # `reasoningContent` block and the visible text follows in a later
-            # block. Pick the first block that carries a text payload.
-            content = next(
-                (
-                    block["text"]
-                    for block in response["output"]["message"]["content"]
-                    if isinstance(block, dict) and block.get("text")
-                ),
-                None,
-            )
+            # When thinking/reasoning is enabled, `reasoningContent` and
+            # `text` blocks can interleave as [reasoning, text, reasoning,
+            # text, ...], not just [reasoning, text], so every text block
+            # must be joined rather than returning only the first one found.
+            text_blocks = [
+                block["text"]
+                for block in response["output"]["message"]["content"]
+                if isinstance(block, dict) and block.get("text")
+            ]
+            content = "".join(text_blocks) if text_blocks else None
 
             stop_reason = response.get("stopReason")
 
