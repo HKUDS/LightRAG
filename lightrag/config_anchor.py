@@ -75,7 +75,7 @@ _DIR_FSYNC_UNSUPPORTED = frozenset(
 )
 
 # ``os.link`` errors that mean "this filesystem has no hard links", which is
-# when the bind falls back to a re-check made under its keyed lock.
+# when the bind falls back to an exclusive-create claim of the anchor name.
 _LINK_UNSUPPORTED = frozenset(
     code
     for code in (
@@ -243,9 +243,13 @@ def _publish_no_clobber(tmp: str, path: str) -> None:
 
     POSIX: ``link`` then ``unlink`` -- ``link(2)`` never replaces its target.
     Windows: ``rename`` refuses an existing target natively. A filesystem
-    without hard links falls back to a re-check and a replace, which is
-    sound because the bind that calls this holds its keyed lock across the
-    whole read-decide-write (see ``bind_configuration_identity``).
+    without hard links claims the name with ``O_CREAT | O_EXCL`` and only
+    then replaces the empty claim with the temp file, so the fallback is
+    no-clobber on its own and does not lean on any lock (the bind lock fails
+    open, and the keyed lock cannot see another process tree). Until the
+    replace lands the anchor is an empty file, which every reader refuses as
+    unreadable -- loud, never "absent" -- and a crash in that window leaves
+    it for the operator to delete, the sanctioned rebind.
     """
     if os.name == "nt":
         os.rename(tmp, path)
@@ -257,8 +261,8 @@ def _publish_no_clobber(tmp: str, path: str) -> None:
     except OSError as e:
         if e.errno not in _LINK_UNSUPPORTED:
             raise
-        if os.path.lexists(path):
-            raise FileExistsError(errno.EEXIST, "anchor exists", path) from e
+        # Raises FileExistsError itself when another start got there first.
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
         os.replace(tmp, path)
         return
     # Published. The temp name is a second link to the same file; failing to
