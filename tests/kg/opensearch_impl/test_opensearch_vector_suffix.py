@@ -4,8 +4,10 @@ Every index created before the suffix is legacy. Startup copies it when
 this workspace owns it and the recorded dimension and model do not disagree.
 A destination with fewer documents than that legacy index is copied again;
 one with at least as many is left in place. A mismatch is skipped, not
-raised. ``drop`` deletes the owned legacy index so the next startup does
-not copy the cleared corpus back.
+raised. ``drop`` deletes a compatible owned legacy index so the next
+startup does not copy the cleared corpus back, and leaves an incompatible
+one in place. A legacy mapping that cannot be read fails the drop before
+the serving index is deleted.
 
 See ``docs/design/VectorSpaceProvenance.md``.
 """
@@ -88,6 +90,11 @@ class Cluster:
         # reports success, so a short destination can stay short.
         self.reindex_copy_limit: int | None = None
         self.fail_delete = False
+        # Fail get_mapping on the Nth call for an index (1-based), counted
+        # only while the entry is set. Ownership reads the mapping once;
+        # the compatibility read is the next call.
+        self.fail_get_mapping_on: dict[str, int] = {}
+        self.get_mapping_calls: dict[str, int] = {}
 
     def client(self):
         from opensearchpy import AsyncOpenSearch
@@ -121,6 +128,10 @@ class Cluster:
     async def get_mapping(self, index):
         if index not in self.indices:
             raise NotFoundError(404, "index_not_found_exception", "no such index")
+        nth = self.get_mapping_calls.get(index, 0) + 1
+        self.get_mapping_calls[index] = nth
+        if self.fail_get_mapping_on.get(index) == nth:
+            raise OpenSearchException("mapping unavailable")
         return {index: {"mappings": self.indices[index]["mappings"]}}
 
     async def put_mapping(self, index, body):
@@ -632,6 +643,102 @@ async def test_drop_clears_legacy_so_the_next_start_does_not_resurrect(
     restarted = await _init(_storage(global_config), cluster)
     assert cluster.doc_ids(restarted._index_name) == set()
     assert cluster.reindex_calls == [(storage._legacy_index_name, storage._index_name)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_model", "legacy_dim", "other_index"),
+    [
+        ("e5-large", 8, "ws_entities_e5_large_8d"),
+        ("bge-m3", 16, "ws_entities_bge_m3_16d"),
+    ],
+)
+async def test_drop_leaves_an_incompatible_owned_legacy_index(
+    global_config, cluster, legacy_model, legacy_dim, other_index
+):
+    """Clear removes the current index, not a previous model's pre-suffix rows.
+
+    Startup already refuses to copy a model or dimension mismatch, so
+    deleting that unsuffixed index is not what stops it coming back. The
+    other space's suffixed index is a different name and stays as well.
+    """
+    storage = _storage(global_config)
+    assert storage._index_name == "ws_entities_bge_m3_8d"
+    assert storage._legacy_index_name == "ws_entities"
+    assert other_index not in (storage._index_name, storage._legacy_index_name)
+    cluster.seed(
+        other_index,
+        model=legacy_model,
+        dim=legacy_dim,
+        docs={"other": {"content": "other"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model=legacy_model,
+        dim=legacy_dim,
+        docs={"a": {"content": "a"}},
+    )
+
+    await _init(storage, cluster)
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.reindex_calls == []
+
+    assert (await storage.drop())["status"] == "success"
+
+    assert storage._legacy_index_name in cluster.indices
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert (
+        cluster.meta(storage._legacy_index_name)[VECTOR_SPACE_MODEL_KEY]
+        == legacy_model
+    )
+    assert cluster.doc_ids(other_index) == {"other"}
+    assert cluster.doc_ids(storage._index_name) == set()
+
+    await _init(_storage(global_config), cluster)
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert cluster.doc_ids(storage._index_name) == set()
+    assert cluster.doc_ids(other_index) == {"other"}
+    assert cluster.reindex_calls == []
+
+
+@pytest.mark.asyncio
+async def test_drop_mapping_failure_does_not_delete_the_serving_index(
+    global_config, cluster
+):
+    """A legacy mapping that cannot be read aborts before either delete.
+
+    Ownership consumes the first mapping read. The compatibility read is
+    the next one; failing it must not wipe the serving index or the legacy
+    index and report success.
+    """
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"kept": {"content": "kept"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}},
+    )
+    await _init(storage, cluster)
+    assert cluster.doc_ids(storage._index_name) == {"kept"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+
+    cluster.get_mapping_calls.clear()
+    cluster.fail_get_mapping_on[storage._legacy_index_name] = 2
+
+    result = await storage.drop()
+
+    assert result["status"] == "error"
+    assert "mapping unavailable" in result["message"]
+    assert cluster.doc_ids(storage._index_name) == {"kept"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
+    assert storage._index_name not in cluster.deleted
+    assert storage._legacy_index_name not in cluster.deleted
 
 
 @pytest.mark.asyncio

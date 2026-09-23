@@ -319,8 +319,8 @@ documents than the legacy index:
   path for every existing deployment. Accepted residue: a same-dimension model
   change made in the same step as the upgrade is not detectable, and the new
   index's marker then names the model configured now. Recovery is
-  `lightrag-rebuild-vdb`. `drop()` deletes the legacy index when this workspace
-  owns it, so that clear does not migrate the old vectors back.
+  `lightrag-rebuild-vdb`. `drop()` deletes that compatible legacy index when
+  this workspace owns it, so a clear does not migrate those vectors back.
 - The legacy index is kept after a successful copy. An empty one is deleted.
   A destination that already holds at least as many documents as the legacy
   index is not copied again, and only then is the operator warned to delete
@@ -338,10 +338,15 @@ documents than the legacy index:
   until a later copy covers the legacy count. The legacy source is left
   untouched.
 
-`drop()` deletes the owned legacy index *before* it deletes and recreates the
-suffixed index. The next startup would otherwise see an empty suffixed index
-and copy the just-cleared corpus back. A legacy index whose marker names
-another workspace is not deleted.
+`drop()` deletes a workspace-owned legacy index only when its recorded model
+and dimension are compatible with this process, and it does so *before* it
+deletes and recreates the suffixed index. The next startup would otherwise
+see an empty suffixed index and copy that compatible corpus back. A legacy
+index whose marker names another workspace is not deleted. An incompatible
+unsuffixed index — a previous model, a different dimension, or a dimension
+that cannot be read — is left in place on clear and on rebuild, the same
+orphan a container named by a previous configuration is. If the legacy
+mapping cannot be read, `drop()` fails before the serving index is deleted.
 
 The `_meta` marker stays on the index this process creates. The dimension
 guard and the readiness probe still refuse a container this process must not

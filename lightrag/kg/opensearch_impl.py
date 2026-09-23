@@ -6990,12 +6990,17 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         return not dest_exists
 
     async def _delete_owned_legacy_index(self) -> None:
-        """Delete the legacy index when this workspace owns it.
+        """Delete this workspace's legacy index when startup would copy it.
 
-        ``drop`` does this before recreating the suffixed index. Leaving the
-        legacy copy in place would refill an index the clear just emptied the
-        next time startup finds the suffixed index empty. A marker that names
-        another workspace is left untouched.
+        ``drop`` does this before recreating the suffixed index. A compatible
+        legacy index would refill an index the clear just emptied. A marker
+        that names another workspace is left untouched. A recorded model or
+        dimension that disagrees, or a dimension that cannot be read, is left
+        in place: startup already refuses to copy it, and deleting it would
+        discard the previous model's pre-suffix vectors.
+
+        A mapping read that fails propagates. ``drop`` then reports the error
+        and does not delete the serving index.
         """
         legacy = self._legacy_migration_index()
         if legacy is None:
@@ -7003,6 +7008,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if not await self.client.indices.exists(index=legacy):
             return
         if not await self._legacy_index_owned_by_workspace(legacy):
+            return
+        # Same predicate as the copy. Do not catch this read: failing it and
+        # continuing would delete the serving index without knowing whether
+        # the legacy corpus is the one startup would copy back.
+        mapping = await self.client.indices.get_mapping(index=legacy)
+        if not self._legacy_source_is_compatible(mapping, legacy):
             return
         await self._delete_index_if_present(legacy)
         logger.info(
@@ -7908,10 +7919,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def drop(self) -> dict[str, str]:
         """Delete and recreate the vector index, discarding pending buffers.
 
-        Also deletes this workspace's legacy (unsuffixed) index when the
-        marker says it is ours, and does so before recreating the suffixed
-        index. That legacy copy is the source of the one-time migration;
-        leaving it in place would refill the index this clear just emptied.
+        Also deletes this workspace's unsuffixed legacy index when the marker
+        says it is ours and the recorded model and dimension are compatible,
+        and does so before recreating the suffixed index. That compatible
+        copy would refill the index this clear just emptied. An incompatible
+        legacy index — a previous model or a different dimension — is left
+        in place. If its mapping cannot be read, this returns an error and
+        does not delete the serving index.
 
         Runs entirely under ``_flush_lock`` so a concurrent flush / upsert
         cannot land writes against an index that is being deleted and
@@ -7936,8 +7950,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     logger.info(
                         f"[{self.workspace}] Vector index already missing during drop: {self._index_name}"
                     )
-                # Recreate the index. The legacy source is already gone when
-                # it was ours, so this provisions an empty index.
+                # Recreate the index. A compatible legacy source owned by this
+                # workspace is already gone, so this provisions an empty index.
+                # An incompatible legacy index was left in place and is not
+                # copied back.
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
                 logger.info(
