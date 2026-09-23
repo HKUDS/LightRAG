@@ -763,17 +763,23 @@ refuses when either env file names a different one. A JSON source's
 7. publish the anchor {target type, same UUID} by atomic replace  <- COMMIT
 ```
 
-`--dry-run` takes the lock shared, runs steps 1–3 and writes nothing; it
+`--dry-run` takes the lock shared, runs steps 1–3 and writes no row; it
 reports the anchor, the source's row count and workspace scopes, and the
-verdict on the target.
+verdict on the target. Opening the target at step 3 is an ordinary backend
+`initialize()`, which provisions a missing container (PostgreSQL's
+`check_tables`, OpenSearch's index creation and its container marker) exactly
+as any start against that backend would; the identity is the first **row**
+the migration writes, not the first byte on the target.
 
 **Failure and recovery.** Before step 7 the anchor is unchanged: the old
 environment keeps working on the source and the new one is refused on the type
 mismatch; a re-run resumes through the ownership marker and reconciles the
 target to the *current* source. A failed replace at step 7 is re-checked
 against the file, so a directory fsync failing after a landed replace is
-reported as switched, not failed. After step 7 the migration is complete. The
-source is never modified or deleted; removing it is a separate operator
+reported as switched, not failed; one whose anchor then cannot be read back
+is reported as **indeterminate** — neither switched nor unchanged — and the
+operator inspects the anchor before starting anything. After step 7 the
+migration is complete. The source is never modified or deleted; removing it is a separate operator
 action. A server never completes a migration on its own.
 
 **Accepted residues.** The ownership marker cannot tell this attempt's residue
@@ -786,6 +792,13 @@ unaffected, but their rows in the target are stale copies — the target must
 be dedicated, and consolidating into an already-shared container is out of
 scope. The lock is local to one `WORKING_DIR`: deployments sharing one remote
 container from other working directories must be stopped by the operator.
+A target that is refused, or only dry-run, may still have been **provisioned**
+by its `initialize()`: an empty table or index created, or an existing
+container's schema and container marker brought to this version, as any start
+of this version against it would. No row is written or deleted before the
+verdict; a non-mutating per-backend probe would remove this, at the cost of a
+second open path in every admitted backend, and is not worth it for a
+container that only a LightRAG configuration storage ever uses.
 
 ## The first keys: one baseline per vector target
 

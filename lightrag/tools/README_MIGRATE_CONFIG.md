@@ -58,7 +58,7 @@ lightrag-migrate-config --target-backend OpenSearchKVStorage \
 | `--target-backend` | `JsonKVStorage`, `PGKVStorage`, `MongoKVStorage` or `OpenSearchKVStorage`; must differ from the anchored backend |
 | `--source-env` | env file with the **source** connection (default: the current environment) |
 | `--target-env` | env file with the **target** connection (default: the current environment) |
-| `--dry-run` | report the anchor, the source (row count, workspace scopes), the target and the verdict on it; write nothing |
+| `--dry-run` | report the anchor, the source (row count, workspace scopes), the target and the verdict on it; write no row (opening the target still provisions a missing table, collection or index, as any start does) |
 | `--assume-exclusive` | proceed where the anchor lock cannot be taken (see *Locking*) |
 | `--yes` | skip the confirmation prompt |
 
@@ -100,8 +100,11 @@ names a different `WORKING_DIR`. A JSON source takes its `config_dir` from
 7. Replaces the anchor atomically with `{target type, same UUID}`. **This is
    the commit point.**
 
-After step 7, set `LIGHTRAG_CONFIG_STORAGE=<target>` explicitly and start the
-server. The tool does not edit the environment.
+After step 7, set `LIGHTRAG_CONFIG_STORAGE=<target>` explicitly, carry over
+every target connection setting that `--target-env` supplied (the tool lists
+them by name), and start the server. The tool does not edit the environment:
+without those settings the server opens a different target container and is
+refused.
 
 ## Failure and recovery
 
@@ -112,6 +115,11 @@ server. The tool does not edit the environment.
   meantime.
 - **After step 7** the migration is complete, and the tool reports
   `Switched`.
+- **Outcome unknown.** When the anchor replace raises and the anchor then
+  cannot be read back, the replace may or may not have landed, and the tool
+  says so instead of guessing. Start nothing until the anchor reads back: if
+  it names the target, the migration is complete; if it still names the
+  source, re-run.
 - **The source is never modified or deleted.** Removing the old copy is a
   separate, explicit action.
 - **A shared source container.** Every workspace's rows are copied, and the
