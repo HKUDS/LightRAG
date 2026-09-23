@@ -37,7 +37,9 @@ or `--input-dir` are refused, not ignored: the embedding function is built
 through the server's own argument parser, which would honor them, while the
 workspace and directories the tool clears come from the environment — so a
 flag could select one embedding configuration and clear another workspace.
-Put the values in `.env` instead.
+Put the values in `.env` instead. A backend named under the wrong storage
+category (for example `LIGHTRAG_GRAPH_STORAGE=JsonKVStorage`) is refused
+before anything opens, exactly as the server refuses it.
 
 The tool reads the same `.env` / environment configuration as the server
 (`LIGHTRAG_KV_STORAGE`, `LIGHTRAG_VECTOR_STORAGE`, `LIGHTRAG_GRAPH_STORAGE`,
@@ -71,9 +73,14 @@ The run, in order:
      path, id) — a listing read, so a page that comes back empty while the
      strict counts say documents exist is read as the backend's swallowed
      failure, not as "no documents";
-   - whether `text_chunks` holds any data;
+   - whether `text_chunks` holds any data, and the same for each other KV
+     namespace it drops (`full_docs`, `full_entities`, `full_relations`,
+     `entity_chunks`, `relation_chunks`) -- these can hold rows while
+     doc-status and chunks are empty, after an interrupted write;
    - whether the knowledge graph holds entities, and relations;
-   - whether each vector storage is empty, has vectors, or refused to attach;
+   - whether each vector storage is empty or has vectors; one that refused
+     to attach (a corrupt snapshot, a container in another vector space) was
+     never read and shows as `UNREADABLE`;
    - the recorded embedding baselines;
    - the top-level files of this workspace's input directory
      (`INPUT_DIR/<workspace>`, or `INPUT_DIR` for the default workspace).
@@ -142,7 +149,9 @@ Preserved:
 - **Every other workspace.** Backend-specific `*_WORKSPACE` variables outrank
   `WORKSPACE` inside the storage layer; the summary names every such override
   in effect, and the workspace a storage resolved to where its backend reports
-  it, so check them before you type the phrase.
+  it, so check them before you type the phrase. The names a backend
+  substitutes for the default workspace (`default` on PostgreSQL, `_` on
+  Redis, `base` on Neo4j and Memgraph) are not reported as overrides.
 
 ## Errors: what stops the run and what does not
 

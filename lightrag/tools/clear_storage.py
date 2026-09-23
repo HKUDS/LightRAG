@@ -82,7 +82,7 @@ from lightrag.exceptions import (
     VectorSpaceMismatchError,
     WorkingDirectoryInUseError,
 )
-from lightrag.kg import STORAGE_ENV_REQUIREMENTS
+from lightrag.kg import STORAGE_ENV_REQUIREMENTS, verify_storage_implementation
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.kg.working_dir_lock import (
     acquire_working_dir_lock,
@@ -126,6 +126,8 @@ DATA_STORAGE_LABELS: Tuple[str, ...] = (
     "doc_status",
 )
 
+# The KV namespaces dropped besides ``text_chunks``, which has its own line.
+OTHER_KV_LABELS: Tuple[str, ...] = DATA_STORAGE_LABELS[1:6]
 VECTOR_LABELS: Tuple[str, ...] = ("entities_vdb", "relationships_vdb", "chunks_vdb")
 
 # Which configured backend (``resolve_storage_names`` key) each label uses.
@@ -134,6 +136,16 @@ STORAGE_KIND_OF_LABEL: Dict[str, str] = {
     **{label: "vector" for label in VECTOR_LABELS},
     "chunk_entity_relation_graph": "graph",
     "doc_status": "doc_status",
+}
+
+# The ``STORAGE_IMPLEMENTATIONS`` category each configured backend must belong
+# to, checked exactly as ``LightRAG.__post_init__`` checks it.
+STORAGE_TYPE_OF_KIND: Dict[str, str] = {
+    "kv": "KV_STORAGE",
+    "vector": "VECTOR_STORAGE",
+    "graph": "GRAPH_STORAGE",
+    "doc_status": "DOC_STATUS_STORAGE",
+    "config": "CONFIG_STORAGE",
 }
 
 # ANSI color codes for terminal output
@@ -159,9 +171,10 @@ STATE_HAS_ENTITIES_AND_RELATIONS = "has entities and relations"
 STATE_EMPTY = "EMPTY"
 
 # The names backends write back onto ``workspace`` when it was empty:
-# PostgreSQL (and pgtable) substitute ``"default"``, Redis doc-status ``"_"``.
-# Under an empty WORKSPACE they are the default workspace, not an override.
-DEFAULT_WORKSPACE_ALIASES = frozenset({"", "default", "_"})
+# PostgreSQL (and pgtable) substitute ``"default"``, Redis doc-status ``"_"``,
+# Neo4j and Memgraph ``"base"``. Under an empty WORKSPACE they are the default
+# workspace, not an override.
+DEFAULT_WORKSPACE_ALIASES = frozenset({"", "default", "_", "base"})
 
 POPULATED_STATES: frozenset[str] = frozenset(
     {
@@ -492,6 +505,16 @@ class ClearTool:
         if args is None:
             return False
         self.storage_names = self.resolve_storage_names(args)
+        # The server refuses a backend named under the wrong category in
+        # ``LightRAG.__post_init__``; this tool resolves classes directly, so
+        # without the same check a KV class named as the graph storage would
+        # drop an unrelated container and report the real graph as cleared.
+        for kind, storage_type in STORAGE_TYPE_OF_KIND.items():
+            try:
+                verify_storage_implementation(storage_type, self.storage_names[kind])
+            except ValueError as e:
+                print(f"\n✗ {e}")
+                return False
         self.workspace = args.workspace or ""
         self.working_dir = args.working_dir
         self.config_dir = resolve_config_dir(args.config_dir, args.working_dir)
@@ -700,7 +723,7 @@ class ClearTool:
         recent = await self._read("doc_status", page)
         total = strict_total
 
-        async def text_chunks_state() -> Any:
+        async def kv_state(label: str) -> Any:
             # The same strict existence read the startup gate uses to CLAIM a
             # chunk baseline, not ``BaseKVStorage.is_empty()``: the KV
             # backends' ``is_empty()`` catch their transport errors and answer
@@ -708,8 +731,11 @@ class ClearTool:
             # empty store and let the confirmation drop every healthy sibling
             # around it -- the partial clear the kind rule refuses. The
             # strict read raises instead, and ``_read`` applies the rule.
+            # Every KV namespace is asked, not only ``text_chunks``: after an
+            # interrupted multi-store operation ``full_docs`` or the recovery
+            # anchors can hold rows while doc-status and chunks are empty.
             populated = await chunk_source_is_populated(
-                self.storages["text_chunks"], strict=True
+                self.storages[label], strict=True
             )
             if populated is None:
                 return Unreadable(
@@ -748,7 +774,12 @@ class ClearTool:
         for label in VECTOR_LABELS:
             vdb = self.storages[label]
             if label in self.refused_vdbs:
-                vectors[label] = "refused to attach (will be dropped)"
+                # Refused means never read: a corrupt snapshot and a container
+                # in another vector space may both hold vectors. Unknown is
+                # UNREADABLE, so it is red and named again above the prompt.
+                vectors[label] = Unreadable(
+                    f"refused to attach, will be dropped: {self.refused_vdbs[label]}"
+                )
                 continue
             if vdb is not None and not getattr(vdb, "persists_vectors", True):
                 vectors[label] = "no-op backend (nothing stored)"
@@ -770,7 +801,13 @@ class ClearTool:
             "counts": counts,
             "total_docs": total,
             "recent": recent,
-            "text_chunks": await self._read("text_chunks", text_chunks_state),
+            "text_chunks": await self._read(
+                "text_chunks", lambda: kv_state("text_chunks")
+            ),
+            "kv_namespaces": {
+                label: await self._read(label, lambda label=label: kv_state(label))
+                for label in OTHER_KV_LABELS
+            },
             "graph": await self._read("chunk_entity_relation_graph", graph_state),
             "vectors": vectors,
             "baselines": baselines,
@@ -824,6 +861,9 @@ class ClearTool:
             name("doc_status", "most recently updated documents")
         if isinstance(summary["text_chunks"], Unreadable):
             name("text_chunks", "text_chunks state")
+        for label, state in summary["kv_namespaces"].items():
+            if isinstance(state, Unreadable):
+                name(label, f"{label} state")
         if isinstance(summary["graph"], Unreadable):
             name("chunk_entity_relation_graph", "knowledge graph state")
         for label, state in summary["vectors"].items():
@@ -908,6 +948,9 @@ class ClearTool:
                 )
 
         print(f"\nText chunks: {show(summary['text_chunks'])}")
+        print("Other KV namespaces:")
+        for label, state in summary["kv_namespaces"].items():
+            print(f"    {label:18s} {show(state)}")
         print(f"Knowledge graph: {show(summary['graph'])}")
 
         print("\nVector storages:")

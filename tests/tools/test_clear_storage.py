@@ -381,7 +381,8 @@ class TestSummary:
         zero, an EMPTY and a "(none recorded)" stay plain, so a yellow line
         is always a line worth stopping at."""
         tool = make_tool(tmp_path, counts={})
-        tool.storages["text_chunks"].iter_rows = rows_stream([])
+        for label in ("text_chunks", *clear_storage.OTHER_KV_LABELS):
+            tool.storages[label].iter_rows = rows_stream([])
         tool.storages["chunk_entity_relation_graph"].get_popular_labels = AsyncMock(
             return_value=[]
         )
@@ -440,9 +441,68 @@ class TestSummary:
 
         summary = await tool.collect_summary()
 
-        assert summary["vectors"]["entities_vdb"].startswith("refused")
+        refused = summary["vectors"]["entities_vdb"]
+        assert isinstance(refused, Unreadable)
+        assert "refused to attach" in refused.reason
+        assert "foreign space" in refused.reason
         assert summary["vectors"]["relationships_vdb"] == "has vectors"
         assert summary["vectors"]["chunks_vdb"] == "EMPTY"
+
+    async def test_a_refused_vector_store_is_red_and_named_before_the_prompt(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """A refused store was never read -- a corrupt snapshot or a container
+        in another space may hold vectors -- so it renders as UNREADABLE and
+        is listed again directly above the confirmation, not as plain text."""
+        tool = make_tool(tmp_path)
+        tool.refused_vdbs["chunks_vdb"] = "snapshot is corrupt"
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+        out = capsys.readouterr().out
+
+        assert f"{clear_storage.BOLD_RED}UNREADABLE" in out
+        assert "chunks_vdb state" in tool.unreadable_items(summary)
+
+    async def test_every_kv_namespace_is_probed_not_only_text_chunks(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """``full_docs`` and the recovery anchors can hold rows while
+        doc-status and chunks are empty (an interrupted multi-store write);
+        the screen must not present that workspace as empty."""
+        tool = make_tool(tmp_path, counts={})
+        for label in ("text_chunks", *clear_storage.OTHER_KV_LABELS):
+            tool.storages[label].iter_rows = rows_stream([])
+        tool.storages["full_docs"].iter_rows = rows_stream([{"_id": "doc-1"}])
+        tool.storages["relation_chunks"].iter_rows = rows_stream(
+            error=OSError("kv file unreadable")
+        )
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+        out = plain(capsys.readouterr().out)
+
+        assert summary["text_chunks"] == "EMPTY"
+        assert summary["kv_namespaces"]["full_docs"] == "has data"
+        assert summary["kv_namespaces"]["full_entities"] == "EMPTY"
+        assert isinstance(summary["kv_namespaces"]["relation_chunks"], Unreadable)
+        assert "relation_chunks state" in tool.unreadable_items(summary)
+        assert "full_docs" in out and "has data" in out
+
+    async def test_a_server_kv_namespace_outage_refuses_the_run(
+        self, tmp_path, stub_baselines, monkeypatch
+    ):
+        """The kind rule reaches the other KV namespaces too: a server
+        backend that cannot answer for ``full_entities`` will not serve its
+        drop either, so the run is refused before anything is dropped."""
+        tool = make_tool(tmp_path)
+        tool.storage_names["kv"] = "RedisKVStorage"
+        tool.storages["full_entities"].iter_rows = rows_stream(
+            error=ConnectionError("redis down")
+        )
+
+        with pytest.raises(clear_storage.RemoteBackendUnavailableError):
+            await tool.collect_summary()
 
     async def test_a_workspace_override_in_effect_is_named(
         self, tmp_path, monkeypatch, stub_baselines, capsys
@@ -488,6 +548,18 @@ class TestSummary:
         tool = make_tool(tmp_path, workspace="")
         tool.storages["doc_status"].workspace = "default"
         tool.storages["text_chunks"].workspace = "_"
+
+        tool.print_summary(await tool.collect_summary())
+
+        assert "resolved to workspace(s)" not in capsys.readouterr().out
+
+    async def test_the_graph_backends_base_default_is_not_flagged(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """Neo4j and Memgraph substitute ``"base"`` for an empty workspace."""
+        tool = make_tool(tmp_path, workspace="")
+        tool.storages["chunk_entity_relation_graph"].workspace = "base"
+        tool.storages["doc_status"].workspace = "default"
 
         tool.print_summary(await tool.collect_summary())
 
@@ -1223,6 +1295,24 @@ class TestSetup:
         assert "refused to attach" in capsys.readouterr().out
         for label in DATA_STORAGE_LABELS:
             fakes[label].initialize.assert_awaited_once()
+
+    async def test_a_backend_named_under_the_wrong_category_refuses_the_run(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The server refuses ``LIGHTRAG_GRAPH_STORAGE=JsonKVStorage`` in
+        ``LightRAG.__post_init__``; the tool must too, before opening
+        anything -- a KV class in the graph slot would drop an unrelated
+        container and report the real graph as cleared."""
+        fakes = openable_fakes()
+        tool = ClearTool()
+        names = {**FILE_BACKED_NAMES, "graph": "JsonKVStorage"}
+        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, names=names)
+
+        assert await tool.setup_storages() is False
+
+        assert "not compatible with GRAPH_STORAGE" in capsys.readouterr().out
+        for label in DATA_STORAGE_LABELS:
+            fakes[label].initialize.assert_not_awaited()
 
     async def test_a_server_backend_that_cannot_open_refuses_the_run(
         self, tmp_path, monkeypatch, capsys
