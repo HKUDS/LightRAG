@@ -85,7 +85,12 @@ async def audit_kg_integrity(
       resolvable source chunk (reported, never modified);
     - ``anchorless_docs``: documents with no anchor rows that own nothing in
       the graph — see below;
-    - ``repaired_docs``: doc ids whose anchors were updated (``apply=True``).
+    - ``repaired_docs``: doc ids whose anchors were updated (``apply=True``);
+    - ``vector_census``: separate read-only vector coverage/reverse census.
+      Vector gaps never expand ``apply`` beyond recovery-anchor repair.
+
+    Stop all writers first. The graph enumeration is shared with the vector
+    census; see docs/design/VectorCensus.md for memory and snapshot limits.
 
     **Certifying absence.** A document can legitimately own nothing in the
     graph — ``skip_kg`` (``process_options`` ``'!'``) skips extraction and the
@@ -106,6 +111,20 @@ async def audit_kg_integrity(
 
     all_nodes = await graph.get_all_nodes()
     all_edges = await graph.get_all_edges()
+
+    from lightrag.tools.vector_census import audit_vector_census
+
+    vector_census = await audit_vector_census(
+        all_nodes,
+        all_edges,
+        getattr(rag, "entities_vdb", None),
+        getattr(rag, "relationships_vdb", None),
+        chunks_vdb=getattr(rag, "chunks_vdb", None),
+        text_chunks=rag.text_chunks,
+        entity_chunks=getattr(rag, "entity_chunks", None),
+        relation_chunks=getattr(rag, "relation_chunks", None),
+        batch_size=batch_size,
+    )
 
     # Node/edge -> owning docs via source chunks.
     referenced_chunks: set[str] = set()
@@ -213,6 +232,7 @@ async def audit_kg_integrity(
         "orphan_relations": sorted(orphan_relations),
         "anchorless_docs": anchorless_docs,
         "repaired_docs": sorted(set(repaired_docs)),
+        "vector_census": vector_census,
     }
 
 
@@ -265,6 +285,9 @@ async def _find_anchorless_docs(
 
 
 def _print_report(report: dict[str, Any], verbose: bool) -> None:
+    from lightrag.tools.vector_census import print_vector_census
+
+    print_vector_census(report["vector_census"])
     print(
         f"Graph: {report['entities_total']} entities, "
         f"{report['relations_total']} relations"

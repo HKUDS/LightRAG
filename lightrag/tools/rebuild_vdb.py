@@ -522,10 +522,17 @@ async def check_vdb_consistency(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     incompatible: Dict[str, str] | None = None,
+    include_census: bool = False,
+    chunks_vdb=None,
+    text_chunks=None,
 ) -> Dict[str, Any]:
     """Read-only diagnosis: find graph records with no vector counterpart.
 
-    Only the graph -> VDB direction is covered; stale reverse orphans
+    The default three-argument call preserves the legacy forward-only report.
+    ``include_census=True`` adds a separate certified Nano census (including
+    chunks when supplied); unsupported targets explicitly report unavailable.
+
+    Only the legacy graph -> VDB direction is covered; stale reverse orphans
     (records present in the VDB but absent from the graph) can only be
     eliminated by a full rebuild. Relations are probed with both candidate
     ids from make_relation_vdb_ids so legacy reverse-order ids are not
@@ -556,6 +563,20 @@ async def check_vdb_consistency(
 
     # Entities: one candidate id per graph node
     nodes = await graph.get_all_nodes()
+    edges = await graph.get_all_edges()
+    if include_census:
+        from lightrag.tools.vector_census import audit_vector_census
+
+        report["census"] = await audit_vector_census(
+            nodes,
+            edges,
+            entities_vdb,
+            relationships_vdb,
+            chunks_vdb=chunks_vdb,
+            text_chunks=text_chunks,
+            batch_size=batch_size,
+            incompatible=incompatible,
+        )
     entity_items: List[tuple] = []
     seen_entity_ids: set = set()
     for node in nodes:
@@ -583,7 +604,6 @@ async def check_vdb_consistency(
                     report["missing_entity_names"].append(entity_name)
 
     # Relations: both candidate ids (normalized + legacy reverse) per edge
-    edges = await graph.get_all_edges()
     relation_items: List[tuple] = []
     seen_relation_ids: set = set()
     for edge in edges:
@@ -955,9 +975,16 @@ class RebuildTool:
                 print(f"      ... and {len(stats['errors']) - 5} more")
 
     def print_check_report(self, report: Dict[str, Any]):
+        if "census" in report:
+            from lightrag.tools.vector_census import print_vector_census
+
+            print_vector_census(report["census"])
         incompatible = report.get("incompatible") or {}
         print("\n" + "=" * 60)
-        print("📊 Consistency Report (graph -> vector storage)")
+        print(
+            "Legacy forward probe (graph -> vector, existence only; "
+            "not a certified census)"
+        )
         print("=" * 60)
         if incompatible:
             print(
@@ -1035,6 +1062,9 @@ class RebuildTool:
             self.relationships_vdb,
             batch_size=self.batch_size,
             incompatible=self.incompatible_vdbs,
+            include_census=True,
+            chunks_vdb=self.chunks_vdb,
+            text_chunks=self.text_chunks,
         )
         self.print_check_report(report)
         print(f"\n(check took {time.time() - start:.1f}s)")
