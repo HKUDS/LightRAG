@@ -763,7 +763,9 @@ the migration writes, not the first byte on the target.
 **Failure and recovery.** Before step 7 the anchor is unchanged: the old
 environment keeps working on the source and the new one is refused on the type
 mismatch; a re-run resumes through the ownership marker and reconciles the
-target to the *current* source. A failed replace at step 7 is re-checked
+target to the *current* source. A claim whose identity write errored is such a
+failure, never a refusal: the server may have committed the marker before the
+client saw the error, and the re-run's classification finds it. A failed replace at step 7 is re-checked
 against the file, so a directory fsync failing after a landed replace is
 reported as switched, not failed; one whose anchor then cannot be read back
 is reported as **indeterminate** — neither switched nor unchanged — and the

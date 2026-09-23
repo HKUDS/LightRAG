@@ -100,6 +100,21 @@ class _FailsOnIteration(Container):
         return super().iter_rows(page_size=page_size)
 
 
+class _CommitsThenFails(Container):
+    """A target whose first upsert lands and is then reported as failed."""
+
+    def __init__(self, rows=None, **kwargs):
+        super().__init__(rows, **kwargs)
+        self.fail_after_commit = True
+
+    async def upsert(self, data):
+        await super().upsert(data)
+        if self.fail_after_commit:
+            self.fail_after_commit = False
+            await super().index_done_callback()
+            raise ConnectionError("connection reset after commit")
+
+
 def _identity_row(storage_uuid=UUID_A):
     return cs.make_config_row(
         scope_workspace=SERVER_SCOPE,
@@ -356,6 +371,21 @@ class TestFailureAndResume:
         assert result.verdict.state == "resume"
         assert result.switched is True
         assert _data(target) == _data(source)
+
+    async def test_a_claim_whose_write_landed_but_errored_resumes(self, tmp_path):
+        """The server can commit the ownership marker before the client sees
+        the connection fail: that is a resumable failure, never a refusal
+        (which would mean nothing was written)."""
+        _anchor(tmp_path)
+        source, target = Container(_source_rows()), _CommitsThenFails()
+        with pytest.raises(mc.MigrationFailed, match="claim the target"):
+            await _migrate(tmp_path, source, target)
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+        target.fail_after_commit = False
+        result = await _migrate(tmp_path, source, target)
+        assert result.verdict.state == "resume"
+        assert result.switched is True
 
     async def test_a_flush_failure_leaves_the_anchor(self, tmp_path):
         _anchor(tmp_path)
@@ -719,6 +749,18 @@ class TestCommandLine:
         assert "MONGO_URI" in out
         assert "secret" not in out
         assert "POSTGRES_HOST" not in out
+
+    async def test_a_failed_claim_is_reported_as_a_failure_not_a_refusal(
+        self, monkeypatch, capsys
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        self._wire(monkeypatch, Container(_source_rows()), _CommitsThenFails())
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "Migration failed" in out and "Re-run to resume" in out
+        assert "Refused" not in out
 
     async def test_conflicting_env_files_are_refused(self, tmp_path, capsys):
         _anchor(os.environ["WORKING_DIR"])
