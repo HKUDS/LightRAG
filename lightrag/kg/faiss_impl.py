@@ -2139,14 +2139,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
 
         def _delete_files() -> None:
-            # Remove storage files if they exist. Both removals stay in the
+            # Attempt removal directly: exists() can hide a stat permission
+            # error as absence. Both removals stay in the
             # destructive phase: the pair is what a drop destroys, and a
             # failure on the second one must not be reported as a completed
             # drop just because the first one landed.
-            if os.path.exists(self._faiss_index_file):
+            try:
                 os.remove(self._faiss_index_file)
-            if os.path.exists(self._meta_file):
+            except FileNotFoundError:
+                pass
+            try:
                 os.remove(self._meta_file)
+            except FileNotFoundError:
+                pass
             # The marker is cleaned up LAST and its failure is swallowed,
             # because by this line the drop has already happened: both
             # authoritative files are gone, so every persisted vector is gone.
@@ -2158,8 +2163,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # absent ``_load_faiss_index`` takes its early return and never
             # reads the marker, and the next save replaces it.
             try:
-                if os.path.exists(self._vector_space_file):
-                    os.remove(self._vector_space_file)
+                os.remove(self._vector_space_file)
+            except FileNotFoundError:
+                pass
             except OSError as e:
                 log_without_raising(
                     logger.warning,

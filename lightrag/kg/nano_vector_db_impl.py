@@ -1686,9 +1686,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
 
         def _delete_file() -> None:
-            # delete _client_file_name
-            if os.path.exists(self._client_file_name):
+            # exists() can hide a stat permission error as absence. Only the
+            # deletion itself can confirm that the snapshot is gone.
+            try:
                 os.remove(self._client_file_name)
+            except FileNotFoundError:
+                pass
 
         async def _committed() -> None:
             # Discard buffered (unflushed) upserts and queued deletes

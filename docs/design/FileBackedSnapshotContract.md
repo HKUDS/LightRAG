@@ -148,11 +148,10 @@ did not.
 
 Because the mode carries none of this on Windows, a `0600` assertion proves
 nothing there and `chmod(0)` does not revoke read access, so the tests relying
-on either are POSIX-only. The native behaviour has its own job,
-`.github/workflows/windows-private-file.yml` on `windows-latest` — the only
-Windows job in the repository — which also fails if its Windows-only tests
-merely skipped. `tests/test_private_file.py` imports no storage so that job
-stays seconds long.
+on either are POSIX-only. The native behaviour runs alongside the vector deletion tests in
+`.github/workflows/windows-storage.yml` on `windows-latest`. Both groups share
+one dependency setup and run serially. The job also fails if a required
+Windows-only case is missing, skipped or failed in the combined JUnit report.
 
 **A refusal's `artifacts` must cover every file that storage's `drop()`
 removes.** That is the whole protocol in one line: the tool backs up
@@ -514,6 +513,29 @@ empty and only the dirty flag is set, since a bare dirty flag still means the
 in-memory state may be stale relative to disk. What a replay deliberately does
 *not* restore is a row another writer has since superseded with a strictly newer
 one.
+
+### Deleting vector snapshots
+
+Nano and Faiss attempt each removal directly and ignore only
+`FileNotFoundError`. An `exists()` preflight is not a deletion verdict: a
+permission failure during its stat can look like absence and would skip the
+removal while reporting a successful drop. All other removal errors keep the
+existing failure path, without clearing buffers or publishing a successful
+reset. This includes Windows sharing violations and read-only attributes;
+release the conflicting handle or correct the attribute, then retry.
+
+Faiss still deletes the index before the metadata. Failure on the second file
+is a partial deletion, reported as an error, not rolled back. Marker cleanup
+is best-effort after both data files are gone: an orphan marker produces a
+warning without changing the completed data deletion to a failure. A later
+successful drop retries its removal. Post-deletion notification failures retain
+the existing success semantics documented by each backend's `drop()`.
+
+`tests/kg/test_vector_drop_errors.py` covers hidden existence errors and retry
+semantics. `.github/workflows/windows-storage.yml` additionally exercises
+real Windows handles without `FILE_SHARE_DELETE`, read-only files and Faiss
+partial deletion. The native tests require no second account or assumed ACL
+layout, and their JUnit report must contain the named cases without skips.
 
 ### Non-pipeline write paths
 
