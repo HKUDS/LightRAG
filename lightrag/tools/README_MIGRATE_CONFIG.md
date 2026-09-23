@@ -90,8 +90,10 @@ names a different `WORKING_DIR`. A JSON source takes its `config_dir` from
    flushes strictly and reads it back. This row is the ownership marker that
    makes a re-run safe.
 5. Copies every row: server-scope rows and every workspace's rows, with the
-   key and the row envelope verbatim. A row that is not a well-formed row is
-   refused and listed, never skipped. Target rows that the source does not
+   key and the row envelope verbatim. A row that is not a well-formed row (an
+   integer `schema_version`, a string `workspace` and a mapping `value`) is
+   refused and listed, never skipped; `updated_at` / `updated_by` are only
+   diagnostic and are copied as they are. Target rows that the source does not
    hold, or holds differently, are deleted. The tool is allowed to delete them
    only because step 3 proved ownership.
 6. Flushes strictly. It then compares every target row with the source (key
@@ -112,7 +114,9 @@ refused.
   working on the source, and the new one is refused on the type mismatch.
   Re-run the tool: it resumes through the ownership marker and reconciles the
   target to the source as it is **now**, even if the source changed in the
-  meantime.
+  meantime. Anything that goes wrong after the target was claimed is reported
+  as a failure, never as a refusal, even a source row damaged mid-copy (the
+  re-run then refuses and names it).
 - **After step 7** the migration is complete, and the tool reports
   `Switched`.
 - **Outcome unknown.** When the anchor replace raises and the anchor then

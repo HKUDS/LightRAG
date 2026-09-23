@@ -52,6 +52,7 @@ from lightrag.exceptions import (
     ConfigurationAnchorLockError,
     ConfigurationIdentityError,
     ConfigurationStorageError,
+    CorruptStorageRecordError,
     WorkingDirectoryInUseError,
 )
 from lightrag.kg.anchor_lock import (
@@ -104,7 +105,15 @@ def row_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_well_formed(row: Any) -> bool:
-    """The uniform row shape (*Row shape* in the contract)."""
+    """The fields of the uniform row shape a reader interprets (*Row shape*
+    in the contract): an integer ``schema_version``, a string ``workspace``
+    and a mapping ``value``.
+
+    ``updated_at`` / ``updated_by`` are diagnostic, read by no verdict, so a
+    row lacking them is not refused: it is copied verbatim and verified by
+    digest like every other, and the target serves it exactly as the source
+    did.
+    """
     if not isinstance(row, dict):
         return False
     version = row.get("schema_version")
@@ -166,6 +175,13 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
             scan.scopes[scope] = scan.scopes.get(scope, 0) + 1
     except ConfigurationStorageError:
         raise
+    except CorruptStorageRecordError as e:
+        # One damaged row, named by the backend -- not a store that failed.
+        # A refusal before the claim; steps 5-6 turn it into a failure.
+        raise MigrationRefused(
+            f"a row in the configuration container is not a configuration "
+            f"row ({e}); repair or remove it and re-run"
+        ) from e
     except Exception as e:
         raise ConfigurationStorageError(
             f"could not enumerate the configuration container ({type(e).__name__}: {e})"
@@ -355,6 +371,7 @@ async def migrate_configuration(
     assume_exclusive: bool = False,
     page_size: int = DEFAULT_PAGE_SIZE,
     out: Callable[[str], None] = print,
+    release_claims: Callable[[], None] = lambda: None,
 ) -> MigrationResult:
     """Run the seven steps; raise ``MigrationRefused`` / ``MigrationFailed``
     (or a ``ConfigurationStorageError``) on anything short of "switched".
@@ -475,16 +492,22 @@ async def migrate_configuration(
                     f"could not claim the target with this identity: {e}"
                 ) from e
 
-        # Step 5. Copy, converging the target onto the current source.
-        result.copied, result.deleted = await _copy_rows(
-            source, target, source_scan=source_scan, page_size=page_size
-        )
+        try:
+            # Step 5. Copy, converging the target onto the current source.
+            result.copied, result.deleted = await _copy_rows(
+                source, target, source_scan=source_scan, page_size=page_size
+            )
 
-        # Step 6. Strict flush, then verify every row against the source.
-        await cs.flush_configuration_storage(target, "the migrated rows")
-        await _verify(
-            source, target, storage_uuid=anchor.storage_uuid, page_size=page_size
-        )
+            # Step 6. Strict flush, then verify every row against the source.
+            await cs.flush_configuration_storage(target, "the migrated rows")
+            await _verify(
+                source, target, storage_uuid=anchor.storage_uuid, page_size=page_size
+            )
+        except MigrationRefused as e:
+            # The target is claimed and may already be partly converged, so
+            # a row that turned bad since step 2 is not "nothing was
+            # written": the anchor is unchanged and a re-run reconciles.
+            raise MigrationFailed(str(e)) from e
 
         # Step 7. The commit point.
         new_anchor = StorageAnchor(
@@ -523,6 +546,10 @@ async def migrate_configuration(
                 await storage.finalize()
             except Exception as e:  # pragma: no cover - best effort
                 out(f"  (could not close a configuration storage cleanly: {e})")
+        # The directory claims the openers took go back BEFORE the anchor
+        # lock, the order every starter uses: a start admitted by the freed
+        # anchor lock must not then be refused by a claim still held here.
+        release_claims()
         if exclusive is not None:
             exclusive.release()
         if shared:
@@ -610,7 +637,24 @@ def _opener(working_dir: str, config_dir: str, claims: list[str]) -> OpenStorage
             },
             embedding_func=None,
         )
-        await storage.initialize()
+        try:
+            await storage.initialize()
+        except BaseException as e:
+            # The caller never receives a storage that failed to open, so it
+            # is closed here: a client acquired before the failure must not
+            # leak.
+            try:
+                await storage.finalize()
+            except Exception:
+                pass
+            if not isinstance(e, Exception) or isinstance(
+                e, (ConfigurationStorageError, ConfigurationIdentityError)
+            ):
+                raise
+            raise ConfigurationStorageError(
+                f"could not open the {backend} configuration storage "
+                f"({type(e).__name__}: {e})"
+            ) from e
         return storage
 
     return _open
@@ -656,6 +700,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _release_claims(claims: list[str]) -> None:
+    from lightrag.kg.working_dir_lock import release_working_dir_lock
+
+    while claims:
+        release_working_dir_lock(claims.pop())
+
+
 def _load_env_file(path: str | None) -> dict[str, str | None]:
     if not path:
         return {}
@@ -667,7 +718,6 @@ def _load_env_file(path: str | None) -> dict[str, str | None]:
 async def async_main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-    from lightrag.kg.working_dir_lock import release_working_dir_lock
 
     working_dir = os.path.abspath(os.environ.get("WORKING_DIR") or DEFAULT_WORKING_DIR)
     claims: list[str] = []
@@ -713,6 +763,7 @@ async def async_main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             assume_exclusive=args.assume_exclusive,
             page_size=max(1, args.page_size),
+            release_claims=lambda: _release_claims(claims),
         )
     except (
         MigrationRefused,
@@ -737,8 +788,9 @@ async def async_main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
-        for config_dir in claims:
-            release_working_dir_lock(config_dir)
+        # Normally already given back inside the migration, before its anchor
+        # lock; this covers a failure before it was reached.
+        _release_claims(claims)
         finalize_share_data()
 
     if args.dry_run:

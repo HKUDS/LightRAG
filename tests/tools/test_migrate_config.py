@@ -18,6 +18,7 @@ from lightrag import config_store as cs
 from lightrag.exceptions import (
     ConfigurationAnchorLockError,
     ConfigurationStorageError,
+    CorruptStorageRecordError,
 )
 from lightrag.kg import anchor_lock as al
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
@@ -113,6 +114,43 @@ class _CommitsThenFails(Container):
             self.fail_after_commit = False
             await super().index_done_callback()
             raise ConnectionError("connection reset after commit")
+
+
+class _TurnsMalformed(Container):
+    """A source whose ``bad_from_call``-th enumeration yields one damaged row
+    (the source changed after the first scan)."""
+
+    def __init__(self, rows=None, *, bad_from_call, **kwargs):
+        super().__init__(rows, **kwargs)
+        self.bad_from_call = bad_from_call
+        self.iter_calls = 0
+
+    def iter_rows(self, *, page_size=200):
+        self.iter_calls += 1
+        rows = super().iter_rows(page_size=page_size)
+        if self.iter_calls < self.bad_from_call:
+            return rows
+
+        async def _gen():
+            async for row in rows:
+                yield row
+            yield {"_id": "alpha/embedding/late", "workspace": "alpha"}
+
+        return _gen()
+
+
+class _CorruptRecord(Container):
+    """A backend that names a damaged record while enumerating, as
+    ``JsonKVStorage`` does for a non-mapping value."""
+
+    def iter_rows(self, *, page_size=200):
+        async def _gen():
+            raise CorruptStorageRecordError(
+                "config record 'alpha/embedding/entities' is str, not a mapping"
+            )
+            yield  # pragma: no cover
+
+        return _gen()
 
 
 def _identity_row(storage_uuid=UUID_A):
@@ -386,6 +424,56 @@ class TestFailureAndResume:
         result = await _migrate(tmp_path, source, target)
         assert result.verdict.state == "resume"
         assert result.switched is True
+
+    async def test_a_source_row_that_turned_bad_after_the_claim_is_a_failure(
+        self, tmp_path
+    ):
+        """Steps 5-6 run after the claim: a row that is damaged by then is a
+        resumable failure, never a refusal (which means nothing was written)."""
+        _anchor(tmp_path)
+        source = _TurnsMalformed(_source_rows(), bad_from_call=2)
+        target = Container()
+        with pytest.raises(mc.MigrationFailed, match="well-formed"):
+            await _migrate(tmp_path, source, target)
+        assert target.visible[IDENTITY_KEY]["value"] == {"uuid": UUID_A}
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+    async def test_a_corrupt_record_is_a_refusal_that_names_it(self, tmp_path):
+        """A backend's typed corruption is one damaged row, not a store
+        failure: refused before anything is written, the row named."""
+        _anchor(tmp_path)
+        source = _CorruptRecord(_source_rows())
+        target = Container()
+        with pytest.raises(mc.MigrationRefused, match="alpha/embedding/entities"):
+            await _migrate(tmp_path, source, target)
+        assert target.calls == []
+
+    async def test_the_directory_claims_go_back_before_the_anchor_lock(
+        self, tmp_path, monkeypatch
+    ):
+        _anchor(tmp_path)
+        events = []
+        real_acquire = mc.acquire_anchor_lock_exclusive
+
+        def _acquire(*args, **kwargs):
+            lock = real_acquire(*args, **kwargs)
+            real_release = lock.release
+
+            def _release():
+                events.append("anchor lock")
+                real_release()
+
+            lock.release = _release
+            return lock
+
+        monkeypatch.setattr(mc, "acquire_anchor_lock_exclusive", _acquire)
+        await _migrate(
+            tmp_path,
+            Container(_source_rows()),
+            Container(),
+            release_claims=lambda: events.append("claims"),
+        )
+        assert events == ["claims", "anchor lock"]
 
     async def test_a_flush_failure_leaves_the_anchor(self, tmp_path):
         _anchor(tmp_path)
@@ -762,6 +850,18 @@ class TestCommandLine:
         assert "Migration failed" in out and "Re-run to resume" in out
         assert "Refused" not in out
 
+    async def test_a_newly_damaged_source_row_is_not_reported_as_refused(
+        self, monkeypatch, capsys
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        source = _TurnsMalformed(_source_rows(), bad_from_call=2)
+        self._wire(monkeypatch, source, Container())
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "Migration failed" in out and "Refused" not in out
+
     async def test_conflicting_env_files_are_refused(self, tmp_path, capsys):
         _anchor(os.environ["WORKING_DIR"])
         (tmp_path / "a.env").write_text("POSTGRES_HOST=a\n")
@@ -828,3 +928,32 @@ async def test_the_cli_opens_a_real_json_source_through_its_own_opener(
     assert ca.read_anchor(working_dir).backend == "MongoKVStorage"
     assert not holds_working_dir_lock(cs.resolve_config_dir("", working_dir))
     initialize_share_data(workers=1)
+
+
+async def test_a_storage_that_fails_to_open_is_closed_and_reported(monkeypatch, capsys):
+    """The opener's own failure path: the half-opened storage is finalized
+    (a client acquired before the failure must not leak), and the operator
+    gets a migration failure, not a traceback."""
+    from lightrag.kg import factory
+
+    working_dir = os.environ["WORKING_DIR"]
+    _anchor(working_dir)
+    finalized = []
+
+    class _Unreachable:
+        def __init__(self, **kwargs):
+            self.workspace = kwargs["workspace"]
+
+        async def initialize(self):
+            raise ConnectionError("connection refused")
+
+        async def finalize(self):
+            finalized.append(True)
+
+    monkeypatch.setattr(factory, "get_storage_class", lambda name: _Unreachable)
+    code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "could not open the PGKVStorage configuration storage" in out
+    assert "anchor is unchanged" in out
+    assert finalized == [True]
