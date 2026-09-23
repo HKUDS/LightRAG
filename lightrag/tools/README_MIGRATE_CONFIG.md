@@ -124,8 +124,10 @@ refused.
   says so instead of guessing. Start nothing until the anchor reads back: if
   it names the target, the migration is complete; if it still names the
   source, re-run.
-- **The source is never modified or deleted.** Removing the old copy is a
-  separate, explicit action.
+- **No source row is ever written or deleted.** Removing the old copy is a
+  separate, explicit action. Opening either side is an ordinary backend
+  `initialize()`, which may provision a missing table or index or bring an
+  existing container's schema to this version, as any start does.
 - **A shared source container.** Every workspace's rows are copied, and the
   dry run lists the scopes. Deployments that stay on the source are
   unaffected, but their rows in the target are stale copies. The target must

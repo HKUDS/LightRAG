@@ -779,8 +779,8 @@ against the file, so a directory fsync failing after a landed replace is
 reported as switched, not failed; one whose anchor then cannot be read back
 is reported as **indeterminate** — neither switched nor unchanged — and the
 operator inspects the anchor before starting anything. After step 7 the
-migration is complete. The source is never modified or deleted; removing it is a separate operator
-action. A server never completes a migration on its own.
+migration is complete. No source row is ever written or deleted; removing the
+source is a separate operator action. A server never completes a migration on its own.
 
 **Accepted residues.** The ownership marker cannot tell this attempt's residue
 from a stale copy left by an earlier migration of the same identity (PG →
@@ -792,11 +792,12 @@ unaffected, but their rows in the target are stale copies — the target must
 be dedicated, and consolidating into an already-shared container is out of
 scope. The lock is local to one `WORKING_DIR`: deployments sharing one remote
 container from other working directories must be stopped by the operator.
-A target that is refused, or only dry-run, may still have been **provisioned**
-by its `initialize()`: an empty table or index created, or an existing
-container's schema and container marker brought to this version, as any start
-of this version against it would. No row is written or deleted before the
-verdict; a non-mutating per-backend probe would remove this, at the cost of a
+Either side may have been **provisioned** by its `initialize()`: the source
+(even one the identity check then refuses as the wrong container) and a
+target that is refused or only dry-run. That means an empty table or index
+created, or an existing container's schema and container marker brought to
+this version, as any start of this version against it would. No row is
+written or deleted on the source ever, nor on the target before the verdict; a non-mutating per-backend probe would remove this, at the cost of a
 second open path in every admitted backend, and is not worth it for a
 container that only a LightRAG configuration storage ever uses.
 
