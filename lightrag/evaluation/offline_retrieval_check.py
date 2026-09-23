@@ -65,8 +65,9 @@ class QueryResult:
     ranked: list[str]
 
     def recall_at(self, top_k: int) -> float:
-        hits = set(self.expected) & set(self.ranked[:top_k])
-        return len(hits) / len(self.expected)
+        expected = set(self.expected)
+        hits = expected & set(self.ranked[:top_k])
+        return len(hits) / len(expected)
 
     def reciprocal_rank(self) -> float:
         for rank, document in enumerate(self.ranked, start=1):
