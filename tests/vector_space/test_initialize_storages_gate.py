@@ -143,10 +143,16 @@ async def test_a_vanished_vector_store_refuses_to_serve(tmp_path):
     (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
 
     rag = _rag(tmp_path, model_name="bge-m3")
-    with pytest.raises(VectorStorageEmptyError) as excinfo:
-        await rag.initialize_storages()
+    try:
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await rag.initialize_storages()
 
-    assert "lightrag-rebuild-vdb" in str(excinfo.value)
+        assert "lightrag-rebuild-vdb" in str(excinfo.value)
+    finally:
+        # A refusal AFTER ``INITIALIZED`` is sticky but its resources are open,
+        # so the caller still owes the teardown -- including the configuration
+        # storage's hold on the shared ``config`` namespace.
+        await rag.finalize_storages()
 
 
 async def test_an_unfinished_ingest_is_not_refused(tmp_path):
@@ -265,8 +271,12 @@ async def test_the_rebuild_flag_is_off_by_default(tmp_path):
     await _seed(tmp_path, model_name="bge-m3")
     (tmp_path / _workspace(tmp_path) / "vdb_entities.json").unlink()
 
-    with pytest.raises(VectorStorageEmptyError):
-        await _rag(tmp_path, model_name="bge-m3").initialize_storages()
+    rag = _rag(tmp_path, model_name="bge-m3")
+    try:
+        with pytest.raises(VectorStorageEmptyError):
+            await rag.initialize_storages()
+    finally:
+        await rag.finalize_storages()
 
 
 async def test_a_graph_only_deployment_restarts(tmp_path):

@@ -37,6 +37,7 @@ from lightrag.kg.opensearch_impl import (  # noqa: E402
     _FINAL_NAMESPACE_META_KEY,
     _WORKSPACE_META_KEY,
     _claim_index_for_workspace,
+    _build_index_name,
     _sanitize_index_name,
 )
 
@@ -502,3 +503,26 @@ class TestUnwritableMapping:
                 client, "teama_text_chunks", "TeamA", "TeamA_text_chunks"
             )
         client.indices.put_mapping.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "alias", [".lightrag_config", "x_lightrag_config", "+LightRAG_config"]
+)
+@pytest.mark.parametrize("via_env", [False, True])
+def test_reserved_index_aliases_are_rejected_before_attachment(
+    monkeypatch, alias, via_env
+):
+    monkeypatch.delenv("OPENSEARCH_WORKSPACE", raising=False)
+    if via_env:
+        monkeypatch.setenv("OPENSEARCH_WORKSPACE", alias)
+    with pytest.raises(ValueError, match="reserved LightRAG index"):
+        _build_index_name("ordinary" if via_env else alias, "config")
+
+
+def test_internal_index_name_and_ordinary_names_remain_available(monkeypatch):
+    monkeypatch.setenv("OPENSEARCH_WORKSPACE", ".lightrag_config")
+    assert (
+        _build_index_name("_lightrag_config", "config")[2] == "x_lightrag_config_config"
+    )
+    monkeypatch.delenv("OPENSEARCH_WORKSPACE")
+    assert _build_index_name("v1.0", "config")[2] == "v1_0_config"

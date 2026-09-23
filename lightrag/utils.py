@@ -12,6 +12,7 @@ import json
 import logging
 import logging.handlers
 import math
+import configparser
 import os
 import re
 import time
@@ -47,6 +48,7 @@ from lightrag.exceptions import (
     CommitBookkeepingError,
     EmptyTruncatedResponseError,
 )
+from lightrag.namespace import RESERVED_WORKSPACE_PREFIX
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -7874,6 +7876,165 @@ def _truncate_chunks_for_unified_context(
     return approx[:k]
 
 
+# The one door through the ``_lightrag*`` reservation below. Set ONLY by the
+# configuration-storage factory, for the duration of one storage construction,
+# and read only by ``validate_workspace``. A context variable rather than a
+# constructor parameter so that no public storage signature grows an
+# ``allow_reserved`` flag -- a public bypass is the reservation with extra
+# steps. See *The internal factory* in docs/design/ConfigurationStorage.md.
+_reserved_workspace_grant: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "lightrag_reserved_workspace_grant", default=None
+)
+
+
+def is_reserved_workspace(workspace: str | None) -> bool:
+    """Whether ``workspace`` belongs to the family LightRAG keeps for itself.
+
+    Case-insensitive on purpose: OpenSearch lowercases index names, so
+    ``_LightRAG_config`` and ``_lightrag_config`` land on the SAME index there,
+    and a reservation that only knew one spelling would let an ordinary
+    storage reach the configuration container through the other. The grant
+    still admits exactly one spelling (``CONFIG_WORKSPACE``), so every
+    variant is refused everywhere else.
+    """
+    return bool(workspace) and (
+        str(workspace).casefold().startswith(RESERVED_WORKSPACE_PREFIX.casefold())
+    )
+
+
+class _ReservedWorkspaceGrant:
+    """Context manager that lets exactly one reserved name through the validator."""
+
+    def __init__(self, workspace: str) -> None:
+        if not is_reserved_workspace(workspace):
+            raise ValueError(
+                f"{workspace!r} is not a reserved workspace name; a grant is only "
+                f"for names starting with {RESERVED_WORKSPACE_PREFIX!r}"
+            )
+        self._workspace = workspace
+        self._token: contextvars.Token | None = None
+
+    def __enter__(self) -> str:
+        self._token = _reserved_workspace_grant.set(self._workspace)
+        return self._workspace
+
+    def __exit__(self, *_exc) -> None:
+        if self._token is not None:
+            _reserved_workspace_grant.reset(self._token)
+            self._token = None
+
+
+def _grant_reserved_workspace(workspace: str) -> _ReservedWorkspaceGrant:
+    """Private: allow ``validate_workspace`` to accept one reserved name.
+
+    Internal to the configuration-storage factory. Nothing else may call it,
+    and it is deliberately not exported: the grant is what makes the
+    reservation enforceable rather than advisory.
+    """
+    return _ReservedWorkspaceGrant(workspace)
+
+
+def validate_workspace_override(env_var: str, value: str | None) -> str | None:
+    """The workspace a ``*_WORKSPACE`` environment variable remaps TENANT data
+    to, stripped, or ``None`` / the empty value when it sets nothing.
+
+    Refuses the reserved ``_lightrag*`` family. The override is applied AFTER
+    ``validate_workspace()`` has passed the constructor argument, so without
+    this check ``REDIS_WORKSPACE=_lightrag_config`` (or any sibling variable)
+    would bind ordinary storage into the family the configuration container
+    lives in. The configuration storage never reaches here: its reserved
+    workspace skips the override altogether. See *The internal factory* in
+    docs/design/ConfigurationStorage.md.
+
+    Raises:
+        ValueError: the override names a reserved workspace.
+    """
+    if value is None:
+        return None
+    effective = str(value).strip()
+    if is_reserved_workspace(effective):
+        raise ValueError(
+            f"{env_var}={effective!r} names a workspace reserved for LightRAG's "
+            f"own containers (the {RESERVED_WORKSPACE_PREFIX!r} family); tenant "
+            f"data cannot be remapped onto it"
+        )
+    return effective
+
+
+# Every ``*_WORKSPACE`` override, with the ``config.ini`` section that can set
+# it instead where one exists. Beside ``validate_workspace_override`` so a new
+# backend's override gets added to both at once.
+WORKSPACE_OVERRIDE_SOURCES: tuple[tuple[str, str | None], ...] = (
+    ("POSTGRES_WORKSPACE", "postgres"),
+    ("NEO4J_WORKSPACE", "neo4j"),
+    ("MEMGRAPH_WORKSPACE", None),
+    ("MILVUS_WORKSPACE", None),
+    ("MONGODB_WORKSPACE", None),
+    ("OPENSEARCH_WORKSPACE", None),
+    ("QDRANT_WORKSPACE", None),
+    ("REDIS_WORKSPACE", None),
+)
+
+_workspace_override_warning_emitted = False
+
+
+def warn_about_workspace_overrides() -> list[str]:
+    """Warn ONCE per process about every ``*_WORKSPACE`` override in effect.
+
+    These variables exist to keep LEGACY data reachable, and nothing above the
+    storage layer knows one is set: a backend applies it inside its own
+    constructor, so the workspace a caller asked for and the container its data
+    lands in can differ, and every record keyed by the caller's workspace --
+    the embedding baselines among them -- stays under the name the caller gave.
+
+    That is tolerable while the override never moves. Using one to MOVE data --
+    setting, changing or clearing it on a deployment that already has some --
+    points the same instance at a different container while those records stay
+    behind, and no check below can tell that apart from an ordinary start. So
+    the rule is stated where an operator will see it rather than enforced:
+    a storage's workspace follows the server's, and switching data location by
+    editing one of these is unsupported.
+
+    Called from the APPLICATION's startup, not from ``LightRAG``: the uvicorn
+    entry point (``lightrag_server.main``) and the Gunicorn master's
+    ``on_starting`` hook, which runs before it forks. That is once per server
+    start rather than once per worker or once per instance, which is what an
+    operator-facing deprecation wants. The once-per-process guard below only
+    keeps a second call quiet; it is not what makes the count right.
+
+    Returns the variables it warned about, so a caller can report them.
+    """
+    global _workspace_override_warning_emitted
+
+    file_config = configparser.ConfigParser()
+    try:
+        file_config.read("config.ini", "utf-8")
+    except (OSError, configparser.Error):  # pragma: no cover - unreadable file
+        pass
+
+    in_effect: list[str] = []
+    for env_var, section in WORKSPACE_OVERRIDE_SOURCES:
+        value = os.environ.get(env_var)
+        if (value is None or not value.strip()) and section is not None:
+            value = file_config.get(section, "workspace", fallback=None)
+        if value is not None and value.strip():
+            in_effect.append(env_var)
+
+    if in_effect and not _workspace_override_warning_emitted:
+        _workspace_override_warning_emitted = True
+        logger.warning(
+            f"Workspace override(s) in effect: {', '.join(in_effect)}. These "
+            f"exist only to keep legacy data reachable and are deprecated: a "
+            f"storage's workspace should follow the server's. They are applied "
+            f"inside the storage layer, so nothing above it sees one -- do NOT "
+            f"set, change or clear one to move an existing deployment's data. "
+            f"Doing so points this instance at a different container while the "
+            f"records keyed by the server's workspace, including the recorded "
+            f"embedding baselines, stay where they are."
+        )
+    return in_effect
+
+
 def validate_workspace(workspace: str) -> str:
     """Validate a workspace name used to build per-workspace directories.
 
@@ -7887,6 +8048,13 @@ def validate_workspace(workspace: str) -> str:
     while unsafe names are rejected so the caller fails fast instead of
     silently reading or writing outside the intended directory.
 
+    Names starting with ``_lightrag`` are RESERVED for LightRAG's own
+    containers and refused too, unless the configuration-storage factory is
+    the caller binding them. A deployment whose workspace already carries such
+    a name fails to start here, loudly, and must be renamed: a reservation that
+    let existing names through could never protect the container it exists
+    for. See docs/design/ConfigurationStorage.md.
+
     Args:
         workspace: Workspace name from configuration or environment variables.
 
@@ -7894,8 +8062,8 @@ def validate_workspace(workspace: str) -> str:
         The workspace name unchanged when it is valid.
 
     Raises:
-        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."`` or
-            ``".."``.
+        ValueError: If the workspace contains ``/`` or ``\\``, is ``"."`` or
+            ``".."``, or starts with the reserved ``_lightrag`` prefix.
 
     Examples:
         >>> validate_workspace("my_workspace")
@@ -7911,6 +8079,16 @@ def validate_workspace(workspace: str) -> str:
         raise ValueError(
             f"Invalid workspace name {workspace!r}: must not contain path "
             "separators ('/', '\\') or be a relative path reference ('.', '..')"
+        )
+    if (
+        is_reserved_workspace(workspace)
+        and _reserved_workspace_grant.get() != workspace
+    ):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: names starting with "
+            f"{RESERVED_WORKSPACE_PREFIX!r} are reserved for LightRAG's internal "
+            "containers (the configuration storage lives in one). Choose another "
+            "workspace name."
         )
     return workspace
 

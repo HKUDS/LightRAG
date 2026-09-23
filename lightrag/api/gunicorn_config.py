@@ -27,6 +27,10 @@ bind = None
 loglevel = None
 certfile = None
 keyfile = None
+# The PARSED working directory, which is not always what ``WORKING_DIR`` says:
+# ``--working-dir`` overrides it for the workers, so a master that read the
+# environment here would claim a directory nobody asks for (see on_starting).
+working_dir = None
 
 # Enable preload_app option
 preload_app = True
@@ -93,6 +97,23 @@ logconfig_dict = {
 }
 
 
+def resolved_working_dir() -> str:
+    """The working directory the WORKERS will use.
+
+    ``--working-dir`` is parsed into ``global_args`` and handed to every
+    worker's ``LightRAG``; nothing writes it back to the environment. So a
+    master reading ``WORKING_DIR`` here would resolve one directory while its
+    workers resolve another -- the master's claim would then be on a path
+    nobody inherits, the first worker would take the real one for itself, and
+    every worker after it would be refused at startup. ``run_with_gunicorn``
+    sets the parsed value on this module before Gunicorn starts; the
+    environment is only the fallback for a master started another way.
+    """
+    if working_dir:
+        return working_dir
+    return get_env_value("WORKING_DIR", "./rag_storage")
+
+
 def on_starting(server):
     """
     Executed when Gunicorn starts, before forking the first worker processes
@@ -119,6 +140,28 @@ def on_starting(server):
     # Log the location of the LightRAG log file
     print(f"LightRAG log file: {log_file_path}\n")
 
+    # Here rather than in a worker: the master is the one process every run
+    # has exactly one of, so the deprecation is said once per server start
+    # instead of once per worker.
+    from lightrag.utils import warn_about_workspace_overrides
+
+    warn_about_workspace_overrides()
+
+    # Claim the working directory HERE, in the master, before the fork. The
+    # claim is held by the open file description, which forked workers inherit
+    # -- so they find it already taken by their own tree and count themselves
+    # in, instead of opening a second descriptor and refusing each other. Taken
+    # after the fork it would admit exactly one worker.
+    from lightrag.kg.working_dir_lock import (
+        acquire_working_dir_lock,
+        uses_working_dir,
+    )
+
+    # The configuration storage is bound to the KV backend, so that is the one
+    # that decides whether this directory is claimed at all.
+    if uses_working_dir(get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage")):
+        acquire_working_dir_lock(resolved_working_dir())
+
     print("Gunicorn initialization complete, forking workers...\n")
 
 
@@ -133,6 +176,16 @@ def on_exit(server):
 
     print("Finalizing shared storage...")
     finalize_share_data()
+
+    # The master took the directory claim before forking, so the master gives
+    # it back -- a worker's own finalize only decrements its inherited count.
+    from lightrag.kg.working_dir_lock import (
+        release_working_dir_lock,
+        uses_working_dir,
+    )
+
+    if uses_working_dir(get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage")):
+        release_working_dir_lock(resolved_working_dir())
 
     print("Gunicorn shutdown complete")
     print("=" * 80)
