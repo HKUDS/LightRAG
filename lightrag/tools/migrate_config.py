@@ -23,7 +23,7 @@ identity* in ``docs/design/ConfigurationStorage.md``; operator guide:
   identity is this migration's to reconcile, anything else is refused.
 * **The anchor is the commit point.** It is replaced atomically only after a
   strict flush and a full verification; before that the old configuration
-  keeps working on the source. The source is never modified or deleted, and
+  keeps working on the source. No source row is ever written or deleted, and
   no ``.env`` or environment is ever written.
 """
 
@@ -64,7 +64,7 @@ from lightrag.utils import setup_logger
 
 # Fields a backend adds to a row it returns and owns itself; never content.
 BACKEND_METADATA_KEYS = frozenset(
-    {"_id", "id", "create_time", "update_time", "__mirrored_id"}
+    {"_id", "create_time", "update_time", "__mirrored_id"}
 )
 
 # The environment variables each configuration backend reads, by prefix (or
@@ -100,8 +100,17 @@ class MigrationIndeterminate(RuntimeError):
 
 
 def row_payload(row: dict[str, Any]) -> dict[str, Any]:
-    """The row envelope, verbatim, without the backend-owned metadata."""
-    return {k: v for k, v in row.items() if k not in BACKEND_METADATA_KEYS}
+    """The row envelope, verbatim, without the backend-owned metadata.
+
+    ``id`` is metadata only where it mirrors the key, which is what
+    ``PGKVStorage`` adds (``id`` and ``_id`` both set to the key). An ``id``
+    that says anything else is envelope content and is kept, so it is copied
+    and verified rather than silently dropped.
+    """
+    payload = {k: v for k, v in row.items() if k not in BACKEND_METADATA_KEYS}
+    if "id" in payload and "_id" in row and payload["id"] == row["_id"]:
+        del payload["id"]
+    return payload
 
 
 def is_well_formed(row: Any) -> bool:
@@ -279,7 +288,8 @@ async def _copy_rows(
                 f"({type(e).__name__}: {e})"
             ) from e
         await cs.flush_configuration_storage(target, "the stale target rows")
-    kept = {k for k in target_scan.digests if k not in set(stale)}
+    stale_keys = set(stale)
+    kept = {k for k in target_scan.digests if k not in stale_keys}
 
     identity_key = cs.storage_identity_key()
     copied = 0

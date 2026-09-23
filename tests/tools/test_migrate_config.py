@@ -385,6 +385,29 @@ class TestRefusals:
             al.release_anchor_lock_shared(str(tmp_path))
 
 
+class TestRowPayload:
+    def test_a_key_mirror_is_metadata(self):
+        """``PGKVStorage`` returns the key as both ``id`` and ``_id``."""
+        row = {"id": "k", "_id": "k", "create_time": 1, "update_time": 2, "v": 1}
+        assert mc.row_payload(row) == {"v": 1}
+
+    def test_an_id_that_is_not_the_key_is_content(self):
+        row = {"id": "custom", "_id": "k", "v": 1}
+        assert mc.row_payload(row) == {"id": "custom", "v": 1}
+
+    async def test_an_envelope_id_is_copied_and_verified(self, tmp_path):
+        """A row carrying its own ``id`` reaches the target with it; it is
+        never dropped from both sides and then "verified"."""
+        _anchor(tmp_path)
+        rows = _source_rows()
+        key = cs.embedding_baseline_key("alpha", "entities")
+        rows[key] = {**rows[key], "id": "forward-field"}
+        target = Container()
+        result = await _migrate(tmp_path, Container(rows), target)
+        assert result.switched is True
+        assert target.visible[key]["id"] == "forward-field"
+
+
 class TestFailureAndResume:
     async def test_a_pagination_failure_leaves_the_anchor(self, tmp_path):
         _anchor(tmp_path)
