@@ -53,10 +53,17 @@ with, kept apart from the data that configuration produced.
 | --- | --- |
 | KV namespace | `config` |
 | Selected by | `config_storage` / `LIGHTRAG_CONFIG_STORAGE` — its own category |
-| `JsonKVStorage` | `config_dir/kv_store_config.json`, default `<working_dir>/_lightrag_config` |
+| `JsonKVStorage` | `config_dir/kv_server_config.json`, default `<working_dir>/_lightrag_config` |
 | `PGKVStorage` | table `LIGHTRAG_CONFIG (workspace, id, value JSONB, create_time, update_time)`, partition constant `_lightrag_config` |
 | `MongoKVStorage` | collection `_lightrag_config_config` |
 | `OpenSearchKVStorage` | index `x_lightrag_config_config` (the backend's own sanitizer prepends `x`) |
+
+The JSON file is named for what it holds, not derived from the namespace as
+every data namespace's `kv_store_<namespace>.json` is (`CONFIG_JSON_FILE_NAME`
+in `lightrag/namespace.py`). It was `kv_store_config.json` while this storage
+existed only on `dev`; no release ever wrote that name, so nothing reads it and
+nothing migrates it. From the first release on, renaming the file loses every
+recorded baseline exactly as moving `config_dir` does.
 
 The namespace is a KV namespace on purpose: **KV container names carry no model
 suffix**, so a record kept here does not move when the embedding model changes.
@@ -320,7 +327,7 @@ compatibility claim on the old path would be for, and there is none here.
 
 The reason is that no such revision exists. Every release through `v1.5.7`,
 `main` and `dev` have no configuration storage at all: no `config` namespace,
-no `kv_store_config.json`, and no directory claim of any kind. The only code
+no `kv_server_config.json`, and no directory claim of any kind. The only code
 that ever claimed `<working_dir>` is the unmerged branch this change is stacked
 on, and the two land as one step, so `dev` goes from nothing to this layout.
 A rolling upgrade across that boundary therefore pairs a new server with an old

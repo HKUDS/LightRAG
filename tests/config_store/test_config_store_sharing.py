@@ -53,7 +53,7 @@ def _config_storage(working_dir):
 
 
 def _config_file(working_dir):
-    return working_dir / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    return working_dir / CONFIG_CONTAINER_TAG / "kv_server_config.json"
 
 
 async def test_two_tenants_in_one_process_read_and_write_their_own_rows(tmp_path):

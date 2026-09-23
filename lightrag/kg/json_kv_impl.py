@@ -10,6 +10,7 @@ from lightrag.base import (
 from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
+    CONFIG_JSON_FILE_NAME,
     NameSpace,
     default_config_dir,
 )
@@ -95,6 +96,7 @@ class JsonKVStorage(BaseKVStorage):
             # (the init claim, the namespace lock, the orphan sweep) reads it,
             # and it must be the same constant in every process.
             self.workspace = CONFIG_CONTAINER_TAG
+            file_name = CONFIG_JSON_FILE_NAME
         else:
             # Reject path traversal before using workspace in a file path
             validate_workspace(self.workspace)
@@ -105,9 +107,10 @@ class JsonKVStorage(BaseKVStorage):
                 # Default behavior when workspace is empty
                 workspace_dir = working_dir
                 self.workspace = ""
+            file_name = f"kv_store_{self.namespace}.json"
 
         os.makedirs(workspace_dir, exist_ok=True)
-        self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
+        self._file_name = os.path.join(workspace_dir, file_name)
         self._data = None
         # Whether THIS instance holds the shared namespace; see ``finalize``.
         self._holds_namespace = False

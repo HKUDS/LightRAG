@@ -180,7 +180,7 @@ async def _seed(tmp_path, *, model_name, space="A"):
 
 
 def _records(tmp_path) -> dict[str, dict]:
-    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
     if not path.exists():
         return {}
     payload = json.loads(path.read_text())
@@ -398,7 +398,7 @@ async def test_unsupported_baseline_version_refuses_before_business_storages(
     tmp_path, version
 ):
     await _seed(tmp_path, model_name="bge-m3")
-    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
     records = json.loads(config_file.read_text())
     key = cs.embedding_baseline_key(_workspace(tmp_path), "chunks")
     if version is None:
@@ -572,7 +572,7 @@ async def test_an_unreadable_configuration_file_is_read_again_by_the_next_instan
     handed back instead, so the file is read again and still governs.
     """
     await _seed(tmp_path, model_name="bge-m3")
-    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
     recorded = json.loads(config_file.read_text())
     assert _records(tmp_path)["entities"]["model"] == "bge-m3"
 
@@ -1044,7 +1044,7 @@ async def test_corrupt_nano_startup_is_sticky_preserves_file_and_releases_claim(
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
     await rag.finalize_storages()
-    config_file = tmp_path / "_lightrag_config" / "kv_store_config.json"
+    config_file = tmp_path / "_lightrag_config" / "kv_server_config.json"
     baseline = config_file.read_bytes()
     broken = _rag(tmp_path, model_name="bge-m3")
     path = Path(getattr(broken, target + "_vdb")._client_file_name)

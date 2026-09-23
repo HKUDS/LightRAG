@@ -87,7 +87,7 @@ def _write_recorded_baselines(tmp_path, workspace, *, model_name, dim=_DIM):
     only that the code agrees with itself, where what is being pinned is that
     the on-disk shape is the contract and a later start reads it back.
     """
-    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = {
         cs.embedding_baseline_key(workspace, target): {
