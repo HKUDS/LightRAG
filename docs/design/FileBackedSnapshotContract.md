@@ -658,7 +658,9 @@ the first is still held is refused with
   data.
 
 This is a process-tree guard, and only that. Two separate process trees on one
-`working_dir` are still unsupported and still undetected here — that needs a
+`working_dir` AND one workspace are still unsupported and still undetected here
+(different workspaces use different files and are supported; see
+`ServerInstanceContract.md`) — that needs a
 lock on the directory itself, which is a different mechanism for a different
 failure.
 

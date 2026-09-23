@@ -379,10 +379,12 @@ every release a cancellation detached is **drained before the claim goes back**.
 
 **Accepted residue.** A deployment whose configuration is on a server backend
 (or in a `config_dir` of its own) but whose business data is file-backed is
-*not* protected: two servers there
-still overwrite each other's `full_docs`, `doc_status`, graph and vectors, and
-lose more than baselines doing it. That is the long-standing "separate process
-trees are unsupported" position, unchanged. This claim narrows the blast radius
+*not* protected against two servers on the **same workspace**: they still
+overwrite each other's `full_docs`, `doc_status`, graph and vectors, and lose
+more than baselines doing it. That is the long-standing "one instance per
+workspace" position, unchanged. Servers on DIFFERENT workspaces keep their
+file-backed data in different subdirectories and are supported; see
+`ServerInstanceContract.md`. This claim narrows the blast radius
 rather than closing it, because the baseline is the case whose failure is
 silent. Recovery is unchanged — one server per directory, or server backends —
 and widening the claim to any file-backed storage is a deliberate follow-up,
@@ -836,8 +838,10 @@ below says exactly where that ends.
 part of this contract rather than an assumption under it. **The atomic claim
 covers workers sharing one `shared_storage` instance — one Gunicorn master —
 and nothing wider.** Two independent masters, containers, hosts or SDK process
-groups must not initialize the same configuration store concurrently, and
-overlapping rolling deployments are not supported. That is the same constraint
+groups must not initialize the same **workspace** of a configuration store
+concurrently, and overlapping rolling deployments are not supported.
+Instances on different workspaces claim different keys and never contend
+(`ServerInstanceContract.md`). That is the same constraint
 the embedding-space work already operates under: LightRAG propagates no
 configuration between worker processes and supports no rolling update, so a
 model change is always stop → `lightrag-rebuild-vdb` → start, one deployment at
@@ -858,8 +862,8 @@ B while A is serving on a baseline that is no longer recorded. A read-back can
 only report the record that exists at the moment it runs. Exclusion needs
 mutual exclusion or a compare-and-set, and neither is present here.
 
-Concurrent initialization by separate process trees is therefore **unsupported,
-not a handled residue** — nothing in this slice makes it safe, and it must not
+Concurrent initialization of one workspace by separate process trees is
+therefore **unsupported, not a handled residue** — nothing in this slice makes it safe, and it must not
 be listed among the states this design accepts. Supporting it later needs one
 of: a distributed `shared_storage` lock, or genuine create-if-absent/CAS in each
 backend. Both are projects of their own, and neither is required for the
@@ -1081,9 +1085,10 @@ evidence.
 ## What the category does not retire
 
 **The working-directory claim stays.** Even with configuration on a server
-backend, two servers sharing one `working_dir` still overwrite each other's
-`full_docs`, `doc_status`, graph and vectors — and lose more than baselines
-doing it. The claim now follows the configuration storage onto `config_dir`,
+backend, two servers sharing one `working_dir` AND one workspace still
+overwrite each other's `full_docs`, `doc_status`, graph and vectors — and lose
+more than baselines doing it. (On different workspaces they share nothing but
+the configuration container; see `ServerInstanceContract.md`.) The claim now follows the configuration storage onto `config_dir`,
 which is where the file it protects actually is.
 
 ## What this does not retire
