@@ -111,6 +111,10 @@ from lightrag.kg.working_dir_lock import (
     release_working_dir_lock,
     uses_working_dir,
 )
+from lightrag.kg.anchor_lock import (
+    acquire_anchor_lock_shared,
+    release_anchor_lock_shared,
+)
 from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     acquire_reservation,
@@ -175,12 +179,14 @@ from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
 from lightrag.vector_space_gate import StartupEvidence, check_vector_space_at_startup
 from lightrag.config_store import (
     BaselineOrigin,
+    bind_configuration_identity,
     claim_embedding_baseline,
     configured_baseline,
     create_configuration_storage,
     describe_configuration_container,
     flush_configuration_storage,
     precheck_embedding_baselines,
+    preflight_configuration_anchor,
     read_embedding_baselines,
     resolve_config_dir,
     resolve_configuration_storage,
@@ -1778,6 +1784,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # ``lightrag/kg/working_dir_lock.py``. Set at the top of
         # ``initialize_storages``, cleared by whichever path gives it back.
         self._holds_working_dir: bool = False
+        # Whether THIS instance holds a shared hold on the anchor lock; see
+        # ``lightrag/kg/anchor_lock.py``. Taken before the ``config_dir``
+        # claim and given back after it.
+        self._holds_anchor_lock: bool = False
 
         # Refused here, before any storage is built, so the message names the
         # rule rather than whichever backend happened to construct first. Path
@@ -2267,6 +2277,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if self._holds_working_dir:
                 self._holds_working_dir = False
                 release_working_dir_lock(self.config_dir)
+            # Taken before the directory claim, so given back after it.
+            self._release_anchor_lock()
+
+    def _release_anchor_lock(self) -> None:
+        if self._holds_anchor_lock:
+            self._holds_anchor_lock = False
+            release_anchor_lock_shared(self.working_dir)
+
+    def _configuration_container(self) -> str:
+        return describe_configuration_container(self.config_storage, self.config_dir)
 
     async def _establish_embedding_baselines(
         self, bootstrap_targets: list[str], evidence: StartupEvidence
@@ -2339,7 +2359,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Bring every storage up, in the order the contract fixes.
 
         Nine steps (``docs/design/ConfigurationStorage.md``, *Startup
-        sequence*): the configuration storage first; a strict read of this
+        sequence*), preceded by the anchor checks (0a-0c: the shared anchor
+        lock, a strict read of the anchor, a refusal when it binds another
+        backend type): the configuration storage first, then its identity
+        verified against the anchor or bound (1b); a strict read of this
         workspace's three embedding baselines; a PRECHECK that refuses on a
         recorded mismatch BEFORE any vector storage initializes; the business
         storages, with a reverse-order rollback if one of them fails; the
@@ -2357,7 +2380,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           method re-raises it on every later call rather than early-returning
           as initialized or re-running the steps on storages a rollback has
           closed. Retry with a new instance. The preamble above step 1 --
-          binding the loop, the default workspace, ``pipeline_status`` -- is
+          binding the loop, the default workspace, ``pipeline_status``, the
+          anchor checks 0a-0c and the directory claim -- is
           deliberately outside that: it opens nothing and moves no status, so
           a failure there leaves the instance exactly as it was and the next
           call re-runs every step for real. Making it sticky would kill an
@@ -2396,6 +2420,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         await initialize_pipeline_status(workspace=self.workspace)
 
+        # Steps 0a-0c: the anchor lock (shared), a strict read of the anchor,
+        # and the backend-type check -- all before the configuration storage
+        # opens, so a KV change that moved the configuration's candidate
+        # backend is refused with nothing initialized, no baseline written
+        # and the anchor untouched. They open nothing, so a failure here is
+        # an ordinary, non-sticky one that hands the lock back. See *The
+        # anchor and the container identity* in
+        # docs/design/ConfigurationStorage.md.
+        acquire_anchor_lock_shared(self.working_dir)
+        self._holds_anchor_lock = True
+        try:
+            preflight_configuration_anchor(
+                working_dir=self.working_dir,
+                backend=self.config_storage,
+                container=self._configuration_container(),
+            )
+        except BaseException:
+            self._release_anchor_lock()
+            raise
+
         # Claim the CONFIGURATION DIRECTORY when the configuration storage is
         # file-backed, and only then. Such a storage shares its in-memory copy
         # inside ONE process tree and publishes by rewriting the whole file, so
@@ -2422,6 +2466,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Before step 1, so nothing is open yet and nothing is sticky:
                 # a refusal here leaves the instance exactly as it was.
                 self._holds_working_dir = False
+                self._release_anchor_lock()
                 raise e
 
         # From here until INITIALIZED, `started` is the list of what must be
@@ -2436,6 +2481,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # on what it records.
             started.append(("configuration_storage", self.configuration_storage))
             await self.configuration_storage.initialize()
+
+            # Step 1b. The container's identity against the anchor -- or, with
+            # no anchor, the bind that creates one. Before any baseline is
+            # read: a baseline read from the wrong container is worse than
+            # none. Sticky and rolled back like a step-2 failure.
+            await bind_configuration_identity(
+                self.configuration_storage,
+                working_dir=self.working_dir,
+                backend=self.config_storage,
+                container=self._configuration_container(),
+            )
 
             # Steps 2 and 3. Strict-read the three baselines and compare the
             # ones that exist. A mismatch refuses HERE, before any vector
@@ -2457,9 +2513,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 warn_about_unrecorded_baselines(
                     bootstrap_targets,
                     workspace=self.workspace,
-                    container=describe_configuration_container(
-                        self.config_storage, self.config_dir
-                    ),
+                    container=self._configuration_container(),
                 )
             else:
                 bootstrap_targets = []
@@ -2757,6 +2811,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if self._holds_working_dir:
                 self._holds_working_dir = False
                 release_working_dir_lock(self.config_dir)
+            self._release_anchor_lock()
         if cancelled is not None:
             raise cancelled
 

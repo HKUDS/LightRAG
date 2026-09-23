@@ -87,12 +87,15 @@ from lightrag.config_store import (
     EMBEDDING_TARGETS,
     create_configuration_storage,
     describe_configuration_container,
+    preflight_configuration_anchor,
     read_embedding_baselines,
     record_embedding_baseline,
     resolve_config_dir,
     resolve_configuration_storage,
+    verify_configuration_identity,
 )
 from lightrag.exceptions import (
+    ConfigurationAnchorLockError,
     ConfigurationStorageError,
     CorruptStorageSnapshotError,
     ReferencesIntactFlushError,
@@ -102,6 +105,10 @@ from lightrag.exceptions import (
 )
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.private_file import PrivateFileError, open_private_file
+from lightrag.kg.anchor_lock import (
+    acquire_anchor_lock_shared,
+    release_anchor_lock_shared,
+)
 from lightrag.kg.working_dir_lock import (
     acquire_working_dir_lock,
     release_working_dir_lock,
@@ -776,6 +783,12 @@ class RebuildTool:
         # ``setup_storages``.
         self._holds_working_dir = False
         self.config_dir = ""
+        # The shared anchor lock (``lightrag/kg/anchor_lock.py``) and the
+        # anchor it guards, read before anything opens. The tool VERIFIES the
+        # container's identity against it and never writes either.
+        self._holds_anchor_lock = False
+        self.anchor_working_dir = ""
+        self.anchor = None
         self.global_config: Dict[str, Any] = {}
         self.embedding_func: EmbeddingFunc | None = None
         self.embedding_available = False
@@ -895,6 +908,12 @@ class RebuildTool:
         self.config_dir = self.resolve_config_dir()
         self.workspace = os.getenv("WORKSPACE", "")
 
+        # The anchor first (steps 0a-0c, as a start runs them): the shared
+        # lock, a strict read, and a refusal when it binds another backend
+        # type -- before the directory claim and before anything opens.
+        if not self.preflight_anchor():
+            return False
+
         # Claim the working directory FIRST, before building anything. This
         # tool is a SECOND process tree: a server running on the same
         # directory keeps its own in-memory copy of a file-backed
@@ -996,7 +1015,13 @@ class RebuildTool:
             # that cannot record its baseline afterwards is not a clean
             # recovery, so failing to open it aborts here rather than after
             # the vectors were dropped.
-            for storage in (self.configuration_storage, self.graph, self.text_chunks):
+            await self.configuration_storage.initialize()
+            # The container must be the one the anchor binds before anything
+            # else opens: a baseline recorded into the wrong container is a
+            # rebuild that protects nothing.
+            if not await self.verify_identity():
+                return False
+            for storage in (self.graph, self.text_chunks):
                 await storage.initialize()
             # Vector targets, one at a time, tolerating ONLY the typed
             # embedding-space refusal or a typed corrupt snapshot.
@@ -1051,6 +1076,63 @@ class RebuildTool:
                 "  authoritative sources; nothing else can repair them."
             )
         return True
+
+    def preflight_anchor(self) -> bool:
+        """Take the shared anchor lock and refuse on a backend-type mismatch.
+
+        Refuses exactly as a start would. Never creates or rewrites the
+        anchor: only a server or SDK start binds.
+        """
+        self.anchor_working_dir = os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR)
+        try:
+            acquire_anchor_lock_shared(self.anchor_working_dir)
+        except ConfigurationAnchorLockError as e:
+            print(f"\n✗ {e}")
+            return False
+        self._holds_anchor_lock = True
+        try:
+            self.anchor = preflight_configuration_anchor(
+                working_dir=self.anchor_working_dir,
+                backend=self.storage_names["config"],
+                container=describe_configuration_container(
+                    self.storage_names["config"], self.config_dir
+                ),
+            )
+        except ConfigurationStorageError as e:
+            print(f"\n✗ {e}")
+            self.release_anchor_lock()
+            return False
+        return True
+
+    async def verify_identity(self) -> bool:
+        """Verify the configuration container against the anchor; write nothing."""
+        try:
+            binding = await verify_configuration_identity(
+                self.configuration_storage,
+                self.anchor,
+                working_dir=self.anchor_working_dir,
+                backend=self.storage_names["config"],
+                container=describe_configuration_container(
+                    self.storage_names["config"], self.config_dir
+                ),
+            )
+        except ConfigurationStorageError as e:
+            print(f"✗ {e}")
+            return False
+        if binding.action == "unanchored":
+            print(
+                "- Storage identity: no anchor on record, so the configuration "
+                "container's identity was not verified (only a server start "
+                "binds one)"
+            )
+        else:
+            print(f"- Storage identity: {binding.storage_uuid} (matches the anchor)")
+        return True
+
+    def release_anchor_lock(self) -> None:
+        if self._holds_anchor_lock:
+            self._holds_anchor_lock = False
+            release_anchor_lock_shared(self.anchor_working_dir)
 
     async def print_baselines(self) -> bool:
         """Report each target's recorded embedding baseline against the config.
@@ -1580,6 +1662,8 @@ class RebuildTool:
             if self._holds_working_dir:
                 self._holds_working_dir = False
                 release_working_dir_lock(self.config_dir)
+            # Taken before the directory claim, so given back after it.
+            self.release_anchor_lock()
 
 
 async def async_main() -> bool:

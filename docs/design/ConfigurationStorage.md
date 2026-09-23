@@ -7,8 +7,11 @@ Status: **slices 1 and 1b implemented** — slice 1
 enumeration surface `BaseKVStorage.iter_rows()`); slice 1b
 ([#4020](https://github.com/HKUDS/LightRAG/issues/4020)) made configuration its
 own storage **category** and retired the reserved workspace name it used to
-live under. Slice 2 and everything under *later* in the rollout table are still
-planned. The acceptance scenarios are regression tests under
+live under; slice 1c
+([#4059](https://github.com/HKUDS/LightRAG/issues/4059)) gave the container
+an identity and anchored each deployment to it (*The anchor and the container
+identity*). Slice 2 and everything under *later* in the rollout table are
+still planned. The acceptance scenarios are regression tests under
 `tests/config_store/`, with the per-backend enumeration tests beside each
 backend under `tests/kg/`.
 
@@ -57,6 +60,11 @@ with, kept apart from the data that configuration produced.
 | `PGKVStorage` | table `LIGHTRAG_CONFIG (workspace, id, value JSONB, create_time, update_time)`, partition constant `_lightrag_config` |
 | `MongoKVStorage` | collection `_lightrag_config_config` |
 | `OpenSearchKVStorage` | index `x_lightrag_config_config` (the backend's own sanitizer prepends `x`) |
+| identity | row `_lightrag_server/storage_identity`, `value = {"uuid": <UUIDv4>}`, in whichever of the four holds the container |
+| anchor | `<working_dir>/_lightrag_config/storage_anchor.json` — fixed, never follows `config_dir` |
+
+The last two rows are the container's identity and the deployment's binding to
+it; see *The anchor and the container identity*.
 
 The JSON file is named for what it holds, not derived from the namespace as
 every data namespace's `kv_store_<namespace>.json` is (`CONFIG_JSON_FILE_NAME`
@@ -269,6 +277,17 @@ as *absent* after an ordinary redeploy, which is the failure this whole
 facility exists to prevent. The requirement that business workspaces differ is
 the cheaper and already-load-bearing rule.
 
+**The container identity is not that deployment id.** The UUID in
+`_lightrag_server/storage_identity` identifies the whole configuration
+CONTAINER, not a deployment and not a workspace, and it is never a row
+discriminator: every row is still keyed by its scope. It lives inside the
+container and travels with it (a dump/restore keeps it), a start without an
+anchor adopts whatever UUID the container already holds, and an ordinary
+redeploy that keeps `WORKING_DIR` and the container passes unchanged — so none
+of the "reads as absent after a redeploy" failure above can follow from it.
+Two deployments sharing one container share its identity, which is correct:
+they share the container.
+
 ### One server at a time on a file-backed configuration
 
 The in-process guard (*One file per namespace per process tree* in
@@ -317,6 +336,21 @@ file it exists to protect. Five properties matter:
   it writes to say the rebuild happened is exactly the one a running server
   would overwrite. The confirmation prompt is not a substitute: it asks the
   operator, the claim asks the filesystem.
+
+**The anchor lock is a third, separate statement.** `.lightrag_anchor.lock`
+beside the anchor (`lightrag/kg/anchor_lock.py`) is taken SHARED by every
+starter — the server, the Gunicorn master in `on_starting` (workers inherit
+it), the SDK, `lightrag-rebuild-vdb`, `lightrag-clear-storage` — and
+EXCLUSIVELY only by the offline configuration migration. It is a different
+file from this claim's `.lightrag_storage.lock` even when both sit in the
+default `config_dir`, and it changes nothing about this claim: starters that
+coexist today are not newly refused, and only a migration is excluded against
+them. Order: the anchor lock, then this claim; released in reverse, after the
+teardown. Where a filesystem or platform cannot lock (NFSv3 without lockd,
+SMB/CIFS, a read-only directory, Windows — `msvcrt.locking` has no shared
+mode) starters fail open with a warning, as this claim does; the migration
+refuses unless `--assume-exclusive` records that the operator stopped every
+reader and writer.
 
 #### There is no claim on a pre-move path, because there is no pre-move server
 
@@ -377,6 +411,9 @@ shielded task returns the moment the awaiting task is cancelled, which
 event loop's own shutdown and loses exactly what it was called to hand back. So
 every release a cancellation detached is **drained before the claim goes back**.
 
+The shared anchor lock goes back after the claim, on both paths, for the same
+reason: it was taken first.
+
 **Accepted residue.** A deployment whose configuration is on a server backend
 (or in a `config_dir` of its own) but whose business data is file-backed is
 *not* protected: two servers there
@@ -386,7 +423,9 @@ trees are unsupported" position, unchanged. This claim narrows the blast radius
 rather than closing it, because the baseline is the case whose failure is
 silent. Recovery is unchanged — one server per directory, or server backends —
 and widening the claim to any file-backed storage is a deliberate follow-up,
-since it would refuse deployments that work today.
+since it would refuse deployments that work today. The anchor lock does not
+change this: it excludes a migration, not a second server on the same
+business data.
 
 ## Keys
 
@@ -471,6 +510,176 @@ One module owns the list of keys. Each entry declares:
 A general namespace without a registry becomes a junk drawer. The `sensitive`
 flag exists from the first entry even though nothing sensitive is stored yet —
 adding the column later means auditing every key that already exists.
+
+## The anchor and the container identity
+
+"Unset follows `kv_storage`" re-resolves on every start, so the configuration
+container moves whenever the KV selection does: the old records stay in the
+old backend and the new container reads as absent. Baselines are only ever
+established on positive evidence, so a drifted start re-probes rather than
+adopting silently — but it loses the recorded baselines (a probe verdict is a
+sample, weaker than the record), it loses every record that cannot be
+re-derived by probing (slice 2's server-level pair and every environment
+setting later moved into the store), and a start against an emptied or wrong
+container is only announced. The anchor turns that into a refusal.
+
+**Two pieces, and nothing else.**
+
+- The container's **identity**: the server-scope row
+  `_lightrag_server/storage_identity`, `value = {"uuid": <UUIDv4>}`, registered
+  in `CONFIG_KEY_REGISTRY` with `SERVER_SCOPE`. It identifies the whole
+  container — every workspace in it shares it. It is never overwritten once
+  valid, and never deleted or regenerated by a workspace clear
+  (`delete_workspace_configuration` deletes registered per-workspace suffixes
+  by key and never reaches it), an embedding rebuild, or row maintenance.
+- The deployment's **anchor**:
+  `<working_dir>/_lightrag_config/storage_anchor.json`, holding exactly
+  `schema_version`, `backend` and `storage_uuid`
+  (`lightrag/config_anchor.py`). No host, port, credential, connection string
+  or hash of one. Its path depends on `working_dir` and a name fixed in code,
+  and **does not follow `config_dir`**: that setting moves the JSON data, and
+  moving the anchor with it would move the checked data and the check
+  together.
+
+**Why a UUID and not only the backend type.** A type-only anchor catches the
+KV-drift case and nothing else. The UUID also catches a same-type container
+change: a connection pointed at another or an empty database, a changed
+`LIGHTRAG_CONFIG_DIR`, a restore from a backup older than the identity. Its
+cost is one registered row and one bind step — no pending state, no recovery
+mode, no journal.
+
+### What is compared
+
+| change | result |
+| --- | --- |
+| IP, port, DNS or credentials change; type and UUID unchanged | passes; connection failures still fail normally |
+| same backend type, different UUID | refused |
+| anchor present, container UUID missing | refused; no UUID is created |
+| backend type changed, even with the same UUID copied over | refused (the copy-the-row bypass) |
+| JSON `config_dir` changed | judged by the target container's UUID; the fixed anchor is still read |
+| identity matches, an embedding baseline does not | refused by the baseline contract, unchanged |
+| anchor file deleted by the operator | no-anchor branch: adopt the container's UUID, or create one |
+
+The UUID identifies a logical container. It is not a tamper-proof credential
+and does not prove that a database is physically unique or complete: a clone
+or an old backup carries the same UUID, and detecting same-type clones,
+rollbacks or edits to both sides is out of scope. Baselines, the coverage gate
+and the per-container markers are all kept and still ANDed.
+
+### Reads and writes
+
+- **The anchor is read strictly.** Structure, the exact `schema_version`, an
+  admitted backend name and a canonical UUID are all validated. Only a
+  genuine "file does not exist" is the no-anchor branch; a permission error, a
+  directory in its place, a truncated or corrupt file or an unknown version
+  refuses (`ConfigurationIdentityError`, cause `anchor_unreadable`).
+- **The identity row is read strictly** (`read_config_row_strict`); a backend
+  error, a wrong schema version or scope, or a malformed UUID is an error,
+  never absent.
+- **The identity is written through `flush_configuration_storage`** — the
+  same strict flush the baseline claims use, retained-buffer check included —
+  and confirmed by a strict read-back. An OpenSearch read-back answered from
+  the process-local buffer is not proof of durability.
+- **The anchor is written durably in two modes.** Both write a temp file in
+  the same directory, `fsync` it, publish, then `fsync` the directory where
+  the platform can (Windows cannot; `EINVAL` / `ENOTSUP` read as "cannot").
+  The *bind* publishes **no-clobber** — `link` then `unlink` on POSIX,
+  `rename` on Windows, a re-check under the bind's keyed lock on a filesystem
+  without hard links. The *migration* publishes by atomic replace, and nothing
+  else does. A normal start never overwrites or deletes an existing anchor,
+  and every failure — directory, temp file, publish, directory fsync — is
+  raised with a definite message, never reported as success.
+- **Persistence is a deployment requirement.** `WORKING_DIR` must persist
+  whichever backends are selected, and the anchor belongs in backup, restore
+  and volume migration. An ephemeral `WORKING_DIR` loses the anchor on every
+  restart and makes the check vacuous, which is why the no-anchor bind logs at
+  WARNING. A read-only `WORKING_DIR` fails the first bind loudly; once an
+  anchor exists it only affects the lock.
+
+### Startup: steps 0a–0c and 1b
+
+```
+0a. take the shared anchor lock                          (not sticky)
+0b. strict-read the anchor
+0c. anchor present and the candidate backend type differs
+      -> refuse before the configuration storage initializes
+    (the JSON config_dir claim, unchanged)
+1.  initialize the configuration storage
+1b. BIND, under keyed lock "configuration_identity"      (sticky; rolled
+      re-read the anchor                                   back like step 2)
+      strict-read the identity row
+      anchored:     equal -> continue
+                    missing / different / invalid / error -> refuse
+      not anchored: present -> adopt it
+                    confirmed absent -> create it: upsert, strict flush,
+                                        strict read-back, compare
+                    publish the anchor {candidate backend, uuid}, no-clobber
+                    WARNING: container, uuid, adopted or created
+2-9. unchanged
+```
+
+- **0a–0c open nothing**, so a failure there is an ordinary, non-sticky one
+  that hands the lock back — the same boundary as *Where stickiness starts*.
+  1b follows the sticky and rollback rules of a step-2 failure; `INITIALIZED`
+  keeps its meaning.
+- **The Gunicorn master runs 0a–0c in `on_starting`**, before forking, through
+  the same `configuration_selection_from_env()` it already uses for the
+  directory claim, so a type mismatch refuses the master instead of every
+  worker failing while the master respawns them. Workers still run 0b–1b.
+- **The anchor is published as soon as the identity is confirmed**, before any
+  business storage initializes. It records the binding and nothing else — not
+  whether any baseline has been recorded.
+- **The keyed lock spans the whole read-decide-write.** A second worker of the
+  same master waits, then finds an anchor and an equal UUID. Concurrent first
+  binds by separate process trees remain unsupported, as every other claim
+  here; the no-clobber publish only guarantees the loser never overwrites the
+  winner's anchor.
+
+**Crash analysis — why there is no `pending` state.** The identity is written
+first and the anchor second, so every interruption heals by adoption:
+
+| interrupted after | next start | outcome |
+| --- | --- | --- |
+| identity durable, anchor not published | no anchor, identity present -> adopt | heals by itself |
+| anchor publish failed | start fails loudly; the retry adopts the durable identity | heals by itself |
+| any of steps 2–9 | anchor and identity already consistent | existing sticky-failure rules |
+
+### Refusals, and the rebind
+
+**Deleting `storage_anchor.json` is the sanctioned rebind.** The next start
+takes the no-anchor branch and binds to whatever container the current
+configuration selects, with a WARNING naming the container and the UUID. That
+turns drift detection off for one start; protection falls back to the
+baseline contract (evidence-only adoption, the unrecorded-baseline
+announcement, the coverage gate, the per-container markers). It is a
+deliberate downgrade to the pre-anchor guarantees, not a bypass below them,
+and the documented recovery for a container intentionally emptied or
+replaced, a database restored from a backup older than the identity, or an
+old container abandoned on purpose. Do not delete it while servers run:
+running processes do not re-read it, and a respawned Gunicorn worker rebinds
+to the current container. No `rebind` command exists; one is added only if
+misuse of the deletion shows up in practice.
+
+Every refusal names the stage, the expected and actual backend type and UUID,
+and the anchor's path, and hides credentials. The advice depends on the cause,
+because type drift is the mistake the anchor exists to stop:
+
+| refusal | first advice | deleting the anchor |
+| --- | --- | --- |
+| container UUID missing | if the container was intentionally emptied, replaced or restored from an old backup, delete the anchor (path given) and restart | primary recovery |
+| backend type differs | set `LIGHTRAG_CONFIG_STORAGE` explicitly to the anchored backend, or migrate the container offline | listed last, marked as abandoning every record in the old container |
+| same type, different UUID | check that the connection settings point at the intended database | listed last, same warning |
+
+### Maintenance tools
+
+`lightrag-rebuild-vdb` and `lightrag-clear-storage` take the shared anchor
+lock, resolve through the same selection code, refuse a backend-type mismatch
+before anything opens, and **verify** the identity
+(`verify_configuration_identity`) right after the configuration storage opens
+and before any data storage does — refusing exactly as a start would. They
+never create or rewrite the anchor or the identity row; with no anchor they
+run as before and say nothing was verified. Only a server or SDK start binds,
+and only the migration tool changes a binding.
 
 ## The first keys: one baseline per vector target
 
@@ -597,7 +806,10 @@ whole check runs before the vector storages initialize; that is impossible — t
 entity probe reads `entities_vdb`.
 
 ```
+0a-0c. the anchor lock, the anchor, the backend-type check
+       (see *The anchor and the container identity*)
 1.  initialize the configuration storage
+1b. verify the container's identity against the anchor, or bind it
 2.  strict-read the three records for this workspace
 3.  PRECHECK, on records that exist:
       any mismatch  -> refuse; no vector storage is initialized
@@ -737,9 +949,10 @@ pending buffer ahead of its own client guard), so a retry on the same object
 could neither succeed honestly nor re-run from step 1. A new instance is the
 retry.
 
-**Where stickiness starts.** Steps 1 through 9 are the guarded phase; the
-preamble before them -- binding the event loop, the default workspace,
-`pipeline_status` -- is not, and deliberately so. Stickiness exists to stop two
+**Where stickiness starts.** Steps 1 through 9 are the guarded phase, 1b
+included; the preamble before them -- binding the event loop, the default
+workspace, `pipeline_status`, the anchor steps 0a-0c and the directory claim
+-- is not, and deliberately so. Stickiness exists to stop two
 things: a later call early-returning on a status that says `INITIALIZED`, and
 re-running steps against storages a rollback has closed. Neither is reachable
 before step 1, where nothing has been opened and the status has not moved, so a
@@ -884,7 +1097,10 @@ costs no new backend work — but the caller must still check the ClassVar rathe
 than assume it, since `BaseKVStorage` defaults it to `False`.
 
 A configuration store that was deliberately emptied reads as confirmed absent
-and bootstraps again, which is correct. A store that cannot be reached does not.
+-- and, while an anchor exists, **refuses**: its identity is gone, so step 1b
+stops the start before any baseline is read. Recovery is deleting the anchor
+(*Refusals, and the rebind*); only then does the emptied store bootstrap
+again. A store that cannot be reached refuses either way.
 
 **One failure is typed apart, and it does not weaken the table above.** A
 record that was FETCHED but is not a row — the key maps to a string, a number,
@@ -1140,17 +1356,34 @@ its workspace. Recovery: a maintenance command that deletes rows whose scope
 names a workspace with no data. Severity drops to reporting noise once workspace
 names are UUIDs.
 
-**A replaced or cleared configuration store loses every baseline.** Reads
-confirm absent, which bootstraps again — the same class as a wiped marker, and
-the same recovery. A separately selected backend adds a second way to reach
-this state: point `config_storage` or `config_dir` at an empty or different
-store and the start looks exactly like a first one. Announced rather than
-enforced (`warn_about_unrecorded_baselines()`, the same posture as
-`warn_about_workspace_overrides()`), because the two are indistinguishable from
-inside the process. What is *not* residue: nothing is adopted on the configured
+**A replaced or cleared configuration store loses every baseline — when no
+anchor exists.** With an anchor, a replaced or cleared store has no identity,
+or another one, and step 1b refuses. Without one, reads confirm absent, which
+bootstraps again — the same class as a wiped marker, and the same recovery. A
+separately selected backend adds a second way to reach this state: point
+`config_storage` or `config_dir` at an empty or different store on a
+deployment with no anchor and the start looks exactly like a first one.
+Announced rather than enforced (`warn_about_unrecorded_baselines()`, the same
+posture as `warn_about_workspace_overrides()`), because the two are
+indistinguishable from inside the process. What is *not* residue: nothing is adopted on the configured
 model alone even then — a baseline is established only for a target whose
 container is confirmed empty or whose stored vectors an adoption probe vouched
 for.
+
+**The no-anchor boundary.** A deleted anchor, a replaced volume and an
+ephemeral `WORKING_DIR` cannot be told apart from a first upgrade: each takes
+the no-anchor branch and binds to whatever the current configuration selects.
+That is the documented rebind when intended, and a silent loss of drift
+detection for one start when not — which is why the bind logs at WARNING and
+the deployment docs require `WORKING_DIR` to persist. Recovery when
+unintended: restore the anchor from backup, or point the configuration back
+and delete the anchor the wrong start wrote.
+
+**An orphan identity row after an interrupted bind.** If the configuration is
+repointed between a bind's identity write and its anchor publish, the first
+container keeps an identity no anchor names. A later bind to it adopts it; an
+anchored start against it refuses on UUID mismatch. Both directions are safe
+and the row is harmless. Recovery: none needed.
 
 **Two deployments sharing one server backend AND one business workspace name
 overwrite each other's baselines.** The container name is fixed for everyone,
@@ -1180,6 +1413,7 @@ the more convenient one.
 | --- | --- |
 | 1 | the `config` namespace across the five KV backends (PostgreSQL DDL + SQL templates; the internal reserved-workspace factory; the enumeration surface), the reserved `_lightrag*` name family, **three** `<workspace>/embedding/<target>` records with their verdicts, the split startup sequence with cleanup on early refusal, the atomic claim, per-target `rebuild_vdb` commits, data-first drop cleanup, key registry |
 | 1b | configuration as its own **category** (`config_storage`, four admitted backends, refusal by name), `config_dir` for the JSON backend with the migration-free default, fixed container names on PostgreSQL / MongoDB / OpenSearch, the single-server claim moved onto `config_dir`, the unrecorded-baseline announcement, and the retirement of the whole reserved-name machinery |
+| 1c | the container identity row, the anchor file with its strict read and no-clobber publish, the shared anchor lock, steps 0a–0c and 1b (Gunicorn master included), identity verification in the two maintenance tools |
 | 2 | `_lightrag_server/embedding.current` / `.previous` and the startup inventory naming which workspaces still need a rebuild, over the enumeration surface from slice 1 |
 | later | migrating existing environment variables into the store, key by key; a display-name → UUID mapping once workspace names become UUIDs; the secrets policy |
 
@@ -1259,3 +1493,41 @@ The implementation is not complete until these are regression tests.
     every storage initialized before it are each released exactly once;
     storages the loop never reached are not touched; the original exception is
     what propagates.
+
+The anchor and the container identity (slice 1c):
+
+28. A first start with no anchor creates the identity, then the anchor, on
+    each of the four backends; an inherited Redis selection is refused by
+    name.
+29. A deployment with configuration rows but no identity binds by creating it;
+    every baseline row is read unchanged.
+30. An anchor naming another backend type is refused at step 0c: no
+    configuration or business storage initialized, nothing written, the anchor
+    untouched, and not sticky. An explicit `LIGHTRAG_CONFIG_STORAGE` naming
+    the anchored backend passes.
+31. Same type and UUID passes; same type with a different UUID, a missing
+    UUID, an invalid row or a read error each refuse, and create nothing.
+32. A no-anchor bind whose identity read fails at transport level creates
+    neither a UUID nor an anchor.
+33. A Gunicorn master refuses a type mismatch before forking.
+34. A changed `config_dir` still reads the fixed anchor and is judged by the
+    target's UUID; a moved directory that keeps its identity passes.
+35. An anchor that cannot be read (permission, corruption, truncation, unknown
+    version, a directory in its place) is never absent; a failed write,
+    publish or directory fsync is loud; a start never overwrites an anchor.
+36. A crash or cancellation after the identity write and before the anchor
+    publish heals by adoption on the next start; a 1b failure is sticky and
+    releases every resource and the anchor lock.
+37. Concurrent binds in one process tree create exactly one identity and
+    publish the anchor once; repeated initialization never regenerates either.
+38. Deleting the anchor rebinds with a WARNING naming the container and the
+    UUID; each refusal carries its per-cause advice.
+39. Starters share the anchor lock; an exclusive hold refuses them, and any
+    starter refuses the exclusive hold; on a filesystem that cannot lock,
+    starters warn and proceed and the exclusive hold needs
+    `--assume-exclusive`.
+40. A workspace clear never deletes the identity; `lightrag-rebuild-vdb` and
+    `lightrag-clear-storage` refuse on an identity or type mismatch before any
+    data storage opens, and never create an anchor.
+41. The identity's strict read, flush and read-back run on all four backends,
+    and an OpenSearch write still retained in the buffer binds nothing.

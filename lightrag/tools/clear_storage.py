@@ -66,15 +66,18 @@ from lightrag.config_store import (
     delete_workspace_configuration,
     describe_configuration_container,
     embedding_baseline_key,
+    preflight_configuration_anchor,
     read_config_row_strict,
     resolve_config_dir,
     resolve_configuration_storage,
+    verify_configuration_identity,
 )
 from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
 )
 from lightrag.exceptions import (
+    ConfigurationAnchorLockError,
     ConfigurationRecordMalformedError,
     ConfigurationStorageError,
     CorruptStorageSnapshotError,
@@ -84,6 +87,10 @@ from lightrag.exceptions import (
 )
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS, verify_storage_implementation
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+from lightrag.kg.anchor_lock import (
+    acquire_anchor_lock_shared,
+    release_anchor_lock_shared,
+)
 from lightrag.kg.working_dir_lock import (
     acquire_working_dir_lock,
     release_working_dir_lock,
@@ -257,6 +264,10 @@ class ClearTool:
         self.configuration_storage = None
         self._holds_working_dir = False
         self.config_dir = ""
+        # The shared anchor lock and the anchor it guards; the tool VERIFIES
+        # the container's identity against it and never writes either.
+        self._holds_anchor_lock = False
+        self.anchor = None
         self.input_dir = ""
         self.working_dir = ""
         self.workspace = ""
@@ -520,6 +531,13 @@ class ClearTool:
         self.config_dir = resolve_config_dir(args.config_dir, args.working_dir)
         self.input_dir = self.resolve_input_dir(args.input_dir)
 
+        # The anchor first (steps 0a-0c, as a start runs them), before the
+        # directory claim and before anything opens: a clear against a
+        # configuration container this deployment is not bound to would
+        # delete the records of the wrong one.
+        if not self.preflight_anchor():
+            return False
+
         # Claim the configuration directory FIRST, for the reason
         # ``lightrag-rebuild-vdb`` does: a server on the same directory keeps
         # its own copy of a file-backed configuration namespace and would
@@ -559,6 +577,8 @@ class ClearTool:
             )
             self._print_env_requirements()
             return False
+        if not await self.verify_identity():
+            return False
 
         try:
             for label in DATA_STORAGE_LABELS:
@@ -588,6 +608,64 @@ class ClearTool:
         print(f"- Input Dir:          {self.input_dir}")
         print("- Connection Status:  ✓ Success")
         return True
+
+    def _container(self) -> str:
+        return describe_configuration_container(
+            self.storage_names["config"], self.config_dir
+        )
+
+    def preflight_anchor(self) -> bool:
+        """Take the shared anchor lock and refuse on a backend-type mismatch.
+
+        Refuses exactly as a start would. Never creates or rewrites the
+        anchor: only a server or SDK start binds.
+        """
+        try:
+            acquire_anchor_lock_shared(self.working_dir)
+        except ConfigurationAnchorLockError as e:
+            print(f"\n✗ {e}")
+            return False
+        self._holds_anchor_lock = True
+        try:
+            self.anchor = preflight_configuration_anchor(
+                working_dir=self.working_dir,
+                backend=self.storage_names["config"],
+                container=self._container(),
+            )
+        except ConfigurationStorageError as e:
+            print(f"\n✗ {e}")
+            self.release_anchor_lock()
+            return False
+        return True
+
+    async def verify_identity(self) -> bool:
+        """Verify the configuration container against the anchor, before any
+        data storage opens; write nothing."""
+        try:
+            binding = await verify_configuration_identity(
+                self.configuration_storage,
+                self.anchor,
+                working_dir=self.working_dir,
+                backend=self.storage_names["config"],
+                container=self._container(),
+            )
+        except ConfigurationStorageError as e:
+            print(f"✗ {e}")
+            return False
+        if binding.action == "unanchored":
+            print(
+                "- Storage identity: no anchor on record, so the configuration "
+                "container's identity was not verified (only a server start "
+                "binds one)"
+            )
+        else:
+            print(f"- Storage identity: {binding.storage_uuid} (matches the anchor)")
+        return True
+
+    def release_anchor_lock(self) -> None:
+        if self._holds_anchor_lock:
+            self._holds_anchor_lock = False
+            release_anchor_lock_shared(self.working_dir)
 
     def _print_env_requirements(self) -> None:
         for storage_name in set(self.storage_names.values()):
@@ -1220,6 +1298,8 @@ class ClearTool:
             if self._holds_working_dir:
                 self._holds_working_dir = False
                 release_working_dir_lock(self.config_dir)
+            # Taken before the directory claim, so given back after it.
+            self.release_anchor_lock()
 
 
 async def async_main() -> bool:

@@ -57,16 +57,24 @@ def _hermetic_working_dir(monkeypatch, tmp_path):
 
     The claim is per process tree and released only by the tools' own
     ``run()``, which these tests bypass, so any claim a test leaves behind is
-    given back here. Only claims the test ADDED are touched: a test that
+    given back here, and so is the shared anchor lock
+    (``lightrag/kg/anchor_lock.py``) they take first. Only claims the test ADDED are touched: a test that
     manipulates the claim table itself restores it in its own ``finally``.
     """
+    from lightrag.kg import anchor_lock as al
     from lightrag.kg import working_dir_lock as wdl
 
     monkeypatch.setenv("WORKING_DIR", str(tmp_path / "rag_storage"))
     monkeypatch.setenv("LIGHTRAG_CONFIG_DIR", "")
 
     before = set(wdl._claims)
+    # The shared anchor lock the tools take before the claim, likewise.
+    anchor_before = set(al._shared_holds)
     yield
     for lock_path in set(wdl._claims) - before:
         while lock_path in wdl._claims:
             wdl.release_working_dir_lock(os.path.dirname(lock_path))
+    for lock_path in set(al._shared_holds) - anchor_before:
+        hold = al._shared_holds.pop(lock_path)
+        if hold.handle is not None:
+            hold.handle.close()

@@ -141,7 +141,13 @@ class TestTheConfigurationDirectoryIsWhereBaselinesLive:
             assert {b.origin for b in recorded.values()} == {"probe"}
         finally:
             await rag.finalize_storages()
-        assert _stored(path) == before
+        # A dev deployment with rows but no identity binds by CREATING the
+        # identity; every baseline row it already had is byte-for-byte the
+        # same, and the identity is the only row added.
+        after = _stored(path)
+        identity_key = cs.storage_identity_key()
+        assert set(after) == set(before) | {identity_key}
+        assert {k: v for k, v in after.items() if k != identity_key} == before
 
     async def test_a_mismatching_model_still_refuses(self, tmp_path):
         _write_recorded_baselines(tmp_path, _workspace(tmp_path), model_name="bge-m3")
