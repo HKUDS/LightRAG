@@ -83,6 +83,23 @@ class Container(FakeConfigKV):
         return _gen()
 
 
+class _FailsOnIteration(Container):
+    """A source whose ``fail_on_call``-th enumeration loses its cursor."""
+
+    def __init__(self, rows=None, *, fail_on_call, **kwargs):
+        super().__init__(rows, **kwargs)
+        self.fail_on_call = fail_on_call
+        self.iter_calls = 0
+
+    def iter_rows(self, *, page_size=200):
+        self.iter_calls += 1
+        if self.iter_calls == self.fail_on_call:
+            self.iter_error_after = 1
+        else:
+            self.iter_error_after = None
+        return super().iter_rows(page_size=page_size)
+
+
 def _identity_row(storage_uuid=UUID_A):
     return cs.make_config_row(
         scope_workspace=SERVER_SCOPE,
@@ -396,6 +413,50 @@ class TestFailureAndResume:
         assert result.switched is True
         assert ca.read_anchor(str(tmp_path)).backend == "MongoKVStorage"
 
+    async def test_a_source_lost_during_the_copy_is_a_resumable_failure(self, tmp_path):
+        """The copy re-enumerates the source after the first scan passed and
+        the target was claimed: a cursor lost there is a migration failure
+        (anchor unchanged, re-run resumes), never a raw backend error."""
+        _anchor(tmp_path)
+        source = _FailsOnIteration(_source_rows(), fail_on_call=2)
+        target = Container()
+        with pytest.raises(mc.MigrationFailed, match="during the copy"):
+            await _migrate(tmp_path, source, target)
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+        assert target.visible[IDENTITY_KEY]["value"] == {"uuid": UUID_A}
+
+    async def test_an_anchor_that_cannot_be_read_back_is_indeterminate(
+        self, tmp_path, monkeypatch
+    ):
+        """The replace may have landed before the error: with no read-back
+        the outcome is reported as unknown, never as "anchor unchanged"."""
+        _anchor(tmp_path)
+        real = mc.publish_anchor
+        real_read = mc.read_anchor
+        published = []
+
+        def _landed_then_failed(working_dir, anchor, *, replace):
+            real(working_dir, anchor, replace=replace)
+            published.append(anchor)
+            raise ca.ConfigurationIdentityError(
+                "fsync failed", cause=ca.IDENTITY_ANCHOR_WRITE_FAILED
+            )
+
+        def _unreadable(working_dir):
+            # Step 1's read passes; only the read-back after the switch fails.
+            if not published:
+                return real_read(working_dir)
+            raise ca.ConfigurationIdentityError(
+                "EIO", cause=ca.IDENTITY_ANCHOR_UNREADABLE
+            )
+
+        monkeypatch.setattr(mc, "publish_anchor", _landed_then_failed)
+        monkeypatch.setattr(mc, "read_anchor", _unreadable)
+        with pytest.raises(mc.MigrationIndeterminate):
+            await _migrate(tmp_path, Container(_source_rows()), Container())
+        monkeypatch.undo()
+        assert ca.read_anchor(str(tmp_path)).backend == "MongoKVStorage"
+
     async def test_a_source_that_changed_between_attempts_is_converged(self, tmp_path):
         _anchor(tmp_path)
         # Writes land as they are made, so the failed attempt leaves rows.
@@ -603,6 +664,61 @@ class TestCommandLine:
         code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
         assert code == 1
         assert "anchor is unchanged" in capsys.readouterr().out
+
+    async def test_a_copy_time_source_failure_is_reported_not_raised(
+        self, monkeypatch, capsys
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        source = _FailsOnIteration(_source_rows(), fail_on_call=2)
+        self._wire(monkeypatch, source, Container())
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        assert code == 1
+        assert "anchor is unchanged" in capsys.readouterr().out
+
+    async def test_an_indeterminate_switch_does_not_claim_the_anchor_is_unchanged(
+        self, monkeypatch, capsys
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        self._wire(monkeypatch, Container(_source_rows()), Container())
+
+        async def _indeterminate(**kwargs):
+            raise mc.MigrationIndeterminate("injected")
+
+        monkeypatch.setattr(mc, "migrate_configuration", _indeterminate)
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "Outcome unknown" in out
+        assert "anchor is unchanged" not in out
+
+    async def test_the_next_step_names_the_target_settings_to_persist(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A connection given by --target-env lives in this process only; the
+        operator must be told to carry it over, by name, never by value."""
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        monkeypatch.delenv("MONGO_URI", raising=False)
+        (tmp_path / "t.env").write_text(
+            "MONGO_URI=mongodb://secret@target\nPOSTGRES_HOST=ignored\n"
+        )
+        self._wire(monkeypatch, Container(_source_rows()), Container())
+        code = await mc.async_main(
+            [
+                "--target-backend",
+                "MongoKVStorage",
+                "--target-env",
+                str(tmp_path / "t.env"),
+                "--yes",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "MONGO_URI" in out
+        assert "secret" not in out
+        assert "POSTGRES_HOST" not in out
 
     async def test_conflicting_env_files_are_refused(self, tmp_path, capsys):
         _anchor(os.environ["WORKING_DIR"])

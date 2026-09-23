@@ -88,6 +88,11 @@ class MigrationFailed(RuntimeError):
     and a re-run resumes."""
 
 
+class MigrationIndeterminate(RuntimeError):
+    """The anchor replace raised and the anchor could not be read back: it
+    may name either backend, and must be inspected before anything starts."""
+
+
 # ---------------------------------------------------------------------------
 # Rows
 # ---------------------------------------------------------------------------
@@ -278,19 +283,28 @@ async def _copy_rows(
         copied += len(batch)
         batch.clear()
 
-    async for row in source.iter_rows(page_size=page_size):
-        key = _row_key(row) if isinstance(row, dict) else None
-        if key == identity_key or key in kept:
-            continue
-        payload = row_payload(row) if isinstance(row, dict) else None
-        if key is None or not is_well_formed(payload):
-            raise MigrationRefused(
-                f"source row {key!r} is not a well-formed configuration row; "
-                f"repair it and re-run"
-            )
-        batch[key] = payload
-        if len(batch) >= page_size:
-            await _flush_batch()
+    try:
+        async for row in source.iter_rows(page_size=page_size):
+            key = _row_key(row) if isinstance(row, dict) else None
+            if key == identity_key or key in kept:
+                continue
+            payload = row_payload(row) if isinstance(row, dict) else None
+            if key is None or not is_well_formed(payload):
+                raise MigrationRefused(
+                    f"source row {key!r} is not a well-formed configuration row; "
+                    f"repair it and re-run"
+                )
+            batch[key] = payload
+            if len(batch) >= page_size:
+                await _flush_batch()
+    except (MigrationRefused, MigrationFailed):
+        raise
+    except Exception as e:
+        # The target may already be claimed: this must reach the handler that
+        # says the anchor is unchanged and a re-run resumes, not a traceback.
+        raise MigrationFailed(
+            f"could not enumerate the source during the copy ({type(e).__name__}: {e})"
+        ) from e
     await _flush_batch()
     return copied, len(stale)
 
@@ -440,7 +454,11 @@ async def migrate_configuration(
                 f"is overwritten or merged. Use a dedicated, empty target."
             )
         if dry_run:
-            out("- Dry run: nothing was written.")
+            out(
+                "- Dry run: no row was written. Opening the target provisions "
+                "its container if it is missing (a table, collection or "
+                "index), as any start on that backend does."
+            )
             return result
 
         # Step 4. Claim: the ownership marker first.
@@ -472,8 +490,14 @@ async def migrate_configuration(
             # truthfully either way.
             try:
                 landed = read_anchor(working_dir) == new_anchor
-            except ConfigurationIdentityError:
-                landed = False
+            except ConfigurationIdentityError as read_error:
+                # The replace may have landed before the failure: asserting
+                # either binding here would report a durable write that may
+                # have happened as one that did not, or the reverse.
+                raise MigrationIndeterminate(
+                    f"the anchor switch raised ({e}) and the anchor could not "
+                    f"be read back ({read_error})"
+                ) from e
             if not landed:
                 raise MigrationFailed(
                     f"the verified copy is complete but the anchor could not "
@@ -696,6 +720,14 @@ async def async_main(argv: list[str] | None = None) -> int:
             f"configuration still works on the source. Re-run to resume."
         )
         return 1
+    except MigrationIndeterminate as e:
+        print(
+            f"\n✗ Outcome unknown: {e}\n  The verified copy is complete, but the "
+            f"anchor {anchor_path(working_dir)} may bind either backend. Start "
+            f"nothing until it reads back: if it names {args.target_backend}, "
+            f"the migration is complete; if it still names the source, re-run."
+        )
+        return 1
     finally:
         for config_dir in claims:
             release_working_dir_lock(config_dir)
@@ -703,12 +735,29 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         return 0
+    # Names only, never values: this tool never logs a credential.
+    # What --target-env supplied for the target backend exists only in this
+    # process; the deployment environment has to carry it too.
+    target_settings = sorted(
+        name
+        for name, value in target_env.items()
+        if value is not None and _reads(args.target_backend, name)
+    )
     print(
         f"\n✓ Switched: the anchor now binds {result.target_backend} (identity "
         f"{result.anchor.storage_uuid}); {result.copied} row(s) written, "
         f"{result.deleted} stale row(s) removed, every row verified.\n"
         f"  Next: set LIGHTRAG_CONFIG_STORAGE={result.target_backend} explicitly "
-        f"(this tool never edits .env), then start the server.\n"
+        f"(this tool never edits .env)"
+        + (
+            f", and apply the target connection settings "
+            f"({', '.join(target_settings)}) from --target-env to the "
+            f"deployment environment -- without them the server opens a "
+            f"different {result.target_backend} container and is refused"
+            if target_settings
+            else ""
+        )
+        + ". Then start the server.\n"
         f"  The source {result.anchor.backend} container was kept; removing it "
         f"is a separate, explicit step."
     )
