@@ -415,6 +415,23 @@ class TestEmptyContainerGate:
         assert error.source == "the knowledge graph"
         assert "lightrag-rebuild-vdb" in str(error)
 
+    async def test_names_the_workspace_the_storage_actually_opened(self):
+        """A backend override moves the container off the configured
+        workspace. Qdrant records it in ``effective_workspace`` and keeps
+        ``workspace`` as configured; the others overwrite ``workspace``."""
+        qdrant_like = FakeVectorStorage(rows=[])
+        qdrant_like.workspace = "configured"
+        qdrant_like.effective_workspace = "overridden"
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(FakeGraph(labels=["Alice"]), qdrant_like, FakeEmbedding())
+        assert excinfo.value.workspace == "overridden"
+
+        milvus_like = FakeVectorStorage(rows=[])
+        milvus_like.workspace = "overridden"
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(FakeGraph(labels=["Alice"]), milvus_like, FakeEmbedding())
+        assert excinfo.value.workspace == "overridden"
+
     async def test_is_not_a_space_mismatch(self):
         """`lightrag-rebuild-vdb` answers VectorSpaceMismatchError by DROPPING
         the container. There is nothing to drop here, and a tool that conflated

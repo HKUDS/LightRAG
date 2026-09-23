@@ -853,7 +853,22 @@ class _PairingGate:
             vdb_name=name,
             container=getattr(vdb, "final_namespace", None),
             source=source,
+            workspace=_effective_workspace(vdb),
         )
+
+
+def _effective_workspace(vdb) -> str | None:
+    """The workspace ``vdb`` actually opened, after any backend override.
+
+    Qdrant keeps the override in ``effective_workspace`` and leaves
+    ``workspace`` as configured; Milvus, PostgreSQL, MongoDB and OpenSearch
+    overwrite ``workspace`` with it during setup. ``None`` when neither is
+    there.
+    """
+    effective = getattr(vdb, "effective_workspace", None)
+    if effective is not None:
+        return effective
+    return getattr(vdb, "workspace", None)
 
 
 async def _probe_target(
