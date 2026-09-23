@@ -10,7 +10,7 @@ inside this class.
 That mattered beyond the ugly traceback: ``config_store.read_config_row_strict``
 wraps an unrecognised exception from a point read as "could not read
 configuration record", which every caller above reads as the STORE not
-serving. So one damaged row in ``kv_store_config.json`` presented itself as a
+serving. So one damaged row in ``kv_server_config.json`` presented itself as a
 configuration backend outage, and ``lightrag-clear-storage`` refused to clear
 the workspace -- the single situation that tool exists for.
 """

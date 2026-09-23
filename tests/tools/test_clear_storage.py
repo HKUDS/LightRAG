@@ -1687,7 +1687,7 @@ class TestEndToEndOnJsonBackends:
         workspace_dir.mkdir(parents=True)
         config_dir.mkdir(parents=True)
         (workspace_dir / "kv_store_text_chunks.json").write_text('{"chunk-1": ')
-        (config_dir / "kv_store_config.json").write_text(
+        (config_dir / "kv_server_config.json").write_text(
             json.dumps(
                 {"e2e/embedding/chunks": {"value": "not-a-dict", "workspace": "e2e"}}
             )
@@ -1711,7 +1711,7 @@ class TestEndToEndOnJsonBackends:
         assert "chunks embedding baseline" in out
         assert "Workspace cleared" in out
         assert (workspace_dir / "kv_store_text_chunks.json").read_text() == "{}"
-        assert json.loads((config_dir / "kv_store_config.json").read_text()) == {}
+        assert json.loads((config_dir / "kv_server_config.json").read_text()) == {}
 
     async def test_a_baseline_record_that_is_not_a_row_still_clears(
         self, tmp_path, monkeypatch, capsys, stub_server_api
@@ -1734,7 +1734,7 @@ class TestEndToEndOnJsonBackends:
         config_dir = working_dir / CONFIG_CONTAINER_TAG
         workspace_dir.mkdir(parents=True)
         config_dir.mkdir(parents=True)
-        (config_dir / "kv_store_config.json").write_text(
+        (config_dir / "kv_server_config.json").write_text(
             json.dumps({"e2e/embedding/chunks": "garbage"})
         )
         monkeypatch.setenv("WORKING_DIR", str(working_dir))
@@ -1754,7 +1754,7 @@ class TestEndToEndOnJsonBackends:
         assert "is not a mapping" in out
         assert "chunks embedding baseline" in out
         assert "Workspace cleared" in out
-        assert json.loads((config_dir / "kv_store_config.json").read_text()) == {}
+        assert json.loads((config_dir / "kv_server_config.json").read_text()) == {}
 
 
 class TestCommandLine:

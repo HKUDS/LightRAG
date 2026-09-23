@@ -845,7 +845,7 @@ class TestFactory:
         assert storage.namespace == "config"
         assert (tmp_path / CONFIG_CONTAINER_TAG).is_dir()
         assert storage._file_name == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+            tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
         )
 
     def test_config_dir_moves_the_file_and_nothing_else(self, tmp_path):
@@ -860,7 +860,7 @@ class TestFactory:
             },
             embedding_func=_embedding(),
         )
-        assert storage._file_name == str(elsewhere / "kv_store_config.json")
+        assert storage._file_name == str(elsewhere / "kv_server_config.json")
         assert not (tmp_path / CONFIG_CONTAINER_TAG).exists()
 
     def test_the_workspace_argument_does_not_reach_the_container(self, tmp_path):

@@ -202,7 +202,7 @@ class TestEnvironmentRemapDoesNotReachTheConfigurationContainer:
             embedding_func=None,
         )
         assert storage._file_name == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "kv_store_config.json"
+            tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
         )
 
 

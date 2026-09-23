@@ -589,7 +589,10 @@ there is no reload needed.
 The on-disk file at `working_dir/[workspace/]kv_store_<namespace>.json` exists
 for durability only. It is the source of truth at startup and the target of
 `index_done_callback` flushes, but is **not** part of the steady-state
-read/write path.
+read/write path. The configuration namespace is the one exception to that
+path: its file is `config_dir/kv_server_config.json` (`CONFIG_JSON_FILE_NAME`),
+outside every workspace — see
+[ConfigurationStorage.md](ConfigurationStorage.md).
 
 ### First-time load (`initialize`)
 

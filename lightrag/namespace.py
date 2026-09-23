@@ -45,6 +45,13 @@ class NameSpace:
 # PostgreSQL, MongoDB or OpenSearch. See docs/design/ConfigurationStorage.md.
 CONFIG_CONTAINER_TAG = "_lightrag_config"
 
+# The file a JSON-backed configuration storage keeps inside ``config_dir``.
+# Named for what it holds -- the server's configuration -- rather than derived
+# as ``kv_store_<namespace>.json`` like every data namespace. Renaming it after
+# a deployment has recorded baselines loses them, exactly as moving
+# ``config_dir`` does (see ``default_config_dir``).
+CONFIG_JSON_FILE_NAME = "kv_server_config.json"
+
 
 def default_config_dir(working_dir: str) -> str:
     """Where a file-backed configuration storage keeps its file by default.
