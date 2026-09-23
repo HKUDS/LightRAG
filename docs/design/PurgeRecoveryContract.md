@@ -60,6 +60,17 @@ The offline remedy for a document with no proof is `audit_kg_integrity(..., appl
 | Cache ids left in `metadata.deletion_llm_cache_ids` (step 4 failed) | Still reachable: a retry unions them back in, and `adelete_by_doc_id(delete_llm_cache=True)` reads the same key. |
 | A cache row shared with an identical prompt elsewhere, deleted in step 4 | The same shared-prompt residue whole-document deletion already has (see above). |
 
+### Adding and replacing chunks
+
+`aadd_chunks_to_doc` is a custom-chunk patch that refuses to create a document. The refusal is made inside `_apply_custom_chunks`, under the same reservation and document lock as the mode decision, so a document deleted in between cannot turn the call into a create. Everything else is patch mode's own contract: journal first, anchors unioned at commit, SDK resume or scan rollback. Patch mode numbers its chunks after the highest existing `chunk_order_index`, so the field stays a position in the document. It goes past the highest index rather than the count, because a chunk-level delete leaves gaps.
+
+`amodify_chunk_in_doc` is an add followed by a delete, **in that order**, and each half is a complete operation with its own gates. The order chooses which intermediate state survives a failure. Add-then-delete keeps both versions, so a query can surface the old text, and that heals when the call is repeated. Delete-then-add keeps neither version, which loses data. The two halves are deliberately not held under one reservation. Doing that would mean threading an external reservation through `_apply_custom_chunks`' failure path, which discards partial buffers on exit. It would buy nothing for correctness, because every state between the halves is one that both halves already accept on their own.
+
+| State | Why it is accepted |
+|---|---|
+| Both versions present after a failed or refused delete half | The tolerated direction: nothing is lost, and the call's error names the added chunk. Repeating the call finishes it, since the add is a committed no-op and the delete then runs. |
+| Two concurrent modifies of one chunk leave both new texts | Each add commits; the second delete finds the old chunk gone and succeeds as a no-op. Neither text is lost, and the caller removes the one it does not want. |
+
 ## Chunk tracking authority
 
 **Chunk tracking outranks graph `source_id`.** Within a surviving entity or relation, the `entity_chunks` / `relation_chunks` row is the authoritative chunk list; the graph node's `source_id` is only a truncated view of it (`apply_source_ids_limit`) and may legitimately still name chunks a previous purge already pruned — `_purge_kg_contributions` reads tracking first, falls back to `source_id` only when the row is absent, and its `graph_references_deleted_chunks` branch exists to repair exactly that lag. So code that folds a `source_id` delta back into tracking must append genuine additions only: restoring an ID that is in the graph but not in tracking writes stale attribution into the authoritative store, and a later purge would rebuild or retain KG objects from chunks that no longer exist. `compute_incremental_chunk_ids` carries this rule and `tests/utils/test_compute_incremental_chunk_ids.py` pins it. Genuinely missing attribution is repaired by `audit_kg_integrity`, never by the incremental path.

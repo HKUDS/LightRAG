@@ -2421,6 +2421,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         the same call can be retried by the SDK caller, and ``/documents/scan``
         can roll the operation back. Partial work is never blind-flushed.
         """
+        await self._apply_custom_chunks(full_text, text_chunks, doc_id)
+
+    async def _apply_custom_chunks(
+        self,
+        full_text: str,
+        text_chunks: list[str],
+        doc_id: str | None,
+        *,
+        allow_create: bool = True,
+    ) -> None:
+        """Body of :py:meth:`ainsert_custom_chunks`.
+
+        ``allow_create=False`` refuses a document that does not exist instead of
+        creating it, deciding under the same reservation and document lock as
+        the rest of the operation (:py:meth:`aadd_chunks_to_doc`).
+        """
         # Owner token for the busy reservation, generated before any await so the
         # finally always holds it and can release the slot by owner (even if the
         # acquire is cancelled at the lock exit).
@@ -2564,6 +2580,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     mode = existing_journal.get("mode") or "patch"
                     resume = True
                 elif existing_row is None:
+                    if not allow_create:
+                        raise RuntimeError(
+                            f"Document {doc_key} not found; chunks can only be "
+                            "added to an existing PROCESSED document."
+                        )
                     mode = "create"
                 elif _row_status_text(existing_row) == DocStatus.PROCESSED.value:
                     mode = "patch"
@@ -2584,6 +2605,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         logger.warning("This document is already in the storage.")
                         return
 
+                chunk_order_start = 0
                 if mode == "patch":
                     # Committed-content dedup: drop chunks whose content the
                     # base document already owns, so repeating an
@@ -2603,6 +2625,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             if isinstance(row, dict) and row.get("content"):
                                 committed_hashes.add(
                                     compute_text_content_hash(row["content"])
+                                )
+                            if isinstance(row, dict) and isinstance(
+                                row.get("chunk_order_index"), int
+                            ):
+                                # Patched chunks follow the document's own, so
+                                # chunk_order_index stays a position in it. Past
+                                # the highest index, not the count: a chunk-level
+                                # delete leaves gaps. Stable across a resume, as
+                                # the patch joins chunks_list only at commit.
+                                chunk_order_start = max(
+                                    chunk_order_start,
+                                    row["chunk_order_index"] + 1,
                                 )
                     chunk_entries = [
                         entry
@@ -2780,7 +2814,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 "content": content,
                                 "full_doc_id": doc_key,
                                 "tokens": len(self.tokenizer.encode(content)),
-                                "chunk_order_index": index,
+                                "chunk_order_index": chunk_order_start + index,
                                 "file_path": file_path,
                             }
                             for index, (chunk_id, content, _) in enumerate(
@@ -7857,6 +7891,188 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             async_name="adelete_chunks_from_doc",
             owning_loop=self._owning_loop,
         )
+
+    async def aadd_chunks_to_doc(self, doc_id: str, contents: list[str]) -> list[str]:
+        """Add chunks to an existing processed document and return their ids.
+
+        The addition half of an incremental document update; the removal half
+        is :py:meth:`adelete_chunks_from_doc`, and :py:meth:`amodify_chunk_in_doc`
+        combines the two. Runs as a custom-chunk patch (see
+        :py:meth:`ainsert_custom_chunks`): the new chunks are extracted and
+        merged into the graph, and the document's chunk list and recovery
+        anchors are extended, never replaced.
+
+        Rules a caller must know:
+
+        * The document must already exist and be ``PROCESSED``; this never
+          creates one. It is refused while the pipeline is busy or scanning.
+        * Chunk ids are generated, not chosen: a new chunk's id is
+          :func:`~lightrag.utils_pipeline.make_custom_chunk_id` of
+          ``(doc_id, content)``, so identical text in two documents never
+          shares a chunk row.
+        * Text the document already holds is not added again. Its existing
+          chunk id is returned instead, so the result always names the chunk
+          that holds each text.
+        * New chunks are numbered after the document's existing ones.
+        * A failure leaves the document ``FAILED`` with the operation
+          journaled. Repeating the same call resumes it, and
+          ``/documents/scan`` rolls it back.
+
+        Args:
+            doc_id: The document to extend.
+            contents: The text of each new chunk. Empty and repeated texts are
+                ignored.
+
+        Returns:
+            One chunk id per distinct non-empty text, in input order.
+
+        Raises:
+            RuntimeError: The document is absent or not ``PROCESSED``, another
+                custom-chunk operation on it is unfinished, or the pipeline is
+                busy.
+        """
+        texts = list(
+            dict.fromkeys(
+                text
+                for text in (sanitize_text_for_encoding(c) for c in contents or [])
+                if text
+            )
+        )
+        if not texts:
+            return []
+        await self._apply_custom_chunks("", texts, doc_id, allow_create=False)
+        _, held = await self._doc_chunks_by_content_hash(doc_id)
+        return [
+            held.get(
+                compute_text_content_hash(text), make_custom_chunk_id(doc_id, text)
+            )
+            for text in texts
+        ]
+
+    def add_chunks_to_doc(self, doc_id: str, contents: list[str]) -> list[str]:
+        """Synchronously add chunks to a document.
+
+        See :py:meth:`aadd_chunks_to_doc` for the rules and return value.
+        """
+        return _run_sync(
+            lambda: self.aadd_chunks_to_doc(doc_id, contents),
+            sync_name="add_chunks_to_doc",
+            async_name="aadd_chunks_to_doc",
+            owning_loop=self._owning_loop,
+        )
+
+    async def amodify_chunk_in_doc(
+        self,
+        doc_id: str,
+        old_chunk_id: str,
+        new_content: str,
+        delete_llm_cache: bool = False,
+    ) -> str:
+        """Replace one chunk's text and keep the rest of the document.
+
+        Adds the new text with :py:meth:`aadd_chunks_to_doc`, then removes the
+        old chunk with :py:meth:`adelete_chunks_from_doc`. Adding first is
+        deliberate: a failure between the two leaves both versions, never
+        neither, and repeating the same call finishes the job.
+
+        Rules a caller must know:
+
+        * Each half takes the pipeline slot on its own, so other work can run
+          between them, and a query in that window can see both versions. Two
+          concurrent modifies of one chunk can therefore leave both new texts;
+          neither is lost.
+        * New text equal to the old text is a no-op that returns
+          ``old_chunk_id``.
+        * If ``old_chunk_id`` is already gone and the new text is present, the
+          call is taken as a repeat of a finished one and returns the id of the
+          chunk holding the new text.
+        * The new chunk id is generated, as in :py:meth:`aadd_chunks_to_doc`.
+        * ``delete_llm_cache`` applies to the old chunk, as in
+          :py:meth:`adelete_chunks_from_doc`.
+
+        Returns:
+            The id of the chunk now holding ``new_content``.
+
+        Raises:
+            ValueError: ``new_content`` is empty, or ``old_chunk_id`` is not in
+                the document and the new text is not either.
+            RuntimeError: Either half was refused or failed; the message says
+                which, and whether the new chunk was already added.
+        """
+        new_text = sanitize_text_for_encoding(new_content or "")
+        if not new_text:
+            raise ValueError(
+                "new_content is empty; use adelete_chunks_from_doc to remove a chunk."
+            )
+        new_hash = compute_text_content_hash(new_text)
+
+        owned, held = await self._doc_chunks_by_content_hash(doc_id)
+        if old_chunk_id not in owned:
+            if new_hash in held:
+                return held[new_hash]
+            raise ValueError(
+                f"Chunk {old_chunk_id} is not part of document {doc_id}, and "
+                "the new text is not either."
+            )
+        if held.get(new_hash) == old_chunk_id:
+            return old_chunk_id
+
+        new_chunk_id = (await self.aadd_chunks_to_doc(doc_id, [new_text]))[0]
+        result = await self.adelete_chunks_from_doc(
+            doc_id, [old_chunk_id], delete_llm_cache=delete_llm_cache
+        )
+        if result.status != "success":
+            raise RuntimeError(
+                f"Chunk {new_chunk_id} was added to document {doc_id}, but "
+                f"removing chunk {old_chunk_id} failed ({result.status_code}): "
+                f"{result.message} Repeat the call to finish."
+            )
+        return new_chunk_id
+
+    def modify_chunk_in_doc(
+        self,
+        doc_id: str,
+        old_chunk_id: str,
+        new_content: str,
+        delete_llm_cache: bool = False,
+    ) -> str:
+        """Synchronously replace one chunk's text.
+
+        See :py:meth:`amodify_chunk_in_doc` for the rules and return value.
+        """
+        return _run_sync(
+            lambda: self.amodify_chunk_in_doc(
+                doc_id, old_chunk_id, new_content, delete_llm_cache
+            ),
+            sync_name="modify_chunk_in_doc",
+            async_name="amodify_chunk_in_doc",
+            owning_loop=self._owning_loop,
+        )
+
+    async def _doc_chunks_by_content_hash(
+        self, doc_id: str
+    ) -> tuple[set[str], dict[str, str]]:
+        """The document's chunk ids, and each text it holds mapped to its chunk.
+
+        The map is keyed by content hash; where two chunks hold the same text,
+        the first in ``chunks_list`` wins. An absent document yields neither.
+        """
+        row = await self.doc_status.get_by_id(doc_id)
+        if not isinstance(row, dict):
+            return set(), {}
+        chunk_ids = normalize_string_list(
+            row.get("chunks_list", []), context=f"doc {doc_id} chunks_list"
+        )
+        held: dict[str, str] = {}
+        if chunk_ids:
+            for chunk_id, chunk_row in zip(
+                chunk_ids, await self.text_chunks.get_by_ids(chunk_ids)
+            ):
+                if isinstance(chunk_row, dict) and chunk_row.get("content"):
+                    held.setdefault(
+                        compute_text_content_hash(chunk_row["content"]), chunk_id
+                    )
+        return set(chunk_ids), held
 
     @staticmethod
     def _chunk_delete_refusal(doc_id: str, status_row: dict[str, Any]) -> str | None:

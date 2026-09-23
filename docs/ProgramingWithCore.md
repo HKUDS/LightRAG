@@ -1980,36 +1980,54 @@ The deletion process:
 4. Update all related vector indexes
 5. Clean up document status records
 
-### Delete Chunks from a Document
+### Update Chunks in a Document
 
-Removes some of a processed document's chunks and keeps the rest, so a small
-change to a large document does not need a delete and a full re-insert. Every
-entity or relation the removed chunks fed is deleted when they were its only
-sources, and rebuilt from its surviving chunks otherwise.
-
-```python
-from lightrag.utils_pipeline import make_custom_chunk_id
-
-# Remove one chunk. Ids the document does not own are skipped.
-result = await rag.adelete_chunks_from_doc("doc-12345", ["chunk-abc"])
-
-# Synchronous, and also dropping the removed chunks' extraction cache
-rag.delete_chunks_from_doc("doc-12345", ["chunk-abc"], delete_llm_cache=True)
-```
-
-Combined with `ainsert_custom_chunks` on the same document (patch mode), this
-is an in-place edit. Custom-chunk ids are derived from the document id and the
-chunk text, so a caller that knows the old text can compute the id to remove:
+Adds, removes or replaces some of a processed document's chunks and keeps the
+rest, so a small change to a large document does not need a delete and a full
+re-insert. Only the changed chunks are extracted. An entity or relation the
+removed chunks fed is deleted when they were its only sources, and rebuilt from
+its surviving chunks otherwise.
 
 ```python
-old_id = make_custom_chunk_id("doc-12345", "Rent is $2,000 per month.")
-await rag.adelete_chunks_from_doc("doc-12345", [old_id])
-await rag.ainsert_custom_chunks(
-    "", ["Rent is $2,150 per month."], doc_id="doc-12345"
+# Add: returns one generated chunk id per text, in order
+ids = await rag.aadd_chunks_to_doc("doc-12345", ["Rent is $2,000 per month."])
+
+# Replace one chunk's text: returns the id of the chunk now holding it
+new_id = await rag.amodify_chunk_in_doc(
+    "doc-12345", ids[0], "Rent is $2,150 per month."
 )
+
+# Remove: ids the document does not own are skipped
+result = await rag.adelete_chunks_from_doc("doc-12345", [new_id])
+
+# Synchronous forms: add_chunks_to_doc, modify_chunk_in_doc, delete_chunks_from_doc
 ```
 
-The call returns a `DeletionResult`; it does not raise for the cases below.
+Chunk ids are generated from the document id and the text
+(`lightrag.utils_pipeline.make_custom_chunk_id`), so the same text in two
+documents never shares a chunk, and a caller that knows a chunk's text can
+recompute its id. Store the ids `aadd_chunks_to_doc` returns, or recompute
+them; there is no way to choose them.
+
+**`aadd_chunks_to_doc`** only extends an existing `PROCESSED` document and
+never creates one. Text the document already holds is not added again; its
+existing chunk id is returned instead. New chunks are numbered after the
+document's existing ones. It runs as a custom-chunk patch, so a failure leaves
+the document `FAILED` with the operation journaled: repeating the call resumes
+it, and `/documents/scan` rolls it back. It raises `RuntimeError` when refused.
+
+**`amodify_chunk_in_doc`** adds the new text first and then removes the old
+chunk, so a failure between the two leaves both versions, never neither.
+Repeating the call finishes the job, and a repeat after success returns the
+same id. New text equal to the old is a no-op. The two halves take the pipeline
+slot separately, so a query in between can see both versions. It raises
+`ValueError` for empty text or a chunk the document does not hold, and
+`RuntimeError` when either half is refused or fails; the message says whether
+the new chunk was already added.
+
+**`adelete_chunks_from_doc`** returns a `DeletionResult` and does not raise for
+the cases below. `delete_llm_cache=True` also drops the removed chunks'
+extraction cache.
 
 | Result | When |
 |---|---|

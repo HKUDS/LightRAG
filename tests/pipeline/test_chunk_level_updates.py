@@ -1,4 +1,4 @@
-"""``adelete_chunks_from_doc``: removing part of a processed document.
+"""Chunk-level document updates: add, delete and modify chunks in place.
 
 Drives the real LightRAG object (JSON / NetworkX storages, offline) with
 extraction monkeypatched to a deterministic fake — the same harness as
@@ -6,11 +6,16 @@ test_custom_chunk_patch.py. Every capitalized word of a chunk is an entity and
 the first two are related, so "Alice founded Acme" yields ALICE, ACME and the
 ACME--ALICE relation.
 
-Covers the removal half of an incremental update (the addition half is
-``ainsert_custom_chunks`` patch mode): exclusive contributions are deleted,
-shared ones rebuilt with exact provenance, untouched ones left alone; the
-anchors stay a faithful superset; refusals change nothing; a failure part-way
-converges on retry; and a later whole-document delete leaves no orphans.
+``adelete_chunks_from_doc``: exclusive contributions are deleted, shared ones
+rebuilt with exact provenance, untouched ones left alone; the anchors stay a
+faithful superset; refusals change nothing; a failure part-way converges on
+retry; and a later whole-document delete leaves no orphans.
+
+``aadd_chunks_to_doc``: generated ids are returned, the document is extended
+and never created, known text is not re-added, numbering continues.
+
+``amodify_chunk_in_doc``: add first, then delete, so a failure between the two
+keeps both versions and a repeat finishes the job.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ import pytest
 
 import lightrag.lightrag as lightrag_module
 from lightrag import LightRAG
-from lightrag.base import DocStatus
+from lightrag.base import DeletionResult, DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
@@ -609,5 +614,276 @@ async def test_prune_keeps_untracked_names_and_drops_vanished_ones(tmp_path):
         assert "DANA" not in anchors["entity_names"]
         # Names outside the pruned set are never touched.
         assert {"ACME", "ALICE", "BOB"} <= set(anchors["entity_names"])
+    finally:
+        await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# aadd_chunks_to_doc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_returns_generated_ids_and_extends_the_document(tmp_path):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        before = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+
+        ids = await rag.aadd_chunks_to_doc("doc-1", ["Frank knows Alice"])
+        frank = _cid("doc-1", "Frank knows Alice")
+        assert ids == [frank]
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        assert row["chunks_list"] == before + [frank]
+        # The anchors are extended, not replaced by the new chunk's entities.
+        anchors = await rag.full_entities.get_by_id("doc-1")
+        assert anchors["entity_names"] == [
+            "ACME",
+            "ALICE",
+            "BOB",
+            "CAROL",
+            "DANA",
+            "FRANK",
+        ]
+        assert frank in _source_ids(
+            await rag.chunk_entity_relation_graph.get_node("ALICE")
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_add_never_creates_a_document(tmp_path):
+    rag = await _build_rag(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="not found"):
+            await rag.aadd_chunks_to_doc("doc-missing", ["Alice founded Acme"])
+        assert await rag.doc_status.get_by_id("doc-missing") is None
+        assert await rag.full_docs.get_by_id("doc-missing") is None
+        assert await rag.chunk_entity_relation_graph.get_node("ALICE") is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_add_returns_the_existing_id_for_text_already_held(tmp_path):
+    """Text the document holds is not added again, and the id returned is the
+    chunk that actually holds it, even when the pipeline chose that id."""
+    rag = await _build_rag(tmp_path, chunking_func=_two_chunks)
+    try:
+        doc_id = compute_mdhash_id("doc.txt", prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            "Alice", ids=[doc_id], file_paths=["doc.txt"]
+        )
+        await rag.apipeline_process_enqueue_documents()
+        pipeline_ids = (await rag.doc_status.get_by_id(doc_id))["chunks_list"]
+        held = await rag.text_chunks.get_by_id(pipeline_ids[0])
+        assert pipeline_ids[0] != _cid(doc_id, held["content"])
+
+        ids = await rag.aadd_chunks_to_doc(
+            doc_id, ["", held["content"], "Gina", "Gina"]
+        )
+        assert ids == [pipeline_ids[0], _cid(doc_id, "Gina")]
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["chunks_list"] == pipeline_ids + [_cid(doc_id, "Gina")]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_added_chunks_are_numbered_after_the_highest_existing_one(tmp_path):
+    """Past the highest index, not the count: deleting the middle chunk of
+    0,1,2 leaves two chunks, and numbering from the count would reuse 2."""
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        await rag.adelete_chunks_from_doc("doc-1", [_cid("doc-1", "Bob joined Acme")])
+
+        [frank] = await rag.aadd_chunks_to_doc("doc-1", ["Frank knows Alice"])
+        assert (await rag.text_chunks.get_by_id(frank))["chunk_order_index"] == 3
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_failed_add_is_journaled_and_resumes(tmp_path, monkeypatch):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        original_merge = lightrag_module.merge_nodes_and_edges
+        calls = {"n": 0}
+
+        async def merge_boom_once(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("merge boom")
+            return await original_merge(**kwargs)
+
+        monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", merge_boom_once)
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.aadd_chunks_to_doc("doc-1", ["Frank knows Alice"])
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.FAILED.value
+
+        ids = await rag.aadd_chunks_to_doc("doc-1", ["Frank knows Alice"])
+        assert ids == [_cid("doc-1", "Frank knows Alice")]
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        assert ids[0] in row["chunks_list"]
+    finally:
+        await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# amodify_chunk_in_doc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_modify_replaces_the_chunk_and_its_graph_contribution(tmp_path):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        alice, bob, carol = (
+            _cid("doc-1", "Alice founded Acme"),
+            _cid("doc-1", "Bob joined Acme"),
+            _cid("doc-1", "Carol audits Dana"),
+        )
+
+        new_id = await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech")
+        assert new_id == _cid("doc-1", "Bob joined Initech")
+
+        graph = rag.chunk_entity_relation_graph
+        assert await graph.get_edge("ACME", "BOB") is None
+        assert await graph.get_edge("BOB", "INITECH") is not None
+        assert _source_ids(await graph.get_node("ACME")) == [alice]
+        assert _source_ids(await graph.get_node("BOB")) == [new_id]
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert row["chunks_list"] == [alice, carol, new_id]
+        assert await rag.text_chunks.get_by_id(bob) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_modify_to_the_same_text_changes_nothing(tmp_path):
+    """Without this guard the add would be skipped as a duplicate and the
+    delete would then remove the only copy of the text."""
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        bob = _cid("doc-1", "Bob joined Acme")
+        before = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+
+        assert await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Acme") == bob
+        assert (await rag.doc_status.get_by_id("doc-1"))["chunks_list"] == before
+        assert await rag.text_chunks.get_by_id(bob) is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_modify_adds_first_so_a_failed_delete_keeps_both(tmp_path, monkeypatch):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        bob = _cid("doc-1", "Bob joined Acme")
+        new = _cid("doc-1", "Bob joined Initech")
+        original_delete = rag.adelete_chunks_from_doc
+
+        async def refused_delete(doc_id, chunk_ids, delete_llm_cache=False):
+            return DeletionResult(
+                status="not_allowed",
+                doc_id=doc_id,
+                message="Pipeline is busy with another operation.",
+                status_code=403,
+            )
+
+        monkeypatch.setattr(rag, "adelete_chunks_from_doc", refused_delete)
+        with pytest.raises(RuntimeError, match="was added"):
+            await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech")
+        chunks = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+        assert bob in chunks and new in chunks
+
+        monkeypatch.setattr(rag, "adelete_chunks_from_doc", original_delete)
+        assert await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech") == new
+        chunks = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+        assert bob not in chunks and new in chunks
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_modify_whose_add_fails_keeps_the_old_text(tmp_path, monkeypatch):
+    """The reason modify adds first: deleting first would lose the old text
+    whenever the add then fails."""
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        bob = _cid("doc-1", "Bob joined Acme")
+
+        async def merge_boom(**kwargs):
+            raise RuntimeError("merge boom")
+
+        monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", merge_boom)
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech")
+
+        assert await rag.text_chunks.get_by_id(bob) is not None
+        assert bob in (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+        assert await rag.chunk_entity_relation_graph.get_node("BOB") is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_repeating_a_finished_modify_returns_the_new_id(tmp_path):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        bob = _cid("doc-1", "Bob joined Acme")
+        new_id = await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech")
+        before = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+
+        again = await rag.amodify_chunk_in_doc("doc-1", bob, "Bob joined Initech")
+        assert again == new_id
+        assert (await rag.doc_status.get_by_id("doc-1"))["chunks_list"] == before
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_modify_rejects_bad_input_before_touching_anything(tmp_path):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        before = (await rag.doc_status.get_by_id("doc-1"))["chunks_list"]
+
+        with pytest.raises(ValueError, match="empty"):
+            await rag.amodify_chunk_in_doc(
+                "doc-1", _cid("doc-1", "Bob joined Acme"), ""
+            )
+        with pytest.raises(ValueError, match="not part of document"):
+            await rag.amodify_chunk_in_doc("doc-1", "chunk-nope", "Hank was here")
+        assert (await rag.doc_status.get_by_id("doc-1"))["chunks_list"] == before
+        assert await rag.chunk_entity_relation_graph.get_node("HANK") is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_modify_then_document_delete_leaves_no_orphans(tmp_path):
+    rag = await _build_rag(tmp_path)
+    try:
+        await _seed_three_chunk_doc(rag)
+        await rag.amodify_chunk_in_doc(
+            "doc-1", _cid("doc-1", "Bob joined Acme"), "Bob joined Initech"
+        )
+        deleted = await rag.adelete_by_doc_id("doc-1")
+        assert deleted.status == "success", deleted
+        assert await _graph_nodes(rag) == set()
     finally:
         await rag.finalize_storages()
