@@ -478,6 +478,33 @@ class TestSummary:
         assert "resolved to workspace(s)" in out
         assert "other" in out and "qdrant-legacy" in out
 
+    async def test_a_backend_default_sentinel_is_not_flagged_as_an_override(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """Under an empty WORKSPACE, PostgreSQL writes ``"default"`` and Redis
+        doc-status ``"_"`` back onto ``workspace``. That IS the default
+        workspace; warning about it on every such deployment would teach the
+        operator to ignore the line when a real override is in effect."""
+        tool = make_tool(tmp_path, workspace="")
+        tool.storages["doc_status"].workspace = "default"
+        tool.storages["text_chunks"].workspace = "_"
+
+        tool.print_summary(await tool.collect_summary())
+
+        assert "resolved to workspace(s)" not in capsys.readouterr().out
+
+    async def test_a_default_sentinel_under_a_named_workspace_is_flagged(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """The aliases apply only to an empty WORKSPACE: under a named one, a
+        storage on ``default`` is on a different workspace."""
+        tool = make_tool(tmp_path, workspace="ws")
+        tool.storages["doc_status"].workspace = "default"
+
+        tool.print_summary(await tool.collect_summary())
+
+        assert "resolved to workspace(s)" in capsys.readouterr().out
+
     async def test_an_unreadable_count_on_a_file_backed_store_is_shown_not_zero(
         self, tmp_path, stub_baselines, capsys
     ):

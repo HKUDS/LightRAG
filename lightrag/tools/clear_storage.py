@@ -158,6 +158,11 @@ STATE_HAS_ENTITIES = "has entities"
 STATE_HAS_ENTITIES_AND_RELATIONS = "has entities and relations"
 STATE_EMPTY = "EMPTY"
 
+# The names backends write back onto ``workspace`` when it was empty:
+# PostgreSQL (and pgtable) substitute ``"default"``, Redis doc-status ``"_"``.
+# Under an empty WORKSPACE they are the default workspace, not an override.
+DEFAULT_WORKSPACE_ALIASES = frozenset({"", "default", "_"})
+
 POPULATED_STATES: frozenset[str] = frozenset(
     {
         STATE_HAS_DATA,
@@ -869,6 +874,10 @@ class ClearTool:
                 f"before confirming."
             )
         resolved = summary["resolved_workspaces"]
+        if not self.workspace:
+            resolved = sorted(
+                {"" if ws in DEFAULT_WORKSPACE_ALIASES else ws for ws in resolved}
+            )
         shown = [ws if ws else "(default)" for ws in resolved]
         if len(resolved) > 1 or (resolved and resolved[0] != self.workspace):
             print(
