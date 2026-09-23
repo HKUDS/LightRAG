@@ -13,7 +13,7 @@ are pinned here:
 * a separately selected backend is a new way to point a running deployment at
   an empty store, which is announced rather than enforced.
 
-See docs/design/ConfigurationStorage.md.
+See docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

@@ -437,7 +437,7 @@ class MongoKVStorage(BaseKVStorage):
             # MONGODB_WORKSPACE remap. Two deployments sharing one database
             # share this collection and are kept apart by the row KEY, whose
             # scope is the business workspace the row is about.
-            # See docs/design/ConfigurationStorage.md.
+            # See docs/design/ConfigurationStorageContract.md.
             self.workspace = CONFIG_CONTAINER_TAG
             self.final_namespace = f"{CONFIG_CONTAINER_TAG}_{self.namespace}"
             self._collection_name = self.final_namespace

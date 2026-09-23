@@ -6245,7 +6245,7 @@ def create_document_routes(
             # does not opportunistically remove "the ones for the parts that
             # did drop". A failed cache drop is a data drop that failed: the
             # cache rows survive in this workspace, so the records stay too.
-            # See *Workspace drop* in docs/design/ConfigurationStorage.md.
+            # See *Workspace drop* in docs/design/ConfigurationStorageContract.md.
             configuration_storage = getattr(rag, "configuration_storage", None)
             if configuration_storage is None:
                 pass

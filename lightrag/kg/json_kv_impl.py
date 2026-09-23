@@ -88,7 +88,7 @@ class JsonKVStorage(BaseKVStorage):
             # where the reserved workspace used to put this file -- point it
             # anywhere else and an existing deployment's baselines read as
             # ABSENT, which is what lets a start bootstrap.
-            # See docs/design/ConfigurationStorage.md.
+            # See docs/design/ConfigurationStorageContract.md.
             workspace_dir = (
                 self.global_config.get("config_dir") or ""
             ).strip() or default_config_dir(working_dir)

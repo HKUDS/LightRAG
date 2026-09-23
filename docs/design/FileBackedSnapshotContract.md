@@ -592,7 +592,7 @@ for durability only. It is the source of truth at startup and the target of
 read/write path. The configuration namespace is the one exception to that
 path: its file is `config_dir/kv_server_config.json` (`CONFIG_JSON_FILE_NAME`),
 outside every workspace — see
-[ConfigurationStorage.md](ConfigurationStorage.md).
+[ConfigurationStorageContract.md](ConfigurationStorageContract.md).
 
 ### First-time load (`initialize`)
 
@@ -658,7 +658,9 @@ the first is still held is refused with
   data.
 
 This is a process-tree guard, and only that. Two separate process trees on one
-`working_dir` are still unsupported and still undetected here — that needs a
+`working_dir` AND one workspace are still unsupported and still undetected here
+(different workspaces use different files and are supported; see
+`ServerInstanceContract.md`) — that needs a
 lock on the directory itself, which is a different mechanism for a different
 failure.
 

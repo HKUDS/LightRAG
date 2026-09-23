@@ -777,7 +777,7 @@ class RebuildTool:
         self.text_chunks = None
         # The configuration storage: where each target's embedding baseline is
         # recorded AFTER that target's rebuild is durable and verified, and
-        # never before. See docs/design/ConfigurationStorage.md.
+        # never before. See docs/design/ConfigurationStorageContract.md.
         self.configuration_storage = None
         # Whether this run holds the configuration-directory claim; see
         # ``setup_storages``.

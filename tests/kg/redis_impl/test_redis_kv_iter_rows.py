@@ -1,5 +1,5 @@
 """``RedisKVStorage.iter_rows``: the enumeration surface (scenario 16 in
-docs/design/ConfigurationStorage.md) on the Redis backend, over the FakeRedis
+docs/design/ConfigurationStorageContract.md) on the Redis backend, over the FakeRedis
 stand-in.
 
 SCAN walks the namespace prefix ``count`` keys at a time and each page is read

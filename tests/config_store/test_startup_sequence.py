@@ -9,7 +9,7 @@ the configuration storage released exactly once -- because every one of those
 is a property of the ORDER things happen in, which no double can pin.
 
 Scenario numbers refer to the acceptance list in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

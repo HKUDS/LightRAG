@@ -5,7 +5,7 @@ Anchored: backend type and UUID must both match, and nothing is ever
 created. Not anchored: the container's identity is adopted, or created
 through the strict flush and read-back, and only THEN is the anchor
 published -- so every crash window heals by adoption on the next start. See
-*The anchor and the container identity* in docs/design/ConfigurationStorage.md.
+*The anchor and the container identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

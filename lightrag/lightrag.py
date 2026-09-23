@@ -1466,7 +1466,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``OpenSearchKVStorage``; anything else is refused by name at construction.
     Left empty it FOLLOWS ``kv_storage``, which is where an existing
     deployment's records already are. See
-    docs/design/ConfigurationStorage.md.
+    docs/design/ConfigurationStorageContract.md.
     """
 
     config_dir: str = field(
@@ -2155,7 +2155,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # teardown reachable, and every constructor and validation above may
         # refuse (a missing ``llm_model_func``, a bad role config) -- so
         # nothing this storage holds may precede any of them. See *Cleanup
-        # before INITIALIZED exists* in docs/design/ConfigurationStorage.md.
+        # before INITIALIZED exists* in docs/design/ConfigurationStorageContract.md.
         self.config_storage_cls: type[BaseKVStorage] = get_storage_class(
             self.config_storage
         )  # type: ignore
@@ -2235,7 +2235,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         it would not be an option anyway, since no backend promises that works
         on an instance that never initialized.
         See *Cleanup before INITIALIZED exists* in
-        docs/design/ConfigurationStorage.md.
+        docs/design/ConfigurationStorageContract.md.
         """
         detached: list[asyncio.Future] = []
         try:
@@ -2307,7 +2307,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         unreadable, vectors surviving behind an empty source, probe
         inconclusive or unable to run -- writes NOTHING and is retried on the
         next start. No target is ever recorded on a sibling's verdict. See
-        *Establishing a baseline* in docs/design/ConfigurationStorage.md.
+        *Establishing a baseline* in docs/design/ConfigurationStorageContract.md.
         """
         for target in bootstrap_targets:
             populated = evidence.source_populated.get(target)
@@ -2364,7 +2364,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def initialize_storages(self):
         """Bring every storage up, in the order the contract fixes.
 
-        Nine steps (``docs/design/ConfigurationStorage.md``, *Startup
+        Nine steps (``docs/design/ConfigurationStorageContract.md``, *Startup
         sequence*), preceded by the anchor checks (0a-0c: the shared anchor
         lock, a strict read of the anchor, a refusal when it binds another
         backend type): the configuration storage first, then its identity
@@ -2433,7 +2433,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # and the anchor untouched. They open nothing, so a failure here is
         # an ordinary, non-sticky one that hands the lock back. See *The
         # anchor and the container identity* in
-        # docs/design/ConfigurationStorage.md.
+        # docs/design/ConfigurationStorageContract.md.
         acquire_anchor_lock_shared(self._anchor_working_dir)
         self._holds_anchor_lock = True
         try:
@@ -2605,7 +2605,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # returns -- and a raise from it must not be read as a failed write
             # when the buffer is empty (the commit landed and only the refresh
             # after it failed). See *A flush that retained anything is a failed
-            # flush here* in docs/design/ConfigurationStorage.md.
+            # flush here* in docs/design/ConfigurationStorageContract.md.
             await flush_configuration_storage(
                 self.configuration_storage, "the startup claims"
             )

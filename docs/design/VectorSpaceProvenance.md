@@ -681,7 +681,7 @@ opposite directions:
   failure; `is_empty()` is a fallback whose "empty" is read as unknown, and it
   stays the read for a target whose baseline is already recorded and which
   therefore claims nothing. See *Establishing a baseline* in
-  [ConfigurationStorage.md](ConfigurationStorage.md).
+  [ConfigurationStorageContract.md](ConfigurationStorageContract.md).
 
 The base-class default raises `StorageCapabilityError`, the fail-closed pattern
 already used by `iter_labels` / `iter_edges`: a backend that has not implemented
@@ -853,7 +853,7 @@ different models whose names differ only that way **and** which share a
 dimension; in practice such name pairs are the same model spelled differently
 by different providers or config files, which is benign. **Closed** for any
 workspace with a recorded baseline: the per-target embedding baseline
-(`docs/design/ConfigurationStorage.md`) stores the model name **unfolded**, so
+(`docs/design/ConfigurationStorageContract.md`) stores the model name **unfolded**, so
 the two spellings compare unequal at the precheck and the second refuses to
 start. Still open for a workspace whose baseline is absent -- the first start
 after the upgrade, or a probe that could not run -- until the record is
@@ -876,7 +876,7 @@ gate only fires when the change lands on an *empty* container. Switching from
 model A to B (accepted through a rebuild) and back to A reused
 `entities_a_1024d`, which is not empty, so the gate passed and retrieval was
 silently stale and partial. **Closed** by the recorded per-target embedding
-baseline (`docs/design/ConfigurationStorage.md`): the record moves only on a
+baseline (`docs/design/ConfigurationStorageContract.md`): the record moves only on a
 successful rebuild, so the switch back is a mismatch, refused at step 3 of
 startup -- ahead of the legacy-container migration those backends run inside
 `initialize()`. What stays open is recorded in that contract as its own

@@ -8,7 +8,7 @@ target's embedding baseline: recording one over an incomplete index would
 claim the target was adopted in the configured space while its vectors are
 missing, and nothing later catches that — the startup precheck sees a matching
 record and the coverage gate only refuses an EMPTY index. See *Rebuild* in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 
 The base ``has_pending_index_ops`` answers ``False``, which is the truth for a
 backend that buffers nothing and a wrong answer here; that is what these tests

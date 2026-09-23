@@ -2,7 +2,7 @@
 created, flushed to ``kv_server_config.json`` and read back, verified by a
 fresh process-tree view of the file, and a damaged row refuses rather than
 reading as absent. See *The anchor and the container identity* in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

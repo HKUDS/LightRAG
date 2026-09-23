@@ -7,7 +7,7 @@ one backend **type** to another — for example from `PGKVStorage` to
 storage anchor only after the copy has been verified.
 
 The design contract is *The anchor and the container identity* in
-[`docs/design/ConfigurationStorage.md`](../../docs/design/ConfigurationStorage.md).
+[`docs/design/ConfigurationStorageContract.md`](../../docs/design/ConfigurationStorageContract.md).
 
 ## When do I need this?
 

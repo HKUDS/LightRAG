@@ -2,7 +2,7 @@
 deployment is bound to, kept where no storage selection can move it.
 
 Full contract: *The anchor and the container identity* in
-``docs/design/ConfigurationStorage.md``. The rules a caller meets:
+``docs/design/ConfigurationStorageContract.md``. The rules a caller meets:
 
 * **Fixed path.** ``<working_dir>/_lightrag_config/storage_anchor.json``. It
   depends on ``working_dir`` and a name written in code, and deliberately NOT

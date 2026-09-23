@@ -913,7 +913,7 @@ class ConfigurationStorageError(RuntimeError):
     Absent means bootstrap; this means stop. Treating one as the other is the
     defect the strict-read rule exists to prevent: a store that could not be
     reached must never be mistaken for a store that holds nothing. See *Reads
-    are strict* in docs/design/ConfigurationStorage.md.
+    are strict* in docs/design/ConfigurationStorageContract.md.
     """
 
 
@@ -947,7 +947,7 @@ class ConfigurationIdentityError(ConfigurationStorageError):
     ``lightrag.config_anchor`` and is what a caller branches on -- never the
     message, which carries the per-cause recovery advice for the operator.
     ``anchor_path`` names the file a rebind would delete. See *The anchor and
-    the container identity* in docs/design/ConfigurationStorage.md.
+    the container identity* in docs/design/ConfigurationStorageContract.md.
     """
 
     def __init__(self, message: str, *, cause: str, anchor_path: str = "") -> None:

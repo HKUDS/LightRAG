@@ -227,7 +227,7 @@ def classify_drop_result(result: Any) -> str | None:
     happen; and a dict whose ``status`` is not ``"success"`` is a backend
     reporting a non-raising failure. Either read as success would let the
     configuration records be deleted over surviving data, the one residue
-    *Workspace drop* in ``docs/design/ConfigurationStorage.md`` never accepts.
+    *Workspace drop* in ``docs/design/ConfigurationStorageContract.md`` never accepts.
     """
     if isinstance(result, BaseException):
         # ``repr``: a CancelledError stringifies to the empty string.
@@ -1156,7 +1156,7 @@ class ClearTool:
 
         Only when EVERY drop succeeded: records gone with data still present
         lets the next startup adopt a wrong baseline over it, the residue
-        *Workspace drop* in ``docs/design/ConfigurationStorage.md`` never
+        *Workspace drop* in ``docs/design/ConfigurationStorageContract.md`` never
         accepts. A partial drop keeps all three records and says so. Returns
         False when the records should have gone and did not.
         """

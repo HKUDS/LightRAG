@@ -16,7 +16,7 @@ declare -g DEFAULT_KV_STORAGE="JsonKVStorage"
 
 # The configuration storage is its own category and admits four backends.
 # RedisKVStorage is deliberately absent, so a Redis KV selection has to name
-# one of these explicitly -- see docs/design/ConfigurationStorage.md.
+# one of these explicitly -- see docs/design/ConfigurationStorageContract.md.
 declare -ag CONFIG_STORAGE_OPTIONS=(
   "JsonKVStorage"
   "PGKVStorage"

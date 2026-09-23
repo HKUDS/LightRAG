@@ -5,7 +5,7 @@ server that answers every bulk item with a retryable failure (429).
 ``get_by_id_strict`` answers from the buffer, so without the pending check the
 configuration store would confirm a baseline claim, a rebuild record and a
 workspace drop the server never saw. See *A flush that retained anything is a
-failed flush here* in docs/design/ConfigurationStorage.md.
+failed flush here* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

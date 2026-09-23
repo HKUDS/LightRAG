@@ -1,7 +1,7 @@
 """The configuration storage: one place, independent of any knowledge-base
 workspace, for the server's settings and every workspace's.
 
-Full contract: ``docs/design/ConfigurationStorage.md``. Read it before adding
+Full contract: ``docs/design/ConfigurationStorageContract.md``. Read it before adding
 a key, before binding a storage to the configuration workspace, and before
 moving anything out of an environment variable. The rules this module
 enforces, in the order a caller meets them:
@@ -795,7 +795,7 @@ async def claim_embedding_baseline(
     buffers in process memory until the flush), then strict-read back and
     validate what is actually stored against THIS process's configuration.
     The lock spans workers of one Gunicorn master and nothing wider; see *What
-    the lock does and does not span* in ``docs/design/ConfigurationStorage.md``.
+    the lock does and does not span* in ``docs/design/ConfigurationStorageContract.md``.
 
     Returns the baseline now on record (this process's, or the one another
     worker got in first with). Raises ``EmbeddingBaselineMismatchError`` if

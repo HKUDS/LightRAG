@@ -2,7 +2,7 @@
 modes that never report a failed write as a success.
 
 See *The anchor and the container identity* in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

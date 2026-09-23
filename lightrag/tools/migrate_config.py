@@ -4,7 +4,7 @@ different backend TYPE, offline, and move the anchor only once the copy is
 verified.
 
 Full contract: *Offline migration* under *The anchor and the container
-identity* in ``docs/design/ConfigurationStorage.md``; operator guide:
+identity* in ``docs/design/ConfigurationStorageContract.md``; operator guide:
 ``lightrag/tools/README_MIGRATE_CONFIG.md``. The rules:
 
 * **Cross-type only.** A same-type move (PostgreSQL to PostgreSQL, Mongo to

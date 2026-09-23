@@ -9851,7 +9851,7 @@ TABLES = {
     # the same shape as every other one. The workspace a row is ABOUT is a
     # field inside ``value``, and ``id`` is TEXT because it carries that
     # workspace name too -- which is what keeps two deployments sharing one
-    # database on disjoint rows. See docs/design/ConfigurationStorage.md.
+    # database on disjoint rows. See docs/design/ConfigurationStorageContract.md.
     "LIGHTRAG_CONFIG": {
         "ddl": """CREATE TABLE LIGHTRAG_CONFIG (
 	                workspace varchar(255) NOT NULL,

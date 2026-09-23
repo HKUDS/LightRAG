@@ -3,7 +3,7 @@
 Keys, the row shape, the registry, strict reads, the precheck that names every
 mismatched target at once, the atomic claim (flush BEFORE the lock is
 released, then a strict read-back), the rebuild record, the data-first drop
-and the enumeration surface. See docs/design/ConfigurationStorage.md; the
+and the enumeration surface. See docs/design/ConfigurationStorageContract.md; the
 scenario numbers below are its acceptance list.
 """
 

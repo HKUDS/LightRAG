@@ -4,7 +4,7 @@ A backend type that differs from the anchor refuses the MASTER, instead of
 surfacing as every worker failing while the master respawns them. The master
 also takes the shared anchor lock so its workers inherit it, and gives it back
 in ``on_exit`` after the ``config_dir`` claim. See *The anchor and the
-container identity* in docs/design/ConfigurationStorage.md.
+container identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

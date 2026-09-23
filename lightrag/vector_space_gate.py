@@ -1023,7 +1023,7 @@ async def check_vector_space_at_startup(
         baseline_targets: targets (``"entities"``, ``"relationships"``,
             ``"chunks"``) whose baseline is absent, so the caller is about to
             establish one from what this call returns
-            (``docs/design/ConfigurationStorage.md``). Three things key off
+            (``docs/design/ConfigurationStorageContract.md``). Three things key off
             it, all for the same reason -- a durable claim needs evidence a
             coverage check does not: the target's probe runs even when the
             container's own marker needs no adoption (on the backends without

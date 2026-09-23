@@ -6,7 +6,7 @@ bind before anything opens, and refuse an identity mismatch before any data
 storage opens -- exactly as a start would. With no anchor they run as before
 and say nothing was verified. Neither ever creates or rewrites the anchor or
 the identity row. See *Maintenance tools* under *The anchor and the container
-identity* in docs/design/ConfigurationStorage.md.
+identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

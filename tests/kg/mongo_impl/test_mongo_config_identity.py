@@ -2,7 +2,7 @@
 against an in-memory collection: created through the strict flush and
 read-back, verified on the next bind, and a read failure creates nothing.
 See *The anchor and the container identity* in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

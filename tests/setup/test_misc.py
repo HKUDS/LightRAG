@@ -2193,7 +2193,7 @@ class TestTheWizardSelectsAValidConfigurationBackend:
     configuration backend explicitly; otherwise the wizard accepts and
     validates a selection that is refused by name at startup.
 
-    See docs/design/ConfigurationStorage.md.
+    See docs/design/ConfigurationStorageContract.md.
     """
 
     def _select(self, kv_storage: str, stdin: str = "") -> dict[str, str]:
@@ -2468,7 +2468,7 @@ class TestTheNonStorageFlowsDoNotWriteAnUnstartableFile:
     the wizard's output saying why. The guard asks exactly one question, and
     only when the file is otherwise unstartable.
 
-    See docs/design/ConfigurationStorage.md.
+    See docs/design/ConfigurationStorageContract.md.
     """
 
     def _ensure(
@@ -2625,7 +2625,7 @@ class TestValidationRefusesAConfigurationBackendStartupWouldReject:
     worse than no validation: it tells the operator the environment is good
     and the server then refuses it. Both shapes are covered -- an explicit
     value outside the four, and an unset one inheriting a KV backend outside
-    the four. See docs/design/ConfigurationStorage.md.
+    the four. See docs/design/ConfigurationStorageContract.md.
     """
 
     BASE = [

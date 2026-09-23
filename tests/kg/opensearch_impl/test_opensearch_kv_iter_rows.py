@@ -1,5 +1,5 @@
 """``OpenSearchKVStorage.iter_rows``: the enumeration surface (scenario 16 in
-docs/design/ConfigurationStorage.md) on the OpenSearch backend.
+docs/design/ConfigurationStorageContract.md) on the OpenSearch backend.
 
 A PIT + search_after scan, read-your-writes against the process-local buffer:
 a buffered upsert is yielded in place of its indexed version, a buffered

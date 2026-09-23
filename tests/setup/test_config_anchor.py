@@ -4,7 +4,7 @@
 to a TYPE other than the one the anchor binds -- the server refuses that start
 too -- and ``make env-storage`` reports the anchor and warns on a mismatch.
 The wizard only ever reads the anchor. See *The anchor and the container
-identity* in docs/design/ConfigurationStorage.md.
+identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

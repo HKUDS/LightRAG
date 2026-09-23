@@ -5,7 +5,7 @@ the configuration storage is not a local JSON file, and every one binds the
 same container-wide identity row. The in-tree keyed lock cannot see another
 server, so the anchor bind lock (``lightrag/kg/anchor_lock.py``) serializes
 the no-anchor bind; an anchored start never takes it. See *The anchor and the
-container identity* in docs/design/ConfigurationStorage.md.
+container identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

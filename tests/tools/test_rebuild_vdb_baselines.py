@@ -4,7 +4,7 @@ After a target's rebuild is durable and verified the tool records that ONE
 target's baseline; a rebuild that reported errors records nothing; a baseline
 that could not be recorded is reported as a failed rebuild, which is what
 makes the process exit non-zero. See *Rebuild* in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

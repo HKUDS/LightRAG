@@ -4,7 +4,7 @@ The target's identity row is written first and is the ownership marker; the
 anchor moves only after a strict flush and a full verification; a crash at
 any step leaves the anchor on the source and a re-run converges the target to
 the CURRENT source. See *Offline migration* in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

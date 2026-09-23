@@ -4,7 +4,7 @@ on the JSON / Nano / NetworkX backends.
 0a-0c (the shared anchor lock, a strict anchor read, the backend-type check)
 open nothing and are not sticky; 1b (the identity bind) follows the sticky
 rules and the rollback of a step-2 failure. See *The anchor and the container
-identity* in docs/design/ConfigurationStorage.md.
+identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations
