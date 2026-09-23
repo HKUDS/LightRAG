@@ -894,6 +894,18 @@ MAX_EXTRACTION_ENTITIES=40
 
 如果旧 `.env` 中仍包含 `ENTITY_TYPES`，请在启动前移除。该变量已被 prompt profile 替代，服务器会对此进行快速失败校验。
 
+### 关键词抽取配置
+
+关键词抽取在查询链路运行（`KEYWORD` 角色的 LLM），用于 `hybrid` / `local` / `global` 模式，其结构化输出策略独立于 `ENTITY_EXTRACTION_USE_JSON`：
+
+- `KEYWORD_EXTRACTION_JSON_MODE`：关键词抽取的 `response_format` 策略。`auto`（默认）先请求 `response_format={"type": "json_object"}`，仅当 provider 拒绝该字段本身时才去掉它重试一次；`json_object` 始终发送；`none` 从不发送。仅当你明确知道 provider 的取向时才设为 `json_object` 或 `none`：LM Studio 这类服务只接受 `json_schema`/`text` 并返回 HTTP 400，查询链路会表现为"未检索到相关上下文"。
+
+示例：
+
+```bash
+KEYWORD_EXTRACTION_JSON_MODE=auto
+```
+
 ### 支持的存储类型
 
 LightRAG 使用 4 种类型的存储用于不同目的：
