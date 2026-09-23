@@ -171,7 +171,7 @@ class TestPublish:
         assert open(ca.anchor_path(str(tmp_path)), "rb").read() == before
         assert self._leftovers(tmp_path) == []
 
-    def test_without_hard_links_the_bind_rechecks_and_still_never_clobbers(
+    def test_without_hard_links_the_bind_still_never_clobbers(
         self, tmp_path, monkeypatch
     ):
         def _no_links(src, dst):
@@ -186,6 +186,38 @@ class TestPublish:
             )
         assert excinfo.value.cause == ca.IDENTITY_ANCHOR_APPEARED
         assert ca.read_anchor(str(tmp_path)).storage_uuid == UUID_A
+
+    def test_without_hard_links_a_winner_that_lands_late_is_never_replaced(
+        self, tmp_path, monkeypatch
+    ):
+        """The fallback's no-clobber may not rest on a check made before the
+        publish: another process tree's anchor landing in between must win.
+        The winner is planted at the last moment the target can still be
+        missing, i.e. just before the final replace."""
+
+        def _no_links(src, dst):
+            raise OSError(errno.EPERM, "hard links not supported")
+
+        real_replace = os.replace
+        winner = self._anchor(backend="MongoKVStorage", storage_uuid=UUID_B)
+        planted = []
+
+        def _replace_after_a_rival(src, dst):
+            if not os.path.lexists(dst):
+                with open(dst, "w", encoding="utf-8") as f:
+                    json.dump(winner.to_payload(), f)
+                planted.append(dst)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(ca.os, "link", _no_links)
+        monkeypatch.setattr(ca.os, "replace", _replace_after_a_rival)
+        try:
+            ca.publish_anchor(str(tmp_path), self._anchor(), replace=False)
+        except ConfigurationIdentityError as e:
+            assert e.cause == ca.IDENTITY_ANCHOR_APPEARED
+        assert planted == [], "the target was still claimable at the replace"
+        assert ca.read_anchor(str(tmp_path)) == self._anchor()
+        assert self._leftovers(tmp_path) == []
 
     def test_the_migration_mode_replaces_atomically(self, tmp_path):
         ca.publish_anchor(str(tmp_path), self._anchor(), replace=False)

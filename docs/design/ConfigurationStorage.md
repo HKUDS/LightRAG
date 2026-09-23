@@ -586,8 +586,13 @@ and the per-container markers are all kept and still ANDed.
   the same directory, `fsync` it, publish, then `fsync` the directory where
   the platform can (Windows cannot; `EINVAL` / `ENOTSUP` read as "cannot").
   The *bind* publishes **no-clobber** — `link` then `unlink` on POSIX,
-  `rename` on Windows, a re-check under the bind's keyed lock on a filesystem
-  without hard links. The *migration* publishes by atomic replace, and nothing
+  `rename` on Windows, and on a filesystem without hard links an
+  `O_CREAT | O_EXCL` claim of the name that the temp file then replaces. The
+  fallback leans on no lock (the bind lock fails open, the keyed lock sees
+  one process tree only). Its residue: until the replace lands the anchor is
+  an empty file that every reader refuses as unreadable, and a crash in that
+  window leaves it for the operator to delete — the sanctioned rebind. The
+  *migration* publishes by atomic replace, and nothing
   else does. A normal start never overwrites or deletes an existing anchor,
   and every failure — directory, temp file, publish, directory fsync — is
   raised with a definite message, never reported as success.

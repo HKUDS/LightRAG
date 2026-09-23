@@ -1869,6 +1869,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # claim -- the first worker would take the lock and every other one
         # would be refused at startup.
         self.config_dir = resolve_config_dir(self.config_dir, self.working_dir)
+        # The anchor, its lock and the bind lock are pinned to the directory
+        # as it resolves NOW, beside ``config_dir``: a relative
+        # ``working_dir`` re-resolved after the caller changed its CWD would
+        # read another deployment's anchor against this container, and would
+        # release a lock path other than the one it acquired.
+        self._anchor_working_dir = os.path.abspath(self.working_dir)
 
         # Verify storage implementation compatibility and environment variables
         storage_configs = [
@@ -2283,7 +2289,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def _release_anchor_lock(self) -> None:
         if self._holds_anchor_lock:
             self._holds_anchor_lock = False
-            release_anchor_lock_shared(self.working_dir)
+            release_anchor_lock_shared(self._anchor_working_dir)
 
     def _configuration_container(self) -> str:
         return describe_configuration_container(self.config_storage, self.config_dir)
@@ -2428,11 +2434,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # an ordinary, non-sticky one that hands the lock back. See *The
         # anchor and the container identity* in
         # docs/design/ConfigurationStorage.md.
-        acquire_anchor_lock_shared(self.working_dir)
+        acquire_anchor_lock_shared(self._anchor_working_dir)
         self._holds_anchor_lock = True
         try:
             preflight_configuration_anchor(
-                working_dir=self.working_dir,
+                working_dir=self._anchor_working_dir,
                 backend=self.config_storage,
                 container=self._configuration_container(),
             )
@@ -2488,7 +2494,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # none. Sticky and rolled back like a step-2 failure.
             await bind_configuration_identity(
                 self.configuration_storage,
-                working_dir=self.working_dir,
+                working_dir=self._anchor_working_dir,
                 backend=self.config_storage,
                 container=self._configuration_container(),
             )
