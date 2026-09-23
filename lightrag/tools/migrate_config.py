@@ -463,9 +463,17 @@ async def migrate_configuration(
 
         # Step 4. Claim: the ownership marker first.
         if verdict.state == "empty":
-            await cs.write_storage_identity(
-                target, anchor.storage_uuid, updated_by=cs.UPDATED_BY_MIGRATE
-            )
+            try:
+                await cs.write_storage_identity(
+                    target, anchor.storage_uuid, updated_by=cs.UPDATED_BY_MIGRATE
+                )
+            except ConfigurationIdentityError as e:
+                # Not a refusal: the marker may be durable even though the
+                # client saw the write fail. A re-run classifies the target
+                # again and resumes through it, or claims it afresh.
+                raise MigrationFailed(
+                    f"could not claim the target with this identity: {e}"
+                ) from e
 
         # Step 5. Copy, converging the target onto the current source.
         result.copied, result.deleted = await _copy_rows(
