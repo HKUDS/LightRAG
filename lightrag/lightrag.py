@@ -7468,6 +7468,760 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             action=_terminal_release,
                         )
 
+    async def adelete_chunks_from_doc(
+        self,
+        doc_id: str,
+        chunk_ids: list[str],
+        delete_llm_cache: bool = False,
+    ) -> DeletionResult:
+        """Delete some of a processed document's chunks and keep the rest.
+
+        The chunk-level counterpart of :py:meth:`adelete_by_doc_id`, and the
+        removal half of an incremental document update. The addition half is
+        :py:meth:`ainsert_custom_chunks` on a ``PROCESSED`` document (patch
+        mode), whose chunk ids a caller can recompute from ``(doc_id, content)``
+        with :func:`~lightrag.utils_pipeline.make_custom_chunk_id`. A KG object
+        is deleted when the removed chunks were its only sources and rebuilt
+        from its surviving chunks otherwise, as a document deletion does.
+
+        Rules a caller must know:
+
+        * Only ids in the document's ``chunks_list`` are deleted. Any other id,
+          another document's chunk included, is skipped and never touched, so
+          repeating a call that already succeeded is a no-op.
+        * The document must be ``PROCESSED`` and carry neither an unfinished
+          custom-chunk operation nor an unfinished document purge; otherwise
+          the call is refused (``not_allowed``, 409) and nothing changes.
+        * Fails closed like :py:meth:`adelete_by_doc_id`: when the recovery
+          anchors are unusable and the document may have written to the graph,
+          nothing is deleted (``fail``, 409).
+        * Holds the pipeline ``busy`` slot for the whole operation, and is
+          refused (``not_allowed``, 403) while ingestion, a scan or another
+          delete holds it. Retry once the pipeline is idle.
+        * ``full_docs`` is not rewritten: a later whole-document reprocess
+          re-chunks the original text and brings the removed content back, as
+          it drops chunks added by a custom-chunk patch.
+        * With ``delete_llm_cache=False`` the removed chunks' extraction cache
+          rows stay, so re-adding identical content later is a cache hit.
+        * A failure leaves the document ``PROCESSED`` with part of the work
+          possibly applied. Repeat the same call to converge. Why that is safe,
+          and what a caller who never retries is left with, is in
+          docs/design/PurgeRecoveryContract.md (Chunk-level deletion).
+
+        Args:
+            doc_id: The document whose chunks are removed.
+            chunk_ids: Chunk ids to remove. Duplicates and empty ids are ignored.
+            delete_llm_cache: Also delete the extraction cache rows referenced by
+                the removed chunks. Defaults to False.
+
+        Returns:
+            DeletionResult: ``status`` is ``success``, ``not_found`` (unknown
+            document), ``not_allowed`` or ``fail``, with a matching
+            ``status_code``.
+        """
+        requested_ids = list(
+            dict.fromkeys(
+                cid for cid in (chunk_ids or []) if isinstance(cid, str) and cid
+            )
+        )
+        if not requested_ids:
+            return DeletionResult(
+                status="success",
+                doc_id=doc_id,
+                message="No chunk ids given; nothing was deleted.",
+                status_code=200,
+            )
+
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=self.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+
+        token = uuid.uuid4().hex
+        busy_acquired = False
+        mutation_started = False
+        stage = "initializing"
+        status_row: dict[str, Any] | None = None
+        file_path: str | None = None
+        cache_ids: list[str] = []
+
+        try:
+            # Pre-arm ownership before acquire, as adelete_by_doc_id does: the
+            # exit is owner-checked, so a stamp that never happened is a no-op.
+            busy_acquired = True
+            reservation = await acquire_reservation(
+                pipeline_status,
+                pipeline_status_lock,
+                owner_key="busy_owner",
+                owner=token,
+                # Not a re-runnable kind: a worker that dies part-way fences the
+                # workspace for recovery instead of silently freeing the slot.
+                owner_kind="delete",
+                flags={
+                    "busy": True,
+                    "operation_record": {"kind": "delete_chunks", "doc_id": doc_id},
+                    # Must not start with "deleting": adelete_by_doc_id joins a
+                    # busy job whose name does, and would then run inside this
+                    # operation instead of being refused.
+                    "job_name": "Chunk deletion",
+                    "job_start": datetime.now(timezone.utc).isoformat(),
+                    "latest_message": (
+                        f"Deleting {len(requested_ids)} chunk(s) from document {doc_id}"
+                    ),
+                    "cancellation_requested": False,
+                    "cancellation_reason": None,
+                    "cancellation_detail": None,
+                },
+                reject_when=(
+                    ("busy", "Pipeline is busy with another operation."),
+                    ("scanning", "A document scan is in progress."),
+                ),
+            )
+            if not reservation.acquired:
+                busy_acquired = False
+                recovery_required = (
+                    reservation.conflict
+                    is PipelineReservationConflict.RECOVERY_REQUIRED
+                )
+                return DeletionResult(
+                    status="not_allowed",
+                    doc_id=doc_id,
+                    message=reservation.message
+                    or "Pipeline is busy with another operation.",
+                    status_code=503 if recovery_required else 403,
+                )
+
+            # Same per-document lock as custom-chunk operations and their
+            # rollback, so none of them can interleave with this one.
+            doc_lock_namespace = (
+                f"{self.workspace}:DocPatch" if self.workspace else "DocPatch"
+            )
+            async with get_storage_keyed_lock(
+                [doc_id], namespace=doc_lock_namespace, enable_logging=False
+            ):
+                stage = "validate_document"
+                status_row = await self.doc_status.get_by_id(doc_id)
+                if not status_row:
+                    return DeletionResult(
+                        status="not_found",
+                        doc_id=doc_id,
+                        message=f"Document {doc_id} not found.",
+                        status_code=404,
+                        file_path="",
+                    )
+                file_path = status_row.get("file_path")
+
+                refusal = self._chunk_delete_refusal(doc_id, status_row)
+                if refusal is not None:
+                    logger.warning(refusal)
+                    return DeletionResult(
+                        status="not_allowed",
+                        doc_id=doc_id,
+                        message=refusal,
+                        status_code=409,
+                        file_path=file_path,
+                    )
+
+                owned_ids = normalize_string_list(
+                    status_row.get("chunks_list", []),
+                    context=f"doc {doc_id} chunks_list",
+                )
+                owned_set = set(owned_ids)
+                target_ids = [cid for cid in requested_ids if cid in owned_set]
+                skipped = len(requested_ids) - len(target_ids)
+                if not target_ids:
+                    return DeletionResult(
+                        status="success",
+                        doc_id=doc_id,
+                        message=(
+                            f"Document {doc_id} owns none of the {skipped} given "
+                            f"chunk id(s); nothing was deleted."
+                        ),
+                        status_code=200,
+                        file_path=file_path,
+                    )
+                target_set = set(target_ids)
+                remaining_ids = {cid for cid in owned_ids if cid not in target_set}
+
+                # The document's anchors are the candidate superset: they name
+                # everything it contributed, so they name everything these
+                # chunks contributed. A document that provably never reached
+                # the graph (skip_kg) has nothing to clean.
+                stage = "validate_recovery_anchors"
+                proof = await self._resolve_purge_recovery_proof(doc_id, target_ids)
+                if proof.proof_kind == "anchors":
+                    entity_row = await self.full_entities.get_by_id(doc_id) or {}
+                    relation_row = await self.full_relations.get_by_id(doc_id) or {}
+                    candidate_entities = [
+                        name
+                        for name in (entity_row.get("entity_names") or [])
+                        if isinstance(name, str) and name
+                    ]
+                    candidate_relations = [
+                        (pair[0], pair[1])
+                        for pair in (relation_row.get("relation_pairs") or [])
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2
+                    ]
+                elif proof.proof_kind == "pre_graph":
+                    candidate_entities = []
+                    candidate_relations = []
+                else:
+                    self._raise_missing_recovery_proof(doc_id, proof)
+
+                stage = "analyze_graph_dependencies"
+                (
+                    candidate_entities,
+                    candidate_relations,
+                ) = await self._chunk_delete_candidates(
+                    candidate_entities, candidate_relations, target_set
+                )
+
+                if delete_llm_cache:
+                    if not self.llm_response_cache:
+                        raise RuntimeError(
+                            f"Cannot delete LLM cache for document {doc_id}: "
+                            "cache storage is unavailable"
+                        )
+                    stage = "collect_llm_cache"
+                    cache_ids = await self._collect_chunk_llm_cache_ids(
+                        status_row, target_ids
+                    )
+                    if cache_ids:
+                        # The chunk rows are the only other carrier of these
+                        # ids and the purge deletes them, so the ids must be
+                        # durable first or a failed cache delete strands the
+                        # rows for good. adelete_by_doc_id reads the same key.
+                        mutation_started = True
+                        status_row = await self._update_delete_retry_state(
+                            doc_id,
+                            status_row,
+                            deletion_stage=stage,
+                            doc_llm_cache_ids=cache_ids,
+                            failed=False,
+                        )
+                        await self._flush_storages([self.doc_status])
+
+                # Graph, vectors and chunk tracking first, then the chunks,
+                # each flushed before the next step; the anchors are kept
+                # (patch_only) because the document still owns the rest.
+                #
+                # The "rollback" policy, not deletion's "best_effort": the
+                # candidates are already narrowed to objects these chunks
+                # feed, so forcing each one through the rebuild costs nothing
+                # extra, and in exchange a missing extraction cache still
+                # rewrites graph provenance to the surviving chunks and a
+                # failed rebuild raises instead of being logged and skipped.
+                stage = "purge_kg_contributions"
+                mutation_started = True
+                try:
+                    rebuild_report = await self._purge_kg_contributions(
+                        doc_id,
+                        target_ids,
+                        candidate_entities=candidate_entities,
+                        candidate_relations=candidate_relations,
+                        patch_only=True,
+                        rebuild_policy="rollback",
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+                except _PurgeStageError as purge_error:
+                    stage = purge_error.purge_stage
+                    raise
+                if rebuild_report.has_warnings:
+                    degraded_message = (
+                        f"[chunk-delete] {doc_id}: rebuilt "
+                        f"{len(rebuild_report.degraded_entities)} entity(ies) and "
+                        f"{len(rebuild_report.degraded_relationships)} relation(s) "
+                        f"without extraction cache for "
+                        f"{len(rebuild_report.missing_cache_chunk_ids)} chunk(s); "
+                        "provenance is exact but their descriptions were kept "
+                        "as they were"
+                    )
+                    logger.warning(degraded_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = degraded_message
+                        append_pipeline_history(pipeline_status, degraded_message)
+
+                if candidate_entities or candidate_relations:
+                    stage = "prune_recovery_anchors"
+                    await self._prune_anchors_after_chunk_delete(
+                        doc_id,
+                        candidate_entities,
+                        candidate_relations,
+                        remaining_chunk_ids=remaining_ids,
+                    )
+
+                if cache_ids:
+                    stage = "delete_llm_cache"
+                    await self.llm_response_cache.delete(cache_ids)
+                    # text_chunks joins the flush so the pair stays ordered and
+                    # fenced (see LLM extraction cache reachability).
+                    await self._flush_storages(
+                        [self.text_chunks, self.llm_response_cache]
+                    )
+                    still_cached = await self._get_existing_llm_cache_ids(cache_ids)
+                    if still_cached:
+                        raise RuntimeError(
+                            f"{len(still_cached)} LLM cache entries still exist "
+                            "after delete"
+                        )
+
+                # Commit record, written last: until it lands, a retry still
+                # finds the removed ids in chunks_list and converges.
+                stage = "update_doc_status"
+                await self._commit_chunk_delete_status(
+                    doc_id, target_set, clear_cache_ids=bool(cache_ids)
+                )
+
+            message = f"Deleted {len(target_ids)} chunk(s) from document {doc_id}"
+            if skipped:
+                message += f"; skipped {skipped} id(s) the document does not own"
+            logger.info(message)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = message
+                append_pipeline_history(pipeline_status, message)
+            return DeletionResult(
+                status="success",
+                doc_id=doc_id,
+                message=message,
+                status_code=200,
+                file_path=file_path,
+            )
+
+        except (RecoveryAnchorMissingError, KGPurgeOperationConflictError) as e:
+            # Refused before the first write: the document is unchanged, and
+            # retrying unchanged will refuse again (the message names the fix).
+            logger.error(f"Refusing to delete chunks from document {doc_id}: {e}")
+            return DeletionResult(
+                status="fail",
+                doc_id=doc_id,
+                message=str(e),
+                status_code=409,
+                file_path=file_path,
+            )
+
+        except Exception as e:
+            error_message = f"Error while deleting chunks from document {doc_id}: {e}"
+            logger.error(error_message)
+            logger.error(traceback.format_exc())
+            if mutation_started and status_row is not None:
+                try:
+                    await self._update_delete_retry_state(
+                        doc_id,
+                        status_row,
+                        deletion_stage=stage,
+                        doc_llm_cache_ids=cache_ids,
+                        error_message=error_message,
+                        failed=True,
+                    )
+                except Exception as status_update_error:
+                    logger.error(
+                        "Failed to record chunk-deletion retry state for "
+                        "document %s: %s",
+                        doc_id,
+                        status_update_error,
+                    )
+            return DeletionResult(
+                status="fail",
+                doc_id=doc_id,
+                message=error_message,
+                status_code=500,
+                file_path=file_path,
+            )
+
+        finally:
+            if busy_acquired:
+                await self._exit_busy_reservation(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    token,
+                    flush=mutation_started,
+                    label="chunk-delete",
+                )
+
+    def delete_chunks_from_doc(
+        self,
+        doc_id: str,
+        chunk_ids: list[str],
+        delete_llm_cache: bool = False,
+    ) -> DeletionResult:
+        """Synchronously delete some of a document's chunks.
+
+        See :py:meth:`adelete_chunks_from_doc` for the rules and return value.
+        """
+        return _run_sync(
+            lambda: self.adelete_chunks_from_doc(doc_id, chunk_ids, delete_llm_cache),
+            sync_name="delete_chunks_from_doc",
+            async_name="adelete_chunks_from_doc",
+            owning_loop=self._owning_loop,
+        )
+
+    @staticmethod
+    def _chunk_delete_refusal(doc_id: str, status_row: dict[str, Any]) -> str | None:
+        """Why a chunk-level delete may not start on this document, or None."""
+        raw_status = status_row.get("status")
+        status_text = (
+            raw_status.value if isinstance(raw_status, DocStatus) else str(raw_status)
+        )
+        if status_text != DocStatus.PROCESSED.value:
+            return (
+                f"Document {doc_id} is in status '{status_text}'; chunks can only "
+                "be deleted from a PROCESSED document."
+            )
+        if doc_status_custom_chunk_patch(status_row) is not None:
+            return (
+                f"Document {doc_id} has an unfinished custom-chunk operation; "
+                "retry it with its original input, or run /documents/scan to roll "
+                "it back, before deleting chunks."
+            )
+        purge_journal = doc_status_kg_purge_journal(status_row)
+        if (
+            purge_journal is not None
+            and purge_journal.get("phase") != KG_PURGE_PHASE_COMPLETED
+        ):
+            return (
+                f"Document {doc_id} has an unfinished document deletion; finish it "
+                "with adelete_by_doc_id before deleting chunks."
+            )
+        return None
+
+    async def _collect_chunk_llm_cache_ids(
+        self, status_row: dict[str, Any], chunk_ids: list[str]
+    ) -> list[str]:
+        """Cache ids the given chunks reference, plus any a failed attempt kept.
+
+        The persisted ``deletion_llm_cache_ids`` are unioned in because a retry
+        after the purge finds the chunk rows already gone.
+        """
+        metadata = status_row.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        cache_ids = normalize_string_list(
+            metadata.get("deletion_llm_cache_ids", []),
+            context="metadata.deletion_llm_cache_ids",
+        )
+        for row in await self.text_chunks.get_by_ids(chunk_ids):
+            if not isinstance(row, dict):
+                continue
+            cache_list = row.get("llm_cache_list")
+            if isinstance(cache_list, list):
+                cache_ids.extend(
+                    cid for cid in cache_list if isinstance(cid, str) and cid
+                )
+        return list(dict.fromkeys(cache_ids))
+
+    async def _prune_anchors_after_chunk_delete(
+        self,
+        doc_id: str,
+        entity_names: list[str],
+        relation_pairs: list[tuple[str, str]],
+        *,
+        remaining_chunk_ids: set[str],
+    ) -> None:
+        """Drop the given anchor names the document no longer contributes to.
+
+        Runs after a chunk-level purge committed, over the objects that purge
+        touched; every other name in the anchor rows is left alone. A name is
+        dropped only when that is provably safe: its graph object is gone, or
+        it has a chunk-tracking row and no chunk the document still owns feeds
+        it. Anything else is kept, because an anchor that over-claims costs a
+        later purge a no-op read while one that under-claims strands a live
+        object. Unlike :py:meth:`_prune_doc_recovery_anchors`, a missing
+        tracking row keeps the name.
+        """
+        entity_sources, relation_sources = await self._read_graph_object_sources(
+            entity_names, relation_pairs
+        )
+
+        def _droppable(sources: tuple[set[str], bool] | None) -> bool:
+            if sources is None:
+                return True
+            chunk_ids, tracked = sources
+            return tracked and not chunk_ids & remaining_chunk_ids
+
+        drop_entities = {
+            name for name in entity_names if _droppable(entity_sources.get(name))
+        }
+        drop_relations = {
+            pair for pair in relation_pairs if _droppable(relation_sources.get(pair))
+        }
+
+        changed = False
+        if drop_entities:
+            entity_row = await self.full_entities.get_by_id(doc_id)
+            if isinstance(entity_row, dict) and isinstance(
+                entity_row.get("entity_names"), list
+            ):
+                keep_names = [
+                    name
+                    for name in entity_row["entity_names"]
+                    if name not in drop_entities
+                ]
+                await self.full_entities.upsert(
+                    {
+                        doc_id: {
+                            "entity_names": sorted(keep_names),
+                            "count": len(keep_names),
+                        }
+                    }
+                )
+                changed = True
+
+        if drop_relations:
+            relation_row = await self.full_relations.get_by_id(doc_id)
+            if isinstance(relation_row, dict) and isinstance(
+                relation_row.get("relation_pairs"), list
+            ):
+                keep_pairs = [
+                    list(pair)
+                    for pair in relation_row["relation_pairs"]
+                    if tuple(pair) not in drop_relations
+                ]
+                await self.full_relations.upsert(
+                    {
+                        doc_id: {
+                            "relation_pairs": sorted(keep_pairs),
+                            "count": len(keep_pairs),
+                        }
+                    }
+                )
+                changed = True
+
+        if changed:
+            await self._flush_storages([self.full_entities, self.full_relations])
+
+    async def _chunk_delete_candidates(
+        self,
+        entity_names: list[str],
+        relation_pairs: list[tuple[str, str]],
+        chunk_ids: set[str],
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        """Narrow a document's anchor names to the live objects ``chunk_ids`` feed.
+
+        An object that none of ``chunk_ids`` feeds is one the purge would leave
+        as it is, so dropping it here changes nothing but the cost.
+        """
+        entity_sources, relation_sources = await self._read_graph_object_sources(
+            entity_names, relation_pairs
+        )
+        return (
+            [name for name, (ids, _) in entity_sources.items() if ids & chunk_ids],
+            [pair for pair, (ids, _) in relation_sources.items() if ids & chunk_ids],
+        )
+
+    async def _read_graph_object_sources(
+        self,
+        entity_names: list[str],
+        relation_pairs: list[tuple[str, str]],
+    ) -> tuple[
+        dict[str, tuple[set[str], bool]],
+        dict[tuple[str, str], tuple[set[str], bool]],
+    ]:
+        """Chunk ids feeding each live graph object, and whether it is tracked.
+
+        Absent objects are left out. The ids are the union of the chunk-tracking
+        row and the graph ``source_id``: tracking is authoritative, but after a
+        rebuild that failed part-way the graph still names chunks tracking has
+        already dropped, and a retry has to see those too.
+        """
+
+        def _sources(tracking_row: Any, graph_obj: dict[str, Any]) -> set[str]:
+            tracked_ids = (
+                tracking_row.get("chunk_ids") or []
+                if isinstance(tracking_row, dict)
+                else []
+            )
+            graph_ids = (graph_obj.get("source_id") or "").split(GRAPH_FIELD_SEP)
+            return {cid for cid in [*tracked_ids, *graph_ids] if cid}
+
+        entity_sources: dict[str, tuple[set[str], bool]] = {}
+        if entity_names:
+            nodes = await self.chunk_entity_relation_graph.get_nodes_batch(
+                list(entity_names)
+            )
+            rows = (
+                await self.entity_chunks.get_by_ids(list(entity_names))
+                if self.entity_chunks
+                else [None] * len(entity_names)
+            )
+            for name, row in zip(entity_names, rows):
+                node = nodes.get(name)
+                if node:
+                    entity_sources[name] = (
+                        _sources(row, node),
+                        isinstance(row, dict),
+                    )
+
+        relation_sources: dict[tuple[str, str], tuple[set[str], bool]] = {}
+        if relation_pairs:
+            edges = await self.chunk_entity_relation_graph.get_edges_batch(
+                [{"src": src, "tgt": tgt} for src, tgt in relation_pairs]
+            )
+            rows = (
+                await self.relation_chunks.get_by_ids(
+                    [make_relation_chunk_key(src, tgt) for src, tgt in relation_pairs]
+                )
+                if self.relation_chunks
+                else [None] * len(relation_pairs)
+            )
+            for pair, row in zip(relation_pairs, rows):
+                edge = edges.get(pair)
+                if edge:
+                    relation_sources[pair] = (
+                        _sources(row, edge),
+                        isinstance(row, dict),
+                    )
+
+        return entity_sources, relation_sources
+
+    async def _commit_chunk_delete_status(
+        self, doc_id: str, removed_ids: set[str], *, clear_cache_ids: bool
+    ) -> None:
+        """Write the chunk-level delete's commit record and flush it.
+
+        Re-reads the row and writes only the fields it changes, so nothing the
+        purge journaled in between is clobbered.
+        """
+        current = await require_doc_status_record(
+            self.doc_status, doc_id, purpose="commit a chunk-level delete"
+        )
+        chunks = [
+            cid
+            for cid in normalize_string_list(
+                doc_status_field(current, "chunks_list", []),
+                context=f"doc {doc_id} chunks_list",
+            )
+            if cid not in removed_ids
+        ]
+        metadata = doc_status_field(current, "metadata", {})
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata.pop("deletion_failed", None)
+        metadata.pop("deletion_failure_stage", None)
+        if clear_cache_ids:
+            metadata.pop("deletion_llm_cache_ids", None)
+        await self.doc_status.update_doc_status_fields(
+            doc_id,
+            {
+                "chunks_list": chunks,
+                "chunks_count": len(chunks),
+                "metadata": metadata,
+                "error_msg": "",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        await self._flush_storages([self.doc_status])
+
+    async def _exit_busy_reservation(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock: Any,
+        token: str,
+        *,
+        flush: bool,
+        label: str,
+    ) -> None:
+        """Flush, then release or hand off a ``busy`` slot this call owns.
+
+        For SDK writers holding ``busy`` without ``destructive_busy``: enqueues
+        stay allowed meanwhile, so work can be waiting in the ingress mailbox.
+        When it is, the slot is handed to a processing run rather than
+        released, since releasing first would strand that work. A mailbox that
+        cannot be read fails toward handoff (the driven run re-probes it).
+        Owner-checked and cancellation-resistant, so it is a no-op once the
+        slot was released or taken over.
+
+        ``flush`` runs a plain :py:meth:`_insert_done` while the slot is still
+        held. The buffer holds deletes, which must stay buffered on a flush
+        failure rather than be discarded, so that failure is logged, not raised.
+        """
+        # Resolved before the release below, which is safe only because
+        # get_pipeline_ingress is suspension-free by contract.
+        try:
+            handoff_ingress = await get_pipeline_ingress(self.workspace)
+        except Exception as ingress_error:
+            handoff_ingress = None
+            logger.warning(
+                f"{label} exit: pipeline ingress unavailable; failing toward "
+                f"handoff so mailbox-only work is not silently deferred: "
+                f"{ingress_error}"
+            )
+
+        def _exit_action(status):
+            updates = {
+                "operation_record": None,
+                "cancellation_requested": False,
+                "cancellation_reason": None,
+                "cancellation_detail": None,
+            }
+            if handoff_ingress is None:
+                ingress_has_work = True
+            else:
+                try:
+                    ingress_has_work = handoff_ingress.has_work()
+                except Exception as probe_error:
+                    ingress_has_work = True
+                    logger.warning(
+                        f"{label} exit: ingress has_work probe failed; handing "
+                        f"off so queued work is not silently deferred: "
+                        f"{probe_error}"
+                    )
+            if ingress_has_work:
+                status.update(updates)
+                return "handoff"
+            updates.update({"busy": False, "busy_owner": None})
+            status.update(updates)
+            return "released"
+
+        def _terminal_release(status):
+            status.update(
+                {
+                    "busy": False,
+                    "busy_owner": None,
+                    "operation_record": None,
+                    "cancellation_requested": False,
+                    "cancellation_reason": None,
+                    "cancellation_detail": None,
+                }
+            )
+
+        try:
+            try:
+                if flush:
+                    try:
+                        await self._insert_done()
+                    except Exception as flush_error:
+                        logger.error(
+                            f"{label} exit: failed to persist pending changes: "
+                            f"{flush_error}"
+                        )
+            finally:
+                decision = await with_reservation_lock(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    owner_key="busy_owner",
+                    token=token,
+                    action=_exit_action,
+                )
+                if decision == "handoff":
+                    try:
+                        await self.apipeline_process_enqueue_documents(
+                            _holding_busy=True, token=token
+                        )
+                    except Exception as drain_error:
+                        logger.warning(
+                            f"Failed to process queued documents handed off "
+                            f"from a {label}: {drain_error}"
+                        )
+        finally:
+            await with_reservation_lock(
+                pipeline_status,
+                pipeline_status_lock,
+                owner_key="busy_owner",
+                token=token,
+                action=_terminal_release,
+            )
+
     # ------------------------------------------------------------------
     # Admin-write gate
     # ------------------------------------------------------------------

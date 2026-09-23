@@ -1980,6 +1980,51 @@ The deletion process:
 4. Update all related vector indexes
 5. Clean up document status records
 
+### Delete Chunks from a Document
+
+Removes some of a processed document's chunks and keeps the rest, so a small
+change to a large document does not need a delete and a full re-insert. Every
+entity or relation the removed chunks fed is deleted when they were its only
+sources, and rebuilt from its surviving chunks otherwise.
+
+```python
+from lightrag.utils_pipeline import make_custom_chunk_id
+
+# Remove one chunk. Ids the document does not own are skipped.
+result = await rag.adelete_chunks_from_doc("doc-12345", ["chunk-abc"])
+
+# Synchronous, and also dropping the removed chunks' extraction cache
+rag.delete_chunks_from_doc("doc-12345", ["chunk-abc"], delete_llm_cache=True)
+```
+
+Combined with `ainsert_custom_chunks` on the same document (patch mode), this
+is an in-place edit. Custom-chunk ids are derived from the document id and the
+chunk text, so a caller that knows the old text can compute the id to remove:
+
+```python
+old_id = make_custom_chunk_id("doc-12345", "Rent is $2,000 per month.")
+await rag.adelete_chunks_from_doc("doc-12345", [old_id])
+await rag.ainsert_custom_chunks(
+    "", ["Rent is $2,150 per month."], doc_id="doc-12345"
+)
+```
+
+The call returns a `DeletionResult`; it does not raise for the cases below.
+
+| Result | When |
+|---|---|
+| `success` / 200 | Deleted, or nothing to delete (repeating a finished call is a no-op) |
+| `not_found` / 404 | No such document |
+| `not_allowed` / 409 | Document not `PROCESSED`, or it has an unfinished custom-chunk operation or document deletion |
+| `not_allowed` / 403 | The pipeline is busy (ingestion, scan or another delete). Retry when idle |
+| `fail` / 409 | Recovery anchors unusable; nothing was deleted. Run `audit_kg_integrity(..., apply=True)` first |
+| `fail` / 500 | Failed part-way; the document stays `PROCESSED`. Repeat the same call |
+
+`full_docs` keeps the original text, so a later whole-document reprocess
+re-chunks it and the removed content returns, the same way it drops chunks a
+custom-chunk patch added. The ordering and crash behavior are specified in
+[PurgeRecoveryContract.md](design/PurgeRecoveryContract.md#chunk-level-deletion).
+
 **Important Reminders:**
 1. All deletion operations are **irreversible** — use with caution
 2. Deleting large amounts of data may take time, especially deletion by document ID
