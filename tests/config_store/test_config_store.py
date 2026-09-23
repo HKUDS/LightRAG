@@ -198,12 +198,14 @@ class TestKeysAndRows:
                 cs.UPDATED_BY_STARTUP,
                 cs.UPDATED_BY_REBUILD,
                 cs.DELETED_BY_CLEAR_TOOL,
+                cs.UPDATED_BY_MIGRATE,
             }
             assert set(spec.writers) == {
                 cs.UPDATED_BY_STARTUP,
                 cs.UPDATED_BY_REBUILD,
                 cs.DELETED_BY_CLEAR_ENDPOINT,
                 cs.DELETED_BY_CLEAR_TOOL,
+                cs.UPDATED_BY_MIGRATE,
             }
 
     def test_the_registry_names_every_caller_that_touches_the_identity(self):
@@ -215,8 +217,9 @@ class TestKeysAndRows:
             cs.UPDATED_BY_STARTUP,
             cs.UPDATED_BY_REBUILD,
             cs.DELETED_BY_CLEAR_TOOL,
+            cs.UPDATED_BY_MIGRATE,
         }
-        assert set(spec.writers) == {cs.UPDATED_BY_STARTUP}
+        assert set(spec.writers) == {cs.UPDATED_BY_STARTUP, cs.UPDATED_BY_MIGRATE}
         assert cs.DELETED_BY_CLEAR_ENDPOINT not in spec.writers
         assert cs.DELETED_BY_CLEAR_TOOL not in spec.writers
 

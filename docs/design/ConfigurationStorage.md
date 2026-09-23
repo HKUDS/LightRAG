@@ -667,7 +667,7 @@ because type drift is the mistake the anchor exists to stop:
 | refusal | first advice | deleting the anchor |
 | --- | --- | --- |
 | container UUID missing | if the container was intentionally emptied, replaced or restored from an old backup, delete the anchor (path given) and restart | primary recovery |
-| backend type differs | set `LIGHTRAG_CONFIG_STORAGE` explicitly to the anchored backend, or migrate the container offline | listed last, marked as abandoning every record in the old container |
+| backend type differs | set `LIGHTRAG_CONFIG_STORAGE` explicitly to the anchored backend, or run `lightrag-migrate-config` | listed last, marked as abandoning every record in the old container |
 | same type, different UUID | check that the connection settings point at the intended database | listed last, same warning |
 
 ### Maintenance tools
@@ -680,6 +680,81 @@ and before any data storage does — refusing exactly as a start would. They
 never create or rewrite the anchor or the identity row; with no anchor they
 run as before and say nothing was verified. Only a server or SDK start binds,
 and only the migration tool changes a binding.
+
+### Offline migration: `lightrag-migrate-config`
+
+`lightrag/tools/migrate_config.py`; operator guide in
+`lightrag/tools/README_MIGRATE_CONFIG.md`.
+
+**Cross-type only.** A same-type move — PostgreSQL to another PostgreSQL,
+Mongo to Mongo, an OpenSearch snapshot or reindex, copying the JSON file — is
+the backend's own dump/restore: the identity row travels with the data, and
+"same type, same UUID" passes. A same-type tool is also not implementable
+without refactoring three backends: the PostgreSQL, MongoDB and OpenSearch
+`ClientManager`s are process-wide singletons that read `os.environ`, which is
+why `migrate_llm_cache` already excludes a same-type target. Two containers of
+different types read disjoint connection variables, so one process can hold
+both; the tool refuses when `--source-env` and `--target-env` set different
+values for a variable either selected backend reads, and never writes an env
+file or logs a credential.
+
+**The UUID is kept.** The target receives the source's identity. The backend
+type already tells source from target, and pointing back at the source after a
+migration is refused by type; a fresh UUID would discriminate nothing and add
+a second identity to verify.
+
+**The anchor and its lock come from the current `WORKING_DIR`**, and the tool
+refuses when either env file names a different one. A JSON source's
+`config_dir` resolves from `--source-env`, a JSON target's from
+`--target-env`, and a JSON side's `config_dir` claim is taken for the run.
+
+```
+1. take the anchor lock EXCLUSIVELY; strict-read the anchor
+     no anchor -> refuse (nothing is bound)
+     target type unadmitted, or equal to the anchored one -> refuse
+2. open the source as the anchored type; its identity must equal the anchor's
+     (an unreadable source refuses: the anchor never moves without one)
+   enumerate it; a row that is not a well-formed row is refused and listed
+3. open the target and classify it
+     empty                           -> claim it
+     identity == the anchor's UUID   -> an earlier attempt's residue: resume
+     anything else                   -> refuse; no overwrite, no merge
+4. claim: write the target's identity (same UUID) FIRST, strict flush,
+   read-back -- the ownership marker that makes a re-run safe
+5. copy every row, paged: server scope and every workspace, key and row
+   envelope verbatim, the source identity excepted. Target rows the source
+   does not hold, or holds differently, are deleted and the delete flushed
+   BEFORE the upsert -- permitted only because step 3/4 proved ownership, and
+   ordered so a backend that merges an upsert (Mongo's `$set`) keeps no
+   stale field
+6. strict flush; enumerate both and compare key set and content, backend
+   metadata (`_id`, `create_time`, `update_time`) excluded
+7. publish the anchor {target type, same UUID} by atomic replace  <- COMMIT
+```
+
+`--dry-run` takes the lock shared, runs steps 1–3 and writes nothing; it
+reports the anchor, the source's row count and workspace scopes, and the
+verdict on the target.
+
+**Failure and recovery.** Before step 7 the anchor is unchanged: the old
+environment keeps working on the source and the new one is refused on the type
+mismatch; a re-run resumes through the ownership marker and reconciles the
+target to the *current* source. A failed replace at step 7 is re-checked
+against the file, so a directory fsync failing after a landed replace is
+reported as switched, not failed. After step 7 the migration is complete. The
+source is never modified or deleted; removing it is a separate operator
+action. A server never completes a migration on its own.
+
+**Accepted residues.** The ownership marker cannot tell this attempt's residue
+from a stale copy left by an earlier migration of the same identity (PG →
+Mongo, later Mongo → OpenSearch, later OpenSearch → Mongo finds the old Mongo
+copy); it does not need to, since both belong to this identity and step 5
+converges either. A source container SHARED with other deployments has every
+sharer's rows copied (the dry run lists the scopes); sharers that stay are
+unaffected, but their rows in the target are stale copies — the target must
+be dedicated, and consolidating into an already-shared container is out of
+scope. The lock is local to one `WORKING_DIR`: deployments sharing one remote
+container from other working directories must be stopped by the operator.
 
 ## The first keys: one baseline per vector target
 
@@ -1413,7 +1488,7 @@ the more convenient one.
 | --- | --- |
 | 1 | the `config` namespace across the five KV backends (PostgreSQL DDL + SQL templates; the internal reserved-workspace factory; the enumeration surface), the reserved `_lightrag*` name family, **three** `<workspace>/embedding/<target>` records with their verdicts, the split startup sequence with cleanup on early refusal, the atomic claim, per-target `rebuild_vdb` commits, data-first drop cleanup, key registry |
 | 1b | configuration as its own **category** (`config_storage`, four admitted backends, refusal by name), `config_dir` for the JSON backend with the migration-free default, fixed container names on PostgreSQL / MongoDB / OpenSearch, the single-server claim moved onto `config_dir`, the unrecorded-baseline announcement, and the retirement of the whole reserved-name machinery |
-| 1c | the container identity row, the anchor file with its strict read and no-clobber publish, the shared anchor lock, steps 0a–0c and 1b (Gunicorn master included), identity verification in the two maintenance tools |
+| 1c | the container identity row, the anchor file with its strict read and no-clobber publish, the shared anchor lock, steps 0a–0c and 1b (Gunicorn master included), identity verification in the two maintenance tools, the cross-type offline migration `lightrag-migrate-config` |
 | 2 | `_lightrag_server/embedding.current` / `.previous` and the startup inventory naming which workspaces still need a rebuild, over the enumeration surface from slice 1 |
 | later | migrating existing environment variables into the store, key by key; a display-name → UUID mapping once workspace names become UUIDs; the secrets policy |
 
@@ -1531,3 +1606,15 @@ The anchor and the container identity (slice 1c):
     data storage opens, and never create an anchor.
 41. The identity's strict read, flush and read-back run on all four backends,
     and an OpenSearch write still retained in the buffer binds nothing.
+42. A migration copies every workspace's rows and the server-scope rows, keeps
+    the UUID and the source, and moves the anchor last; a same-type target,
+    an unadmitted one, a missing anchor, a source that is not the anchored
+    container, a malformed source row, a target with another identity and a
+    non-empty target without one are each refused with nothing written.
+43. A pagination, write, flush or verification failure, and a failed anchor
+    replace, leave the anchor on the source; the re-run resumes, and
+    converges a target whose source changed between attempts (removed,
+    changed and added rows, a stale field under a merging upsert).
+44. The migration is refused while any starter holds the anchor lock, and a
+    filesystem that cannot lock refuses it without `--assume-exclusive`;
+    conflicting env files and a different `WORKING_DIR` are refused.

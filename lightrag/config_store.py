@@ -125,6 +125,10 @@ UPDATED_BY_REBUILD = "lightrag-rebuild-vdb"
 DELETED_BY_CLEAR_ENDPOINT = "/documents/clear"
 DELETED_BY_CLEAR_TOOL = "lightrag-clear-storage"
 
+# The offline migration copies EVERY row verbatim into another container and
+# writes that container's identity, so it reads and writes every key.
+UPDATED_BY_MIGRATE = "lightrag-migrate-config"
+
 
 class ConfigScope(str, Enum):
     """Whether a key is filed under a workspace or under the server itself."""
@@ -180,11 +184,17 @@ CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {
         scope=ConfigScope.SERVER,
         schema_version=1,
         schema="{uuid: str (canonical UUID of the whole configuration container)}",
-        # Written only by a start that binds with no anchor on record; never
-        # overwritten once valid, never deleted by workspace clear/delete or
-        # an embedding rebuild. The two tools only VERIFY it.
-        readers=(UPDATED_BY_STARTUP, UPDATED_BY_REBUILD, DELETED_BY_CLEAR_TOOL),
-        writers=(UPDATED_BY_STARTUP,),
+        # Written by a start that binds with no anchor on record, and by the
+        # migration into its (empty) target; never overwritten once valid,
+        # never deleted by workspace clear/delete or an embedding rebuild.
+        # The rebuild and clear tools only VERIFY it.
+        readers=(
+            UPDATED_BY_STARTUP,
+            UPDATED_BY_REBUILD,
+            DELETED_BY_CLEAR_TOOL,
+            UPDATED_BY_MIGRATE,
+        ),
+        writers=(UPDATED_BY_STARTUP, UPDATED_BY_MIGRATE),
         sensitive=False,
     ),
     **{
@@ -193,12 +203,18 @@ CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {
             scope=ConfigScope.WORKSPACE,
             schema_version=1,
             schema=_EMBEDDING_BASELINE_SCHEMA,
-            readers=(UPDATED_BY_STARTUP, UPDATED_BY_REBUILD, DELETED_BY_CLEAR_TOOL),
+            readers=(
+                UPDATED_BY_STARTUP,
+                UPDATED_BY_REBUILD,
+                DELETED_BY_CLEAR_TOOL,
+                UPDATED_BY_MIGRATE,
+            ),
             writers=(
                 UPDATED_BY_STARTUP,
                 UPDATED_BY_REBUILD,
                 DELETED_BY_CLEAR_ENDPOINT,
                 DELETED_BY_CLEAR_TOOL,
+                UPDATED_BY_MIGRATE,
             ),
             sensitive=False,
         )
@@ -957,19 +973,23 @@ async def read_storage_identity(config: Any) -> str | None:
     return storage_uuid
 
 
-async def _create_storage_identity(config: Any, storage_uuid: str) -> None:
+async def write_storage_identity(
+    config: Any, storage_uuid: str, *, updated_by: str = UPDATED_BY_STARTUP
+) -> None:
     """Write the identity row, flush strictly, read it back and compare.
 
     Through ``flush_configuration_storage`` like every baseline claim, so an
     OpenSearch write still sitting in the process-local buffer is a failure
-    rather than a read-back answered from that buffer.
+    rather than a read-back answered from that buffer. Two callers: the bind
+    of a container that has none, and the offline migration claiming its
+    target (the ownership marker). Neither ever overwrites a valid identity.
     """
     key = storage_identity_key()
     row = make_config_row(
         scope_workspace=SERVER_SCOPE,
         suffix=STORAGE_IDENTITY_SUFFIX,
         value={"uuid": storage_uuid},
-        updated_by=UPDATED_BY_STARTUP,
+        updated_by=updated_by,
     )
     try:
         await config.upsert({key: row})
@@ -1013,8 +1033,9 @@ def check_anchor_backend(
         f"unset, so the configuration followed it to a container that does "
         f"not hold this deployment's records. Fix: set "
         f"LIGHTRAG_CONFIG_STORAGE={anchor.backend} explicitly (no migration "
-        f"needed), or migrate the configuration container to {backend} "
-        f"offline before starting. Last resort: deleting {path} rebinds the "
+        f"needed), or move the configuration container to {backend} with "
+        f"`lightrag-migrate-config --target-backend {backend}` before "
+        f"starting. Last resort: deleting {path} rebinds the "
         f"next start to {backend} and ABANDONS every record in the "
         f"{anchor.backend} container, embedding baselines included.",
         cause=IDENTITY_BACKEND_MISMATCH,
@@ -1114,7 +1135,7 @@ async def bind_configuration_identity(
         stored = await read_storage_identity(config)
         if stored is None:
             stored = new_storage_uuid()
-            await _create_storage_identity(config, stored)
+            await write_storage_identity(config, stored)
             action = "created"
         else:
             action = "adopted"
