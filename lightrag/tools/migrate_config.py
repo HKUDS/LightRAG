@@ -99,18 +99,27 @@ class MigrationIndeterminate(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def row_payload(row: dict[str, Any]) -> dict[str, Any]:
+def row_payload(row: dict[str, Any], *, id_mirror: bool = False) -> dict[str, Any]:
     """The row envelope, verbatim, without the backend-owned metadata.
 
-    ``id`` is metadata only where it mirrors the key, which is what
-    ``PGKVStorage`` adds (``id`` and ``_id`` both set to the key). An ``id``
-    that says anything else is envelope content and is kept, so it is copied
-    and verified rather than silently dropped.
+    ``id_mirror`` is set only for rows read from a backend that adds the key
+    as ``id`` (``PGKVStorage`` sets both ``id`` and ``_id`` to it), and only
+    then is an ``id`` equal to the key dropped. Every other ``id`` is
+    envelope content: copied and verified, never silently dropped.
     """
     payload = {k: v for k, v in row.items() if k not in BACKEND_METADATA_KEYS}
-    if "id" in payload and "_id" in row and payload["id"] == row["_id"]:
+    if id_mirror and "id" in payload and payload["id"] == row.get("_id"):
         del payload["id"]
     return payload
+
+
+# The admitted configuration backends that return the key as ``id`` too.
+_ID_MIRROR_BACKENDS = frozenset({"PGKVStorage"})
+
+
+def _mirrors_id(config: Any) -> bool:
+    """Whether ``config`` is a backend whose rows carry the key as ``id``."""
+    return type(config).__name__ in _ID_MIRROR_BACKENDS
 
 
 def is_well_formed(row: Any) -> bool:
@@ -169,16 +178,19 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
     failure mid-stream propagates: a partial listing is never a complete one.
     """
     identity_key = cs.storage_identity_key()
+    id_mirror = _mirrors_id(config)
     scan = ContainerScan()
     try:
         async for row in config.iter_rows(page_size=page_size):
             key = _row_key(row) if isinstance(row, dict) else None
             if key == identity_key:
                 continue
-            if key is None or not is_well_formed(row_payload(row)):
+            payload = (
+                row_payload(row, id_mirror=id_mirror) if isinstance(row, dict) else None
+            )
+            if key is None or not is_well_formed(payload):
                 scan.malformed.append(key)
                 continue
-            payload = row_payload(row)
             scan.digests[key] = row_digest(payload)
             scope = payload["workspace"]
             scan.scopes[scope] = scan.scopes.get(scope, 0) + 1
@@ -216,7 +228,20 @@ async def classify_target(
     target: Any, storage_uuid: str, *, page_size: int
 ) -> TargetVerdict:
     identity = await cs.read_storage_identity(target)
-    scan = await scan_container(target, page_size=page_size)
+    try:
+        scan = await scan_container(target, page_size=page_size)
+    except MigrationRefused as e:
+        if identity != storage_uuid:
+            raise
+        # The enumeration died at the damaged record, so there is no complete
+        # listing to converge from; but the target is this migration's own
+        # residue, which the operator may simply clear.
+        raise MigrationRefused(
+            f"{e}. The target holds this migration's identity, so it is an "
+            f"earlier attempt's residue: removing that row, or discarding the "
+            f"whole target container, is safe -- the source is untouched and "
+            f"the anchor unchanged."
+        ) from e
     count = scan.rows + len(scan.malformed)
     if identity == storage_uuid:
         return TargetVerdict("resume", identity, count)
@@ -309,12 +334,17 @@ async def _copy_rows(
         copied += len(batch)
         batch.clear()
 
+    source_id_mirror = _mirrors_id(source)
     try:
         async for row in source.iter_rows(page_size=page_size):
             key = _row_key(row) if isinstance(row, dict) else None
             if key == identity_key or key in kept:
                 continue
-            payload = row_payload(row) if isinstance(row, dict) else None
+            payload = (
+                row_payload(row, id_mirror=source_id_mirror)
+                if isinstance(row, dict)
+                else None
+            )
             if key is None or not is_well_formed(payload):
                 raise MigrationRefused(
                     f"source row {key!r} is not a well-formed configuration row; "
