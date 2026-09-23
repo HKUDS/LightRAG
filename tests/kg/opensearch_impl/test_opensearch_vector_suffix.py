@@ -2,12 +2,12 @@
 
 Every index created before the suffix is legacy. Startup copies it when
 this workspace owns it and the recorded dimension and model do not disagree.
-A destination with fewer documents than that legacy index is copied again;
-one with at least as many is left in place. A mismatch is skipped, not
-raised. ``drop`` deletes a compatible owned legacy index so the next
-startup does not copy the cleared corpus back, and leaves an incompatible
-one in place. A legacy mapping that cannot be read fails the drop before
-the serving index is deleted.
+A destination that is missing any legacy document id is copied again, even
+when it already holds as many documents. One that contains every legacy id
+is left in place. A mismatch is skipped, not raised. ``drop`` deletes a
+compatible owned legacy index so the next startup does not copy the cleared
+corpus back, and leaves an incompatible one in place. A legacy mapping that
+cannot be read fails the drop before the serving index is deleted.
 
 See ``docs/design/VectorSpaceProvenance.md``.
 """
@@ -95,6 +95,15 @@ class Cluster:
         # the compatibility read is the next call.
         self.fail_get_mapping_on: dict[str, int] = {}
         self.get_mapping_calls: dict[str, int] = {}
+        self.fail_refresh = False
+        # An mget item error is not a confirmed miss and must not count as
+        # coverage. It is also not permission to skip the copy.
+        self.mget_item_error = False
+        self.search_calls: list[str] = []
+        self.scroll_calls = 0
+        self.cleared_scrolls: list[str] = []
+        self._scrolls: dict[str, dict] = {}
+        self._scroll_seq = 0
 
     def client(self):
         from opensearchpy import AsyncOpenSearch
@@ -108,6 +117,11 @@ class Cluster:
         client.indices.delete = AsyncMock(side_effect=self.delete)
         client.count = AsyncMock(side_effect=self.count)
         client.reindex = AsyncMock(side_effect=self.reindex)
+        client.search = AsyncMock(side_effect=self.search)
+        client.scroll = AsyncMock(side_effect=self.scroll)
+        client.clear_scroll = AsyncMock(side_effect=self.clear_scroll)
+        client.mget = AsyncMock(side_effect=self.mget)
+        client.indices.refresh = AsyncMock(side_effect=self.refresh)
         return client
 
     async def exists(self, index):
@@ -149,6 +163,70 @@ class Cluster:
 
     async def count(self, index=None, **kwargs):
         return {"count": len(self.indices[index]["docs"])}
+
+    async def refresh(self, index=None, **kwargs):
+        if self.fail_refresh:
+            raise OpenSearchException("refresh failed")
+        if index not in self.indices:
+            raise NotFoundError(404, "index_not_found_exception", "no such index")
+        return {"_shards": {"successful": 1, "failed": 0}}
+
+    def _hit_page(self, scroll_id: str, doc_ids: list[str]) -> dict:
+        return {
+            "_scroll_id": scroll_id,
+            "hits": {"hits": [{"_id": doc_id} for doc_id in doc_ids]},
+        }
+
+    async def search(self, *, index=None, body=None, scroll=None, size=None, **kwargs):
+        if index not in self.indices:
+            raise NotFoundError(404, "index_not_found_exception", "no such index")
+        self.search_calls.append(index)
+        page = size if size is not None else (body or {}).get("size", 10)
+        ids = list(self.indices[index]["docs"])
+        chunk = ids[:page]
+        self._scroll_seq += 1
+        scroll_id = f"scroll-{self._scroll_seq}"
+        self._scrolls[scroll_id] = {
+            "ids": ids,
+            "pos": len(chunk),
+            "page": page,
+        }
+        return self._hit_page(scroll_id, chunk)
+
+    async def scroll(self, *, scroll_id=None, scroll=None, **kwargs):
+        self.scroll_calls += 1
+        state = self._scrolls.get(scroll_id)
+        if state is None:
+            raise OpenSearchException(f"unknown scroll {scroll_id}")
+        start = state["pos"]
+        chunk = state["ids"][start : start + state["page"]]
+        state["pos"] = start + len(chunk)
+        return self._hit_page(scroll_id, chunk)
+
+    async def clear_scroll(self, *, scroll_id=None, **kwargs):
+        self.cleared_scrolls.append(scroll_id)
+        self._scrolls.pop(scroll_id, None)
+        return {"succeeded": True}
+
+    async def mget(self, *, index=None, body=None, _source=None, **kwargs):
+        ids = list((body or {}).get("ids") or [])
+        if self.mget_item_error:
+            return {
+                "docs": [
+                    {
+                        "_id": doc_id,
+                        "error": {"type": "unavailable", "reason": "shard down"},
+                    }
+                    for doc_id in ids
+                ]
+            }
+        held = self.indices[index]["docs"]
+        return {
+            "docs": [
+                {"_id": doc_id, "found": doc_id in held}
+                for doc_id in ids
+            ]
+        }
 
     async def reindex(
         self, *, body, params=None, refresh=None, wait_for_completion=None, **kwargs
@@ -428,64 +506,263 @@ async def test_empty_suffixed_index_still_receives_the_legacy_copy(
 
 
 @pytest.mark.asyncio
-async def test_nonempty_suffixed_index_is_not_copied_into_again(
+async def test_equal_count_with_a_missing_legacy_id_is_copied(
     global_config, cluster, caplog
 ):
-    """Equal counts are already covered, so the legacy index is left alone.
+    """dest {a, new} has as many rows as legacy {a, b} and still misses b.
 
-    The operator is told to delete that legacy index only in this case.
+    A count comparison would skip the copy and tell the operator the
+    migration is done. Deleting the legacy index then drops b for good.
     """
     storage = _storage(global_config)
     cluster.seed(
         storage._index_name,
         model="bge-m3",
         dim=8,
-        docs={"kept": {"content": "kept"}},
+        docs={"a": {"content": "a"}, "new": {"content": "new"}},
     )
     cluster.seed(
         storage._legacy_index_name,
         model="bge-m3",
         dim=8,
-        docs={"legacy": {"content": "legacy"}},
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
     )
 
     with _warnings(caplog):
         await _init(storage, cluster)
 
-    assert cluster.doc_ids(storage._index_name) == {"kept"}
-    assert cluster.doc_ids(storage._legacy_index_name) == {"legacy"}
-    assert cluster.reindex_calls == []
-    assert "Not copying" in caplog.text
-    assert storage._legacy_index_name in caplog.text
+    assert cluster.doc_ids(storage._index_name) == {"a", "b", "new"}
+    assert cluster.indices[storage._index_name]["docs"]["new"]["content"] == "new"
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b"}
+    assert cluster.reindex_calls == [
+        (storage._legacy_index_name, storage._index_name)
+    ]
+    assert storage._index_name not in cluster.deleted
+    assert storage._legacy_index_name not in cluster.deleted
+    assert "Not copying" not in caplog.text
+    assert cluster.cleared_scrolls
 
 
 @pytest.mark.asyncio
-async def test_larger_destination_is_not_copied_into_again(
+async def test_larger_count_with_a_missing_legacy_id_is_copied(
     global_config, cluster, caplog
 ):
-    """More destination rows than the legacy index is also already covered."""
+    """Extra destination rows do not stand in for a legacy id that is absent."""
     storage = _storage(global_config)
     cluster.seed(
         storage._index_name,
         model="bge-m3",
         dim=8,
-        docs={"kept": {"content": "kept"}, "also": {"content": "also"}},
+        docs={
+            "a": {"content": "a"},
+            "new": {"content": "new"},
+            "extra": {"content": "extra"},
+        },
     )
     cluster.seed(
         storage._legacy_index_name,
         model="bge-m3",
         dim=8,
-        docs={"legacy": {"content": "legacy"}},
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
     )
 
     with _warnings(caplog):
         await _init(storage, cluster)
 
-    assert cluster.doc_ids(storage._index_name) == {"kept", "also"}
-    assert cluster.doc_ids(storage._legacy_index_name) == {"legacy"}
+    assert cluster.doc_ids(storage._index_name) == {"a", "b", "new", "extra"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b"}
+    assert cluster.reindex_calls == [
+        (storage._legacy_index_name, storage._index_name)
+    ]
+    assert storage._index_name not in cluster.deleted
+    assert "Not copying" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_destination_superset_of_legacy_ids_is_not_copied(
+    global_config, cluster, caplog
+):
+    """Every legacy id already present is coverage, whatever else is there.
+
+    The operator is told to delete the legacy index only in this case.
+    """
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={
+            "a": {"content": "kept-a"},
+            "b": {"content": "kept-b"},
+            "extra": {"content": "only-here"},
+        },
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+
+    with _warnings(caplog):
+        await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"a", "b", "extra"}
+    assert cluster.indices[storage._index_name]["docs"]["a"]["content"] == "kept-a"
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b"}
     assert cluster.reindex_calls == []
     assert storage._index_name not in cluster.deleted
     assert "Not copying" in caplog.text
+    assert storage._legacy_index_name in caplog.text
+    assert cluster.cleared_scrolls
+
+
+@pytest.mark.asyncio
+async def test_id_coverage_reads_past_the_first_scroll_page(
+    global_config, cluster, caplog
+):
+    """The missing legacy id is on the second page. The first page is present."""
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "new": {"content": "new"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+
+    with (
+        _warnings(caplog),
+        patch("lightrag.kg.opensearch_impl._LEGACY_ID_PAGE_SIZE", 1),
+    ):
+        await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"a", "b", "new"}
+    assert cluster.reindex_calls == [
+        (storage._legacy_index_name, storage._index_name)
+    ]
+    assert "Not copying" not in caplog.text
+    # Page size 1 puts b on the second page. A single search page cannot
+    # see it, so the check has to scroll.
+    assert cluster.scroll_calls >= 1
+    assert cluster.cleared_scrolls
+
+
+@pytest.mark.asyncio
+async def test_reindex_count_does_not_mask_missing_legacy_ids(
+    global_config, cluster, caplog
+):
+    """A short copy plus destination-only rows can still reach the legacy count.
+
+    The reindex reports success and the destination then has at least as
+    many documents as the legacy index, while b, c, and d were not copied.
+    """
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={
+            "e1": {"content": "e1"},
+            "e2": {"content": "e2"},
+            "e3": {"content": "e3"},
+        },
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={
+            "a": {"content": "a"},
+            "b": {"content": "b"},
+            "c": {"content": "c"},
+            "d": {"content": "d"},
+        },
+    )
+    cluster.reindex_copy_limit = 1
+
+    with _warnings(caplog):
+        with pytest.raises(DataMigrationError, match="verification failed"):
+            await _init(storage, cluster)
+
+    assert storage._index_ready is False
+    assert storage._index_name not in cluster.indices
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b", "c", "d"}
+    assert cluster.reindex_calls == [
+        (storage._legacy_index_name, storage._index_name)
+    ]
+    assert "Not copying" not in caplog.text
+    assert cluster.cleared_scrolls
+
+
+@pytest.mark.asyncio
+async def test_mget_failure_is_not_treated_as_id_coverage(
+    global_config, cluster, caplog
+):
+    """A shard error while checking ids is not 'every legacy id is present'."""
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+    cluster.mget_item_error = True
+
+    with _warnings(caplog):
+        with pytest.raises(DataMigrationError):
+            await _init(storage, cluster)
+
+    assert storage._index_ready is False
+    assert cluster.doc_ids(storage._index_name) == {"a", "b"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b"}
+    assert cluster.reindex_calls == []
+    assert storage._index_name not in cluster.deleted
+    assert storage._legacy_index_name not in cluster.deleted
+    assert "Not copying" not in caplog.text
+    assert cluster.cleared_scrolls
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_is_not_treated_as_id_coverage(
+    global_config, cluster, caplog
+):
+    """An id listing that could not refresh does not report the copy done."""
+    storage = _storage(global_config)
+    cluster.seed(
+        storage._index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+    cluster.seed(
+        storage._legacy_index_name,
+        model="bge-m3",
+        dim=8,
+        docs={"a": {"content": "a"}, "b": {"content": "b"}},
+    )
+    cluster.fail_refresh = True
+
+    with _warnings(caplog):
+        with pytest.raises(DataMigrationError, match="refresh"):
+            await _init(storage, cluster)
+
+    assert cluster.doc_ids(storage._index_name) == {"a", "b"}
+    assert cluster.doc_ids(storage._legacy_index_name) == {"a", "b"}
+    assert cluster.reindex_calls == []
+    assert storage._index_name not in cluster.deleted
+    assert "Not copying" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -725,7 +1002,9 @@ async def test_drop_mapping_failure_does_not_delete_the_serving_index(
         docs={"a": {"content": "a"}},
     )
     await _init(storage, cluster)
-    assert cluster.doc_ids(storage._index_name) == {"kept"}
+    # Startup copies the missing legacy id. The drop below must still refuse
+    # before deleting either index.
+    assert cluster.doc_ids(storage._index_name) == {"kept", "a"}
     assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
 
     cluster.get_mapping_calls.clear()
@@ -735,7 +1014,7 @@ async def test_drop_mapping_failure_does_not_delete_the_serving_index(
 
     assert result["status"] == "error"
     assert "mapping unavailable" in result["message"]
-    assert cluster.doc_ids(storage._index_name) == {"kept"}
+    assert cluster.doc_ids(storage._index_name) == {"kept", "a"}
     assert cluster.doc_ids(storage._legacy_index_name) == {"a"}
     assert storage._index_name not in cluster.deleted
     assert storage._legacy_index_name not in cluster.deleted

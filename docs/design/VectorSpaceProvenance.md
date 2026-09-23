@@ -304,8 +304,8 @@ that suffix is legacy. There is no older naming scheme to special-case, and
 OpenSearch does not use Qdrant's three-state workspace-field probe: an index
 is already per-workspace, so the `_meta` ownership marker settles it.
 
-On startup, when the suffixed index is missing, empty, or holds fewer
-documents than the legacy index:
+On startup, when the suffixed index is missing or does not contain every
+document id from the legacy index:
 
 - The legacy index is copied with `_reindex` only after
   `_claim_index_for_workspace` accepts it. A mismatch is logged and skipped.
@@ -322,21 +322,27 @@ documents than the legacy index:
   `lightrag-rebuild-vdb`. `drop()` deletes that compatible legacy index when
   this workspace owns it, so a clear does not migrate those vectors back.
 - The legacy index is kept after a successful copy. An empty one is deleted.
-  A destination that already holds at least as many documents as the legacy
-  index is not copied again, and only then is the operator warned to delete
-  the legacy index. A shorter destination is copied again. Document `_id`s
-  are idempotent, so the retry does not delete the destination first, and
-  rows that exist only there are left in place. Accepted residue: coverage
-  is a document count, not an id set, so a destination that already holds as
-  many rows as the legacy index is not recopied even when those rows are a
-  different set. Recovery, while the legacy index is still there, is to
-  delete the suffixed index or run `lightrag-rebuild-vdb`.
-- A copy that does not leave the destination covering the legacy count raises
-  `DataMigrationError`. The destination is deleted when that delete succeeds,
-  so the next start retries from an empty index. When the delete does not
-  succeed, the short index stays and the next start still refuses to attach
-  until a later copy covers the legacy count. The legacy source is left
-  untouched.
+  Coverage is the set of legacy document ids, not a document count. The
+  legacy index is refreshed, scrolled in `_doc` order with `_source` off,
+  and each id is confirmed in the destination with `mget`. `_id` is not a
+  sortable field, so this is not a composite aggregation. A destination that
+  already holds as many rows as the legacy index is copied again when any
+  legacy id is absent, as with legacy `{a, b}` and destination `{a, new}`.
+  Document `_id`s are idempotent, so that retry does not delete the
+  destination first, and rows that exist only there are left in place. A
+  listing that does not yield the refreshed count, or an `mget` item that
+  is not a confirmed hit or miss, raises `DataMigrationError`. Before a
+  copy, that failure leaves both indexes in place and does not tell the
+  operator to delete the legacy index. The scroll runs again on each later
+  start while the legacy index remains.
+- When every legacy id is already present, the index is not copied again,
+  and only then is the operator warned to delete the legacy index.
+- A copy that still leaves a legacy id absent, or whose id listing cannot
+  be finished, raises `DataMigrationError`. The destination is deleted when
+  that delete succeeds, so the next start retries from an empty index.
+  When the delete does not succeed, the index stays and the next start
+  still refuses to attach until a later copy leaves every legacy id
+  present. The legacy source is left untouched.
 
 `drop()` deletes a workspace-owned legacy index only when its recorded model
 and dimension are compatible with this process, and it does so *before* it

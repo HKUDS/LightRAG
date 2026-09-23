@@ -2089,12 +2089,13 @@ confidently wrong neighbours. Backends whose container name encodes the model
 model name) land the change on a separate container, so the previous model's
 vectors stay where they are. OpenSearch copies an existing unsuffixed index
 into that container when the index belongs to this workspace and the recorded
-model and dimension do not disagree, and repeats the copy until the suffixed
-index has at least as many documents as the legacy index. On clear and on
-rebuild, OpenSearch deletes that unsuffixed index only when it is owned by
-this workspace and compatible with the current model and dimension. An
-incompatible unsuffixed index, including the previous model's, is left in
-place. Coverage is a document count, not an id set; see
+model and dimension do not disagree, and repeats the copy until every legacy
+document id is present in the suffixed index. A destination with as many
+documents as the legacy index is not treated as covered while a legacy id is
+still missing. On clear and on rebuild, OpenSearch deletes that unsuffixed
+index only when it is owned by this workspace and compatible with the current
+model and dimension. An incompatible unsuffixed index, including the previous
+model's, is left in place. See
 [`docs/design/VectorSpaceProvenance.md`](design/VectorSpaceProvenance.md) for
-that residue and for which backend does what, and
-`lightrag/tools/README_REBUILD_VDB.md` for the tool.
+which backend does what, and `lightrag/tools/README_REBUILD_VDB.md` for the
+tool.

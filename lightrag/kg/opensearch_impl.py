@@ -6391,6 +6391,50 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             return {"status": "error", "message": str(e)}
 
 
+# Legacy-id coverage pages. ``_id`` is not sortable in OpenSearch, so this is
+# a ``_doc`` scroll plus mget rather than a composite aggregation. A document
+# count is not coverage: destination-only rows can hide a missing legacy id.
+_LEGACY_ID_PAGE_SIZE = 1000
+_LEGACY_ID_SCROLL = "5m"
+_LEGACY_ID_MISS_SAMPLE = 5
+
+
+def _migration_scroll_ids(
+    response: Any, index_name: str
+) -> tuple[str | None, list[str]]:
+    """Return ``(scroll_id, document ids)`` from one scroll page.
+
+    A page that is not a list of hits, or a hit without a string id, raises
+    ``DataMigrationError``. That response is not an empty index.
+    """
+    if not isinstance(response, dict):
+        raise DataMigrationError(
+            f"OpenSearch id scroll for '{index_name}' returned {response!r}"
+        )
+    scroll_id = response.get("_scroll_id")
+    if scroll_id is not None and not isinstance(scroll_id, str):
+        raise DataMigrationError(
+            f"OpenSearch id scroll for '{index_name}' returned scroll id "
+            f"{scroll_id!r}"
+        )
+    hits_obj = response.get("hits")
+    hits = hits_obj.get("hits") if isinstance(hits_obj, dict) else None
+    if not isinstance(hits, list):
+        raise DataMigrationError(
+            f"OpenSearch id scroll for '{index_name}' returned no hits list"
+        )
+    ids: list[str] = []
+    for hit in hits:
+        doc_id = hit.get("_id") if isinstance(hit, dict) else None
+        if not isinstance(doc_id, str) or not doc_id:
+            raise DataMigrationError(
+                f"OpenSearch id scroll for '{index_name}' returned a hit "
+                f"without a document id: {hit!r}"
+            )
+        ids.append(doc_id)
+    return scroll_id, ids
+
+
 @final
 @dataclass
 class OpenSearchVectorDBStorage(BaseVectorStorage):
@@ -6859,8 +6903,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """Drop a destination this attempt failed to fill so the next start retries.
 
         The delete leaves the legacy source untouched. If it fails, the short
-        index stays, and the next start still refuses to attach until the
-        destination covers the legacy count. See
+        index stays, and the next start still refuses to attach until every
+        legacy document id is present. See
         ``docs/design/VectorSpaceProvenance.md``.
         """
         try:
@@ -6871,8 +6915,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"[{self.workspace}] Could not remove partial index "
                 f"'{self._index_name}' after a failed migration ({exc}). "
-                f"The next start retries the copy while this index holds "
-                f"fewer documents than the legacy source."
+                f"The next start retries the copy while a legacy document "
+                f"id is still absent from this index."
             )
 
     async def _copy_legacy_documents(
@@ -6910,22 +6954,159 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"(timed_out={timed_out}, failures={failure_count})"
             )
         try:
-            dest_count = await self._index_doc_count(self._index_name)
+            missing = await self._legacy_ids_missing_from_destination(legacy_index)
         except (OpenSearchException, DataMigrationError) as exc:
             await self._discard_partial_migration()
             raise DataMigrationError(
                 f"Could not verify OpenSearch migration into '{self._index_name}'"
             ) from exc
-        # Coverage, not equality. A retry keeps rows that exist only in the
-        # destination, so a finished copy can hold more documents than the
-        # legacy index. Fewer than the source means the copy is still short.
-        if dest_count < source_count:
+        # Id coverage, not a document count. Destination-only rows can make
+        # the destination at least as large as the legacy index while a
+        # legacy id is still absent.
+        if missing:
             await self._discard_partial_migration()
+            sample = ", ".join(missing)
             raise DataMigrationError(
-                f"OpenSearch migration verification failed, expected at least "
-                f"{source_count} documents in '{self._index_name}', "
-                f"got {dest_count}."
+                f"OpenSearch migration verification failed, legacy index "
+                f"'{legacy_index}' ({source_count} documents) still has "
+                f"id(s) absent from '{self._index_name}': {sample}."
             )
+
+    async def _refresh_index_for_migration(self, index_name: str) -> None:
+        """Refresh ``index_name`` so a following count and scroll see one view.
+
+        Both reads are near-real-time. Without this refresh an empty count
+        can delete an index that still holds documents, and a scroll can
+        miss ids the count included. A failure raises: an index that could
+        not be read is neither empty nor covered.
+        """
+        try:
+            await self.client.indices.refresh(index=index_name)
+        except OpenSearchException as exc:
+            raise DataMigrationError(
+                f"Could not refresh OpenSearch index '{index_name}' "
+                f"before listing document ids"
+            ) from exc
+
+    async def _confirmed_absent_ids(self, index_name: str, ids: list[str]) -> list[str]:
+        """Return ids confirmed absent. Any other mget outcome raises.
+
+        ``found: false`` is the only absence. An item error, a short
+        response, or a transport error is not a miss, so it is neither
+        coverage nor a confirmed gap.
+        """
+        try:
+            response = await self.client.mget(
+                index=index_name,
+                body={"ids": ids},
+                _source=False,
+                realtime=True,
+            )
+        except OpenSearchException as exc:
+            raise DataMigrationError(
+                f"Could not verify document ids in OpenSearch index '{index_name}'"
+            ) from exc
+        docs = response.get("docs") if isinstance(response, dict) else None
+        if not isinstance(docs, list) or len(docs) != len(ids):
+            reported = len(docs) if isinstance(docs, list) else "no"
+            raise DataMigrationError(
+                f"OpenSearch mget for '{index_name}' returned {reported} "
+                f"items for {len(ids)} ids"
+            )
+        absent: list[str] = []
+        for doc_id, item in zip(ids, docs):
+            try:
+                interpreted = _interpret_mget_item(
+                    item, doc_id, require_source=False
+                )
+            except RuntimeError as exc:
+                raise DataMigrationError(
+                    f"Could not verify document id '{doc_id}' in '{index_name}'"
+                ) from exc
+            if interpreted is None:
+                absent.append(doc_id)
+        return absent
+
+    async def _legacy_ids_missing_from_destination(self, legacy_index: str) -> list[str]:
+        """Legacy document ids the destination does not hold.
+
+        An empty list means the scroll listed every legacy document and
+        mget found each id. A non-empty list is a sample of confirmed
+        misses (at most ``_LEGACY_ID_MISS_SAMPLE``). A scroll that ends
+        before the refreshed count, or a response that is not a confirmed
+        hit or miss, raises ``DataMigrationError``.
+
+        ``_id`` is not sortable, so the listing is a ``_doc`` scroll. See
+        ``docs/design/VectorSpaceProvenance.md``.
+        """
+        await self._refresh_index_for_migration(legacy_index)
+        source_count = await self._index_doc_count(legacy_index)
+        if source_count == 0:
+            return []
+
+        missing: list[str] = []
+        scanned = 0
+        scroll_id: str | None = None
+        try:
+            response = await self.client.search(
+                index=legacy_index,
+                body={
+                    "query": {"match_all": {}},
+                    "sort": ["_doc"],
+                    "_source": False,
+                },
+                scroll=_LEGACY_ID_SCROLL,
+                size=_LEGACY_ID_PAGE_SIZE,
+            )
+            while True:
+                next_id, ids = _migration_scroll_ids(response, legacy_index)
+                if next_id is not None:
+                    scroll_id = next_id
+                if not ids:
+                    break
+                scanned += len(ids)
+                if scanned > source_count + _LEGACY_ID_PAGE_SIZE:
+                    raise DataMigrationError(
+                        f"OpenSearch id listing for '{legacy_index}' did not "
+                        f"terminate after {scanned} hits (count {source_count})"
+                    )
+                absent = await self._confirmed_absent_ids(self._index_name, ids)
+                for doc_id in absent:
+                    missing.append(doc_id)
+                    if len(missing) >= _LEGACY_ID_MISS_SAMPLE:
+                        return missing
+                if len(ids) < _LEGACY_ID_PAGE_SIZE:
+                    break
+                if scroll_id is None:
+                    raise DataMigrationError(
+                        f"OpenSearch id scroll for '{legacy_index}' returned "
+                        f"a full page without a scroll id"
+                    )
+                response = await self.client.scroll(
+                    scroll_id=scroll_id, scroll=_LEGACY_ID_SCROLL
+                )
+        except OpenSearchException as exc:
+            raise DataMigrationError(
+                f"Could not list document ids in OpenSearch index '{legacy_index}'"
+            ) from exc
+        finally:
+            if scroll_id is not None:
+                try:
+                    await self.client.clear_scroll(scroll_id=scroll_id)
+                except OpenSearchException as exc:
+                    logger.warning(
+                        f"[{self.workspace}] Could not clear the OpenSearch "
+                        f"scroll used to list '{legacy_index}' ({exc})."
+                    )
+
+        if missing:
+            return missing
+        if scanned != source_count:
+            raise DataMigrationError(
+                f"OpenSearch id listing for '{legacy_index}' saw {scanned} "
+                f"documents; count reported {source_count}."
+            )
+        return []
 
     async def _migrate_legacy_index(self, *, dest_exists: bool) -> bool:
         """Copy this workspace's legacy index into the suffixed index.
@@ -6935,12 +7116,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         to create the index, or when ``dest_exists`` was already true.
 
         An ownership mismatch or an incompatible legacy source is skipped
-        with a warning and does not raise. A destination that already holds
-        at least as many documents as the legacy index is left in place, and
-        only then is the operator warned to delete the legacy index. A shorter
-        destination is copied again without deleting it first. A copy that
-        does not leave the destination covering the legacy count raises
-        ``DataMigrationError``. See ``docs/design/VectorSpaceProvenance.md``.
+        with a warning and does not raise. The destination is left in place
+        only when every legacy document id is already present, and only then
+        is the operator warned to delete the legacy index. Any missing legacy
+        id is copied again without deleting the destination first. A copy
+        that still leaves a legacy id absent raises ``DataMigrationError``.
+        See ``docs/design/VectorSpaceProvenance.md``.
         """
         legacy = self._legacy_migration_index()
         if legacy is None:
@@ -6954,6 +7135,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if not self._legacy_source_is_compatible(mapping, legacy):
             return False
 
+        await self._refresh_index_for_migration(legacy)
         source_count = await self._index_doc_count(legacy)
         if source_count == 0:
             await self._delete_index_if_present(legacy)
@@ -6963,17 +7145,17 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             return False
 
         if dest_exists:
-            dest_count = await self._index_doc_count(self._index_name)
-            if dest_count >= source_count:
+            missing = await self._legacy_ids_missing_from_destination(legacy)
+            if not missing:
                 logger.warning(
-                    f"[{self.workspace}] Both '{self._index_name}' "
-                    f"({dest_count} docs) and legacy '{legacy}' "
-                    f"({source_count} docs) have data. Not copying. Delete "
-                    f"'{legacy}' after verifying the migration."
+                    f"[{self.workspace}] Every document id in legacy "
+                    f"'{legacy}' is already in '{self._index_name}'. "
+                    f"Not copying. Delete '{legacy}'."
                 )
                 return False
-            # Reindex in place. Document _ids are idempotent, so a short
-            # destination is not deleted before the retry.
+            # Reindex in place. Document _ids are idempotent, so a
+            # destination that is missing some legacy ids is not deleted
+            # before the retry, and rows that exist only there stay.
         else:
             await self._create_serving_index()
 
@@ -6984,8 +7166,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         await self._copy_legacy_documents(legacy, source_count)
         logger.info(
             f"[{self.workspace}] Copied legacy OpenSearch index '{legacy}' into "
-            f"'{self._index_name}'. The legacy index was kept; delete it after "
-            f"verifying the copy."
+            f"'{self._index_name}' and verified every legacy document id is "
+            f"present. The legacy index was kept; delete '{legacy}' when it "
+            f"is no longer needed."
         )
         return not dest_exists
 
