@@ -1083,8 +1083,12 @@ async def bind_configuration_identity(
 
     Under one keyed lock spanning the whole read-decide-write, so a second
     worker of the same Gunicorn master waits and then finds an anchor and an
-    equal UUID. Concurrent first binds by separate process trees remain
-    unsupported; the read-back is not exclusion across them.
+    equal UUID. A start that finds NO anchor additionally takes the anchor
+    bind lock (``lightrag/kg/anchor_lock.py``), which serializes the bind
+    across process trees on this host -- several servers may share one
+    ``working_dir`` with different workspaces -- and re-reads the anchor
+    inside it. Concurrent first binds from different ``working_dir``s or
+    hosts against one container remain unsupported.
 
     * Anchored: the backend type and the container's UUID must both equal
       the anchor's. A missing, different, invalid or unreadable identity
@@ -1095,6 +1099,7 @@ async def bind_configuration_identity(
       and the UUID. The anchor goes last so every crash window heals by
       adoption on the next start.
     """
+    from lightrag.kg.anchor_lock import anchor_bind_lock
     from lightrag.kg.shared_storage import get_storage_keyed_lock
 
     async with get_storage_keyed_lock(
@@ -1102,36 +1107,73 @@ async def bind_configuration_identity(
     ):
         anchor = read_anchor(working_dir)
         if anchor is not None:
-            check_anchor_backend(
-                anchor, backend, working_dir=working_dir, container=container
+            return await _verify_anchored(
+                config,
+                anchor,
+                working_dir=working_dir,
+                backend=backend,
+                container=container,
             )
-            stored = await read_storage_identity(config)
-            _check_identity_against_anchor(
-                anchor, stored, working_dir=working_dir, container=container
+        async with anchor_bind_lock(working_dir):
+            # Another server on this working directory may have bound while
+            # this one waited: its anchor is then the one to verify against.
+            anchor = read_anchor(working_dir)
+            if anchor is not None:
+                return await _verify_anchored(
+                    config,
+                    anchor,
+                    working_dir=working_dir,
+                    backend=backend,
+                    container=container,
+                )
+            return await _bind_unanchored(
+                config,
+                working_dir=working_dir,
+                backend=backend,
+                container=container,
             )
-            return IdentityBinding(storage_uuid=stored, action="verified")
 
-        stored = await read_storage_identity(config)
-        if stored is None:
-            stored = new_storage_uuid()
-            await _create_storage_identity(config, stored)
-            action = "created"
-        else:
-            action = "adopted"
-        path = publish_anchor(
-            working_dir,
-            StorageAnchor(backend=backend, storage_uuid=stored),
-            replace=False,
-        )
-        logger.warning(
-            f"Bound this deployment to the configuration container {container} "
-            f"(identity {stored}, {action}); the anchor is {path}. No anchor was "
-            f"on record, which is expected on a first start or after the anchor "
-            f"was deliberately deleted to rebind. If neither is the case -- a "
-            f"WORKING_DIR that does not persist, a replaced volume -- drift "
-            f"between configuration containers was NOT checked on this start."
-        )
-        return IdentityBinding(storage_uuid=stored, action=action)
+
+async def _verify_anchored(
+    config: Any,
+    anchor: StorageAnchor,
+    *,
+    working_dir: str,
+    backend: str,
+    container: str,
+) -> IdentityBinding:
+    check_anchor_backend(anchor, backend, working_dir=working_dir, container=container)
+    stored = await read_storage_identity(config)
+    _check_identity_against_anchor(
+        anchor, stored, working_dir=working_dir, container=container
+    )
+    return IdentityBinding(storage_uuid=stored, action="verified")
+
+
+async def _bind_unanchored(
+    config: Any, *, working_dir: str, backend: str, container: str
+) -> IdentityBinding:
+    stored = await read_storage_identity(config)
+    if stored is None:
+        stored = new_storage_uuid()
+        await _create_storage_identity(config, stored)
+        action = "created"
+    else:
+        action = "adopted"
+    path = publish_anchor(
+        working_dir,
+        StorageAnchor(backend=backend, storage_uuid=stored),
+        replace=False,
+    )
+    logger.warning(
+        f"Bound this deployment to the configuration container {container} "
+        f"(identity {stored}, {action}); the anchor is {path}. No anchor was "
+        f"on record, which is expected on a first start or after the anchor "
+        f"was deliberately deleted to rebind. If neither is the case -- a "
+        f"WORKING_DIR that does not persist, a replaced volume -- drift "
+        f"between configuration containers was NOT checked on this start."
+    )
+    return IdentityBinding(storage_uuid=stored, action=action)
 
 
 async def verify_configuration_identity(

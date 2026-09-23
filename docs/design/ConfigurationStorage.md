@@ -350,7 +350,9 @@ teardown. Where a filesystem or platform cannot lock (NFSv3 without lockd,
 SMB/CIFS, a read-only directory, Windows — `msvcrt.locking` has no shared
 mode) starters fail open with a warning, as this claim does; the migration
 refuses unless `--assume-exclusive` records that the operator stopped every
-reader and writer.
+reader and writer. A third lock file, the **bind lock**, serializes only
+the first bind of a `working_dir` across the servers that share it (see
+*Startup: steps 0a–0c and 1b*); an anchored start never touches it.
 
 #### There is no claim on a pre-move path, because there is no pre-move server
 
@@ -630,10 +632,23 @@ and the per-container markers are all kept and still ANDed.
   business storage initializes. It records the binding and nothing else — not
   whether any baseline has been recorded.
 - **The keyed lock spans the whole read-decide-write.** A second worker of the
-  same master waits, then finds an anchor and an equal UUID. Concurrent first
-  binds by separate process trees remain unsupported, as every other claim
-  here; the no-clobber publish only guarantees the loser never overwrites the
-  winner's anchor.
+  same master waits, then finds an anchor and an equal UUID.
+- **Several servers on one `working_dir` are supported**, each on its own
+  business workspace, when the configuration storage is not the local JSON
+  file (that one is claimed exclusively on `config_dir`). Their baselines
+  never contend — the key's scope is the workspace — but the identity row is
+  the whole container's, so two such servers starting together would each
+  read it absent and each create one: the anchor would name one UUID while
+  the container kept the other, and every later start would refuse. So a
+  start that finds **no** anchor also takes the **bind lock**
+  (`.lightrag_anchor_bind.lock`, exclusive, polled so it never blocks the
+  event loop, bounded wait) and re-reads the anchor inside it; the second
+  server then verifies against the anchor the first published. An anchored
+  start never takes it, so running servers do not serialize on it. It fails
+  open where the filesystem cannot lock, like the shared lock. Concurrent
+  first binds from different `working_dir`s or hosts against one container
+  remain unsupported; the no-clobber publish only guarantees the loser never
+  overwrites the winner's anchor.
 
 **Crash analysis — why there is no `pending` state.** The identity is written
 first and the anchor second, so every interruption heals by adoption:
@@ -1520,6 +1535,10 @@ The anchor and the container identity (slice 1c):
     releases every resource and the anchor lock.
 37. Concurrent binds in one process tree create exactly one identity and
     publish the anchor once; repeated initialization never regenerates either.
+    Two process trees on one `working_dir` binding at once do too: one
+    creates, the other waits on the bind lock and verifies; an anchored start
+    never waits on it, and a bind lock held past its timeout refuses with
+    nothing written.
 38. Deleting the anchor rebinds with a WARNING naming the container and the
     UUID; each refusal carries its per-cause advice.
 39. Starters share the anchor lock; an exclusive hold refuses them, and any
