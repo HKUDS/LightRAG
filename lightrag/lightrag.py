@@ -6785,7 +6785,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         deletion_operations_started = False
         deletion_fully_completed = False
         in_final_delete_stage = False
-        original_exception = None
         doc_llm_cache_ids: list[str] = []
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
@@ -7251,7 +7250,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # retrying unchanged will refuse again — the operator has to run
             # the integrity audit first. The message is written to be
             # client-safe and names that remedy.
-            original_exception = e
             error_message = str(e)
             logger.error(f"Refusing to delete document {doc_id}: {e}")
             try:
@@ -7279,7 +7277,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
 
         except Exception as e:
-            original_exception = e
             error_message = f"Error while deleting document {doc_id}: {e}"
             logger.error(error_message)
             logger.error(traceback.format_exc())
@@ -7412,18 +7409,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 doc_id,
                                 persistence_error,
                             )
-                        elif original_exception is None:
-                            # Deletion stages were in-flight but the try-block return was never
-                            # reached; treat the persistence failure as the primary error.
-                            return DeletionResult(
-                                status="fail",
-                                doc_id=doc_id,
-                                message=f"Deletion completed but failed to persist changes: {persistence_error}",
-                                status_code=500,
-                                file_path=file_path,
-                            )
-                        # If there was an original exception, log the persistence error but
-                        # don't override it — the original error result was already returned.
+                        # Otherwise an except block already returned the fail result, or a
+                        # BaseException (e.g. a cancellation) is propagating. Only log the
+                        # persistence error: a return here would swallow that exception.
                 else:
                     logger.debug(
                         f"No deletion operations were started for document {doc_id}, skipping persistence"
