@@ -182,6 +182,23 @@ class TestKeysAndRows:
             assert spec.readers and spec.writers
             assert spec.sensitive is False
 
+    def test_the_registry_names_every_caller_that_touches_a_baseline(self):
+        """Nothing enforces these two tuples, which is exactly why they drift:
+        the offline clear reads the rows and deletes them, and was absent from
+        both for a release. A new caller declares itself here first."""
+        for spec in cs.CONFIG_KEY_REGISTRY.values():
+            assert set(spec.readers) == {
+                cs.UPDATED_BY_STARTUP,
+                cs.UPDATED_BY_REBUILD,
+                cs.DELETED_BY_CLEAR_TOOL,
+            }
+            assert set(spec.writers) == {
+                cs.UPDATED_BY_STARTUP,
+                cs.UPDATED_BY_REBUILD,
+                cs.DELETED_BY_CLEAR_ENDPOINT,
+                cs.DELETED_BY_CLEAR_TOOL,
+            }
+
     def test_the_row_carries_the_scope_as_a_field(self):
         row = _row(workspace="tenant-a")
         assert row["workspace"] == "tenant-a"
@@ -289,6 +306,49 @@ class TestStrictReads:
         with pytest.raises(ConfigurationStorageError) as excinfo:
             await cs.read_embedding_baselines(kv, "ws")
         assert isinstance(excinfo.value.__cause__, ConnectionError)
+
+    async def test_a_record_that_is_not_a_row_is_malformed_not_an_outage(self):
+        """Fetched, so the store IS serving and can still delete this record
+        by key. Typed apart from a transport failure because one caller --
+        ``lightrag-clear-storage`` -- may legitimately go on; everything that
+        must stop still stops, since this subclasses the transport error."""
+
+        class NotARow:
+            supports_strict_point_reads = True
+
+            async def get_by_id_strict(self, key):
+                return "garbage"
+
+        with pytest.raises(cs.ConfigurationRecordMalformedError, match="not a mapping"):
+            await cs.read_config_row_strict(NotARow(), "ws/embedding/chunks")
+
+    async def test_a_backend_that_raises_corruption_is_malformed_not_an_outage(self):
+        """``JsonKVStorage`` never RETURNS the damaged payload -- it reaches
+        for mapping methods to normalise the row and raises first -- so the
+        shape check above cannot see this case."""
+        from lightrag.exceptions import CorruptStorageRecordError
+
+        class Corrupt:
+            supports_strict_point_reads = True
+
+            async def get_by_id_strict(self, key):
+                raise CorruptStorageRecordError(f"record {key!r} is str, not a mapping")
+
+        with pytest.raises(cs.ConfigurationRecordMalformedError) as excinfo:
+            await cs.read_config_row_strict(Corrupt(), "ws/embedding/chunks")
+        assert isinstance(excinfo.value.__cause__, CorruptStorageRecordError)
+
+    async def test_a_malformed_record_still_stops_a_start(self):
+        """The subclass must not weaken the startup rule it inherits."""
+
+        class NotARow:
+            supports_strict_point_reads = True
+
+            async def get_by_id_strict(self, key):
+                return "garbage"
+
+        with pytest.raises(ConfigurationStorageError):
+            await cs.read_embedding_baselines(NotARow(), "ws")
 
     async def test_a_confirmed_absence_reads_as_none(self):
         kv = FakeConfigKV({_key("entities"): _row()})

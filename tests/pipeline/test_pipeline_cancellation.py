@@ -589,11 +589,19 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
     )
     parsed_data = {"blocks_path": str(blocks_path)}
 
-    # Per-call behaviour: call 1 succeeds quickly (~0.05s), call 2 fails
-    # quickly (~0.1s), call 3 cannot finish until teardown releases it.
-    # Fail-fast must cancel call 3 rather than wait. Order by call_count rather than
-    # by item identifier because the VLM role wrapper does not surface
-    # the item filename in its kwargs (only image_inputs bytes).
+    # Per-call behaviour: call 1 succeeds quickly, call 2 fails once call 1's
+    # result has been RECORDED, call 3 cannot finish until teardown releases
+    # it. Fail-fast must cancel call 3 rather than wait. Order by call_count
+    # rather than by item identifier because the VLM role wrapper does not
+    # surface the item filename in its kwargs (only image_inputs bytes).
+    #
+    # "Recorded" is the point: after the VLM returns, the item task still
+    # awaits the LLM cache write before it completes. A failure that lands in
+    # that window makes fail-fast cancel the not-yet-finished sibling, and the
+    # success this test wants preserved never existed. A fixed sleep only
+    # widened the window under load (the full suite, or a busy machine); the
+    # ": ok" history line is the item task's final act, so waiting for it is
+    # waiting for the task itself.
     call_count = {"n": 0}
     call_lock = asyncio.Lock()
     release_slow = asyncio.Event()
@@ -607,7 +615,10 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
             await asyncio.sleep(0.05)
             return json.dumps({"name": "first", "type": "Chart", "description": "ok"})
         if seq == 2:
-            await asyncio.sleep(0.1)
+            while not any(
+                m.endswith(": ok") for m in pipeline_status["history_messages"]
+            ):
+                await asyncio.sleep(0.01)
             raise MultimodalAnalysisError("forced failure")
         await release_slow.wait()
         slow_completed.set()

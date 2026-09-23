@@ -730,6 +730,17 @@ class MultimodalAnalysisError(RuntimeError):
     """
 
 
+# Appended to every startup-time vector refusal below. A rebuild re-embeds
+# every record from the authoritative sources; when the workspace's data is
+# disposable that is wasted cost, and the WebUI's own Clear sits behind the
+# server that refuses to start -- so the refusal names the offline clear too.
+CLEAR_STORAGE_ALTERNATIVE = (
+    "If this workspace's data is disposable, run `lightrag-clear-storage` "
+    "instead: it drops the workspace offline without re-embedding, which "
+    "also clears this refusal."
+)
+
+
 class VectorSpaceMismatchError(RuntimeError):
     """The persisted vectors were written in a different embedding space.
 
@@ -791,7 +802,8 @@ class VectorSpaceMismatchError(RuntimeError):
             f"nothing, or confidently wrong neighbours. Rebuild the vector "
             f"storages from the knowledge graph with `lightrag-rebuild-vdb` "
             f"(run it with this embedding configuration), or point this instance "
-            f"back at the previous embedding configuration."
+            f"back at the previous embedding configuration. "
+            f"{CLEAR_STORAGE_ALTERNATIVE}"
         )
         if detail:
             message = f"{message} {detail}"
@@ -862,12 +874,30 @@ class CorruptStorageSnapshotError(RuntimeError):
             f"store. Run `lightrag-rebuild-vdb` offline with the same storage "
             f"and workspace configuration; after confirmation it backs up this "
             f"storage's files before rebuilding. Restart the server only "
-            f"after the rebuild succeeds."
+            f"after the rebuild succeeds. {CLEAR_STORAGE_ALTERNATIVE}"
         )
         self.backend = backend
         self.container = container
         self.detail = detail
         self.artifacts = artifacts
+
+
+class CorruptStorageRecordError(RuntimeError):
+    """A stored row is not this storage's row shape at all.
+
+    Not "a field is missing" -- that is the caller's schema question. This is
+    the payload under a key being something other than a mapping: a string, a
+    number, a list. A KV backend normalises every row it hands back (time
+    fields, ``_id``), so it reaches for mapping methods before any caller
+    sees the value; without this the corruption escapes as an opaque
+    ``AttributeError`` from deep inside the backend, and a layer above reads
+    it as "the store is not serving" rather than "one row is damaged".
+
+    Raised by the storage, classified by whoever knows the schema. Deliberately
+    NOT a ``ConfigurationStorageError``: this can come from any namespace, and
+    ``lightrag.config_store`` translates it into the configuration-level
+    refusal when it is a configuration row.
+    """
 
 
 class ConfigurationStorageError(RuntimeError):
@@ -884,6 +914,22 @@ class ConfigurationStorageError(RuntimeError):
     defect the strict-read rule exists to prevent: a store that could not be
     reached must never be mistaken for a store that holds nothing. See *Reads
     are strict* in docs/design/ConfigurationStorage.md.
+    """
+
+
+class ConfigurationRecordMalformedError(ConfigurationStorageError):
+    """A configuration record was FETCHED, but its shape is not a row.
+
+    The distinction this type exists to carry: the store answered, so it is
+    serving and it can still DELETE this record -- deletes go by key and never
+    read the value. Only the payload is damaged.
+
+    Everything that must stop on any unreadable record keeps stopping, because
+    this is a ``ConfigurationStorageError``. What it buys is the caller that
+    can legitimately go on: ``lightrag-clear-storage`` shows such a record as
+    UNREADABLE and drops the workspace anyway, since a workspace whose
+    configuration is corrupt is exactly the one an operator is trying to
+    clear. Read on TYPE, never on message text.
     """
 
 
@@ -935,7 +981,7 @@ class EmbeddingBaselineMismatchError(VectorSpaceMismatchError):
             "confidently wrong neighbours. Rebuild them with "
             "`lightrag-rebuild-vdb` (run with this embedding configuration), "
             "or point this instance back at the previous embedding "
-            "configuration."
+            "configuration. " + CLEAR_STORAGE_ALTERNATIVE
         )
         RuntimeError.__init__(self, message)
         first = mismatches[0]
@@ -1015,7 +1061,8 @@ class VectorStorageEmptyError(RuntimeError):
             f"provisioned a new, empty one. Rebuild the vector storages from "
             f"the knowledge graph with `lightrag-rebuild-vdb` (run it with this "
             f"embedding configuration), or point this instance back at the "
-            f"configuration whose vectors are still there."
+            f"configuration whose vectors are still there. "
+            f"{CLEAR_STORAGE_ALTERNATIVE}"
         )
         super().__init__(message)
         self.vdb_name = vdb_name

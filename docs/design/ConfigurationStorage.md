@@ -879,6 +879,26 @@ than assume it, since `BaseKVStorage` defaults it to `False`.
 A configuration store that was deliberately emptied reads as confirmed absent
 and bootstraps again, which is correct. A store that cannot be reached does not.
 
+**One failure is typed apart, and it does not weaken the table above.** A
+record that was FETCHED but is not a row — the key maps to a string, a number,
+a list, because somebody hand-edited the file — raises
+`ConfigurationRecordMalformedError`, a `ConfigurationStorageError` subclass.
+Every caller that must stop still stops, because it inherits the parent. What
+the type buys is the caller that may legitimately go on:
+`lightrag-clear-storage` shows such a record as UNREADABLE and drops the
+workspace anyway, since the store answered — it is serving — and
+`delete_workspace_configuration` removes the record by key without ever
+reading its value. A workspace whose configuration is corrupt is exactly the
+one an operator is trying to clear, so refusing there refuses the recovery.
+
+Classifying this needs the backend's help, which is why `JsonKVStorage` raises
+`CorruptStorageRecordError` for a non-mapping payload instead of letting it
+escape as an `AttributeError` from inside its own row normalisation: an
+unrecognised exception out of a point read is indistinguishable from an
+outage, and `read_config_row_strict` would have reported one damaged row as a
+configuration backend that could not answer. The shape check on the RETURNED
+value cannot cover this — the JSON backend never gets far enough to return it.
+
 **Strictness has to survive the layer below the read, too.** On the JSON
 backend the file is read once per process tree and shared: the first instance
 to ask wins a claim, loads the file into the shared namespace dict, and every
@@ -974,6 +994,17 @@ runs after the storage drops: the records are deleted after it, and a failed
 cache drop keeps them exactly as a failed storage drop does. The cache rows
 that survive are workspace data too, and the endpoint's history entry names
 which drop kept the records.
+
+`/documents/clear` and the offline `lightrag-clear-storage` tool
+(`lightrag/tools/clear_storage.py`) are the two callers of
+`delete_workspace_configuration`, and both follow this ordering: the tool
+drops the same eleven data storages, classifies each result on
+`BaseException`, and deletes the records only when every drop succeeded. It
+never drops the LLM cache, so "every data storage" for it is those eleven.
+Both are named in `CONFIG_KEY_REGISTRY`'s `writers`, and the tool in its
+`readers` too (it strict-reads the baselines for the pre-delete summary).
+Nothing enforces those tuples, so a new caller declares itself there before
+it touches a row -- `tests/config_store/test_config_store.py` pins the list.
 
 Workspace names becoming UUIDs later reduces the accepted residue to orphan rows
 and a misleading inventory rather than a wrong refusal, but does not remove the

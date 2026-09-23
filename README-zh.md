@@ -537,11 +537,15 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 ### 运维工具（`lightrag/tools/`）
 
-涉及存储的工具与服务器一样读取 `.env` 和环境变量，请在项目根目录下、使用同一套配置运行。其中若干工具会原地改写存储——是否必须先停掉服务器（以及其它写入方）请查看对应指南，`rebuild_vdb` 必须先停。
+涉及存储的工具与服务器一样读取 `.env` 和环境变量，请在项目根目录下、使用同一套配置运行。其中若干工具会原地改写存储——是否必须先停掉服务器（以及其它写入方）请查看对应指南，`rebuild_vdb` 与 `clear_storage` 必须先停。
 
 **`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
 
 丢弃并从权威数据源（图节点/边、`text_chunks` KV 存储）重建全部向量存储。用于向量写入失败后的恢复，以及更换 embedding 模型或维度之后的重建；另提供只读的一致性检查模式。
+
+**`clear_storage.py`** — `lightrag-clear-storage` — [README_CLEAR_STORAGE.md](./lightrag/tools/README_CLEAR_STORAGE.md)
+
+离线清空一个 workspace 的全部数据存储，行为与 WebUI 的“清空”按钮完全一致；清空前先展示将被删除的内容，并要求输入确认短语。当向量索引为空或不可读导致服务器拒绝启动、而数据本身可以丢弃时，用它代替耗时的重建。从不触碰 LLM 响应缓存。必须先停掉服务器。
 
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 

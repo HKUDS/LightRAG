@@ -496,7 +496,7 @@ async def _source_is_populated(name: str, probe) -> bool | None:
     must answer ``False`` only on a read that would have raised had it failed.
     ``BaseKVStorage.is_empty`` does not qualify -- it catches its errors and
     answers ``True`` -- which is why the chunk source is read through
-    ``_chunk_source_is_populated``, in its strict mode, on the starts that
+    ``chunk_source_is_populated``, in its strict mode, on the starts that
     have a chunk baseline to establish. The graph readers behind the other two
     probes propagate their failures.
     """
@@ -510,17 +510,22 @@ async def _source_is_populated(name: str, probe) -> bool | None:
         return None
 
 
-async def _graph_has_nodes(graph) -> bool:
+async def graph_has_nodes(graph) -> bool:
     """Whether the graph holds at least one entity.
 
     ``get_popular_labels`` rather than ``iter_labels``: it is abstract on
     ``BaseGraphStorage`` so every backend implements it, while ``iter_labels``
     fails closed on backends that never did.
+
+    Public, not gate-internal: ``lightrag/tools/clear_storage.py`` shows the
+    same verdict in its pre-delete summary. Keep the raising behavior -- a
+    caller that turns a failed read into "empty" is the defect this and
+    ``chunk_source_is_populated`` exist to avoid.
     """
     return bool(await graph.get_popular_labels(limit=1))
 
 
-async def _graph_has_edges(graph) -> bool:
+async def graph_has_edges(graph) -> bool:
     """Whether the graph holds at least one relation.
 
     ``iter_edges`` is the only bounded edge reader on the base class
@@ -528,6 +533,8 @@ async def _graph_has_edges(graph) -> bool:
     default -- a backend that never implemented it raises
     ``StorageCapabilityError``, which the caller reads as "unanswerable" and
     skips. All seven in-tree graph backends implement it.
+
+    Public for the same reason as ``graph_has_nodes``.
     """
     iterator = graph.iter_edges(batch_size=1)
     try:
@@ -1053,7 +1060,7 @@ async def check_vector_space_at_startup(
             name="chunks",
             source="the text chunk storage",
             vdb=chunks_vdb,
-            source_probe=lambda: _chunk_source_is_populated(
+            source_probe=lambda: chunk_source_is_populated(
                 text_chunks, strict="chunks" in baseline_targets
             ),
             no_healing_probe=lambda: _finished_doc_chunk_ids(
@@ -1065,7 +1072,7 @@ async def check_vector_space_at_startup(
         name="entities",
         source="the knowledge graph",
         vdb=entities_vdb,
-        source_probe=lambda: _graph_has_nodes(graph),
+        source_probe=lambda: graph_has_nodes(graph),
         no_healing_probe=lambda: _node_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
@@ -1073,7 +1080,7 @@ async def check_vector_space_at_startup(
         name="relationships",
         source="the knowledge graph",
         vdb=relationships_vdb,
-        source_probe=lambda: _graph_has_edges(graph),
+        source_probe=lambda: graph_has_edges(graph),
         no_healing_probe=lambda: _edge_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
@@ -1148,9 +1155,7 @@ async def _index_is_empty_for_baseline(name: str, vdb) -> bool | None:
         return None
 
 
-async def _chunk_source_is_populated(
-    text_chunks, *, strict: bool = True
-) -> bool | None:
+async def chunk_source_is_populated(text_chunks, *, strict: bool = True) -> bool | None:
     """Whether ``text_chunks`` holds a row: ``True``, ``False``, or ``None``
     when empty and unreadable cannot be told apart.
 
@@ -1189,6 +1194,9 @@ async def _chunk_source_is_populated(
     ``True``, the second ``None``. The coverage check only acts on ``True``,
     so that backend keeps exactly the check it had, and never a baseline it
     did not earn.
+
+    Public, not gate-internal: ``lightrag/tools/clear_storage.py`` reads it
+    too, for the same reason -- it must not show an outage as an empty store.
     """
     if not strict:
         return not await text_chunks.is_empty()

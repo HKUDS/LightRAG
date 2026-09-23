@@ -22,6 +22,7 @@ from opensearchpy.exceptions import (  # type: ignore
     NotFoundError,
     OpenSearchException,
     ConflictError,
+    TransportError,
 )
 import lightrag.kg.opensearch_impl
 from lightrag.exceptions import (
@@ -6728,6 +6729,119 @@ class TestGraphReadContract:
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_popular_labels(limit=2) == ["Alpha", "Zeta"]
+
+    # -- a missing EDGE index is an empty edge set, not a missing graph -----
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_missing_edge_index_ranks_from_node_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Only the edge index is gone; the entities in the node index must
+        still be returned.
+
+        Regression: the missing-index handler wrapped the whole method, so an
+        ``index_not_found`` from the edge aggregation answered ``[]`` without
+        ever scanning the node index -- a graph that held entities reported as
+        one that held nothing. The Mongo backend, the other two-container
+        implementation, treats a missing edge collection as an empty edge set
+        and ranks from the node side; this is the same rule.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            async def _search(index=None, body=None, **kwargs):
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                # The isolated-node scan searches through a PIT, without an
+                # index argument.
+                return self._node_page(["Orphan1", "Orphan2"])
+
+            mock_client.search = AsyncMock(side_effect=_search)
+            labels = await s.get_popular_labels(limit=10)
+
+        assert labels == ["Orphan1", "Orphan2"]
+        mock_client.create_pit.assert_awaited_once()
+        # The mark still lands: the next write must recreate the edge index
+        # with its mapping rather than let the cluster auto-create it.
+        assert s._indices_ready is False
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_missing_node_index_still_returns_empty(
+        self, global_config, embed_func, mock_client
+    ):
+        """The confirmed-empty answer is kept for the index that holds the
+        entities: no node index, no entities."""
+        mock_client.search = AsyncMock(return_value=self._aggs([], []))
+        mock_client.create_pit = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=10)
+
+        assert labels == []
+        assert s._indices_ready is False
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_edge_transport_error_still_raises(
+        self, global_config, embed_func, mock_client
+    ):
+        """Splitting the edge aggregation into its own handler must not widen
+        what it swallows: a transport failure is not a missing index."""
+        mock_client.search = AsyncMock(
+            side_effect=TransportError(
+                503, "search_phase_execution_exception", "shard failure"
+            )
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with pytest.raises(TransportError):
+                await s.get_popular_labels(limit=10)
+
+        mock_client.create_pit.assert_not_awaited()
+        assert s._indices_ready is True
+
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_missing_edge_index_keeps_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        """The ``*`` subgraph ranks from the edge index when truncated; with
+        that index gone it must still return the entities, with no relations,
+        instead of an empty graph.
+
+        Regression: the same whole-method handler as get_popular_labels.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 5})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            async def _search(index=None, body=None, **kwargs):
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                assert index == s._nodes_index
+                return self._node_page(["A", "B", "C", "D"])
+
+            async def _create_pit(index=None, **kwargs):
+                # The edge pass at the end opens a PIT on the edge index.
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                return {"pit_id": "pit-nodes"}
+
+            mock_client.search = AsyncMock(side_effect=_search)
+            mock_client.create_pit = AsyncMock(side_effect=_create_pit)
+            mock_client.mget = AsyncMock(
+                side_effect=_mget_by_ids_side_effect(
+                    {node_id: {"entity_type": "person"} for node_id in "ABCD"}
+                )
+            )
+            result = await s.get_knowledge_graph("*", max_nodes=4)
+
+        assert result.is_truncated is True
+        assert [node.id for node in result.nodes] == ["A", "B", "C", "D"]
+        assert result.edges == []
+        assert s._indices_ready is False
 
     # -- get_knowledge_graph ------------------------------------------------
 

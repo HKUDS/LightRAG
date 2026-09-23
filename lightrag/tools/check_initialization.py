@@ -98,7 +98,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
     try:
         from lightrag.kg.shared_storage import get_namespace_data
 
-        get_namespace_data("pipeline_status", workspace=rag_instance.workspace)
+        await get_namespace_data("pipeline_status", workspace=rag_instance.workspace)
         print("✅ Pipeline status: INITIALIZED")
     except KeyError:
         issues.append(
