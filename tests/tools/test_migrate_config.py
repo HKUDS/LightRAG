@@ -386,10 +386,39 @@ class TestRefusals:
 
 
 class TestRowPayload:
-    def test_a_key_mirror_is_metadata(self):
-        """``PGKVStorage`` returns the key as both ``id`` and ``_id``."""
+    def test_a_key_mirror_is_metadata_only_where_the_backend_adds_it(self):
+        """``PGKVStorage`` returns the key as both ``id`` and ``_id``; any
+        other backend's ``id`` equal to the key is the row's own."""
         row = {"id": "k", "_id": "k", "create_time": 1, "update_time": 2, "v": 1}
-        assert mc.row_payload(row) == {"v": 1}
+        assert mc.row_payload(row, id_mirror=True) == {"v": 1}
+        assert mc.row_payload(row) == {"id": "k", "v": 1}
+
+    async def test_an_id_equal_to_its_key_survives_a_non_pg_source(self, tmp_path):
+        _anchor(tmp_path)
+        rows = _source_rows()
+        key = cs.embedding_baseline_key("alpha", "entities")
+        rows[key] = {**rows[key], "id": key}
+        target = Container()
+        result = await _migrate(tmp_path, Container(rows), target)
+        assert result.switched is True
+        assert target.visible[key]["id"] == key
+
+    async def test_a_pg_source_mirror_is_not_copied(self, tmp_path):
+        class PGKVStorage(Container):
+            def iter_rows(self, *, page_size=200):
+                rows = super().iter_rows(page_size=page_size)
+
+                async def _gen():
+                    async for row in rows:
+                        yield {**row, "id": row["_id"]}
+
+                return _gen()
+
+        _anchor(tmp_path)
+        target = Container()
+        result = await _migrate(tmp_path, PGKVStorage(_source_rows()), target)
+        assert result.switched is True
+        assert all("id" not in row for row in target.visible.values())
 
     def test_an_id_that_is_not_the_key_is_content(self):
         row = {"id": "custom", "_id": "k", "v": 1}
@@ -470,6 +499,23 @@ class TestFailureAndResume:
         with pytest.raises(mc.MigrationRefused, match="alpha/embedding/entities"):
             await _migrate(tmp_path, source, target)
         assert target.calls == []
+
+    async def test_a_corrupt_row_in_this_migrations_own_target_says_so(self, tmp_path):
+        """No complete listing exists past the damaged record, so the claimed
+        target cannot be converged automatically; the refusal says that it is
+        this migration's residue and safe to clear."""
+        _anchor(tmp_path)
+        target = _CorruptRecord({IDENTITY_KEY: _identity_row()})
+        with pytest.raises(mc.MigrationRefused, match="residue"):
+            await _migrate(tmp_path, Container(_source_rows()), target)
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+    async def test_a_corrupt_row_in_a_foreign_target_is_a_plain_refusal(self, tmp_path):
+        _anchor(tmp_path)
+        target = _CorruptRecord({IDENTITY_KEY: _identity_row(UUID_B)})
+        with pytest.raises(mc.MigrationRefused) as excinfo:
+            await _migrate(tmp_path, Container(_source_rows()), target)
+        assert "residue" not in str(excinfo.value)
 
     async def test_the_directory_claims_go_back_before_the_anchor_lock(
         self, tmp_path, monkeypatch
