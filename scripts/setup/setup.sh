@@ -1175,6 +1175,7 @@ select_storage_backends() {
   # would come out without the key the whole function exists to add.
   select_config_storage "$kv_storage"
   config_storage="$SELECTED_CONFIG_STORAGE"
+  report_config_anchor "$config_storage"
 
   for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage" \
     "$config_storage"; do
@@ -1217,6 +1218,99 @@ config_storage_records_in() {
   fi
   # Never fail: the caller reads this in a command substitution under `set -e`,
   # and "no admitted backend holds records" is an answer, not an error.
+  return 0
+}
+
+resolve_host_working_dir() {
+  # The WORKING_DIR the server will use, as a path on THIS host. Compose
+  # always mounts ./data/rag_storage at the container's working directory
+  # (see prepare_compose_data_path_overrides), whatever .env says; a host run
+  # resolves a relative WORKING_DIR against the repository root, where the
+  # server is started from.
+  local runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
+  local dir
+
+  if [[ "$runtime_target" == "compose" ]]; then
+    dir="${REPO_ROOT}/data/rag_storage"
+  else
+    dir="${ENV_VALUES[WORKING_DIR]:-./rag_storage}"
+    if [[ "$dir" != /* ]]; then
+      dir="${REPO_ROOT}/${dir#./}"
+    fi
+  fi
+  printf '%s' "$dir"
+}
+
+read_config_anchor() {
+  # Reads <WORKING_DIR>/_lightrag_config/storage_anchor.json, the binding the
+  # server checks before it opens the configuration storage (see *The anchor
+  # and the container identity* in docs/design/ConfigurationStorage.md).
+  # The wizard only ever READS it -- it never writes, moves or deletes it.
+  #
+  # Sets CONFIG_ANCHOR_STATE to "absent", "readable" or "unreadable", and
+  # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID. The
+  # parse is deliberately narrow: anything it cannot confirm is
+  # "unreadable", never "absent".
+  local dir content
+  local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+  dir="$(resolve_host_working_dir)"
+  CONFIG_ANCHOR_PATH="${dir}/_lightrag_config/storage_anchor.json"
+  CONFIG_ANCHOR_BACKEND=""
+  CONFIG_ANCHOR_UUID=""
+  CONFIG_ANCHOR_STATE="unreadable"
+
+  if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then
+    CONFIG_ANCHOR_STATE="absent"
+    return 0
+  fi
+  if [[ ! -f "$CONFIG_ANCHOR_PATH" || ! -r "$CONFIG_ANCHOR_PATH" ]]; then
+    return 0
+  fi
+  content="$(tr -d '\n\r' < "$CONFIG_ANCHOR_PATH" 2>/dev/null)" || return 0
+
+  [[ "$content" =~ \"schema_version\"[[:space:]]*:[[:space:]]*1[[:space:]]*[,}] ]] || return 0
+  [[ "$content" =~ \"backend\"[[:space:]]*:[[:space:]]*\"([A-Za-z]+)\" ]] || return 0
+  CONFIG_ANCHOR_BACKEND="${BASH_REMATCH[1]}"
+  [[ "$content" =~ \"storage_uuid\"[[:space:]]*:[[:space:]]*\"($uuid_re)\" ]] || return 0
+  CONFIG_ANCHOR_UUID="${BASH_REMATCH[1]}"
+  config_storage_is_admitted "$CONFIG_ANCHOR_BACKEND" || return 0
+  CONFIG_ANCHOR_STATE="readable"
+  return 0
+}
+
+report_config_anchor() {
+  # For `make env-storage`: say which configuration container this
+  # deployment is bound to, and warn when the selection just made resolves
+  # to another backend TYPE -- the server refuses such a start. Keeping the
+  # old backend or migrating is the operator's choice; nothing is changed.
+  local candidate="$1"
+
+  read_config_anchor
+  case "$CONFIG_ANCHOR_STATE" in
+    absent)
+      return 0
+      ;;
+    unreadable)
+      log_warn "The configuration storage anchor $CONFIG_ANCHOR_PATH exists" \
+        "but could not be read here. The server never treats it as absent:" \
+        "repair or restore it, or delete it to rebind on the next start."
+      return 0
+      ;;
+  esac
+
+  if [[ "$CONFIG_ANCHOR_BACKEND" == "$candidate" ]]; then
+    log_info "Configuration storage anchor: $CONFIG_ANCHOR_BACKEND" \
+      "(identity $CONFIG_ANCHOR_UUID) at $CONFIG_ANCHOR_PATH"
+    return 0
+  fi
+  log_warn "This deployment's configuration storage anchor ($CONFIG_ANCHOR_PATH)" \
+    "binds it to $CONFIG_ANCHOR_BACKEND, but the configuration storage now" \
+    "resolves to $candidate, so the server will REFUSE to start."
+  log_warn "Either set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND (no" \
+    "migration needed), or run 'lightrag-migrate-config --target-backend" \
+    "$candidate' with every server stopped before starting. This wizard" \
+    "never writes or moves the anchor."
   return 0
 }
 
@@ -3223,6 +3317,20 @@ validate_env_file() {
         "Set LIGHTRAG_CONFIG_STORAGE to one of: ${CONFIG_STORAGE_OPTIONS[*]} (the records already in $kv are not migrated)"
     fi
     errors=1
+  else
+    # The anchor: the server refuses a configuration backend TYPE other than
+    # the one this deployment is bound to, so validation must too. An anchor
+    # this parser cannot confirm is only a warning -- the server reads it
+    # strictly and will say why.
+    read_config_anchor
+    if [[ "$CONFIG_ANCHOR_STATE" == "readable" && "$CONFIG_ANCHOR_BACKEND" != "$config_storage" ]]; then
+      format_error \
+        "The configuration storage anchor $CONFIG_ANCHOR_PATH binds this deployment to $CONFIG_ANCHOR_BACKEND, but the configuration storage resolves to $config_storage, so the server refuses this .env at startup" \
+        "Set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND, or move the container with 'lightrag-migrate-config --target-backend $config_storage' first"
+      errors=1
+    elif [[ "$CONFIG_ANCHOR_STATE" == "unreadable" ]]; then
+      echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read; the server refuses to start until it is repaired, restored or deleted." >&2
+    fi
   fi
 
   if ! validate_mongo_vector_storage_config \

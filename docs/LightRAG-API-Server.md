@@ -923,6 +923,13 @@ For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can
 * **Left unset it follows `LIGHTRAG_KV_STORAGE`**, so an ordinary deployment configures nothing and needs no new connection variables — the records go to the backend that is already configured.
 * **`RedisKVStorage` is not admitted.** A deployment that selects it for `LIGHTRAG_KV_STORAGE` must therefore name a configuration backend explicitly, or the server is refused at startup with a message saying so. `JsonKVStorage` is the choice that needs no new connection settings: it writes one small file under `WORKING_DIR`, and nothing stops a Redis (or Postgres, or Mongo) deployment from using it for configuration alone.
 * `LIGHTRAG_CONFIG_DIR` moves that file, which defaults to `<WORKING_DIR>/_lightrag_config`. **Moving it after a deployment has recorded its baselines loses them**: they are read from the directory configured now, and a directory with no records is indistinguishable from a first start — so the configured model would be recorded over vectors nobody checked it against. In a container the directory must be on a **mounted** volume for the same reason; the default is, one that is not lives inside the container and disappears when it is recreated.
+* **The first start binds the deployment to its configuration container.** It records the backend type and the container's UUID in `<WORKING_DIR>/_lightrag_config/storage_anchor.json`, a fixed path that does not follow `LIGHTRAG_CONFIG_DIR`. Every later start checks both before reading any baseline. If you change `LIGHTRAG_KV_STORAGE` while `LIGHTRAG_CONFIG_STORAGE` is unset, the configuration container moves, and the start is **refused** instead of silently losing the records. Recover in one of two ways:
+  * set `LIGHTRAG_CONFIG_STORAGE` to the anchored backend explicitly (no migration needed);
+  * move the container with `lightrag-migrate-config` (see *Configuration Storage Migration Between Backend Types* below).
+
+  A container with the same type but another UUID (another or an emptied database, a changed `LIGHTRAG_CONFIG_DIR`) is refused too. Connection details (host, port, credentials) are not compared.
+* **Deleting the anchor file is the sanctioned rebind.** Use it for a container intentionally emptied, replaced or restored from an old backup: the next start binds to whatever is selected, with a WARNING. Do not delete it while servers are running.
+* **`WORKING_DIR` must persist, whichever backends are selected**, and belongs in backup, restore and volume migration. An ephemeral `WORKING_DIR`, such as the Helm chart with `persistence.enabled=false`, loses the anchor on every restart, so the check never runs.
 
 **PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
 
@@ -962,13 +969,35 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 # LIGHTRAG_CONFIG_STORAGE=JsonKVStorage
 ```
 
-You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `env.example` file.
+You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for:
+- the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below);
+- the LLM cache (see *LLM Cache Migration Between Storage Types* below);
+- the configuration storage (see *Configuration Storage Migration Between Backend Types* below). For further information, please read the sample `env.example` file.
 
 > The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
 ### LLM Cache Migration Between Storage Types
 
 When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+### Configuration Storage Migration Between Backend Types
+
+The configuration storage (embedding baselines and the server's own settings) can be moved to a configuration backend of a **different type**, offline, with `lightrag-migrate-config`:
+
+```bash
+# Stop every server, SDK process and maintenance tool using this WORKING_DIR first.
+lightrag-migrate-config --target-backend MongoKVStorage --dry-run   # report only
+lightrag-migrate-config --target-backend MongoKVStorage
+# Then set LIGHTRAG_CONFIG_STORAGE=MongoKVStorage explicitly and start the server.
+```
+
+How it works:
+- The tool keeps the container's UUID.
+- It copies every workspace's rows, verifies the copy, and only then moves the anchor.
+- It never modifies the source or edits `.env`.
+- A failed run leaves the anchor on the source, and re-running it resumes.
+
+A same-type move (PostgreSQL to another PostgreSQL, and so on) is done with the backend's own dump/restore: the identity travels with the data. See [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md).
 
 ### Graph Migration From Apache AGE To PostgreSQL Tables
 

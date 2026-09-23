@@ -670,6 +670,17 @@ because type drift is the mistake the anchor exists to stop:
 | backend type differs | set `LIGHTRAG_CONFIG_STORAGE` explicitly to the anchored backend, or run `lightrag-migrate-config` | listed last, marked as abandoning every record in the old container |
 | same type, different UUID | check that the connection settings point at the intended database | listed last, same warning |
 
+### The setup wizard
+
+The wizard only ever READS the anchor, at the `WORKING_DIR` the server will
+use on this host (`./data/rag_storage` for the compose runtime, which mounts
+it there whatever `.env` says). `make env-storage` reports it when readable and
+warns when the selection just made resolves to another backend type; keeping
+the old backend or migrating stays the operator's choice. `make env-validate`
+refuses an `.env` the server would refuse on that type mismatch, as it already
+refuses an unadmitted backend, and only warns about an anchor its narrow
+parser cannot confirm — the server reads that one strictly and says why.
+
 ### Maintenance tools
 
 `lightrag-rebuild-vdb` and `lightrag-clear-storage` take the shared anchor
