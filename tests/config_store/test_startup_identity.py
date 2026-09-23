@@ -308,3 +308,38 @@ async def test_a_running_migration_refuses_the_start_without_sticking(tmp_path):
         lock.release()
     await rag.initialize_storages()
     await rag.finalize_storages()
+
+
+async def test_a_relative_working_dir_keeps_its_anchor_across_a_cwd_change(
+    tmp_path, monkeypatch
+):
+    """The anchor is pinned where ``config_dir`` is, at construction: a CWD
+    change before ``initialize_storages()`` must neither bind a second anchor
+    beside another directory nor release a lock path it never took."""
+    from lightrag import LightRAG
+
+    deployment = tmp_path / "deploy"
+    elsewhere = tmp_path / "elsewhere"
+    deployment.mkdir()
+    elsewhere.mkdir()
+    base = _base_rag(deployment, model_name="bge-m3")
+    monkeypatch.chdir(tmp_path)
+    rag = LightRAG(
+        working_dir="deploy",
+        workspace=base.workspace,
+        llm_model_func=base.llm_model_func,
+        embedding_func=base.embedding_func,
+        tokenizer=base.tokenizer,
+    )
+    monkeypatch.chdir(elsewhere)
+
+    await rag.initialize_storages()
+    assert al.holds_anchor_lock(str(deployment))
+    await rag.finalize_storages()
+
+    storage_uuid = _stored(_config_file(deployment))[IDENTITY_KEY]["value"]["uuid"]
+    assert ca.read_anchor(str(deployment)) == ca.StorageAnchor(
+        backend="JsonKVStorage", storage_uuid=storage_uuid
+    )
+    assert ca.read_anchor(str(elsewhere / "deploy")) is None
+    assert not al.holds_anchor_lock(str(deployment))
