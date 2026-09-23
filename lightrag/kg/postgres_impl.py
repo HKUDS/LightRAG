@@ -3825,9 +3825,14 @@ class PGKVStorage(BaseKVStorage):
                 f"[{self.workspace}] Successfully deleted {len(ids)} records from {self.namespace}"
             )
         except Exception as e:
+            # Fail loud: a caller (e.g. the "create" rollback path in
+            # lightrag.py) relies on this delete failing visibly rather
+            # than being reported as a clean return, which would be a
+            # false success.
             logger.error(
                 f"[{self.workspace}] Error while deleting records from {self.namespace}: {e}"
             )
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
@@ -6950,9 +6955,14 @@ class PGDocStatusStorage(DocStatusStorage):
                 f"[{self.workspace}] Successfully deleted {len(ids)} records from {self.namespace}"
             )
         except Exception as e:
+            # Fail loud: a caller (e.g. the "create" rollback path in
+            # lightrag.py) relies on this delete failing visibly rather
+            # than being reported as a clean return, which would be a
+            # false success.
             logger.error(
                 f"[{self.workspace}] Error while deleting records from {self.namespace}: {e}"
             )
+            raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Update or insert document status
