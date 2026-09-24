@@ -839,3 +839,35 @@ def test_migration_advice_names_working_dir_when_env_spells_it_unread(
         f"WORKING_DIR={tmp_path}/data/rag_storage lightrag-migrate-config"
         in result.stderr
     )
+
+
+PRESERVED_HEADER = (
+    "### ----- Preserved custom environment variables from previous .env  -----"
+)
+
+
+def test_a_finalizer_keeps_the_marker_for_a_binding_regeneration_preserves(
+    tmp_path: Path,
+) -> None:
+    """The generator copies the preserved-custom section verbatim after the
+    canonical settings, so an ``export`` binding there still wins under
+    dotenv in the file it writes; the check must not use ENV_VALUES."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            *BASE_ENV,
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            PRESERVED_HEADER,
+            "export LIGHTRAG_CONFIG_STORAGE=MongoKVStorage",
+        ],
+    )
+    _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
+    result = _run(
+        tmp_path,
+        """
+load_existing_env_if_present
+report_config_anchor_for_output host
+""",
+    )
+    assert "LIGHTRAG_CONFIG_STORAGE is assigned in a form" in result.stdout
+    assert "Configuration storage anchor: JsonKVStorage" not in result.stdout

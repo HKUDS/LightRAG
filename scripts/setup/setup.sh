@@ -1462,6 +1462,30 @@ report_config_anchor() {
   return 0
 }
 
+preserved_section_keeps_unread_binding() {
+  # Whether the preserved-custom section of the .env ``$1`` -- the one the
+  # generator is about to overwrite -- binds ``$2`` in a form other than a
+  # plain ``KEY=``. append_preserved_non_template_env_lines keeps such a
+  # line verbatim (it has no plain key to drop it by), after the settings
+  # written from ENV_VALUES.
+  local env_file="$1" key="$2" line in_section="no"
+  local header="### ----- Preserved custom environment variables from previous .env  -----"
+
+  [[ -f "$env_file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$header" ]]; then
+      in_section="yes"
+      continue
+    fi
+    [[ "$in_section" == "yes" ]] || continue
+    [[ "$line" =~ ^[A-Za-z0-9_]+= ]] && continue
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'${key}\'|${key})[[:space:]]*(=|$|#) ]]; then
+      return 0
+    fi
+  done < "$env_file"
+  return 1
+}
+
 report_config_anchor_for_output() {
   # Every finalizer calls this once its runtime target is settled: env-base
   # and env-server can switch between host and Compose (and env-server can
@@ -1470,16 +1494,19 @@ report_config_anchor_for_output() {
   # An unset KV backend is the server's default; a configuration backend the
   # category does not admit is reported by the admitted check instead.
   #
-  # The .env being checked is the one about to be WRITTEN, and the generator
-  # writes these keys canonically from ENV_VALUES, dropping every form the
-  # loader could not read. The unread markers from the old file therefore
-  # no longer apply, whether a prompt changed the value or kept it.
+  # The .env being checked is the one about to be WRITTEN. The generator
+  # writes these keys canonically from ENV_VALUES and drops the forms the
+  # loader could not read -- except inside the preserved-custom section,
+  # which it copies verbatim after the canonical settings, so a binding
+  # there still wins under dotenv. A marker is cleared only when no such
+  # binding survives.
   local candidate="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}"
   local key
 
   for key in WORKING_DIR LIGHTRAG_RUNTIME_TARGET LIGHTRAG_CONFIG_STORAGE \
     LIGHTRAG_KV_STORAGE; do
-    unset 'UNREAD_ENV_KEYS[$key]'
+    preserved_section_keeps_unread_binding "${REPO_ROOT}/.env" "$key" ||
+      unset 'UNREAD_ENV_KEYS[$key]'
   done
   config_storage_is_admitted "$candidate" || return 0
   report_config_anchor "$candidate" "$1"

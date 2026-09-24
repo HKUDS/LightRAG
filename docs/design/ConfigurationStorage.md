@@ -741,7 +741,9 @@ for under a default the server does not use. `WORKING_DIR` is exempt for the
 compose runtime, whose generated service fixes the container's. The setup
 flows check the `.env` they are about to WRITE, which the generator emits
 canonically from the wizard's values, so for them those markers from the
-old file no longer apply. A migration command recommended while
+old file no longer apply — except for a binding inside the preserved-custom
+section, which the generator copies verbatim after those values and which
+therefore still wins. A migration command recommended while
 `WORKING_DIR` is spelled in an unread form always names the directory.
 
 **`.env` is the wizard's only source of values.** It is a static `.env`
