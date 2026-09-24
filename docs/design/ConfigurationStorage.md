@@ -697,7 +697,10 @@ use on this host. For the compose runtime that is the host source of the
 lightrag service's bind mount onto the container working directory, read
 from the compose file the generator starts from (a customized mount survives
 regeneration), `./data/rag_storage` by default; a named volume, a path
-Compose expands, or no readable mount leaves the anchor not checked. `make env-storage` reports it when readable and
+Compose expands, or no readable mount leaves the anchor not checked, and so
+does a `LIGHTRAG_CONFIG_STORAGE` or `LIGHTRAG_KV_STORAGE` set in that
+service's `environment:` — the wizard never writes one there, regeneration
+keeps it, and it outranks `.env`, so the backend to compare is not `.env`'s. `make env-storage` reports it when readable and
 warns when the selection just made resolves to another backend type; keeping
 the old backend or migrating stays the operator's choice. It reports only
 after the runtime target of the `.env` being written is settled, because a
@@ -722,7 +725,9 @@ drift from the first. Both flows then warn that the anchor was not checked.
 The same holds for a key the check depends on (`WORKING_DIR`, the runtime
 target, the configuration or KV backend) assigned in a python-dotenv form
 the wizard's `.env` reader does not parse, such as `export KEY=`, a
-single-quoted `'KEY'`, spaces around `=`, an inline ` # comment`, trailing whitespace, or a backslash
+single-quoted `'KEY'`, a bare `KEY` (which clears an earlier assignment:
+dotenv gives it no value and the server takes the default), spaces around
+`=`, an inline ` # comment`, trailing whitespace, or a backslash
 escape the two parsers decode differently: it is recorded,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. A lookup that finds no anchor

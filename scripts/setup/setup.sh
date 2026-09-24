@@ -1225,6 +1225,39 @@ config_storage_records_in() {
   return 0
 }
 
+compose_lightrag_environment_key() {
+  # The first of the keys ``$2...`` that the lightrag service's
+  # ``environment:`` block in ``$1`` sets, in map or list form, or nothing.
+  # The wizard writes none of the storage selections there, so one found is
+  # an operator's override that regeneration keeps and that outranks .env.
+  local compose_file="$1" line key in_lightrag="no" in_env="no"
+  shift
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      continue
+    fi
+    [[ "$in_lightrag" == "yes" ]] || continue
+    if [[ "$line" =~ ^[[:space:]]{0,2}[^[:space:]] ]]; then
+      break
+    elif [[ "$line" == "    environment:" ]]; then
+      in_env="yes"
+    elif [[ "$in_env" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
+      in_env="no"
+    elif [[ "$in_env" == "yes" ]]; then
+      for key in "$@"; do
+        if [[ "$line" =~ ^[[:space:]]+(-[[:space:]]+)?[\"\']?${key}[\"\']?[[:space:]]*[:=] ]]; then
+          printf '%s' "$key"
+          return 0
+        fi
+      done
+    fi
+  done < "$compose_file"
+  return 0
+}
+
 compose_working_dir_mount_source() {
   # The host side of the lightrag service's short-form bind mount onto the
   # container working directory in ``$1``, or nothing. The generator keeps a
@@ -1278,7 +1311,7 @@ resolve_host_working_dir() {
   # ``${...}`` that python-dotenv or Compose expands, a named volume, a
   # compose file with no such mount.
   local runtime_target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
-  local dir compose_file base="$REPO_ROOT"
+  local dir compose_file key base="$REPO_ROOT"
 
   RESOLVED_WORKING_DIR=""
   RESOLVE_WORKING_DIR_FAILURE=""
@@ -1289,6 +1322,14 @@ resolve_host_working_dir() {
     fi
     dir="./data/rag_storage"
     if [[ -n "$compose_file" ]]; then
+      # The backend the anchor is compared with comes from .env -- unless
+      # the service environment overrides it, which the wizard keeps.
+      key="$(compose_lightrag_environment_key "$compose_file" \
+        LIGHTRAG_CONFIG_STORAGE LIGHTRAG_KV_STORAGE)"
+      if [[ -n "$key" ]]; then
+        RESOLVE_WORKING_DIR_FAILURE="$compose_file sets $key in the lightrag service environment, which overrides .env and which this wizard does not read"
+        return 1
+      fi
       dir="$(compose_working_dir_mount_source "$compose_file")"
       base="$(dirname "$compose_file")"
       if [[ -z "$dir" ]]; then
@@ -3454,7 +3495,10 @@ load_env_file() {
         value="${value:1:${#value}-2}"
       fi
       ENV_VALUES["$key"]="$value"
-    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'([A-Za-z0-9_]+)\'|([A-Za-z0-9_]+))[[:space:]]*= ]]; then
+    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'([A-Za-z0-9_]+)\'|([A-Za-z0-9_]+))[[:space:]]*(=|$|#) ]]; then
+      # A bare ``KEY`` (or ``export KEY``) is a binding too: python-dotenv
+      # gives it no value, load_dotenv leaves the variable unset, and the
+      # server takes the default -- whatever an earlier line assigned.
       # python-dotenv -- and so the server -- also accepts ``export KEY=``,
       # spaces around ``=`` and a single-quoted ``'KEY'``. They are not read
       # here, only recorded, so a check that depends on such a key can say
