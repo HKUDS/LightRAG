@@ -74,6 +74,26 @@ def test_find_target_span_table_cite_marker():
 
 
 @pytest.mark.offline
+def test_find_target_span_prefers_table_tag_over_a_preceding_self_cite():
+    """A block can narrate the table before presenting it: a <cite> to the
+    SAME id appears earlier in the text than the actual <table> tag. The
+    leftmost-match locator must anchor on the real table, not the citation,
+    or the surrounding leading/trailing text gets scoped around the wrong
+    span."""
+    content = (
+        "as shown in Table 1, "
+        '<cite type="table" refid="tb-1">Table 1</cite>: '
+        '<table id="tb-1" format="json">[[1,2]]</table>'
+        " concluding remarks."
+    )
+    span = find_target_span("tables", "tb-1", content)
+    assert span is not None
+    snippet = content[span[0] : span[1]]
+    assert snippet.startswith("<table")
+    assert snippet.endswith("</table>")
+
+
+@pytest.mark.offline
 def test_find_target_span_equation():
     content = 'A <equation id="eq-abcd-0002" format="latex">x^2</equation> B'
     span = find_target_span("equations", "eq-abcd-0002", content)
