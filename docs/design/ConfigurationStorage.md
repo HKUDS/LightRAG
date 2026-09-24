@@ -738,9 +738,13 @@ deciding as it does in dotenv, and the lines inside a quoted value that
 spans several lines are part of that value, not assignments,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. `WORKING_DIR` is exempt for the
-compose runtime, whose generated service fixes the container's. A host
-server loads `.env` with `override=False`, so a key the wizard's own shell
-exports with another value also leaves the anchor not checked. A lookup that finds no anchor
+compose runtime, whose generated service fixes the container's.
+
+**`.env` is the wizard's only source of values.** It is a static `.env`
+tool: the shell it runs in says nothing about the environment a server will
+start from, so it never consults exported variables, even though a host
+server loads `.env` with `override=False`. An exported value that
+contradicts `.env` is the operator's to reconcile. A lookup that finds no anchor
 is absence only below a searchable directory; an ancestor that cannot be
 searched or is not a directory makes the server's `open()` fail and refuse,
 so the wizard reports that anchor as unreadable, never absent. The path is

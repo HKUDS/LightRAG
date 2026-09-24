@@ -48,8 +48,8 @@ _ANCHOR_KEYS = ("WORKING_DIR", "LIGHTRAG_CONFIG_STORAGE", "LIGHTRAG_KV_STORAGE")
 def _run(
     case_dir: Path, body: str, *, exported: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
-    # The check reads the shell's exported anchor keys, so the test controls
-    # them rather than inheriting whatever the runner exports.
+    # The runner's own exports are dropped and a test's are added, so a test
+    # can prove the check never reads them.
     env = {k: v for k, v in os.environ.items() if k not in _ANCHOR_KEYS}
     env.update(exported or {})
     return subprocess.run(
@@ -708,39 +708,23 @@ def test_compose_ignores_how_env_spells_working_dir(tmp_path: Path) -> None:
     assert "binds this deployment to PGKVStorage" in result.stderr
 
 
-@pytest.mark.parametrize(
-    "exported",
-    [
-        {"WORKING_DIR": "/srv/rag"},
-        {"LIGHTRAG_CONFIG_STORAGE": "PGKVStorage"},
-    ],
-)
-def test_an_exported_override_leaves_a_host_anchor_unchecked(
-    tmp_path: Path, exported: dict[str, str]
+@pytest.mark.parametrize("target_env", [[], ["LIGHTRAG_RUNTIME_TARGET=compose"]])
+def test_the_shells_environment_is_never_consulted(
+    tmp_path: Path, target_env: list[str]
 ) -> None:
-    """A host server loads .env with override=False: what the shell exports
-    wins, so the check cannot claim .env's answer."""
-    _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
-    result = _validate(
-        tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"], exported=exported
-    )
-    assert "is exported in this shell and overrides .env" in result.stderr
-    assert "anchor was not checked" in result.stderr
-
-
-def test_an_exported_value_equal_to_env_does_not_block_the_check(
-    tmp_path: Path,
-) -> None:
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    """The wizard is a static .env tool: the shell it runs in says nothing
+    about the environment a server will start from, so exported values --
+    even ones that contradict .env -- change nothing."""
+    anchor_dir = "data/rag_storage" if target_env else "rag_storage"
+    _write_anchor(tmp_path / anchor_dir, "PGKVStorage")
     result = _validate(
         tmp_path,
-        ["LIGHTRAG_KV_STORAGE=JsonKVStorage"],
-        exported={"LIGHTRAG_KV_STORAGE": "JsonKVStorage"},
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", *target_env],
+        exported={
+            "WORKING_DIR": "/srv/rag",
+            "LIGHTRAG_CONFIG_STORAGE": "PGKVStorage",
+            "LIGHTRAG_KV_STORAGE": "PGKVStorage",
+        },
     )
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
-def test_compose_ignores_an_exported_working_dir(tmp_path: Path) -> None:
-    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
-    result = _validate(tmp_path, COMPOSE_ENV, exported={"WORKING_DIR": "/srv/rag"})
+    assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr

@@ -1357,6 +1357,10 @@ read_config_anchor() {
   # caller did not settle it, the two storage selections, and WORKING_DIR
   # for a host run only -- the generated Compose service fixes the
   # container's, so the .env spelling does not matter there.
+  #
+  # .env is the ONLY source of these values. The wizard is a static .env
+  # tool: the shell it runs in says nothing about the environment a server
+  # will start from, so exported variables are never consulted.
   keys=()
   [[ -z "${1:-}" ]] && keys+=(LIGHTRAG_RUNTIME_TARGET)
   keys+=(LIGHTRAG_CONFIG_STORAGE LIGHTRAG_KV_STORAGE WORKING_DIR)
@@ -1364,15 +1368,6 @@ read_config_anchor() {
     [[ "$key" == WORKING_DIR && "$target" == compose ]] && continue
     if [[ -n "${UNREAD_ENV_KEYS[$key]+set}" ]]; then
       CONFIG_ANCHOR_UNRESOLVED_REASON="$key is assigned in a form this wizard does not read (such as 'export $key=' or spaces around '=')"
-      return 0
-    fi
-    # A host server loads .env with override=False, so a variable already
-    # exported in the environment it starts from wins over the file. The
-    # wizard can only see its own shell's, which is the likeliest one.
-    if [[ "$target" != compose && "$key" != LIGHTRAG_RUNTIME_TARGET ]] &&
-      printenv "$key" >/dev/null &&
-      [[ "$(printenv "$key")" != "${ENV_VALUES[$key]-}" || -z "${ENV_VALUES[$key]+set}" ]]; then
-      CONFIG_ANCHOR_UNRESOLVED_REASON="$key=$(printenv "$key") is exported in this shell and overrides .env for a server started from it"
       return 0
     fi
   done
