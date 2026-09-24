@@ -543,10 +543,11 @@ async def migrate_configuration(
             await _verify(
                 source, target, storage_uuid=anchor.storage_uuid, page_size=page_size
             )
-        except MigrationRefused as e:
+        except (MigrationRefused, ConfigurationIdentityError) as e:
             # The target is claimed and may already be partly converged, so
-            # a row that turned bad since step 2 is not "nothing was
-            # written": the anchor is unchanged and a re-run reconciles.
+            # a row -- or the target's own identity -- that turned bad since
+            # the claim is not "nothing was written": the anchor is unchanged
+            # and a re-run reconciles or refuses by name.
             raise MigrationFailed(str(e)) from e
 
         # Step 7. The commit point.
@@ -668,15 +669,25 @@ def _opener(working_dir: str, config_dir: str, claims: list[str]) -> OpenStorage
             # A server on another WORKING_DIR could still hold this directory.
             acquire_working_dir_lock(config_dir)
             claims.append(config_dir)
-        storage = cs.create_configuration_storage(
-            get_storage_class(backend),
-            global_config={
-                "working_dir": working_dir,
-                "config_dir": config_dir,
-                "kv_storage": backend,
-            },
-            embedding_func=None,
-        )
+        try:
+            # Resolution and construction fail on a missing driver or an
+            # environment value the backend rejects; nothing is open yet.
+            storage = cs.create_configuration_storage(
+                get_storage_class(backend),
+                global_config={
+                    "working_dir": working_dir,
+                    "config_dir": config_dir,
+                    "kv_storage": backend,
+                },
+                embedding_func=None,
+            )
+        except (ConfigurationStorageError, ConfigurationIdentityError):
+            raise
+        except Exception as e:
+            raise ConfigurationStorageError(
+                f"could not create the {backend} configuration storage "
+                f"({type(e).__name__}: {e})"
+            ) from e
         try:
             await storage.initialize()
         except BaseException as e:
