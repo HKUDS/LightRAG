@@ -1366,6 +1366,9 @@ read_config_anchor() {
   keys+=(LIGHTRAG_CONFIG_STORAGE LIGHTRAG_KV_STORAGE WORKING_DIR)
   for key in "${keys[@]}"; do
     [[ "$key" == WORKING_DIR && "$target" == compose ]] && continue
+    # The KV backend decides only while the configuration storage follows
+    # it; an explicit selection (checked just before) makes it irrelevant.
+    [[ "$key" == LIGHTRAG_KV_STORAGE && -n "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]] && continue
     if [[ -n "${UNREAD_ENV_KEYS[$key]+set}" ]]; then
       CONFIG_ANCHOR_UNRESOLVED_REASON="$key is assigned in a form this wizard does not read (such as 'export $key=' or spaces around '=')"
       return 0

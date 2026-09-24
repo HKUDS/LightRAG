@@ -752,3 +752,33 @@ def test_a_multiline_value_opened_by_any_binding_form_is_skipped(
     )
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_unread_kv_key_is_irrelevant_once_config_storage_is_explicit(
+    tmp_path: Path,
+) -> None:
+    """The KV backend decides the configuration backend only while
+    LIGHTRAG_CONFIG_STORAGE is unset; with an explicit one the check runs."""
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "export LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_CONFIG_STORAGE=JsonKVStorage",
+        ],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_unread_kv_key_still_matters_when_config_storage_follows_it(
+    tmp_path: Path,
+) -> None:
+    result = _validate(
+        tmp_path,
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "export LIGHTRAG_KV_STORAGE=PGKVStorage"],
+    )
+    assert "LIGHTRAG_KV_STORAGE is assigned in a form this wizard does not read" in (
+        result.stderr
+    )

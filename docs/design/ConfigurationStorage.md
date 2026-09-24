@@ -751,7 +751,11 @@ Unicode whitespace such as a no-break space, only because Python's `\s` is
 Unicode by default; a shell sourcing the same file keeps it. Such a
 character is a copy-paste accident, not `.env` syntax, and the wizard does
 not model it: at worst it misses a warning, and the server still refuses a
-mismatched anchor at startup with nothing written. A lookup that finds no anchor
+mismatched anchor at startup with nothing written. The same holds for the
+other corners of python-dotenv's grammar that no common `.env` uses: keys
+outside `[A-Za-z0-9_]` (a `-`, which no shell can export either, or an
+arbitrary quoted key) and a lone CR as a line ending (a pre-OS X Mac
+convention; CRLF is handled). A lookup that finds no anchor
 is absence only below a searchable directory; an ancestor that cannot be
 searched or is not a directory makes the server's `open()` fail and refuse,
 so the wizard reports that anchor as unreadable, never absent. The path is
