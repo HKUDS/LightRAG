@@ -15,6 +15,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
+# Keys a loaded .env assigns in a form load_env_file does not read (see there).
+declare -A UNREAD_ENV_KEYS
 # Whether a .env was loaded at startup. Distinct from "ORIGINAL_ENV_VALUES is
 # non-empty": a deployment whose .env carries only comments still ran a server
 # on the DEFAULTS, and those defaults decide where its records are.
@@ -107,6 +109,7 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
+  UNREAD_ENV_KEYS=()
   EXISTING_ENV_LOADED=0
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
@@ -1258,7 +1261,8 @@ read_config_anchor() {
   # ``$1`` is passed through to resolve_host_working_dir.
   #
   # Sets CONFIG_ANCHOR_STATE to "absent", "readable", "unreadable" or
-  # "unresolved" (WORKING_DIR could not be resolved here), and
+  # "unresolved" (the anchor's location or the backend to compare it with
+  # could not be read here; CONFIG_ANCHOR_UNRESOLVED_REASON says why), and
   # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID.
   #
   # "readable" requires the WHOLE file to be one JSON object that the
@@ -1266,7 +1270,7 @@ read_config_anchor() {
   # it: exactly the three members, and a repeated key keeps its LAST value.
   # Anything outside the narrow grammar below is "unreadable", never
   # "absent" -- a looser match would pass a file the server refuses.
-  local dir content rest
+  local dir content rest key
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
   local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -1277,7 +1281,18 @@ read_config_anchor() {
   CONFIG_ANCHOR_BACKEND=""
   CONFIG_ANCHOR_UUID=""
   CONFIG_ANCHOR_STATE="unresolved"
-  dir="$(resolve_host_working_dir "${1:-}")" || return 0
+  CONFIG_ANCHOR_UNRESOLVED_REASON=""
+  for key in WORKING_DIR LIGHTRAG_RUNTIME_TARGET LIGHTRAG_CONFIG_STORAGE \
+    LIGHTRAG_KV_STORAGE; do
+    if [[ -n "${UNREAD_ENV_KEYS[$key]+set}" ]]; then
+      CONFIG_ANCHOR_UNRESOLVED_REASON="$key is assigned in a form this wizard does not read (such as 'export $key=' or spaces around '=')"
+      return 0
+    fi
+  done
+  if ! dir="$(resolve_host_working_dir "${1:-}")"; then
+    CONFIG_ANCHOR_UNRESOLVED_REASON="WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...} interpolation, which this wizard does not expand"
+    return 0
+  fi
   CONFIG_ANCHOR_PATH="${dir}/_lightrag_config/storage_anchor.json"
   CONFIG_ANCHOR_STATE="unreadable"
 
@@ -1327,10 +1342,9 @@ report_config_anchor() {
       return 0
       ;;
     unresolved)
-      log_warn "WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...}" \
-        "interpolation, which this wizard does not expand, so it cannot check" \
-        "the configuration storage anchor there. The server refuses to start" \
-        "if that anchor binds a backend other than $candidate."
+      log_warn "$CONFIG_ANCHOR_UNRESOLVED_REASON, so the configuration" \
+        "storage anchor was not checked. The server refuses to start if the" \
+        "anchor binds a backend other than the one it resolves."
       return 0
       ;;
     unreadable)
@@ -3299,6 +3313,12 @@ load_env_file() {
         value="${value:1:${#value}-2}"
       fi
       ENV_VALUES["$key"]="$value"
+    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z0-9_]+)[[:space:]]*= ]]; then
+      # python-dotenv -- and so the server -- also accepts ``export KEY=``
+      # and spaces around ``=``. They are not read here, only recorded, so a
+      # check that depends on such a key can say it could not check instead
+      # of reading the default the server does not use.
+      UNREAD_ENV_KEYS["${BASH_REMATCH[2]}"]=1
     fi
   done < "$env_file"
 }
@@ -3392,7 +3412,7 @@ validate_env_file() {
     elif [[ "$CONFIG_ANCHOR_STATE" == "unreadable" ]]; then
       echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read here; the server reads it strictly and refuses to start unless it is a valid anchor, so check it (repair, restore or delete it if it is not)." >&2
     elif [[ "$CONFIG_ANCHOR_STATE" == "unresolved" ]]; then
-      echo "Warning: WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...} interpolation, which this check does not expand, so the configuration storage anchor was not checked; the server refuses to start if it binds a backend other than $config_storage." >&2
+      echo "Warning: $CONFIG_ANCHOR_UNRESOLVED_REASON, so the configuration storage anchor was not checked; the server refuses to start if it binds a backend other than the one it resolves." >&2
     fi
   fi
 

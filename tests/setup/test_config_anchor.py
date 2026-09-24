@@ -340,3 +340,43 @@ def test_an_empty_working_dir_is_the_directory_the_server_starts_in(
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
     assert f"{tmp_path}/_lightrag_config/storage_anchor.json" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "export WORKING_DIR=./actual",
+        "WORKING_DIR = ./actual",
+        "  WORKING_DIR=./actual",
+    ],
+)
+def test_a_working_dir_in_a_form_the_wizard_does_not_read_is_unchecked(
+    tmp_path: Path, line: str
+) -> None:
+    """python-dotenv accepts these forms, so the server reads the anchor under
+    ``./actual``; the wizard does not parse them, and must not fall back to
+    ``./rag_storage`` and pass what the server refuses."""
+    _write_anchor(tmp_path / "actual", "PGKVStorage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
+    assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
+    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
+        result.stderr
+    )
+    assert "anchor was not checked" in result.stderr
+
+
+def test_a_configuration_backend_the_wizard_does_not_read_is_unchecked(
+    tmp_path: Path,
+) -> None:
+    """The comparison side too: the server would resolve PGKVStorage and
+    match the anchor, the wizard would resolve JsonKVStorage and refuse."""
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "export LIGHTRAG_CONFIG_STORAGE=PGKVStorage",
+        ],
+    )
+    assert "binds this deployment" not in result.stderr
+    assert "LIGHTRAG_CONFIG_STORAGE is assigned in a form" in result.stderr
