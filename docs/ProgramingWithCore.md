@@ -1400,6 +1400,8 @@ endpoints of every relationship before writing any custom KG data.
 `merge_entities` resolves existing exact legacy source/target names first and
 otherwise uses normalized names. The target may be an existing entity or a
 new normalized name created by the merge.
+`create_relation` resolves both endpoints the same way, so a relation can be
+created with the same spelling `create_entity` accepted for either endpoint.
 
 ### Relation Weight Contract
 
