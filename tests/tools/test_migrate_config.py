@@ -835,6 +835,26 @@ class TestEnvironments:
             current={"WORKING_DIR": str(tmp_path)},
         )
 
+    def test_an_empty_working_dir_is_the_start_directory(self, tmp_path, monkeypatch):
+        """``WORKING_DIR=`` is the server's start directory, not the
+        default: the tool must look for the anchor where that server did."""
+        monkeypatch.chdir(tmp_path)
+        assert mc.resolve_working_dir({"WORKING_DIR": ""}) == str(tmp_path)
+        assert mc.resolve_working_dir({}) == os.path.abspath(mc.DEFAULT_WORKING_DIR)
+
+    def test_an_env_file_with_an_empty_working_dir_is_compared_too(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(mc.MigrationRefused, match="WORKING_DIR"):
+            mc.resolve_environments(
+                source_backend="PGKVStorage",
+                target_backend="MongoKVStorage",
+                source_env={"WORKING_DIR": ""},
+                target_env={},
+                current={"WORKING_DIR": str(tmp_path / "rag_storage")},
+            )
+
 
 class TestEndToEndOnJson:
     async def test_json_to_a_server_backend_and_the_next_start_passes(
@@ -913,6 +933,17 @@ class TestCommandLine:
     async def test_no_anchor_is_refused_with_exit_1(self, capsys):
         assert await mc.async_main(["--target-backend", "MongoKVStorage"]) == 1
         assert "nothing is bound" in capsys.readouterr().out
+
+    async def test_an_empty_working_dir_finds_the_anchor_in_the_start_directory(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("WORKING_DIR", "")
+        _anchor(str(tmp_path))
+        self._wire(monkeypatch, Container(_source_rows()), Container())
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        assert code == 0, capsys.readouterr().out
+        assert ca.read_anchor(str(tmp_path)).backend == "MongoKVStorage"
 
     async def test_a_migration_prints_the_next_step_and_exits_0(
         self, monkeypatch, capsys
