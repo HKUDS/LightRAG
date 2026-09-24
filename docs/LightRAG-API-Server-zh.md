@@ -803,13 +803,13 @@ lightrag-server --embedding-binding gemini --help
 设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：`LLM_TIMEOUT * llm_output_tokens/second`（例如 `240s * 50 tokens/s = 12000`，此时 max_tokens 应小于 12000）。
 
 ```
-# For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
+# For vLLM/SGLang deployed models, or most of OpenAI compatible API provider
 OPENAI_LLM_MAX_TOKENS=9000
 
-# For Ollama Deployed Modeles
+# For Ollama Deployed Models
 OLLAMA_LLM_NUM_PREDICT=9000
 
-# For OpenAI o1-mini or newer modles
+# For OpenAI o1-mini or newer models
 OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 ```
 
