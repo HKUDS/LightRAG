@@ -699,7 +699,10 @@ warns when the selection just made resolves to another backend type; keeping
 the old backend or migrating stays the operator's choice. It reports only
 after the runtime target of the `.env` being written is settled, because a
 run that switches between host and Compose also switches which directory the
-next server reads. `make env-validate` refuses an `.env` the server would
+next server reads — and so do `make env-base` and `make env-server`, which
+can switch it too. A host `WORKING_DIR=` set to the empty string is the
+directory the server starts in, as `os.path.abspath("")` makes it, not the
+`./rag_storage` default an unset key gets. `make env-validate` refuses an `.env` the server would
 refuse on that type mismatch, as it already refuses an unadmitted backend,
 and only warns about an anchor its narrow parser cannot confirm — the server
 reads that one strictly and says why.
@@ -1703,5 +1706,6 @@ The anchor and the container identity (slice 1c):
     conflicting env files and a different `WORKING_DIR` are refused.
 45. The wizard calls an anchor readable only when the server's parser accepts
     it, reads the backend a repeated key leaves to the server, reports on the
-    directory of the runtime target it is switching to, and warns instead of
+    directory of the runtime target any of its flows is switching to, reads
+    an empty `WORKING_DIR` as the start directory, and warns instead of
     guessing for a `WORKING_DIR` that uses `${...}`.

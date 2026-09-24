@@ -291,12 +291,16 @@ def test_an_interpolated_working_dir_is_reported_as_unchecked(
     assert "REFUSE" not in report.stdout
 
 
-def test_env_storage_reads_the_anchor_of_the_runtime_it_is_switching_to(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "finalizer",
+    ["finalize_storage_setup", "finalize_base_setup", "finalize_server_setup"],
+)
+def test_every_setup_flow_reads_the_anchor_of_the_runtime_it_is_switching_to(
+    tmp_path: Path, finalizer: str
 ) -> None:
-    """A host .env that ``env-storage`` switches to Compose: the next server
-    reads the Compose mount, so that is the anchor to report on -- not the
-    host WORKING_DIR the old .env named."""
+    """A host .env that ``env-storage``, ``env-base`` or ``env-server``
+    switches to Compose: the next server reads the Compose mount, so that is
+    the anchor to report on -- not the host WORKING_DIR the old .env named."""
     _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
     _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
     write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
@@ -316,9 +320,23 @@ resolve_compose_output_action() {
 }
 backup_env_file() { :; }
 generate_env_file() { :; }
-finalize_storage_setup
-""",
+%s
+"""
+        % finalizer,
     )
     assert result.returncode == 0, result.stderr
     assert "binds it to PGKVStorage" in result.stdout
     assert "server will REFUSE to start" in result.stdout
+
+
+def test_an_empty_working_dir_is_the_directory_the_server_starts_in(
+    tmp_path: Path,
+) -> None:
+    """``WORKING_DIR=`` is the empty string to the server, and
+    ``os.path.abspath("")`` is its start directory -- not ``./rag_storage``."""
+    _write_anchor(tmp_path, "PGKVStorage")
+    _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR="])
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+    assert f"{tmp_path}/_lightrag_config/storage_anchor.json" in result.stderr

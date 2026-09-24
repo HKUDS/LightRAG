@@ -1239,10 +1239,12 @@ resolve_host_working_dir() {
   if [[ "$runtime_target" == "compose" ]]; then
     dir="${REPO_ROOT}/data/rag_storage"
   else
-    dir="${ENV_VALUES[WORKING_DIR]:-./rag_storage}"
+    # ``-`` not ``:-``: ``WORKING_DIR=`` is kept as the empty string by the
+    # server, and os.path.abspath("") is the directory it starts in.
+    dir="${ENV_VALUES[WORKING_DIR]-./rag_storage}"
     [[ "$dir" == *'${'* ]] && return 1
     if [[ "$dir" != /* ]]; then
-      dir="${REPO_ROOT}/${dir#./}"
+      dir="${REPO_ROOT}${dir:+/${dir#./}}"
     fi
   fi
   printf '%s' "$dir"
@@ -1352,6 +1354,19 @@ report_config_anchor() {
     "$candidate' with every server stopped before starting. This wizard" \
     "never writes or moves the anchor."
   return 0
+}
+
+report_config_anchor_for_output() {
+  # Every finalizer calls this once its runtime target is settled: env-base
+  # and env-server can switch between host and Compose (and env-server can
+  # change WORKING_DIR) just as env-storage can, and the switch decides which
+  # directory the next server reads the anchor from. ``$1`` is that target.
+  # An unset KV backend is the server's default; a configuration backend the
+  # category does not admit is reported by the admitted check instead.
+  local candidate="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}"
+
+  config_storage_is_admitted "$candidate" || return 0
+  report_config_anchor "$candidate" "$1"
 }
 
 config_storage_needs_no_new_settings() {
@@ -2937,6 +2952,8 @@ finalize_base_setup() {
       show_host_start_hint
   fi
 
+  report_config_anchor_for_output "$runtime_target"
+
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
@@ -3068,13 +3085,7 @@ finalize_storage_setup() {
     runtime_target \
     show_host_start_hint
 
-  # Only now is the runtime target settled, and it decides which WORKING_DIR
-  # -- the Compose mount or the host path -- holds the anchor.
-  if [[ -n "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" ]]; then
-    report_config_anchor \
-      "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]}}" \
-      "$runtime_target"
-  fi
+  report_config_anchor_for_output "$runtime_target"
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -3199,6 +3210,8 @@ finalize_server_setup() {
     compose_action \
     runtime_target \
     show_host_start_hint
+
+  report_config_anchor_for_output "$runtime_target"
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
