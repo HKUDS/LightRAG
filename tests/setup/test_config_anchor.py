@@ -446,3 +446,121 @@ def test_a_missing_anchor_below_a_searchable_directory_is_absent(
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
     assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
     assert "anchor" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'WORKING_DIR="./a\\tactual"',
+        'WORKING_DIR="./a\\$actual"',
+        "WORKING_DIR='./a\\'actual'",
+    ],
+)
+def test_a_working_dir_with_an_escape_dotenv_decodes_differently_is_unchecked(
+    tmp_path: Path, line: str
+) -> None:
+    """python-dotenv decodes ``\\t`` and ``\\'`` and keeps ``\\$``; the plain
+    parse does the opposite, so its path is not the server's."""
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
+    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
+        result.stderr
+    )
+
+
+def test_escapes_both_parsers_decode_alike_are_read(tmp_path: Path) -> None:
+    _write_anchor(tmp_path / 'a"b', "PGKVStorage")
+    result = _validate(
+        tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", 'WORKING_DIR="./a\\"b"']
+    )
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_anchor_behind_a_symlink_loop_is_not_absent(tmp_path: Path) -> None:
+    """ELOOP makes the server refuse; a broken-looking link is not absence."""
+    (tmp_path / "rag_storage").symlink_to(tmp_path / "rag_storage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert "could not be read" in result.stderr
+
+
+def _compose(case_dir: Path, mount: str) -> None:
+    write_text_lines(
+        case_dir / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: lightrag",
+            "    volumes:",
+            f"      - {mount}",
+            "      - ./data/inputs:/app/data/inputs",
+            "    environment:",
+            '      WORKING_DIR: "/app/data/rag_storage"',
+        ],
+    )
+
+
+COMPOSE_ENV = ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "LIGHTRAG_RUNTIME_TARGET=compose"]
+
+
+@pytest.mark.parametrize(
+    "mount",
+    ["{src}:/app/data/rag_storage", '"{src}:/app/data/rag_storage:rw"'],
+)
+def test_a_customized_compose_mount_is_where_the_anchor_is_read(
+    tmp_path: Path, mount: str
+) -> None:
+    """The generator keeps a customized mount, so the anchor the Compose
+    server reads is under ITS source -- not ./data/rag_storage."""
+    source = tmp_path / "srv"
+    _write_anchor(source, "PGKVStorage")
+    _write_anchor(tmp_path / "data" / "rag_storage", "JsonKVStorage")
+    _compose(tmp_path, mount.format(src=source))
+    result = _validate(tmp_path, COMPOSE_ENV)
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert f"{source}/_lightrag_config/storage_anchor.json" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mount",
+    ["lightrag_data:/app/data/rag_storage", "${DATA}:/app/data/rag_storage"],
+)
+def test_a_compose_mount_the_wizard_cannot_resolve_is_unchecked(
+    tmp_path: Path, mount: str
+) -> None:
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    _compose(tmp_path, mount)
+    result = _validate(tmp_path, COMPOSE_ENV)
+    assert "does not resolve to a host path" in result.stderr
+    assert "binds this deployment" not in result.stderr
+
+
+def test_a_compose_file_without_the_mount_is_unchecked(tmp_path: Path) -> None:
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    _compose(tmp_path, "./data/inputs2:/app/data/inputs2")
+    result = _validate(tmp_path, COMPOSE_ENV)
+    assert "no short-form lightrag bind mount" in result.stderr
+
+
+def test_compose_migration_advice_names_the_mounted_working_dir(
+    tmp_path: Path,
+) -> None:
+    """Run on the host, the tool resolves WORKING_DIR from the host .env,
+    which a Compose deployment does not point at its mount."""
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    result = _validate(tmp_path, COMPOSE_ENV)
+    expected = (
+        f"WORKING_DIR={tmp_path}/data/rag_storage lightrag-migrate-config"
+        " --target-backend JsonKVStorage"
+    )
+    assert expected in result.stderr
+    report = _run(
+        tmp_path,
+        "ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=compose\n"
+        'report_config_anchor "JsonKVStorage"',
+    )
+    assert expected in report.stdout
+
+
+def test_host_migration_advice_needs_no_working_dir(tmp_path: Path) -> None:
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert "'lightrag-migrate-config --target-backend JsonKVStorage'" in (result.stderr)

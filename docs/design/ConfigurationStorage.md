@@ -693,8 +693,11 @@ because type drift is the mistake the anchor exists to stop:
 ### The setup wizard
 
 The wizard only ever READS the anchor, at the `WORKING_DIR` the server will
-use on this host (`./data/rag_storage` for the compose runtime, which mounts
-it there whatever `.env` says). `make env-storage` reports it when readable and
+use on this host. For the compose runtime that is the host source of the
+lightrag service's bind mount onto the container working directory, read
+from the compose file the generator starts from (a customized mount survives
+regeneration), `./data/rag_storage` by default; a named volume, a path
+Compose expands, or no readable mount leaves the anchor not checked. `make env-storage` reports it when readable and
 warns when the selection just made resolves to another backend type; keeping
 the old backend or migrating stays the operator's choice. It reports only
 after the runtime target of the `.env` being written is settled, because a
@@ -719,12 +722,17 @@ drift from the first. Both flows then warn that the anchor was not checked.
 The same holds for a key the check depends on (`WORKING_DIR`, the runtime
 target, the configuration or KV backend) assigned in a python-dotenv form
 the wizard's `.env` reader does not parse, such as `export KEY=`, spaces
-around `=`, an inline ` # comment` or trailing whitespace: it is recorded,
+around `=`, an inline ` # comment`, trailing whitespace, or a backslash
+escape the two parsers decode differently: it is recorded,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. A lookup that finds no anchor
 is absence only below a searchable directory; an ancestor that cannot be
 searched or is not a directory makes the server's `open()` fail and refuse,
-so the wizard reports that anchor as unreadable, never absent.
+so the wizard reports that anchor as unreadable, never absent; so does a
+symlink that does not resolve, which may be a loop (`ELOOP`) as well as
+dangling. The migration command it recommends names `WORKING_DIR` whenever
+the anchor's directory is not the one the tool resolves from the host
+`.env`, as for every Compose deployment.
 
 ### Maintenance tools
 
@@ -1719,5 +1727,7 @@ The anchor and the container identity (slice 1c):
     an empty `WORKING_DIR` as the start directory, and warns instead of
     guessing for a `WORKING_DIR` that uses `${...}` or for a key it depends
     on written in a dotenv form it does not parse; a path it cannot search
-    is unreadable, not absent. `lightrag-migrate-config` resolves an empty
+    is unreadable, not absent; a Compose deployment is read at its mount
+    source, and its migration advice names that directory.
+    `lightrag-migrate-config` resolves an empty
     `WORKING_DIR` as the start directory, as the server does.

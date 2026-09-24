@@ -1225,32 +1225,109 @@ config_storage_records_in() {
   return 0
 }
 
-resolve_host_working_dir() {
-  # The WORKING_DIR the server will use, as a path on THIS host. Compose
-  # always mounts ./data/rag_storage at the container's working directory
-  # (see prepare_compose_data_path_overrides), whatever .env says; a host run
-  # resolves a relative WORKING_DIR against the repository root, where the
-  # server is started from. ``$1`` is the runtime target when the caller has
-  # settled one that ``.env`` does not carry yet.
-  #
-  # Fails, printing nothing, for a WORKING_DIR that uses ``${...}``: the
-  # server's python-dotenv expands it, and a second implementation of that
-  # expansion here would only be a second answer to drift from the first.
-  local runtime_target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
-  local dir
+compose_working_dir_mount_source() {
+  # The host side of the lightrag service's short-form bind mount onto the
+  # container working directory in ``$1``, or nothing. The generator keeps a
+  # customized mount when it regenerates, so the file, not the default, says
+  # where a Compose server's anchor lives. Same block layout as
+  # _strip_lightrag_wizard_bind_mounts reads.
+  local compose_file="$1" line spec in_lightrag="no" in_volumes="no"
 
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      continue
+    fi
+    [[ "$in_lightrag" == "yes" ]] || continue
+    if [[ "$line" =~ ^[[:space:]]{0,2}[^[:space:]] ]]; then
+      break
+    elif [[ "$line" == "    volumes:" ]]; then
+      in_volumes="yes"
+    elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
+      in_volumes="no"
+    elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]]+(.*)$ ]]; then
+      spec="${BASH_REMATCH[1]}"
+      spec="${spec%\"}"
+      spec="${spec#\"}"
+      spec="${spec%\'}"
+      spec="${spec#\'}"
+      if [[ "$spec" =~ ^(.+):${COMPOSE_LIGHTRAG_WORKING_DIR}(:[A-Za-z,]+)?$ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+    fi
+  done < "$compose_file"
+  return 0
+}
+
+resolve_host_working_dir() {
+  # The WORKING_DIR the server will use, as a path on THIS host, in
+  # RESOLVED_WORKING_DIR; ``$1`` is the runtime target when the caller has
+  # settled one that ``.env`` does not carry yet. Called directly, not in a
+  # command substitution, so a failure can leave its reason in
+  # RESOLVE_WORKING_DIR_FAILURE.
+  #
+  # Compose: the host source of the lightrag service's mount onto the
+  # container working directory, read from the compose file the generator
+  # will start from (a customized mount survives regeneration), else the
+  # ``./data/rag_storage`` default. Host: WORKING_DIR against the repository
+  # root, where the server is started from.
+  #
+  # Fails rather than guesses for what only another program resolves: a
+  # ``${...}`` that python-dotenv or Compose expands, a named volume, a
+  # compose file with no such mount.
+  local runtime_target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
+  local dir compose_file base="$REPO_ROOT"
+
+  RESOLVED_WORKING_DIR=""
+  RESOLVE_WORKING_DIR_FAILURE=""
   if [[ "$runtime_target" == "compose" ]]; then
-    dir="${REPO_ROOT}/data/rag_storage"
+    compose_file="$(find_generated_compose_file)"
+    if [[ -z "$compose_file" && -f "${REPO_ROOT}/docker-compose.yml" ]]; then
+      compose_file="${REPO_ROOT}/docker-compose.yml"
+    fi
+    dir="./data/rag_storage"
+    if [[ -n "$compose_file" ]]; then
+      dir="$(compose_working_dir_mount_source "$compose_file")"
+      base="$(dirname "$compose_file")"
+      if [[ -z "$dir" ]]; then
+        RESOLVE_WORKING_DIR_FAILURE="$compose_file has no short-form lightrag bind mount onto $COMPOSE_LIGHTRAG_WORKING_DIR that this wizard can read"
+        return 1
+      fi
+      if [[ "$dir" == *'$'* || "$dir" == '~'* ]] ||
+        [[ "$dir" != /* && "$dir" != . && "$dir" != ./* && "$dir" != ../* ]]; then
+        RESOLVE_WORKING_DIR_FAILURE="$compose_file mounts '$dir' onto $COMPOSE_LIGHTRAG_WORKING_DIR, which this wizard does not resolve to a host path (a named volume, or a path Compose expands)"
+        return 1
+      fi
+    fi
   else
     # ``-`` not ``:-``: ``WORKING_DIR=`` is kept as the empty string by the
     # server, and os.path.abspath("") is the directory it starts in.
     dir="${ENV_VALUES[WORKING_DIR]-./rag_storage}"
-    [[ "$dir" == *'${'* ]] && return 1
-    if [[ "$dir" != /* ]]; then
-      dir="${REPO_ROOT}${dir:+/${dir#./}}"
+    if [[ "$dir" == *'${'* ]]; then
+      RESOLVE_WORKING_DIR_FAILURE="WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...} interpolation, which this wizard does not expand"
+      return 1
     fi
   fi
-  printf '%s' "$dir"
+  if [[ "$dir" != /* ]]; then
+    dir="${base}${dir:+/${dir#./}}"
+  fi
+  RESOLVED_WORKING_DIR="$dir"
+}
+
+config_anchor_migrate_command() {
+  # The recovery command for ``$1`` as the operator runs it on this host.
+  # The tool resolves WORKING_DIR from the host .env, which a Compose
+  # deployment does not point at its mount, so the command names the
+  # directory the anchor was read from whenever the two differ.
+  local target="$1" anchor_dir="${CONFIG_ANCHOR_PATH%/_lightrag_config/*}"
+  local prefix=""
+
+  if ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
+    prefix="WORKING_DIR=$(printf '%q' "$anchor_dir") "
+  fi
+  printf '%slightrag-migrate-config --target-backend %s' "$prefix" "$target"
 }
 
 path_is_confirmed_absent() {
@@ -1263,8 +1340,10 @@ path_is_confirmed_absent() {
   while [[ "$parent" == */* ]]; do
     parent="${parent%/*}"
     [[ -z "$parent" ]] && parent="/"
-    # A dangling symlink resolves to ENOENT, which the server reads as absent.
-    [[ -L "$parent" && ! -e "$parent" ]] && return 0
+    # A symlink that does not resolve may be dangling (ENOENT) or a loop
+    # (ELOOP, which the server refuses); telling them apart portably is more
+    # than this needs, so it is not proof of absence either way.
+    [[ -L "$parent" && ! -e "$parent" ]] && return 1
     if [[ -e "$parent" ]]; then
       [[ -d "$parent" && -x "$parent" ]]
       return
@@ -1310,10 +1389,11 @@ read_config_anchor() {
       return 0
     fi
   done
-  if ! dir="$(resolve_host_working_dir "${1:-}")"; then
-    CONFIG_ANCHOR_UNRESOLVED_REASON="WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...} interpolation, which this wizard does not expand"
+  if ! resolve_host_working_dir "${1:-}"; then
+    CONFIG_ANCHOR_UNRESOLVED_REASON="$RESOLVE_WORKING_DIR_FAILURE"
     return 0
   fi
+  dir="$RESOLVED_WORKING_DIR"
   CONFIG_ANCHOR_PATH="${dir}/_lightrag_config/storage_anchor.json"
   CONFIG_ANCHOR_STATE="unreadable"
 
@@ -1385,9 +1465,9 @@ report_config_anchor() {
     "binds it to $CONFIG_ANCHOR_BACKEND, but the configuration storage now" \
     "resolves to $candidate, so the server will REFUSE to start."
   log_warn "Either set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND (no" \
-    "migration needed), or run 'lightrag-migrate-config --target-backend" \
-    "$candidate' with every server stopped before starting. This wizard" \
-    "never writes or moves the anchor."
+    "migration needed), or run '$(config_anchor_migrate_command "$candidate")'" \
+    "with every server stopped before starting. This wizard never writes or" \
+    "moves the anchor."
   return 0
 }
 
@@ -3314,7 +3394,7 @@ finalize_server_setup() {
 
 load_env_file() {
   local env_file="$1"
-  local line key value
+  local line key value stripped
 
   if [[ ! -f "$env_file" ]]; then
     format_error ".env file not found at $env_file" "Run make env-base to generate it."
@@ -3327,11 +3407,18 @@ load_env_file() {
       value="${line#*=}"
       # Forms python-dotenv reads differently from the plain parse below:
       # leading or trailing whitespace (stripped there, a CR included), an
-      # unquoted `` # comment`` (dropped there), or a quoted value followed
-      # by anything. Recorded like the forms in the branch further down.
+      # unquoted `` # comment`` (dropped there), a quoted value followed by
+      # anything, and any backslash escape but ``\\`` and ``\"`` inside
+      # double quotes, or any at all inside single quotes (dotenv decodes
+      # ``\t``, ``\n``, ``\'`` ... and keeps ``\$``; this parse does the
+      # opposite). Recorded like the forms in the branch further down.
+      stripped="${value//\\\\/}"
+      stripped="${stripped//\\\"/}"
       if [[ "$value" =~ ^[[:space:]] || "$value" =~ [[:space:]]$ ]] ||
         [[ "$value" != [\"\']* && "$value" =~ [[:space:]]# ]] ||
-        [[ "$value" == [\"\']* && ! "$value" =~ ^\".*\"$ && ! "$value" =~ ^\'.*\'$ ]]; then
+        [[ "$value" == [\"\']* && ! "$value" =~ ^\".*\"$ && ! "$value" =~ ^\'.*\'$ ]] ||
+        [[ "$value" == \"* && "$stripped" == *\\* ]] ||
+        [[ "$value" == \'* && "$value" == *\\* ]]; then
         UNREAD_ENV_KEYS["$key"]=1
       fi
       if [[ "$value" =~ ^\".*\"$ ]]; then
@@ -3437,7 +3524,7 @@ validate_env_file() {
     if [[ "$CONFIG_ANCHOR_STATE" == "readable" && "$CONFIG_ANCHOR_BACKEND" != "$config_storage" ]]; then
       format_error \
         "The configuration storage anchor $CONFIG_ANCHOR_PATH binds this deployment to $CONFIG_ANCHOR_BACKEND, but the configuration storage resolves to $config_storage, so the server refuses this .env at startup" \
-        "Set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND, or move the container with 'lightrag-migrate-config --target-backend $config_storage' first"
+        "Set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND, or move the container with '$(config_anchor_migrate_command "$config_storage")' first"
       errors=1
     elif [[ "$CONFIG_ANCHOR_STATE" == "unreadable" ]]; then
       echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read here; the server reads it strictly and refuses to start unless it is a valid anchor, so check it (repair, restore or delete it if it is not)." >&2
