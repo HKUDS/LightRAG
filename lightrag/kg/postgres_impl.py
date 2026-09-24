@@ -331,6 +331,11 @@ _VECTOR_INDEX_SUFFIXES = [
     "vchordrq_cosine",
 ]
 
+# pgvector's own default for the hnsw.ef_search GUC. Used as a floor so a
+# small top_k never narrows the ANN search below pgvector's out-of-the-box
+# recall.
+_PGVECTOR_DEFAULT_EF_SEARCH = 40
+
 
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
     """
@@ -2722,11 +2727,28 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
         timing_label: str | None = None,
+        preamble: str | None = None,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
+        """
+        Args:
+            preamble: an optional statement (e.g. a session-scoped ``SET
+                LOCAL``) executed on the same connection immediately before
+                the fetch, wrapped together in one transaction so the
+                setting cannot leak onto the pooled connection for a later,
+                unrelated query.
+        """
+
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
             fetch_start = time.perf_counter()
-            if prepared_params:
+            if preamble:
+                async with connection.transaction():
+                    await connection.execute(preamble)
+                    if prepared_params:
+                        rows = await connection.fetch(sql, *prepared_params)
+                    else:
+                        rows = await connection.fetch(sql)
+            elif prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
             else:
                 rows = await connection.fetch(sql)
@@ -4880,11 +4902,8 @@ class PGVectorStorage(BaseVectorStorage):
         # Use positional $4 parameter instead of string-interpolated literal.
         # asyncpg sends the embedding via register_vector binary codec, avoiding
         # per-query text serialization and PostgreSQL text-to-vector parsing.
-        vector_cast = (
-            "halfvec"
-            if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC"
-            else "vector"
-        )
+        index_type = getattr(self.db, "vector_index_type", None)
+        vector_cast = "halfvec" if index_type == "HNSW_HALFVEC" else "vector"
         sql = SQL_TEMPLATES[self.namespace].format(
             table_name=self.table_name, vector_cast=vector_cast
         )
@@ -4894,7 +4913,21 @@ class PGVectorStorage(BaseVectorStorage):
             "top_k": top_k,
             "embedding": embedding,
         }
-        results = await self.db.query(sql, params=list(params.values()), multirows=True)
+
+        preamble = None
+        if index_type in ("HNSW", "HNSW_HALFVEC"):
+            # pgvector's HNSW ANN search only explores hnsw.ef_search
+            # candidates (default 40), independent of the LIMIT/top_k asked
+            # for. Left unset, a caller-chosen top_k above that default
+            # silently returns fewer rows than requested even though more
+            # matches exist under the cosine threshold. Raise ef_search to
+            # at least top_k for this query only.
+            ef_search = max(int(top_k), _PGVECTOR_DEFAULT_EF_SEARCH)
+            preamble = f"SET LOCAL hnsw.ef_search = {ef_search}"
+
+        results = await self.db.query(
+            sql, params=list(params.values()), multirows=True, preamble=preamble
+        )
         return results
 
     async def index_done_callback(self) -> None:
