@@ -718,9 +718,13 @@ and a second implementation of that expansion would be a second answer to
 drift from the first. Both flows then warn that the anchor was not checked.
 The same holds for a key the check depends on (`WORKING_DIR`, the runtime
 target, the configuration or KV backend) assigned in a python-dotenv form
-the wizard's `.env` reader does not parse, such as `export KEY=` or spaces
-around `=`: it is recorded, not guessed at, and the anchor is reported as
-not checked rather than looked for under a default the server does not use.
+the wizard's `.env` reader does not parse, such as `export KEY=`, spaces
+around `=`, an inline ` # comment` or trailing whitespace: it is recorded,
+not guessed at, and the anchor is reported as not checked rather than looked
+for under a default the server does not use. A lookup that finds no anchor
+is absence only below a searchable directory; an ancestor that cannot be
+searched or is not a directory makes the server's `open()` fail and refuse,
+so the wizard reports that anchor as unreadable, never absent.
 
 ### Maintenance tools
 
@@ -1714,4 +1718,6 @@ The anchor and the container identity (slice 1c):
     directory of the runtime target any of its flows is switching to, reads
     an empty `WORKING_DIR` as the start directory, and warns instead of
     guessing for a `WORKING_DIR` that uses `${...}` or for a key it depends
-    on written in a dotenv form it does not parse.
+    on written in a dotenv form it does not parse; a path it cannot search
+    is unreadable, not absent. `lightrag-migrate-config` resolves an empty
+    `WORKING_DIR` as the start directory, as the server does.

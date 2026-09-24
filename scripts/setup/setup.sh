@@ -1253,6 +1253,27 @@ resolve_host_working_dir() {
   printf '%s' "$dir"
 }
 
+path_is_confirmed_absent() {
+  # Whether a lookup of ``$1`` that found nothing proves it does not exist.
+  # ``-e`` is also false when an ancestor cannot be searched or is not a
+  # directory; the server's open() then fails with EACCES / ENOTDIR and
+  # refuses, so only a missing entry below a searchable directory is absence.
+  local parent="$1"
+
+  while [[ "$parent" == */* ]]; do
+    parent="${parent%/*}"
+    [[ -z "$parent" ]] && parent="/"
+    # A dangling symlink resolves to ENOENT, which the server reads as absent.
+    [[ -L "$parent" && ! -e "$parent" ]] && return 0
+    if [[ -e "$parent" ]]; then
+      [[ -d "$parent" && -x "$parent" ]]
+      return
+    fi
+    [[ "$parent" == "/" ]] && break
+  done
+  return 1
+}
+
 read_config_anchor() {
   # Reads <WORKING_DIR>/_lightrag_config/storage_anchor.json, the binding the
   # server checks before it opens the configuration storage (see *The anchor
@@ -1297,7 +1318,7 @@ read_config_anchor() {
   CONFIG_ANCHOR_STATE="unreadable"
 
   if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then
-    CONFIG_ANCHOR_STATE="absent"
+    path_is_confirmed_absent "$CONFIG_ANCHOR_PATH" && CONFIG_ANCHOR_STATE="absent"
     return 0
   fi
   if [[ ! -f "$CONFIG_ANCHOR_PATH" || ! -r "$CONFIG_ANCHOR_PATH" ]]; then
@@ -3304,6 +3325,15 @@ load_env_file() {
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
+      # Forms python-dotenv reads differently from the plain parse below:
+      # leading or trailing whitespace (stripped there, a CR included), an
+      # unquoted `` # comment`` (dropped there), or a quoted value followed
+      # by anything. Recorded like the forms in the branch further down.
+      if [[ "$value" =~ ^[[:space:]] || "$value" =~ [[:space:]]$ ]] ||
+        [[ "$value" != [\"\']* && "$value" =~ [[:space:]]# ]] ||
+        [[ "$value" == [\"\']* && ! "$value" =~ ^\".*\"$ && ! "$value" =~ ^\'.*\'$ ]]; then
+        UNREAD_ENV_KEYS["$key"]=1
+      fi
       if [[ "$value" =~ ^\".*\"$ ]]; then
         value="${value:1:${#value}-2}"
         value="${value//\\\$/\$}"

@@ -10,6 +10,7 @@ identity* in docs/design/ConfigurationStorage.md.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -380,3 +381,68 @@ def test_a_configuration_backend_the_wizard_does_not_read_is_unchecked(
     )
     assert "binds this deployment" not in result.stderr
     assert "LIGHTRAG_CONFIG_STORAGE is assigned in a form" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "WORKING_DIR=./actual # local path",
+        'WORKING_DIR="./actual" # local path',
+        "WORKING_DIR=./actual ",
+        "WORKING_DIR= ./actual",
+        "WORKING_DIR=./actual\r",
+    ],
+)
+def test_a_working_dir_dotenv_reads_differently_is_unchecked(
+    tmp_path: Path, line: str
+) -> None:
+    """python-dotenv strips the comment and the whitespace and reads
+    ``./actual``; the plain parse would keep them and look elsewhere."""
+    _write_anchor(tmp_path / "actual", "PGKVStorage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
+    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
+        result.stderr
+    )
+    assert "binds this deployment" not in result.stderr
+
+
+def test_a_hash_inside_an_unquoted_value_is_not_a_comment(tmp_path: Path) -> None:
+    _write_anchor(tmp_path / "a#b", "PGKVStorage")
+    result = _validate(
+        tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR=./a#b"]
+    )
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_anchor_behind_a_non_directory_is_not_absent(tmp_path: Path) -> None:
+    """``_lightrag_config`` is a file: the server's open() fails with
+    ENOTDIR and refuses, so this is not the absence that lets it bootstrap."""
+    (tmp_path / "rag_storage").mkdir()
+    (tmp_path / "rag_storage" / "_lightrag_config").write_text("x")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert "could not be read" in result.stderr
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="root bypasses directory search permission",
+)
+def test_an_anchor_behind_an_unsearchable_directory_is_not_absent(
+    tmp_path: Path,
+) -> None:
+    anchor = _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    anchor.parent.chmod(0o600)
+    try:
+        result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    finally:
+        anchor.parent.chmod(0o700)
+    assert "could not be read" in result.stderr
+
+
+def test_a_missing_anchor_below_a_searchable_directory_is_absent(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "rag_storage").mkdir()
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
+    assert "anchor" not in result.stderr
