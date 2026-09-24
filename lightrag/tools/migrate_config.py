@@ -36,7 +36,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -663,6 +663,13 @@ def _reads(backend: str, name: str) -> bool:
     )
 
 
+def resolve_working_dir(env: Mapping[str, str]) -> str:
+    """The WORKING_DIR the server resolves from ``env``: the default only
+    when the key is unset. ``WORKING_DIR=`` is the empty string, which
+    ``abspath`` makes the start directory -- where that server's anchor is."""
+    return os.path.abspath(env.get("WORKING_DIR", DEFAULT_WORKING_DIR))
+
+
 def resolve_environments(
     *,
     source_backend: str,
@@ -678,10 +685,10 @@ def resolve_environments(
     ``WORKING_DIR``: the anchor and its lock are resolved from the current
     environment only.
     """
-    working_dir = os.path.abspath(current.get("WORKING_DIR") or DEFAULT_WORKING_DIR)
+    working_dir = resolve_working_dir(current)
     for label, env in (("--source-env", source_env), ("--target-env", target_env)):
         named = env.get("WORKING_DIR")
-        if named and os.path.abspath(named) != working_dir:
+        if named is not None and os.path.abspath(named) != working_dir:
             raise MigrationRefused(
                 f"{label} names WORKING_DIR={named}, but the anchor is resolved "
                 f"from the current environment's WORKING_DIR ({working_dir}). "
@@ -824,7 +831,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 
-    working_dir = os.path.abspath(os.environ.get("WORKING_DIR") or DEFAULT_WORKING_DIR)
+    working_dir = resolve_working_dir(os.environ)
     claims: list[str] = []
     initialize_share_data(workers=1)
     try:
