@@ -693,14 +693,18 @@ because type drift is the mistake the anchor exists to stop:
 ### The setup wizard
 
 The wizard only ever READS the anchor, at the `WORKING_DIR` the server will
-use on this host. For the compose runtime that is the host source of the
-lightrag service's bind mount onto the container working directory, read
-from the compose file the generator starts from (a customized mount survives
-regeneration), `./data/rag_storage` by default; a named volume, a path
-Compose expands, or no readable mount leaves the anchor not checked, and so
-does a `LIGHTRAG_CONFIG_STORAGE` or `LIGHTRAG_KV_STORAGE` set in that
-service's `environment:` — the wizard never writes one there, regeneration
-keeps it, and it outranks `.env`, so the backend to compare is not `.env`'s. `make env-storage` reports it when readable and
+use on this host: `./data/rag_storage` for the compose runtime, the mount
+the generated compose file makes.
+
+**Operator edits to the compose file are kept, not interpreted.** Regeneration
+preserves what an operator adds to the lightrag service — another mount, an
+`environment:` entry such as `LIGHTRAG_KV_STORAGE`, which then outranks
+`.env` — but the wizard does not read any of it: following arbitrary edits
+would make it a second Compose implementation. Keeping such an edit
+consistent with the anchor is the operator's responsibility; a finding that
+the wizard misjudges an edited compose file is outside its scope.
+
+`make env-storage` reports the anchor when readable and
 warns when the selection just made resolves to another backend type; keeping
 the old backend or migrating stays the operator's choice. It reports only
 after the runtime target of the `.env` being written is settled, because a
@@ -1735,7 +1739,8 @@ The anchor and the container identity (slice 1c):
     an empty `WORKING_DIR` as the start directory, and warns instead of
     guessing for a `WORKING_DIR` that uses `${...}` or for a key it depends
     on written in a dotenv form it does not parse; a path it cannot search
-    is unreadable, not absent; a Compose deployment is read at its mount
-    source, and its migration advice names that directory.
+    is unreadable, not absent; a Compose deployment's migration advice
+    names its `./data/rag_storage`; operator edits to the compose file are
+    kept by regeneration and not interpreted.
     `lightrag-migrate-config` resolves an empty
     `WORKING_DIR` as the start directory, as the server does.

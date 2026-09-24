@@ -482,62 +482,7 @@ def test_an_anchor_behind_a_symlink_loop_is_not_absent(tmp_path: Path) -> None:
     assert "could not be read" in result.stderr
 
 
-def _compose(case_dir: Path, mount: str) -> None:
-    write_text_lines(
-        case_dir / "docker-compose.final.yml",
-        [
-            "services:",
-            "  lightrag:",
-            "    image: lightrag",
-            "    volumes:",
-            f"      - {mount}",
-            "      - ./data/inputs:/app/data/inputs",
-            "    environment:",
-            '      WORKING_DIR: "/app/data/rag_storage"',
-        ],
-    )
-
-
 COMPOSE_ENV = ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "LIGHTRAG_RUNTIME_TARGET=compose"]
-
-
-@pytest.mark.parametrize(
-    "mount",
-    ["{src}:/app/data/rag_storage", '"{src}:/app/data/rag_storage:rw"'],
-)
-def test_a_customized_compose_mount_is_where_the_anchor_is_read(
-    tmp_path: Path, mount: str
-) -> None:
-    """The generator keeps a customized mount, so the anchor the Compose
-    server reads is under ITS source -- not ./data/rag_storage."""
-    source = tmp_path / "srv"
-    _write_anchor(source, "PGKVStorage")
-    _write_anchor(tmp_path / "data" / "rag_storage", "JsonKVStorage")
-    _compose(tmp_path, mount.format(src=source))
-    result = _validate(tmp_path, COMPOSE_ENV)
-    assert parse_lines(result.stdout)["VALID"] == "no"
-    assert f"{source}/_lightrag_config/storage_anchor.json" in result.stderr
-
-
-@pytest.mark.parametrize(
-    "mount",
-    ["lightrag_data:/app/data/rag_storage", "${DATA}:/app/data/rag_storage"],
-)
-def test_a_compose_mount_the_wizard_cannot_resolve_is_unchecked(
-    tmp_path: Path, mount: str
-) -> None:
-    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
-    _compose(tmp_path, mount)
-    result = _validate(tmp_path, COMPOSE_ENV)
-    assert "does not resolve to a host path" in result.stderr
-    assert "binds this deployment" not in result.stderr
-
-
-def test_a_compose_file_without_the_mount_is_unchecked(tmp_path: Path) -> None:
-    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
-    _compose(tmp_path, "./data/inputs2:/app/data/inputs2")
-    result = _validate(tmp_path, COMPOSE_ENV)
-    assert "no short-form lightrag bind mount" in result.stderr
 
 
 def test_compose_migration_advice_names_the_mounted_working_dir(
@@ -625,45 +570,42 @@ def test_a_bare_key_that_clears_an_earlier_assignment_is_unchecked(
     )
 
 
-def _compose_with_environment(case_dir: Path, entries: list[str]) -> None:
+def test_operator_compose_edits_are_kept_and_not_interpreted(
+    tmp_path: Path,
+) -> None:
+    """The wizard keeps what an operator adds to the lightrag service -- here
+    another working-directory mount and a storage override -- and does not
+    read it: the anchor check assumes the generated ./data/rag_storage
+    layout, and keeping an operator's own edits consistent is theirs."""
+    compose = tmp_path / "docker-compose.final.yml"
     write_text_lines(
-        case_dir / "docker-compose.final.yml",
+        compose,
         [
             "services:",
             "  lightrag:",
+            "    image: example/lightrag:test",
             "    volumes:",
-            "      - ./data/rag_storage:/app/data/rag_storage",
+            "      - /srv/lightrag:/app/data/rag_storage",
             "    environment:",
-            '      WORKING_DIR: "/app/data/rag_storage"',
-            *entries,
+            "      LIGHTRAG_CONFIG_STORAGE: PGKVStorage",
         ],
     )
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        "      LIGHTRAG_CONFIG_STORAGE: PGKVStorage",
-        '      "LIGHTRAG_KV_STORAGE": PGKVStorage',
-        "      - LIGHTRAG_CONFIG_STORAGE=PGKVStorage",
-    ],
-)
-def test_a_compose_storage_override_is_unchecked(tmp_path: Path, entry: str) -> None:
-    """The service environment outranks .env and regeneration keeps it, so
-    the backend the anchor is compared with may not be .env's."""
-    _write_anchor(tmp_path / "data" / "rag_storage", "JsonKVStorage")
-    _compose_with_environment(tmp_path, [entry])
-    result = _validate(tmp_path, COMPOSE_ENV)
-    assert "in the lightrag service environment, which overrides .env" in (
-        result.stderr
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
     )
-    assert "anchor was not checked" in result.stderr
-
-
-def test_a_compose_environment_without_storage_keys_is_checked(
-    tmp_path: Path,
-) -> None:
     _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
-    _compose_with_environment(tmp_path, ["      MONGO_URI: mongodb://mongo"])
-    result = _validate(tmp_path, COMPOSE_ENV)
-    assert "binds this deployment to PGKVStorage" in result.stderr
+    result = _run(
+        tmp_path,
+        """
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+report_config_anchor_for_output compose
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"{tmp_path}/data/rag_storage/_lightrag_config" in result.stdout
+    assert "binds it to PGKVStorage" in result.stdout
+    generated = compose.read_text(encoding="utf-8")
+    assert "LIGHTRAG_CONFIG_STORAGE: PGKVStorage" in generated
+    assert "/srv/lightrag:/app/data/rag_storage" in generated

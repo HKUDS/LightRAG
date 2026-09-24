@@ -1225,75 +1225,6 @@ config_storage_records_in() {
   return 0
 }
 
-compose_lightrag_environment_key() {
-  # The first of the keys ``$2...`` that the lightrag service's
-  # ``environment:`` block in ``$1`` sets, in map or list form, or nothing.
-  # The wizard writes none of the storage selections there, so one found is
-  # an operator's override that regeneration keeps and that outranks .env.
-  local compose_file="$1" line key in_lightrag="no" in_env="no"
-  shift
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    if [[ "$line" == "  lightrag:" ]]; then
-      in_lightrag="yes"
-      continue
-    fi
-    [[ "$in_lightrag" == "yes" ]] || continue
-    if [[ "$line" =~ ^[[:space:]]{0,2}[^[:space:]] ]]; then
-      break
-    elif [[ "$line" == "    environment:" ]]; then
-      in_env="yes"
-    elif [[ "$in_env" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
-      in_env="no"
-    elif [[ "$in_env" == "yes" ]]; then
-      for key in "$@"; do
-        if [[ "$line" =~ ^[[:space:]]+(-[[:space:]]+)?[\"\']?${key}[\"\']?[[:space:]]*[:=] ]]; then
-          printf '%s' "$key"
-          return 0
-        fi
-      done
-    fi
-  done < "$compose_file"
-  return 0
-}
-
-compose_working_dir_mount_source() {
-  # The host side of the lightrag service's short-form bind mount onto the
-  # container working directory in ``$1``, or nothing. The generator keeps a
-  # customized mount when it regenerates, so the file, not the default, says
-  # where a Compose server's anchor lives. Same block layout as
-  # _strip_lightrag_wizard_bind_mounts reads.
-  local compose_file="$1" line spec in_lightrag="no" in_volumes="no"
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    if [[ "$line" == "  lightrag:" ]]; then
-      in_lightrag="yes"
-      continue
-    fi
-    [[ "$in_lightrag" == "yes" ]] || continue
-    if [[ "$line" =~ ^[[:space:]]{0,2}[^[:space:]] ]]; then
-      break
-    elif [[ "$line" == "    volumes:" ]]; then
-      in_volumes="yes"
-    elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
-      in_volumes="no"
-    elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]]+(.*)$ ]]; then
-      spec="${BASH_REMATCH[1]}"
-      spec="${spec%\"}"
-      spec="${spec#\"}"
-      spec="${spec%\'}"
-      spec="${spec#\'}"
-      if [[ "$spec" =~ ^(.+):${COMPOSE_LIGHTRAG_WORKING_DIR}(:[A-Za-z,]+)?$ ]]; then
-        printf '%s' "${BASH_REMATCH[1]}"
-        return 0
-      fi
-    fi
-  done < "$compose_file"
-  return 0
-}
-
 resolve_host_working_dir() {
   # The WORKING_DIR the server will use, as a path on THIS host, in
   # RESOLVED_WORKING_DIR; ``$1`` is the runtime target when the caller has
@@ -1301,47 +1232,20 @@ resolve_host_working_dir() {
   # command substitution, so a failure can leave its reason in
   # RESOLVE_WORKING_DIR_FAILURE.
   #
-  # Compose: the host source of the lightrag service's mount onto the
-  # container working directory, read from the compose file the generator
-  # will start from (a customized mount survives regeneration), else the
-  # ``./data/rag_storage`` default. Host: WORKING_DIR against the repository
-  # root, where the server is started from.
+  # Compose: the ``./data/rag_storage`` mount the generated compose file
+  # makes (see prepare_compose_data_path_overrides). An operator's own edits
+  # to that file are kept by regeneration but not interpreted here: they are
+  # the operator's to keep consistent. Host: WORKING_DIR against the
+  # repository root, where the server is started from.
   #
-  # Fails rather than guesses for what only another program resolves: a
-  # ``${...}`` that python-dotenv or Compose expands, a named volume, a
-  # compose file with no such mount.
+  # Fails rather than guesses for a ``${...}`` that python-dotenv expands.
   local runtime_target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
-  local dir compose_file key base="$REPO_ROOT"
+  local dir
 
   RESOLVED_WORKING_DIR=""
   RESOLVE_WORKING_DIR_FAILURE=""
   if [[ "$runtime_target" == "compose" ]]; then
-    compose_file="$(find_generated_compose_file)"
-    if [[ -z "$compose_file" && -f "${REPO_ROOT}/docker-compose.yml" ]]; then
-      compose_file="${REPO_ROOT}/docker-compose.yml"
-    fi
     dir="./data/rag_storage"
-    if [[ -n "$compose_file" ]]; then
-      # The backend the anchor is compared with comes from .env -- unless
-      # the service environment overrides it, which the wizard keeps.
-      key="$(compose_lightrag_environment_key "$compose_file" \
-        LIGHTRAG_CONFIG_STORAGE LIGHTRAG_KV_STORAGE)"
-      if [[ -n "$key" ]]; then
-        RESOLVE_WORKING_DIR_FAILURE="$compose_file sets $key in the lightrag service environment, which overrides .env and which this wizard does not read"
-        return 1
-      fi
-      dir="$(compose_working_dir_mount_source "$compose_file")"
-      base="$(dirname "$compose_file")"
-      if [[ -z "$dir" ]]; then
-        RESOLVE_WORKING_DIR_FAILURE="$compose_file has no short-form lightrag bind mount onto $COMPOSE_LIGHTRAG_WORKING_DIR that this wizard can read"
-        return 1
-      fi
-      if [[ "$dir" == *'$'* || "$dir" == '~'* ]] ||
-        [[ "$dir" != /* && "$dir" != . && "$dir" != ./* && "$dir" != ../* ]]; then
-        RESOLVE_WORKING_DIR_FAILURE="$compose_file mounts '$dir' onto $COMPOSE_LIGHTRAG_WORKING_DIR, which this wizard does not resolve to a host path (a named volume, or a path Compose expands)"
-        return 1
-      fi
-    fi
   else
     # ``-`` not ``:-``: ``WORKING_DIR=`` is kept as the empty string by the
     # server, and os.path.abspath("") is the directory it starts in.
@@ -1352,7 +1256,7 @@ resolve_host_working_dir() {
     fi
   fi
   if [[ "$dir" != /* ]]; then
-    dir="${base}${dir:+/${dir#./}}"
+    dir="${REPO_ROOT}${dir:+/${dir#./}}"
   fi
   RESOLVED_WORKING_DIR="$(normalize_path_lexically "$dir")"
 }
