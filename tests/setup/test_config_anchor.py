@@ -564,3 +564,37 @@ def test_host_migration_advice_needs_no_working_dir(tmp_path: Path) -> None:
     _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
     assert "'lightrag-migrate-config --target-backend JsonKVStorage'" in (result.stderr)
+
+
+@pytest.mark.parametrize(
+    "working_dir",
+    ["./missing/../actual", "./actual/./", "actual//", "{abs}/x/../actual"],
+)
+def test_working_dir_is_normalized_like_the_servers_abspath(
+    tmp_path: Path, working_dir: str
+) -> None:
+    """``os.path.abspath`` removes ``..`` lexically, so the server reads
+    ``<repo>/actual`` although ``missing`` does not exist; looking up the
+    literal path would miss that anchor and call it absent."""
+    _write_anchor(tmp_path / "actual", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            f"WORKING_DIR={working_dir.format(abs=tmp_path)}",
+        ],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert f"{tmp_path}/actual/_lightrag_config/storage_anchor.json" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line", ["'WORKING_DIR'=./actual", "export 'WORKING_DIR'=./actual"]
+)
+def test_a_single_quoted_key_is_unchecked(tmp_path: Path, line: str) -> None:
+    """python-dotenv accepts a single-quoted key; the plain parse does not."""
+    _write_anchor(tmp_path / "actual", "PGKVStorage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
+    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
+        result.stderr
+    )

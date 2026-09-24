@@ -1313,7 +1313,31 @@ resolve_host_working_dir() {
   if [[ "$dir" != /* ]]; then
     dir="${base}${dir:+/${dir#./}}"
   fi
-  RESOLVED_WORKING_DIR="$dir"
+  RESOLVED_WORKING_DIR="$(normalize_path_lexically "$dir")"
+}
+
+normalize_path_lexically() {
+  # os.path.normpath for an absolute POSIX path, which the server applies
+  # (through abspath) before it opens the anchor: ``.`` and empty
+  # components drop, ``..`` removes the one before it WITHOUT consulting the
+  # filesystem, so ``./missing/../actual`` is ``./actual`` even though
+  # ``missing`` does not exist. POSIX keeps exactly two leading slashes.
+  local path="$1" part lead="/" out=""
+  local -a parts=() kept=()
+
+  [[ "$path" == //* && "$path" != ///* ]] && lead="//"
+  IFS='/' read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ""|.) ;;
+      ..) ((${#kept[@]})) && unset 'kept[${#kept[@]}-1]' ;;
+      *) kept+=("$part") ;;
+    esac
+  done
+  for part in "${kept[@]}"; do
+    out+="${out:+/}$part"
+  done
+  printf '%s%s' "$lead" "$out"
 }
 
 config_anchor_migrate_command() {
@@ -3430,12 +3454,13 @@ load_env_file() {
         value="${value:1:${#value}-2}"
       fi
       ENV_VALUES["$key"]="$value"
-    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z0-9_]+)[[:space:]]*= ]]; then
-      # python-dotenv -- and so the server -- also accepts ``export KEY=``
-      # and spaces around ``=``. They are not read here, only recorded, so a
-      # check that depends on such a key can say it could not check instead
-      # of reading the default the server does not use.
-      UNREAD_ENV_KEYS["${BASH_REMATCH[2]}"]=1
+    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'([A-Za-z0-9_]+)\'|([A-Za-z0-9_]+))[[:space:]]*= ]]; then
+      # python-dotenv -- and so the server -- also accepts ``export KEY=``,
+      # spaces around ``=`` and a single-quoted ``'KEY'``. They are not read
+      # here, only recorded, so a check that depends on such a key can say
+      # it could not check instead of reading the default the server does
+      # not use.
+      UNREAD_ENV_KEYS["${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}"]=1
     fi
   done < "$env_file"
 }

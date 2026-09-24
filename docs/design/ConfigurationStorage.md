@@ -721,14 +721,17 @@ and a second implementation of that expansion would be a second answer to
 drift from the first. Both flows then warn that the anchor was not checked.
 The same holds for a key the check depends on (`WORKING_DIR`, the runtime
 target, the configuration or KV backend) assigned in a python-dotenv form
-the wizard's `.env` reader does not parse, such as `export KEY=`, spaces
-around `=`, an inline ` # comment`, trailing whitespace, or a backslash
+the wizard's `.env` reader does not parse, such as `export KEY=`, a
+single-quoted `'KEY'`, spaces around `=`, an inline ` # comment`, trailing whitespace, or a backslash
 escape the two parsers decode differently: it is recorded,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. A lookup that finds no anchor
 is absence only below a searchable directory; an ancestor that cannot be
 searched or is not a directory makes the server's `open()` fail and refuse,
-so the wizard reports that anchor as unreadable, never absent; so does a
+so the wizard reports that anchor as unreadable, never absent. The path is
+normalized lexically first, as the server's `os.path.abspath` does, so
+`./missing/../actual` is looked up as `./actual`. A lookup is also not
+absence for a
 symlink that does not resolve, which may be a loop (`ELOOP`) as well as
 dangling. The migration command it recommends names `WORKING_DIR` whenever
 the anchor's directory is not the one the tool resolves from the host
