@@ -1339,7 +1339,8 @@ read_config_anchor() {
   # it: exactly the three members, and a repeated key keeps its LAST value.
   # Anything outside the narrow grammar below is "unreadable", never
   # "absent" -- a looser match would pass a file the server refuses.
-  local dir content rest key
+  local dir content rest key target
+  local -a keys
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
   local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -1351,10 +1352,27 @@ read_config_anchor() {
   CONFIG_ANCHOR_UUID=""
   CONFIG_ANCHOR_STATE="unresolved"
   CONFIG_ANCHOR_UNRESOLVED_REASON=""
-  for key in WORKING_DIR LIGHTRAG_RUNTIME_TARGET LIGHTRAG_CONFIG_STORAGE \
-    LIGHTRAG_KV_STORAGE; do
+  target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
+  # Only the keys that decide this check: the runtime target when the
+  # caller did not settle it, the two storage selections, and WORKING_DIR
+  # for a host run only -- the generated Compose service fixes the
+  # container's, so the .env spelling does not matter there.
+  keys=()
+  [[ -z "${1:-}" ]] && keys+=(LIGHTRAG_RUNTIME_TARGET)
+  keys+=(LIGHTRAG_CONFIG_STORAGE LIGHTRAG_KV_STORAGE WORKING_DIR)
+  for key in "${keys[@]}"; do
+    [[ "$key" == WORKING_DIR && "$target" == compose ]] && continue
     if [[ -n "${UNREAD_ENV_KEYS[$key]+set}" ]]; then
       CONFIG_ANCHOR_UNRESOLVED_REASON="$key is assigned in a form this wizard does not read (such as 'export $key=' or spaces around '=')"
+      return 0
+    fi
+    # A host server loads .env with override=False, so a variable already
+    # exported in the environment it starts from wins over the file. The
+    # wizard can only see its own shell's, which is the likeliest one.
+    if [[ "$target" != compose && "$key" != LIGHTRAG_RUNTIME_TARGET ]] &&
+      printenv "$key" >/dev/null &&
+      [[ "$(printenv "$key")" != "${ENV_VALUES[$key]-}" || -z "${ENV_VALUES[$key]+set}" ]]; then
+      CONFIG_ANCHOR_UNRESOLVED_REASON="$key=$(printenv "$key") is exported in this shell and overrides .env for a server started from it"
       return 0
     fi
   done
@@ -3363,17 +3381,41 @@ finalize_server_setup() {
 
 load_env_file() {
   local env_file="$1"
-  local line key value inner stripped
+  local line key value inner stripped quote i j
+  local -a lines=()
 
   if [[ ! -f "$env_file" ]]; then
     format_error ".env file not found at $env_file" "Run make env-base to generate it."
     return 1
   fi
 
-  while IFS= read -r line || [[ -n "$line" ]]; do
+  mapfile -t lines < "$env_file"
+  for ((i = 0; i < ${#lines[@]}; i++)); do
+    line="${lines[$i]}"
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
+      # A quote this line opens and does not close: python-dotenv reads a
+      # value spanning the lines up to the closing quote, so those lines
+      # are part of it and not assignments. With no closing quote it drops
+      # the statement and reads on from the next line. Either way the key
+      # is not read here.
+      if [[ "$value" == [\"\']* ]]; then
+        quote="${value:0:1}"
+        inner="${value:1}"
+        inner="${inner//\\${quote}/}"
+        if [[ "$inner" != *"$quote"* ]]; then
+          UNREAD_ENV_KEYS["$key"]=1
+          for ((j = i + 1; j < ${#lines[@]}; j++)); do
+            stripped="${lines[$j]//\\${quote}/}"
+            if [[ "$stripped" == *"$quote"* ]]; then
+              i=$j
+              break
+            fi
+          done
+          continue
+        fi
+      fi
       # Forms python-dotenv reads differently from the plain parse below:
       # leading or trailing whitespace (stripped there, a CR included), an
       # unquoted `` # comment`` (dropped there), a quoted value followed by
@@ -3420,7 +3462,7 @@ load_env_file() {
       # not use.
       UNREAD_ENV_KEYS["${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}"]=1
     fi
-  done < "$env_file"
+  done
 }
 
 validate_ssl_runtime_path() {

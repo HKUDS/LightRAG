@@ -42,7 +42,16 @@ def _write_anchor(working_dir: Path, backend: str, *, raw: str | None = None) ->
     return path
 
 
-def _run(case_dir: Path, body: str) -> subprocess.CompletedProcess:
+_ANCHOR_KEYS = ("WORKING_DIR", "LIGHTRAG_CONFIG_STORAGE", "LIGHTRAG_KV_STORAGE")
+
+
+def _run(
+    case_dir: Path, body: str, *, exported: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
+    # The check reads the shell's exported anchor keys, so the test controls
+    # them rather than inheriting whatever the runner exports.
+    env = {k: v for k, v in os.environ.items() if k not in _ANCHOR_KEYS}
+    env.update(exported or {})
     return subprocess.run(
         [
             bash_bin(),
@@ -57,13 +66,16 @@ reset_state
 """,
         ],
         cwd=REPO_ROOT,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-def _validate(case_dir: Path, env_lines: list[str]) -> subprocess.CompletedProcess:
+def _validate(
+    case_dir: Path, env_lines: list[str], *, exported: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     write_text_lines(case_dir / ".env", [*BASE_ENV, *env_lines])
     write_text_lines(case_dir / "env.example", ["LLM_BINDING=openai"])
     return _run(
@@ -75,6 +87,7 @@ else
   printf 'VALID=no\\n'
 fi
 """,
+        exported=exported,
     )
 
 
@@ -652,3 +665,82 @@ def test_an_unread_binding_after_a_clean_one_still_marks_the_key(
     assert "WORKING_DIR is assigned in a form this wizard does not read" in (
         result.stderr
     )
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_lines_inside_a_multiline_value_are_not_assignments(
+    tmp_path: Path, quote: str
+) -> None:
+    """python-dotenv reads NOTE across the lines up to its closing quote, so
+    the WORKING_DIR line inside it is part of NOTE, and the server keeps the
+    default ./rag_storage."""
+    _write_anchor(tmp_path / "actual", "JsonKVStorage")
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            f"NOTE={quote}x",
+            "WORKING_DIR=./actual",
+            f"y{quote}",
+        ],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_unclosed_quote_drops_only_its_own_line(tmp_path: Path) -> None:
+    """With no closing quote dotenv drops that statement and reads on."""
+    _write_anchor(tmp_path / "actual", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", 'NOTE="x', "WORKING_DIR=./actual"],
+    )
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_compose_ignores_how_env_spells_working_dir(tmp_path: Path) -> None:
+    """The generated service fixes the container's WORKING_DIR, so an
+    unread .env spelling of it must not stop the check."""
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    result = _validate(tmp_path, [*COMPOSE_ENV, "export WORKING_DIR=/tmp"])
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "exported",
+    [
+        {"WORKING_DIR": "/srv/rag"},
+        {"LIGHTRAG_CONFIG_STORAGE": "PGKVStorage"},
+    ],
+)
+def test_an_exported_override_leaves_a_host_anchor_unchecked(
+    tmp_path: Path, exported: dict[str, str]
+) -> None:
+    """A host server loads .env with override=False: what the shell exports
+    wins, so the check cannot claim .env's answer."""
+    _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
+    result = _validate(
+        tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"], exported=exported
+    )
+    assert "is exported in this shell and overrides .env" in result.stderr
+    assert "anchor was not checked" in result.stderr
+
+
+def test_an_exported_value_equal_to_env_does_not_block_the_check(
+    tmp_path: Path,
+) -> None:
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage"],
+        exported={"LIGHTRAG_KV_STORAGE": "JsonKVStorage"},
+    )
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_compose_ignores_an_exported_working_dir(tmp_path: Path) -> None:
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    result = _validate(tmp_path, COMPOSE_ENV, exported={"WORKING_DIR": "/srv/rag"})
+    assert "binds this deployment to PGKVStorage" in result.stderr
