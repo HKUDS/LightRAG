@@ -1287,7 +1287,7 @@ config_anchor_migrate_command() {
   # The tool resolves WORKING_DIR from the host .env, which a Compose
   # deployment does not point at its mount, so the command names the
   # directory the anchor was read from whenever the two differ.
-  local target="$1" anchor_dir="${CONFIG_ANCHOR_PATH%/_lightrag_config/*}"
+  local target="$1" anchor_dir="$CONFIG_ANCHOR_DIR"
   local prefix=""
 
   if ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
@@ -1329,7 +1329,8 @@ read_config_anchor() {
   # Sets CONFIG_ANCHOR_STATE to "absent", "readable", "unreadable" or
   # "unresolved" (the anchor's location could not be resolved here;
   # CONFIG_ANCHOR_UNRESOLVED_REASON says why), and
-  # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID.
+  # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_DIR (the WORKING_DIR it is under) /
+  # CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID.
   #
   # Values come from .env alone, read as load_env_file reads the KEY=value
   # lines the wizard itself writes. Hand-written dotenv forms beyond that
@@ -1349,6 +1350,7 @@ read_config_anchor() {
   local -A members=()
 
   CONFIG_ANCHOR_PATH=""
+  CONFIG_ANCHOR_DIR=""
   CONFIG_ANCHOR_BACKEND=""
   CONFIG_ANCHOR_UUID=""
   CONFIG_ANCHOR_STATE="unresolved"
@@ -1358,6 +1360,9 @@ read_config_anchor() {
     return 0
   fi
   dir="$RESOLVED_WORKING_DIR"
+  # Kept as resolved: stripping the suffix off the path would turn "/" into
+  # "" (the start directory to the migration tool) and "//" into "/".
+  CONFIG_ANCHOR_DIR="$dir"
   # Joined as os.path.join does: no second slash after a root that already
   # ends in one ("/" or the POSIX-distinct "//").
   CONFIG_ANCHOR_PATH="${dir%/}/_lightrag_config/storage_anchor.json"

@@ -586,3 +586,22 @@ def test_the_anchor_path_is_joined_as_os_path_join_does(
         'read_config_anchor host\nprintf "PATH=%s\\n" "$CONFIG_ANCHOR_PATH"',
     )
     assert parse_lines(result.stdout)["PATH"] == expected
+
+
+@pytest.mark.parametrize("working_dir", ["/", "//"])
+def test_migration_advice_keeps_a_root_working_dir(
+    tmp_path: Path, working_dir: str
+) -> None:
+    """The anchor's directory is taken as resolved, not cut off its path:
+    "/" must not become "" -- which the tool reads as its start directory,
+    and which a prefix WORKING_DIR='' would then point it at."""
+    result = _run(
+        tmp_path,
+        f"ENV_VALUES[WORKING_DIR]='{working_dir}'\n"
+        "read_config_anchor host\n"
+        'printf "DIR=%s\\n" "$CONFIG_ANCHOR_DIR"\n'
+        'printf "CMD=%s\\n" "$(config_anchor_migrate_command JsonKVStorage)"',
+    )
+    lines = parse_lines(result.stdout)
+    assert lines["DIR"] == working_dir
+    assert lines["CMD"] == "lightrag-migrate-config --target-backend JsonKVStorage"
