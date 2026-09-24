@@ -63,9 +63,19 @@ from lightrag.kg.anchor_lock import (
 from lightrag.utils import setup_logger
 
 # Fields a backend adds to a row it returns and owns itself; never content.
-BACKEND_METADATA_KEYS = frozenset(
-    {"_id", "create_time", "update_time", "__mirrored_id"}
-)
+BACKEND_METADATA_KEYS = frozenset({"_id", "create_time", "update_time"})
+
+# Envelope fields an admitted backend overwrites on write and returns as its
+# own value on read, so a row's OWN field of that name cannot be stored there:
+# PostgreSQL returns the key as ``id``; OpenSearch writes the key as
+# ``__mirrored_id`` and drops it from every read. Only PostgreSQL's appears in
+# what it yields, and is stripped there (``row_payload``); a source row that
+# owns either field is refused for that target before the claim.
+RESERVED_FIELDS_BY_BACKEND: dict[str, frozenset[str]] = {
+    "PGKVStorage": frozenset({"id"}),
+    "OpenSearchKVStorage": frozenset({"__mirrored_id"}),
+}
+_RESERVED_FIELDS = frozenset().union(*RESERVED_FIELDS_BY_BACKEND.values())
 
 # The environment variables each configuration backend reads, by prefix (or
 # exact name). Two backends of different types read disjoint sets, which is
@@ -162,8 +172,9 @@ class ContainerScan:
     # The key of every row that is not a well-formed row (``None`` when the
     # row carries no usable key at all).
     malformed: list[str | None] = field(default_factory=list)
-    # The key of every well-formed row whose envelope carries its own ``id``.
-    with_id: list[str] = field(default_factory=list)
+    # For every field some backend reserves, the keys of the well-formed rows
+    # whose envelope carries it as their own.
+    reserved: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def rows(self) -> int:
@@ -194,8 +205,8 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
                 scan.malformed.append(key)
                 continue
             scan.digests[key] = row_digest(payload)
-            if "id" in payload:
-                scan.with_id.append(key)
+            for name in _RESERVED_FIELDS.intersection(payload):
+                scan.reserved.setdefault(name, []).append(key)
             scope = payload["workspace"]
             scan.scopes[scope] = scan.scopes.get(scope, 0) + 1
     except ConfigurationStorageError:
@@ -500,16 +511,25 @@ async def migrate_configuration(
                 f"{source_scan.malformed_names()}. They are never skipped; "
                 f"repair or remove them and re-run."
             )
-        if source_scan.with_id and target_backend in _ID_MIRROR_BACKENDS:
-            # PostgreSQL returns the key as ``id`` on every read, so an
-            # envelope ``id`` stored there can never be read back or told
-            # apart from the mirror on a later migration out of it.
+        clashing = {
+            name: keys
+            for name, keys in source_scan.reserved.items()
+            if name in RESERVED_FIELDS_BY_BACKEND.get(target_backend, ())
+        }
+        if clashing:
+            # The target overwrites these fields on write and answers its own
+            # value on read: the row's field could never be read back, nor
+            # told apart from the backend's on a later migration out of it.
+            listed = "; ".join(
+                f"'{name}' in {len(keys)} row(s): "
+                + ", ".join(repr(k) for k in keys[:10])
+                + (", ..." if len(keys) > 10 else "")
+                for name, keys in sorted(clashing.items())
+            )
             raise MigrationRefused(
-                f"{len(source_scan.with_id)} source row(s) carry their own "
-                f"'id' field ({', '.join(repr(k) for k in source_scan.with_id[:10])}"
-                f"{', ...' if len(source_scan.with_id) > 10 else ''}), which "
-                f"{target_backend} cannot hold: it returns the key as 'id'. "
-                f"Nothing was written; remove the field or choose another target."
+                f"Source rows carry fields {target_backend} cannot hold, because "
+                f"it reserves them for its own use ({listed}). Nothing was "
+                f"written; remove the fields or choose another target."
             )
 
         # Step 3. The target, classified.
