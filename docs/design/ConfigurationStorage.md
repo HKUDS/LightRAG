@@ -696,10 +696,23 @@ The wizard only ever READS the anchor, at the `WORKING_DIR` the server will
 use on this host (`./data/rag_storage` for the compose runtime, which mounts
 it there whatever `.env` says). `make env-storage` reports it when readable and
 warns when the selection just made resolves to another backend type; keeping
-the old backend or migrating stays the operator's choice. `make env-validate`
-refuses an `.env` the server would refuse on that type mismatch, as it already
-refuses an unadmitted backend, and only warns about an anchor its narrow
-parser cannot confirm — the server reads that one strictly and says why.
+the old backend or migrating stays the operator's choice. It reports only
+after the runtime target of the `.env` being written is settled, because a
+run that switches between host and Compose also switches which directory the
+next server reads. `make env-validate` refuses an `.env` the server would
+refuse on that type mismatch, as it already refuses an unadmitted backend,
+and only warns about an anchor its narrow parser cannot confirm — the server
+reads that one strictly and says why.
+
+"Readable" means the whole file is one JSON object that `parse_anchor_payload`
+accepts, read as Python's `json` reads it: exactly the three members, a
+repeated key keeping its last value, nothing before or after the object. A
+parser that matched each field on its own would call a file with an extra
+member readable, which the server refuses, and could read a different
+backend out of a repeated key than the server does. A host `WORKING_DIR`
+that uses `${...}` is not resolved: the server's python-dotenv expands it,
+and a second implementation of that expansion would be a second answer to
+drift from the first. Both flows then warn that the anchor was not checked.
 
 ### Maintenance tools
 
@@ -1682,9 +1695,13 @@ The anchor and the container identity (slice 1c):
     container, a malformed source row, a target with another identity and a
     non-empty target without one are each refused with nothing written.
 43. A pagination, write, flush or verification failure, and a failed anchor
-    replace, leave the anchor on the source; the re-run resumes, and
-    converges a target whose source changed between attempts (removed,
+    replace whose anchor reads back, leave the anchor on the source; the
+    re-run resumes, and converges a target whose source changed between attempts (removed,
     changed and added rows, a stale field under a merging upsert).
 44. The migration is refused while any starter holds the anchor lock, and a
     filesystem that cannot lock refuses it without `--assume-exclusive`;
     conflicting env files and a different `WORKING_DIR` are refused.
+45. The wizard calls an anchor readable only when the server's parser accepts
+    it, reads the backend a repeated key leaves to the server, reports on the
+    directory of the runtime target it is switching to, and warns instead of
+    guessing for a `WORKING_DIR` that uses `${...}`.

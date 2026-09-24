@@ -190,3 +190,135 @@ def test_env_storage_says_nothing_without_an_anchor(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "anchor" not in result.stdout
     assert not (tmp_path / "rag_storage").exists()
+
+
+# The wizard's parser must never say "readable" about a file the server
+# refuses, nor read a different backend out of it than the server would.
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # An extra member: the server requires exactly the three fields.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",'
+        ' "note": "x"}' % UUID,
+        # A duplicate key alongside an extra one.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "backend":'
+        ' "JsonKVStorage", "storage_uuid": "%s", "x": 1}' % UUID,
+        # An empty object, and a trailing comma.
+        "{}",
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",}'
+        % UUID,
+        # A raw newline inside a string is not JSON.
+        '{"schema_version": 1, "backend": "JsonKV\nStorage", "storage_uuid": "%s"}'
+        % UUID,
+        # Not a JSON integer 1.
+        '{"schema_version": 1.0, "backend": "JsonKVStorage", "storage_uuid": "%s"}'
+        % UUID,
+        # Trailing content after the object.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s"} x'
+        % UUID,
+        # A byte-order mark, which the server's UTF-8 decode keeps.
+        '﻿{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid":'
+        ' "%s"}' % UUID,
+        # A NUL byte, which bash would silently drop.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid":'
+        ' "%s"}\x00' % UUID,
+    ],
+)
+def test_the_wizard_accepts_only_what_the_server_accepts(
+    tmp_path: Path, raw: str
+) -> None:
+    from lightrag.config_anchor import read_anchor
+    from lightrag.exceptions import ConfigurationIdentityError
+
+    working_dir = tmp_path / "rag_storage"
+    _write_anchor(working_dir, "", raw=raw)
+    with pytest.raises(ConfigurationIdentityError):
+        read_anchor(str(working_dir))
+
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
+    assert "could not be read" in result.stderr
+    assert "binds this deployment" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"storage_uuid":"%s","backend":"PGKVStorage","schema_version":1}' % UUID,
+        '\n\t{ "backend" : "PGKVStorage" ,\r\n "schema_version" : 1 ,'
+        ' "storage_uuid" : "%s" }\n\n' % UUID,
+        # A repeated key keeps its LAST value in Python's json, and so here: a
+        # first-match reading would report JsonKVStorage.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "backend":'
+        ' "PGKVStorage", "storage_uuid": "%s"}' % UUID,
+    ],
+)
+def test_the_wizard_reads_the_backend_the_server_reads(
+    tmp_path: Path, raw: str
+) -> None:
+    from lightrag.config_anchor import read_anchor
+
+    working_dir = tmp_path / "rag_storage"
+    _write_anchor(working_dir, "", raw=raw)
+    assert read_anchor(str(working_dir)).backend == "PGKVStorage"
+
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_interpolated_working_dir_is_reported_as_unchecked(
+    tmp_path: Path,
+) -> None:
+    """python-dotenv expands ``${HOME}``; the wizard does not, so it must not
+    look below a literal ``<repo>/${HOME}`` and call what it finds there (or
+    fails to find) the deployment's anchor."""
+    _write_anchor(tmp_path / "${HOME}" / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR=${HOME}/rag_storage"],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
+    assert "interpolation" in result.stderr
+    assert "binds this deployment" not in result.stderr
+
+    report = _run(
+        tmp_path,
+        "ENV_VALUES[WORKING_DIR]='${HOME}/rag_storage'\n"
+        'report_config_anchor "JsonKVStorage"',
+    )
+    assert "interpolation" in report.stdout
+    assert "REFUSE" not in report.stdout
+
+
+def test_env_storage_reads_the_anchor_of_the_runtime_it_is_switching_to(
+    tmp_path: Path,
+) -> None:
+    """A host .env that ``env-storage`` switches to Compose: the next server
+    reads the Compose mount, so that is the anchor to report on -- not the
+    host WORKING_DIR the old .env named."""
+    _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+    result = _run(
+        tmp_path,
+        """
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]=NanoVectorDBStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=NetworkXStorage
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]=JsonDocStatusStorage
+ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=host
+show_summary() { :; }
+confirm_required_yes_no() { return 0; }
+resolve_compose_output_action() {
+  local -n action_ref="$2" target_ref="$3" hint_ref="$4"
+  action_ref="write_env_only"; target_ref="compose"; hint_ref="no"
+}
+backup_env_file() { :; }
+generate_env_file() { :; }
+finalize_storage_setup
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "binds it to PGKVStorage" in result.stdout
+    assert "server will REFUSE to start" in result.stdout

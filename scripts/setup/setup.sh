@@ -1175,7 +1175,8 @@ select_storage_backends() {
   # would come out without the key the whole function exists to add.
   select_config_storage "$kv_storage"
   config_storage="$SELECTED_CONFIG_STORAGE"
-  report_config_anchor "$config_storage"
+  # The anchor is reported by finalize_storage_setup, not here: where it
+  # lives depends on the runtime target, which is only settled there.
 
   for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage" \
     "$config_storage"; do
@@ -1226,14 +1227,20 @@ resolve_host_working_dir() {
   # always mounts ./data/rag_storage at the container's working directory
   # (see prepare_compose_data_path_overrides), whatever .env says; a host run
   # resolves a relative WORKING_DIR against the repository root, where the
-  # server is started from.
-  local runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
+  # server is started from. ``$1`` is the runtime target when the caller has
+  # settled one that ``.env`` does not carry yet.
+  #
+  # Fails, printing nothing, for a WORKING_DIR that uses ``${...}``: the
+  # server's python-dotenv expands it, and a second implementation of that
+  # expansion here would only be a second answer to drift from the first.
+  local runtime_target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
   local dir
 
   if [[ "$runtime_target" == "compose" ]]; then
     dir="${REPO_ROOT}/data/rag_storage"
   else
     dir="${ENV_VALUES[WORKING_DIR]:-./rag_storage}"
+    [[ "$dir" == *'${'* ]] && return 1
     if [[ "$dir" != /* ]]; then
       dir="${REPO_ROOT}/${dir#./}"
     fi
@@ -1246,18 +1253,30 @@ read_config_anchor() {
   # server checks before it opens the configuration storage (see *The anchor
   # and the container identity* in docs/design/ConfigurationStorage.md).
   # The wizard only ever READS it -- it never writes, moves or deletes it.
+  # ``$1`` is passed through to resolve_host_working_dir.
   #
-  # Sets CONFIG_ANCHOR_STATE to "absent", "readable" or "unreadable", and
-  # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID. The
-  # parse is deliberately narrow: anything it cannot confirm is
-  # "unreadable", never "absent".
-  local dir content
+  # Sets CONFIG_ANCHOR_STATE to "absent", "readable", "unreadable" or
+  # "unresolved" (WORKING_DIR could not be resolved here), and
+  # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID.
+  #
+  # "readable" requires the WHOLE file to be one JSON object that the
+  # server's parse_anchor_payload accepts, read the way Python's json reads
+  # it: exactly the three members, and a repeated key keeps its LAST value.
+  # Anything outside the narrow grammar below is "unreadable", never
+  # "absent" -- a looser match would pass a file the server refuses.
+  local dir content rest
+  local LC_ALL=C
+  local ws=$'[ \t\n\r]*'
   local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  local member_re="^${ws}\"([a-z_]+)\"${ws}:${ws}(1|\"[A-Za-z]+\"|\"${uuid_re}\")${ws}([,}])"
+  local -A members=()
 
-  dir="$(resolve_host_working_dir)"
-  CONFIG_ANCHOR_PATH="${dir}/_lightrag_config/storage_anchor.json"
+  CONFIG_ANCHOR_PATH=""
   CONFIG_ANCHOR_BACKEND=""
   CONFIG_ANCHOR_UUID=""
+  CONFIG_ANCHOR_STATE="unresolved"
+  dir="$(resolve_host_working_dir "${1:-}")" || return 0
+  CONFIG_ANCHOR_PATH="${dir}/_lightrag_config/storage_anchor.json"
   CONFIG_ANCHOR_STATE="unreadable"
 
   if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then
@@ -1267,12 +1286,25 @@ read_config_anchor() {
   if [[ ! -f "$CONFIG_ANCHOR_PATH" || ! -r "$CONFIG_ANCHOR_PATH" ]]; then
     return 0
   fi
-  content="$(tr -d '\n\r' < "$CONFIG_ANCHOR_PATH" 2>/dev/null)" || return 0
+  # The trailing "x" keeps trailing newlines; comparing the length with the
+  # file size catches a NUL byte, which bash would silently drop.
+  content="$(cat "$CONFIG_ANCHOR_PATH" 2>/dev/null; printf x)" || return 0
+  content="${content%x}"
+  [[ "${#content}" -eq "$(wc -c < "$CONFIG_ANCHOR_PATH")" ]] || return 0
 
-  [[ "$content" =~ \"schema_version\"[[:space:]]*:[[:space:]]*1[[:space:]]*[,}] ]] || return 0
-  [[ "$content" =~ \"backend\"[[:space:]]*:[[:space:]]*\"([A-Za-z]+)\" ]] || return 0
+  [[ "$content" =~ ^${ws}\{ ]] || return 0
+  rest="${content:${#BASH_REMATCH[0]}}"
+  while [[ "$rest" =~ $member_re ]]; do
+    members["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+    rest="${rest:${#BASH_REMATCH[0]}}"
+    [[ "${BASH_REMATCH[3]}" == "}" ]] && break
+  done
+  [[ "${BASH_REMATCH[3]:-}" == "}" && "$rest" =~ ^${ws}$ ]] || return 0
+  [[ "${#members[@]}" -eq 3 ]] || return 0
+  [[ "${members[schema_version]:-}" == "1" ]] || return 0
+  [[ "${members[backend]:-}" =~ ^\"([A-Za-z]+)\"$ ]] || return 0
   CONFIG_ANCHOR_BACKEND="${BASH_REMATCH[1]}"
-  [[ "$content" =~ \"storage_uuid\"[[:space:]]*:[[:space:]]*\"($uuid_re)\" ]] || return 0
+  [[ "${members[storage_uuid]:-}" =~ ^\"($uuid_re)\"$ ]] || return 0
   CONFIG_ANCHOR_UUID="${BASH_REMATCH[1]}"
   config_storage_is_admitted "$CONFIG_ANCHOR_BACKEND" || return 0
   CONFIG_ANCHOR_STATE="readable"
@@ -1284,11 +1316,19 @@ report_config_anchor() {
   # deployment is bound to, and warn when the selection just made resolves
   # to another backend TYPE -- the server refuses such a start. Keeping the
   # old backend or migrating is the operator's choice; nothing is changed.
+  # ``$2`` is the runtime target the .env being written will carry.
   local candidate="$1"
 
-  read_config_anchor
+  read_config_anchor "${2:-}"
   case "$CONFIG_ANCHOR_STATE" in
     absent)
+      return 0
+      ;;
+    unresolved)
+      log_warn "WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...}" \
+        "interpolation, which this wizard does not expand, so it cannot check" \
+        "the configuration storage anchor there. The server refuses to start" \
+        "if that anchor binds a backend other than $candidate."
       return 0
       ;;
     unreadable)
@@ -3028,6 +3068,14 @@ finalize_storage_setup() {
     runtime_target \
     show_host_start_hint
 
+  # Only now is the runtime target settled, and it decides which WORKING_DIR
+  # -- the Compose mount or the host path -- holds the anchor.
+  if [[ -n "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" ]]; then
+    report_config_anchor \
+      "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]}}" \
+      "$runtime_target"
+  fi
+
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
@@ -3329,7 +3377,9 @@ validate_env_file() {
         "Set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND, or move the container with 'lightrag-migrate-config --target-backend $config_storage' first"
       errors=1
     elif [[ "$CONFIG_ANCHOR_STATE" == "unreadable" ]]; then
-      echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read; the server refuses to start until it is repaired, restored or deleted." >&2
+      echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read here; the server reads it strictly and refuses to start unless it is a valid anchor, so check it (repair, restore or delete it if it is not)." >&2
+    elif [[ "$CONFIG_ANCHOR_STATE" == "unresolved" ]]; then
+      echo "Warning: WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...} interpolation, which this check does not expand, so the configuration storage anchor was not checked; the server refuses to start if it binds a backend other than $config_storage." >&2
     fi
   fi
 

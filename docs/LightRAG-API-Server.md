@@ -996,6 +996,7 @@ How it works:
 - It copies every workspace's rows, verifies the copy, and only then moves the anchor.
 - It never modifies the source or edits `.env`.
 - A failed run leaves the anchor on the source, and re-running it resumes.
+- An **indeterminate** run is the exception: the anchor replace raised and the anchor could not be read back, so it may already name the target. Start nothing until the anchor reads back. If it names the target, the migration is complete; if it names the source, re-run.
 
 A same-type move (PostgreSQL to another PostgreSQL, and so on) is done with the backend's own dump/restore: the identity travels with the data. See [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md).
 
