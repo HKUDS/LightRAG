@@ -80,8 +80,9 @@ names a different `WORKING_DIR`. A JSON source takes its `config_dir` from
    bind it. The target type must differ from the anchored one.
 2. Opens the source as the anchored type. Its identity must equal the
    anchor's UUID. An unreadable source refuses: restore or reconnect it and
-   re-run. A `PGKVStorage` target refuses any source row carrying its own
-   `id` field, which PostgreSQL cannot hold (it returns the key as `id`).
+   re-run. A target refuses any source row carrying a field it reserves
+   for itself: `id` on `PGKVStorage` (it returns the key as `id`) and
+   `__mirrored_id` on `OpenSearchKVStorage` (it writes the key there).
 3. Opens the target and classifies it:
    - **empty**: the tool claims it;
    - **already holds this identity**: the target is left over from an earlier

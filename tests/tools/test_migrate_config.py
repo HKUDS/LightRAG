@@ -392,6 +392,22 @@ class TestRefusals:
             )
         assert target.calls == []
 
+    async def test_a_mirrored_id_field_is_refused_for_an_opensearch_target(
+        self, tmp_path
+    ):
+        """OpenSearch writes the key as ``__mirrored_id`` and drops it from
+        every read, so a row's own field of that name cannot be stored there."""
+        _anchor(tmp_path)
+        rows = _source_rows()
+        key = cs.embedding_baseline_key("alpha", "entities")
+        rows[key] = {**rows[key], "__mirrored_id": "the row's own"}
+        target = Container()
+        with pytest.raises(mc.MigrationRefused, match="__mirrored_id"):
+            await _migrate(
+                tmp_path, Container(rows), target, target_backend="OpenSearchKVStorage"
+            )
+        assert target.calls == []
+
     async def test_a_malformed_source_row_is_refused_and_listed(self, tmp_path):
         _anchor(tmp_path)
         rows = _source_rows()
@@ -448,6 +464,18 @@ class TestRowPayload:
         result = await _migrate(tmp_path, Container(rows), target)
         assert result.switched is True
         assert target.visible[key]["id"] == key
+
+    async def test_a_mirrored_id_field_survives_a_non_opensearch_target(self, tmp_path):
+        """No admitted backend yields ``__mirrored_id``: a row that carries one
+        owns it, and it is copied and verified, not stripped from both sides."""
+        _anchor(tmp_path)
+        rows = _source_rows()
+        key = cs.embedding_baseline_key("alpha", "entities")
+        rows[key] = {**rows[key], "__mirrored_id": "the row's own"}
+        target = Container()
+        result = await _migrate(tmp_path, Container(rows), target)
+        assert result.switched is True
+        assert target.visible[key]["__mirrored_id"] == "the row's own"
 
     async def test_a_pg_source_mirror_is_not_copied(self, tmp_path):
         class PGKVStorage(Container):
