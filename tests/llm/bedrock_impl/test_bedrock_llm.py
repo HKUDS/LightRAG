@@ -501,6 +501,34 @@ async def test_bedrock_no_timeout_keeps_botocore_defaults(monkeypatch):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_bedrock_complete_inherits_default_llm_timeout(monkeypatch):
+    """bedrock_complete must apply LightRAG's LLM timeout when none is passed.
+
+    It is the llm_model_func of the library path, which never passes a
+    timeout. Without the fallback botocore's 60s read timeout cut any
+    attempt longer than that (GPT-6 Astra extraction on a dense chunk)
+    while the role queue waited default_llm_timeout * 2.
+    """
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    client_kwargs_calls: list[dict] = []
+    hashing_kv = SimpleNamespace(
+        global_config={"llm_model_name": "bedrock-model", "default_llm_timeout": 240}
+    )
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession([], client_kwargs_calls),
+    ):
+        await bedrock_complete(prompt="hello", hashing_kv=hashing_kv)
+        await bedrock_complete(prompt="hello", hashing_kv=hashing_kv, timeout=30)
+
+    assert client_kwargs_calls[0]["config"].read_timeout == 240
+    # A caller-passed timeout (llm_model_kwargs) still wins.
+    assert client_kwargs_calls[1]["config"].read_timeout == 30
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_bedrock_extra_fields_maps_to_additional_model_request_fields(
     monkeypatch,
 ):
