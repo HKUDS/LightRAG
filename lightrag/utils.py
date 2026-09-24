@@ -7003,6 +7003,13 @@ async def apply_rerank_if_enabled(
                     )
                     return retrieved_docs
 
+                # Sort by score instead of trusting the provider already
+                # returned results in relevance order: callers slice this
+                # list positionally (chunk_top_k truncation), so an
+                # unsorted response would silently keep the wrong chunks
+                # despite every chunk carrying a correct rerank_score.
+                reranked_docs.sort(key=lambda d: d["rerank_score"], reverse=True)
+
                 logger.info(
                     f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"
                 )
