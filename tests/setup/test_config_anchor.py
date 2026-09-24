@@ -609,3 +609,46 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     generated = compose.read_text(encoding="utf-8")
     assert "LIGHTRAG_CONFIG_STORAGE: PGKVStorage" in generated
     assert "/srv/lightrag:/app/data/rag_storage" in generated
+
+
+@pytest.mark.parametrize("line", ['WORKING_DIR="./a"ctual"', "WORKING_DIR='./a'ctual'"])
+def test_an_unescaped_inner_quote_is_unchecked(tmp_path: Path, line: str) -> None:
+    """python-dotenv rejects the whole line, so the server keeps the
+    default; reading the outermost quotes as one value looks elsewhere."""
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
+    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
+        result.stderr
+    )
+
+
+def test_the_last_binding_decides_whether_a_key_is_read(tmp_path: Path) -> None:
+    """dotenv keeps the LAST binding, so a clean assignment after an unread
+    one is the value the server uses, and the check must run on it."""
+    _write_anchor(tmp_path / "actual", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "export WORKING_DIR=./old",
+            "WORKING_DIR=./actual",
+        ],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+def test_an_unread_binding_after_a_clean_one_still_marks_the_key(
+    tmp_path: Path,
+) -> None:
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "WORKING_DIR=./actual",
+            "export WORKING_DIR=./other",
+        ],
+    )
+    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
+        result.stderr
+    )

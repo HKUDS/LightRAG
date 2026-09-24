@@ -3363,7 +3363,7 @@ finalize_server_setup() {
 
 load_env_file() {
   local env_file="$1"
-  local line key value stripped
+  local line key value inner stripped
 
   if [[ ! -f "$env_file" ]]; then
     format_error ".env file not found at $env_file" "Run make env-base to generate it."
@@ -3381,14 +3381,24 @@ load_env_file() {
       # double quotes, or any at all inside single quotes (dotenv decodes
       # ``\t``, ``\n``, ``\'`` ... and keeps ``\$``; this parse does the
       # opposite). Recorded like the forms in the branch further down.
-      stripped="${value//\\\\/}"
+      #
+      # A quote inside the quotes that is not escaped ends the value there,
+      # and python-dotenv rejects the whole line (the variable keeps its
+      # earlier binding or the default), so that is recorded too. The LAST
+      # binding decides, as in dotenv: a line read cleanly clears a marker an
+      # earlier line left.
+      inner=""
+      ((${#value} >= 2)) && inner="${value:1:${#value}-2}"
+      stripped="${inner//\\\\/}"
       stripped="${stripped//\\\"/}"
       if [[ "$value" =~ ^[[:space:]] || "$value" =~ [[:space:]]$ ]] ||
         [[ "$value" != [\"\']* && "$value" =~ [[:space:]]# ]] ||
         [[ "$value" == [\"\']* && ! "$value" =~ ^\".*\"$ && ! "$value" =~ ^\'.*\'$ ]] ||
-        [[ "$value" == \"* && "$stripped" == *\\* ]] ||
-        [[ "$value" == \'* && "$value" == *\\* ]]; then
+        [[ "$value" == \"* && ( "$stripped" == *\\* || "$stripped" == *\"* ) ]] ||
+        [[ "$value" == \'* && ( "$value" == *\\* || "$inner" == *\'* ) ]]; then
         UNREAD_ENV_KEYS["$key"]=1
+      else
+        unset 'UNREAD_ENV_KEYS[$key]'
       fi
       if [[ "$value" =~ ^\".*\"$ ]]; then
         value="${value:1:${#value}-2}"

@@ -732,7 +732,9 @@ the wizard's `.env` reader does not parse, such as `export KEY=`, a
 single-quoted `'KEY'`, a bare `KEY` (which clears an earlier assignment:
 dotenv gives it no value and the server takes the default), spaces around
 `=`, an inline ` # comment`, trailing whitespace, or a backslash
-escape the two parsers decode differently: it is recorded,
+escape the two parsers decode differently, or an unescaped quote inside the
+quotes (dotenv rejects that line): it is recorded, the last binding of a key
+deciding as it does in dotenv,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. A lookup that finds no anchor
 is absence only below a searchable directory; an ancestor that cannot be
