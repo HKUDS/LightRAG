@@ -3387,30 +3387,34 @@ load_env_file() {
   mapfile -t lines < "$env_file"
   for ((i = 0; i < ${#lines[@]}; i++)); do
     line="${lines[$i]}"
+    # A quote a binding opens and does not close: python-dotenv reads a
+    # value spanning the lines up to the closing quote, so those lines are
+    # part of it and not assignments. With no closing quote it drops the
+    # statement and reads on from the next line. Either way the key is not
+    # read here. The binding is recognized in every form dotenv accepts
+    # (``export``, a quoted key, whitespace around ``=``), not only the plain
+    # one, since each of them can open such a value.
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'([A-Za-z0-9_]+)\'|([A-Za-z0-9_]+))[[:space:]]*=[[:space:]]*([\"\'].*)$ ]]; then
+      key="${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}"
+      value="${BASH_REMATCH[5]}"
+      quote="${value:0:1}"
+      inner="${value:1}"
+      inner="${inner//\\${quote}/}"
+      if [[ "$inner" != *"$quote"* ]]; then
+        UNREAD_ENV_KEYS["$key"]=1
+        for ((j = i + 1; j < ${#lines[@]}; j++)); do
+          stripped="${lines[$j]//\\${quote}/}"
+          if [[ "$stripped" == *"$quote"* ]]; then
+            i=$j
+            break
+          fi
+        done
+        continue
+      fi
+    fi
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
-      # A quote this line opens and does not close: python-dotenv reads a
-      # value spanning the lines up to the closing quote, so those lines
-      # are part of it and not assignments. With no closing quote it drops
-      # the statement and reads on from the next line. Either way the key
-      # is not read here.
-      if [[ "$value" == [\"\']* ]]; then
-        quote="${value:0:1}"
-        inner="${value:1}"
-        inner="${inner//\\${quote}/}"
-        if [[ "$inner" != *"$quote"* ]]; then
-          UNREAD_ENV_KEYS["$key"]=1
-          for ((j = i + 1; j < ${#lines[@]}; j++)); do
-            stripped="${lines[$j]//\\${quote}/}"
-            if [[ "$stripped" == *"$quote"* ]]; then
-              i=$j
-              break
-            fi
-          done
-          continue
-        fi
-      fi
       # Forms python-dotenv reads differently from the plain parse below:
       # leading or trailing whitespace (stripped there, a CR included), an
       # unquoted `` # comment`` (dropped there), a quoted value followed by

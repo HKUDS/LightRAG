@@ -735,7 +735,7 @@ dotenv gives it no value and the server takes the default), spaces around
 escape the two parsers decode differently, or an unescaped quote inside the
 quotes (dotenv rejects that line): it is recorded, the last binding of a key
 deciding as it does in dotenv, and the lines inside a quoted value that
-spans several lines are part of that value, not assignments,
+spans several lines (opened by any binding form) are part of that value, not assignments,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. `WORKING_DIR` is exempt for the
 compose runtime, whose generated service fixes the container's.

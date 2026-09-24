@@ -728,3 +728,27 @@ def test_the_shells_environment_is_never_consulted(
     )
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "opening", ['NOTE= "x', 'export NOTE="x', "'NOTE'='x", 'NOTE = "x']
+)
+def test_a_multiline_value_opened_by_any_binding_form_is_skipped(
+    tmp_path: Path, opening: str
+) -> None:
+    """Every binding form dotenv accepts can open a multiline value, not only
+    a plain ``KEY="``; the WORKING_DIR line inside is part of NOTE."""
+    quote = opening[-2]
+    _write_anchor(tmp_path / "actual", "JsonKVStorage")
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            opening,
+            "WORKING_DIR=./actual",
+            f"y{quote}",
+        ],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
