@@ -15,8 +15,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
-# Keys a loaded .env assigns in a form load_env_file does not read (see there).
-declare -A UNREAD_ENV_KEYS
 # Whether a .env was loaded at startup. Distinct from "ORIGINAL_ENV_VALUES is
 # non-empty": a deployment whose .env carries only comments still ran a server
 # on the DEFAULTS, and those defaults decide where its records are.
@@ -109,7 +107,6 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
-  UNREAD_ENV_KEYS=()
   EXISTING_ENV_LOADED=0
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
@@ -1289,14 +1286,11 @@ config_anchor_migrate_command() {
   # The recovery command for ``$1`` as the operator runs it on this host.
   # The tool resolves WORKING_DIR from the host .env, which a Compose
   # deployment does not point at its mount, so the command names the
-  # directory the anchor was read from whenever the two differ -- and
-  # whenever .env spells WORKING_DIR in a form the loader did not read, as
-  # the tool's dotenv then resolves a value the wizard cannot see.
+  # directory the anchor was read from whenever the two differ.
   local target="$1" anchor_dir="${CONFIG_ANCHOR_PATH%/_lightrag_config/*}"
   local prefix=""
 
-  if [[ -n "${UNREAD_ENV_KEYS[WORKING_DIR]+set}" ]] ||
-    ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
+  if ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
     prefix="WORKING_DIR=$(printf '%q' "$anchor_dir") "
   fi
   printf '%slightrag-migrate-config --target-backend %s' "$prefix" "$target"
@@ -1333,17 +1327,21 @@ read_config_anchor() {
   # ``$1`` is passed through to resolve_host_working_dir.
   #
   # Sets CONFIG_ANCHOR_STATE to "absent", "readable", "unreadable" or
-  # "unresolved" (the anchor's location or the backend to compare it with
-  # could not be read here; CONFIG_ANCHOR_UNRESOLVED_REASON says why), and
+  # "unresolved" (the anchor's location could not be resolved here;
+  # CONFIG_ANCHOR_UNRESOLVED_REASON says why), and
   # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID.
+  #
+  # Values come from .env alone, read as load_env_file reads the KEY=value
+  # lines the wizard itself writes. Hand-written dotenv forms beyond that
+  # (``export``, multi-line values, ...) are not modelled; see *The setup
+  # wizard* in docs/design/ConfigurationStorage.md.
   #
   # "readable" requires the WHOLE file to be one JSON object that the
   # server's parse_anchor_payload accepts, read the way Python's json reads
   # it: exactly the three members, and a repeated key keeps its LAST value.
   # Anything outside the narrow grammar below is "unreadable", never
   # "absent" -- a looser match would pass a file the server refuses.
-  local dir content rest key target
-  local -a keys
+  local dir content rest
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
   local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -1355,28 +1353,6 @@ read_config_anchor() {
   CONFIG_ANCHOR_UUID=""
   CONFIG_ANCHOR_STATE="unresolved"
   CONFIG_ANCHOR_UNRESOLVED_REASON=""
-  target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
-  # Only the keys that decide this check: the runtime target when the
-  # caller did not settle it, the two storage selections, and WORKING_DIR
-  # for a host run only -- the generated Compose service fixes the
-  # container's, so the .env spelling does not matter there.
-  #
-  # .env is the ONLY source of these values. The wizard is a static .env
-  # tool: the shell it runs in says nothing about the environment a server
-  # will start from, so exported variables are never consulted.
-  keys=()
-  [[ -z "${1:-}" ]] && keys+=(LIGHTRAG_RUNTIME_TARGET)
-  keys+=(LIGHTRAG_CONFIG_STORAGE LIGHTRAG_KV_STORAGE WORKING_DIR)
-  for key in "${keys[@]}"; do
-    [[ "$key" == WORKING_DIR && "$target" == compose ]] && continue
-    # The KV backend decides only while the configuration storage follows
-    # it; an explicit selection (checked just before) makes it irrelevant.
-    [[ "$key" == LIGHTRAG_KV_STORAGE && -n "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]] && continue
-    if [[ -n "${UNREAD_ENV_KEYS[$key]+set}" ]]; then
-      CONFIG_ANCHOR_UNRESOLVED_REASON="$key is assigned in a form this wizard does not read (such as 'export $key=' or spaces around '=')"
-      return 0
-    fi
-  done
   if ! resolve_host_working_dir "${1:-}"; then
     CONFIG_ANCHOR_UNRESOLVED_REASON="$RESOLVE_WORKING_DIR_FAILURE"
     return 0
@@ -1462,30 +1438,6 @@ report_config_anchor() {
   return 0
 }
 
-preserved_section_keeps_unread_binding() {
-  # Whether the preserved-custom section of the .env ``$1`` -- the one the
-  # generator is about to overwrite -- binds ``$2`` in a form other than a
-  # plain ``KEY=``. append_preserved_non_template_env_lines keeps such a
-  # line verbatim (it has no plain key to drop it by), after the settings
-  # written from ENV_VALUES.
-  local env_file="$1" key="$2" line in_section="no"
-  local header="### ----- Preserved custom environment variables from previous .env  -----"
-
-  [[ -f "$env_file" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "$header" ]]; then
-      in_section="yes"
-      continue
-    fi
-    [[ "$in_section" == "yes" ]] || continue
-    [[ "$line" =~ ^[A-Za-z0-9_]+= ]] && continue
-    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'${key}\'|${key})[[:space:]]*(=|$|#) ]]; then
-      return 0
-    fi
-  done < "$env_file"
-  return 1
-}
-
 report_config_anchor_for_output() {
   # Every finalizer calls this once its runtime target is settled: env-base
   # and env-server can switch between host and Compose (and env-server can
@@ -1493,21 +1445,8 @@ report_config_anchor_for_output() {
   # directory the next server reads the anchor from. ``$1`` is that target.
   # An unset KV backend is the server's default; a configuration backend the
   # category does not admit is reported by the admitted check instead.
-  #
-  # The .env being checked is the one about to be WRITTEN. The generator
-  # writes these keys canonically from ENV_VALUES and drops the forms the
-  # loader could not read -- except inside the preserved-custom section,
-  # which it copies verbatim after the canonical settings, so a binding
-  # there still wins under dotenv. A marker is cleared only when no such
-  # binding survives.
   local candidate="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}"
-  local key
 
-  for key in WORKING_DIR LIGHTRAG_RUNTIME_TARGET LIGHTRAG_CONFIG_STORAGE \
-    LIGHTRAG_KV_STORAGE; do
-    preserved_section_keeps_unread_binding "${REPO_ROOT}/.env" "$key" ||
-      unset 'UNREAD_ENV_KEYS[$key]'
-  done
   config_storage_is_admitted "$candidate" || return 0
   report_config_anchor "$candidate" "$1"
 }
@@ -3422,71 +3361,17 @@ finalize_server_setup() {
 
 load_env_file() {
   local env_file="$1"
-  local line key value inner stripped quote i j
-  local -a lines=()
+  local line key value
 
   if [[ ! -f "$env_file" ]]; then
     format_error ".env file not found at $env_file" "Run make env-base to generate it."
     return 1
   fi
 
-  mapfile -t lines < "$env_file"
-  for ((i = 0; i < ${#lines[@]}; i++)); do
-    line="${lines[$i]}"
-    # A quote a binding opens and does not close: python-dotenv reads a
-    # value spanning the lines up to the closing quote, so those lines are
-    # part of it and not assignments. With no closing quote it drops the
-    # statement and reads on from the next line. Either way the key is not
-    # read here. The binding is recognized in every form dotenv accepts
-    # (``export``, a quoted key, whitespace around ``=``), not only the plain
-    # one, since each of them can open such a value.
-    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'([A-Za-z0-9_]+)\'|([A-Za-z0-9_]+))[[:space:]]*=[[:space:]]*([\"\'].*)$ ]]; then
-      key="${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}"
-      value="${BASH_REMATCH[5]}"
-      quote="${value:0:1}"
-      inner="${value:1}"
-      inner="${inner//\\${quote}/}"
-      if [[ "$inner" != *"$quote"* ]]; then
-        UNREAD_ENV_KEYS["$key"]=1
-        for ((j = i + 1; j < ${#lines[@]}; j++)); do
-          stripped="${lines[$j]//\\${quote}/}"
-          if [[ "$stripped" == *"$quote"* ]]; then
-            i=$j
-            break
-          fi
-        done
-        continue
-      fi
-    fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
-      # Forms python-dotenv reads differently from the plain parse below:
-      # leading or trailing whitespace (stripped there, a CR included), an
-      # unquoted `` # comment`` (dropped there), a quoted value followed by
-      # anything, and any backslash escape but ``\\`` and ``\"`` inside
-      # double quotes, or any at all inside single quotes (dotenv decodes
-      # ``\t``, ``\n``, ``\'`` ... and keeps ``\$``; this parse does the
-      # opposite). Recorded like the forms in the branch further down.
-      #
-      # A quote inside the quotes that is not escaped ends the value there,
-      # and python-dotenv rejects the whole line (the variable keeps its
-      # earlier binding or the default), so that is recorded too. The LAST
-      # binding decides, as in dotenv: a line read cleanly clears a marker an
-      # earlier line left.
-      inner=""
-      ((${#value} >= 2)) && inner="${value:1:${#value}-2}"
-      stripped="${inner//\\\\/}"
-      stripped="${stripped//\\\"/}"
-      if [[ "$value" =~ ^[[:space:]] || "$value" =~ [[:space:]]$ ]] ||
-        [[ "$value" != [\"\']* && "$value" =~ [[:space:]]# ]] ||
-        [[ "$value" == [\"\']* && ! "$value" =~ ^\".*\"$ && ! "$value" =~ ^\'.*\'$ ]] ||
-        [[ "$value" == \"* && ( "$stripped" == *\\* || "$stripped" == *\"* ) ]] ||
-        [[ "$value" == \'* && ( "$value" == *\\* || "$inner" == *\'* ) ]]; then
-        UNREAD_ENV_KEYS["$key"]=1
-      else
-        unset 'UNREAD_ENV_KEYS[$key]'
-      fi
       if [[ "$value" =~ ^\".*\"$ ]]; then
         value="${value:1:${#value}-2}"
         value="${value//\\\$/\$}"
@@ -3496,18 +3381,8 @@ load_env_file() {
         value="${value:1:${#value}-2}"
       fi
       ENV_VALUES["$key"]="$value"
-    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(\'([A-Za-z0-9_]+)\'|([A-Za-z0-9_]+))[[:space:]]*(=|$|#) ]]; then
-      # A bare ``KEY`` (or ``export KEY``) is a binding too: python-dotenv
-      # gives it no value, load_dotenv leaves the variable unset, and the
-      # server takes the default -- whatever an earlier line assigned.
-      # python-dotenv -- and so the server -- also accepts ``export KEY=``,
-      # spaces around ``=`` and a single-quoted ``'KEY'``. They are not read
-      # here, only recorded, so a check that depends on such a key can say
-      # it could not check instead of reading the default the server does
-      # not use.
-      UNREAD_ENV_KEYS["${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}"]=1
     fi
-  done
+  done < "$env_file"
 }
 
 validate_ssl_runtime_path() {

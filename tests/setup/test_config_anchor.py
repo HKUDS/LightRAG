@@ -356,69 +356,6 @@ def test_an_empty_working_dir_is_the_directory_the_server_starts_in(
     assert f"{tmp_path}/_lightrag_config/storage_anchor.json" in result.stderr
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "export WORKING_DIR=./actual",
-        "WORKING_DIR = ./actual",
-        "  WORKING_DIR=./actual",
-    ],
-)
-def test_a_working_dir_in_a_form_the_wizard_does_not_read_is_unchecked(
-    tmp_path: Path, line: str
-) -> None:
-    """python-dotenv accepts these forms, so the server reads the anchor under
-    ``./actual``; the wizard does not parse them, and must not fall back to
-    ``./rag_storage`` and pass what the server refuses."""
-    _write_anchor(tmp_path / "actual", "PGKVStorage")
-    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
-    assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-    assert "anchor was not checked" in result.stderr
-
-
-def test_a_configuration_backend_the_wizard_does_not_read_is_unchecked(
-    tmp_path: Path,
-) -> None:
-    """The comparison side too: the server would resolve PGKVStorage and
-    match the anchor, the wizard would resolve JsonKVStorage and refuse."""
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            "export LIGHTRAG_CONFIG_STORAGE=PGKVStorage",
-        ],
-    )
-    assert "binds this deployment" not in result.stderr
-    assert "LIGHTRAG_CONFIG_STORAGE is assigned in a form" in result.stderr
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "WORKING_DIR=./actual # local path",
-        'WORKING_DIR="./actual" # local path',
-        "WORKING_DIR=./actual ",
-        "WORKING_DIR= ./actual",
-        "WORKING_DIR=./actual\r",
-    ],
-)
-def test_a_working_dir_dotenv_reads_differently_is_unchecked(
-    tmp_path: Path, line: str
-) -> None:
-    """python-dotenv strips the comment and the whitespace and reads
-    ``./actual``; the plain parse would keep them and look elsewhere."""
-    _write_anchor(tmp_path / "actual", "PGKVStorage")
-    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-    assert "binds this deployment" not in result.stderr
-
-
 def test_a_hash_inside_an_unquoted_value_is_not_a_comment(tmp_path: Path) -> None:
     _write_anchor(tmp_path / "a#b", "PGKVStorage")
     result = _validate(
@@ -459,25 +396,6 @@ def test_a_missing_anchor_below_a_searchable_directory_is_absent(
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
     assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
     assert "anchor" not in result.stderr
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        'WORKING_DIR="./a\\tactual"',
-        'WORKING_DIR="./a\\$actual"',
-        "WORKING_DIR='./a\\'actual'",
-    ],
-)
-def test_a_working_dir_with_an_escape_dotenv_decodes_differently_is_unchecked(
-    tmp_path: Path, line: str
-) -> None:
-    """python-dotenv decodes ``\\t`` and ``\\'`` and keeps ``\\$``; the plain
-    parse does the opposite, so its path is not the server's."""
-    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
 
 
 def test_escapes_both_parsers_decode_alike_are_read(tmp_path: Path) -> None:
@@ -546,43 +464,6 @@ def test_working_dir_is_normalized_like_the_servers_abspath(
     assert f"{tmp_path}/actual/_lightrag_config/storage_anchor.json" in result.stderr
 
 
-@pytest.mark.parametrize(
-    "line", ["'WORKING_DIR'=./actual", "export 'WORKING_DIR'=./actual"]
-)
-def test_a_single_quoted_key_is_unchecked(tmp_path: Path, line: str) -> None:
-    """python-dotenv accepts a single-quoted key; the plain parse does not."""
-    _write_anchor(tmp_path / "actual", "PGKVStorage")
-    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-
-
-@pytest.mark.parametrize(
-    "extra",
-    [
-        ["WORKING_DIR"],
-        ["export WORKING_DIR"],
-        ["WORKING_DIR  # cleared"],
-        ["'WORKING_DIR'"],
-    ],
-)
-def test_a_bare_key_that_clears_an_earlier_assignment_is_unchecked(
-    tmp_path: Path, extra: list[str]
-) -> None:
-    """python-dotenv gives a bare key no value and load_dotenv leaves it
-    unset, so the server reads ./rag_storage, not the earlier ./actual."""
-    _write_anchor(tmp_path / "actual", "JsonKVStorage")
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR=./actual", *extra],
-    )
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-
-
 def test_operator_compose_edits_are_kept_and_not_interpreted(
     tmp_path: Path,
 ) -> None:
@@ -624,90 +505,6 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "/srv/lightrag:/app/data/rag_storage" in generated
 
 
-@pytest.mark.parametrize("line", ['WORKING_DIR="./a"ctual"', "WORKING_DIR='./a'ctual'"])
-def test_an_unescaped_inner_quote_is_unchecked(tmp_path: Path, line: str) -> None:
-    """python-dotenv rejects the whole line, so the server keeps the
-    default; reading the outermost quotes as one value looks elsewhere."""
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", line])
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-
-
-def test_the_last_binding_decides_whether_a_key_is_read(tmp_path: Path) -> None:
-    """dotenv keeps the LAST binding, so a clean assignment after an unread
-    one is the value the server uses, and the check must run on it."""
-    _write_anchor(tmp_path / "actual", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            "export WORKING_DIR=./old",
-            "WORKING_DIR=./actual",
-        ],
-    )
-    assert parse_lines(result.stdout)["VALID"] == "no"
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
-def test_an_unread_binding_after_a_clean_one_still_marks_the_key(
-    tmp_path: Path,
-) -> None:
-    result = _validate(
-        tmp_path,
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            "WORKING_DIR=./actual",
-            "export WORKING_DIR=./other",
-        ],
-    )
-    assert "WORKING_DIR is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-
-
-@pytest.mark.parametrize("quote", ['"', "'"])
-def test_lines_inside_a_multiline_value_are_not_assignments(
-    tmp_path: Path, quote: str
-) -> None:
-    """python-dotenv reads NOTE across the lines up to its closing quote, so
-    the WORKING_DIR line inside it is part of NOTE, and the server keeps the
-    default ./rag_storage."""
-    _write_anchor(tmp_path / "actual", "JsonKVStorage")
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            f"NOTE={quote}x",
-            "WORKING_DIR=./actual",
-            f"y{quote}",
-        ],
-    )
-    assert parse_lines(result.stdout)["VALID"] == "no"
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
-def test_an_unclosed_quote_drops_only_its_own_line(tmp_path: Path) -> None:
-    """With no closing quote dotenv drops that statement and reads on."""
-    _write_anchor(tmp_path / "actual", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", 'NOTE="x', "WORKING_DIR=./actual"],
-    )
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
-def test_compose_ignores_how_env_spells_working_dir(tmp_path: Path) -> None:
-    """The generated service fixes the container's WORKING_DIR, so an
-    unread .env spelling of it must not stop the check."""
-    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
-    result = _validate(tmp_path, [*COMPOSE_ENV, "export WORKING_DIR=/tmp"])
-    assert parse_lines(result.stdout)["VALID"] == "no"
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
 @pytest.mark.parametrize("target_env", [[], ["LIGHTRAG_RUNTIME_TARGET=compose"]])
 def test_the_shells_environment_is_never_consulted(
     tmp_path: Path, target_env: list[str]
@@ -730,60 +527,6 @@ def test_the_shells_environment_is_never_consulted(
     assert "binds this deployment to PGKVStorage" in result.stderr
 
 
-@pytest.mark.parametrize(
-    "opening", ['NOTE= "x', 'export NOTE="x', "'NOTE'='x", 'NOTE = "x']
-)
-def test_a_multiline_value_opened_by_any_binding_form_is_skipped(
-    tmp_path: Path, opening: str
-) -> None:
-    """Every binding form dotenv accepts can open a multiline value, not only
-    a plain ``KEY="``; the WORKING_DIR line inside is part of NOTE."""
-    quote = opening[-2]
-    _write_anchor(tmp_path / "actual", "JsonKVStorage")
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            opening,
-            "WORKING_DIR=./actual",
-            f"y{quote}",
-        ],
-    )
-    assert parse_lines(result.stdout)["VALID"] == "no"
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
-def test_an_unread_kv_key_is_irrelevant_once_config_storage_is_explicit(
-    tmp_path: Path,
-) -> None:
-    """The KV backend decides the configuration backend only while
-    LIGHTRAG_CONFIG_STORAGE is unset; with an explicit one the check runs."""
-    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _validate(
-        tmp_path,
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            "export LIGHTRAG_KV_STORAGE=PGKVStorage",
-            "LIGHTRAG_CONFIG_STORAGE=JsonKVStorage",
-        ],
-    )
-    assert parse_lines(result.stdout)["VALID"] == "no"
-    assert "binds this deployment to PGKVStorage" in result.stderr
-
-
-def test_an_unread_kv_key_still_matters_when_config_storage_follows_it(
-    tmp_path: Path,
-) -> None:
-    result = _validate(
-        tmp_path,
-        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "export LIGHTRAG_KV_STORAGE=PGKVStorage"],
-    )
-    assert "LIGHTRAG_KV_STORAGE is assigned in a form this wizard does not read" in (
-        result.stderr
-    )
-
-
 def test_advice_to_delete_the_anchor_requires_stopping_every_server(
     tmp_path: Path,
 ) -> None:
@@ -796,78 +539,17 @@ def test_advice_to_delete_the_anchor_requires_stopping_every_server(
     assert "stopped first" in report.stdout
 
 
-def test_a_finalizer_checks_the_env_it_writes_not_the_old_spelling(
-    tmp_path: Path,
-) -> None:
-    """The generator writes the key canonically from ENV_VALUES and drops
-    the ``export`` line, so the unread marker from the old file is stale."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            *BASE_ENV,
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            "export LIGHTRAG_KV_STORAGE=MongoKVStorage",
-        ],
-    )
+def test_hand_written_dotenv_forms_are_not_interpreted(tmp_path: Path) -> None:
+    """The wizard reads the KEY=value lines it writes itself. A hand-written
+    ``export`` line is not modelled -- neither read nor flagged -- so the
+    check runs on the plain value; keeping such a line consistent is the
+    operator's. See *The setup wizard* in the configuration storage
+    contract."""
     _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    result = _run(
-        tmp_path,
-        """
-load_existing_env_if_present
-report_config_anchor_for_output host
-""",
-    )
-    assert "binds it to PGKVStorage" in result.stdout
-    assert "not checked" not in result.stdout
-
-
-def test_migration_advice_names_working_dir_when_env_spells_it_unread(
-    tmp_path: Path,
-) -> None:
-    """The stale canonical value equals the Compose mount, but the tool's
-    dotenv reads the later ``export`` line; only a prefix is certain."""
-    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
     result = _validate(
         tmp_path,
-        [
-            *COMPOSE_ENV,
-            "WORKING_DIR=./data/rag_storage",
-            "export WORKING_DIR=./other",
-        ],
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "export WORKING_DIR=./elsewhere"],
     )
-    assert (
-        f"WORKING_DIR={tmp_path}/data/rag_storage lightrag-migrate-config"
-        in result.stderr
-    )
-
-
-PRESERVED_HEADER = (
-    "### ----- Preserved custom environment variables from previous .env  -----"
-)
-
-
-def test_a_finalizer_keeps_the_marker_for_a_binding_regeneration_preserves(
-    tmp_path: Path,
-) -> None:
-    """The generator copies the preserved-custom section verbatim after the
-    canonical settings, so an ``export`` binding there still wins under
-    dotenv in the file it writes; the check must not use ENV_VALUES."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            *BASE_ENV,
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            PRESERVED_HEADER,
-            "export LIGHTRAG_CONFIG_STORAGE=MongoKVStorage",
-        ],
-    )
-    _write_anchor(tmp_path / "rag_storage", "JsonKVStorage")
-    result = _run(
-        tmp_path,
-        """
-load_existing_env_if_present
-report_config_anchor_for_output host
-""",
-    )
-    assert "LIGHTRAG_CONFIG_STORAGE is assigned in a form" in result.stdout
-    assert "Configuration storage anchor: JsonKVStorage" not in result.stdout
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+    assert "not checked" not in result.stderr

@@ -726,25 +726,19 @@ backend out of a repeated key than the server does. A host `WORKING_DIR`
 that uses `${...}` is not resolved: the server's python-dotenv expands it,
 and a second implementation of that expansion would be a second answer to
 drift from the first. Both flows then warn that the anchor was not checked.
-The same holds for a key the check depends on (`WORKING_DIR`, the runtime
-target, the configuration or KV backend) assigned in a python-dotenv form
-the wizard's `.env` reader does not parse, such as `export KEY=`, a
-single-quoted `'KEY'`, a bare `KEY` (which clears an earlier assignment:
-dotenv gives it no value and the server takes the default), spaces around
-`=`, an inline ` # comment`, trailing whitespace, or a backslash
-escape the two parsers decode differently, or an unescaped quote inside the
-quotes (dotenv rejects that line): it is recorded, the last binding of a key
-deciding as it does in dotenv, and the lines inside a quoted value that
-spans several lines (opened by any binding form) are part of that value, not assignments,
-not guessed at, and the anchor is reported as not checked rather than looked
-for under a default the server does not use. `WORKING_DIR` is exempt for the
-compose runtime, whose generated service fixes the container's. The setup
-flows check the `.env` they are about to WRITE, which the generator emits
-canonically from the wizard's values, so for them those markers from the
-old file no longer apply — except for a binding inside the preserved-custom
-section, which the generator copies verbatim after those values and which
-therefore still wins. A migration command recommended while
-`WORKING_DIR` is spelled in an unread form always names the directory.
+
+**The wizard reads the `.env` it writes: plain `KEY=value` lines.** Other
+python-dotenv forms that only a hand edit produces are not modelled: they
+are neither parsed nor flagged. That covers `export KEY=`, quoted or bare
+keys, spaces around `=`, inline comments, backslash escapes, multi-line
+quoted values, and a key bound twice in different forms. Following
+dotenv's grammar in bash would be a second parser, one more answer to drift
+from the server's, and every corner it covered exposed the next. A
+hand-edited `.env` is the operator's to keep consistent. The worst case is a
+check that runs on the plain value the wizard read; the server still reads
+the anchor strictly and refuses a mismatch at startup, with nothing
+written. Regeneration rewrites the keys the wizard manages as plain
+`KEY=value`.
 
 **`.env` is the wizard's only source of values.** It is a static `.env`
 tool: the shell it runs in says nothing about the environment a server will
@@ -752,16 +746,7 @@ start from, so it never consults exported variables, even though a host
 server loads `.env` with `override=False`. An exported value that
 contradicts `.env` is the operator's to reconcile.
 
-Whitespace means the POSIX kind (space, tab, CR). python-dotenv also strips
-Unicode whitespace such as a no-break space, only because Python's `\s` is
-Unicode by default; a shell sourcing the same file keeps it. Such a
-character is a copy-paste accident, not `.env` syntax, and the wizard does
-not model it: at worst it misses a warning, and the server still refuses a
-mismatched anchor at startup with nothing written. The same holds for the
-other corners of python-dotenv's grammar that no common `.env` uses: keys
-outside `[A-Za-z0-9_]` (a `-`, which no shell can export either, or an
-arbitrary quoted key) and a lone CR as a line ending (a pre-OS X Mac
-convention; CRLF is handled). A lookup that finds no anchor
+A lookup that finds no anchor
 is absence only below a searchable directory; an ancestor that cannot be
 searched or is not a directory makes the server's `open()` fail and refuse,
 so the wizard reports that anchor as unreadable, never absent. The path is
@@ -1764,10 +1749,9 @@ The anchor and the container identity (slice 1c):
     it, reads the backend a repeated key leaves to the server, reports on the
     directory of the runtime target any of its flows is switching to, reads
     an empty `WORKING_DIR` as the start directory, and warns instead of
-    guessing for a `WORKING_DIR` that uses `${...}` or for a key it depends
-    on written in a dotenv form it does not parse; a path it cannot search
+    guessing for a `WORKING_DIR` that uses `${...}`; a path it cannot search
     is unreadable, not absent; a Compose deployment's migration advice
     names its `./data/rag_storage`; operator edits to the compose file are
-    kept by regeneration and not interpreted.
-    `lightrag-migrate-config` resolves an empty
+    kept by regeneration and not interpreted, and so are hand-written dotenv
+    forms other than `KEY=value`. `lightrag-migrate-config` resolves an empty
     `WORKING_DIR` as the start directory, as the server does.
