@@ -738,7 +738,9 @@ hand-edited `.env` is the operator's to keep consistent. The worst case is a
 check that runs on the plain value the wizard read; the server still reads
 the anchor strictly and refuses a mismatch at startup, with nothing
 written. Regeneration rewrites the keys the wizard manages as plain
-`KEY=value`.
+`KEY=value`. What the wizard itself writes it reads as dotenv does,
+including a doubled backslash inside the single quotes `format_env_value`
+puts around a value with a space, which dotenv decodes to one.
 
 **`.env` is the wizard's only source of values.** It is a static `.env`
 tool: the shell it runs in says nothing about the environment a server will

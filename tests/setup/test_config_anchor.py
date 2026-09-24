@@ -553,3 +553,36 @@ def test_hand_written_dotenv_forms_are_not_interpreted(tmp_path: Path) -> None:
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
     assert "not checked" not in result.stderr
+
+
+def test_a_single_quoted_doubled_backslash_reads_as_the_server_reads_it(
+    tmp_path: Path,
+) -> None:
+    """format_env_value single-quotes a value with a space as it is, and
+    python-dotenv decodes ``\\\\`` inside single quotes to one backslash:
+    the wizard must look where the server will."""
+    _write_anchor(tmp_path / "a\\b path", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR='./a\\\\b path'"],
+    )
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "working_dir, expected",
+    [
+        ("/", "/_lightrag_config/storage_anchor.json"),
+        ("//", "//_lightrag_config/storage_anchor.json"),
+    ],
+)
+def test_the_anchor_path_is_joined_as_os_path_join_does(
+    tmp_path: Path, working_dir: str, expected: str
+) -> None:
+    result = _run(
+        tmp_path,
+        f"ENV_VALUES[WORKING_DIR]='{working_dir}'\n"
+        'read_config_anchor host\nprintf "PATH=%s\\n" "$CONFIG_ANCHOR_PATH"',
+    )
+    assert parse_lines(result.stdout)["PATH"] == expected

@@ -1358,7 +1358,10 @@ read_config_anchor() {
     return 0
   fi
   dir="$RESOLVED_WORKING_DIR"
-  CONFIG_ANCHOR_PATH="${dir}/_lightrag_config/storage_anchor.json"
+  # Joined as os.path.join does: no second slash after a root that already
+  # ends in one ("/" or the POSIX-distinct "//").
+  CONFIG_ANCHOR_PATH="${dir%/}/_lightrag_config/storage_anchor.json"
+  [[ "$dir" == "//" ]] && CONFIG_ANCHOR_PATH="//_lightrag_config/storage_anchor.json"
   CONFIG_ANCHOR_STATE="unreadable"
 
   if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then
@@ -3379,6 +3382,11 @@ load_env_file() {
         value="${value//\\\\/\\}"
       elif [[ "$value" =~ ^\'.*\'$ ]]; then
         value="${value:1:${#value}-2}"
+        # python-dotenv decodes ``\\`` inside single quotes, and
+        # format_env_value writes a value with whitespace, ``$``, ``#`` or
+        # ``"`` single-quoted as it is -- so a doubled backslash in the
+        # wizard's own output reads back as one on the server.
+        value="${value//\\\\/\\}"
       fi
       ENV_VALUES["$key"]="$value"
     fi
