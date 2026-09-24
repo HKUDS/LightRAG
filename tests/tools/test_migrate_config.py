@@ -517,6 +517,29 @@ class TestFailureAndResume:
             await _migrate(tmp_path, Container(_source_rows()), target)
         assert "residue" not in str(excinfo.value)
 
+    async def test_a_target_identity_that_turned_bad_after_the_claim_is_a_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """Verification re-reads the target's identity; a malformed one there
+        is past the claim, so it is a failure, not a refusal."""
+        _anchor(tmp_path)
+        real_read = cs.read_storage_identity
+        reads = []
+
+        async def _read(config):
+            reads.append(config)
+            # source, classification, the claim's read-back; the 4th is step 6
+            if len(reads) > 3:
+                raise ca.ConfigurationIdentityError(
+                    "malformed identity", cause=ca.IDENTITY_ANCHOR_UNREADABLE
+                )
+            return await real_read(config)
+
+        monkeypatch.setattr(cs, "read_storage_identity", _read)
+        with pytest.raises(mc.MigrationFailed, match="malformed identity"):
+            await _migrate(tmp_path, Container(_source_rows()), Container())
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
     async def test_the_directory_claims_go_back_before_the_anchor_lock(
         self, tmp_path, monkeypatch
     ):
@@ -1026,3 +1049,26 @@ async def test_a_storage_that_fails_to_open_is_closed_and_reported(monkeypatch, 
     assert "could not open the PGKVStorage configuration storage" in out
     assert "anchor is unchanged" in out
     assert finalized == [True]
+
+
+async def test_a_backend_that_cannot_be_constructed_is_reported(monkeypatch, capsys):
+    """A driver that is missing, or an environment value the constructor
+    rejects, fails before anything is open: a migration failure, not a
+    traceback."""
+    from lightrag.kg import factory
+
+    working_dir = os.environ["WORKING_DIR"]
+    _anchor(working_dir)
+
+    class _RejectsItsEnvironment:
+        def __init__(self, **kwargs):
+            raise ValueError("MONGO_UPSERT_MAX_PAYLOAD_BYTES must be an integer")
+
+    monkeypatch.setattr(
+        factory, "get_storage_class", lambda name: _RejectsItsEnvironment
+    )
+    code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "could not create the PGKVStorage configuration storage" in out
+    assert "anchor is unchanged" in out
