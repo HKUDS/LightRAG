@@ -879,6 +879,68 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         return {nid for nid in node_ids if graph.has_node(nid)}
 
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """Get multiple nodes in a single call, from one graph snapshot.
+
+        Overrides the ``BaseGraphStorage`` default, which awaits one
+        ``get_node`` per id -- each such await is a point where a peer
+        commit landing mid-batch could make ``_get_graph`` reload, so
+        entries fetched before and after the reload would describe two
+        different graph states inside one logical batch. Matches
+        ``has_nodes_batch``: one ``_get_graph()`` call, then every lookup
+        answered synchronously against that single snapshot.
+        """
+        graph = await self._get_graph()
+        result = {}
+        for node_id in node_ids:
+            node = graph.nodes.get(node_id)
+            if node is not None:
+                result[node_id] = dict(node)
+        return result
+
+    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+        """Node degrees for multiple ids, from one graph snapshot.
+
+        See ``get_nodes_batch`` for why this overrides the per-id default.
+        """
+        graph = await self._get_graph()
+        return {
+            node_id: graph.degree(node_id) if graph.has_node(node_id) else 0
+            for node_id in node_ids
+        }
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Get multiple edges in a single call, from one graph snapshot.
+
+        See ``get_nodes_batch`` for why this overrides the per-pair default.
+        """
+        graph = await self._get_graph()
+        result = {}
+        for pair in pairs:
+            src_id = pair["src"]
+            tgt_id = pair["tgt"]
+            edge = graph.edges.get((src_id, tgt_id))
+            if edge is not None:
+                result[(src_id, tgt_id)] = dict(edge)
+        return result
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Combined endpoint degrees for multiple edges, from one snapshot.
+
+        See ``get_nodes_batch`` for why this overrides the per-pair default.
+        """
+        graph = await self._get_graph()
+        result = {}
+        for src_id, tgt_id in edge_pairs:
+            src_degree = graph.degree(src_id) if graph.has_node(src_id) else 0
+            tgt_degree = graph.degree(tgt_id) if graph.has_node(tgt_id) else 0
+            result[(src_id, tgt_id)] = src_degree + tgt_degree
+        return result
+
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
     ) -> None:
