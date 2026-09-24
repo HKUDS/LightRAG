@@ -1289,11 +1289,14 @@ config_anchor_migrate_command() {
   # The recovery command for ``$1`` as the operator runs it on this host.
   # The tool resolves WORKING_DIR from the host .env, which a Compose
   # deployment does not point at its mount, so the command names the
-  # directory the anchor was read from whenever the two differ.
+  # directory the anchor was read from whenever the two differ -- and
+  # whenever .env spells WORKING_DIR in a form the loader did not read, as
+  # the tool's dotenv then resolves a value the wizard cannot see.
   local target="$1" anchor_dir="${CONFIG_ANCHOR_PATH%/_lightrag_config/*}"
   local prefix=""
 
-  if ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
+  if [[ -n "${UNREAD_ENV_KEYS[WORKING_DIR]+set}" ]] ||
+    ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
     prefix="WORKING_DIR=$(printf '%q' "$anchor_dir") "
   fi
   printf '%slightrag-migrate-config --target-backend %s' "$prefix" "$target"
@@ -1436,7 +1439,10 @@ report_config_anchor() {
     unreadable)
       log_warn "The configuration storage anchor $CONFIG_ANCHOR_PATH exists" \
         "but could not be read here. The server never treats it as absent:" \
-        "repair or restore it, or delete it to rebind on the next start."
+        "repair or restore it, or -- with EVERY server on this WORKING_DIR" \
+        "stopped first -- delete it to rebind on the next start. A running" \
+        "server never rereads it, so a delete under live servers splits the" \
+        "deployment."
       return 0
       ;;
   esac
@@ -1463,8 +1469,18 @@ report_config_anchor_for_output() {
   # directory the next server reads the anchor from. ``$1`` is that target.
   # An unset KV backend is the server's default; a configuration backend the
   # category does not admit is reported by the admitted check instead.
+  #
+  # The .env being checked is the one about to be WRITTEN, and the generator
+  # writes these keys canonically from ENV_VALUES, dropping every form the
+  # loader could not read. The unread markers from the old file therefore
+  # no longer apply, whether a prompt changed the value or kept it.
   local candidate="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}"
+  local key
 
+  for key in WORKING_DIR LIGHTRAG_RUNTIME_TARGET LIGHTRAG_CONFIG_STORAGE \
+    LIGHTRAG_KV_STORAGE; do
+    unset 'UNREAD_ENV_KEYS[$key]'
+  done
   config_storage_is_admitted "$candidate" || return 0
   report_config_anchor "$candidate" "$1"
 }
@@ -3554,7 +3570,7 @@ validate_env_file() {
         "Set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND, or move the container with '$(config_anchor_migrate_command "$config_storage")' first"
       errors=1
     elif [[ "$CONFIG_ANCHOR_STATE" == "unreadable" ]]; then
-      echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read here; the server reads it strictly and refuses to start unless it is a valid anchor, so check it (repair, restore or delete it if it is not)." >&2
+      echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read here; the server reads it strictly and refuses to start unless it is a valid anchor, so check it (repair or restore it, or delete it with every server on this WORKING_DIR stopped first: a running server never rereads it)." >&2
     elif [[ "$CONFIG_ANCHOR_STATE" == "unresolved" ]]; then
       echo "Warning: $CONFIG_ANCHOR_UNRESOLVED_REASON, so the configuration storage anchor was not checked; the server refuses to start if it binds a backend other than the one it resolves." >&2
     fi

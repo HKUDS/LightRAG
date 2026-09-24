@@ -738,7 +738,11 @@ deciding as it does in dotenv, and the lines inside a quoted value that
 spans several lines (opened by any binding form) are part of that value, not assignments,
 not guessed at, and the anchor is reported as not checked rather than looked
 for under a default the server does not use. `WORKING_DIR` is exempt for the
-compose runtime, whose generated service fixes the container's.
+compose runtime, whose generated service fixes the container's. The setup
+flows check the `.env` they are about to WRITE, which the generator emits
+canonically from the wizard's values, so for them those markers from the
+old file no longer apply. A migration command recommended while
+`WORKING_DIR` is spelled in an unread form always names the directory.
 
 **`.env` is the wizard's only source of values.** It is a static `.env`
 tool: the shell it runs in says nothing about the environment a server will

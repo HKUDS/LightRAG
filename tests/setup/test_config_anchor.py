@@ -782,3 +782,60 @@ def test_an_unread_kv_key_still_matters_when_config_storage_follows_it(
     assert "LIGHTRAG_KV_STORAGE is assigned in a form this wizard does not read" in (
         result.stderr
     )
+
+
+def test_advice_to_delete_the_anchor_requires_stopping_every_server(
+    tmp_path: Path,
+) -> None:
+    """A running server never rereads the anchor, so a delete under live
+    servers lets a respawned worker bind another container."""
+    _write_anchor(tmp_path / "rag_storage", "", raw="{")
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert "every server on this WORKING_DIR stopped first" in result.stderr
+    report = _run(tmp_path, 'report_config_anchor "JsonKVStorage"')
+    assert "stopped first" in report.stdout
+
+
+def test_a_finalizer_checks_the_env_it_writes_not_the_old_spelling(
+    tmp_path: Path,
+) -> None:
+    """The generator writes the key canonically from ENV_VALUES and drops
+    the ``export`` line, so the unread marker from the old file is stale."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            *BASE_ENV,
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "export LIGHTRAG_KV_STORAGE=MongoKVStorage",
+        ],
+    )
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    result = _run(
+        tmp_path,
+        """
+load_existing_env_if_present
+report_config_anchor_for_output host
+""",
+    )
+    assert "binds it to PGKVStorage" in result.stdout
+    assert "not checked" not in result.stdout
+
+
+def test_migration_advice_names_working_dir_when_env_spells_it_unread(
+    tmp_path: Path,
+) -> None:
+    """The stale canonical value equals the Compose mount, but the tool's
+    dotenv reads the later ``export`` line; only a prefix is certain."""
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    result = _validate(
+        tmp_path,
+        [
+            *COMPOSE_ENV,
+            "WORKING_DIR=./data/rag_storage",
+            "export WORKING_DIR=./other",
+        ],
+    )
+    assert (
+        f"WORKING_DIR={tmp_path}/data/rag_storage lightrag-migrate-config"
+        in result.stderr
+    )
