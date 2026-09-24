@@ -785,7 +785,14 @@ interprets (an integer `schema_version`, a string `workspace`, a mapping
 verified by digest, never grounds to refuse. A backend's typed corruption
 (`CorruptStorageRecordError`) is a damaged row, refused by name, not a store
 failure. The tool gives back its `config_dir` claims before the anchor lock,
-the order every starter uses. A failed replace at step 7 is re-checked
+the order every starter uses. The anchor read under the lock must be the one
+the command read when it chose which connection settings are the source's; a
+migration that moved it in between is refused before anything opens. A source
+that cannot be read at step 2 is the refusal above, never a resumable failure.
+A PostgreSQL target refuses, before the claim, any source row that carries
+its own `id`: PostgreSQL returns the key as `id` on every read, so that field
+could neither be read back nor told apart from the mirror on a later
+migration out of it. A failed replace at step 7 is re-checked
 against the file, so a directory fsync failing after a landed replace is
 reported as switched, not failed; one whose anchor then cannot be read back
 is reported as **indeterminate** — neither switched nor unchanged — and the

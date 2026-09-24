@@ -162,6 +162,8 @@ class ContainerScan:
     # The key of every row that is not a well-formed row (``None`` when the
     # row carries no usable key at all).
     malformed: list[str | None] = field(default_factory=list)
+    # The key of every well-formed row whose envelope carries its own ``id``.
+    with_id: list[str] = field(default_factory=list)
 
     @property
     def rows(self) -> int:
@@ -192,6 +194,8 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
                 scan.malformed.append(key)
                 continue
             scan.digests[key] = row_digest(payload)
+            if "id" in payload:
+                scan.with_id.append(key)
             scope = payload["workspace"]
             scan.scopes[scope] = scan.scopes.get(scope, 0) + 1
     except ConfigurationStorageError:
@@ -412,6 +416,7 @@ async def migrate_configuration(
     page_size: int = DEFAULT_PAGE_SIZE,
     out: Callable[[str], None] = print,
     release_claims: Callable[[], None] = lambda: None,
+    expected_anchor: StorageAnchor | None = None,
 ) -> MigrationResult:
     """Run the seven steps; raise ``MigrationRefused`` / ``MigrationFailed``
     (or a ``ConfigurationStorageError``) on anything short of "switched".
@@ -437,6 +442,16 @@ async def migrate_configuration(
         anchor = read_anchor(working_dir)
         if anchor is None:
             raise MigrationRefused(_no_anchor_message(working_dir))
+        if expected_anchor is not None and anchor != expected_anchor:
+            # The caller chose which connection settings are the source's
+            # from the anchor it read before this lock; another migration
+            # has moved it since, so those settings describe another backend.
+            raise MigrationRefused(
+                f"The anchor changed while this command was starting (it read "
+                f"{expected_anchor.backend}, it now binds {anchor.backend}); "
+                f"another migration ran. Nothing was written; re-run against "
+                f"the current anchor."
+            )
         if target_backend not in admitted:
             raise MigrationRefused(
                 f"{target_backend!r} is not a configuration storage backend; "
@@ -451,10 +466,19 @@ async def migrate_configuration(
             )
         out(f"- Anchor:  {anchor.backend}, identity {anchor.storage_uuid}")
 
-        # Step 2. The source, strictly.
-        source = await open_source(anchor.backend)
-        opened.append(source)
-        stored = await cs.read_storage_identity(source)
+        # Step 2. The source, strictly. A source that cannot be read is the
+        # contract's refusal (nothing is claimed yet), not a resumable failure.
+        try:
+            source = await open_source(anchor.backend)
+            opened.append(source)
+            stored = await cs.read_storage_identity(source)
+            source_scan = await scan_container(source, page_size=page_size)
+        except ConfigurationStorageError as e:
+            raise MigrationRefused(
+                f"The source {anchor.backend} could not be read ({e}). Nothing "
+                f"was written; restore or reconnect the source and re-run -- "
+                f"the anchor is never moved without a readable source."
+            ) from e
         if stored != anchor.storage_uuid:
             raise MigrationRefused(
                 f"The source container ({anchor.backend}) holds identity "
@@ -462,7 +486,6 @@ async def migrate_configuration(
                 f"source settings do not point at the anchored container; "
                 f"the anchor is never moved without a readable source."
             )
-        source_scan = await scan_container(source, page_size=page_size)
         scopes = ", ".join(
             f"{scope} ({n})" for scope, n in sorted(source_scan.scopes.items())
         )
@@ -476,6 +499,17 @@ async def migrate_configuration(
                 f"not well-formed configuration rows: "
                 f"{source_scan.malformed_names()}. They are never skipped; "
                 f"repair or remove them and re-run."
+            )
+        if source_scan.with_id and target_backend in _ID_MIRROR_BACKENDS:
+            # PostgreSQL returns the key as ``id`` on every read, so an
+            # envelope ``id`` stored there can never be read back or told
+            # apart from the mirror on a later migration out of it.
+            raise MigrationRefused(
+                f"{len(source_scan.with_id)} source row(s) carry their own "
+                f"'id' field ({', '.join(repr(k) for k in source_scan.with_id[:10])}"
+                f"{', ...' if len(source_scan.with_id) > 10 else ''}), which "
+                f"{target_backend} cannot hold: it returns the key as 'id'. "
+                f"Nothing was written; remove the field or choose another target."
             )
 
         # Step 3. The target, classified.
@@ -815,6 +849,8 @@ async def async_main(argv: list[str] | None = None) -> int:
             assume_exclusive=args.assume_exclusive,
             page_size=max(1, args.page_size),
             release_claims=lambda: _release_claims(claims),
+            # The overlay above chose the source's settings from this anchor.
+            expected_anchor=anchor,
         )
     except (
         MigrationRefused,
