@@ -204,9 +204,17 @@ def _data(container):
     }
 
 
-async def _migrate(tmp_path, source, target, *, target_backend="MongoKVStorage", **kw):
+async def _migrate(
+    tmp_path,
+    source,
+    target,
+    *,
+    target_backend="MongoKVStorage",
+    source_backend="PGKVStorage",
+    **kw,
+):
     async def _open_source(backend):
-        assert backend == "PGKVStorage"
+        assert backend == source_backend
         return source
 
     async def _open_target(backend):
@@ -340,11 +348,49 @@ class TestRefusals:
 
     async def test_an_unreadable_source_is_refused(self, tmp_path):
         _anchor(tmp_path)
-        with pytest.raises(ConfigurationStorageError):
+        with pytest.raises(mc.MigrationRefused, match="restore or reconnect"):
             await _migrate(
                 tmp_path, Container(read_error=ConnectionError("down")), Container()
             )
         assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+    async def test_an_anchor_moved_since_the_caller_read_it_is_refused(self, tmp_path):
+        """The CLI picks the source's connection settings from the anchor it
+        read before the lock; a migration that ran in between leaves them
+        describing another backend."""
+        _anchor(tmp_path, backend="MongoKVStorage")
+        source, target = Container(_source_rows()), Container()
+        with pytest.raises(mc.MigrationRefused, match="anchor changed"):
+            await mc.migrate_configuration(
+                working_dir=str(tmp_path),
+                target_backend="OpenSearchKVStorage",
+                open_source=lambda backend: pytest.fail("opened a source"),
+                open_target=lambda backend: pytest.fail("opened a target"),
+                expected_anchor=ca.StorageAnchor(
+                    backend="PGKVStorage", storage_uuid=UUID_A
+                ),
+                out=lambda line: None,
+            )
+        assert source.calls == [] and target.calls == []
+
+    async def test_an_envelope_id_is_refused_for_a_postgresql_target(self, tmp_path):
+        """PostgreSQL returns the key as ``id`` on every read: an envelope
+        ``id`` stored there could never be read back, nor told apart from the
+        mirror on a later migration out of it."""
+        _anchor(tmp_path, backend="MongoKVStorage")
+        rows = _source_rows()
+        key = cs.embedding_baseline_key("alpha", "entities")
+        rows[key] = {**rows[key], "id": key}
+        target = Container()
+        with pytest.raises(mc.MigrationRefused, match="cannot hold"):
+            await _migrate(
+                tmp_path,
+                Container(rows),
+                target,
+                target_backend="PGKVStorage",
+                source_backend="MongoKVStorage",
+            )
+        assert target.calls == []
 
     async def test_a_malformed_source_row_is_refused_and_listed(self, tmp_path):
         _anchor(tmp_path)
@@ -442,7 +488,7 @@ class TestFailureAndResume:
         _anchor(tmp_path)
         source = Container(_source_rows())
         source.iter_error_after = 3
-        with pytest.raises(ConfigurationStorageError, match="enumerate"):
+        with pytest.raises(mc.MigrationRefused, match="enumerate"):
             await _migrate(tmp_path, source, Container())
         assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
 
@@ -954,6 +1000,20 @@ class TestCommandLine:
         assert code == 1
         assert "Migration failed" in out and "Refused" not in out
 
+    async def test_an_unreadable_source_is_not_reported_as_still_working(
+        self, monkeypatch, capsys
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        self._wire(
+            monkeypatch, Container(read_error=ConnectionError("down")), Container()
+        )
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "Refused" in out and "restore or reconnect" in out
+        assert "still works on the source" not in out
+
     async def test_conflicting_env_files_are_refused(self, tmp_path, capsys):
         _anchor(os.environ["WORKING_DIR"])
         (tmp_path / "a.env").write_text("POSTGRES_HOST=a\n")
@@ -1047,7 +1107,8 @@ async def test_a_storage_that_fails_to_open_is_closed_and_reported(monkeypatch, 
     out = capsys.readouterr().out
     assert code == 1
     assert "could not open the PGKVStorage configuration storage" in out
-    assert "anchor is unchanged" in out
+    # The source is what failed to open: the pre-claim refusal.
+    assert "Nothing was written" in out and "restore or reconnect" in out
     assert finalized == [True]
 
 
@@ -1071,4 +1132,5 @@ async def test_a_backend_that_cannot_be_constructed_is_reported(monkeypatch, cap
     out = capsys.readouterr().out
     assert code == 1
     assert "could not create the PGKVStorage configuration storage" in out
-    assert "anchor is unchanged" in out
+    # The source is what failed to open: the pre-claim refusal.
+    assert "Nothing was written" in out and "restore or reconnect" in out
