@@ -227,3 +227,70 @@ def test_table_budget_too_small_for_wrapper_avoids_partial_tags():
     # Never spend the budget on a broken opening <table ... without </table>.
     assert not (out.lstrip().startswith("<table") and "</table>" not in out)
     assert _MARKER_RE.search(out) is None
+
+
+class _CountingCharTokenizer(_CharTokenizer):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encode(self, content: str):
+        self.calls += 1
+        return super().encode(content)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("fmt", ["json", "html"])
+@pytest.mark.parametrize("keep", ["head", "tail"])
+def test_row_trim_keeps_most_rows_with_logarithmic_probes(fmt, keep):
+    """Row trimming picks the largest fitting row count without probing
+    every count: a linear scan re-tokenized the whole candidate per row,
+    which took ~25s for an 8000-row table.  The probe count is asserted
+    instead of a duration so the bound holds on any runner.  Bisection over
+    4000 rows needs ~13 probes plus the entry check; the ceiling of 40
+    leaves room for small helper changes while staying two orders of
+    magnitude below the ~2700 probes a linear scan makes."""
+    from lightrag.multimodal_context import (
+        _row_trim_table_leading,
+        _row_trim_table_trailing,
+        parse_table_tag,
+        serialize_html_rows,
+        split_html_rows,
+    )
+
+    row_count = 4000
+    if fmt == "json":
+        rows = [[f"r{i}c0", f"r{i}c1"] for i in range(row_count)]
+        attrs = 'id="t" format="json"'
+        content = f"<table {attrs}>{json.dumps(rows)}</table>"
+    else:
+        rows_html = "".join(
+            f"<tr><td>r{i}c0</td><td>r{i}c1</td></tr>" for i in range(row_count)
+        )
+        attrs = 'id="t" format="html"'
+        content = f"<table {attrs}>{rows_html}</table>"
+
+    counting = _CountingCharTokenizer()
+    tok = Tokenizer(model_name="char", tokenizer=counting)
+    budget = len(content) // 3
+    trim = _row_trim_table_trailing if keep == "head" else _row_trim_table_leading
+    out = trim(content, budget, tok)
+
+    assert out is not None
+    assert len(out) <= budget
+    assert counting.calls < 40, f"{counting.calls} tokenizer calls"
+
+    # Maximality: one more row from the same side would not fit.
+    if fmt == "json":
+        _, kept = parse_table_tag(out)
+        k = len(kept)
+        more = rows[: k + 1] if keep == "head" else rows[-(k + 1) :]
+        bigger = f"<table {attrs}>{json.dumps(more, ensure_ascii=False)}</table>"
+    else:
+        all_rows = split_html_rows(rows_html)
+        k = len(split_html_rows(out[out.index(">") + 1 : -len("</table>")]))
+        more = all_rows[: k + 1] if keep == "head" else all_rows[-(k + 1) :]
+        bigger = f"<table {attrs}>{serialize_html_rows(more)}</table>"
+    assert 0 < k < row_count
+    assert len(bigger) > budget
+    edge = "r0c0" if keep == "head" else f"r{row_count - 1}c0"
+    assert edge in out
