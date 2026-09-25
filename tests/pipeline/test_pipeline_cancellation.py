@@ -164,16 +164,36 @@ async def _run_worker_until_drained(
     worker_coro_factory,
     queue: asyncio.Queue,
     *,
-    timeout: float = 2.0,
+    timeout: float = 15.0,
 ) -> None:
     """Spin up the worker, await q.join(), then cancel the worker — same
-    teardown sequence as ``_run_pipeline_batch``."""
+    teardown sequence as ``_run_pipeline_batch``.
+
+    The join is raced against the worker task: a worker that dies stops
+    calling ``task_done()``, so waiting on the join alone would sit out the
+    whole timeout and then report a bare ``TimeoutError`` instead of the
+    worker's own exception. ``timeout`` is only a hang guard for a worker
+    that stays alive but never drains; a passing run returns as soon as the
+    queue is empty, so its size costs nothing."""
     worker = asyncio.create_task(worker_coro_factory())
+    join_task = asyncio.create_task(queue.join())
     try:
-        await asyncio.wait_for(queue.join(), timeout=timeout)
+        done, _ = await asyncio.wait(
+            {worker, join_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if worker in done:
+            # Re-raises the worker's exception; a clean return is still a bug
+            # because the worker loop is supposed to run until cancelled.
+            worker.result()
+            raise AssertionError("worker exited before draining its queue")
+        if join_task not in done:
+            raise AssertionError(f"queue did not drain within {timeout}s hang guard")
     finally:
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
+        for task in (join_task, worker):
+            task.cancel()
+        await asyncio.gather(join_task, worker, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -308,11 +328,27 @@ async def test_pipeline_cancel_interrupts_inflight_native_parser_llm(
                 ingress=await get_pipeline_ingress(rag.workspace),
             )
         )
-        await asyncio.wait_for(submit_started.wait(), timeout=1.0)
+        # Both bounds are hang guards, not latency assertions: a green run
+        # returns as soon as the event fires / the batch finishes. The first
+        # wait races the batch so a batch that fails before reaching the LLM
+        # surfaces its own exception instead of a timeout.
+        started = asyncio.create_task(submit_started.wait())
+        done, _ = await asyncio.wait(
+            {started, batch}, timeout=15.0, return_when=asyncio.FIRST_COMPLETED
+        )
+        if started not in done:
+            started.cancel()
+            await asyncio.gather(started, return_exceptions=True)
+            if batch in done:
+                batch.result()
+                raise AssertionError("batch finished before the parser LLM call")
+            batch.cancel()
+            await asyncio.gather(batch, return_exceptions=True)
+            raise AssertionError("parser LLM call never started within hang guard")
         async with pipeline_status_lock:
             pipeline_status["cancellation_requested"] = True
 
-        await asyncio.wait_for(batch, timeout=2.0)
+        await asyncio.wait_for(batch, timeout=15.0)
         row = await rag.doc_status.get_by_id(doc_id)
         assert row is not None
         assert row["status"] == DocStatus.FAILED.value
