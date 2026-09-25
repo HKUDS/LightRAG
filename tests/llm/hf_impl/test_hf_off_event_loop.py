@@ -101,11 +101,27 @@ def test_inference_executor_resets_after_fork():
     only place CPython's multi-threaded-fork warning can be asserted absent
     instead of filtered away. _fork_probe.py explains the rest."""
     probe = Path(__file__).with_name("_fork_probe.py")
+    # Imports in the probe can load a BLAS/OpenMP runtime. Keep those native
+    # pools single-threaded so the fresh interpreter remains a faithful model
+    # of a single-threaded pre-fork master. Python-visible threads are still
+    # checked by the probe, and any fork warning still fails the test.
+    env = os.environ.copy()
+    env.update(
+        {
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+            "VECLIB_MAXIMUM_THREADS": "1",
+            "BLIS_NUM_THREADS": "1",
+        }
+    )
     result = subprocess.run(
         [sys.executable, str(probe)],
         capture_output=True,
         text=True,
         timeout=60,
+        env=env,
     )
     assert result.returncode == 0, (
         f"fork probe failed (rc={result.returncode})\n"

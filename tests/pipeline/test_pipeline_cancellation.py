@@ -500,13 +500,13 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
         # the test fails on the missing llm_analyze_result entries. Gating on
         # vlm_inflight makes "flag set while tasks are running" an ordering
         # guarantee instead of a timing bet.
-        flipped_at: list[float] = []
+        cancellation_requested = asyncio.Event()
 
         async def flip_when_inflight():
             await vlm_inflight.wait()
             async with pipeline_status_lock:
                 pipeline_status["cancellation_requested"] = True
-                flipped_at.append(time.monotonic())
+                cancellation_requested.set()
 
         flipper = asyncio.create_task(flip_when_inflight())
 
@@ -522,7 +522,6 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
                 ),
                 timeout=15.0,
             )
-        raised_at = time.monotonic()
         # Never plain-await the flipper: if analyze_multimodal raised without
         # ever reaching the VLM, vlm_inflight stays clear and the wait would
         # hang the suite instead of failing the assertions below.
@@ -531,24 +530,21 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
 
         # A raise with the flag never set means the pre-schedule check (or an
         # earlier boundary) fired instead — not the in-flight path under test.
-        assert flipped_at, "cancellation was never requested while VLM ran"
-
-        # Measure from the flag flip, not from the call: only the poll loop's
-        # reaction time is under test, and timing the whole call would fold in
-        # storage/parser startup and re-introduce a load-sensitive threshold.
-        detect_latency = raised_at - flipped_at[0]
-        assert detect_latency < 1.0, (
-            f"poll loop took {detect_latency:.2f}s to observe the flag (>1.0s); "
-            f"the interval is 0.5s and the VLM call is 1.2s"
+        assert cancellation_requested.is_set(), (
+            "cancellation was never requested while VLM ran"
         )
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        # Sidecar should have been written even though we raised — every
-        # item carries a llm_analyze_result entry (cancelled / failure).
+        # Sidecar should have been written even though we raised. All item
+        # tasks were still running when the flag flipped, so observing three
+        # cancelled failures proves the poll loop interrupted them. If the
+        # loop missed the flag, slow_vlm would finish and these would succeed.
         for letter in ("A", "B", "C"):
             item = payload["drawings"][f"im-{letter}"]
             assert "llm_analyze_result" in item
-            assert item["llm_analyze_result"]["status"] in ("failure", "success")
+            result = item["llm_analyze_result"]
+            assert result["status"] == "failure"
+            assert result["message"] == "cancelled"
     finally:
         await _shutdown_role_workers(rag)
         await rag.finalize_storages()
