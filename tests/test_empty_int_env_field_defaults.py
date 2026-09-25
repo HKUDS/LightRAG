@@ -8,48 +8,17 @@ empty (common in ``.env`` / Compose). ``env.example`` ships live
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _import_field_default(env_key: str, env_value: str, field_name: str) -> str:
-    env = os.environ.copy()
-    env[env_key] = env_value
-    env["PYTHONPATH"] = str(REPO_ROOT) + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
-    )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from lightrag.lightrag import LightRAG; "
-            f"print(LightRAG.__dataclass_fields__[{field_name!r}].default)",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+from tests._env_import_probe import import_defaults_with_blank_env
 
 
 @pytest.mark.offline
 @pytest.mark.parametrize("env_value", ["", "  ", "\t"])
 def test_empty_embedding_batch_num_env_falls_back_on_import(env_value: str) -> None:
-    assert (
-        _import_field_default("EMBEDDING_BATCH_NUM", env_value, "embedding_batch_num")
-        == "10"
-    )
+    assert import_defaults_with_blank_env(env_value)["EMBEDDING_BATCH_NUM"] == "10"
 
 
 @pytest.mark.offline
 def test_empty_llm_timeout_env_falls_back_on_import() -> None:
-    assert _import_field_default("LLM_TIMEOUT", "", "default_llm_timeout") == "240"
+    assert import_defaults_with_blank_env("")["LLM_TIMEOUT"] == "240"
