@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 REDIS_LIMITS = [
     ("MAX_CONNECTIONS", "REDIS_MAX_CONNECTIONS", "200", "17"),
