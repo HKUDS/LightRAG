@@ -97,10 +97,12 @@ def test_inference_executor_resets_after_fork():
     must reset both so the child lazily builds a fresh pair.
 
     The fork runs in a subprocess, not here: a fresh single-threaded
-    interpreter is both what a pre-fork master actually looks like and the
-    only place CPython's multi-threaded-fork warning can be asserted absent
-    instead of filtered away. _fork_probe.py explains the rest."""
+    interpreter is the only place CPython's multi-threaded-fork warning can
+    be asserted absent instead of filtered away. _fork_probe.py explains the
+    rest, including the native thread-pool caps that keep it single-threaded."""
     probe = Path(__file__).with_name("_fork_probe.py")
+    # The probe caps the BLAS/OpenMP pools itself, so running it directly
+    # behaves the same as running it from here.
     result = subprocess.run(
         [sys.executable, str(probe)],
         capture_output=True,
