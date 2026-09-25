@@ -5,7 +5,7 @@ configuration remains* is loud and recoverable, *configuration gone, data
 remains* lets the next startup adopt a wrong baseline over surviving vectors.
 So a partial drop keeps all three records rather than deleting "the ones for
 the parts that did drop". Scenarios 13 and 14 in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

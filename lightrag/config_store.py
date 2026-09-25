@@ -1,7 +1,7 @@
 """The configuration storage: one place, independent of any knowledge-base
 workspace, for the server's settings and every workspace's.
 
-Full contract: ``docs/design/ConfigurationStorage.md``. Read it before adding
+Full contract: ``docs/design/ConfigurationStorageContract.md``. Read it before adding
 a key, before binding a storage to the configuration workspace, and before
 moving anything out of an environment variable. The rules this module
 enforces, in the order a caller meets them:
@@ -38,11 +38,19 @@ enforces, in the order a caller meets them:
   flush and a strict read-back inside the lock. The claim covers workers of
   one Gunicorn master and nothing wider.
 
-The first keys are the three per-target embedding baselines. What a baseline
-MEANS -- the space adopted for that target, not the space its vectors were
-written in -- and why there are three of them is in the contract; the
-``origin`` field records how each claim was established and never enters a
-verdict.
+* **The container has an identity.** ``_lightrag_server/storage_identity``
+  holds a UUID for the whole container, and the anchor file
+  (``lightrag/config_anchor.py``) records which backend and UUID this
+  deployment is bound to. ``bind_configuration_identity`` checks -- or, with
+  no anchor, establishes -- that binding before any baseline is read; the
+  row is never overwritten once valid and never deleted by workspace
+  maintenance.
+
+The first per-workspace keys are the three per-target embedding baselines.
+What a baseline MEANS -- the space adopted for that target, not the space its
+vectors were written in -- and why there are three of them is in the
+contract; the ``origin`` field records how each claim was established and
+never enters a verdict.
 """
 
 from __future__ import annotations
@@ -53,7 +61,21 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncIterator, Callable
 
+from lightrag.config_anchor import (
+    IDENTITY_BACKEND_MISMATCH,
+    IDENTITY_ROW_INVALID,
+    IDENTITY_UUID_MISMATCH,
+    IDENTITY_UUID_MISSING,
+    IDENTITY_WRITE_FAILED,
+    StorageAnchor,
+    anchor_path,
+    canonical_storage_uuid,
+    new_storage_uuid,
+    publish_anchor,
+    read_anchor,
+)
 from lightrag.exceptions import (
+    ConfigurationIdentityError,
     ConfigurationRecordMalformedError,
     ConfigurationStorageError,
     CorruptStorageRecordError,
@@ -88,6 +110,11 @@ EMBEDDING_TARGETS: tuple[str, ...] = (
 # workspaces (or two targets) never wait on each other.
 CLAIM_LOCK_NAMESPACE = "configuration_embedding_claim"
 
+# The keyed-lock namespace the identity bind runs under. One key: the
+# container has one identity, and the lock spans the whole read-decide-write.
+IDENTITY_LOCK_NAMESPACE = "configuration_identity"
+IDENTITY_LOCK_KEY = "storage_identity"
+
 # ``updated_by`` values the two writers stamp. Diagnostic only.
 UPDATED_BY_STARTUP = "lightrag.initialize_storages"
 UPDATED_BY_REBUILD = "lightrag-rebuild-vdb"
@@ -97,6 +124,10 @@ UPDATED_BY_REBUILD = "lightrag-rebuild-vdb"
 # ``updated_by``: a delete leaves no row to carry one.
 DELETED_BY_CLEAR_ENDPOINT = "/documents/clear"
 DELETED_BY_CLEAR_TOOL = "lightrag-clear-storage"
+
+# The offline migration copies EVERY row verbatim into another container and
+# writes that container's identity, so it reads and writes every key.
+UPDATED_BY_MIGRATE = "lightrag-migrate-config"
 
 
 class ConfigScope(str, Enum):
@@ -143,22 +174,52 @@ _EMBEDDING_BASELINE_SCHEMA = (
     "probe | empty | rebuild}"
 )
 
+# The container's own identity: one row, server scope, shared by every
+# workspace the container holds.
+STORAGE_IDENTITY_SUFFIX = "storage_identity"
+
 CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {
-    embedding_baseline_suffix(target): ConfigKeySpec(
-        suffix=embedding_baseline_suffix(target),
-        scope=ConfigScope.WORKSPACE,
+    STORAGE_IDENTITY_SUFFIX: ConfigKeySpec(
+        suffix=STORAGE_IDENTITY_SUFFIX,
+        scope=ConfigScope.SERVER,
         schema_version=1,
-        schema=_EMBEDDING_BASELINE_SCHEMA,
-        readers=(UPDATED_BY_STARTUP, UPDATED_BY_REBUILD, DELETED_BY_CLEAR_TOOL),
-        writers=(
+        schema="{uuid: str (canonical UUID of the whole configuration container)}",
+        # Written by a start that binds with no anchor on record, and by the
+        # migration into its (empty) target; never overwritten once valid,
+        # never deleted by workspace clear/delete or an embedding rebuild.
+        # The rebuild and clear tools only VERIFY it.
+        readers=(
             UPDATED_BY_STARTUP,
             UPDATED_BY_REBUILD,
-            DELETED_BY_CLEAR_ENDPOINT,
             DELETED_BY_CLEAR_TOOL,
+            UPDATED_BY_MIGRATE,
         ),
+        writers=(UPDATED_BY_STARTUP, UPDATED_BY_MIGRATE),
         sensitive=False,
-    )
-    for target in EMBEDDING_TARGETS
+    ),
+    **{
+        embedding_baseline_suffix(target): ConfigKeySpec(
+            suffix=embedding_baseline_suffix(target),
+            scope=ConfigScope.WORKSPACE,
+            schema_version=1,
+            schema=_EMBEDDING_BASELINE_SCHEMA,
+            readers=(
+                UPDATED_BY_STARTUP,
+                UPDATED_BY_REBUILD,
+                DELETED_BY_CLEAR_TOOL,
+                UPDATED_BY_MIGRATE,
+            ),
+            writers=(
+                UPDATED_BY_STARTUP,
+                UPDATED_BY_REBUILD,
+                DELETED_BY_CLEAR_ENDPOINT,
+                DELETED_BY_CLEAR_TOOL,
+                UPDATED_BY_MIGRATE,
+            ),
+            sensitive=False,
+        )
+        for target in EMBEDDING_TARGETS
+    },
 }
 """Every key this namespace may hold. A write to an unregistered suffix is
 refused by ``make_config_row``; a general namespace without a registry becomes
@@ -734,7 +795,7 @@ async def claim_embedding_baseline(
     buffers in process memory until the flush), then strict-read back and
     validate what is actually stored against THIS process's configuration.
     The lock spans workers of one Gunicorn master and nothing wider; see *What
-    the lock does and does not span* in ``docs/design/ConfigurationStorage.md``.
+    the lock does and does not span* in ``docs/design/ConfigurationStorageContract.md``.
 
     Returns the baseline now on record (this process's, or the one another
     worker got in first with). Raises ``EmbeddingBaselineMismatchError`` if
@@ -859,6 +920,302 @@ async def delete_workspace_configuration(config: Any, workspace: str) -> None:
             f"configuration rows survived the delete for workspace "
             f"{workspace!r}: {surviving}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The container identity and the anchor
+# ---------------------------------------------------------------------------
+
+
+def storage_identity_key() -> str:
+    """``_lightrag_server/storage_identity``."""
+    return config_key(SERVER_SCOPE, STORAGE_IDENTITY_SUFFIX)
+
+
+def _identity_invalid(key: str, detail: str) -> ConfigurationIdentityError:
+    return ConfigurationIdentityError(
+        f"The configuration storage identity row {key!r} is unreadable: "
+        f"{detail}. It is never treated as absent and never regenerated; "
+        f"repair or restore the row.",
+        cause=IDENTITY_ROW_INVALID,
+    )
+
+
+async def read_storage_identity(config: Any) -> str | None:
+    """The container's UUID; ``None`` only when the row is CONFIRMED absent.
+
+    A backend error raises ``ConfigurationStorageError`` (the strict read);
+    a row with the wrong schema, scope or a malformed UUID raises
+    ``ConfigurationIdentityError`` with cause ``IDENTITY_ROW_INVALID``.
+    """
+    key = storage_identity_key()
+    row = await read_config_row_strict(config, key)
+    if row is None:
+        return None
+    expected_version = registry_spec(STORAGE_IDENTITY_SUFFIX).schema_version
+    version = row.get("schema_version")
+    if type(version) is not int or version != expected_version:
+        raise _identity_invalid(
+            key,
+            f"unsupported schema_version {version!r}; expected integer "
+            f"{expected_version}",
+        )
+    if row.get("workspace") != SERVER_CONFIG_SCOPE:
+        raise _identity_invalid(
+            key, f"scope {row.get('workspace')!r} is not {SERVER_CONFIG_SCOPE!r}"
+        )
+    value = row.get("value")
+    storage_uuid = canonical_storage_uuid(
+        value.get("uuid") if isinstance(value, dict) else None
+    )
+    if storage_uuid is None:
+        raise _identity_invalid(key, f"value {value!r} carries no canonical UUID")
+    return storage_uuid
+
+
+async def write_storage_identity(
+    config: Any, storage_uuid: str, *, updated_by: str = UPDATED_BY_STARTUP
+) -> None:
+    """Write the identity row, flush strictly, read it back and compare.
+
+    Through ``flush_configuration_storage`` like every baseline claim, so an
+    OpenSearch write still sitting in the process-local buffer is a failure
+    rather than a read-back answered from that buffer. Two callers: the bind
+    of a container that has none, and the offline migration claiming its
+    target (the ownership marker). Neither ever overwrites a valid identity.
+    """
+    key = storage_identity_key()
+    row = make_config_row(
+        scope_workspace=SERVER_SCOPE,
+        suffix=STORAGE_IDENTITY_SUFFIX,
+        value={"uuid": storage_uuid},
+        updated_by=updated_by,
+    )
+    try:
+        await config.upsert({key: row})
+    except Exception as e:
+        raise ConfigurationIdentityError(
+            f"could not write the configuration storage identity {key!r} "
+            f"({type(e).__name__}: {e})",
+            cause=IDENTITY_WRITE_FAILED,
+        ) from e
+    await flush_configuration_storage(config, f"the storage identity {key!r}")
+    stored = await read_storage_identity(config)
+    if stored != storage_uuid:
+        raise ConfigurationIdentityError(
+            f"the configuration storage read back identity {stored!r} for "
+            f"{key!r} right after writing {storage_uuid!r}; the write is not "
+            f"visible or not durable, or another process wrote concurrently, "
+            f"and the instance must not serve on it",
+            cause=IDENTITY_WRITE_FAILED,
+        )
+
+
+def check_anchor_backend(
+    anchor: StorageAnchor | None, backend: str, *, working_dir: str, container: str
+) -> None:
+    """Step 0c: refuse when an anchor binds another backend TYPE.
+
+    Runs before the configuration storage is opened, so a refusal here opens
+    nothing. The server never switches to the anchored backend on its own:
+    type drift is the mistake the anchor exists to stop, so the advice is to
+    select the anchored backend explicitly, and deleting the anchor comes
+    last.
+    """
+    if anchor is None or anchor.backend == backend:
+        return
+    path = anchor_path(working_dir)
+    raise ConfigurationIdentityError(
+        f"Refusing to start: the configuration storage selected now is "
+        f"{container}, but the anchor {path} binds this deployment to "
+        f"{anchor.backend} (identity {anchor.storage_uuid}). The usual cause "
+        f"is LIGHTRAG_KV_STORAGE changing while LIGHTRAG_CONFIG_STORAGE is "
+        f"unset, so the configuration followed it to a container that does "
+        f"not hold this deployment's records. Fix: set "
+        f"LIGHTRAG_CONFIG_STORAGE={anchor.backend} explicitly (no migration "
+        f"needed), or move the configuration container to {backend} with "
+        f"`lightrag-migrate-config --target-backend {backend}` before "
+        f"starting. Last resort: deleting {path} rebinds the "
+        f"next start to {backend} and ABANDONS every record in the "
+        f"{anchor.backend} container, embedding baselines included.",
+        cause=IDENTITY_BACKEND_MISMATCH,
+        anchor_path=path,
+    )
+
+
+def preflight_configuration_anchor(
+    *, working_dir: str, backend: str, container: str
+) -> StorageAnchor | None:
+    """Steps 0b-0c for any starter: strict-read the anchor and refuse a
+    backend type it does not bind. Returns the anchor (``None`` when there is
+    none). Opens nothing; the caller holds the shared anchor lock."""
+    anchor = read_anchor(working_dir)
+    check_anchor_backend(anchor, backend, working_dir=working_dir, container=container)
+    return anchor
+
+
+def _check_identity_against_anchor(
+    anchor: StorageAnchor, stored: str | None, *, working_dir: str, container: str
+) -> None:
+    path = anchor_path(working_dir)
+    if stored is None:
+        raise ConfigurationIdentityError(
+            f"Refusing to start: the configuration container {container} "
+            f"holds no storage identity, but the anchor {path} binds this "
+            f"deployment to identity {anchor.storage_uuid}. If the container "
+            f"was intentionally emptied, replaced, or restored from a backup "
+            f"older than the identity, delete {path} and restart -- the next "
+            f"start binds to this container. Otherwise check that the "
+            f"connection settings (or LIGHTRAG_CONFIG_DIR) point at the "
+            f"intended container. No identity was created.",
+            cause=IDENTITY_UUID_MISSING,
+            anchor_path=path,
+        )
+    if stored != anchor.storage_uuid:
+        raise ConfigurationIdentityError(
+            f"Refusing to start: the configuration container {container} has "
+            f"identity {stored}, but the anchor {path} binds this deployment "
+            f"to identity {anchor.storage_uuid}. Check that the connection "
+            f"settings (or LIGHTRAG_CONFIG_DIR) point at the intended "
+            f"database or directory. Last resort: deleting {path} rebinds the "
+            f"next start to this container and ABANDONS every record in the "
+            f"anchored one.",
+            cause=IDENTITY_UUID_MISMATCH,
+            anchor_path=path,
+        )
+
+
+@dataclass(frozen=True)
+class IdentityBinding:
+    """What a bind or a verification established."""
+
+    storage_uuid: str | None
+    # "verified" (anchor and container agree), "adopted" (no anchor, the
+    # container's identity was bound), "created" (no anchor, no identity:
+    # one was created and bound), "unanchored" (a tool found no anchor and
+    # verified nothing).
+    action: str
+
+
+async def bind_configuration_identity(
+    config: Any, *, working_dir: str, backend: str, container: str
+) -> IdentityBinding:
+    """Step 1b: verify the container against the anchor, or bind it.
+
+    Under one keyed lock spanning the whole read-decide-write, so a second
+    worker of the same Gunicorn master waits and then finds an anchor and an
+    equal UUID. A start that finds NO anchor additionally takes the anchor
+    bind lock (``lightrag/kg/anchor_lock.py``), which serializes the bind
+    across process trees on this host -- several servers may share one
+    ``working_dir`` with different workspaces -- and re-reads the anchor
+    inside it. Concurrent first binds from different ``working_dir``s or
+    hosts against one container remain unsupported.
+
+    * Anchored: the backend type and the container's UUID must both equal
+      the anchor's. A missing, different, invalid or unreadable identity
+      refuses, and nothing is created.
+    * Not anchored: a present identity is adopted; a confirmed-absent one is
+      created (upsert, strict flush, strict read-back). Either way the
+      anchor is then published no-clobber and a WARNING names the container
+      and the UUID. The anchor goes last so every crash window heals by
+      adoption on the next start.
+    """
+    from lightrag.kg.anchor_lock import anchor_bind_lock
+    from lightrag.kg.shared_storage import get_storage_keyed_lock
+
+    async with get_storage_keyed_lock(
+        IDENTITY_LOCK_KEY, namespace=IDENTITY_LOCK_NAMESPACE
+    ):
+        anchor = read_anchor(working_dir)
+        if anchor is not None:
+            return await _verify_anchored(
+                config,
+                anchor,
+                working_dir=working_dir,
+                backend=backend,
+                container=container,
+            )
+        async with anchor_bind_lock(working_dir):
+            # Another server on this working directory may have bound while
+            # this one waited: its anchor is then the one to verify against.
+            anchor = read_anchor(working_dir)
+            if anchor is not None:
+                return await _verify_anchored(
+                    config,
+                    anchor,
+                    working_dir=working_dir,
+                    backend=backend,
+                    container=container,
+                )
+            return await _bind_unanchored(
+                config,
+                working_dir=working_dir,
+                backend=backend,
+                container=container,
+            )
+
+
+async def _verify_anchored(
+    config: Any,
+    anchor: StorageAnchor,
+    *,
+    working_dir: str,
+    backend: str,
+    container: str,
+) -> IdentityBinding:
+    check_anchor_backend(anchor, backend, working_dir=working_dir, container=container)
+    stored = await read_storage_identity(config)
+    _check_identity_against_anchor(
+        anchor, stored, working_dir=working_dir, container=container
+    )
+    return IdentityBinding(storage_uuid=stored, action="verified")
+
+
+async def _bind_unanchored(
+    config: Any, *, working_dir: str, backend: str, container: str
+) -> IdentityBinding:
+    stored = await read_storage_identity(config)
+    if stored is None:
+        stored = new_storage_uuid()
+        await write_storage_identity(config, stored)
+        action = "created"
+    else:
+        action = "adopted"
+    path = publish_anchor(
+        working_dir,
+        StorageAnchor(backend=backend, storage_uuid=stored),
+        replace=False,
+    )
+    logger.warning(
+        f"Bound this deployment to the configuration container {container} "
+        f"(identity {stored}, {action}); the anchor is {path}. No anchor was "
+        f"on record, which is expected on a first start or after the anchor "
+        f"was deliberately deleted to rebind. If neither is the case -- a "
+        f"WORKING_DIR that does not persist, a replaced volume -- drift "
+        f"between configuration containers was NOT checked on this start."
+    )
+    return IdentityBinding(storage_uuid=stored, action=action)
+
+
+async def verify_configuration_identity(
+    config: Any,
+    anchor: StorageAnchor | None,
+    *,
+    working_dir: str,
+    backend: str,
+    container: str,
+) -> IdentityBinding:
+    """The maintenance tools' check: refuse exactly as a start would, write
+    nothing. With no anchor there is nothing to verify, and the caller says
+    so; only a server or SDK start binds."""
+    if anchor is None:
+        return IdentityBinding(storage_uuid=None, action="unanchored")
+    check_anchor_backend(anchor, backend, working_dir=working_dir, container=container)
+    stored = await read_storage_identity(config)
+    _check_identity_against_anchor(
+        anchor, stored, working_dir=working_dir, container=container
+    )
+    return IdentityBinding(storage_uuid=stored, action="verified")
 
 
 # ---------------------------------------------------------------------------

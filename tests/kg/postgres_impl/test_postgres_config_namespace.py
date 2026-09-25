@@ -1,6 +1,6 @@
 """The ``config`` namespace on PostgreSQL: the ``LIGHTRAG_CONFIG`` table, the
 per-namespace SQL templates, the row shaping in both directions, and
-``iter_rows`` (scenario 16 in docs/design/ConfigurationStorage.md) as a
+``iter_rows`` (scenario 16 in docs/design/ConfigurationStorageContract.md) as a
 keyset-paged id walk read through ``get_by_ids``.
 
 The ``workspace`` column is the CONTAINER's workspace; the workspace a row is

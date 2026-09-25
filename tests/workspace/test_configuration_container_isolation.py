@@ -8,7 +8,7 @@ exist: there is no name to collide with, and no override can redirect into a
 container no workspace addresses. These tests pin that property -- and that
 the ``*_WORKSPACE`` variables still only move TENANT data.
 
-See docs/design/ConfigurationStorage.md.
+See docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

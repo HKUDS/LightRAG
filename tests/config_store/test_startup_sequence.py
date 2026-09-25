@@ -9,7 +9,7 @@ the configuration storage released exactly once -- because every one of those
 is a property of the ORDER things happen in, which no double can pin.
 
 Scenario numbers refer to the acceptance list in
-docs/design/ConfigurationStorage.md.
+docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations
@@ -101,6 +101,16 @@ def _rag(tmp_path, *, model_name, space="A", failing_embedder=False, rebuilding=
         ),
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizer()),
     )
+
+
+async def _bind(tmp_path, *, model_name):
+    """One clean start and stop, so the deployment is anchored and its
+    identity is on record. A later start then verifies the binding without
+    writing, which puts the first configuration flush at step 8 -- after
+    INITIALIZED -- where the stickiness tests below inject their failures."""
+    rag = _rag(tmp_path, model_name=model_name)
+    await rag.initialize_storages()
+    await rag.finalize_storages()
 
 
 async def _seed(tmp_path, *, model_name, space="A"):
@@ -511,6 +521,7 @@ async def test_a_cancellation_after_initialized_is_sticky(tmp_path):
     call early-returns as ready with the checks never completed."""
     import asyncio
 
+    await _bind(tmp_path, model_name="bge-m3")
     rag = _rag(tmp_path, model_name="bge-m3")
     _Spy(
         rag.configuration_storage,
@@ -873,6 +884,7 @@ async def test_a_failed_configuration_flush_is_sticky(tmp_path):
     must be retained, or the next initialize_storages() would early-return on
     the status and report an instance that never recorded its baselines as
     ready."""
+    await _bind(tmp_path, model_name="bge-m3")
     rag = _rag(tmp_path, model_name="bge-m3")
     _Spy(
         rag.configuration_storage,
@@ -963,6 +975,7 @@ async def test_a_refresh_failure_over_landed_claims_still_starts(tmp_path):
 async def test_a_retained_final_flush_is_still_a_failure(tmp_path):
     """The other side of the same question: a backend that kept the operation
     buffered has not made it durable, whichever way the flush left."""
+    await _bind(tmp_path, model_name="bge-m3")
     rag = _rag(tmp_path, model_name="bge-m3")
 
     async def _retain():

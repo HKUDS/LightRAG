@@ -864,7 +864,7 @@ def _resolve_workspace(workspace: str, namespace: str):
     index is ``CONFIG_CONTAINER_TAG`` + the ``config`` namespace, and
     ``OPENSEARCH_WORKSPACE`` is not consulted for it. Nothing else is ever
     opened on that namespace, which is what makes it a safe marker. See
-    docs/design/ConfigurationStorage.md.
+    docs/design/ConfigurationStorageContract.md.
     """
     if namespace == NameSpace.KV_STORE_CONFIG:
         return CONFIG_CONTAINER_TAG

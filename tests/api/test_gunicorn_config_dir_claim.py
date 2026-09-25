@@ -13,7 +13,7 @@ every other worker was refused at startup with
 no master-held claim at all.
 
 Both sides now resolve through ``configuration_selection_from_env``, and these
-tests pin that they agree. See docs/design/ConfigurationStorage.md.
+tests pin that they agree. See docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

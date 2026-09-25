@@ -1,5 +1,5 @@
 """``MongoKVStorage.iter_rows``: the enumeration surface (scenario 16 in
-docs/design/ConfigurationStorage.md) on the MongoDB backend.
+docs/design/ConfigurationStorageContract.md) on the MongoDB backend.
 
 A server cursor with ``batch_size`` bounding what is in memory; ``_id`` is the
 document key already and the time defaults match ``get_by_ids``.

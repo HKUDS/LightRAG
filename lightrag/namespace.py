@@ -26,7 +26,7 @@ class NameSpace:
     # container of its own rather than following the knowledge base it
     # configures. This namespace is ALSO the marker every backend keys its
     # fixed-container rule on: nothing else is ever opened on it.
-    # See docs/design/ConfigurationStorage.md.
+    # See docs/design/ConfigurationStorageContract.md.
     KV_STORE_CONFIG = "config"
 
 
@@ -42,7 +42,7 @@ class NameSpace:
 #
 # The leading underscore keeps it out of the space of names a tenant would
 # be given, so a container is recognisable as ours at a glance in a shared
-# PostgreSQL, MongoDB or OpenSearch. See docs/design/ConfigurationStorage.md.
+# PostgreSQL, MongoDB or OpenSearch. See docs/design/ConfigurationStorageContract.md.
 CONFIG_CONTAINER_TAG = "_lightrag_config"
 
 # The file a JSON-backed configuration storage keeps inside ``config_dir``.

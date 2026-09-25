@@ -201,6 +201,7 @@ lightrag-download-cache = "lightrag.tools.download_cache:main"
 lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 lightrag-rebuild-vdb = "lightrag.tools.rebuild_vdb:main"
 lightrag-clear-storage = "lightrag.tools.clear_storage:main"
+lightrag-migrate-config = "lightrag.tools.migrate_config:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"

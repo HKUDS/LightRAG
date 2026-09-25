@@ -297,7 +297,7 @@ class StorageNameSpace(ABC):
         the configuration store confirms a drop by strict read-back, and a
         buffered tombstone answers that read as "gone" before the server
         agrees (*Claiming a baseline atomically* in
-        ``docs/design/ConfigurationStorage.md``).
+        ``docs/design/ConfigurationStorageContract.md``).
 
         The default is ``False``, which is the truth for an immediate-write or
         snapshot backend (no per-operation buffer, nothing to retain) and an
@@ -754,7 +754,7 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
         The enumeration surface the configuration inventory consumes (see
         *Enumeration, and what the inventory really costs* in
-        ``docs/design/ConfigurationStorage.md``). Rules for implementers:
+        ``docs/design/ConfigurationStorageContract.md``). Rules for implementers:
 
         * never materialize the whole namespace -- read ``page_size`` rows per
           backend round trip and yield them as they arrive;

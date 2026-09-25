@@ -201,6 +201,8 @@ persistence:
 
 These sizes are upgradable only under `workload.kind: Deployment`. A StatefulSet provisions its storage through `volumeClaimTemplates`, which is immutable once the object exists, so under `workload.kind: StatefulSet` a `helm upgrade` that changes a size - or that flips `persistence.enabled` on after installing with it off - is rejected by the API server rather than applied. See "Replica Count" above for the per-PVC expansion procedure.
 
+**Keep `persistence.enabled: true` in production, even when every storage backend is a database.** The working directory holds the configuration storage anchor (`_lightrag_config/storage_anchor.json`). Each start checks the anchor to confirm that the configuration container it opens (for example, the PostgreSQL `LIGHTRAG_CONFIG` table) is the one this deployment was bound to. With `persistence.enabled: false` the working directory is an `emptyDir`, so the anchor is lost on every pod restart. The check then has nothing to compare against: every start rebinds to whatever container the current settings select, with only a WARNING in the log. Include the working-directory volume in backup, restore and volume migration for the same reason. See *The anchor and the container identity* in [ConfigurationStorageContract.md](../docs/design/ConfigurationStorageContract.md).
+
 ### Configuring Environment Variables
 
 The `env` section in the `values.yaml` file contains all environment configurations for LightRAG, similar to a `.env` file. When using helm upgrade or helm install commands, you can override these with the --set flag.

@@ -5,7 +5,7 @@ server that answers every bulk item with a retryable failure (429).
 ``get_by_id_strict`` answers from the buffer, so without the pending check the
 configuration store would confirm a baseline claim, a rebuild record and a
 workspace drop the server never saw. See *A flush that retained anything is a
-failed flush here* in docs/design/ConfigurationStorage.md.
+failed flush here* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations
@@ -235,3 +235,55 @@ async def test_a_refresh_failure_over_a_landed_bulk_still_claims():
     key = cs.embedding_baseline_key(WORKSPACE, "entities")
     assert server.docs[key]["value"]["model"] == "bge-m3", "the server has the row"
     assert await storage.has_pending_index_ops(include_deletes=True) is False
+
+
+# ---------------------------------------------------------------------------
+# The container identity: the same retained-buffer rule, for the bind
+# ---------------------------------------------------------------------------
+
+
+async def _bind(storage, tmp_path):
+    return await cs.bind_configuration_identity(
+        storage,
+        working_dir=str(tmp_path),
+        backend="OpenSearchKVStorage",
+        container="OpenSearchKVStorage (_lightrag_config)",
+    )
+
+
+async def test_a_rate_limited_identity_write_binds_nothing(tmp_path):
+    """The strict read would answer from the buffer; the retained-buffer check
+    refuses first, so neither an identity nor an anchor is claimed."""
+    from lightrag import config_anchor as ca
+
+    server = _FakeServer(rate_limited=True)
+    storage = await _config_storage(server)
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        with pytest.raises(ConfigurationStorageError, match="retained"):
+            await _bind(storage, tmp_path)
+    assert server.docs == {}
+    assert await storage.has_pending_index_ops(include_deletes=True) is False
+    assert ca.read_anchor(str(tmp_path)) is None
+
+
+async def test_a_healthy_server_records_the_identity_and_verifies_it(tmp_path):
+    from lightrag import config_anchor as ca
+
+    server = _FakeServer(rate_limited=False)
+    storage = await _config_storage(server)
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        created = await _bind(storage, tmp_path)
+        assert created.action == "created"
+        assert server.docs[cs.storage_identity_key()]["value"] == {
+            "uuid": created.storage_uuid
+        }
+        bulk_calls = server.bulk_calls
+        verified = await _bind(storage, tmp_path)
+    assert verified.storage_uuid == created.storage_uuid
+    assert verified.action == "verified"
+    assert server.bulk_calls == bulk_calls
+    assert ca.read_anchor(str(tmp_path)).backend == "OpenSearchKVStorage"

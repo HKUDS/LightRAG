@@ -148,30 +148,55 @@ def on_starting(server):
 
     warn_about_workspace_overrides()
 
-    # Claim the configuration directory HERE, in the master, before the fork.
-    # The claim is held by the open file description, which forked workers
-    # inherit -- so they find it already taken by their own tree and count
-    # themselves in, instead of opening a second descriptor and refusing each
-    # other. Taken after the fork it would admit exactly one worker.
+    # The anchor lock and the configuration directory claim, HERE in the
+    # master, before the fork. Both are held by an open file description,
+    # which forked workers inherit -- so they find them already taken by
+    # their own tree and count themselves in, instead of opening a second
+    # descriptor. Taken after the fork, the directory claim would admit
+    # exactly one worker.
     #
-    # It must be the SAME directory the workers ask for, resolved the same way,
-    # or the master's claim is on a path nobody inherits and every worker after
-    # the first is refused at startup. Hence the shared resolver rather than a
-    # second reading of the environment here.
-    from lightrag.config_store import configuration_selection_from_env
+    # They must name the SAME directories the workers ask for, resolved the
+    # same way, or the master's claim is on a path nobody inherits and every
+    # worker after the first is refused at startup. Hence the shared resolver
+    # rather than a second reading of the environment here.
+    #
+    # And the anchor check (steps 0a-0c) runs here too: a backend type that
+    # differs from the anchor refuses the MASTER, instead of surfacing as
+    # every worker failing while the master respawns them. Workers still run
+    # 0b-1b themselves.
+    from lightrag.config_store import (
+        configuration_selection_from_env,
+        describe_configuration_container,
+        preflight_configuration_anchor,
+    )
+    from lightrag.kg.anchor_lock import (
+        acquire_anchor_lock_shared,
+        release_anchor_lock_shared,
+    )
     from lightrag.kg.working_dir_lock import (
         acquire_working_dir_lock,
         uses_working_dir,
     )
 
+    master_working_dir = resolved_working_dir()
     config_storage, config_dir = configuration_selection_from_env(
         kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
-        working_dir=resolved_working_dir(),
+        working_dir=master_working_dir,
     )
-    # The CONFIGURATION storage decides whether a directory is claimed at all;
-    # a server-backed one claims nothing.
-    if uses_working_dir(config_storage):
-        acquire_working_dir_lock(config_dir)
+    acquire_anchor_lock_shared(master_working_dir)
+    try:
+        preflight_configuration_anchor(
+            working_dir=master_working_dir,
+            backend=config_storage,
+            container=describe_configuration_container(config_storage, config_dir),
+        )
+        # The CONFIGURATION storage decides whether a directory is claimed at
+        # all; a server-backed one claims nothing.
+        if uses_working_dir(config_storage):
+            acquire_working_dir_lock(config_dir)
+    except BaseException:
+        release_anchor_lock_shared(master_working_dir)
+        raise
 
     print("Gunicorn initialization complete, forking workers...\n")
 
@@ -193,15 +218,17 @@ def on_exit(server):
     # Resolved through the same helper ``on_starting`` used, so the release
     # cannot name a different directory than the claim.
     from lightrag.config_store import configuration_selection_from_env
+    from lightrag.kg.anchor_lock import release_anchor_lock_shared
     from lightrag.kg.working_dir_lock import (
         release_working_dir_lock,
         uses_working_dir,
     )
 
+    master_working_dir = resolved_working_dir()
     try:
         config_storage, config_dir = configuration_selection_from_env(
             kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
-            working_dir=resolved_working_dir(),
+            working_dir=master_working_dir,
         )
     except ValueError:
         # An unusable selection refused in ``on_starting``, so nothing was
@@ -209,6 +236,9 @@ def on_exit(server):
         config_storage, config_dir = "", ""
     if config_storage and uses_working_dir(config_storage):
         release_working_dir_lock(config_dir)
+    # Taken before the directory claim, so given back after it. Safe without
+    # a hold: ``on_starting`` may have refused before taking it.
+    release_anchor_lock_shared(master_working_dir)
 
     print("Gunicorn shutdown complete")
     print("=" * 80)

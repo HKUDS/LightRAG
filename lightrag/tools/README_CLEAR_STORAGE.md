@@ -228,7 +228,7 @@ directory by hand and re-run.
   the drops are idempotent. Records deleted while data survived would let the
   next start adopt a wrong baseline over it, which is the one residue this
   ordering exists to prevent (*Workspace drop* in
-  `docs/design/ConfigurationStorage.md`).
+  `docs/design/ConfigurationStorageContract.md`).
 - **A vector storage that refuses to attach is dropped anyway.** The two typed
   refusals — vectors written in another embedding space, or a corrupt local
   snapshot — are the states this tool exists to clear, and `drop()` is

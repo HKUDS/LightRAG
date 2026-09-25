@@ -913,7 +913,7 @@ class ConfigurationStorageError(RuntimeError):
     Absent means bootstrap; this means stop. Treating one as the other is the
     defect the strict-read rule exists to prevent: a store that could not be
     reached must never be mistaken for a store that holds nothing. See *Reads
-    are strict* in docs/design/ConfigurationStorage.md.
+    are strict* in docs/design/ConfigurationStorageContract.md.
     """
 
 
@@ -930,6 +930,40 @@ class ConfigurationRecordMalformedError(ConfigurationStorageError):
     UNREADABLE and drops the workspace anyway, since a workspace whose
     configuration is corrupt is exactly the one an operator is trying to
     clear. Read on TYPE, never on message text.
+    """
+
+
+class ConfigurationIdentityError(ConfigurationStorageError):
+    """The configuration container is not the one this deployment is bound to,
+    or the binding itself could not be read or written to a definite answer.
+
+    Raised by ``lightrag.config_anchor`` and ``lightrag.config_store`` around
+    the anchor file (``<working_dir>/_lightrag_config/storage_anchor.json``)
+    and the container's own identity row. A startup failure like its parent:
+    nothing here is ever read as "absent" unless the anchor file genuinely
+    does not exist.
+
+    ``cause`` is one of the ``IDENTITY_*`` constants in
+    ``lightrag.config_anchor`` and is what a caller branches on -- never the
+    message, which carries the per-cause recovery advice for the operator.
+    ``anchor_path`` names the file a rebind would delete. See *The anchor and
+    the container identity* in docs/design/ConfigurationStorageContract.md.
+    """
+
+    def __init__(self, message: str, *, cause: str, anchor_path: str = "") -> None:
+        super().__init__(message)
+        self.cause = cause
+        self.anchor_path = anchor_path
+
+
+class ConfigurationAnchorLockError(RuntimeError):
+    """The anchor lock could not be taken in the mode this process needs.
+
+    A starter (server, SDK, maintenance tool) takes it SHARED and is refused
+    only while the offline migration holds it EXCLUSIVELY; the migration is
+    refused while any starter holds it, and where the filesystem cannot lock
+    unless the operator asserts exclusivity. See
+    ``lightrag/kg/anchor_lock.py``.
     """
 
 

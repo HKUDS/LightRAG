@@ -3,7 +3,7 @@
 Keys, the row shape, the registry, strict reads, the precheck that names every
 mismatched target at once, the atomic claim (flush BEFORE the lock is
 released, then a strict read-back), the rebuild record, the data-first drop
-and the enumeration surface. See docs/design/ConfigurationStorage.md; the
+and the enumeration surface. See docs/design/ConfigurationStorageContract.md; the
 scenario numbers below are its acceptance list.
 """
 
@@ -171,12 +171,18 @@ class TestKeysAndRows:
 
     def test_the_registry_declares_the_five_fields_for_every_key(self):
         assert set(cs.CONFIG_KEY_REGISTRY) == {
+            "storage_identity",
             "embedding/entities",
             "embedding/relationships",
             "embedding/chunks",
         }
-        for spec in cs.CONFIG_KEY_REGISTRY.values():
-            assert spec.scope is cs.ConfigScope.WORKSPACE
+        for suffix, spec in cs.CONFIG_KEY_REGISTRY.items():
+            expected_scope = (
+                cs.ConfigScope.SERVER
+                if suffix == cs.STORAGE_IDENTITY_SUFFIX
+                else cs.ConfigScope.WORKSPACE
+            )
+            assert spec.scope is expected_scope
             assert spec.schema_version == 1
             assert spec.schema
             assert spec.readers and spec.writers
@@ -186,18 +192,36 @@ class TestKeysAndRows:
         """Nothing enforces these two tuples, which is exactly why they drift:
         the offline clear reads the rows and deletes them, and was absent from
         both for a release. A new caller declares itself here first."""
-        for spec in cs.CONFIG_KEY_REGISTRY.values():
+        for target in cs.EMBEDDING_TARGETS:
+            spec = cs.CONFIG_KEY_REGISTRY[cs.embedding_baseline_suffix(target)]
             assert set(spec.readers) == {
                 cs.UPDATED_BY_STARTUP,
                 cs.UPDATED_BY_REBUILD,
                 cs.DELETED_BY_CLEAR_TOOL,
+                cs.UPDATED_BY_MIGRATE,
             }
             assert set(spec.writers) == {
                 cs.UPDATED_BY_STARTUP,
                 cs.UPDATED_BY_REBUILD,
                 cs.DELETED_BY_CLEAR_ENDPOINT,
                 cs.DELETED_BY_CLEAR_TOOL,
+                cs.UPDATED_BY_MIGRATE,
             }
+
+    def test_the_registry_names_every_caller_that_touches_the_identity(self):
+        """The identity is written by a binding start and nothing else: the
+        two maintenance tools only verify it, and neither clear path may ever
+        delete it."""
+        spec = cs.CONFIG_KEY_REGISTRY[cs.STORAGE_IDENTITY_SUFFIX]
+        assert set(spec.readers) == {
+            cs.UPDATED_BY_STARTUP,
+            cs.UPDATED_BY_REBUILD,
+            cs.DELETED_BY_CLEAR_TOOL,
+            cs.UPDATED_BY_MIGRATE,
+        }
+        assert set(spec.writers) == {cs.UPDATED_BY_STARTUP, cs.UPDATED_BY_MIGRATE}
+        assert cs.DELETED_BY_CLEAR_ENDPOINT not in spec.writers
+        assert cs.DELETED_BY_CLEAR_TOOL not in spec.writers
 
     def test_the_row_carries_the_scope_as_a_field(self):
         row = _row(workspace="tenant-a")

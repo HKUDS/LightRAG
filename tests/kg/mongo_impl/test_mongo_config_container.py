@@ -8,7 +8,7 @@ return once skipped ``_resolve_upsert_batch_limits()``, leaving
 ``_max_upsert_payload_bytes`` and ``_max_upsert_records_per_batch``
 undefined; a Mongo-backed configuration storage then raised ``AttributeError``
 inside ``upsert`` while claiming its first absent embedding baseline, which is
-during startup. See docs/design/ConfigurationStorage.md.
+during startup. See docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations

@@ -7888,7 +7888,7 @@ def validate_workspace_override(env_var: str, value: str | None) -> str | None:
     Nothing about the configuration container depends on this any more: its
     container is named in code rather than by a workspace, and no backend in
     the category consults an override for it. See
-    docs/design/ConfigurationStorage.md.
+    docs/design/ConfigurationStorageContract.md.
 
     Raises:
         ValueError: the override is not a legal workspace name.
@@ -7995,7 +7995,7 @@ def validate_workspace(workspace: str) -> str:
     category with a container named in code, so no workspace name can reach
     it: a tenant may be called ``_lightrag_config`` and still shares nothing
     with it -- different files, different tables, different collections. See
-    docs/design/ConfigurationStorage.md.
+    docs/design/ConfigurationStorageContract.md.
 
     Args:
         workspace: Workspace name from configuration or environment variables.

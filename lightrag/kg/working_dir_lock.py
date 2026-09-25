@@ -23,14 +23,18 @@ Nothing inside a process tree can see that, so the claim has to live where both
 servers can: on the directory itself.
 
 **Accepted residue: business data is not protected.** Two servers sharing a
-``working_dir`` whose configuration is on a server backend (or in a different
-``config_dir``) but whose ``full_docs`` / ``doc_status`` / graph / vectors are
-file-backed still overwrite each other, and lose more than baselines when they
-do. That is the
-long-standing "separate process trees are unsupported" position, unchanged
-here; this claim narrows the blast radius rather than closing it, because the
-baseline is the case whose failure is SILENT. Recovery for the rest is
-unchanged: run one server per directory, or use server backends. Widening the
+``working_dir`` AND a workspace, whose configuration is on a server backend (or
+in a different ``config_dir``) but whose ``full_docs`` / ``doc_status`` / graph
+/ vectors are file-backed, still overwrite each other, and lose more than
+baselines when they do. That is the long-standing "one instance per workspace"
+position, unchanged here (servers on different workspaces are supported; see
+``docs/design/ServerInstanceContract.md``); this claim narrows the blast radius
+rather than closing it, because the baseline is the case whose failure is
+SILENT. The recovery is one server per workspace. Moving the business storages
+to server backends is NOT one: it removes the whole-file overwrite, but
+``pipeline_status``, the keyed locks and the ingress mailbox are still per
+process tree, so two servers on one workspace still admit conflicting writes
+and destructive operations independently. Widening the
 claim to any file-backed storage is a deliberate follow-up, not an oversight --
 it would refuse deployments that work today.
 

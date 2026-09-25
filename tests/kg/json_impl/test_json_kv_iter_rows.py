@@ -1,5 +1,5 @@
 """``JsonKVStorage.iter_rows``: the enumeration surface (scenario 16 in
-docs/design/ConfigurationStorage.md) on the JSON backend.
+docs/design/ConfigurationStorageContract.md) on the JSON backend.
 
 Rows come out shaped like ``get_by_ids`` returns them, ``_id`` included and
 deep-copied; the key list is one snapshot and each page re-reads its rows, so

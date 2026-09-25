@@ -72,6 +72,12 @@ resources:
     cpu: 500m
     memory: 1Gi
 
+# Keep persistence enabled in production even with every storage on a
+# database: the working directory holds the configuration storage anchor
+# (_lightrag_config/storage_anchor.json). Without a persistent volume the
+# anchor is lost on every restart, and the check that the configuration
+# container is the one this deployment was bound to never runs. See
+# K8S-README.md "Modifying Persistent Storage".
 persistence:
   enabled: true
   ragStorage:

@@ -58,7 +58,7 @@ STORAGE_IMPLEMENTATIONS = {
     #   configuration storage has to be readable BEFORE any vector storage
     #   initializes (step 3 of the startup sequence).
     #
-    # See docs/design/ConfigurationStorage.md.
+    # See docs/design/ConfigurationStorageContract.md.
     "CONFIG_STORAGE": {
         "implementations": [
             "JsonKVStorage",
