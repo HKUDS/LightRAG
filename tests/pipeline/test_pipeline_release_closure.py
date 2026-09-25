@@ -3190,6 +3190,85 @@ def test_parser_source_resolver_prefers_exact_canonical_file(tmp_path, monkeypat
     assert Path(resolved) == exact
 
 
+def _workspace_resolver_rag(tmp_path, monkeypatch, workspace: str):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    if workspace:
+        # What the API server's DocumentManager creates at start.
+        (input_dir / workspace).mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    # The resolver also searches ./inputs under the current directory; keep
+    # the repository's own tree out of it.
+    monkeypatch.chdir(tmp_path)
+    rag = _new_rag(tmp_path / "work")
+    rag.workspace = workspace
+    return rag, input_dir
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "location",
+    [
+        pytest.param(("demo.pdf",), id="input-root"),
+        pytest.param((PARSED_DIR_NAME, "demo.pdf"), id="input-parsed"),
+        pytest.param(("demo.[mineru].pdf",), id="input-root-hint-variant"),
+        pytest.param(("@cwd", "inputs", "demo.pdf"), id="cwd-inputs"),
+    ],
+)
+def test_parser_source_resolver_keeps_a_scoped_workspace_out_of_the_default_one(
+    tmp_path, monkeypatch, location
+):
+    """A workspace with its own input directory never parses another's file.
+
+    The base input directories belong to the default workspace. A named
+    workspace whose ``INPUT_DIR/<workspace>/`` exists (the API server creates
+    it) and whose own source is gone must come back unresolved rather than
+    pick up another workspace's document with the same basename.
+    """
+    rag, input_dir = _workspace_resolver_rag(tmp_path, monkeypatch, "team")
+    if location[0] == "@cwd":
+        foreign = tmp_path.joinpath(*location[1:])
+    else:
+        foreign = input_dir.joinpath(*location)
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_bytes(b"default workspace's document")
+
+    resolved = rag._resolve_source_file_for_parser(
+        "demo.pdf", parser_engine=PARSER_ENGINE_MINERU
+    )
+
+    assert resolved == "demo.pdf"
+
+
+@pytest.mark.offline
+def test_parser_source_resolver_finds_a_scoped_workspace_file_in_its_own_dir(
+    tmp_path, monkeypatch
+):
+    rag, input_dir = _workspace_resolver_rag(tmp_path, monkeypatch, "team")
+    (input_dir / "demo.pdf").write_bytes(b"default workspace's document")
+    own = input_dir / "team" / "demo.pdf"
+    own.write_bytes(b"team's document")
+
+    assert Path(rag._resolve_source_file_for_parser("demo.pdf")) == own
+
+
+@pytest.mark.offline
+def test_parser_source_resolver_keeps_the_base_dir_for_an_unscoped_workspace(
+    tmp_path, monkeypatch
+):
+    """An SDK caller with a workspace but no ``INPUT_DIR/<workspace>/``.
+
+    Its files sit directly in ``INPUT_DIR``, and it stores only their
+    basenames, so the base directory is the only place they can be found.
+    """
+    rag, input_dir = _workspace_resolver_rag(tmp_path, monkeypatch, "")
+    rag.workspace = "team"
+    base = input_dir / "demo.pdf"
+    base.write_bytes(b"the SDK caller's document")
+
+    assert Path(rag._resolve_source_file_for_parser("demo.pdf")) == base
+
+
 @pytest.mark.offline
 def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     """End-to-end: parse_mineru routes through MinerURawClient + sidecar
