@@ -6753,45 +6753,42 @@ class _PipelineMixin:
         source_name = Path(str(source_file or "").strip()).name
         input_path = input_dir_path()
         # API ``DocumentManager`` scopes its input dir to
-        # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__);
-        # check that location first so files uploaded into a workspace
-        # subdirectory resolve correctly. ``self.workspace`` is empty when
-        # no workspace is configured, in which case these candidates
-        # collapse to the base candidates that follow.
+        # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__) and
+        # creates it at server start. Once that directory exists the
+        # workspace is scoped and looks ONLY there: the base directories are
+        # the default workspace's, so falling back to them would let a
+        # workspace whose own source is gone parse another workspace's file
+        # of the same basename. Without it (an SDK caller keeping its files
+        # directly in INPUT_DIR) the base directories are still searched.
         workspace = getattr(self, "workspace", "") or ""
-        if workspace:
-            candidates.append(input_path / workspace / name)
-            candidates.append(input_path / workspace / PARSED_DIR_NAME / name)
-            roots.append(input_path / workspace)
-            roots.append(input_path / workspace / PARSED_DIR_NAME)
-        candidates.append(input_path / name)
-        candidates.append(input_path / PARSED_DIR_NAME / name)
-        roots.append(input_path)
-        roots.append(input_path / PARSED_DIR_NAME)
-
-        # Common local defaults used by API server.
         cwd = Path.cwd()
         if workspace:
-            candidates.append(cwd / DEFAULT_INPUT_DIR / workspace / name)
-            candidates.append(
-                cwd / DEFAULT_INPUT_DIR / workspace / PARSED_DIR_NAME / name
+            # The second base is the API server's local default.
+            for base in (input_path / workspace, cwd / DEFAULT_INPUT_DIR / workspace):
+                candidates.append(base / name)
+                candidates.append(base / PARSED_DIR_NAME / name)
+                roots.append(base)
+                roots.append(base / PARSED_DIR_NAME)
+        if not workspace or not (input_path / workspace).is_dir():
+            candidates.append(input_path / name)
+            candidates.append(input_path / PARSED_DIR_NAME / name)
+            roots.append(input_path)
+            roots.append(input_path / PARSED_DIR_NAME)
+            # Common local defaults used by API server.
+            candidates.extend(
+                [
+                    cwd / DEFAULT_INPUT_DIR / name,
+                    cwd / DEFAULT_INPUT_DIR / PARSED_DIR_NAME / name,
+                    cwd / PARSED_DIR_NAME / name,
+                ]
             )
-            roots.append(cwd / DEFAULT_INPUT_DIR / workspace)
-            roots.append(cwd / DEFAULT_INPUT_DIR / workspace / PARSED_DIR_NAME)
-        candidates.extend(
-            [
-                cwd / DEFAULT_INPUT_DIR / name,
-                cwd / DEFAULT_INPUT_DIR / PARSED_DIR_NAME / name,
-                cwd / PARSED_DIR_NAME / name,
-            ]
-        )
-        roots.extend(
-            [
-                cwd / DEFAULT_INPUT_DIR,
-                cwd / DEFAULT_INPUT_DIR / PARSED_DIR_NAME,
-                cwd / PARSED_DIR_NAME,
-            ]
-        )
+            roots.extend(
+                [
+                    cwd / DEFAULT_INPUT_DIR,
+                    cwd / DEFAULT_INPUT_DIR / PARSED_DIR_NAME,
+                    cwd / PARSED_DIR_NAME,
+                ]
+            )
 
         if source_name:
             candidates = [root / source_name for root in roots] + candidates
