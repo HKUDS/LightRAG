@@ -1550,8 +1550,24 @@ select_config_storage() {
   # so the caller does not need a command substitution: this function also
   # writes ``ENV_VALUES``, and a subshell would throw that away.
   local kv_storage="$1"
+  local runtime_target="${2:-}"
   local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
   local records_in default_choice="JsonKVStorage"
+
+  # A readable anchor names the container this deployment is already bound to.
+  # Keep it explicit so changing the business KV backend cannot move config.
+  SELECTED_CONFIG_ANCHOR_PATH=""
+  read_config_anchor "$runtime_target"
+  if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+    SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
+    SELECTED_CONFIG_STORAGE="$CONFIG_ANCHOR_BACKEND"
+    if [[ "${existing:-$kv_storage}" != "$SELECTED_CONFIG_STORAGE" ]]; then
+      log_info "Keeping configuration storage at the anchored backend" \
+        "$SELECTED_CONFIG_STORAGE ($CONFIG_ANCHOR_PATH)"
+    fi
+    ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
+    return 0
+  fi
 
   records_in="$(config_storage_records_in)"
   [[ -n "$records_in" ]] && default_choice="$records_in"
@@ -3125,6 +3141,7 @@ finalize_storage_setup() {
   local compose_action="write_env_only"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local show_host_start_hint="no"
+  local config_storage config_db_type
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -3156,24 +3173,72 @@ finalize_storage_setup() {
     return 1
   fi
 
+  existing_compose="$(find_generated_compose_file)"
+  compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
+  restore_vllm_docker_services_from_env
+  resolve_compose_output_action \
+    "$existing_compose" \
+    compose_action \
+    runtime_target \
+    show_host_start_hint
+
+  # Docker choices may change the runtime target after backend selection.
+  # A newly required configuration database can itself add a Docker service,
+  # changing a host choice to Compose; repeat against that final anchor.
+  while true; do
+    read_config_anchor "$runtime_target"
+    if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+      SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
+      if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
+        log_info "Keeping configuration storage at the anchored backend" \
+          "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
+      fi
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$CONFIG_ANCHOR_BACKEND"
+    elif [[ -n "${SELECTED_CONFIG_ANCHOR_PATH:-}" && \
+      "$CONFIG_ANCHOR_PATH" != "$SELECTED_CONFIG_ANCHOR_PATH" ]]; then
+      # The initial selection followed an anchor in another runtime directory.
+      # Restore the original .env choice and select for the final directory.
+      if [[ -n "${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+        ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+      else
+        unset 'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]'
+      fi
+      select_config_storage "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" "$runtime_target"
+    fi
+
+    # Keep database/Docker choices already collected in this run, even if
+    # config no longer needs them. Removing their service can reverse the
+    # runtime switch and select the old anchor again. The summary exposes
+    # this residue; the next run recalculates requirements from the final
+    # runtime. See *The setup wizard* in docs/design/ConfigurationStorageContract.md.
+    config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+    config_db_type="${STORAGE_DB_TYPES[$config_storage]:-}"
+    if [[ -n "$config_db_type" && -z "${REQUIRED_DB_TYPES[$config_db_type]+set}" ]]; then
+      REQUIRED_DB_TYPES["$config_db_type"]=1
+      log_step "Database configuration for $config_storage"
+      collect_database_config "$config_db_type" \
+        "$(storage_default_docker_for_db_type "$config_db_type")"
+      if [[ "$runtime_target" != "compose" && ${#DOCKER_SERVICES[@]} -gt 0 ]]; then
+        compose_action="rewrite_compose"
+        runtime_target="compose"
+        show_host_start_hint="no"
+        continue
+      fi
+    fi
+    validate_required_variables "$config_storage" || return 1
+    break
+  done
+
+  configure_storage_compose_rewrites
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
+
   show_summary
 
   if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
     log_warn "Setup cancelled."
     return 1
   fi
-
-  existing_compose="$(find_generated_compose_file)"
-  compose_file="${REPO_ROOT}/docker-compose.final.yml"
-  record_existing_managed_root_services "$existing_compose"
-  restore_vllm_docker_services_from_env
-  configure_storage_compose_rewrites
-  configure_mongodb_compose_migration_rewrite "$existing_compose"
-  resolve_compose_output_action \
-    "$existing_compose" \
-    compose_action \
-    runtime_target \
-    show_host_start_hint
 
   report_config_anchor_for_output "$runtime_target"
 
