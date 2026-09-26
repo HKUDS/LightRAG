@@ -1561,7 +1561,7 @@ select_config_storage() {
   if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
     SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
     SELECTED_CONFIG_STORAGE="$CONFIG_ANCHOR_BACKEND"
-    if [[ "$existing" != "$SELECTED_CONFIG_STORAGE" ]]; then
+    if [[ "${existing:-$kv_storage}" != "$SELECTED_CONFIG_STORAGE" ]]; then
       log_info "Keeping configuration storage at the anchored backend" \
         "$SELECTED_CONFIG_STORAGE ($CONFIG_ANCHOR_PATH)"
     fi
@@ -3190,7 +3190,7 @@ finalize_storage_setup() {
     read_config_anchor "$runtime_target"
     if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
       SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
-      if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
+      if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
         log_info "Keeping configuration storage at the anchored backend" \
           "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
       fi
