@@ -3189,6 +3189,7 @@ finalize_storage_setup() {
   while true; do
     read_config_anchor "$runtime_target"
     if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+      SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
       if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
         log_info "Keeping configuration storage at the anchored backend" \
           "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
@@ -3206,6 +3207,11 @@ finalize_storage_setup() {
       select_config_storage "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" "$runtime_target"
     fi
 
+    # Keep database/Docker choices already collected in this run, even if
+    # config no longer needs them. Removing their service can reverse the
+    # runtime switch and select the old anchor again. The summary exposes
+    # this residue; the next run recalculates requirements from the final
+    # runtime. See *The setup wizard* in docs/design/ConfigurationStorageContract.md.
     config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
     config_db_type="${STORAGE_DB_TYPES[$config_storage]:-}"
     if [[ -n "$config_db_type" && -z "${REQUIRED_DB_TYPES[$config_db_type]+set}" ]]; then

@@ -510,9 +510,13 @@ finalize_storage_setup
     assert values["REQUIRED"] == "1"
 
 
-def test_new_docker_service_rechecks_the_compose_anchor(tmp_path: Path) -> None:
+@pytest.mark.parametrize("compose_has_anchor", [False, True])
+def test_new_docker_service_rechecks_the_compose_anchor(
+    tmp_path: Path, compose_has_anchor: bool
+) -> None:
     _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
-    _write_anchor(tmp_path / "data" / "rag_storage", "JsonKVStorage")
+    if compose_has_anchor:
+        _write_anchor(tmp_path / "data" / "rag_storage", "JsonKVStorage")
     write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
     result = _run(
         tmp_path,
@@ -534,9 +538,10 @@ collect_postgres_config() {
   add_docker_service postgres
 }
 confirm_required_yes_no() {
-  printf 'CONFIG=%s\\n' "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+  printf 'CONFIG=%s\\n' "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}"
   printf 'TARGET=%s\\n' "$runtime_target"
   printf 'ACTION=%s\\n' "$compose_action"
+  printf 'POSTGRES_SERVICE=%s\\n' "${DOCKER_SERVICE_SET[postgres]:-missing}"
   return 1
 }
 finalize_storage_setup
@@ -544,9 +549,10 @@ finalize_storage_setup
     )
     values = parse_lines(result.stdout)
     assert result.returncode == 1
-    assert values["CONFIG"] == "JsonKVStorage"
+    assert values["CONFIG"] == ("JsonKVStorage" if compose_has_anchor else "<unset>")
     assert values["TARGET"] == "compose"
     assert values["ACTION"] == "rewrite_compose"
+    assert values["POSTGRES_SERVICE"] == "1"
 
 
 def test_storage_finalizer_does_not_carry_a_host_anchor_into_compose(

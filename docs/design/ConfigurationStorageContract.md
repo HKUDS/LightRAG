@@ -240,6 +240,16 @@ server then refuses:
 - **The wizard reads the anchor and never writes, moves or deletes it.** It
   reads it at the `WORKING_DIR` the server will use on this host, which is
   `./data/rag_storage` for the compose runtime.
+- **Database choices collected during a runtime switch survive that run.**
+  If a provisional anchor adds a database and the operator chooses Docker,
+  the final runtime may select another configuration backend. The unused
+  database service, connection settings and deployment marker remain in the
+  confirmation summary and output. This is an accepted extra service, not a
+  configuration migration: automatically removing it and reversing the
+  runtime switch can select the original anchor again. On the next
+  `make env-storage`, requirements are computed from the saved runtime;
+  unused deployment markers and wizard-managed services are removed when
+  Compose is regenerated. Connection values remain available as defaults.
 - **Operator edits to the compose file are kept, not interpreted.**
   Regeneration preserves what an operator adds to the lightrag service,
   such as another mount or an `environment:` entry like
