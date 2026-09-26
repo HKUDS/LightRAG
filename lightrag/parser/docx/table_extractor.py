@@ -334,7 +334,12 @@ class TableExtractor:
                 if tcPr is not None:
                     gs = tcPr.find(qn("w:gridSpan"))
                     if gs is not None:
-                        grid_span = int(gs.get(qn("w:val")))
+                        # A span below 1 would stall or rewind grid_col, and a bad
+                        # w:val would fail the whole document: treat both as 1.
+                        try:
+                            grid_span = max(int(gs.get(qn("w:val"))), 1)
+                        except (TypeError, ValueError):
+                            grid_span = 1
 
                 # Check vMerge (vertical merge)
                 vmerge_elem = None
