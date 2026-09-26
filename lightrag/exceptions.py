@@ -938,7 +938,7 @@ class ConfigurationIdentityError(ConfigurationStorageError):
     or the binding itself could not be read or written to a definite answer.
 
     Raised by ``lightrag.config_anchor`` and ``lightrag.config_store`` around
-    the anchor file (``<working_dir>/_lightrag_config/storage_anchor.json``)
+    the anchor file (``<working_dir>/_lightrag_config/config_storage_anchor.json``)
     and the container's own identity row. A startup failure like its parent:
     nothing here is ever read as "absent" unless the anchor file genuinely
     does not exist.

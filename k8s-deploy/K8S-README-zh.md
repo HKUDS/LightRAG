@@ -201,7 +201,7 @@ persistence:
 
 这两个容量只在 `workload.kind: Deployment` 下可以通过升级修改。StatefulSet 的存储由 `volumeClaimTemplates` 供给，而它在对象创建后即不可变，因此在 `workload.kind: StatefulSet` 下，`helm upgrade` 修改容量、或在最初关闭 persistence 后再打开，都会被 API server 拒绝而非生效。每个 PVC 的扩容步骤见上方「副本数量」。
 
-**生产环境请保持 `persistence.enabled: true`，即使所有存储后端都是数据库。** 工作目录中保存着配置存储锚点（`_lightrag_config/storage_anchor.json`）。每次启动都会用它确认所打开的配置容器（例如 PostgreSQL 的 `LIGHTRAG_CONFIG` 表）就是本部署当初绑定的那一个。`persistence.enabled: false` 时工作目录是 `emptyDir`，Pod 每次重启都会丢失锚点。这项检查于是无从比对：每次启动都会重新绑定到当前配置所选的容器，日志中只有一条 WARNING。出于同样的原因，备份、恢复和卷迁移也应包含工作目录所在的卷。详见 [ConfigurationStorageContract.md](../docs/design/ConfigurationStorageContract.md) 中的 *The anchor and the container identity*。
+**生产环境请保持 `persistence.enabled: true`，即使所有存储后端都是数据库。** 工作目录中保存着配置存储锚点（`_lightrag_config/config_storage_anchor.json`）。每次启动都会用它确认所打开的配置容器（例如 PostgreSQL 的 `LIGHTRAG_CONFIG` 表）就是本部署当初绑定的那一个。`persistence.enabled: false` 时工作目录是 `emptyDir`，Pod 每次重启都会丢失锚点。这项检查于是无从比对：每次启动都会重新绑定到当前配置所选的容器，日志中只有一条 WARNING。出于同样的原因，备份、恢复和卷迁移也应包含工作目录所在的卷。详见 [ConfigurationStorageContract.md](../docs/design/ConfigurationStorageContract.md) 中的 *The anchor and the container identity*。
 
 ### 配置环境变量
 

@@ -1333,7 +1333,7 @@ path_is_confirmed_absent() {
 }
 
 read_config_anchor() {
-  # Reads <WORKING_DIR>/_lightrag_config/storage_anchor.json, the binding the
+  # Reads <WORKING_DIR>/_lightrag_config/config_storage_anchor.json, the binding the
   # server checks before it opens the configuration storage (see *The anchor
   # and the container identity* in docs/design/ConfigurationStorageContract.md).
   # The wizard only ever READS it -- it never writes, moves or deletes it.
@@ -1378,8 +1378,8 @@ read_config_anchor() {
   CONFIG_ANCHOR_DIR="$dir"
   # Joined as os.path.join does: no second slash after a root that already
   # ends in one ("/" or the POSIX-distinct "//").
-  CONFIG_ANCHOR_PATH="${dir%/}/_lightrag_config/storage_anchor.json"
-  [[ "$dir" == "//" ]] && CONFIG_ANCHOR_PATH="//_lightrag_config/storage_anchor.json"
+  CONFIG_ANCHOR_PATH="${dir%/}/_lightrag_config/config_storage_anchor.json"
+  [[ "$dir" == "//" ]] && CONFIG_ANCHOR_PATH="//_lightrag_config/config_storage_anchor.json"
   CONFIG_ANCHOR_STATE="unreadable"
 
   if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then

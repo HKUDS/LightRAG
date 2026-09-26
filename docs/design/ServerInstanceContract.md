@@ -34,7 +34,7 @@ and share one `WORKING_DIR`** (and one `INPUT_DIR`) when all five hold:
    it follows when unset) must be `PGKVStorage`, `MongoKVStorage` or
    `OpenSearchKVStorage`, and every instance must point it at the same
    database, cluster or server. The anchor at
-   `WORKING_DIR/_lightrag_config/storage_anchor.json` is one per `WORKING_DIR`
+   `WORKING_DIR/_lightrag_config/config_storage_anchor.json` is one per `WORKING_DIR`
    and records one backend and one container identity, so an instance on a
    different backend, or on another container of the same backend, is
    refused at startup (*Rules at a glance* in
