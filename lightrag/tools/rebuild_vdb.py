@@ -65,7 +65,7 @@ import asyncio
 import os
 import sys
 import time
-from typing import Any, Callable, Dict, List
+from typing import Any, AsyncIterator, Callable, Dict, List
 
 from dotenv import load_dotenv
 
@@ -110,7 +110,7 @@ BOLD_RED = "\033[1;31m"
 BOLD_GREEN = "\033[1;32m"
 RESET = "\033[0m"
 
-ProgressCallback = Callable[[int, int], None]
+ProgressCallback = Callable[[int, int | None], None]
 
 
 def _new_stats(label: str, source_total: int) -> Dict[str, Any]:
@@ -219,22 +219,25 @@ async def _upsert_batch(
     vdb,
     batch_payload: Dict[str, Dict[str, Any]],
     batch_no: int,
-    total_batches: int,
+    total_batches: int | None,
     stats: Dict[str, Any],
 ) -> None:
     """Upsert one batch; collect the error and continue on persistent failure."""
     label = stats["label"]
+    batch_label = (
+        f"{batch_no}/{total_batches}" if total_batches is not None else str(batch_no)
+    )
     try:
         await safe_vdb_operation_with_exception(
             operation=lambda payload=batch_payload: vdb.upsert(payload),
             operation_name=f"rebuild_{label}_upsert",
-            entity_name=f"batch {batch_no}/{total_batches}",
+            entity_name=f"batch {batch_label}",
             max_retries=3,
             retry_delay=0.2,
         )
         stats["staged"] += len(batch_payload)
     except Exception as e:
-        logger.error(f"Rebuild {label}: batch {batch_no}/{total_batches} failed: {e}")
+        logger.error(f"Rebuild {label}: batch {batch_label} failed: {e}")
         stats["failed_batches"] += 1
         stats["errors"].append(
             {
@@ -249,26 +252,47 @@ async def _upsert_batch(
         await _flush(vdb, stats)
 
 
-async def _drop_and_upsert(
+async def _preflight_batches(
+    batches: AsyncIterator[list[Any]],
+) -> tuple[list[Any] | None, AsyncIterator[list[Any]]]:
+    """Advance a bounded source iterator before any destructive target drop."""
+    try:
+        first = await anext(batches)
+    except StopAsyncIteration:
+        first = None
+    return first, batches
+
+
+async def _stream_upsert(
     vdb,
-    payloads: Dict[str, Dict[str, Any]],
+    source_batches: AsyncIterator[list[Any]],
+    first_batch: list[Any] | None,
     stats: Dict[str, Any],
+    prepare_batch,
     *,
-    batch_size: int,
     progress_callback: ProgressCallback | None = None,
 ) -> Dict[str, Any]:
-    """Drop the VDB, then upsert ``payloads`` in batches with periodic flushes."""
+    """Drop only after preflight, then transform and upsert bounded batches."""
     await _drop_vdb(vdb, stats["label"])
+    batch_no = 0
 
-    items = list(payloads.items())
-    total_batches = (len(items) + batch_size - 1) // batch_size
-    for batch_no, start in enumerate(range(0, len(items), batch_size), start=1):
-        batch_payload = dict(items[start : start + batch_size])
-        await _upsert_batch(vdb, batch_payload, batch_no, total_batches, stats)
+    async def consume(source_batch: list[Any]) -> None:
+        nonlocal batch_no
+        batch_no += 1
+        stats["source_total"] += len(source_batch)
+        payload = await prepare_batch(source_batch, stats)
+        stats["prepared"] += len(payload)
+        if payload:
+            await _upsert_batch(vdb, payload, batch_no, None, stats)
         if progress_callback:
-            progress_callback(batch_no, total_batches)
+            progress_callback(batch_no, None)
 
-    # Final flush persists any remaining deferred embeddings
+    if first_batch is not None:
+        await consume(first_batch)
+    async for source_batch in source_batches:
+        await consume(source_batch)
+    if progress_callback:
+        progress_callback(batch_no, batch_no)
     await _flush(vdb, stats)
     return stats
 
@@ -289,44 +313,50 @@ async def rebuild_entities_vdb(
     _ensure_vector_rebuild_supported(entities_vdb)
     from lightrag.operate import _truncate_vdb_content
 
-    nodes = await graph.get_all_nodes()
-    stats = _new_stats("entities", len(nodes))
+    batches = graph.iter_labels(batch_size)
+    first_batch, batches = await _preflight_batches(batches)
+    stats = _new_stats("entities", 0)
 
-    payloads: Dict[str, Dict[str, Any]] = {}
-    for node in nodes:
-        entity_name = node.get("entity_id") or node.get("id")
-        if entity_name is None or not str(entity_name).strip():
-            stats["skipped"] += 1
-            logger.warning(
-                f"Rebuild entities: skipping graph node without entity id: {node!r}"
-            )
-            continue
-        entity_name = str(entity_name)
-        description = node.get("description") or ""
-        entity_content = _truncate_vdb_content(
-            f"{entity_name}\n{description}",
-            global_config,
-            f"entity:{entity_name}",
+    async def prepare(labels: list[str], stats: Dict[str, Any]):
+        nodes = await graph.get_nodes_batch(
+            [str(label) for label in labels if label is not None]
         )
-        entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
-        if entity_vdb_id in payloads:
-            stats["duplicates"] += 1
-            continue
-        payloads[entity_vdb_id] = {
-            "entity_name": entity_name,
-            "entity_type": node.get("entity_type") or "",
-            "content": entity_content,
-            "source_id": node.get("source_id") or "",
-            "description": description,
-            "file_path": node.get("file_path") or "",
-        }
+        payloads: Dict[str, Dict[str, Any]] = {}
+        for label in labels:
+            if label is None:
+                stats["skipped"] += 1
+                continue
+            entity_name = str(label)
+            node = nodes.get(label) or nodes.get(entity_name)
+            if not isinstance(node, dict) or not entity_name.strip():
+                stats["skipped"] += 1
+                logger.warning(f"Rebuild entities: skipping unreadable node {label!r}")
+                continue
+            description = node.get("description") or ""
+            entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            if entity_vdb_id in payloads:
+                stats["duplicates"] += 1
+                continue
+            payloads[entity_vdb_id] = {
+                "entity_name": entity_name,
+                "entity_type": node.get("entity_type") or "",
+                "content": _truncate_vdb_content(
+                    f"{entity_name}\n{description}",
+                    global_config,
+                    f"entity:{entity_name}",
+                ),
+                "source_id": node.get("source_id") or "",
+                "description": description,
+                "file_path": node.get("file_path") or "",
+            }
+        return payloads
 
-    stats["prepared"] = len(payloads)
-    return await _drop_and_upsert(
+    return await _stream_upsert(
         entities_vdb,
-        payloads,
+        batches,
+        first_batch,
         stats,
-        batch_size=batch_size,
+        prepare,
         progress_callback=progress_callback,
     )
 
@@ -350,111 +380,52 @@ async def rebuild_relationships_vdb(
     _ensure_vector_rebuild_supported(relationships_vdb)
     from lightrag.operate import _truncate_vdb_content
 
-    edges = await graph.get_all_edges()
-    stats = _new_stats("relationships", len(edges))
+    batches = graph.iter_edges(batch_size)
+    first_batch, batches = await _preflight_batches(batches)
+    stats = _new_stats("relationships", 0)
 
-    payloads: Dict[str, Dict[str, Any]] = {}
-    for edge in edges:
-        src = edge.get("source")
-        tgt = edge.get("target")
-        if src is None or tgt is None or not str(src).strip() or not str(tgt).strip():
-            stats["skipped"] += 1
-            logger.warning(
-                f"Rebuild relationships: skipping graph edge without endpoints: {edge!r}"
-            )
-            continue
-        src_id, tgt_id = str(src), str(tgt)
-        # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
-        if src_id > tgt_id:
-            src_id, tgt_id = tgt_id, src_id
+    async def prepare(edges: list[dict], stats: Dict[str, Any]):
+        payloads: Dict[str, Dict[str, Any]] = {}
+        for edge in edges:
+            src, tgt = edge.get("source"), edge.get("target")
+            if src is None or tgt is None or not str(src).strip() or not str(tgt).strip():
+                stats["skipped"] += 1
+                continue
+            src_id, tgt_id = sorted((str(src), str(tgt)))
+            rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
+            if rel_vdb_id in payloads:
+                stats["duplicates"] += 1
+                continue
+            description = edge.get("description") or ""
+            keywords = edge.get("keywords") or ""
+            try:
+                weight = float(edge.get("weight", 1.0))
+            except (TypeError, ValueError):
+                weight = 1.0
+            payloads[rel_vdb_id] = {
+                "src_id": src_id,
+                "tgt_id": tgt_id,
+                "source_id": edge.get("source_id") or "",
+                "content": _truncate_vdb_content(
+                    f"{keywords}\t{src_id}\n{tgt_id}\n{description}",
+                    global_config,
+                    f"relationship:{src_id}-{tgt_id}",
+                ),
+                "keywords": keywords,
+                "description": description,
+                "weight": weight,
+                "file_path": edge.get("file_path") or "",
+            }
+        return payloads
 
-        rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
-        if rel_vdb_id in payloads:
-            stats["duplicates"] += 1
-            continue
-
-        description = edge.get("description") or ""
-        keywords = edge.get("keywords") or ""
-        try:
-            weight = float(edge.get("weight", 1.0))
-        except (TypeError, ValueError):
-            weight = 1.0
-        rel_content = _truncate_vdb_content(
-            f"{keywords}\t{src_id}\n{tgt_id}\n{description}",
-            global_config,
-            f"relationship:{src_id}-{tgt_id}",
-        )
-        payloads[rel_vdb_id] = {
-            "src_id": src_id,
-            "tgt_id": tgt_id,
-            "source_id": edge.get("source_id") or "",
-            "content": rel_content,
-            "keywords": keywords,
-            "description": description,
-            "weight": weight,
-            "file_path": edge.get("file_path") or "",
-        }
-
-    stats["prepared"] = len(payloads)
-    return await _drop_and_upsert(
+    return await _stream_upsert(
         relationships_vdb,
-        payloads,
+        batches,
+        first_batch,
         stats,
-        batch_size=batch_size,
+        prepare,
         progress_callback=progress_callback,
     )
-
-
-async def enumerate_kv_keys(kv) -> List[str]:
-    """List all keys of a KV storage instance.
-
-    BaseKVStorage has no enumeration API, so this uses backend-specific
-    scans (same patterns as lightrag/tools/clean_llm_query_cache.py).
-    When a new KV backend is added, this function must be extended.
-    """
-    storage_name = type(kv).__name__
-
-    if storage_name == "JsonKVStorage":
-        async with kv._storage_lock:
-            return list(kv._data.keys())
-
-    if storage_name == "RedisKVStorage":
-        keys: List[str] = []
-        prefix = f"{kv.final_namespace}:"
-        async with kv._get_redis_connection() as redis:
-            cursor = 0
-            while True:
-                cursor, batch = await redis.scan(cursor, match=f"{prefix}*", count=1000)
-                for key in batch:
-                    if isinstance(key, bytes):
-                        key = key.decode("utf-8")
-                    keys.append(key[len(prefix) :] if key.startswith(prefix) else key)
-                if cursor == 0:
-                    break
-        return keys
-
-    if storage_name == "PGKVStorage":
-        from lightrag.kg.postgres_impl import namespace_to_table_name
-
-        table_name = namespace_to_table_name(kv.namespace)
-        query = f"SELECT id FROM {table_name} WHERE workspace = $1"
-        rows = await kv.db.query(query, [kv.workspace], multirows=True)
-        return [row["id"] for row in (rows or [])]
-
-    if storage_name == "MongoKVStorage":
-        keys = []
-        cursor = kv._data.find({}, {"_id": 1})
-        async for doc in cursor:
-            keys.append(doc["_id"])
-        return keys
-
-    if storage_name == "OpenSearchKVStorage":
-        keys = []
-        async for hits in kv._iter_raw_docs(batch_size=1000):
-            keys.extend(hit["_id"] for hit in hits)
-        return keys
-
-    raise ValueError(f"Unsupported KV storage type for key enumeration: {storage_name}")
 
 
 async def rebuild_chunks_vdb(
@@ -479,40 +450,47 @@ async def rebuild_chunks_vdb(
     per-record ``content`` check below is the only filter.
     """
     _ensure_vector_rebuild_supported(chunks_vdb)
-    chunk_ids = [str(key) for key in await enumerate_kv_keys(text_chunks_kv)]
-    stats = _new_stats("chunks", len(chunk_ids))
+    batches = text_chunks_kv.iter_keys(batch_size)
+    first_batch, batches = await _preflight_batches(batches)
+    stats = _new_stats("chunks", 0)
 
-    await _drop_vdb(chunks_vdb, "chunks")
-
-    total_batches = (len(chunk_ids) + batch_size - 1) // batch_size
-    for batch_no, start in enumerate(range(0, len(chunk_ids), batch_size), start=1):
-        batch_ids = chunk_ids[start : start + batch_size]
+    async def prepare(keys: list[str], stats: Dict[str, Any]):
+        batch_ids = [str(key) for key in keys]
         records = await text_chunks_kv.get_by_ids(batch_ids)
+        record_map: Dict[str, Dict[str, Any]] = {}
+        for record in records:
+            if record is None:
+                continue
+            if not isinstance(record, dict) or not record.get("_id"):
+                raise RuntimeError("Chunk source returned an unidentifiable record")
+            record_id = str(record["_id"])
+            if record_id not in batch_ids or record_id in record_map:
+                raise RuntimeError("Chunk source returned duplicate or unexpected ids")
+            record_map[record_id] = record
 
         batch_payload: Dict[str, Dict[str, Any]] = {}
-        for chunk_id, record in zip(batch_ids, records):
-            if not isinstance(record, dict) or not record.get("content"):
+        for chunk_id in batch_ids:
+            record = record_map.get(chunk_id)
+            if record is None:
+                raise RuntimeError("Chunk source returned an incomplete batch")
+            if not record.get("content"):
                 stats["skipped"] += 1
-                logger.warning(
-                    f"Rebuild chunks: skipping chunk without content: {chunk_id}"
-                )
                 continue
             payload = dict(record)
             payload.pop("_id", None)
             payload.setdefault("full_doc_id", "")
             payload.setdefault("file_path", "")
             batch_payload[chunk_id] = payload
+        return batch_payload
 
-        stats["prepared"] += len(batch_payload)
-        if batch_payload:
-            await _upsert_batch(
-                chunks_vdb, batch_payload, batch_no, total_batches, stats
-            )
-        if progress_callback:
-            progress_callback(batch_no, total_batches)
-
-    await _flush(chunks_vdb, stats)
-    return stats
+    return await _stream_upsert(
+        chunks_vdb,
+        batches,
+        first_batch,
+        stats,
+        prepare,
+        progress_callback=progress_callback,
+    )
 
 
 async def check_vdb_consistency(
@@ -520,107 +498,120 @@ async def check_vdb_consistency(
     entities_vdb,
     relationships_vdb,
     *,
+    text_chunks_kv=None,
+    chunks_vdb=None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     incompatible: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
-    """Read-only diagnosis: find graph records with no vector counterpart.
-
-    Only the graph -> VDB direction is covered; stale reverse orphans
-    (records present in the VDB but absent from the graph) can only be
-    eliminated by a full rebuild. Relations are probed with both candidate
-    ids from make_relation_vdb_ids so legacy reverse-order ids are not
-    misreported as missing.
-
-    ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
-    storage refused to attach because its container holds another embedding
-    space's vectors, mapped to the refusal message. Such a target is NOT
-    probed: its storage cannot answer, and probing it anyway would report
-    every graph record as missing -- a true statement about that container
-    that reads as a routine drift report and buries the one fact that matters,
-    which is that the container is unusable and a rebuild is mandatory rather
-    than optional. The report carries the refusal under ``"incompatible"``
-    instead, and ``consistent`` is False.
-    """
+    """Read-only, bounded, bidirectional consistency diagnosis."""
     incompatible = dict(incompatible or {})
-    report: Dict[str, Any] = {
-        "graph_entities": 0,
-        "graph_relations": 0,
-        "missing_entities": 0,
-        "missing_relations": 0,
-        "missing_entity_names": [],
-        "missing_relation_pairs": [],
-        "skipped_nodes": 0,
-        "skipped_edges": 0,
-        "incompatible": incompatible,
-    }
+    report: Dict[str, Any] = {"targets": {}, "incompatible": incompatible}
 
-    # Entities: one candidate id per graph node
-    nodes = await graph.get_all_nodes()
-    entity_items: List[tuple] = []
-    seen_entity_ids: set = set()
-    for node in nodes:
-        entity_name = node.get("entity_id") or node.get("id")
-        if entity_name is None or not str(entity_name).strip():
-            report["skipped_nodes"] += 1
-            continue
-        entity_name = str(entity_name)
-        entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
-        if entity_vdb_id in seen_entity_ids:
-            continue
-        seen_entity_ids.add(entity_vdb_id)
-        entity_items.append((entity_vdb_id, entity_name))
-
-    report["graph_entities"] = len(entity_items)
-    if "entities" in incompatible:
-        entity_items = []
-    for start in range(0, len(entity_items), batch_size):
-        batch = entity_items[start : start + batch_size]
-        results = await entities_vdb.get_by_ids([vdb_id for vdb_id, _ in batch])
-        for (vdb_id, entity_name), record in zip(batch, results):
+    async def identify(records, requested: set[str]) -> dict[str, dict]:
+        if len(records) != len(requested):
+            raise StorageCapabilityError("incomplete_probe_response")
+        found: dict[str, dict] = {}
+        for record in records:
             if record is None:
-                report["missing_entities"] += 1
-                if len(report["missing_entity_names"]) < MAX_REPORTED_MISSING:
-                    report["missing_entity_names"].append(entity_name)
+                continue
+            if not isinstance(record, dict) or record.get("id") is None:
+                raise StorageCapabilityError("unidentifiable_probe_record")
+            record_id = str(record["id"])
+            if record_id not in requested or record_id in found:
+                raise StorageCapabilityError("duplicate_or_unexpected_probe_id")
+            found[record_id] = record
+        return found
 
-    # Relations: both candidate ids (normalized + legacy reverse) per edge
-    edges = await graph.get_all_edges()
-    relation_items: List[tuple] = []
-    seen_relation_ids: set = set()
-    for edge in edges:
-        src = edge.get("source")
-        tgt = edge.get("target")
-        if src is None or tgt is None or not str(src).strip() or not str(tgt).strip():
-            report["skipped_edges"] += 1
-            continue
-        candidate_ids = make_relation_vdb_ids(str(src), str(tgt))
-        if candidate_ids[0] in seen_relation_ids:
-            continue
-        seen_relation_ids.add(candidate_ids[0])
-        relation_items.append((candidate_ids, f"{src} ~ {tgt}"))
+    async def evaluate(label, vdb, batches, candidates_for, display_for):
+        target = {
+            "status": "inconclusive",
+            "source_count": 0,
+            "target_count": None,
+            "missing": 0,
+            "missing_examples": [],
+            "reason": None,
+        }
+        report["targets"][label] = target
+        blocked_status = None
+        if label in incompatible:
+            blocked_status = "incompatible"
+            target.update(status=blocked_status, reason=incompatible[label])
+        elif not getattr(vdb, "persists_vectors", True):
+            blocked_status = "not_applicable"
+            target.update(status=blocked_status, reason="non_persisting_backend")
+        try:
+            async for source_batch in batches:
+                logical = []
+                requested: list[str] = []
+                for item in source_batch:
+                    candidate_ids = [str(value) for value in candidates_for(item)]
+                    if not candidate_ids:
+                        continue
+                    logical.append((candidate_ids, display_for(item)))
+                    requested.extend(candidate_ids)
+                requested = list(dict.fromkeys(requested))
+                target["source_count"] += len(logical)
+                if blocked_status is not None:
+                    continue
+                found = await identify(
+                    await vdb.get_by_ids(requested), set(requested)
+                )
+                for candidate_ids, display in logical:
+                    if not any(candidate in found for candidate in candidate_ids):
+                        target["missing"] += 1
+                        if len(target["missing_examples"]) < MAX_REPORTED_MISSING:
+                            target["missing_examples"].append(display)
+            if blocked_status is not None:
+                return
+            target["target_count"] = await vdb.get_exact_count()
+        except Exception as exc:
+            target["reason"] = (str(exc) or type(exc).__name__)[:240]
+            return
+        target["status"] = (
+            "consistent"
+            if target["missing"] == 0
+            and target["source_count"] == target["target_count"]
+            else "inconsistent"
+        )
 
-    report["graph_relations"] = len(relation_items)
-    if "relationships" in incompatible:
-        relation_items = []
-    for start in range(0, len(relation_items), batch_size):
-        batch = relation_items[start : start + batch_size]
-        flat_ids: List[str] = []
-        for candidate_ids, _ in batch:
-            flat_ids.extend(candidate_ids)
-        results = await relationships_vdb.get_by_ids(flat_ids)
+    await evaluate(
+        "entities",
+        entities_vdb,
+        graph.iter_labels(batch_size),
+        lambda label: [compute_mdhash_id(str(label), prefix="ent-")],
+        lambda label: str(label),
+    )
+    await evaluate(
+        "relationships",
+        relationships_vdb,
+        graph.iter_edges(batch_size),
+        lambda edge: make_relation_vdb_ids(str(edge["source"]), str(edge["target"])),
+        lambda edge: f"{edge['source']} ~ {edge['target']}",
+    )
+    if text_chunks_kv is not None and chunks_vdb is not None:
+        await evaluate(
+            "chunks",
+            chunks_vdb,
+            text_chunks_kv.iter_keys(batch_size),
+            lambda key: [str(key)],
+            lambda key: str(key),
+        )
 
-        offset = 0
-        for candidate_ids, pair_label in batch:
-            candidate_records = results[offset : offset + len(candidate_ids)]
-            offset += len(candidate_ids)
-            if all(record is None for record in candidate_records):
-                report["missing_relations"] += 1
-                if len(report["missing_relation_pairs"]) < MAX_REPORTED_MISSING:
-                    report["missing_relation_pairs"].append(pair_label)
-
-    report["consistent"] = (
-        not incompatible
-        and report["missing_entities"] == 0
-        and report["missing_relations"] == 0
+    # Keep the established summary fields for library callers while exposing
+    # the richer per-target contract above.
+    entities = report["targets"]["entities"]
+    relationships = report["targets"]["relationships"]
+    report.update(
+        graph_entities=entities["source_count"],
+        graph_relations=relationships["source_count"],
+        missing_entities=entities["missing"],
+        missing_relations=relationships["missing"],
+        missing_entity_names=entities["missing_examples"],
+        missing_relation_pairs=relationships["missing_examples"],
+        consistent=all(
+            target["status"] in ("consistent", "not_applicable")
+            for target in report["targets"].values()
+        ),
     )
     return report
 
@@ -912,7 +903,13 @@ class RebuildTool:
         return True
 
     def make_progress_printer(self, label: str) -> ProgressCallback:
-        def _print_progress(done: int, total: int):
+        def _print_progress(done: int, total: int | None):
+            if total is None:
+                print(f"\r  {label}: processed {done} batches", end="", flush=True)
+                return
+            if total == 0:
+                print(f"\r  {label}: 0/0 batches")
+                return
             total = max(total, 1)
             bar_length = 40
             filled = int(bar_length * done / total)
@@ -957,7 +954,7 @@ class RebuildTool:
     def print_check_report(self, report: Dict[str, Any]):
         incompatible = report.get("incompatible") or {}
         print("\n" + "=" * 60)
-        print("📊 Consistency Report (graph -> vector storage)")
+        print("📊 Consistency Report")
         print("=" * 60)
         if incompatible:
             print(
@@ -986,12 +983,17 @@ class RebuildTool:
             print("\n  Missing relations (first few):")
             for pair in report["missing_relation_pairs"]:
                 print(f"    - {pair}")
-        if report["consistent"]:
-            print(f"\n{BOLD_GREEN}✓ No missing vector records detected.{RESET}")
-            print("  Note: this check only covers the graph -> VDB direction; stale")
-            print(
-                "  VDB-only records (reverse orphans) require a full rebuild to clear."
+        print("\n  Per-target status:")
+        for label, target in report["targets"].items():
+            counts = (
+                f"source={target['source_count']:,}, target={target['target_count']:,}"
+                if target["target_count"] is not None
+                else f"source={target['source_count']:,}, target=unknown"
             )
+            reason = f" ({target['reason']})" if target["reason"] else ""
+            print(f"    - {label}: {target['status']} [{counts}]{reason}")
+        if report["consistent"]:
+            print(f"\n{BOLD_GREEN}✓ Every applicable target is consistent.{RESET}")
         elif incompatible:
             print(f"\n{BOLD_RED}✗ Vector storage unusable (see above).{RESET}")
             print("  Run a rebuild (menu options 2-4) to restore service.")
@@ -1001,13 +1003,19 @@ class RebuildTool:
 
     async def print_source_counts(self, include_graph: bool, include_chunks: bool):
         if include_graph:
-            nodes = await self.graph.get_all_nodes()
-            edges = await self.graph.get_all_edges()
-            print(f"  Graph nodes: {len(nodes):,}")
-            print(f"  Graph edges: {len(edges):,} (before deduplication)")
+            node_count = 0
+            async for batch in self.graph.iter_labels(self.batch_size):
+                node_count += len(batch)
+            edge_count = 0
+            async for batch in self.graph.iter_edges(self.batch_size):
+                edge_count += len(batch)
+            print(f"  Graph nodes: {node_count:,}")
+            print(f"  Graph edges: {edge_count:,}")
         if include_chunks:
-            chunk_ids = await enumerate_kv_keys(self.text_chunks)
-            print(f"  Text chunks: {len(chunk_ids):,}")
+            chunk_count = 0
+            async for batch in self.text_chunks.iter_keys(self.batch_size):
+                chunk_count += len(batch)
+            print(f"  Text chunks: {chunk_count:,}")
 
     def confirm_rebuild(self, targets: str) -> bool:
         print("\n" + "=" * 60)
@@ -1033,6 +1041,8 @@ class RebuildTool:
             self.graph,
             self.entities_vdb,
             self.relationships_vdb,
+            text_chunks_kv=self.text_chunks,
+            chunks_vdb=self.chunks_vdb,
             batch_size=self.batch_size,
             incompatible=self.incompatible_vdbs,
         )

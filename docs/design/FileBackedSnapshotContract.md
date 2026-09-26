@@ -1,5 +1,21 @@
 # File-Backed Snapshot Contract
 
+## Maintenance consistency capabilities
+
+The offline vector rebuild tool uses explicit optional storage capabilities.
+`JsonKVStorage.iter_keys()` is the only file-backed KV implementation that
+advertises bounded key traversal. `NanoVectorDBStorage.get_exact_count()` and
+`FaissVectorDBStorage.get_exact_count()` count only persisted, addressable
+records; pending writes are deliberately excluded, so the existing
+offline/no-writers requirement applies.
+
+Faiss count capability fails closed when index slots and metadata rows differ,
+or when a metadata position is invalid. Nano fails closed when its persisted
+data collection is malformed or contains missing or duplicate IDs. These
+states are diagnostic uncertainty, not proof of inconsistency: callers report
+them as `inconclusive` and must not recommend a destructive rebuild from that
+evidence alone. Neither count path repairs or mutates storage.
+
 Read this before changing `lightrag/kg/nano_vector_db_impl.py`,
 `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`,
 `lightrag/kg/json_doc_status_impl.py`, or `lightrag/kg/file_fingerprint.py`.
