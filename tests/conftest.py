@@ -95,6 +95,13 @@ def _hermetic_mineru_env(monkeypatch):
     selection — captured once in ``pytest_configure`` before this runs (see
     ``requires_spacy_models``), independent of this per-test neutralization.
 
+    ``ENTITY_TYPE_PROMPT_FILE`` is pinned to ``""`` for the same
+    repopulation reason. A developer ``.env`` that names a profile makes every
+    ``LightRAG()`` construction resolve it under ``PROMPT_DIR`` (default
+    ``./prompts``, relative to the CWD), so any test that ``chdir``s into
+    ``tmp_path`` before constructing an instance fails with
+    ``FileNotFoundError``; the built-in default profile is what tests assume.
+
     Strip these variables globally; tests that need a specific mode can
     still ``monkeypatch.setenv(...)`` themselves and monkeypatch will
     restore the inherited value at teardown.
@@ -112,6 +119,7 @@ def _hermetic_mineru_env(monkeypatch):
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
     monkeypatch.delenv("DOCLING_ADDITIONAL_SUFFIXES", raising=False)
     monkeypatch.setenv("DOCX_SMART_HEADING", "false")
+    monkeypatch.setenv("ENTITY_TYPE_PROMPT_FILE", "")
 
 
 @pytest.fixture(autouse=True)

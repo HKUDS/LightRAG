@@ -553,7 +553,7 @@ def test_the_restriction_persists_after_the_handle_closes(tmp_path):
     worth being precise about. A pytest tmp directory carries no inheritable
     entries, so an ordinary file there gets the access token's DEFAULT DACL
     rather than anything inherited — on the runner that is `SYSTEM`,
-    `BUILTIN\Administrators` and `OWNER RIGHTS`, all explicit, none marked
+    `BUILTIN\\Administrators` and `OWNER RIGHTS`, all explicit, none marked
     ``(I)``. So the comparison is not "escaped inheritance" but the stronger
     "every principal the platform would have added is absent".
 
