@@ -712,7 +712,10 @@ def test_working_dir_is_normalized_like_the_servers_abspath(
         ],
     )
     assert parse_lines(result.stdout)["VALID"] == "no"
-    assert f"{tmp_path}/actual/_lightrag_config/config_storage_anchor.json" in result.stderr
+    assert (
+        f"{tmp_path}/actual/_lightrag_config/config_storage_anchor.json"
+        in result.stderr
+    )
 
 
 def test_operator_compose_edits_are_kept_and_not_interpreted(
