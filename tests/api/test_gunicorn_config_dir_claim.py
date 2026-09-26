@@ -163,7 +163,7 @@ def test_an_unusable_selection_is_refused_in_the_master(
 ):
     """Redis is not in the category. Refusing in the master fails the server
     once, clearly, instead of once per worker."""
-    _env(monkeypatch, tmp_path, LIGHTRAG_KV_STORAGE="RedisKVStorage")
+    _env(monkeypatch, tmp_path, LIGHTRAG_CONFIG_STORAGE="RedisKVStorage")
 
     with pytest.raises(ValueError, match="RedisKVStorage"):
         gunicorn_config.on_starting(object())
@@ -227,3 +227,19 @@ def test_the_environment_is_the_fallback_when_nothing_parsed_a_directory(
     monkeypatch.setattr(gunicorn_config, "working_dir", None, raising=False)
 
     assert gunicorn_config.resolved_working_dir() == str(tmp_path)
+
+
+@pytest.mark.parametrize("custom_dir", [False, True])
+def test_redis_default_claims_json_configuration_directory(
+    gunicorn_config, monkeypatch, tmp_path, capsys, custom_dir
+):
+    from lightrag.kg.working_dir_lock import holds_working_dir_lock
+
+    config_dir = tmp_path / ("custom_config" if custom_dir else "_lightrag_config")
+    overrides = {"LIGHTRAG_KV_STORAGE": "RedisKVStorage"}
+    if custom_dir:
+        overrides["LIGHTRAG_CONFIG_DIR"] = str(config_dir)
+    _env(monkeypatch, tmp_path, **overrides)
+    gunicorn_config.on_starting(object())
+    assert holds_working_dir_lock(str(config_dir)) is True
+    capsys.readouterr()

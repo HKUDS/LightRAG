@@ -192,12 +192,35 @@ class TestTheSelectionIsRefusedByName:
         with pytest.raises(ValueError, match="NoSuchStorage"):
             _rag(tmp_path, config_storage="NoSuchStorage")
 
-    def test_a_redis_business_deployment_must_choose_one(self, tmp_path):
-        """Unset, the selection follows ``kv_storage`` -- and Redis is not in
-        the category, so the operator is told so rather than silently landing
-        somewhere else."""
-        with pytest.raises(ValueError, match="LIGHTRAG_CONFIG_STORAGE"):
-            _rag(tmp_path, kv_storage="RedisKVStorage")
+    def test_a_redis_business_deployment_defaults_to_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+        rag = _rag(tmp_path, kv_storage="RedisKVStorage", config_storage="")
+        assert rag.kv_storage == "RedisKVStorage"
+        assert rag.config_storage == "JsonKVStorage"
+        assert type(rag.configuration_storage) is JsonKVStorage
+        assert rag.config_dir == str(tmp_path / "_lightrag_config")
+
+    async def test_redis_default_does_not_override_an_existing_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        from lightrag import config_anchor as ca
+        from lightrag.exceptions import ConfigurationIdentityError
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+        ca.publish_anchor(
+            str(tmp_path),
+            ca.StorageAnchor(backend="PGKVStorage", storage_uuid=ca.new_storage_uuid()),
+            replace=False,
+        )
+        rag = _rag(tmp_path, kv_storage="RedisKVStorage", config_storage="")
+        config_init = AsyncMock()
+        monkeypatch.setattr(rag.configuration_storage, "initialize", config_init)
+        with pytest.raises(ConfigurationIdentityError) as excinfo:
+            await rag.initialize_storages()
+        assert excinfo.value.cause == ca.IDENTITY_BACKEND_MISMATCH
+        config_init.assert_not_awaited()
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
 
     def test_an_admitted_selection_is_independent_of_the_business_backend(
         self, tmp_path
@@ -495,21 +518,13 @@ def test_the_public_init_table_documents_every_storage_selection():
             f"LightRAG Init Parameters table"
         )
 
-    # And the one thing a Redis user has to be told, since the default would
-    # otherwise inherit a backend this category refuses.
+    # Document the Redis exception alongside the ordinary inherited default.
     row = next(line for line in table.splitlines() if "| **config_storage** |" in line)
     assert "RedisKVStorage" in row and "follows `kv_storage`" in row
 
 
 def test_the_api_server_guide_documents_the_category_it_advertises_around():
-    """The same rule for the guide an OPERATOR follows rather than a caller.
-
-    That guide's storage table advertises ``RedisKVStorage`` by name, and a
-    server configured from it alone is refused at construction -- the category
-    does not admit Redis, and unset it follows the KV selection. Every surface
-    that advertises a KV backend has to say what configuration backend goes
-    with it; this is the third one that did not.
-    """
+    """The API guide names the configuration category and Redis default."""
     from pathlib import Path
 
     guide = (
@@ -523,5 +538,5 @@ def test_the_api_server_guide_documents_the_category_it_advertises_around():
             f"{admitted} is an admitted configuration backend the API server "
             f"guide never names"
         )
-    # And the refusal an operator reaches by following the KV table.
+    # Redis remains excluded as an explicit configuration selection.
     assert "RedisKVStorage` is not admitted" in guide

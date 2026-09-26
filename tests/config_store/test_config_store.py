@@ -920,7 +920,12 @@ class TestCategory:
     """The configuration storage is its own selection, and the list is closed."""
 
     def test_unset_follows_the_business_kv_backend(self):
-        for name in ("JsonKVStorage", "PGKVStorage", "MongoKVStorage"):
+        for name in (
+            "JsonKVStorage",
+            "PGKVStorage",
+            "MongoKVStorage",
+            "OpenSearchKVStorage",
+        ):
             assert cs.resolve_configuration_storage("", kv_storage=name) == name
 
     def test_a_vector_storage_is_refused_by_name(self):
@@ -929,9 +934,39 @@ class TestCategory:
                 "NanoVectorDBStorage", kv_storage="JsonKVStorage"
             )
 
-    def test_redis_is_refused_by_name_when_it_would_be_inherited(self):
+    @pytest.mark.parametrize("selected", [None, "", "   "])
+    def test_unset_redis_defaults_to_json(self, selected):
+        assert (
+            cs.resolve_configuration_storage(selected, kv_storage="RedisKVStorage")
+            == "JsonKVStorage"
+        )
+
+    def test_redis_default_announces_the_configuration_directory(self, monkeypatch):
+        from unittest.mock import Mock
+
+        warning = Mock()
+        monkeypatch.setattr(cs.logger, "warning", warning)
+        cs.resolve_configuration_storage("", kv_storage="RedisKVStorage")
+        message = warning.call_args.args[0]
+        assert "JsonKVStorage" in message
+        assert "LIGHTRAG_CONFIG_DIR" in message
+        assert "LIGHTRAG_CONFIG_STORAGE" in message
+
+    def test_unknown_business_backend_does_not_default_to_json(self):
+        with pytest.raises(ValueError, match="UnknownKVStorage"):
+            cs.resolve_configuration_storage("", kv_storage="UnknownKVStorage")
+
+    def test_explicit_redis_is_still_refused(self):
         with pytest.raises(ValueError, match="RedisKVStorage"):
-            cs.resolve_configuration_storage("", kv_storage="RedisKVStorage")
+            cs.resolve_configuration_storage(
+                "RedisKVStorage", kv_storage="RedisKVStorage"
+            )
+
+    def test_redis_can_explicitly_select_a_database(self):
+        assert (
+            cs.resolve_configuration_storage("PGKVStorage", kv_storage="RedisKVStorage")
+            == "PGKVStorage"
+        )
 
     def test_an_explicit_selection_is_independent_of_the_business_backend(self):
         assert (

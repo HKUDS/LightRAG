@@ -1464,8 +1464,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     Admits ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
     ``OpenSearchKVStorage``; anything else is refused by name at construction.
-    Left empty it FOLLOWS ``kv_storage``, which is where an existing
-    deployment's records already are. See
+    Left empty it follows ``kv_storage``, except Redis defaults to JSON.
+    Existing admitted backends keep their configuration container. See
     docs/design/ConfigurationStorageContract.md.
     """
 
@@ -1859,7 +1859,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # verification loop below so an unusable selection is refused by name
         # here rather than at the first missing method. Unset, it follows
         # ``kv_storage``: that is where an existing deployment's records are,
-        # and any other default would read them as absent.
+        # and any other default would read them as absent. Redis alone defaults
+        # to JSON because Redis is not admitted for configuration.
         self.config_storage = resolve_configuration_storage(
             self.config_storage, kv_storage=self.kv_storage
         )

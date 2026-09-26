@@ -109,9 +109,9 @@ env:
   LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
   #  LIGHTRAG_KV_STORAGE: RedisKVStorage
   #  LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
-  #  # Redis is not admitted for the configuration storage, and the selection
-  #  # would otherwise inherit it and be refused at startup. PostgreSQL is
-  #  # already configured below, so the records stay on a server backend.
+  #  # Redis business KV defaults to JSON configuration when unset. Select
+  #  # PostgreSQL explicitly here to keep configuration on the database
+  #  # already configured below, instead of a local file.
   #  LIGHTRAG_CONFIG_STORAGE: PGKVStorage
   LIGHTRAG_GRAPH_STORAGE: Neo4JStorage
   LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage

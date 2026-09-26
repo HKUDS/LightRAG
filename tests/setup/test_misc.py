@@ -2186,12 +2186,9 @@ class TestTheWizardSelectsAValidConfigurationBackend:
     """``select_storage_backends`` must not emit an .env that cannot start.
 
     The configuration storage is its own category admitting four backends.
-    Unset it FOLLOWS ``LIGHTRAG_KV_STORAGE``, which is where an existing
-    deployment's records already are -- so an admitted KV selection writes
-    nothing and the generated .env stays minimal. ``RedisKVStorage`` is NOT
-    admitted, and the wizard offers it, so a Redis selection has to name a
-    configuration backend explicitly; otherwise the wizard accepts and
-    validates a selection that is refused by name at startup.
+    Unset it follows admitted KV backends; Redis defaults to JSON. Both
+    choices leave .env minimal. Explicit invalid selections still need repair,
+    and changes that could strand existing records still require a choice.
 
     See docs/design/ConfigurationStorageContract.md.
     """
@@ -2223,14 +2220,10 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
             "which is where the records already are"
         )
 
-    def test_redis_is_asked_about_and_the_answer_is_written(self):
-        # Empty stdin accepts the prompt's default.
-        values = self._select("RedisKVStorage", stdin="\n")
+    def test_redis_defaults_to_json_without_prompt_or_write(self):
+        values = self._select("RedisKVStorage")
         assert values["CHOSEN"] == "JsonKVStorage"
-        assert values["WRITTEN"] == "JsonKVStorage", (
-            "a Redis KV selection that writes no LIGHTRAG_CONFIG_STORAGE "
-            "produces an .env refused at startup"
-        )
+        assert values["WRITTEN"] == "<unset>"
 
     def test_an_explicit_selection_survives_a_rerun(self):
         """The failure this whole PR exists to prevent, one layer up: an
@@ -2314,12 +2307,10 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         assert values["CHOSEN"] == "MongoKVStorage"
         assert values["WRITTEN"] == "<unset>"
 
-    def test_a_change_away_from_redis_does_not_ask(self):
-        """Redis is not in the category, so nothing admitted held the records
-        and there is nothing to keep them in."""
+    def test_a_change_away_from_redis_preserves_json_records(self):
         values = self._select_after_kv_change("RedisKVStorage", "PGKVStorage")
-        assert values["CHOSEN"] == "PGKVStorage"
-        assert values["WRITTEN"] == "<unset>"
+        assert values["CHOSEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "JsonKVStorage"
 
     def _select_with_previous(
         self,
@@ -2400,9 +2391,8 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         assert values["WRITTEN"] == "<unset>"
 
     def test_switching_to_an_unadmitted_kv_still_defaults_to_the_records(self):
-        """The third door onto the same rule. Changing PostgreSQL KV to Redis
-        skips the follows-the-KV-backend branch entirely -- Redis is not
-        admitted -- and lands on the generic prompt. Defaulting that prompt to
+        """Changing PostgreSQL KV to Redis must retain its configuration
+        container even though Redis now defaults to JSON. Defaulting the prompt to
         JsonKVStorage strands the baselines in PostgreSQL, which is the
         relocation this whole function exists to prevent."""
         values = self._select_with_previous("RedisKVStorage", previous_kv="PGKVStorage")
@@ -2435,9 +2425,9 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         """Nothing admitted held records, so there is nothing to keep."""
         values = self._select_with_previous("RedisKVStorage")
         assert values["CHOSEN"] == "JsonKVStorage"
-        assert values["WRITTEN"] == "JsonKVStorage"
+        assert values["WRITTEN"] == "<unset>"
 
-    def test_a_previous_redis_kv_backend_held_no_records(self):
+    def test_a_previous_redis_kv_backend_keeps_json_records(self):
         values = self._select_with_previous(
             "RedisKVStorage", previous_kv="RedisKVStorage"
         )
@@ -2525,11 +2515,9 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         values = self._ensure(kv="RedisKVStorage", existing_config="PGKVStorage")
         assert values["WRITTEN"] == "PGKVStorage"
 
-    def test_an_inherited_redis_backend_is_asked_about_and_written(self):
-        """The file the server refuses: Redis KV with the selection following
-        it. Empty stdin takes the prompt's default."""
-        values = self._ensure(kv="RedisKVStorage", stdin="\n")
-        assert values["WRITTEN"] == "JsonKVStorage"
+    def test_an_inherited_redis_backend_needs_no_prompt(self):
+        values = self._ensure(kv="RedisKVStorage")
+        assert values["WRITTEN"] == "<unset>"
 
     def test_an_explicit_value_outside_the_four_is_asked_about(self):
         values = self._ensure(
@@ -2549,6 +2537,7 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}}"
         container that has them rather than the file-backed fallback."""
         values = self._ensure(
             kv="RedisKVStorage",
+            existing_config="RedisKVStorage",
             previous_kv="PGKVStorage",
             env=self.POSTGRES,
             stdin="\n",
@@ -2592,6 +2581,7 @@ done
         has no credentials for."""
         values = self._ensure(
             kv="RedisKVStorage",
+            existing_config="RedisKVStorage",
             env={
                 "MONGO_URI": "mongodb://localhost:27017",
                 "MONGO_DATABASE": "lightrag",
@@ -2605,7 +2595,10 @@ done
         it -- so it cannot be the answer, and the prompt must not default to a
         choice it does not offer."""
         values = self._ensure(
-            kv="RedisKVStorage", previous_kv="PGKVStorage", stdin="\n"
+            kv="RedisKVStorage",
+            existing_config="RedisKVStorage",
+            previous_kv="PGKVStorage",
+            stdin="\n",
         )
         assert values["WRITTEN"] == "JsonKVStorage"
 
@@ -2654,14 +2647,12 @@ validate_env_file
 """
         )
 
-    def test_an_inherited_redis_backend_fails_validation(self, tmp_path):
+    def test_an_inherited_redis_backend_passes_validation(self, tmp_path):
         result = self._validate(
             tmp_path, ["LIGHTRAG_KV_STORAGE=RedisKVStorage", *self.BASE]
         )
-        assert result.returncode != 0
-        assert "Validation passed." not in result.stdout
-        assert "LIGHTRAG_CONFIG_STORAGE" in result.stderr
-        assert "RedisKVStorage" in result.stderr
+        assert result.returncode == 0, result.stderr
+        assert "Validation passed." in result.stdout
 
     def test_an_explicit_unadmitted_backend_fails_validation(self, tmp_path):
         result = self._validate(
@@ -2704,12 +2695,8 @@ def test_every_shipped_preset_that_names_an_unadmitted_kv_backend_names_a_config
 ):
     """A preset an operator uncomments has to start.
 
-    The configuration selection FOLLOWS ``LIGHTRAG_KV_STORAGE`` when it is
-    unset, and a backend outside the four is refused by name during
-    construction — so a shipped Redis preset without an explicit
-    ``LIGHTRAG_CONFIG_STORAGE`` hands the operator a server that will not
-    start, from our own documentation. This walks the presets rather than
-    naming them, so a new one cannot quietly reintroduce it.
+    Unset configuration follows admitted KV backends, with a JSON default for
+    Redis. Other unsupported defaults must still name a configuration backend.
     """
     from lightrag.config_store import configuration_storage_implementations
 
@@ -2731,7 +2718,7 @@ def test_every_shipped_preset_that_names_an_unadmitted_kv_backend_names_a_config
 
         for line in kv_lines:
             backend = line.split("LIGHTRAG_KV_STORAGE", 1)[1].lstrip(":= ").strip()
-            if backend in admitted:
+            if backend in admitted or backend == "RedisKVStorage":
                 continue
             assert "LIGHTRAG_CONFIG_STORAGE" in text, (
                 f"{name} offers {backend!r}, which the configuration category "

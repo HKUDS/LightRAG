@@ -849,3 +849,21 @@ def test_migration_advice_keeps_a_root_working_dir(
     lines = parse_lines(result.stdout)
     assert lines["DIR"] == working_dir
     assert lines["CMD"] == "lightrag-migrate-config --target-backend JsonKVStorage"
+
+
+@pytest.mark.parametrize(
+    "anchored, expected", [("JsonKVStorage", "yes"), ("PGKVStorage", "no")]
+)
+def test_redis_default_validation_checks_json_against_anchor(
+    tmp_path, anchored, expected
+):
+    anchor = _write_anchor(tmp_path / "rag_storage", anchored)
+    before = anchor.read_bytes()
+    result = _validate(
+        tmp_path,
+        ["LIGHTRAG_KV_STORAGE=RedisKVStorage", "REDIS_URI=redis://localhost:6379"],
+    )
+    assert parse_lines(result.stdout)["VALID"] == expected, result.stderr
+    assert anchor.read_bytes() == before
+    if expected == "no":
+        assert "resolves to JsonKVStorage" in result.stderr
