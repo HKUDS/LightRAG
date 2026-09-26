@@ -1,4 +1,4 @@
-"""The anchor file: a fixed path, three fields, a strict read, and two write
+"""The anchor file: a fixed path, one strict format, and two write
 modes that never report a failed write as a success.
 
 See *The anchor and the container identity* in
@@ -15,7 +15,6 @@ import pytest
 
 from lightrag import config_anchor as ca
 from lightrag.exceptions import ConfigurationIdentityError
-from lightrag.namespace import CONFIG_CONTAINER_TAG
 
 pytestmark = pytest.mark.offline
 
@@ -45,14 +44,15 @@ def _valid(**overrides):
 
 
 class TestPath:
-    def test_the_anchor_lives_under_the_default_config_dir(self, tmp_path):
+    def test_the_anchor_lives_directly_under_the_working_dir(self, tmp_path):
         assert ca.anchor_path(str(tmp_path)) == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "config_storage_anchor.json"
+            tmp_path / "config_storage_anchor.json"
         )
+        assert ca.anchor_dir(str(tmp_path)) == str(tmp_path)
 
     def test_the_path_depends_only_on_the_working_dir(self, tmp_path, monkeypatch):
-        """``LIGHTRAG_CONFIG_DIR`` moves the JSON data, never the anchor: the
-        check and the checked data must not move together."""
+        """No setting moves the anchor: the removed ``LIGHTRAG_CONFIG_DIR`` is
+        not read."""
         before = ca.anchor_path(str(tmp_path))
         monkeypatch.setenv("LIGHTRAG_CONFIG_DIR", str(tmp_path / "elsewhere"))
         assert ca.anchor_path(str(tmp_path)) == before
@@ -105,7 +105,7 @@ class TestStrictRead:
 
     def test_undecodable_bytes_refuse(self, tmp_path):
         path = ca.anchor_path(str(tmp_path))
-        os.makedirs(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             f.write(b"\xff\xfe\x00garbage")
         with pytest.raises(ConfigurationIdentityError):
@@ -136,7 +136,12 @@ class TestStrictRead:
             "MongoKVStorage",
             "OpenSearchKVStorage",
         ):
-            _write(tmp_path, _valid(backend=backend))
+            extra = (
+                {"layout": "json_shards", "members": []}
+                if backend == "JsonKVStorage"
+                else {}
+            )
+            _write(tmp_path, _valid(backend=backend, **extra))
             assert ca.read_anchor(str(tmp_path)).backend == backend
 
 
@@ -145,11 +150,7 @@ class TestPublish:
         return ca.StorageAnchor(backend=backend, storage_uuid=storage_uuid)
 
     def _leftovers(self, tmp_path):
-        return [
-            name
-            for name in os.listdir(tmp_path / CONFIG_CONTAINER_TAG)
-            if name != ca.ANCHOR_FILE_NAME
-        ]
+        return [name for name in os.listdir(tmp_path) if name != ca.ANCHOR_FILE_NAME]
 
     def test_a_bind_writes_exactly_the_three_fields(self, tmp_path):
         path = ca.publish_anchor(str(tmp_path), self._anchor(), replace=False)

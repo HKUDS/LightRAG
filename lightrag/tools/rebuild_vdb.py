@@ -121,6 +121,7 @@ from lightrag.utils import (
     get_env_value,
     logger,
     make_relation_vdb_ids,
+    normalize_server_workspace,
     safe_vdb_operation_with_exception,
     setup_logger,
 )
@@ -821,9 +822,12 @@ class RebuildTool:
         }
 
     def resolve_config_dir(self) -> str:
+        """The workspace's JSON configuration directory ("" for a database
+        backend), derived exactly as the server derives it."""
         return resolve_config_dir(
-            os.getenv("LIGHTRAG_CONFIG_DIR", ""),
-            os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+            self.storage_names["config"],
+            working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+            workspace=self.workspace,
         )
 
     def check_env_vars(self, storage_name: str) -> None:
@@ -872,8 +876,9 @@ class RebuildTool:
             "vector_storage": self.storage_names["vector"],
             "graph_storage": self.storage_names["graph"],
             # Read by the JSON backend when it opens the configuration
-            # container; ignored by the server backends.
-            "config_dir": self.config_dir,
+            # container (it picks this workspace's snapshot); ignored by the
+            # server backends.
+            "workspace": self.workspace,
             "embedding_batch_num": get_env_value(
                 "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
             ),
@@ -905,8 +910,14 @@ class RebuildTool:
         from lightrag.kg.factory import get_storage_class
 
         self.storage_names = self.resolve_storage_names()
-        self.config_dir = self.resolve_config_dir()
-        self.workspace = os.getenv("WORKSPACE", "")
+        # Normalized exactly as the server normalizes it: the workspace it
+        # registered is the one whose snapshot and membership are checked.
+        self.workspace = normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
+        try:
+            self.config_dir = self.resolve_config_dir()
+        except ValueError as e:
+            print(f"\n✗ {e}")
+            return False
 
         # The anchor first (steps 0a-0c, as a start runs them): the shared
         # lock, a strict read, and a refusal when it binds another backend
@@ -1115,6 +1126,7 @@ class RebuildTool:
                 container=describe_configuration_container(
                     self.storage_names["config"], self.config_dir
                 ),
+                workspace=self.workspace,
             )
         except ConfigurationStorageError as e:
             print(f"✗ {e}")

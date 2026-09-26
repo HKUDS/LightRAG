@@ -8,9 +8,9 @@ identity* in ``docs/design/ConfigurationStorageContract.md``; operator guide:
 ``lightrag/tools/README_MIGRATE_CONFIG.md``. The rules:
 
 * **Cross-type only.** A same-type move (PostgreSQL to PostgreSQL, Mongo to
-  Mongo, an OpenSearch snapshot, copying the JSON file) is the backend's own
-  dump/restore: the identity row travels with the data and "same type, same
-  UUID" passes. The PostgreSQL, MongoDB and OpenSearch client managers are
+  Mongo, an OpenSearch snapshot, copying the whole WORKING_DIR) is the
+  backend's own dump/restore: the identity row travels with the data and
+  "same type, same UUID" passes. The PostgreSQL, MongoDB and OpenSearch client managers are
   process-wide singletons that read ``os.environ``, which is also why two
   containers of ONE type cannot be open here at once.
 * **The UUID is kept.** The target receives the source's identity; the type
@@ -25,6 +25,14 @@ identity* in ``docs/design/ConfigurationStorageContract.md``; operator guide:
   strict flush and a full verification; before that the old configuration
   keeps working on the source. No source row is ever written or deleted, and
   no ``.env`` or environment is ever written.
+* **JSON is the whole group.** A JSON side is every workspace snapshot of
+  this ``WORKING_DIR`` (``JsonShardGroup``), never the invoking workspace's
+  alone. As a source, the anchor's members and the snapshots on disk must
+  agree in both directions before anything is written; as a target, every
+  source workspace and every discovered snapshot is claimed and validated
+  first, same-identity snapshots are converged, and a snapshot the source no
+  longer has rows for is kept with its identity and owner only and stays a
+  member. The owner rows are layout metadata and never leave JSON.
 """
 
 from __future__ import annotations
@@ -42,10 +50,17 @@ from dotenv import dotenv_values, load_dotenv
 
 from lightrag import config_store as cs
 from lightrag.config_anchor import (
+    JSON_CONFIG_BACKEND,
     StorageAnchor,
     anchor_path,
     publish_anchor,
     read_anchor,
+)
+from lightrag.config_shards import (
+    discover_shards,
+    json_config_dir,
+    read_shard_file,
+    validate_config_workspace,
 )
 from lightrag.constants import DEFAULT_WORKING_DIR
 from lightrag.exceptions import (
@@ -60,6 +75,7 @@ from lightrag.kg.anchor_lock import (
     acquire_anchor_lock_shared,
     release_anchor_lock_shared,
 )
+from lightrag.namespace import SERVER_CONFIG_SCOPE
 from lightrag.utils import setup_logger
 
 # Fields a backend adds to a row it returns and owns itself; never content.
@@ -81,7 +97,7 @@ _RESERVED_FIELDS = frozenset().union(*RESERVED_FIELDS_BY_BACKEND.values())
 # exact name). Two backends of different types read disjoint sets, which is
 # what lets one process hold both connections.
 BACKEND_ENV_PREFIXES: dict[str, tuple[str, ...]] = {
-    "JsonKVStorage": ("LIGHTRAG_CONFIG_DIR",),
+    "JsonKVStorage": (),
     "PGKVStorage": ("POSTGRES_",),
     "MongoKVStorage": ("MONGO_", "MONGODB_"),
     "OpenSearchKVStorage": ("OPENSEARCH_",),
@@ -265,6 +281,255 @@ async def classify_target(
     if count:
         return TargetVerdict("foreign_rows", None, count)
     return TargetVerdict("empty", None, 0)
+
+
+# ---------------------------------------------------------------------------
+# The JSON group
+# ---------------------------------------------------------------------------
+
+
+class JsonShardGroup:
+    """Every JSON configuration snapshot of one ``WORKING_DIR``, presented to
+    the migration as ONE configuration container.
+
+    Rows are routed by their ``workspace`` field to that workspace's
+    snapshot; the identity is the one UUID every non-empty snapshot carries
+    (a disagreement raises); owner rows are hidden -- read, validated and
+    written here, never copied. Each snapshot's directory is claimed before
+    it is opened, in sorted order, and the claims are handed back by the
+    caller's ``release_claims``. See the module rules.
+    """
+
+    supports_strict_point_reads = True
+
+    def __init__(self, working_dir: str, claims: list[str]) -> None:
+        self.working_dir = os.path.abspath(working_dir)
+        self._claims = claims
+        self._shards: dict[str, Any] = {}
+        # The identity a claimed-but-still-empty target will stamp into each
+        # snapshot it creates.
+        self._identity: str | None = None
+
+    # -- opening --------------------------------------------------------
+
+    def _refuse(self, detail: str) -> MigrationRefused:
+        return MigrationRefused(
+            f"The JSON configuration group under {self.working_dir} {detail}. "
+            f"Nothing was written."
+        )
+
+    def _validated_disk(self) -> dict[str, cs.ShardContents]:
+        """Every non-empty snapshot on disk, validated against the workspace
+        its location names."""
+        found: dict[str, cs.ShardContents] = {}
+        try:
+            for shard in discover_shards(self.working_dir):
+                contents = cs.inspect_shard_rows(
+                    read_shard_file(shard.path) or {},
+                    workspace=shard.workspace,
+                    location=shard.path,
+                )
+                if not contents.empty:
+                    found[shard.workspace] = contents
+        except ConfigurationIdentityError as e:
+            raise MigrationRefused(str(e)) from e
+        return found
+
+    async def _open(self, workspace: str) -> None:
+        from lightrag.kg.json_kv_impl import JsonKVStorage
+        from lightrag.kg.working_dir_lock import acquire_working_dir_lock
+
+        directory = json_config_dir(self.working_dir, workspace)
+        # A server on this WORKING_DIR could still hold the snapshot.
+        acquire_working_dir_lock(directory)
+        self._claims.append(directory)
+        storage = cs.create_configuration_storage(
+            JsonKVStorage,
+            global_config={"working_dir": self.working_dir, "workspace": workspace},
+            embedding_func=None,
+        )
+        self._shards[workspace] = await _initialize_or_close(
+            storage, JSON_CONFIG_BACKEND
+        )
+
+    async def open_source(self) -> None:
+        """Open the anchored group as a migration source: the anchor's
+        members and the snapshots on disk must agree in both directions,
+        and every member must carry the group's identity and its owner."""
+        anchor = read_anchor(self.working_dir)
+        if anchor is None or anchor.members is None:
+            raise self._refuse("has no JSON anchor to name its members")
+        on_disk = self._validated_disk()
+        members = set(anchor.members)
+        missing = sorted(members - set(on_disk))
+        extra = sorted(set(on_disk) - members)
+        if missing or extra:
+            raise self._refuse(
+                f"does not match its anchor: registered members without a "
+                f"snapshot {missing}, snapshots that are not registered "
+                f"{extra}. A missing member must be restored; an unregistered "
+                f"snapshot is a lost registration or a stray file -- stop every "
+                f"server, back up and delete the anchor and start one server "
+                f"to rebuild the member list, or remove the stray file"
+            )
+        for workspace in sorted(members):
+            contents = on_disk[workspace]
+            if contents.storage_uuid != anchor.storage_uuid or contents.owner is None:
+                raise self._refuse(
+                    f"has member {workspace!r} with identity "
+                    f"{contents.storage_uuid!r} and owner {contents.owner!r}, "
+                    f"not the anchored group {anchor.storage_uuid}"
+                )
+        for workspace in sorted(members):
+            await self._open(workspace)
+
+    async def prepare_target(
+        self, source_scan: "ContainerScan", *, dry_run: bool
+    ) -> None:
+        """Claim, validate and open every snapshot a JSON target could touch:
+        the source's workspaces and every snapshot already on disk. A dry run
+        opens only the snapshots that exist."""
+        scopes = set(source_scan.scopes)
+        if SERVER_CONFIG_SCOPE in scopes:
+            raise self._refuse(
+                "cannot hold the source's server-scope rows besides the identity: "
+                "JSON snapshots are per workspace, and this version defines no "
+                "rule for splitting a server-wide setting across them"
+            )
+        for scope in sorted(scopes):
+            try:
+                validate_config_workspace(scope)
+            except ValueError as e:
+                raise self._refuse(f"cannot hold source scope {scope!r}: {e}") from e
+        on_disk = self._validated_disk()
+        wanted = set(on_disk) if dry_run else set(on_disk) | scopes
+        for workspace in sorted(wanted):
+            await self._open(workspace)
+
+    # -- the container interface ----------------------------------------
+
+    async def _identity_row(self) -> dict[str, Any] | None:
+        identity_key = cs.storage_identity_key()
+        rows: dict[str, dict[str, Any]] = {}
+        for workspace, shard in sorted(self._shards.items()):
+            row = await shard.get_by_id_strict(identity_key)
+            if row is None:
+                if not await shard.is_empty():
+                    raise cs.shard_invalid_error(
+                        json_config_dir(self.working_dir, workspace),
+                        "it holds records but no identity row",
+                    )
+                continue
+            rows[cs.identity_from_row(row, key=identity_key)] = row
+        if len(rows) > 1:
+            raise ConfigurationIdentityError(
+                f"the JSON configuration snapshots under {self.working_dir} "
+                f"carry different identities ({', '.join(sorted(rows))})",
+                cause=cs.IDENTITY_SHARD_INVALID,
+            )
+        if rows:
+            return next(iter(rows.values()))
+        if self._identity is not None:
+            return cs.make_config_row(
+                scope_workspace=cs.SERVER_SCOPE,
+                suffix=cs.STORAGE_IDENTITY_SUFFIX,
+                value={"uuid": self._identity},
+                updated_by=cs.UPDATED_BY_MIGRATE,
+            )
+        return None
+
+    async def get_by_id_strict(self, key: str) -> dict[str, Any] | None:
+        if key == cs.storage_identity_key():
+            return await self._identity_row()
+        if key == cs.json_shard_owner_key():
+            return None
+        for _, shard in sorted(self._shards.items()):
+            row = await shard.get_by_id_strict(key)
+            if row is not None:
+                return row
+        return None
+
+    async def iter_rows(self, *, page_size: int = 200):
+        hidden = {cs.storage_identity_key(), cs.json_shard_owner_key()}
+        for _, shard in sorted(self._shards.items()):
+            async for row in shard.iter_rows(page_size=page_size):
+                if row.get("_id") not in hidden:
+                    yield row
+        identity = await self._identity_row()
+        if identity is not None:
+            yield {**identity, "_id": cs.storage_identity_key()}
+
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        identity_key = cs.storage_identity_key()
+        batches: dict[str, dict[str, dict[str, Any]]] = {}
+        for key, row in data.items():
+            if key == identity_key:
+                self._identity = cs.identity_from_row(row, key=key)
+                continue
+            scope = row.get("workspace") if isinstance(row, dict) else None
+            if not isinstance(scope, str) or scope not in self._shards:
+                raise ConfigurationStorageError(
+                    f"no JSON snapshot was prepared for row {key!r} (scope {scope!r})"
+                )
+            batches.setdefault(scope, {})[key] = dict(row)
+        if not batches:
+            return
+        identity = await self._identity_row()
+        if identity is None:
+            raise ConfigurationStorageError(
+                "the JSON target has no identity to stamp into a new snapshot"
+            )
+        storage_uuid = cs.identity_from_row(identity, key=identity_key)
+        for workspace, batch in sorted(batches.items()):
+            shard = self._shards[workspace]
+            if await shard.get_by_id_strict(cs.json_shard_owner_key()) is None:
+                batch.update(
+                    cs.json_shard_metadata_rows(
+                        workspace, storage_uuid, updated_by=cs.UPDATED_BY_MIGRATE
+                    )
+                )
+            await shard.upsert(batch)
+
+    async def delete(self, ids: list[str]) -> None:
+        hidden = {cs.storage_identity_key(), cs.json_shard_owner_key()}
+        keys = [key for key in ids if key not in hidden]
+        for _, shard in sorted(self._shards.items()):
+            await shard.delete(keys)
+
+    async def index_done_callback(self) -> None:
+        for _, shard in sorted(self._shards.items()):
+            await shard.index_done_callback()
+
+    async def finalize(self) -> None:
+        for _, shard in sorted(self._shards.items()):
+            await shard.finalize()
+
+    # -- the commit -----------------------------------------------------
+
+    async def committed_members(self) -> list[str]:
+        """Every opened snapshot that now holds rows: the new member list."""
+        return [
+            workspace
+            for workspace, shard in sorted(self._shards.items())
+            if not await shard.is_empty()
+        ]
+
+    async def verify_layout(self, storage_uuid: str) -> None:
+        """Every member snapshot carries ``storage_uuid`` and names its own
+        workspace as owner."""
+        for workspace in await self.committed_members():
+            shard = self._shards[workspace]
+            contents = cs.inspect_shard_rows(
+                await cs.read_shard_rows(shard),
+                workspace=workspace,
+                location=json_config_dir(self.working_dir, workspace),
+            )
+            if contents.storage_uuid != storage_uuid or contents.owner != workspace:
+                raise MigrationFailed(
+                    f"the JSON snapshot of workspace {workspace!r} reads back "
+                    f"identity {contents.storage_uuid!r} and owner "
+                    f"{contents.owner!r}, not {storage_uuid!r} / {workspace!r}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +737,9 @@ async def migrate_configuration(
             raise MigrationRefused(
                 f"The target backend {target_backend} is the anchored one. A "
                 f"same-type move is done with the backend's own dump/restore "
-                f"(or by copying the JSON file): the identity row travels with "
-                f"the data, and the same type and UUID pass the start-up check."
+                f"(or, for JSON, by copying the whole WORKING_DIR): the identity "
+                f"row travels with the data, and the same type and UUID pass "
+                f"the start-up check."
             )
         out(f"- Anchor:  {anchor.backend}, identity {anchor.storage_uuid}")
 
@@ -532,9 +798,15 @@ async def migrate_configuration(
                 f"written; remove the fields or choose another target."
             )
 
-        # Step 3. The target, classified.
+        # Step 3. The target, classified. A JSON target first claims and
+        # validates every snapshot it could touch -- the source's workspaces
+        # and the ones already on disk -- so nothing is written before all
+        # of them are known to be this migration's to converge.
         target = await open_target(target_backend)
         opened.append(target)
+        prepare = getattr(target, "prepare_target", None)
+        if prepare is not None:
+            await prepare(source_scan, dry_run=dry_run)
         verdict = await classify_target(
             target, anchor.storage_uuid, page_size=page_size
         )
@@ -597,6 +869,9 @@ async def migrate_configuration(
             await _verify(
                 source, target, storage_uuid=anchor.storage_uuid, page_size=page_size
             )
+            verify_layout = getattr(target, "verify_layout", None)
+            if verify_layout is not None:
+                await verify_layout(anchor.storage_uuid)
         except (MigrationRefused, ConfigurationIdentityError) as e:
             # The target is claimed and may already be partly converged, so
             # a row -- or the target's own identity -- that turned bad since
@@ -604,9 +879,16 @@ async def migrate_configuration(
             # and a re-run reconciles or refuses by name.
             raise MigrationFailed(str(e)) from e
 
-        # Step 7. The commit point.
+        # Step 7. The commit point. A JSON target lists every snapshot it
+        # now holds as a member.
+        members: tuple[str, ...] | None = None
+        if target_backend == JSON_CONFIG_BACKEND:
+            committed = getattr(target, "committed_members", None)
+            members = tuple(await committed()) if committed is not None else ()
         new_anchor = StorageAnchor(
-            backend=target_backend, storage_uuid=anchor.storage_uuid
+            backend=target_backend,
+            storage_uuid=anchor.storage_uuid,
+            members=members,
         )
         try:
             publish_anchor(working_dir, new_anchor, replace=True)
@@ -714,32 +996,21 @@ def resolve_environments(
     return overlay
 
 
-def _config_dir_for(env: dict[str, str | None], working_dir: str) -> str:
-    named = env.get("LIGHTRAG_CONFIG_DIR")
-    if named is None:
-        named = os.environ.get("LIGHTRAG_CONFIG_DIR", "")
-    return cs.resolve_config_dir(named, working_dir)
-
-
-def _opener(working_dir: str, config_dir: str, claims: list[str]) -> OpenStorage:
+def _opener(working_dir: str, claims: list[str], *, source: bool) -> OpenStorage:
     async def _open(backend: str) -> Any:
         from lightrag.kg.factory import get_storage_class
-        from lightrag.kg.working_dir_lock import acquire_working_dir_lock
 
         if backend in cs.FILE_BACKED_CONFIG_STORAGES:
-            # A server on another WORKING_DIR could still hold this directory.
-            acquire_working_dir_lock(config_dir)
-            claims.append(config_dir)
+            group = JsonShardGroup(working_dir, claims)
+            if source:
+                await group.open_source()
+            return group
         try:
             # Resolution and construction fail on a missing driver or an
             # environment value the backend rejects; nothing is open yet.
             storage = cs.create_configuration_storage(
                 get_storage_class(backend),
-                global_config={
-                    "working_dir": working_dir,
-                    "config_dir": config_dir,
-                    "kv_storage": backend,
-                },
+                global_config={"working_dir": working_dir, "kv_storage": backend},
                 embedding_func=None,
             )
         except (ConfigurationStorageError, ConfigurationIdentityError):
@@ -749,27 +1020,30 @@ def _opener(working_dir: str, config_dir: str, claims: list[str]) -> OpenStorage
                 f"could not create the {backend} configuration storage "
                 f"({type(e).__name__}: {e})"
             ) from e
-        try:
-            await storage.initialize()
-        except BaseException as e:
-            # The caller never receives a storage that failed to open, so it
-            # is closed here: a client acquired before the failure must not
-            # leak.
-            try:
-                await storage.finalize()
-            except Exception:
-                pass
-            if not isinstance(e, Exception) or isinstance(
-                e, (ConfigurationStorageError, ConfigurationIdentityError)
-            ):
-                raise
-            raise ConfigurationStorageError(
-                f"could not open the {backend} configuration storage "
-                f"({type(e).__name__}: {e})"
-            ) from e
-        return storage
+        return await _initialize_or_close(storage, backend)
 
     return _open
+
+
+async def _initialize_or_close(storage: Any, backend: str) -> Any:
+    try:
+        await storage.initialize()
+    except BaseException as e:
+        # The caller never receives a storage that failed to open, so it is
+        # closed here: a client acquired before the failure must not leak.
+        try:
+            await storage.finalize()
+        except Exception:
+            pass
+        if not isinstance(e, Exception) or isinstance(
+            e, (ConfigurationStorageError, ConfigurationIdentityError)
+        ):
+            raise
+        raise ConfigurationStorageError(
+            f"could not open the {backend} configuration storage "
+            f"({type(e).__name__}: {e})"
+        ) from e
+    return storage
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -866,12 +1140,8 @@ async def async_main(argv: list[str] | None = None) -> int:
         result = await migrate_configuration(
             working_dir=working_dir,
             target_backend=args.target_backend,
-            open_source=_opener(
-                working_dir, _config_dir_for(source_env, working_dir), claims
-            ),
-            open_target=_opener(
-                working_dir, _config_dir_for(target_env, working_dir), claims
-            ),
+            open_source=_opener(working_dir, claims, source=True),
+            open_target=_opener(working_dir, claims, source=False),
             dry_run=args.dry_run,
             assume_exclusive=args.assume_exclusive,
             page_size=max(1, args.page_size),

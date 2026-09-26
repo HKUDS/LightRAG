@@ -24,10 +24,11 @@ from lightrag.exceptions import (
     ConfigurationIdentityError,
 )
 from lightrag.kg import anchor_lock as al
-from lightrag.namespace import CONFIG_CONTAINER_TAG, CONFIG_JSON_FILE_NAME
+from lightrag.namespace import CONFIG_JSON_FILE_NAME
 from tests.config_store.test_startup_sequence import (  # noqa: F401
     _Spy,
     _shared_storage,
+    _workspace,
 )
 from tests.config_store.test_startup_sequence import _rag as _base_rag
 
@@ -36,28 +37,29 @@ pytestmark = pytest.mark.offline
 IDENTITY_KEY = "_lightrag_server/storage_identity"
 
 
-def _rag(tmp_path, *, model_name, workspace=None, config_dir=None):
-    """The sequence tests' instance, optionally on another workspace or
-    ``config_dir``."""
+OWNER_KEY = "_lightrag_server/json_shard"
+
+
+def _rag(tmp_path, *, model_name, workspace=None):
+    """The sequence tests' instance, optionally on another workspace."""
     base = _base_rag(tmp_path, model_name=model_name)
-    if workspace is None and config_dir is None:
+    if workspace is None:
         return base
     from lightrag import LightRAG
 
     return LightRAG(
         working_dir=str(tmp_path),
-        workspace=workspace or base.workspace,
-        config_dir=config_dir or "",
+        workspace=workspace,
         llm_model_func=base.llm_model_func,
         embedding_func=base.embedding_func,
         tokenizer=base.tokenizer,
     )
 
 
-def _config_file(tmp_path, config_dir=None):
-    return (
-        (tmp_path / CONFIG_CONTAINER_TAG) if config_dir is None else config_dir
-    ) / CONFIG_JSON_FILE_NAME
+def _config_file(tmp_path, workspace=None):
+    """A workspace's JSON snapshot; the sequence tests' workspace by default."""
+    name = _workspace(tmp_path) if workspace is None else workspace
+    return (tmp_path / name if name else tmp_path) / CONFIG_JSON_FILE_NAME
 
 
 def _stored(path) -> dict:
@@ -86,12 +88,34 @@ async def _start_and_stop(tmp_path, **kwargs):
     return rag
 
 
-async def test_a_first_start_creates_the_identity_then_the_anchor(tmp_path):
+async def test_a_first_start_creates_the_group_and_registers_the_workspace(
+    tmp_path, monkeypatch
+):
+    """No anchor, no snapshot: the group's anchor is published FIRST with no
+    members, then the workspace's snapshot gets its identity and owner rows,
+    then the workspace is appended to the members."""
+    published: list[tuple[tuple[str, ...], bool]] = []
+    real_publish = cs.publish_anchor
+
+    def _recording(working_dir, anchor, *, replace):
+        published.append((anchor.members, replace))
+        if not replace:
+            # The create lands before any snapshot is written.
+            assert not _config_file(tmp_path).exists() or not _stored(
+                _config_file(tmp_path)
+            )
+        return real_publish(working_dir, anchor, replace=replace)
+
+    monkeypatch.setattr(cs, "publish_anchor", _recording)
     rag = await _start_and_stop(tmp_path)
-    storage_uuid = _stored(_config_file(tmp_path))[IDENTITY_KEY]["value"]["uuid"]
+    workspace = _workspace(tmp_path)
+    stored = _stored(_config_file(tmp_path))
+    storage_uuid = stored[IDENTITY_KEY]["value"]["uuid"]
+    assert stored[OWNER_KEY]["value"] == {"workspace": workspace}
     assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
-        backend="JsonKVStorage", storage_uuid=storage_uuid
+        backend="JsonKVStorage", storage_uuid=storage_uuid, members=(workspace,)
     )
+    assert published == [((), False), ((workspace,), True)]
     assert rag._holds_anchor_lock is False
     assert not al.holds_anchor_lock(str(tmp_path))
 
@@ -138,7 +162,7 @@ async def test_a_backend_type_change_is_refused_before_anything_opens(tmp_path):
 
 async def test_an_unreadable_anchor_is_refused_and_never_absent(tmp_path):
     path = ca.anchor_path(str(tmp_path))
-    os.makedirs(os.path.dirname(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write('{"schema_version": 1, "backend": "Json')
     rag = _rag(tmp_path, model_name="bge-m3")
@@ -164,7 +188,9 @@ async def test_an_emptied_container_is_refused_and_the_anchor_deletion_rebinds(
     full_docs_init = _Spy(rag.full_docs, "initialize")
     with pytest.raises(ConfigurationIdentityError) as excinfo:
         await rag.initialize_storages()
-    assert excinfo.value.cause == ca.IDENTITY_UUID_MISSING
+    # A registered member whose snapshot is gone is refused, never
+    # re-initialized in place.
+    assert excinfo.value.cause == ca.IDENTITY_MEMBER_MISSING
     assert ca.anchor_path(str(tmp_path)) in str(excinfo.value)
     # Step 1b is sticky and rolled back like a step-2 failure.
     assert config_finalize.calls == 1
@@ -179,43 +205,61 @@ async def test_an_emptied_container_is_refused_and_the_anchor_deletion_rebinds(
     warnings: list[str] = []
     monkeypatch.setattr(cs.logger, "warning", warnings.append)
     await _start_and_stop(tmp_path)
-    new_uuid = ca.read_anchor(str(tmp_path)).storage_uuid
-    assert new_uuid != old_uuid
-    assert any(new_uuid in w and "JsonKVStorage at" in w for w in warnings)
+    new_anchor = ca.read_anchor(str(tmp_path))
+    assert new_anchor.storage_uuid != old_uuid
+    assert new_anchor.members == (_workspace(tmp_path),)
+    assert any(
+        new_anchor.storage_uuid in w and ca.anchor_path(str(tmp_path)) in w
+        for w in warnings
+    )
 
 
-async def test_a_moved_config_dir_that_keeps_its_identity_passes(tmp_path):
-    """``LIGHTRAG_CONFIG_DIR`` changed: the FIXED anchor is still read and the
-    verdict is the target container's UUID."""
+async def test_a_snapshot_copied_to_another_workspace_is_refused(tmp_path):
+    """The snapshot's path is fixed, so it cannot be "moved" by a setting --
+    only copied. A copy under another workspace's name keeps its owner and its
+    rows, is refused, and is never relabelled or enrolled."""
     await _start_and_stop(tmp_path)
     anchor = _anchor_bytes(tmp_path)
-    moved = tmp_path / "moved"
-    moved.mkdir()
-    shutil.copy(_config_file(tmp_path), _config_file(tmp_path, moved))
+    copy = _config_file(tmp_path, "copied")
+    copy.parent.mkdir()
+    shutil.copy(_config_file(tmp_path), copy)
+    before = copy.read_bytes()
 
-    await _start_and_stop(tmp_path, config_dir=str(moved))
+    rag = _rag(tmp_path, model_name="bge-m3", workspace="copied")
+    with pytest.raises(ConfigurationIdentityError) as excinfo:
+        await rag.initialize_storages()
+    assert excinfo.value.cause == ca.IDENTITY_SHARD_INVALID
+    await rag.finalize_storages()
+    assert copy.read_bytes() == before
     assert _anchor_bytes(tmp_path) == anchor
 
 
-async def test_a_config_dir_pointed_at_an_empty_directory_is_refused(tmp_path):
+async def test_a_new_workspace_registers_into_the_existing_group(tmp_path):
+    """An empty snapshot of an unregistered workspace is not a refusal: it is
+    registered with the group's identity, and the first member is kept."""
     await _start_and_stop(tmp_path)
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    rag = _rag(tmp_path, model_name="bge-m3", config_dir=str(empty))
-    with pytest.raises(ConfigurationIdentityError) as excinfo:
-        await rag.initialize_storages()
-    assert excinfo.value.cause == ca.IDENTITY_UUID_MISSING
-    await rag.finalize_storages()
-    # Nothing created in the directory it was pointed at.
-    assert IDENTITY_KEY not in _stored(_config_file(tmp_path, empty))
+    first = ca.read_anchor(str(tmp_path))
+
+    await _start_and_stop(tmp_path, workspace="newcomer")
+    after = ca.read_anchor(str(tmp_path))
+    assert after.storage_uuid == first.storage_uuid
+    assert after.members == tuple(sorted((_workspace(tmp_path), "newcomer")))
+    stored = _stored(_config_file(tmp_path, "newcomer"))
+    assert stored[IDENTITY_KEY]["value"]["uuid"] == first.storage_uuid
+    assert stored[OWNER_KEY]["value"] == {"workspace": "newcomer"}
 
 
 async def test_a_crash_after_the_identity_write_heals_on_the_next_start(
     tmp_path, monkeypatch
 ):
+    """The group anchor is published and the snapshot's identity and owner
+    are durable, but the member append fails: the next start reuses the
+    metadata-only snapshot and appends, with the same identity."""
     real_publish = cs.publish_anchor
 
-    def _crash(*args, **kwargs):
+    def _crash(working_dir, anchor, *, replace):
+        if not replace:
+            return real_publish(working_dir, anchor, replace=replace)
         raise ConfigurationIdentityError(
             "injected publish failure", cause=ca.IDENTITY_ANCHOR_WRITE_FAILED
         )
@@ -229,11 +273,15 @@ async def test_a_crash_after_the_identity_write_heals_on_the_next_start(
     assert rag._startup_refusal is not None
     assert not al.holds_anchor_lock(str(tmp_path))
     created = _stored(_config_file(tmp_path))[IDENTITY_KEY]["value"]["uuid"]
-    assert ca.read_anchor(str(tmp_path)) is None
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        backend="JsonKVStorage", storage_uuid=created, members=()
+    )
 
     monkeypatch.setattr(cs, "publish_anchor", real_publish)
     await _start_and_stop(tmp_path)
-    assert ca.read_anchor(str(tmp_path)).storage_uuid == created
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        backend="JsonKVStorage", storage_uuid=created, members=(_workspace(tmp_path),)
+    )
 
 
 async def test_a_cancellation_during_the_bind_is_sticky_and_releases_everything(
@@ -256,12 +304,13 @@ async def test_a_cancellation_during_the_bind_is_sticky_and_releases_everything(
 async def test_repeated_and_concurrent_instances_never_regenerate_the_identity(
     tmp_path, monkeypatch
 ):
-    publishes = []
+    creates = []
     real_publish = cs.publish_anchor
 
-    def _counting(*args, **kwargs):
-        publishes.append(args)
-        return real_publish(*args, **kwargs)
+    def _counting(working_dir, anchor, *, replace):
+        if not replace:
+            creates.append(anchor)
+        return real_publish(working_dir, anchor, replace=replace)
 
     monkeypatch.setattr(cs, "publish_anchor", _counting)
 
@@ -270,17 +319,37 @@ async def test_repeated_and_concurrent_instances_never_regenerate_the_identity(
 
     rags = [_instance(f"ws{i}") for i in range(3)]
     await asyncio.gather(*(r.initialize_storages() for r in rags))
-    anchor = _anchor_bytes(tmp_path)
-    identity = _stored(_config_file(tmp_path))[IDENTITY_KEY]
-    assert len(publishes) == 1
-    # A later instance in the same process verifies against the same row.
+    # One group created; every concurrent workspace registered into it, and
+    # none lost its membership to another's append.
+    assert len(creates) == 1
+    storage_uuid = creates[0].storage_uuid
+    assert ca.read_anchor(str(tmp_path)).members == ("ws0", "ws1", "ws2")
+    # A later instance in the same process joins the same group.
     extra = _instance("ws-late")
     await extra.initialize_storages()
     for r in [*rags, extra]:
         await r.finalize_storages()
-    assert len(publishes) == 1
+    anchor = _anchor_bytes(tmp_path)
+    assert len(creates) == 1
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        backend="JsonKVStorage",
+        storage_uuid=storage_uuid,
+        members=("ws-late", "ws0", "ws1", "ws2"),
+    )
+    for name in ("ws0", "ws1", "ws2", "ws-late"):
+        stored = _stored(_config_file(tmp_path, name))
+        assert stored[IDENTITY_KEY]["value"]["uuid"] == storage_uuid
+    # Restarting every workspace rewrites neither the anchor nor an identity.
+    identities = {
+        name: _stored(_config_file(tmp_path, name))[IDENTITY_KEY]
+        for name in ("ws0", "ws1", "ws2", "ws-late")
+    }
+    for name in identities:
+        await _start_and_stop(tmp_path, workspace=name)
     assert _anchor_bytes(tmp_path) == anchor
-    assert _stored(_config_file(tmp_path))[IDENTITY_KEY] == identity
+    assert {
+        name: _stored(_config_file(tmp_path, name))[IDENTITY_KEY] for name in identities
+    } == identities
     assert not al.holds_anchor_lock(str(tmp_path))
 
 
@@ -313,7 +382,7 @@ async def test_a_running_migration_refuses_the_start_without_sticking(tmp_path):
 async def test_a_relative_working_dir_keeps_its_anchor_across_a_cwd_change(
     tmp_path, monkeypatch
 ):
-    """The anchor is pinned where ``config_dir`` is, at construction: a CWD
+    """The anchor is pinned where ``working_dir`` resolves, at construction: a CWD
     change before ``initialize_storages()`` must neither bind a second anchor
     beside another directory nor release a lock path it never took."""
     from lightrag import LightRAG
@@ -339,7 +408,7 @@ async def test_a_relative_working_dir_keeps_its_anchor_across_a_cwd_change(
 
     storage_uuid = _stored(_config_file(deployment))[IDENTITY_KEY]["value"]["uuid"]
     assert ca.read_anchor(str(deployment)) == ca.StorageAnchor(
-        backend="JsonKVStorage", storage_uuid=storage_uuid
+        backend="JsonKVStorage", storage_uuid=storage_uuid, members=(base.workspace,)
     )
     assert ca.read_anchor(str(elsewhere / "deploy")) is None
     assert not al.holds_anchor_lock(str(deployment))

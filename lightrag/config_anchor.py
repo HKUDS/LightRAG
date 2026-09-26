@@ -4,34 +4,36 @@ deployment is bound to, kept where no storage selection can move it.
 Full contract: *The anchor and the container identity* in
 ``docs/design/ConfigurationStorageContract.md``. The rules a caller meets:
 
-* **Fixed path.** ``<working_dir>/_lightrag_config/config_storage_anchor.json``. It
-  depends on ``working_dir`` and a name written in code, and deliberately NOT
-  on ``config_dir``: that setting moves the JSON configuration data, and
-  moving the anchor with it would move the checked data and the check
-  together.
+* **Fixed path.** ``<working_dir>/config_storage_anchor.json``, directly
+  under ``working_dir`` for every backend and every workspace: it binds the
+  whole deployment, so it lives outside every workspace, the empty one
+  included. No setting moves it.
 
-* **Three fields and nothing else** -- ``schema_version``, ``backend``,
-  ``storage_uuid``. No host, credential, connection string or hash of one:
-  the identity is compared, connection details are not.
+* **One format.** ``schema_version`` (integer ``1``), ``backend`` and
+  ``storage_uuid``; a ``JsonKVStorage`` anchor adds ``layout``
+  (``"json_shards"``) and ``members``, the workspaces whose JSON snapshots
+  belong to this group. No host, credential, path or connection string: the
+  identity is compared, connection details are not.
 
 * **Strict read.** Only a genuine "file does not exist" is the no-anchor
   branch. A permission error, a truncated or corrupt file, an unknown
-  version, an unadmitted backend or a malformed UUID refuses; it is never
-  read as absent.
+  version, an unadmitted backend, a malformed UUID, a member list on a
+  database anchor or a bad member name refuses; it is never read as absent.
 
 * **Two write modes.** ``publish_anchor(..., replace=False)`` is the bind: it
   never overwrites an anchor that exists. ``replace=True`` is the offline
-  migration's commit point and nothing else's. A normal start never
-  overwrites or deletes an anchor. Both write a temp file in the same
-  directory, ``fsync`` it, publish, then ``fsync`` the directory where the
-  platform supports it; a failure anywhere is raised, never reported as a
-  success.
+  migration's commit point and a JSON start's member append (under the bind
+  lock, from a list re-read inside it) -- nothing else. A normal start never
+  changes the backend or the UUID and never deletes an anchor. Both modes
+  write a temp file in the same directory, ``fsync`` it, publish, then
+  ``fsync`` the directory where the platform supports it; a failure anywhere
+  is raised, never reported as a success.
 
-* **Deleting the file is the sanctioned rebind.** The next start binds to
-  whatever container the current configuration selects, with a WARNING. It
-  turns drift detection off for that one start and falls back to the
-  baseline contract; running processes do not re-read the file, so it must
-  not be deleted while servers are up.
+* **Deleting the file is the sanctioned rebind**, with every server and
+  maintenance writer stopped. The next start binds to whatever container
+  the current configuration selects (for JSON, the surviving consistent
+  snapshots), with a WARNING. Running processes do not re-read the file, so
+  it must not be deleted while servers are up.
 """
 
 from __future__ import annotations
@@ -44,11 +46,14 @@ from dataclasses import dataclass
 
 from lightrag.exceptions import ConfigurationIdentityError
 from lightrag.file_atomic import tmp_path_for
-from lightrag.namespace import default_config_dir
+from lightrag.namespace import ANCHOR_FILE_NAME
 
-ANCHOR_FILE_NAME = "config_storage_anchor.json"
 ANCHOR_SCHEMA_VERSION = 1
 _ANCHOR_FIELDS = frozenset({"schema_version", "backend", "storage_uuid"})
+# The JSON backend's extra fields, and the one layout value it may carry.
+_JSON_ANCHOR_FIELDS = _ANCHOR_FIELDS | {"layout", "members"}
+JSON_CONFIG_BACKEND = "JsonKVStorage"
+JSON_SHARDS_LAYOUT = "json_shards"
 
 # ``ConfigurationIdentityError.cause`` values. A caller branches on these,
 # never on message text.
@@ -60,6 +65,13 @@ IDENTITY_UUID_MISSING = "uuid_missing"
 IDENTITY_UUID_MISMATCH = "uuid_mismatch"
 IDENTITY_ROW_INVALID = "identity_invalid"
 IDENTITY_WRITE_FAILED = "identity_write_failed"
+# JSON shards: a snapshot that is not a valid member (wrong owner, foreign
+# rows, a UUID that disagrees with the group), a registered member whose
+# snapshot lost its identity, and a workspace a maintenance tool found
+# unregistered.
+IDENTITY_SHARD_INVALID = "shard_invalid"
+IDENTITY_MEMBER_MISSING = "member_missing"
+IDENTITY_MEMBER_UNREGISTERED = "member_unregistered"
 
 # Directory-fsync errors that mean "this filesystem cannot fsync a
 # directory", not "the fsync failed". Anything else is a failure.
@@ -90,14 +102,13 @@ _LINK_UNSUPPORTED = frozenset(
 
 
 def anchor_dir(working_dir: str) -> str:
-    """The directory the anchor (and its lock) live in: always the DEFAULT
-    configuration directory under ``working_dir``, whatever ``config_dir``
-    says."""
-    return os.path.abspath(default_config_dir(working_dir))
+    """The directory the anchor and its two locks live in: ``working_dir``
+    itself, absolute."""
+    return os.path.abspath(working_dir)
 
 
 def anchor_path(working_dir: str) -> str:
-    """``<working_dir>/_lightrag_config/config_storage_anchor.json``, absolute."""
+    """``<working_dir>/config_storage_anchor.json``, absolute."""
     return os.path.join(anchor_dir(working_dir), ANCHOR_FILE_NAME)
 
 
@@ -127,18 +138,47 @@ def _admitted_backends() -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class StorageAnchor:
-    """The binding the anchor file records: a backend type and the UUID of
-    the configuration container it was bound to."""
+    """The binding the anchor file records: a backend type, the UUID of the
+    configuration container it was bound to and, for ``JsonKVStorage`` only,
+    the sorted tuple of registered workspace snapshots (``None`` otherwise)."""
 
     backend: str
     storage_uuid: str
+    members: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if (self.backend == JSON_CONFIG_BACKEND) != (self.members is not None):
+            raise ValueError(
+                f"a {self.backend} anchor "
+                + (
+                    "must carry a member tuple"
+                    if self.backend == JSON_CONFIG_BACKEND
+                    else "carries no members"
+                )
+            )
+        if self.members is not None:
+            object.__setattr__(self, "members", tuple(sorted(set(self.members))))
+
+    def with_member(self, workspace: str) -> "StorageAnchor":
+        """This anchor with ``workspace`` registered (JSON only)."""
+        if self.members is None:
+            raise ValueError(f"a {self.backend} anchor has no member list")
+        return StorageAnchor(
+            backend=self.backend,
+            storage_uuid=self.storage_uuid,
+            members=(*self.members, workspace),
+        )
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": ANCHOR_SCHEMA_VERSION,
             "backend": self.backend,
             "storage_uuid": self.storage_uuid,
         }
+        if self.members is not None:
+            payload["layout"] = JSON_SHARDS_LAYOUT
+            payload["members"] = list(self.members)
+        return payload
 
 
 def _unreadable(path: str, detail: str) -> ConfigurationIdentityError:
@@ -157,9 +197,16 @@ def parse_anchor_payload(payload: object, *, path: str) -> StorageAnchor:
     if not isinstance(payload, dict):
         raise _unreadable(path, f"expected a JSON object, got {type(payload).__name__}")
     keys = set(payload)
-    if keys != _ANCHOR_FIELDS:
-        missing = sorted(_ANCHOR_FIELDS - keys)
-        extra = sorted(keys - _ANCHOR_FIELDS)
+    # The backend decides which shape is expected; an unadmitted or missing
+    # backend is refused below, after the structure check names what is off.
+    expected = (
+        _JSON_ANCHOR_FIELDS
+        if payload.get("backend") == JSON_CONFIG_BACKEND
+        else _ANCHOR_FIELDS
+    )
+    if keys != expected:
+        missing = sorted(expected - keys)
+        extra = sorted(keys - expected)
         raise _unreadable(
             path, f"unexpected structure (missing {missing}, unexpected {extra})"
         )
@@ -183,7 +230,38 @@ def parse_anchor_payload(payload: object, *, path: str) -> StorageAnchor:
         raise _unreadable(
             path, f"storage_uuid {payload['storage_uuid']!r} is not a canonical UUID"
         )
-    return StorageAnchor(backend=backend, storage_uuid=storage_uuid)
+    if backend != JSON_CONFIG_BACKEND:
+        return StorageAnchor(backend=backend, storage_uuid=storage_uuid)
+    if payload["layout"] != JSON_SHARDS_LAYOUT:
+        raise _unreadable(
+            path,
+            f"layout {payload['layout']!r} is not {JSON_SHARDS_LAYOUT!r}",
+        )
+    return StorageAnchor(
+        backend=backend,
+        storage_uuid=storage_uuid,
+        members=_parse_members(payload["members"], path=path),
+    )
+
+
+def _parse_members(members: object, *, path: str) -> tuple[str, ...]:
+    """A JSON anchor's member list: distinct legal workspace names."""
+    from lightrag.config_shards import validate_config_workspace
+
+    if not isinstance(members, list):
+        raise _unreadable(path, f"members {members!r} is not a list")
+    seen: set[str] = set()
+    for member in members:
+        if not isinstance(member, str):
+            raise _unreadable(path, f"member {member!r} is not a string")
+        try:
+            validate_config_workspace(member)
+        except ValueError as e:
+            raise _unreadable(path, f"member {member!r} is not a workspace: {e}")
+        if member in seen:
+            raise _unreadable(path, f"member {member!r} is listed twice")
+        seen.add(member)
+    return tuple(members)
 
 
 def read_anchor(working_dir: str) -> StorageAnchor | None:
@@ -278,9 +356,10 @@ def publish_anchor(working_dir: str, anchor: StorageAnchor, *, replace: bool) ->
 
     ``replace=False`` (the bind) never overwrites an existing anchor and
     raises ``ConfigurationIdentityError`` with cause
-    ``IDENTITY_ANCHOR_APPEARED`` when one is found. ``replace=True`` is the
-    offline migration's atomic commit (``os.replace``) and is used nowhere
-    else. Every other failure -- the directory, the temp file, its fsync, the
+    ``IDENTITY_ANCHOR_APPEARED`` when one is found. ``replace=True``
+    (``os.replace``) is the offline migration's atomic commit and a JSON
+    start's member append, which re-reads the anchor under the bind lock
+    first; it is used nowhere else. Every other failure -- the directory, the temp file, its fsync, the
     publish, the directory fsync -- raises with cause
     ``IDENTITY_ANCHOR_WRITE_FAILED``; the temp file is removed best effort.
     """

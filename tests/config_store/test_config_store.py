@@ -172,6 +172,7 @@ class TestKeysAndRows:
     def test_the_registry_declares_the_five_fields_for_every_key(self):
         assert set(cs.CONFIG_KEY_REGISTRY) == {
             "storage_identity",
+            "json_shard",
             "embedding/entities",
             "embedding/relationships",
             "embedding/chunks",
@@ -179,7 +180,7 @@ class TestKeysAndRows:
         for suffix, spec in cs.CONFIG_KEY_REGISTRY.items():
             expected_scope = (
                 cs.ConfigScope.SERVER
-                if suffix == cs.STORAGE_IDENTITY_SUFFIX
+                if suffix in (cs.STORAGE_IDENTITY_SUFFIX, cs.JSON_SHARD_SUFFIX)
                 else cs.ConfigScope.WORKSPACE
             )
             assert spec.scope is expected_scope
@@ -855,9 +856,10 @@ class TestEnumeration:
 
 
 class TestFactory:
-    def test_the_factory_opens_the_default_config_dir(self, tmp_path):
-        """Scenario 12. With no ``config_dir`` configured the factory opens
-        the default one, beside the data it describes."""
+    def test_the_factory_opens_the_fixed_workspace_snapshot(self, tmp_path):
+        """Scenario 12. The factory opens the workspace's fixed snapshot,
+        beside the data it describes: ``WORKING_DIR`` itself for the empty
+        workspace, ``WORKING_DIR/<workspace>`` otherwise."""
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
         storage = cs.create_configuration_storage(
@@ -867,12 +869,23 @@ class TestFactory:
         )
         assert storage.workspace == CONFIG_CONTAINER_TAG
         assert storage.namespace == "config"
-        assert (tmp_path / CONFIG_CONTAINER_TAG).is_dir()
-        assert storage._file_name == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
+        assert storage._file_name == str(tmp_path / "kv_workspace_config.json")
+        assert not (tmp_path / CONFIG_CONTAINER_TAG).exists()
+
+        tenant = cs.create_configuration_storage(
+            JsonKVStorage,
+            global_config={"working_dir": str(tmp_path), "workspace": "tenant"},
+            embedding_func=_embedding(),
+        )
+        assert tenant.workspace == CONFIG_CONTAINER_TAG
+        assert (tmp_path / "tenant").is_dir()
+        assert tenant._file_name == str(
+            tmp_path / "tenant" / "kv_workspace_config.json"
         )
 
-    def test_config_dir_moves_the_file_and_nothing_else(self, tmp_path):
+    def test_a_config_dir_in_global_config_moves_nothing(self, tmp_path):
+        """The removed ``config_dir`` setting is not read: the snapshot path
+        is derived from ``working_dir`` and the workspace alone."""
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
         elsewhere = tmp_path / "conf"
@@ -884,8 +897,8 @@ class TestFactory:
             },
             embedding_func=_embedding(),
         )
-        assert storage._file_name == str(elsewhere / "kv_server_config.json")
-        assert not (tmp_path / CONFIG_CONTAINER_TAG).exists()
+        assert storage._file_name == str(tmp_path / "kv_workspace_config.json")
+        assert not elsewhere.exists()
 
     def test_the_workspace_argument_does_not_reach_the_container(self, tmp_path):
         """The container is named in CODE. A caller naming a workspace lands
@@ -941,7 +954,7 @@ class TestCategory:
             == "JsonKVStorage"
         )
 
-    def test_redis_default_announces_the_configuration_directory(self, monkeypatch):
+    def test_redis_default_announces_the_configuration_location(self, monkeypatch):
         from unittest.mock import Mock
 
         warning = Mock()
@@ -949,7 +962,9 @@ class TestCategory:
         cs.resolve_configuration_storage("", kv_storage="RedisKVStorage")
         message = warning.call_args.args[0]
         assert "JsonKVStorage" in message
-        assert "LIGHTRAG_CONFIG_DIR" in message
+        assert "WORKING_DIR" in message
+        # The removed setting is never advertised.
+        assert "LIGHTRAG_CONFIG_DIR" not in message
         assert "LIGHTRAG_CONFIG_STORAGE" in message
 
     def test_unknown_business_backend_does_not_default_to_json(self):

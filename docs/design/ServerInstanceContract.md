@@ -29,27 +29,34 @@ and share one `WORKING_DIR`** (and one `INPUT_DIR`) when all five hold:
    workspaces onto one physical container. That is legacy compatibility
    (*`*_WORKSPACE` is legacy compatibility* in `ConfigurationStorageContract.md`), and
    two instances collapsed that way ARE the same workspace for this rule.
-3. **Every instance uses the same configuration container, and it is not the
-   local JSON file.** `LIGHTRAG_CONFIG_STORAGE` (or the `LIGHTRAG_KV_STORAGE`
-   it follows when unset) must be `PGKVStorage`, `MongoKVStorage` or
-   `OpenSearchKVStorage`, and every instance must point it at the same
-   database, cluster or server. The anchor at
-   `WORKING_DIR/_lightrag_config/config_storage_anchor.json` is one per `WORKING_DIR`
+3. **Every instance uses the same configuration container.**
+   `LIGHTRAG_CONFIG_STORAGE` (or the `LIGHTRAG_KV_STORAGE` it follows when
+   unset; JSON for Redis) resolves to the same backend for every instance.
+   A database backend (`PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage`)
+   must point every instance at the same database, cluster or server.
+   `JsonKVStorage` needs nothing extra: each workspace keeps its own snapshot
+   at `WORKING_DIR/<workspace>/kv_workspace_config.json` under the group's one
+   identity, and a first start registers its workspace automatically. The
+   anchor at `WORKING_DIR/config_storage_anchor.json` is one per `WORKING_DIR`
    and records one backend and one container identity, so an instance on a
    different backend, or on another container of the same backend, is
-   refused at startup (*Rules at a glance* in
+   refused at startup (*Rules at a glance* and *JSON configuration shards* in
    `ConfigurationStorageContract.md`).
 4. **Each instance listens on its own port.**
 5. **The first start is serialized.** A start that finds no anchor takes the
-   bind lock (`.lightrag_anchor_bind.lock`) so that only one instance creates
-   the container identity. Where that lock cannot be taken (Windows, whose
-   `msvcrt` has no shared lock mode, or a filesystem without locks) it fails
-   open with a warning. Two instances starting at once there can then write
-   different identities: the identity row is an upsert, and only the anchor
-   publish is no-clobber, so the anchor can end up naming a UUID the
-   container no longer holds and every later start is refused. On such a
-   host, start one instance alone until the anchor exists, then start the
-   others.
+   bind lock (`WORKING_DIR/.lightrag_anchor_bind.lock`) so that only one
+   instance creates the container identity; so does a JSON start whose
+   workspace is not yet a member, so that member appends do not overwrite
+   each other. Where POSIX reports that the lock cannot be taken (a
+   filesystem without locks) it fails open with a warning. Two instances
+   starting at once there can then write different identities -- the
+   identity row is an upsert and only the anchor publish is no-clobber, so
+   the anchor can end up naming a UUID the container no longer holds and
+   every later start is refused -- or, on JSON, lose one member append. On
+   such a host, start one instance alone until the anchor exists and every
+   JSON workspace has registered once, then start the others. On Windows the
+   bind lock treats every `msvcrt` failure as contention and times out
+   rather than proceeding.
 
 An "instance" is one process tree. That is either one uvicorn process
 (`lightrag-server`) or one Gunicorn master with its forked workers
@@ -125,8 +132,10 @@ the reason for one of the rule's conditions:
 
 | shared thing | guard |
 | --- | --- |
-| the JSON configuration file `WORKING_DIR/_lightrag_config/kv_server_config.json` | **condition 3.** `JsonKVStorage` publishes the whole namespace by rewriting the file from a per-process-tree copy, so two instances would overwrite each other's baselines. That is why a file-backed configuration storage claims `config_dir` exclusively (`lightrag/kg/working_dir_lock.py`) and a second instance is **refused** with `WorkingDirectoryInUseError` |
-| a server-backed configuration container (the `LIGHTRAG_CONFIG` table, the `_lightrag_config_config` collection or index) | disjoint row keys per workspace; nothing else is shared today |
+| the JSON configuration snapshot `WORKING_DIR/<workspace>/kv_workspace_config.json` | not shared: one per workspace. `JsonKVStorage` publishes the whole snapshot by rewriting it from a per-process-tree copy, so a JSON configuration storage claims its workspace's snapshot directory exclusively (`lightrag/kg/working_dir_lock.py`); a second instance on the same workspace is **refused** with `WorkingDirectoryInUseError` |
+| the JSON group's anchor member list | appended only under the shared bind lock, from a list re-read inside it (condition 5) |
+| a server-backed configuration container (the `LIGHTRAG_CONFIG` table, the `_lightrag_config_config` collection or index) | baseline row keys are disjoint per workspace; the container-wide identity row is shared and its first creation is serialized by the shared bind lock |
+| the anchor and its locks directly under `WORKING_DIR` | starters share the anchor lock and only the offline migration takes it exclusively; a first bind or a JSON registration takes the separate exclusive bind lock and re-reads the anchor |
 | the host's ports | condition 4; a clash fails at bind time |
 
 A new server-wide or container-wide record breaks the rule unless it gets a
@@ -146,29 +155,35 @@ Such a change must state which of these it uses:
 
 | situation | outcome |
 | --- | --- |
-| two instances, JSON configuration storage, one `config_dir` | **refused**: the second fails with `WorkingDirectoryInUseError` |
+| two instances, JSON configuration storage, same workspace, one `WORKING_DIR` | **refused** where OS locks work: both resolve the same snapshot claim and the second fails with `WorkingDirectoryInUseError` |
+| two instances, JSON configuration storage, different workspaces, one `WORKING_DIR` | runs; supported. Each registers its workspace once; the snapshots share one identity |
 | two instances, different workspaces, one server-backed configuration container | runs; supported |
 | two instances on one `WORKING_DIR`, different configuration backends or containers | **refused**: the second instance fails the anchor check at startup |
-| two instances, **same** workspace | **not detected**. They race on every write of that workspace: pipeline state, file-backed storages (whole-file rewrites) and baseline claims. Unsupported, not an accepted residue |
+| two instances, **same** workspace, database configuration or different `WORKING_DIR`s | **not detected**. They race on every write of that workspace: pipeline state, file-backed storages (whole-file rewrites) and baseline claims. Unsupported, not an accepted residue |
 | two instances collapsed onto one container by a `*_WORKSPACE` override | not detected; same as the row above. `warn_about_workspace_overrides()` announces every override at server start |
 | two workspaces a backend maps to one physical partition (condition 1) | **refused** on OpenSearch by the index ownership marker; **not detected** on every other backend, where it is the same-workspace row above |
 | two first starts at once where the bind lock fails open (condition 5) | **not detected** at bind time; the next start is refused when the anchor and the container identity disagree |
+| two JSON registrations at once where the bind lock fails open (condition 5) | a member append may be lost; that workspace's next start refuses its unregistered snapshot and the JSON-to-database migration refuses the extra snapshot. Recovery: stop every instance, back up and delete the anchor, start again |
 | instances on different hosts sharing `WORKING_DIR` over NFS / SMB | not supported. File locks there may fail open (a warning, then proceed), and nothing else crosses hosts |
 
 The undetected rows are left undetected on purpose. Any detection would have
-to be a claim keyed by workspace that every instance takes. Taken on the
-workspace directory it would miss server-backed data, which has no
-directory; taken in a server backend it would need a lease that outlives a
-crash. Neither is part of this contract. An operator runs one instance per
-workspace.
+to be a claim keyed by workspace that every instance takes. The JSON
+configuration's per-workspace snapshot claim is such a claim, which is why
+same-workspace JSON instances on one `WORKING_DIR` are now refused; taken on
+the workspace directory for everyone else it would miss server-backed data,
+which has no directory, and taken in a server backend it would need a lease
+that outlives a crash. Neither is part of this contract. An operator runs one
+instance per workspace.
 
 ## Maintenance tools
 
 `lightrag-rebuild-vdb` and `lightrag-clear-storage` act on **one**
 workspace. Stop the instance serving that workspace first; instances serving
-other workspaces may keep running. Both tools still take the `config_dir`
-claim when the configuration storage is JSON, and so refuse while any
-instance runs on it, which is consistent with condition 3.
+other workspaces may keep running. With JSON configuration both tools take
+that workspace's snapshot claim, so they refuse while an instance serves it;
+they also refuse a workspace no server has registered yet (start the server
+once first). `lightrag-migrate-config` moves the whole configuration
+container and needs every instance on the `WORKING_DIR` stopped.
 
 ## Where the other contracts defer to this one
 

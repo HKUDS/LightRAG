@@ -1,40 +1,45 @@
 """An exclusive claim on a directory, held for the life of a process tree.
 
-**Taken on ``config_dir`` for a file-backed CONFIGURATION storage, and only
-for that.** The parameter is still spelled ``working_dir`` throughout because
-the claim is on a directory whatever that directory holds; with ``config_dir``
-at its default (``<working_dir>/_lightrag_config``) the two name the same
-deployment either way.
+**Taken on a workspace's JSON configuration directory, and only for that.**
+With ``JsonKVStorage`` as the configuration storage, workspace ``w`` claims
+``WORKING_DIR/w`` (the empty workspace claims ``WORKING_DIR``) through the
+``.lightrag_storage.lock`` file beside its snapshot
+(``lightrag/config_shards.py``). The parameter is still spelled
+``working_dir`` because the claim is on a directory whatever it holds. A
+claim locks its own file, not a subtree, so the empty workspace's root claim
+and a named workspace's claim coexist.
 
 A file-backed storage publishes a namespace by rewriting a whole file from an
 in-memory copy. That copy is shared inside ONE process tree, which is what
 makes a Gunicorn master and its workers safe. It is not shared between process
-trees, so two servers started on one ``working_dir`` each load the file, each
-accumulate their own view, and each rewrite the whole thing -- the later flush
-dropping whatever the other recorded since.
+trees, so two servers on one snapshot each load the file, each accumulate
+their own view, and each rewrite the whole thing -- the later flush dropping
+whatever the other recorded since.
 
-For the configuration namespace that is fatal in a way the others are not: an
-overwritten baseline reads back as ABSENT, and absent is the one answer that
-lets a start bootstrap. So the next start does not refuse the model change the
-baseline existed to refuse -- it records the configured model over vectors
-nobody probed, and the protection is gone with nothing in any log.
+For the configuration namespace that loses a recorded decision: an
+overwritten baseline reads back as absent. Absent does not let a start adopt
+the configured model on its own -- a new baseline still needs positive
+evidence (a confirmed-empty container or an adoption probe) -- but the
+refusal the lost baseline existed to make is gone, and the shared identity
+may well survive the overwrite, so nothing else detects it.
 
 Nothing inside a process tree can see that, so the claim has to live where both
-servers can: on the directory itself.
+servers can: on the directory itself. Because the claim now follows the
+workspace, two JSON-configured servers on the same ``WORKING_DIR`` and the
+same workspace are refused here where the OS lock works; servers on different
+workspaces claim different files and run.
 
 **Accepted residue: business data is not protected.** Two servers sharing a
-``working_dir`` AND a workspace, whose configuration is on a server backend (or
-in a different ``config_dir``) but whose ``full_docs`` / ``doc_status`` / graph
-/ vectors are file-backed, still overwrite each other, and lose more than
-baselines when they do. That is the long-standing "one instance per workspace"
-position, unchanged here (servers on different workspaces are supported; see
+workspace whose configuration is on a server backend but whose
+``full_docs`` / ``doc_status`` / graph / vectors are file-backed still
+overwrite each other, and lose more than baselines when they do. That is the
+long-standing "one instance per workspace" position (see
 ``docs/design/ServerInstanceContract.md``); this claim narrows the blast radius
-rather than closing it, because the baseline is the case whose failure is
-SILENT. The recovery is one server per workspace. Moving the business storages
-to server backends is NOT one: it removes the whole-file overwrite, but
-``pipeline_status``, the keyed locks and the ingress mailbox are still per
-process tree, so two servers on one workspace still admit conflicting writes
-and destructive operations independently. Widening the
+rather than closing it. The recovery is one server per workspace. Moving the
+business storages to server backends is NOT one: it removes the whole-file
+overwrite, but ``pipeline_status``, the keyed locks and the ingress mailbox
+are still per process tree, so two servers on one workspace still admit
+conflicting writes and destructive operations independently. Widening the
 claim to any file-backed storage is a deliberate follow-up, not an oversight --
 it would refuse deployments that work today.
 
@@ -61,9 +66,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.exceptions import WorkingDirectoryInUseError
+from lightrag.namespace import CONFIG_CLAIM_FILE_NAME
 from lightrag.utils import logger
 
-LOCK_FILENAME = ".lightrag_storage.lock"
+LOCK_FILENAME = CONFIG_CLAIM_FILE_NAME
 
 # The storages whose data lives on the local filesystem. Only a deployment
 # whose CONFIGURATION storage is one of them claims a directory -- two servers
@@ -190,12 +196,12 @@ def acquire_working_dir_lock(working_dir: str) -> None:
     if not locked:
         handle.close()
         raise WorkingDirectoryInUseError(
-            f"working directory '{working_dir}' is already in use by another "
-            f"LightRAG process. The file-backed storages rewrite whole files "
-            f"from a per-process copy, so both would overwrite each other's "
-            f"rows -- the configuration baselines included. Start one at a "
-            f"time, give this one its own working directory, or use a server "
-            f"storage backend."
+            f"directory '{working_dir}' is already claimed by another LightRAG "
+            f"process serving the same workspace with JSON configuration "
+            f"storage. The file-backed storages rewrite whole files from a "
+            f"per-process copy, so both would overwrite each other's rows -- "
+            f"the configuration baselines included. Run one server per "
+            f"workspace: stop the other, or give this one its own workspace."
         )
 
     try:

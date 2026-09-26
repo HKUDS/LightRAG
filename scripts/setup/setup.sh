@@ -1333,9 +1333,9 @@ path_is_confirmed_absent() {
 }
 
 read_config_anchor() {
-  # Reads <WORKING_DIR>/_lightrag_config/config_storage_anchor.json, the binding the
-  # server checks before it opens the configuration storage (see *The anchor
-  # and the container identity* in docs/design/ConfigurationStorageContract.md).
+  # Reads <WORKING_DIR>/config_storage_anchor.json, the binding the server
+  # checks before it opens the configuration storage (see *The anchor and the
+  # container identity* in docs/design/ConfigurationStorageContract.md).
   # The wizard only ever READS it -- it never writes, moves or deletes it.
   # ``$1`` is passed through to resolve_host_working_dir.
   #
@@ -1352,15 +1352,24 @@ read_config_anchor() {
   #
   # "readable" requires the WHOLE file to be one JSON object that the
   # server's parse_anchor_payload accepts, read the way Python's json reads
-  # it: exactly the three members, and a repeated key keeps its LAST value.
+  # it: exactly the three members (five for JsonKVStorage: plus "layout" and
+  # the "members" string array), and a repeated key keeps its LAST value.
   # Anything outside the narrow grammar below is "unreadable", never
-  # "absent" -- a looser match would pass a file the server refuses.
-  local dir content rest
+  # "absent" -- a looser match would pass a file the server refuses. Member
+  # names are compared literally, so each must have ONE spelling: a \u
+  # escape of an ASCII character and a raw non-ASCII byte are refused (the
+  # server writes neither: json.dumps escapes only non-ASCII, as \u), which
+  # leaves every name spelled as the server spells it. Then a separator,
+  # "." / "..", a reserved root file name or a repeat is refused, exactly.
+  local dir content rest value last name
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
   local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
-  local member_re="^${ws}\"([a-z_]+)\"${ws}:${ws}(1|\"[A-Za-z]+\"|\"${uuid_re}\")${ws}([,}])"
+  local str_re='"(\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\[:cntrl:]])*"'
+  local array_re="\\[${ws}(${str_re}(${ws},${ws}${str_re})*)?${ws}\\]"
+  local member_re="^${ws}\"([a-z_]+)\"${ws}:${ws}(1|\"[A-Za-z_]+\"|\"${uuid_re}\"|${array_re})${ws}([,}])"
   local -A members=()
+  local -A seen=()
 
   CONFIG_ANCHOR_PATH=""
   CONFIG_ANCHOR_DIR=""
@@ -1378,8 +1387,8 @@ read_config_anchor() {
   CONFIG_ANCHOR_DIR="$dir"
   # Joined as os.path.join does: no second slash after a root that already
   # ends in one ("/" or the POSIX-distinct "//").
-  CONFIG_ANCHOR_PATH="${dir%/}/_lightrag_config/config_storage_anchor.json"
-  [[ "$dir" == "//" ]] && CONFIG_ANCHOR_PATH="//_lightrag_config/config_storage_anchor.json"
+  CONFIG_ANCHOR_PATH="${dir%/}/config_storage_anchor.json"
+  [[ "$dir" == "//" ]] && CONFIG_ANCHOR_PATH="//config_storage_anchor.json"
   CONFIG_ANCHOR_STATE="unreadable"
 
   if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then
@@ -1397,18 +1406,44 @@ read_config_anchor() {
 
   [[ "$content" =~ ^${ws}\{ ]] || return 0
   rest="${content:${#BASH_REMATCH[0]}}"
+  last=""
   while [[ "$rest" =~ $member_re ]]; do
     members["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
     rest="${rest:${#BASH_REMATCH[0]}}"
-    [[ "${BASH_REMATCH[3]}" == "}" ]] && break
+    last="${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+    [[ "$last" == "}" ]] && break
   done
-  [[ "${BASH_REMATCH[3]:-}" == "}" && "$rest" =~ ^${ws}$ ]] || return 0
-  [[ "${#members[@]}" -eq 3 ]] || return 0
+  [[ "$last" == "}" && "$rest" =~ ^${ws}$ ]] || return 0
   [[ "${members[schema_version]:-}" == "1" ]] || return 0
   [[ "${members[backend]:-}" =~ ^\"([A-Za-z]+)\"$ ]] || return 0
   CONFIG_ANCHOR_BACKEND="${BASH_REMATCH[1]}"
   [[ "${members[storage_uuid]:-}" =~ ^\"($uuid_re)\"$ ]] || return 0
   CONFIG_ANCHOR_UUID="${BASH_REMATCH[1]}"
+  if [[ "$CONFIG_ANCHOR_BACKEND" == "JsonKVStorage" ]]; then
+    [[ "${#members[@]}" -eq 5 ]] || return 0
+    [[ "${members[layout]:-}" == '"json_shards"' ]] || return 0
+    value="${members[members]:-}"
+    [[ "$value" =~ ^\[ ]] || return 0
+    value="${value#[}"
+    while [[ "$value" =~ ^${ws},?${ws}(${str_re}) ]]; do
+      name="${BASH_REMATCH[1]}"
+      value="${value:${#BASH_REMATCH[0]}}"
+      [[ "$name" == *[$'\200'-$'\377']* ]] && return 0
+      case "$name" in
+        *'/'* | *'\\'* | *'\/'* | *'\u00'[0-7][0-9a-fA-F]* | '"."' | '".."' | \
+          '"kv_workspace_config.json"' | '"config_storage_anchor.json"' | \
+          '".lightrag_storage.lock"' | '".lightrag_anchor.lock"' | \
+          '".lightrag_anchor_bind.lock"')
+          return 0
+          ;;
+      esac
+      [[ -z "${seen[$name]:-}" ]] || return 0
+      seen["$name"]=1
+    done
+    [[ "$value" =~ ^${ws}\]$ ]] || return 0
+  else
+    [[ "${#members[@]}" -eq 3 ]] || return 0
+  fi
   config_storage_is_admitted "$CONFIG_ANCHOR_BACKEND" || return 0
   CONFIG_ANCHOR_STATE="readable"
   return 0

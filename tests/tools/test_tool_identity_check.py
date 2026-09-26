@@ -3,8 +3,10 @@ configuration container against the anchor, and never bind.
 
 They take the shared anchor lock, refuse a backend type the anchor does not
 bind before anything opens, and refuse an identity mismatch before any data
-storage opens -- exactly as a start would. With no anchor they run as before
-and say nothing was verified. Neither ever creates or rewrites the anchor or
+storage opens -- exactly as a start would. On a database backend with no
+anchor they run as before and say nothing was verified; on JSON the workspace
+must be a registered member of the group, or they refuse and advise starting
+the server once. Neither ever creates or rewrites the anchor or
 the identity row. See *Maintenance tools* under *The anchor and the container
 identity* in docs/design/ConfigurationStorageContract.md.
 """
@@ -41,10 +43,17 @@ def _identity_rows(storage_uuid=UUID_A):
     }
 
 
-def _anchor(working_dir, backend="PGKVStorage", storage_uuid=UUID_A) -> bytes:
+def _anchor(
+    working_dir, backend="PGKVStorage", storage_uuid=UUID_A, members=()
+) -> bytes:
+    """Publish an anchor; a JSON one carries ``members`` (a DB one none)."""
     ca.publish_anchor(
         str(working_dir),
-        ca.StorageAnchor(backend=backend, storage_uuid=storage_uuid),
+        ca.StorageAnchor(
+            backend=backend,
+            storage_uuid=storage_uuid,
+            members=members if backend == "JsonKVStorage" else None,
+        ),
         replace=False,
     )
     return open(ca.anchor_path(str(working_dir)), "rb").read()
@@ -73,6 +82,13 @@ def _rebuild_tool(config):
     tool.configuration_storage = config
     tool.storage_names = {**tool.storage_names, "config": "PGKVStorage"}
     return tool
+
+
+def _json_shard_rows(workspace="", storage_uuid=UUID_A, *, owner=True):
+    rows = cs.json_shard_metadata_rows(workspace, storage_uuid, updated_by="test")
+    if not owner:
+        rows.pop(cs.json_shard_owner_key())
+    return rows
 
 
 class TestRebuildTool:
@@ -129,6 +145,93 @@ class TestRebuildTool:
         assert "LIGHTRAG_CONFIG_STORAGE=MongoKVStorage" in capsys.readouterr().out
         config.initialize.assert_not_awaited()
         assert not al.holds_anchor_lock(working_dir)
+
+
+class TestRebuildToolOnJson:
+    """JSON: the workspace must be a registered member. A tool never binds or
+    registers one, so no anchor, or an anchor that does not list the
+    workspace, refuses with the advice to start the server once."""
+
+    def _tool(self, config):
+        tool = _rebuild_tool(config)
+        tool.storage_names = {**tool.storage_names, "config": "JsonKVStorage"}
+        return tool
+
+    @pytest.mark.parametrize("anchored", [False, True], ids=["no_anchor", "other"])
+    async def test_an_unregistered_workspace_refuses_before_any_source_opens(
+        self, monkeypatch, capsys, anchored
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        before = (
+            _anchor(working_dir, backend="JsonKVStorage", members=("other",))
+            if anchored
+            else None
+        )
+        config = _Config()
+        tool = self._tool(config)
+        assert await rebuild_helpers._setup_with(tool, monkeypatch) is False
+        out = capsys.readouterr().out
+        assert "Start the server once to register this workspace" in out
+        tool.graph.initialize.assert_not_awaited()
+        tool.text_chunks.initialize.assert_not_awaited()
+        tool.entities_vdb.initialize.assert_not_awaited()
+        assert _writes(config) == []
+        if anchored:
+            assert open(ca.anchor_path(working_dir), "rb").read() == before
+        else:
+            assert ca.read_anchor(working_dir) is None
+
+    async def test_a_registered_member_verifies_without_writing(
+        self, monkeypatch, capsys
+    ):
+        working_dir = os.environ["WORKING_DIR"]
+        before = _anchor(working_dir, backend="JsonKVStorage", members=("",))
+        config = _Config(_json_shard_rows(""))
+        tool = self._tool(config)
+        assert await rebuild_helpers._setup_with(tool, monkeypatch) is True
+        assert f"{UUID_A} (matches the anchor)" in capsys.readouterr().out
+        assert _writes(config) == []
+        assert open(ca.anchor_path(working_dir), "rb").read() == before
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param({}, id="snapshot_lost"),
+            pytest.param(_json_shard_rows("", owner=False), id="no_owner"),
+            pytest.param(_json_shard_rows("", UUID_B), id="foreign_uuid"),
+        ],
+    )
+    async def test_a_damaged_member_refuses_without_the_first_start_advice(
+        self, monkeypatch, capsys, rows
+    ):
+        """A registered but damaged snapshot needs restoring, not a first
+        start -- and is never re-created in place."""
+        working_dir = os.environ["WORKING_DIR"]
+        before = _anchor(working_dir, backend="JsonKVStorage", members=("",))
+        config = _Config(rows)
+        tool = self._tool(config)
+        assert await rebuild_helpers._setup_with(tool, monkeypatch) is False
+        out = capsys.readouterr().out
+        assert "Refusing to start" in out
+        assert "Start the server once" not in out
+        tool.graph.initialize.assert_not_awaited()
+        assert _writes(config) == []
+        assert open(ca.anchor_path(working_dir), "rb").read() == before
+
+    async def test_the_workspace_is_normalized_as_the_server_normalizes_it(
+        self, monkeypatch, capsys
+    ):
+        """``WORKSPACE=team-a`` is served, and registered, as ``team_a``; the
+        tool must check that member and that snapshot, not ``team-a``'s."""
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir, backend="JsonKVStorage", members=("team_a",))
+        monkeypatch.setenv("WORKSPACE", "team-a")
+        config = _Config(_json_shard_rows("team_a"))
+        tool = self._tool(config)
+        assert await rebuild_helpers._setup_with(tool, monkeypatch) is True
+        assert tool.workspace == "team_a"
+        assert tool.config_dir == os.path.join(os.path.abspath(working_dir), "team_a")
+        assert "Start the server once" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

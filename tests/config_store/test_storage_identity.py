@@ -216,7 +216,7 @@ class TestAnchoredStarts:
         self, tmp_path
     ):
         path = ca.anchor_path(str(tmp_path))
-        os.makedirs(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("{truncated")
         config = FakeConfigKV({IDENTITY_KEY: _identity_row()})

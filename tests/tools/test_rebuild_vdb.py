@@ -853,6 +853,26 @@ async def test_merge_entity_deferred_flush_failure_raises_before_delete(
 # ---------------------------------------------------------------------------
 
 
+def _register_json_workspace_for_fakes(working_dir: str, workspace: str) -> list:
+    """Publish the JSON anchor a server start leaves (``workspace`` a member)
+    and return the identity and owner rows its snapshot would hold, for a fake
+    configuration storage to serve from ``iter_rows``."""
+    from lightrag import config_anchor as ca
+    from lightrag.config_store import json_shard_metadata_rows
+
+    storage_uuid = ca.new_storage_uuid()
+    os.makedirs(working_dir, exist_ok=True)
+    ca.publish_anchor(
+        working_dir,
+        ca.StorageAnchor(
+            backend="JsonKVStorage", storage_uuid=storage_uuid, members=(workspace,)
+        ),
+        replace=False,
+    )
+    rows = json_shard_metadata_rows(workspace, storage_uuid, updated_by="test")
+    return [{**row, "_id": key} for key, row in rows.items()]
+
+
 @pytest.mark.asyncio
 async def test_check_only_stub_carries_embedding_model_name(monkeypatch):
     # When the api extra is unavailable the tool runs check-only with a stub
@@ -868,10 +888,21 @@ async def test_check_only_stub_carries_embedding_model_name(monkeypatch):
 
     captured_funcs = []
 
+    # The JSON configuration workspace must be registered, as a server start
+    # leaves it: the tool never registers one itself.
+    shard_rows = _register_json_workspace_for_fakes(os.environ["WORKING_DIR"], "")
+
     class _DummyStorage(_FakeConfigStorage):
         def __init__(self, *, embedding_func, **kwargs):
             super().__init__(**kwargs)
             captured_funcs.append(embedding_func)
+
+        def iter_rows(self, *, page_size=200):
+            async def gen():
+                for row in shard_rows:
+                    yield row
+
+            return gen()
 
     monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
 
@@ -898,16 +929,22 @@ async def test_check_only_stub_model_name_none_when_unset(monkeypatch):
     from lightrag.tools.rebuild_vdb import RebuildTool
 
     monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    shard_rows = _register_json_workspace_for_fakes(os.environ["WORKING_DIR"], "")
 
     class _DummyStorage(_FakeConfigStorage):
-        pass
+        def iter_rows(self, *, page_size=200):
+            async def gen():
+                for row in shard_rows:
+                    yield row
+
+            return gen()
 
     monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
 
     tool = RebuildTool()
     monkeypatch.setattr(tool, "build_embedding_func", lambda: None)
 
-    await tool.setup_storages()
+    assert await tool.setup_storages() is True
 
     assert tool.embedding_func.model_name is None
 

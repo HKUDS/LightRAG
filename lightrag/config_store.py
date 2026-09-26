@@ -7,10 +7,11 @@ moving anything out of an environment variable. The rules this module
 enforces, in the order a caller meets them:
 
 * **The container** is the KV namespace ``config`` in a container named in
-  CODE, never derived from a workspace: the JSON backend puts its file in
-  ``config_dir``, and PostgreSQL, MongoDB and OpenSearch name their table,
-  collection and index after ``CONFIG_CONTAINER_TAG``. No ``*_WORKSPACE``
-  variable reaches it, and no caller can name a workspace that lands on it.
+  CODE: PostgreSQL, MongoDB and OpenSearch name their table, collection and
+  index after ``CONFIG_CONTAINER_TAG``; the JSON backend keeps one snapshot
+  per workspace at a fixed path (``lightrag/config_shards.py``), and the
+  snapshots of one ``WORKING_DIR`` form one group under one identity. No
+  ``*_WORKSPACE`` variable reaches it and no setting moves it.
   ``create_configuration_storage()`` is still the single door in.
 
 * **The backend is its own category.** ``CONFIG_STORAGE`` admits
@@ -45,7 +46,9 @@ enforces, in the order a caller meets them:
   deployment is bound to. ``bind_configuration_identity`` checks -- or, with
   no anchor, establishes -- that binding before any baseline is read; the
   row is never overwritten once valid and never deleted by workspace
-  maintenance.
+  maintenance. On JSON each snapshot also carries an owner row naming its
+  workspace, and the anchor lists the registered snapshots: a start
+  registers its workspace once, under the bind lock.
 
 The first per-workspace keys are the three per-target embedding baselines.
 What a baseline MEANS -- the space adopted for that target, not the space its
@@ -63,17 +66,27 @@ from enum import Enum
 from typing import Any, AsyncIterator, Callable
 
 from lightrag.config_anchor import (
+    IDENTITY_ANCHOR_WRITE_FAILED,
     IDENTITY_BACKEND_MISMATCH,
+    IDENTITY_MEMBER_MISSING,
+    IDENTITY_MEMBER_UNREGISTERED,
     IDENTITY_ROW_INVALID,
+    IDENTITY_SHARD_INVALID,
     IDENTITY_UUID_MISMATCH,
     IDENTITY_UUID_MISSING,
     IDENTITY_WRITE_FAILED,
+    JSON_CONFIG_BACKEND,
     StorageAnchor,
     anchor_path,
     canonical_storage_uuid,
     new_storage_uuid,
     publish_anchor,
     read_anchor,
+)
+from lightrag.config_shards import (
+    discover_shards,
+    json_config_dir,
+    read_shard_file,
 )
 from lightrag.exceptions import (
     ConfigurationIdentityError,
@@ -90,7 +103,6 @@ from lightrag.namespace import (
     SERVER_SCOPE,
     NameSpace,
     _ServerScope,
-    default_config_dir,
 )
 from lightrag.utils import logger
 
@@ -179,6 +191,11 @@ _EMBEDDING_BASELINE_SCHEMA = (
 # workspace the container holds.
 STORAGE_IDENTITY_SUFFIX = "storage_identity"
 
+# A JSON snapshot's owner: the workspace it belongs to. Layout metadata, not
+# configuration -- it exists only in JSON snapshots and is dropped when the
+# configuration migrates to a database.
+JSON_SHARD_SUFFIX = "json_shard"
+
 CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {
     STORAGE_IDENTITY_SUFFIX: ConfigKeySpec(
         suffix=STORAGE_IDENTITY_SUFFIX,
@@ -189,6 +206,23 @@ CONFIG_KEY_REGISTRY: dict[str, ConfigKeySpec] = {
         # migration into its (empty) target; never overwritten once valid,
         # never deleted by workspace clear/delete or an embedding rebuild.
         # The rebuild and clear tools only VERIFY it.
+        readers=(
+            UPDATED_BY_STARTUP,
+            UPDATED_BY_REBUILD,
+            DELETED_BY_CLEAR_TOOL,
+            UPDATED_BY_MIGRATE,
+        ),
+        writers=(UPDATED_BY_STARTUP, UPDATED_BY_MIGRATE),
+        sensitive=False,
+    ),
+    JSON_SHARD_SUFFIX: ConfigKeySpec(
+        suffix=JSON_SHARD_SUFFIX,
+        scope=ConfigScope.SERVER,
+        schema_version=1,
+        schema="{workspace: str (the workspace whose JSON snapshot this is)}",
+        # Written once when a start registers its workspace (or by the
+        # migration into JSON); verified by every start and tool; never
+        # deleted by clear or rebuild.
         readers=(
             UPDATED_BY_STARTUP,
             UPDATED_BY_REBUILD,
@@ -437,9 +471,9 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
     if kv_storage == "RedisKVStorage":
         logger.warning(
             "config_storage is unset with kv_storage=RedisKVStorage; using "
-            "JsonKVStorage for configuration. Persist the configuration directory "
-            "(LIGHTRAG_CONFIG_DIR, default WORKING_DIR/_lightrag_config). "
-            "Set LIGHTRAG_CONFIG_STORAGE explicitly to select another backend."
+            "JsonKVStorage for configuration, kept beside each workspace's "
+            "data under WORKING_DIR; persist WORKING_DIR. Set "
+            "LIGHTRAG_CONFIG_STORAGE explicitly to select another backend."
         )
         return "JsonKVStorage"
     if kv_storage not in admitted:
@@ -452,38 +486,36 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
     return kv_storage
 
 
-def resolve_config_dir(config_dir: str | None, working_dir: str) -> str:
-    """The absolute directory a file-backed configuration storage uses.
-
-    Absolute for the same reason ``working_dir`` is: the single-server claim
-    keys on the REALPATH, so a relative spelling from a differently-rooted
-    process would open a second descriptor on the same lock file and refuse
-    itself.
-    """
-    return os.path.abspath(
-        (config_dir or "").strip() or default_config_dir(working_dir)
-    )
+def resolve_config_dir(config_storage: str, *, working_dir: str, workspace: str) -> str:
+    """The absolute directory ``config_storage`` keeps ``workspace``'s file in
+    -- ``config_shards.json_config_dir`` for JSON -- or ``""`` for a database
+    backend, which has no directory. Not a setting: derived, never chosen."""
+    if config_storage in FILE_BACKED_CONFIG_STORAGES:
+        return json_config_dir(working_dir, workspace)
+    return ""
 
 
 def configuration_selection_from_env(
-    *, kv_storage: str, working_dir: str
+    *, kv_storage: str, working_dir: str, workspace: str
 ) -> tuple[str, str]:
     """``(config_storage, config_dir)`` as the environment resolves them.
 
     The one answer three call sites must agree on: ``LightRAG`` (from its own
     fields), ``lightrag-rebuild-vdb``, and the **Gunicorn master**, which takes
-    the directory claim before forking. They must not drift: a master that
+    the snapshot claim before forking. They must not drift: a master that
     claims a different directory than its workers hands them no inheritable
     claim, and each worker then opens its own descriptor -- the first wins and
-    every other one is refused at startup.
+    every other one is refused at startup. ``workspace`` is the final,
+    normalized workspace the workers serve.
 
-    Raises ``ValueError`` when the selection is outside the category.
+    Raises ``ValueError`` when the selection is outside the category or the
+    workspace is not a legal configuration workspace.
     """
     config_storage = resolve_configuration_storage(
         os.environ.get("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv_storage
     )
     return config_storage, resolve_config_dir(
-        os.environ.get("LIGHTRAG_CONFIG_DIR", ""), working_dir
+        config_storage, working_dir=working_dir, workspace=workspace
     )
 
 
@@ -511,8 +543,9 @@ def create_configuration_storage(
     no longer a reserved NAME defended everywhere a name can be chosen -- it
     is that the container is not addressed by a workspace at all. Every
     backend in the category keys off the ``config`` namespace, which nothing
-    else is ever opened on, and names its container in code: a directory for
-    the JSON backend, ``CONFIG_CONTAINER_TAG`` for the other three. No
+    else is ever opened on, and names its container in code:
+    ``CONFIG_CONTAINER_TAG`` for the database backends, the fixed per-workspace
+    snapshot for JSON (``global_config["workspace"]`` picks which). No
     ``*_WORKSPACE`` variable is consulted.
 
     The returned storage is NOT initialized; the caller owns its lifecycle.
@@ -544,8 +577,9 @@ def warn_about_unrecorded_baselines(
 
     A separately selected configuration backend is a new way to point a
     running deployment at an empty store -- a fresh database, a mistyped
-    connection string, a ``config_dir`` that does not exist -- and every
-    baseline then reads as absent, which is what lets a start bootstrap.
+    connection string, a lost snapshot -- and every baseline then reads as
+    absent: the recorded decision is gone, and a new one will be recorded
+    once evidence allows it.
 
     Enforcing is not available: absent is also what a genuine first start
     looks like, and the two are indistinguishable from here. So this follows
@@ -563,8 +597,9 @@ def warn_about_unrecorded_baselines(
         f"[{workspace}] No embedding baseline is recorded in {container} for "
         f"this workspace. On a first start that is expected. If this "
         f"deployment has run before, check that the configuration storage "
-        f"selection (config_storage / config_dir) still points at the store "
-        f"that recorded them -- an empty or different one reads exactly like "
+        f"selection (LIGHTRAG_CONFIG_STORAGE and its connection settings) "
+        f"still points at the store that recorded them, and that WORKING_DIR "
+        f"persisted -- an empty or different one reads exactly like "
         f"a first start. Nothing is adopted on the configured model alone: a "
         f"baseline is recorded only for a target whose container is confirmed "
         f"empty or whose stored vectors an adoption probe vouched for."
@@ -902,8 +937,8 @@ async def delete_workspace_configuration(config: Any, workspace: str) -> None:
 
     Called ONLY after every data storage of the workspace dropped
     successfully: *configuration gone, data remains* is the residue that can
-    never be accepted (a later start would bootstrap a wrong baseline over
-    surviving vectors). Raises ``ConfigurationStorageError`` if a row survives
+    never be accepted (the recorded decision would be lost while the vectors
+    it describes survive, and one probing cannot re-derive is gone for good). Raises ``ConfigurationStorageError`` if a row survives
     the delete -- backends that swallow delete errors would otherwise report a
     removal that did not happen.
 
@@ -951,6 +986,11 @@ def _identity_invalid(key: str, detail: str) -> ConfigurationIdentityError:
     )
 
 
+def json_shard_owner_key() -> str:
+    """``_lightrag_server/json_shard``."""
+    return config_key(SERVER_SCOPE, JSON_SHARD_SUFFIX)
+
+
 async def read_storage_identity(config: Any) -> str | None:
     """The container's UUID; ``None`` only when the row is CONFIRMED absent.
 
@@ -962,6 +1002,14 @@ async def read_storage_identity(config: Any) -> str | None:
     row = await read_config_row_strict(config, key)
     if row is None:
         return None
+    return identity_from_row(row, key=key)
+
+
+def identity_from_row(row: Any, *, key: str) -> str:
+    """The canonical UUID a stored identity row carries, or raise
+    ``ConfigurationIdentityError`` (``IDENTITY_ROW_INVALID``)."""
+    if not isinstance(row, dict):
+        raise _identity_invalid(key, f"not a mapping: {row!r}")
     expected_version = registry_spec(STORAGE_IDENTITY_SUFFIX).schema_version
     version = row.get("schema_version")
     if type(version) is not int or version != expected_version:
@@ -1021,6 +1069,226 @@ async def write_storage_identity(
         )
 
 
+# ---------------------------------------------------------------------------
+# JSON configuration shards
+# ---------------------------------------------------------------------------
+
+
+def shard_invalid_error(location: str, detail: str) -> ConfigurationIdentityError:
+    return ConfigurationIdentityError(
+        f"The JSON configuration snapshot {location} is not a valid member of "
+        f"this deployment's configuration: {detail}. Nothing was overwritten "
+        f"or relabelled; restore or correct the file.",
+        cause=IDENTITY_SHARD_INVALID,
+    )
+
+
+@dataclass(frozen=True)
+class ShardContents:
+    """What one JSON snapshot holds, validated by ``inspect_shard_rows``."""
+
+    storage_uuid: str | None
+    owner: str | None
+    application_keys: tuple[str, ...]
+
+    @property
+    def empty(self) -> bool:
+        return (
+            self.storage_uuid is None
+            and self.owner is None
+            and not self.application_keys
+        )
+
+    @property
+    def metadata_only(self) -> bool:
+        return (
+            self.storage_uuid is not None
+            and self.owner is not None
+            and not self.application_keys
+        )
+
+
+def workspace_config_keys(workspace: str) -> frozenset[str]:
+    """Every registered per-workspace key ``workspace`` may hold."""
+    return frozenset(
+        config_key(workspace, suffix)
+        for suffix, spec in CONFIG_KEY_REGISTRY.items()
+        if spec.scope is ConfigScope.WORKSPACE
+    )
+
+
+# What ``read_shard_rows`` records for a key whose stored value is not a row.
+DAMAGED_ROW = object()
+
+
+def owner_from_row(row: Any, *, key: str, location: str) -> str:
+    """The workspace a stored owner row names, or raise."""
+    expected_version = registry_spec(JSON_SHARD_SUFFIX).schema_version
+    if not isinstance(row, dict):
+        raise shard_invalid_error(location, f"owner record {key!r} is not a mapping")
+    version = row.get("schema_version")
+    if type(version) is not int or version != expected_version:
+        raise shard_invalid_error(
+            location,
+            f"owner record {key!r} has unsupported schema_version {version!r}",
+        )
+    if row.get("workspace") != SERVER_CONFIG_SCOPE:
+        raise shard_invalid_error(
+            location, f"owner record {key!r} has scope {row.get('workspace')!r}"
+        )
+    value = row.get("value")
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"workspace"}
+        or not isinstance(value["workspace"], str)
+    ):
+        raise shard_invalid_error(
+            location, f"owner record {key!r} carries no workspace: {value!r}"
+        )
+    return value["workspace"]
+
+
+def inspect_shard_rows(
+    rows: dict[str, Any], *, workspace: str, location: str
+) -> ShardContents:
+    """Validate a JSON snapshot that must belong to ``workspace``.
+
+    It may hold the identity row, the owner row -- which must name
+    ``workspace`` exactly -- and ``workspace``'s own registered keys. Any
+    other key (another workspace's row, an unregistered key, a foreign
+    server-scope row) raises ``ConfigurationIdentityError``
+    (``IDENTITY_SHARD_INVALID``); so does a malformed identity or owner row.
+    Classified by key membership, never by splitting a key. The CONTENT of a
+    registered per-workspace row is judged by that row's own reader: a start
+    refuses a malformed baseline when it reads it, and the clear tool may
+    still delete one by key (``DAMAGED_ROW`` marks a value that is not a row).
+    """
+    identity_key = storage_identity_key()
+    owner_key = json_shard_owner_key()
+    allowed = workspace_config_keys(workspace)
+    storage_uuid: str | None = None
+    owner: str | None = None
+    application: list[str] = []
+    # The owner first: a copied or moved snapshot is named as such rather
+    # than by the first foreign row it happens to carry.
+    if owner_key in rows:
+        owner = owner_from_row(rows[owner_key], key=owner_key, location=location)
+        if owner != workspace:
+            raise shard_invalid_error(
+                location,
+                f"it is owned by workspace {owner!r}, but its location belongs "
+                f"to workspace {workspace!r} (a copied or moved snapshot?)",
+            )
+    for key, row in rows.items():
+        if key == identity_key:
+            try:
+                storage_uuid = identity_from_row(row, key=key)
+            except ConfigurationIdentityError as e:
+                raise shard_invalid_error(location, str(e)) from e
+        elif key == owner_key:
+            continue
+        elif key in allowed:
+            application.append(key)
+        else:
+            raise shard_invalid_error(
+                location,
+                f"record {key!r} does not belong in workspace {workspace!r}'s "
+                f"snapshot (another workspace's row, or a key this version "
+                f"does not register for a JSON snapshot)",
+            )
+    return ShardContents(
+        storage_uuid=storage_uuid, owner=owner, application_keys=tuple(application)
+    )
+
+
+async def read_shard_rows(config: Any) -> dict[str, Any]:
+    """Every row of an open JSON configuration storage, by key; a value that
+    is not a row reads as ``DAMAGED_ROW`` rather than aborting the listing."""
+    rows: dict[str, Any] = {}
+    try:
+        list_keys = getattr(config, "list_keys", None)
+        if list_keys is None:
+            async for row in config.iter_rows(page_size=200):
+                rows[row["_id"]] = row
+            return rows
+        for key in await list_keys():
+            try:
+                row = await config.get_by_id_strict(key)
+            except CorruptStorageRecordError:
+                row = DAMAGED_ROW
+            if row is not None:
+                rows[key] = row
+    except ConfigurationStorageError:
+        raise
+    except Exception as e:
+        raise ConfigurationStorageError(
+            f"could not read the configuration snapshot ({type(e).__name__}: {e})"
+        ) from e
+    return rows
+
+
+def json_shard_metadata_rows(
+    workspace: str, storage_uuid: str, *, updated_by: str
+) -> dict[str, dict[str, Any]]:
+    """The identity and owner rows a registered snapshot carries."""
+    return {
+        storage_identity_key(): make_config_row(
+            scope_workspace=SERVER_SCOPE,
+            suffix=STORAGE_IDENTITY_SUFFIX,
+            value={"uuid": storage_uuid},
+            updated_by=updated_by,
+        ),
+        json_shard_owner_key(): make_config_row(
+            scope_workspace=SERVER_SCOPE,
+            suffix=JSON_SHARD_SUFFIX,
+            value={"workspace": workspace},
+            updated_by=updated_by,
+        ),
+    }
+
+
+def surviving_json_group(working_dir: str) -> tuple[str | None, tuple[str, ...]]:
+    """``(uuid, members)`` of the consistent JSON snapshots that survive under
+    ``working_dir`` -- ``(None, ())`` when none does.
+
+    Every discovered snapshot is read and validated against the workspace
+    its location names; an empty file is not a member. Refuses a snapshot
+    with rows but no identity or owner, and snapshots that disagree on the
+    UUID: automatic recovery is limited to consistent state.
+    """
+    uuids: dict[str, list[str]] = {}
+    members: list[str] = []
+    for shard in discover_shards(working_dir):
+        rows = read_shard_file(shard.path)
+        contents = inspect_shard_rows(
+            rows or {}, workspace=shard.workspace, location=shard.path
+        )
+        if contents.empty:
+            continue
+        if contents.storage_uuid is None or contents.owner is None:
+            raise shard_invalid_error(
+                shard.path,
+                "it holds records but no "
+                + ("identity" if contents.storage_uuid is None else "owner")
+                + " row, so it cannot be attributed to a configuration group",
+            )
+        uuids.setdefault(contents.storage_uuid, []).append(shard.path)
+        members.append(shard.workspace)
+    if len(uuids) > 1:
+        listed = "; ".join(
+            f"{uuid_value}: {', '.join(paths)}" for uuid_value, paths in uuids.items()
+        )
+        raise ConfigurationIdentityError(
+            f"The JSON configuration snapshots under {os.path.abspath(working_dir)} "
+            f"belong to different configuration groups ({listed}). No anchor "
+            f"is on record to say which is this deployment's, and none is "
+            f"chosen: restore the anchor from backup, or remove or restore the "
+            f"snapshots that do not belong.",
+            cause=IDENTITY_SHARD_INVALID,
+        )
+    return (next(iter(uuids)) if uuids else None), tuple(members)
+
+
 def check_anchor_backend(
     anchor: StorageAnchor | None, backend: str, *, working_dir: str, container: str
 ) -> None:
@@ -1076,8 +1344,8 @@ def _check_identity_against_anchor(
             f"was intentionally emptied, replaced, or restored from a backup "
             f"older than the identity, delete {path} and restart -- the next "
             f"start binds to this container. Otherwise check that the "
-            f"connection settings (or LIGHTRAG_CONFIG_DIR) point at the "
-            f"intended container. No identity was created.",
+            f"connection settings point at the intended container. No "
+            f"identity was created.",
             cause=IDENTITY_UUID_MISSING,
             anchor_path=path,
         )
@@ -1086,8 +1354,8 @@ def _check_identity_against_anchor(
             f"Refusing to start: the configuration container {container} has "
             f"identity {stored}, but the anchor {path} binds this deployment "
             f"to identity {anchor.storage_uuid}. Check that the connection "
-            f"settings (or LIGHTRAG_CONFIG_DIR) point at the intended "
-            f"database or directory. Last resort: deleting {path} rebinds the "
+            f"settings point at the intended database and that WORKING_DIR "
+            f"is the deployment's. Last resort: deleting {path} rebinds the "
             f"next start to this container and ABANDONS every record in the "
             f"anchored one.",
             cause=IDENTITY_UUID_MISMATCH,
@@ -1101,34 +1369,42 @@ class IdentityBinding:
 
     storage_uuid: str | None
     # "verified" (anchor and container agree), "adopted" (no anchor, the
-    # container's identity was bound), "created" (no anchor, no identity:
-    # one was created and bound), "unanchored" (a tool found no anchor and
-    # verified nothing).
+    # container's identity was bound -- for JSON, the surviving snapshots'
+    # group), "created" (no anchor, no identity: one was created and bound),
+    # "registered" (JSON: this workspace's snapshot joined the group),
+    # "unanchored" (a tool found no anchor and verified nothing).
     action: str
 
 
 async def bind_configuration_identity(
-    config: Any, *, working_dir: str, backend: str, container: str
+    config: Any,
+    *,
+    working_dir: str,
+    backend: str,
+    container: str,
+    workspace: str = "",
 ) -> IdentityBinding:
     """Step 1b: verify the container against the anchor, or bind it.
 
     Under one keyed lock spanning the whole read-decide-write, so a second
     worker of the same Gunicorn master waits and then finds an anchor and an
-    equal UUID. A start that finds NO anchor additionally takes the anchor
-    bind lock (``lightrag/kg/anchor_lock.py``), which serializes the bind
-    across process trees on this host -- several servers may share one
-    ``working_dir`` with different workspaces -- and re-reads the anchor
-    inside it. Concurrent first binds from different ``working_dir``s or
-    hosts against one container remain unsupported.
+    equal UUID. A start that must WRITE the anchor -- no anchor yet, or on
+    JSON a workspace not yet a member -- additionally takes the anchor bind
+    lock (``lightrag/kg/anchor_lock.py``), which serializes it across process
+    trees on this host, and re-reads the anchor inside it. Concurrent first
+    binds from different ``working_dir``s or hosts remain unsupported.
 
     * Anchored: the backend type and the container's UUID must both equal
       the anchor's. A missing, different, invalid or unreadable identity
       refuses, and nothing is created.
-    * Not anchored: a present identity is adopted; a confirmed-absent one is
-      created (upsert, strict flush, strict read-back). Either way the
-      anchor is then published no-clobber and a WARNING names the container
-      and the UUID. The anchor goes last so every crash window heals by
-      adoption on the next start.
+    * Not anchored (database): a present identity is adopted; a
+      confirmed-absent one is created (upsert, strict flush, strict
+      read-back). The anchor is then published no-clobber and a WARNING
+      names the container and the UUID. The anchor goes last so every crash
+      window heals by adoption on the next start.
+    * JSON: see ``_bind_json`` -- the group is rebuilt from the surviving
+      consistent snapshots when the anchor is missing, and this workspace is
+      registered once when it is not a member.
     """
     from lightrag.kg.anchor_lock import anchor_bind_lock
     from lightrag.kg.shared_storage import get_storage_keyed_lock
@@ -1136,6 +1412,13 @@ async def bind_configuration_identity(
     async with get_storage_keyed_lock(
         IDENTITY_LOCK_KEY, namespace=IDENTITY_LOCK_NAMESPACE
     ):
+        if backend == JSON_CONFIG_BACKEND:
+            return await _bind_json(
+                config,
+                working_dir=working_dir,
+                container=container,
+                workspace=workspace,
+            )
         anchor = read_anchor(working_dir)
         if anchor is not None:
             return await _verify_anchored(
@@ -1207,6 +1490,247 @@ async def _bind_unanchored(
     return IdentityBinding(storage_uuid=stored, action=action)
 
 
+async def _bind_json(
+    config: Any, *, working_dir: str, container: str, workspace: str
+) -> IdentityBinding:
+    """The JSON start: verify a registered member, or rebind and register.
+
+    A member verifies against its own snapshot only and never touches the
+    anchor. Otherwise, under the bind lock and from a fresh read: with no
+    anchor, the group is rebuilt from the surviving consistent snapshots
+    (``surviving_json_group``) -- or created empty -- and published
+    no-clobber BEFORE any snapshot is written; then an unregistered
+    workspace writes its identity-and-owner snapshot, reads it back, and is
+    appended to the member list. Each step leaves a state the next start
+    resumes from. See *JSON configuration shards* in the contract.
+    """
+    from lightrag.kg.anchor_lock import anchor_bind_lock
+
+    anchor = read_anchor(working_dir)
+    if anchor is not None:
+        check_anchor_backend(
+            anchor, JSON_CONFIG_BACKEND, working_dir=working_dir, container=container
+        )
+        if workspace in (anchor.members or ()):
+            return await _verify_json_member(
+                config,
+                anchor,
+                working_dir=working_dir,
+                container=container,
+                workspace=workspace,
+            )
+    async with anchor_bind_lock(working_dir):
+        action = "verified"
+        anchor = read_anchor(working_dir)
+        if anchor is None:
+            anchor = _rebind_json_group(working_dir, container=container)
+            action = "adopted" if anchor.members else "created"
+        else:
+            check_anchor_backend(
+                anchor,
+                JSON_CONFIG_BACKEND,
+                working_dir=working_dir,
+                container=container,
+            )
+        if workspace in (anchor.members or ()):
+            binding = await _verify_json_member(
+                config,
+                anchor,
+                working_dir=working_dir,
+                container=container,
+                workspace=workspace,
+            )
+            return IdentityBinding(storage_uuid=binding.storage_uuid, action=action)
+        return await _register_json_member(
+            config,
+            anchor,
+            working_dir=working_dir,
+            container=container,
+            workspace=workspace,
+        )
+
+
+def _rebind_json_group(working_dir: str, *, container: str) -> StorageAnchor:
+    """Publish the anchor of the surviving JSON group (a new, empty group
+    when nothing survives); called under the bind lock with no anchor."""
+    storage_uuid, members = surviving_json_group(working_dir)
+    created = storage_uuid is None
+    anchor = StorageAnchor(
+        backend=JSON_CONFIG_BACKEND,
+        storage_uuid=storage_uuid or new_storage_uuid(),
+        members=members,
+    )
+    path = publish_anchor(working_dir, anchor, replace=False)
+    if created:
+        logger.warning(
+            f"Bound this deployment to a new JSON configuration group "
+            f"(identity {anchor.storage_uuid}); the anchor is {path}. No anchor "
+            f"and no configuration snapshot were on record, which is expected "
+            f"on a first start or after the anchor was deliberately deleted. "
+            f"If this deployment has run before, WORKING_DIR did not persist "
+            f"and every recorded baseline is gone. Configuration selected now: "
+            f"{container}."
+        )
+    else:
+        logger.warning(
+            f"Rebound this deployment to the surviving JSON configuration "
+            f"group (identity {anchor.storage_uuid}, members "
+            f"{list(anchor.members or ())}); the anchor is {path}. No anchor "
+            f"was on record, so the previous binding and the historical member "
+            f"list could not be verified: a snapshot lost before the anchor "
+            f"was deleted is not listed and is not recovered. Configuration "
+            f"selected now: {container}."
+        )
+    return anchor
+
+
+async def _verify_json_member(
+    config: Any,
+    anchor: StorageAnchor,
+    *,
+    working_dir: str,
+    container: str,
+    workspace: str,
+) -> IdentityBinding:
+    """A registered member: its snapshot must hold the group's identity and
+    name ``workspace`` as its owner. Never repaired here."""
+    contents = inspect_shard_rows(
+        await read_shard_rows(config), workspace=workspace, location=container
+    )
+    path = anchor_path(working_dir)
+    if contents.storage_uuid is None or contents.owner is None:
+        raise ConfigurationIdentityError(
+            f"Refusing to start: workspace {workspace!r} is a registered member "
+            f"of the JSON configuration group in {path}, but its snapshot "
+            f"{container} holds no "
+            + ("identity" if contents.storage_uuid is None else "owner")
+            + " row -- the file is missing, emptied or damaged. Restore the "
+            "complete snapshot from backup. Nothing was created: a lost "
+            "snapshot is never re-initialized in place.",
+            cause=IDENTITY_MEMBER_MISSING,
+            anchor_path=path,
+        )
+    _check_identity_against_anchor(
+        anchor, contents.storage_uuid, working_dir=working_dir, container=container
+    )
+    return IdentityBinding(storage_uuid=contents.storage_uuid, action="verified")
+
+
+async def _register_json_member(
+    config: Any,
+    anchor: StorageAnchor,
+    *,
+    working_dir: str,
+    container: str,
+    workspace: str,
+) -> IdentityBinding:
+    """Join ``workspace``'s snapshot to the group, under the bind lock.
+
+    The snapshot must be empty (it is then given the identity and owner rows,
+    flushed and read back) or already exactly those rows for this group -- an
+    interrupted registration, reused. Anything else refuses, untouched. The
+    member append replaces the anchor re-read under the lock, and is read
+    back; an unreadable read-back is reported as indeterminate.
+    """
+    path = anchor_path(working_dir)
+    contents = inspect_shard_rows(
+        await read_shard_rows(config), workspace=workspace, location=container
+    )
+    if contents.application_keys or (not contents.empty and not contents.metadata_only):
+        raise ConfigurationIdentityError(
+            f"Refusing to start: workspace {workspace!r} is not a registered "
+            f"member of the JSON configuration group in {path}, but its "
+            f"snapshot {container} already holds configuration records. It may "
+            f"be a member whose registration was lost (concurrent starts on a "
+            f"filesystem without locks), or a file copied or restored from "
+            f"elsewhere; it is not overwritten. If it belongs to this "
+            f"deployment: stop every server and maintenance tool on this "
+            f"WORKING_DIR, back up and delete {path}, and start again -- the "
+            f"anchor is rebuilt from the surviving consistent snapshots.",
+            cause=IDENTITY_SHARD_INVALID,
+            anchor_path=path,
+        )
+    if contents.metadata_only:
+        _check_identity_against_anchor(
+            anchor,
+            contents.storage_uuid,
+            working_dir=working_dir,
+            container=container,
+        )
+    else:
+        await _write_json_shard_metadata(
+            config,
+            workspace=workspace,
+            storage_uuid=anchor.storage_uuid,
+            location=container,
+        )
+    registered = anchor.with_member(workspace)
+    try:
+        publish_anchor(working_dir, registered, replace=True)
+    except ConfigurationIdentityError as e:
+        try:
+            landed = read_anchor(working_dir)
+        except ConfigurationIdentityError as read_error:
+            raise ConfigurationIdentityError(
+                f"Registering workspace {workspace!r} in {path} raised ({e}) "
+                f"and the anchor could not be read back ({read_error}); the "
+                f"registration may or may not have landed. Start nothing on "
+                f"this WORKING_DIR until the anchor reads back.",
+                cause=IDENTITY_ANCHOR_WRITE_FAILED,
+                anchor_path=path,
+            ) from e
+        if landed != registered:
+            raise
+        logger.warning(
+            f"The anchor {path} was updated to register workspace "
+            f"{workspace!r}, but its directory could not be fsynced: {e}"
+        )
+    if workspace not in (read_anchor(working_dir) or anchor).members:
+        raise ConfigurationIdentityError(
+            f"The anchor {path} does not list workspace {workspace!r} right "
+            f"after registering it; another process rewrote it concurrently. "
+            f"Restart.",
+            cause=IDENTITY_ANCHOR_WRITE_FAILED,
+            anchor_path=path,
+        )
+    logger.info(
+        f"[{workspace}] Registered this workspace's JSON configuration "
+        f"snapshot {container} in the group {anchor.storage_uuid}"
+    )
+    return IdentityBinding(storage_uuid=anchor.storage_uuid, action="registered")
+
+
+async def _write_json_shard_metadata(
+    config: Any, *, workspace: str, storage_uuid: str, location: str
+) -> None:
+    """Write a snapshot's identity and owner rows, flush strictly, read back."""
+    rows = json_shard_metadata_rows(
+        workspace, storage_uuid, updated_by=UPDATED_BY_STARTUP
+    )
+    try:
+        await config.upsert(rows)
+    except Exception as e:
+        raise ConfigurationIdentityError(
+            f"could not write the JSON configuration snapshot metadata for "
+            f"workspace {workspace!r} ({type(e).__name__}: {e})",
+            cause=IDENTITY_WRITE_FAILED,
+        ) from e
+    await flush_configuration_storage(
+        config, f"the JSON snapshot metadata of workspace {workspace!r}"
+    )
+    stored = inspect_shard_rows(
+        await read_shard_rows(config), workspace=workspace, location=location
+    )
+    if stored.storage_uuid != storage_uuid or stored.owner != workspace:
+        raise ConfigurationIdentityError(
+            f"the JSON configuration snapshot of workspace {workspace!r} read "
+            f"back identity {stored.storage_uuid!r} and owner {stored.owner!r} "
+            f"right after writing {storage_uuid!r}; the write is not visible "
+            f"or not durable",
+            cause=IDENTITY_WRITE_FAILED,
+        )
+
+
 async def verify_configuration_identity(
     config: Any,
     anchor: StorageAnchor | None,
@@ -1214,10 +1738,44 @@ async def verify_configuration_identity(
     working_dir: str,
     backend: str,
     container: str,
+    workspace: str = "",
 ) -> IdentityBinding:
     """The maintenance tools' check: refuse exactly as a start would, write
-    nothing. With no anchor there is nothing to verify, and the caller says
-    so; only a server or SDK start binds."""
+    nothing.
+
+    Database backends: with no anchor there is nothing to verify, and the
+    caller says so; only a server or SDK start binds. JSON: the workspace
+    must be a registered member with a valid snapshot -- a tool never binds,
+    rebinds or registers, so an unanchored or unregistered workspace refuses
+    with the advice to start the server once.
+    """
+    if backend == JSON_CONFIG_BACKEND:
+        if anchor is not None:
+            check_anchor_backend(
+                anchor, backend, working_dir=working_dir, container=container
+            )
+        if anchor is None or workspace not in (anchor.members or ()):
+            what = (
+                "no configuration anchor is on record"
+                if anchor is None
+                else f"workspace {workspace!r} is not registered in the JSON "
+                f"configuration group"
+            )
+            raise ConfigurationIdentityError(
+                f"Refusing: {what} ({anchor_path(working_dir)}). Start the "
+                f"server once to register this workspace, then stop it and "
+                f"rerun this tool. The tool never binds or registers a "
+                f"workspace itself.",
+                cause=IDENTITY_MEMBER_UNREGISTERED,
+                anchor_path=anchor_path(working_dir),
+            )
+        return await _verify_json_member(
+            config,
+            anchor,
+            working_dir=working_dir,
+            container=container,
+            workspace=workspace,
+        )
     if anchor is None:
         return IdentityBinding(storage_uuid=None, action="unanchored")
     check_anchor_backend(anchor, backend, working_dir=working_dir, container=container)

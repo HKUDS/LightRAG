@@ -2541,7 +2541,6 @@ def create_app(args):
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
             config_storage=args.config_storage,
-            config_dir=args.config_dir,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },

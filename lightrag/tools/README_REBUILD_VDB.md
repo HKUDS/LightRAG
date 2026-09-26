@@ -85,7 +85,10 @@ The tool reads the same `.env` / environment configuration as the server
 `WORKSPACE`, `WORKING_DIR`, `EMBEDDING_*`, backend connection settings) and
 builds its embedding function through the exact factory the server uses —
 run it with the same `.env` so rebuilt vectors live in the same embedding
-space the server queries against.
+space the server queries against. `WORKSPACE` is normalized as the server
+normalizes it (every character outside `[A-Za-z0-9_]` becomes `_`). With
+JSON configuration storage the workspace must already be registered: start
+the server once for a new workspace, stop it, then run the tool.
 
 Menu options:
 
