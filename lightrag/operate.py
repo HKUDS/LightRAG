@@ -4910,6 +4910,7 @@ async def kg_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            **(query_param.extra_llm_kwargs or {}),
         )
 
         if (
@@ -5175,7 +5176,11 @@ async def extract_keywords_only(
         global_config["role_llm_funcs"]["keyword"], _priority=DEFAULT_QUERY_PRIORITY
     )
 
-    result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
+    result = await use_model_func(
+        kw_prompt,
+        response_format={"type": "json_object"},
+        **(param.extra_llm_kwargs or {}),
+    )
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
@@ -5345,7 +5350,10 @@ async def _perform_kg_search(
         if texts_to_embed:
             try:
                 all_embeddings = await actual_embedding_func(
-                    texts_to_embed, context="query", _priority=DEFAULT_QUERY_PRIORITY
+                    texts_to_embed,
+                    context="query",
+                    _priority=DEFAULT_QUERY_PRIORITY,
+                    **(query_param.extra_embedding_kwargs or {}),
                 )
                 for i, purpose in enumerate(text_purposes):
                     if purpose == "query":
@@ -5360,6 +5368,10 @@ async def _perform_kg_search(
                     ", ".join(text_purposes),
                 )
             except Exception as e:
+                # extra_embedding_kwargs must not silently degrade into an
+                # un-tagged retry.
+                if query_param.extra_embedding_kwargs:
+                    raise
                 logger.warning(f"Failed to batch pre-compute embeddings: {e}")
 
     # Handle local and global modes
@@ -6896,7 +6908,21 @@ async def naive_query(
 
     if progress_callback:
         await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
-    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
+
+    # Only pre-compute when extra_embedding_kwargs is set, to skip a
+    # redundant round-trip for the common case; no broad try/except, so a
+    # failure never silently retries without the caller's requested data.
+    query_embedding = None
+    if query_param.extra_embedding_kwargs and chunks_vdb.embedding_func:
+        embeddings = await chunks_vdb.embedding_func(
+            [query],
+            context="query",
+            _priority=DEFAULT_QUERY_PRIORITY,
+            **query_param.extra_embedding_kwargs,
+        )
+        query_embedding = embeddings[0]
+
+    chunks = await _get_vector_context(query, chunks_vdb, query_param, query_embedding)
 
     if chunks is None or len(chunks) == 0:
         logger.info(
@@ -7069,6 +7095,7 @@ async def naive_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            **(query_param.extra_llm_kwargs or {}),
         )
 
         if (
