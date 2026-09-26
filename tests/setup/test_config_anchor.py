@@ -207,11 +207,13 @@ def test_env_storage_says_nothing_without_an_anchor(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "previous_kv, new_kv, existing_config, anchored",
+    "previous_kv, new_kv, existing_config, anchored, announces_change",
     [
-        ("JsonKVStorage", "PGKVStorage", "", "JsonKVStorage"),
-        ("JsonKVStorage", "RedisKVStorage", "", "MongoKVStorage"),
-        ("JsonKVStorage", "PGKVStorage", "MongoKVStorage", "JsonKVStorage"),
+        ("JsonKVStorage", "PGKVStorage", "", "JsonKVStorage", True),
+        ("JsonKVStorage", "RedisKVStorage", "", "MongoKVStorage", True),
+        ("JsonKVStorage", "PGKVStorage", "MongoKVStorage", "JsonKVStorage", True),
+        ("RedisKVStorage", "RedisKVStorage", "", "JsonKVStorage", False),
+        ("RedisKVStorage", "RedisKVStorage", "MongoKVStorage", "JsonKVStorage", True),
     ],
 )
 def test_storage_selection_uses_readable_anchor_without_prompt(
@@ -220,6 +222,7 @@ def test_storage_selection_uses_readable_anchor_without_prompt(
     new_kv: str,
     existing_config: str,
     anchored: str,
+    announces_change: bool,
 ) -> None:
     anchor = _write_anchor(tmp_path / "rag_storage", anchored)
     before = anchor.read_bytes()
@@ -237,6 +240,10 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
     assert result.returncode == 0, result.stderr
     assert parse_lines(result.stdout) == {"CHOSEN": anchored, "WRITTEN": anchored}
     assert "PROMPT_CALLED" not in result.stderr
+    output = result.stdout + result.stderr
+    assert (
+        "Keeping configuration storage at the anchored backend" in output
+    ) is announces_change
     assert anchor.read_bytes() == before
 
 

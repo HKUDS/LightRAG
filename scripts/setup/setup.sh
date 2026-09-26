@@ -1574,7 +1574,7 @@ select_config_storage() {
   if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
     SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
     SELECTED_CONFIG_STORAGE="$CONFIG_ANCHOR_BACKEND"
-    if [[ "${existing:-$kv_storage}" != "$SELECTED_CONFIG_STORAGE" ]]; then
+    if [[ "$(resolve_config_storage_selection "$existing" "$kv_storage")" != "$SELECTED_CONFIG_STORAGE" ]]; then
       log_info "Keeping configuration storage at the anchored backend" \
         "$SELECTED_CONFIG_STORAGE ($CONFIG_ANCHOR_PATH)"
     fi
