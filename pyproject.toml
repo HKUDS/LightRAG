@@ -57,6 +57,7 @@ dependencies = [
 pytest = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pytest-xdist>=3.6.0",  # local `-n auto` full-suite runs; see AGENTS.md
     "pre-commit",
     "ruff",
     "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
@@ -176,6 +177,7 @@ test = [
     "lightrag-hku[api]",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pytest-xdist>=3.6.0",  # local `-n auto` full-suite runs; see AGENTS.md
     "pre-commit",
     "ruff",
     "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
@@ -224,6 +226,14 @@ lightrag = ["api/webui/**/*", "api/static/**/*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# tests/setup drives the setup wizard's shell flows and never imports lightrag,
+# so plain recursive runs (`pytest`, `pytest tests`) skip it. Name it explicitly
+# to run it: `pytest tests/setup`. The first nine entries are pytest's defaults,
+# which setting this option replaces.
+norecursedirs = [
+    "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv",
+    "{arch}", "tests/setup",
+]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
