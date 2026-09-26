@@ -3141,6 +3141,7 @@ finalize_storage_setup() {
   local compose_action="write_env_only"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local show_host_start_hint="no"
+  local config_storage config_db_type
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -3176,8 +3177,6 @@ finalize_storage_setup() {
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
   record_existing_managed_root_services "$existing_compose"
   restore_vllm_docker_services_from_env
-  configure_storage_compose_rewrites
-  configure_mongodb_compose_migration_rewrite "$existing_compose"
   resolve_compose_output_action \
     "$existing_compose" \
     compose_action \
@@ -3185,33 +3184,48 @@ finalize_storage_setup() {
     show_host_start_hint
 
   # Docker choices may change the runtime target after backend selection.
-  # Pin config to the anchor the next server will actually read.
-  read_config_anchor "$runtime_target"
-  if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
-    if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
-      log_info "Keeping configuration storage at the anchored backend" \
-        "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
+  # A newly required configuration database can itself add a Docker service,
+  # changing a host choice to Compose; repeat against that final anchor.
+  while true; do
+    read_config_anchor "$runtime_target"
+    if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+      if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
+        log_info "Keeping configuration storage at the anchored backend" \
+          "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
+      fi
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$CONFIG_ANCHOR_BACKEND"
+    elif [[ -n "${SELECTED_CONFIG_ANCHOR_PATH:-}" && \
+      "$CONFIG_ANCHOR_PATH" != "$SELECTED_CONFIG_ANCHOR_PATH" ]]; then
+      # The initial selection followed an anchor in another runtime directory.
+      # Restore the original .env choice and select for the final directory.
+      if [[ -n "${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+        ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+      else
+        unset 'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]'
+      fi
+      select_config_storage "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" "$runtime_target"
     fi
-    ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$CONFIG_ANCHOR_BACKEND"
-    if ! validate_required_variables "$CONFIG_ANCHOR_BACKEND"; then
-      log_warn "The anchored configuration backend needs connection settings" \
-        "before this wizard can write .env; configure them and rerun make env-storage."
-      return 1
+
+    config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+    config_db_type="${STORAGE_DB_TYPES[$config_storage]:-}"
+    if [[ -n "$config_db_type" && -z "${REQUIRED_DB_TYPES[$config_db_type]+set}" ]]; then
+      REQUIRED_DB_TYPES["$config_db_type"]=1
+      log_step "Database configuration for $config_storage"
+      collect_database_config "$config_db_type" \
+        "$(storage_default_docker_for_db_type "$config_db_type")"
+      if [[ "$runtime_target" != "compose" && ${#DOCKER_SERVICES[@]} -gt 0 ]]; then
+        compose_action="rewrite_compose"
+        runtime_target="compose"
+        show_host_start_hint="no"
+        continue
+      fi
     fi
-  elif [[ -n "${SELECTED_CONFIG_ANCHOR_PATH:-}" && \
-    "$CONFIG_ANCHOR_PATH" != "$SELECTED_CONFIG_ANCHOR_PATH" ]]; then
-    # The initial selection followed an anchor in another runtime directory.
-    # Restore the original .env choice and select for the final directory.
-    if [[ -n "${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
-      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
-    else
-      unset 'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]'
-    fi
-    select_config_storage "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" "$runtime_target"
-    if ! validate_required_variables "$SELECTED_CONFIG_STORAGE"; then
-      return 1
-    fi
-  fi
+    validate_required_variables "$config_storage" || return 1
+    break
+  done
+
+  configure_storage_compose_rewrites
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
 
   show_summary
 

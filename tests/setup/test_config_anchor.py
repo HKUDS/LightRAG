@@ -373,9 +373,9 @@ generate_env_file() { :; }
         % finalizer,
     )
     if finalizer == "finalize_storage_setup":
-        assert result.returncode == 1
-        assert "Missing required variables" in result.stderr
-        assert "Wrote .env" not in result.stdout
+        assert result.returncode == 0, result.stderr
+        assert "Configuration storage anchor: PGKVStorage" in result.stdout
+        assert "server will REFUSE to start" not in result.stdout
     else:
         assert result.returncode == 0, result.stderr
         assert "binds it to PGKVStorage" in result.stdout
@@ -416,6 +416,137 @@ finalize_storage_setup
     assert result.returncode == 0, result.stderr
     assert parse_lines(result.stdout)["CONFIRMED_CONFIG"] == "PGKVStorage"
     assert anchor.read_bytes() == before
+
+
+@pytest.mark.parametrize("stale_credentials", [False, True])
+def test_storage_finalizer_collects_new_anchored_database_and_docker_service(
+    tmp_path: Path, stale_credentials: bool
+) -> None:
+    """Final Compose anchor can require a DB absent from the first selection.
+    Even stale credentials must not skip the Docker/service choice."""
+    _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+    stale = "ENV_VALUES[POSTGRES_USER]=old" if stale_credentials else ""
+    result = _run(
+        tmp_path,
+        f"""
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]=NanoVectorDBStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=NetworkXStorage
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]=JsonDocStatusStorage
+ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=host
+{stale}
+confirm_default_no() {{
+  [[ "$1" == "Run LightRAG Server via Docker?" ]]
+}}
+collect_postgres_config() {{
+  printf 'COLLECTED_POSTGRES=yes\\n'
+  ENV_VALUES[POSTGRES_USER]=rag
+  ENV_VALUES[POSTGRES_PASSWORD]=secret
+  ENV_VALUES[POSTGRES_DATABASE]=lightrag
+  add_docker_service postgres
+}}
+confirm_required_yes_no() {{
+  printf 'CONFIG=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
+  printf 'REQUIRED=%s\\n' "${{REQUIRED_DB_TYPES[postgresql]:-missing}}"
+  printf 'SERVICE=%s\\n' "${{DOCKER_SERVICE_SET[postgres]:-missing}}"
+  printf 'MARKER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT]:-missing}}"
+  printf 'ACTION=%s\\n' "$compose_action"
+  printf 'TARGET=%s\\n' "$runtime_target"
+  return 1
+}}
+finalize_storage_setup
+""",
+    )
+    values = parse_lines(result.stdout)
+    assert result.returncode == 1
+    assert values["COLLECTED_POSTGRES"] == "yes"
+    assert values["CONFIG"] == "PGKVStorage"
+    assert values["REQUIRED"] == "1"
+    assert values["SERVICE"] == "1"
+    assert values["MARKER"] == "docker"
+    assert values["ACTION"] == "rewrite_compose"
+    assert values["TARGET"] == "compose"
+
+
+def test_storage_finalizer_collects_database_after_reselecting_without_anchor(
+    tmp_path: Path,
+) -> None:
+    _write_anchor(tmp_path / "rag_storage", "MongoKVStorage")
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+    result = _run(
+        tmp_path,
+        """
+ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]=PGKVStorage
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]=PGKVStorage
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]=NanoVectorDBStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=NetworkXStorage
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]=JsonDocStatusStorage
+ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=host
+select_config_storage JsonKVStorage
+resolve_compose_output_action() {
+  local -n action_ref="$2" target_ref="$3" hint_ref="$4"
+  action_ref="write_env_only"; target_ref="compose"; hint_ref="no"
+}
+collect_postgres_config() {
+  printf 'COLLECTED_POSTGRES=yes\\n'
+  ENV_VALUES[POSTGRES_USER]=rag
+  ENV_VALUES[POSTGRES_PASSWORD]=secret
+  ENV_VALUES[POSTGRES_DATABASE]=lightrag
+}
+confirm_required_yes_no() {
+  printf 'CONFIG=%s\\n' "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+  printf 'REQUIRED=%s\\n' "${REQUIRED_DB_TYPES[postgresql]:-missing}"
+  return 1
+}
+finalize_storage_setup
+""",
+    )
+    values = parse_lines(result.stdout)
+    assert result.returncode == 1
+    assert values["COLLECTED_POSTGRES"] == "yes"
+    assert values["CONFIG"] == "PGKVStorage"
+    assert values["REQUIRED"] == "1"
+
+
+def test_new_docker_service_rechecks_the_compose_anchor(tmp_path: Path) -> None:
+    _write_anchor(tmp_path / "rag_storage", "PGKVStorage")
+    _write_anchor(tmp_path / "data" / "rag_storage", "JsonKVStorage")
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+    result = _run(
+        tmp_path,
+        """
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]=NanoVectorDBStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=NetworkXStorage
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]=JsonDocStatusStorage
+ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=compose
+select_config_storage JsonKVStorage
+resolve_compose_output_action() {
+  local -n action_ref="$2" target_ref="$3" hint_ref="$4"
+  action_ref="write_env_only"; target_ref="host"; hint_ref="yes"
+}
+collect_postgres_config() {
+  ENV_VALUES[POSTGRES_USER]=rag
+  ENV_VALUES[POSTGRES_PASSWORD]=secret
+  ENV_VALUES[POSTGRES_DATABASE]=lightrag
+  add_docker_service postgres
+}
+confirm_required_yes_no() {
+  printf 'CONFIG=%s\\n' "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+  printf 'TARGET=%s\\n' "$runtime_target"
+  printf 'ACTION=%s\\n' "$compose_action"
+  return 1
+}
+finalize_storage_setup
+""",
+    )
+    values = parse_lines(result.stdout)
+    assert result.returncode == 1
+    assert values["CONFIG"] == "JsonKVStorage"
+    assert values["TARGET"] == "compose"
+    assert values["ACTION"] == "rewrite_compose"
 
 
 def test_storage_finalizer_does_not_carry_a_host_anchor_into_compose(

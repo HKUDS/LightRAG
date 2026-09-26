@@ -181,7 +181,8 @@ server then refuses:
   - collects the chosen backend's connection settings;
   - rechecks the anchor after the runtime target is settled, since switching
     between host and Compose also switches the directory the next server
-    reads; it refuses to write when that backend lacks connection settings;
+    reads; if that adds a database backend, it collects its connection and
+    Docker settings, then checks the final runtime again;
   - reports the final anchor before writing.
 - **`make env-validate`**
   - refuses an unadmitted configuration backend, whether it is set
@@ -1199,7 +1200,8 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     without asking for a configuration backend, even when KV changes or an
     explicit selection disagrees. If the runtime changes, the final runtime's
     anchor decides; an anchor in the old runtime is not carried into an
-    unanchored new runtime. Missing connection settings prevent the write.
+    unanchored new runtime. A database first required by the final selection
+    is collected and included in the generated Compose services.
 
 ## History
 
