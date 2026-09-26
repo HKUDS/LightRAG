@@ -368,3 +368,47 @@ def test_direct_parse_engine_field_accepts_bare_bool_flag():
 def test_direct_parse_engine_field_rejected(raw):
     with pytest.raises(ValueError):
         _decode_via_parse_engine_at(raw)
+
+
+# --------------------------------------------------------------------------- #
+# Forbidden-character rule: one value may never carry ',' '(' ')' ']'
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("bad", ["en,fr", "a)b", "a(b", "x]y"])
+def test_normalize_engine_params_rejects_forbidden_chars(bad):
+    # The text path already rejects each of these (a ',' never reaches the
+    # value there — parameters split first, so that one reports an unknown
+    # key); the resolved-dict path must agree, otherwise the value re-encodes
+    # into a directive decode cannot read back.
+    _parsed, text_errors = parse_engine_params(
+        f"language={bad}", engine="mineru", label="x"
+    )
+    assert text_errors
+    norm, errors = normalize_engine_params("mineru", {"language": bad})
+    assert errors and any("may not contain" in e for e in errors)
+    assert norm == {}
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("bad", ["en,fr", "a)b", "a(b", "x]y"])
+def test_encode_parse_engine_never_emits_undecodable_directive(bad):
+    # encode_parse_engine promises it can never emit a string that
+    # decode_parse_engine would reject; a forbidden char used to slip through
+    # and produce e.g. "mineru(language=a)b)", truncated at the injected ')'.
+    with pytest.raises(ValueError):
+        encode_parse_engine("mineru", {"language": bad})
+
+
+@pytest.mark.offline
+def test_list_param_keeps_comma_as_its_joiner(monkeypatch):
+    # ',' is forbidden inside one value but is the canonical joiner of a list
+    # param, so page_range segments must still round-trip.
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    norm, errors = normalize_engine_params("mineru", {"page_range": "1-3,5"})
+    assert errors == [] and norm == {"page_range": "1-3,5"}
+    enc = encode_parse_engine("mineru", {"page_range": ["1-3", "5"]})
+    engine, params, decode_errors = decode_parse_engine(enc)
+    assert engine == "mineru" and decode_errors == []
+    assert params == {"page_range": "1-3,5"}

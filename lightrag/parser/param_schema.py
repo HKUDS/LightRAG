@@ -460,6 +460,17 @@ def _coerce_engine_value(
     (:func:`normalize_engine_params`) so both apply identical rules.  For the
     list-type ``page_range`` the ``value`` is the already-joined comma string.
     """
+    # A single parameter value may never carry a separator / bracket char (see
+    # the module docstring).  Enforced here rather than in the text path alone,
+    # so a resolved dict cannot smuggle in a value that re-encodes into a
+    # ``parse_engine`` directive the parser would reject or silently truncate.
+    # ``,`` is the canonical joiner of a list param, so segments are checked.
+    for segment in value.split(",") if spec.is_list else [value]:
+        if any(ch in _VALUE_FORBIDDEN for ch in segment):
+            return None, (
+                f"{label}: value for {spec.canonical!r} may not contain any of "
+                "',' '(' ')' ']'"
+            )
     # ``local_parse_method`` only feeds the local MinerU request + signature;
     # the official API neither sends it nor folds it into the cache key, so
     # accepting it under official mode would persist a directive that silently
@@ -569,12 +580,6 @@ def parse_engine_params(
                 )
                 continue
             value = "true"  # bare boolean flag means True
-        if any(ch in _VALUE_FORBIDDEN for ch in value):
-            errors.append(
-                f"{label}: value for {spec.canonical!r} may not contain any of "
-                "',' '(' ')' ']'"
-            )
-            continue
         if spec.is_list:
             list_values.setdefault(spec.canonical, []).append(value)
             continue
