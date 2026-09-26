@@ -1,6 +1,6 @@
 # Purge Recovery Contract
 
-Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, or the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
+Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `adelete_chunks_from_doc`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, or the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
 
 The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
 
@@ -23,11 +23,57 @@ Anchor-driven whole-document purge is **journaled and resumable** through four o
 
 Both metadata keys are in the `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` **and** `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` whitelists in `lightrag/utils_pipeline.py`; dropping either at a transition or a FAILED→PENDING reset turns a resumable purge into a permanent refusal. Retiring one requires `doc_status_transition_metadata(..., drop=...)` — passing it via `extra` would persist the value, and omitting it lets carry-over restore it.
 
-Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback — is neither journaled nor proof-checked, because its own operation journal already names the complete candidate superset; the primitive reads that journal to union in candidates no anchor row can name yet.
+Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback and [chunk-level deletion](#chunk-level-deletion) — is neither journaled nor proof-checked by the primitive: patch rollback's own operation journal already names the complete candidate superset (the primitive reads that journal to union in candidates no anchor row can name yet), and chunk-level deletion resolves its proof itself before deriving candidates from the anchors.
 
 A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) skips extraction and the merge, so no anchor rows are ever written. Post-change those documents carry `pre_graph` and delete normally; older ones have neither proof, and anchor repair has nothing to rebuild from.
 
 The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
+
+## Chunk-level deletion
+
+`adelete_chunks_from_doc` removes some of a `PROCESSED` document's chunks and keeps the document. It is the removal half of an incremental update; the addition half is `ainsert_custom_chunks` in patch mode. It is a third caller of `_purge_kg_contributions`, in explicit-candidate, `patch_only` mode, and it adds no purge logic of its own. What it adds is the choice of candidates and the bookkeeping around them.
+
+**Preconditions.** It holds the pipeline `busy` slot (owner kind `delete`, so a worker that dies part-way fences the workspace instead of freeing the slot) and the per-document `DocPatch` lock that custom-chunk operations and their rollback use. It refuses a document that is not `PROCESSED`, or that carries a custom-chunk journal or an unfinished `kg_purge` journal, since both of those name work this operation would interleave with. Its job name must not start with "deleting", because `adelete_by_doc_id` joins a busy job whose name does. Only ids in the document's `chunks_list` are ever deleted.
+
+**Proof.** The same resolver as whole-document purge. `anchors` makes the anchor rows the candidate superset, because they name everything the document contributed and therefore everything these chunks contributed. `pre_graph` (a `skip_kg` document) means there is nothing to clean. Anything else fails closed with `RecoveryAnchorMissingError` before the first write. `journal` and `empty_scope` cannot occur: the first is refused above and the second needs an empty chunk set.
+
+**Candidates are narrowed**, from every anchor name to the live objects whose chunk tracking **or** graph `source_id` names a removed chunk. An object the removed chunks do not feed is one the primitive would leave as it is, so narrowing changes the cost and nothing else. That is what makes the `rollback` rebuild policy affordable here, since that policy rebuilds every candidate it is given. It is chosen over deletion's `best_effort` because `best_effort` returns early when there is no extraction cache, leaving graph `source_id` naming a deleted chunk, and only logs a failed rebuild. `rollback` rewrites provenance structurally from the surviving chunks and raises. Reading tracking and graph together matters on a retry. A rebuild that failed has already written tracking without the removed chunks, while the graph still names them, and only the union still finds that object.
+
+**Ordering**, each step flushed before the next:
+
+1. If `delete_llm_cache`, the removed chunks' cache ids go into `metadata.deletion_llm_cache_ids`. The chunk rows are their only other carrier, and the purge deletes those rows.
+2. The primitive's derived pass (tracking, deletes, rebuild), then the chunk rows. Anchors are kept.
+3. Anchor names this document no longer feeds are pruned, but only among the candidates. A name is dropped only when its graph object is gone, or when it has a tracking row that names none of the document's remaining chunks. An untracked name is kept.
+4. The cache rows are deleted, and the deletion is verified.
+5. The commit record: `chunks_list` / `chunks_count` without the removed ids, with the retry metadata cleared.
+
+**Why there is no journal.** A journal is needed when a retry cannot recompute what is left to do. Here it can. The targets are `requested ∩ chunks_list`, and `chunks_list` keeps the removed ids until step 5. The candidates are recomputed from live tracking and graph state, and every step is idempotent: absent objects and rows are no-ops. So repeating the same call after a failure at any step converges. A failure records `deletion_failed` / `deletion_failure_stage` on the row for the operator, and leaves the status `PROCESSED`. It does not mark the document `FAILED`, because a `FAILED` document is reprocessed from `full_docs`, which would bring the removed text back.
+
+### Accepted residue
+
+| State | Why it is accepted |
+|---|---|
+| `chunks_list` naming chunks already deleted (failure after step 2, before step 5) | Harmless in direction: every reader tolerates a missing chunk row, and `adelete_by_doc_id` deletes it as a no-op. Heals by repeating the call. |
+| Removed chunks still present while their tracking no longer names them (failure inside step 2's rebuild) | The chunks stay retrievable, so a query can surface content the caller meant to remove, which is the tolerated direction. The graph still names them, so a retry's candidate union finds the objects, and a whole-document purge's `graph_references_deleted_chunks` branch repairs them. |
+| Anchors over-claiming: step 3 not reached, or an untracked name kept | A later purge reads the object, finds no chunk of this document feeding it, and leaves it alone. An under-claiming anchor would strand a live object, so step 3 errs this way on purpose. A retry after step 2 finds no candidates and does not revisit these names. They are dropped by the next whole-document purge. |
+| Removed content still in `full_docs` | The same as a custom-chunk patch, whose added chunks are not in `full_docs` either. A whole-document reprocess rebuilds from `full_docs`, so it undoes both. |
+| Cache ids left in `metadata.deletion_llm_cache_ids` (step 4 failed) | Still reachable: a retry unions them back in, and `adelete_by_doc_id(delete_llm_cache=True)` reads the same key. |
+| A cache row shared with an identical prompt elsewhere, deleted in step 4 | The same shared-prompt residue whole-document deletion already has (see above). |
+
+### Adding and replacing chunks
+
+`aadd_chunks_to_doc` is a custom-chunk patch that refuses to create a document. The refusal is made inside `_apply_custom_chunks`, under the same reservation and document lock as the mode decision, so a document deleted in between cannot turn the call into a create. Everything else is patch mode's own contract: journal first, anchors unioned at commit, SDK resume or scan rollback. Patch mode numbers its chunks after the highest existing `chunk_order_index`, so the field stays a position in the document. It goes past the highest index rather than the count, because a chunk-level delete leaves gaps.
+
+`amodify_chunk_in_doc` is an add followed by a delete, **in that order**, and each half is a complete operation with its own gates. The order chooses which intermediate state survives a failure. Add-then-delete keeps both versions, so a query can surface the old text, and that heals when the call is repeated. Delete-then-add keeps neither version, which loses data.
+
+Modifies of one document are serialized by a `DocModify` keyed lock held across both halves. It is a namespace of its own because each half takes the `DocPatch` lock, which is not reentrant. The old chunk's ownership is checked inside that lock. Without the lock, a second modify of the same chunk could run in the gap between the first one's halves, pass its check, and leave a second replacement behind. With it, the second modify waits, finds the chunk already replaced, and refuses with `ValueError`: a lost update is reported rather than silently kept.
+
+The pipeline `busy` reservation is still taken per half rather than across both. Holding it across both would mean threading an external reservation through `_apply_custom_chunks`' failure path, which discards partial buffers on exit. It would change nothing a caller can observe: `busy` does not gate queries, and the `DocModify` lock already excludes the only writer that could interfere, another modify of the same document.
+
+| State | Why it is accepted |
+|---|---|
+| A query between the halves sees both versions | Queries take no lock, so no ordering or reservation can hide the gap; closing it would need a transaction across every storage backend. It is the tolerated direction, surfacing a chunk the query did not need, and it lasts only until the delete half commits. |
+| Both versions present after a failed or refused delete half | The tolerated direction: nothing is lost, and the call's error names the added chunk. Repeating the call finishes it, since the add is a committed no-op and the delete then runs. |
 
 ## Chunk tracking authority
 
