@@ -4,7 +4,12 @@
     "theme": "主题",
     "light": "浅色",
     "dark": "深色",
-    "system": "系统"
+    "system": "系统",
+    "langfuseTracing": "Langfuse 追踪",
+    "langfuseTracingDescription": "通过运维人员配置的 Langfuse 连接导出兼容 OpenAI 的 LLM 追踪数据。",
+    "langfuseUnavailable": "安装可观测性扩展并配置 Langfuse 凭据后才能使用此开关。",
+    "langfuseLoadFailed": "无法加载 Langfuse 追踪状态。",
+    "langfuseUpdateFailed": "无法更新 Langfuse 追踪设置。"
   },
   "header": {
     "documents": "文档",

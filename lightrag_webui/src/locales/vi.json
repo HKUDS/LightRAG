@@ -4,7 +4,12 @@
     "theme": "Giao diện",
     "light": "Sáng",
     "dark": "Tối",
-    "system": "Hệ thống"
+    "system": "Hệ thống",
+    "langfuseTracing": "Theo dõi Langfuse",
+    "langfuseTracingDescription": "Xuất dữ liệu theo dõi LLM tương thích với OpenAI qua kết nối Langfuse do người vận hành cấu hình.",
+    "langfuseUnavailable": "Cài đặt tiện ích quan sát và cấu hình thông tin xác thực Langfuse để sử dụng nút chuyển này.",
+    "langfuseLoadFailed": "Không thể tải trạng thái theo dõi Langfuse.",
+    "langfuseUpdateFailed": "Không thể cập nhật tính năng theo dõi Langfuse."
   },
   "header": {
     "documents": "Tài liệu",

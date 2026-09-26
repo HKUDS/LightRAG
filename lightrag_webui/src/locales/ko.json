@@ -4,7 +4,12 @@
     "theme": "테마",
     "light": "라이트",
     "dark": "다크",
-    "system": "시스템"
+    "system": "시스템",
+    "langfuseTracing": "Langfuse 추적",
+    "langfuseTracingDescription": "운영자가 구성한 Langfuse 연결을 통해 OpenAI 호환 LLM 추적을 내보냅니다.",
+    "langfuseUnavailable": "이 토글을 사용하려면 관측 가능성 추가 기능을 설치하고 Langfuse 자격 증명을 구성하세요.",
+    "langfuseLoadFailed": "Langfuse 추적 상태를 불러올 수 없습니다.",
+    "langfuseUpdateFailed": "Langfuse 추적을 업데이트할 수 없습니다."
   },
   "header": {
     "documents": "문서",

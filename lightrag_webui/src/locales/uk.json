@@ -4,7 +4,12 @@
     "theme": "Тема",
     "light": "Світла",
     "dark": "Темна",
-    "system": "Системна"
+    "system": "Системна",
+    "langfuseTracing": "Трасування Langfuse",
+    "langfuseTracingDescription": "Експортуйте сумісні з OpenAI трасування LLM через налаштоване оператором підключення Langfuse.",
+    "langfuseUnavailable": "Установіть доповнення для спостережуваності та налаштуйте облікові дані Langfuse, щоб використовувати цей перемикач.",
+    "langfuseLoadFailed": "Не вдалося завантажити стан трасування Langfuse.",
+    "langfuseUpdateFailed": "Не вдалося оновити трасування Langfuse."
   },
   "header": {
     "documents": "Документи",
