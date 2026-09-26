@@ -17,6 +17,7 @@ import uk from './locales/uk.json'
 import ko from './locales/ko.json'
 import vi from './locales/vi.json'
 import id from './locales/id.json'
+import az from './locales/az.json'
 
 /**
  * Language priority (workspace-entry PRD): explicit persisted choice >
@@ -60,7 +61,8 @@ i18n
       uk: { translation: uk },
       ko: { translation: ko },
       vi: { translation: vi },
-      id: { translation: id }
+      id: { translation: id },
+      az: { translation: az }
     },
     lng: initialLanguage, // Explicit choice, else browser language, else 'en'
     fallbackLng: 'en',
