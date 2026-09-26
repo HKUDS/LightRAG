@@ -27,6 +27,7 @@ import lightrag.pipeline as pipeline_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.constants import (
+    GRAPH_FIELD_SEP,
     KG_PURGE_METADATA_KEY,
     KG_PURGE_PHASE_COMPLETED,
     KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
@@ -34,7 +35,12 @@ from lightrag.constants import (
     KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.tools.kg_integrity_repair import audit_kg_integrity
-from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
+from lightrag.utils import (
+    EmbeddingFunc,
+    Tokenizer,
+    compute_mdhash_id,
+    make_relation_chunk_key,
+)
 
 from .conftest import request_failed_retry
 
@@ -124,11 +130,13 @@ async def _build_rag(tmp_path, workspace: str) -> LightRAG:
     return rag
 
 
-async def _ingest(rag: LightRAG, file_path: str = "d.txt") -> str:
+async def _ingest(
+    rag: LightRAG,
+    file_path: str = "d.txt",
+    content: str = "alice works at acme",
+) -> str:
     doc_id = compute_mdhash_id(file_path, prefix="doc-")
-    await rag.apipeline_enqueue_documents(
-        "alice works at acme", ids=[doc_id], file_paths=[file_path]
-    )
+    await rag.apipeline_enqueue_documents(content, ids=[doc_id], file_paths=[file_path])
     await rag.apipeline_process_enqueue_documents()
     row = await rag.doc_status.get_by_id(doc_id)
     status = row.get("status")
@@ -729,6 +737,253 @@ async def test_audit_never_certifies_a_document_that_owns_graph_objects(tmp_path
         # And deleting it now really does clean the graph.
         assert (await rag.adelete_by_doc_id(contributing)).status == "success"
         assert await rag.chunk_entity_relation_graph.get_node("ALICE") is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_reads_provenance_from_chunk_tracking_not_the_capped_source_id(
+    tmp_path,
+):
+    """The scan must see the authoritative chunk list, not the capped view.
+
+    ``apply_source_ids_limit`` caps a graph object's ``source_id`` at
+    ``MAX_SOURCE_IDS_PER_ENTITY`` / ``_PER_RELATION`` (200 each by default),
+    while ``entity_chunks`` / ``relation_chunks`` keep the full list — the
+    authority order stated in the purge contract. Resolving provenance from
+    ``source_id`` alone therefore loses every document whose chunks fall
+    outside the window, and for one that also holds no anchor row the audit
+    concluded it owned nothing: the empty rows written for it ARE the
+    ``anchors`` proof, so the next purge would delete its chunks and skip the
+    graph. That is the defect the anchorless certification exists to prevent,
+    reintroduced through the input it reads.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        keeper = await _ingest(rag, "keeper.txt", "alice works at acme")
+        capped_out = await _ingest(rag, "capped-out.txt", "acme employs alice")
+
+        # Both documents contribute ALICE; keep only the first document's chunk
+        # in the graph view, exactly as the cap would once the object exceeds
+        # its limit. Tracking keeps both, which is what makes it authoritative.
+        tracking = await rag.entity_chunks.get_by_id("ALICE")
+        all_chunks = list(tracking["chunk_ids"])
+        chunk_rows = await rag.text_chunks.get_by_ids(all_chunks)
+        keeper_chunks = [
+            chunk_id
+            for chunk_id, row in zip(all_chunks, chunk_rows)
+            if row and row.get("full_doc_id") == keeper
+        ]
+        assert keeper_chunks and len(keeper_chunks) < len(all_chunks), all_chunks
+
+        node = await rag.chunk_entity_relation_graph.get_node("ALICE")
+        await rag.chunk_entity_relation_graph.upsert_node(
+            "ALICE", {**node, "source_id": GRAPH_FIELD_SEP.join(keeper_chunks)}
+        )
+        await rag.chunk_entity_relation_graph.index_done_callback()
+
+        await _drop_anchors(rag, capped_out)
+        await _strip_write_state(rag, capped_out)
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        # It owns ALICE, so it is never certified empty...
+        assert capped_out not in report["anchorless_docs"]
+        # ...and it is repaired with the real name instead.
+        assert "ALICE" in report["missing_entity_anchors"][capped_out]
+        assert (
+            "ALICE" in (await rag.full_entities.get_by_id(capped_out))["entity_names"]
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_still_resolves_provenance_when_a_tracking_row_is_absent(
+    tmp_path,
+):
+    """Tracking is preferred, not required — the graph side must still count.
+
+    A tracking row can be missing (legacy data, or a purge that pruned it
+    while the graph ``source_id`` still lags behind). Taking the union rather
+    than replacing one side with the other keeps those ids in the scan, so
+    the document is still attributed and never certified empty.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest(rag, "graph-only.txt")
+
+        await rag.entity_chunks.delete(["ALICE", "ACME"])
+        await rag.relation_chunks.delete([make_relation_chunk_key("ACME", "ALICE")])
+        await rag.entity_chunks.index_done_callback()
+        await rag.relation_chunks.index_done_callback()
+        assert await rag.entity_chunks.get_by_id("ALICE") is None
+
+        await _drop_anchors(rag, doc_id)
+        await _strip_write_state(rag, doc_id)
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        assert doc_id not in report["anchorless_docs"]
+        assert "ALICE" in report["missing_entity_anchors"][doc_id]
+        assert [["ACME", "ALICE"]] == report["missing_relation_anchors"][doc_id]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_reads_relation_provenance_from_tracking_too(tmp_path):
+    """The relation side needs the same union as the entity side.
+
+    A relation's ``source_id`` is capped by ``MAX_SOURCE_IDS_PER_RELATION``
+    independently of its endpoints', so an edge can lose a document from its
+    graph view while ``relation_chunks`` still names it. With the entity side
+    deliberately blinded here, only the relation tracking row can attribute
+    the second document — which is exactly the input a relation-side omission
+    would drop.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        keeper = await _ingest(rag, "keeper.txt", "alice works at acme")
+        capped_out = await _ingest(rag, "capped-out.txt", "acme employs alice")
+
+        tracking = await rag.relation_chunks.get_by_id(
+            make_relation_chunk_key("ACME", "ALICE")
+        )
+        all_chunks = list(tracking["chunk_ids"])
+        chunk_rows = await rag.text_chunks.get_by_ids(all_chunks)
+        keeper_chunks = [
+            chunk_id
+            for chunk_id, row in zip(all_chunks, chunk_rows)
+            if row and row.get("full_doc_id") == keeper
+        ]
+        assert keeper_chunks and len(keeper_chunks) < len(all_chunks), all_chunks
+        capped = GRAPH_FIELD_SEP.join(keeper_chunks)
+
+        # Blind the entity side completely: drop its tracking and cap its
+        # graph view, so nothing but the relation row can reach capped_out.
+        await rag.entity_chunks.delete(["ALICE", "ACME"])
+        await rag.entity_chunks.index_done_callback()
+        for name in ("ALICE", "ACME"):
+            node = await rag.chunk_entity_relation_graph.get_node(name)
+            await rag.chunk_entity_relation_graph.upsert_node(
+                name, {**node, "source_id": capped}
+            )
+        edge = await rag.chunk_entity_relation_graph.get_edge("ACME", "ALICE")
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            "ACME", "ALICE", {**edge, "source_id": capped}
+        )
+        await rag.chunk_entity_relation_graph.index_done_callback()
+
+        await _drop_anchors(rag, capped_out)
+        await _strip_write_state(rag, capped_out)
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        assert capped_out not in report["anchorless_docs"]
+        assert [["ACME", "ALICE"]] == report["missing_relation_anchors"][capped_out]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_unions_tracking_with_graph_only_source_ids(tmp_path):
+    """A present, non-empty tracking row does not replace the graph view.
+
+    Resolving tracking-first-then-fallback — the rule the purge uses, because
+    it must not act on stale ids — would stop here: the row exists, so the
+    graph half is never read. An audit only reports, and a miss is its
+    expensive error, so it takes the union. Without it, a document named
+    solely by an object's ``source_id`` disappears from the scan, which is the
+    same under-reporting this change exists to remove.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        tracked = await _ingest(rag, "tracked.txt", "alice works at acme")
+        graph_only = await _ingest(rag, "graph-only.txt", "acme employs alice")
+
+        # Shrink tracking to the first document while the graph keeps both:
+        # a row that is present and non-empty, yet incomplete.
+        row = await rag.entity_chunks.get_by_id("ALICE")
+        chunk_rows = await rag.text_chunks.get_by_ids(row["chunk_ids"])
+        tracked_chunks = [
+            chunk_id
+            for chunk_id, chunk in zip(row["chunk_ids"], chunk_rows)
+            if chunk and chunk.get("full_doc_id") == tracked
+        ]
+        assert tracked_chunks and len(tracked_chunks) < len(row["chunk_ids"])
+        await rag.entity_chunks.upsert(
+            {"ALICE": {"chunk_ids": tracked_chunks, "count": len(tracked_chunks)}}
+        )
+        await rag.entity_chunks.index_done_callback()
+
+        await _drop_anchors(rag, graph_only)
+        await _strip_write_state(rag, graph_only)
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        assert graph_only not in report["anchorless_docs"]
+        assert "ALICE" in report["missing_entity_anchors"][graph_only]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_keeps_every_edge_when_relation_keys_collide(tmp_path):
+    """Two pairs can share one relation chunk key; neither edge may vanish.
+
+    ``make_relation_chunk_key`` joins the sorted pair with ``GRAPH_FIELD_SEP``,
+    so an entity name containing that separator makes the key ambiguous —
+    ``("ACME<SEP>CORP", "X")`` and ``("ACME", "CORP<SEP>X")`` produce the same
+    one. Keying the scan by that value instead of by the pair drops one edge
+    from every report field at once, and a document whose only graph
+    contribution is the dropped edge is then certified as owning nothing.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        pairs = [
+            (f"ACME{GRAPH_FIELD_SEP}CORP", "X"),
+            ("ACME", f"CORP{GRAPH_FIELD_SEP}X"),
+        ]
+        for index, (src_name, tgt_name) in enumerate(pairs, start=1):
+            chunk_id = f"collide-chunk-{index}"
+            doc_id = f"doc-collide-{index}"
+            await rag.text_chunks.upsert(
+                {
+                    chunk_id: {
+                        "content": "t",
+                        "full_doc_id": doc_id,
+                        "chunk_order_index": 0,
+                    }
+                }
+            )
+            for name in (src_name, tgt_name):
+                await rag.chunk_entity_relation_graph.upsert_node(
+                    name, {"entity_id": name, "source_id": chunk_id}
+                )
+            await rag.chunk_entity_relation_graph.upsert_edge(
+                src_name, tgt_name, {"source_id": chunk_id, "weight": 1.0}
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": doc_id,
+                        "content_length": 1,
+                        "chunks_count": 1,
+                        "created_at": "2026-01-01T00:00:00",
+                        "updated_at": "2026-01-01T00:00:00",
+                        "file_path": f"{doc_id}.txt",
+                        "track_id": doc_id,
+                    }
+                }
+            )
+        await rag.chunk_entity_relation_graph.index_done_callback()
+
+        report = await audit_kg_integrity(rag, apply=False)
+
+        assert report["relations_total"] == 2
+        assert report["anchorless_docs"] == []
     finally:
         await rag.finalize_storages()
 
