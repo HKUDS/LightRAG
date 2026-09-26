@@ -30,7 +30,7 @@ BASE_ENV = [
 
 
 def _write_anchor(working_dir: Path, backend: str, *, raw: str | None = None) -> Path:
-    path = working_dir / "_lightrag_config" / "storage_anchor.json"
+    path = working_dir / "_lightrag_config" / "config_storage_anchor.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     if raw is None:
         raw = json.dumps(
@@ -604,7 +604,7 @@ def test_an_empty_working_dir_is_the_directory_the_server_starts_in(
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR="])
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
-    assert f"{tmp_path}/_lightrag_config/storage_anchor.json" in result.stderr
+    assert f"{tmp_path}/_lightrag_config/config_storage_anchor.json" in result.stderr
 
 
 def test_a_hash_inside_an_unquoted_value_is_not_a_comment(tmp_path: Path) -> None:
@@ -712,7 +712,10 @@ def test_working_dir_is_normalized_like_the_servers_abspath(
         ],
     )
     assert parse_lines(result.stdout)["VALID"] == "no"
-    assert f"{tmp_path}/actual/_lightrag_config/storage_anchor.json" in result.stderr
+    assert (
+        f"{tmp_path}/actual/_lightrag_config/config_storage_anchor.json"
+        in result.stderr
+    )
 
 
 def test_operator_compose_edits_are_kept_and_not_interpreted(
@@ -824,8 +827,8 @@ def test_a_single_quoted_doubled_backslash_reads_as_the_server_reads_it(
 @pytest.mark.parametrize(
     "working_dir, expected",
     [
-        ("/", "/_lightrag_config/storage_anchor.json"),
-        ("//", "//_lightrag_config/storage_anchor.json"),
+        ("/", "/_lightrag_config/config_storage_anchor.json"),
+        ("//", "//_lightrag_config/config_storage_anchor.json"),
     ],
 )
 def test_the_anchor_path_is_joined_as_os_path_join_does(

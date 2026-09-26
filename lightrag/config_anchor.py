@@ -4,7 +4,7 @@ deployment is bound to, kept where no storage selection can move it.
 Full contract: *The anchor and the container identity* in
 ``docs/design/ConfigurationStorageContract.md``. The rules a caller meets:
 
-* **Fixed path.** ``<working_dir>/_lightrag_config/storage_anchor.json``. It
+* **Fixed path.** ``<working_dir>/_lightrag_config/config_storage_anchor.json``. It
   depends on ``working_dir`` and a name written in code, and deliberately NOT
   on ``config_dir``: that setting moves the JSON configuration data, and
   moving the anchor with it would move the checked data and the check
@@ -46,7 +46,7 @@ from lightrag.exceptions import ConfigurationIdentityError
 from lightrag.file_atomic import tmp_path_for
 from lightrag.namespace import default_config_dir
 
-ANCHOR_FILE_NAME = "storage_anchor.json"
+ANCHOR_FILE_NAME = "config_storage_anchor.json"
 ANCHOR_SCHEMA_VERSION = 1
 _ANCHOR_FIELDS = frozenset({"schema_version", "backend", "storage_uuid"})
 
@@ -97,7 +97,7 @@ def anchor_dir(working_dir: str) -> str:
 
 
 def anchor_path(working_dir: str) -> str:
-    """``<working_dir>/_lightrag_config/storage_anchor.json``, absolute."""
+    """``<working_dir>/_lightrag_config/config_storage_anchor.json``, absolute."""
     return os.path.join(anchor_dir(working_dir), ANCHOR_FILE_NAME)
 
 

@@ -12,7 +12,7 @@ The design contract is *The anchor and the container identity* in
 ## When do I need this?
 
 Every deployment is anchored to one configuration container:
-`<WORKING_DIR>/_lightrag_config/storage_anchor.json` records the backend type
+`<WORKING_DIR>/_lightrag_config/config_storage_anchor.json` records the backend type
 and the container's UUID, and every start checks both before reading any
 baseline. When `LIGHTRAG_CONFIG_STORAGE` is unset, the configuration backend
 follows `LIGHTRAG_KV_STORAGE`. Changing the KV backend therefore moves the

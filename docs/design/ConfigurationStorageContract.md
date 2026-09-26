@@ -43,7 +43,7 @@ Each rule is expanded in the section named after it.
    "absent". *(Reads are strict.)*
 5. **The container has an identity and each deployment an anchor.**
    `_lightrag_server/storage_identity` holds a UUID.
-   `<working_dir>/_lightrag_config/storage_anchor.json` records
+   `<working_dir>/_lightrag_config/config_storage_anchor.json` records
    `{backend, storage_uuid}`, and never follows `config_dir`. Every start
    checks both before reading any baseline. Deleting the anchor is the
    sanctioned rebind. *(The anchor and the container identity.)*
@@ -101,7 +101,7 @@ Two needs meet in one place.
 | `MongoKVStorage` | collection `_lightrag_config_config` |
 | `OpenSearchKVStorage` | index `x_lightrag_config_config` (the backend's sanitizer prepends `x`) |
 | identity | row `_lightrag_server/storage_identity`, `value = {"uuid": <UUIDv4>}` |
-| anchor | `<working_dir>/_lightrag_config/storage_anchor.json`, fixed, never following `config_dir`, and resolved to an absolute path once at construction, as `config_dir` is |
+| anchor | `<working_dir>/_lightrag_config/config_storage_anchor.json`, fixed, never following `config_dir`, and resolved to an absolute path once at construction, as `config_dir` is |
 
 **It is a KV namespace on purpose.** KV container names carry no model
 suffix, so a record kept here does not move when the embedding model changes.
@@ -441,7 +441,7 @@ would be lost. The anchor turns that drift into a refusal.
   - A workspace clear, a rebuild and row maintenance never touch it:
     `delete_workspace_configuration` deletes only registered per-workspace
     suffixes.
-- **The anchor.** `<working_dir>/_lightrag_config/storage_anchor.json`
+- **The anchor.** `<working_dir>/_lightrag_config/config_storage_anchor.json`
   (`lightrag/config_anchor.py`) holds exactly `schema_version`, `backend` and
   `storage_uuid`. It holds no host, port, credential or connection string.
   Its path depends only on `working_dir` and does **not** follow
@@ -550,7 +550,7 @@ anchor second, so every interruption heals by adoption:
 
 ### Refusals, and the rebind
 
-**Deleting `storage_anchor.json` is the sanctioned rebind.** The next start
+**Deleting `config_storage_anchor.json` is the sanctioned rebind.** The next start
 binds to whatever container the current configuration selects, and logs a
 WARNING naming the container and the UUID. For that one start, drift
 detection is off and protection falls back to the baselines, the coverage

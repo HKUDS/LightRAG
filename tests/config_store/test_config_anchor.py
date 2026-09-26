@@ -47,7 +47,7 @@ def _valid(**overrides):
 class TestPath:
     def test_the_anchor_lives_under_the_default_config_dir(self, tmp_path):
         assert ca.anchor_path(str(tmp_path)) == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "storage_anchor.json"
+            tmp_path / CONFIG_CONTAINER_TAG / "config_storage_anchor.json"
         )
 
     def test_the_path_depends_only_on_the_working_dir(self, tmp_path, monkeypatch):
