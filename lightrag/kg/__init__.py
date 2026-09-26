@@ -6,6 +6,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGKVStorage",
             "MongoKVStorage",
             "OpenSearchKVStorage",
+            "HologresKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -18,6 +19,8 @@ STORAGE_IMPLEMENTATIONS = {
             "MongoGraphStorage",
             "MemgraphStorage",
             "OpenSearchGraphStorage",
+            "HologresGraphStorage",
+            "HologresAGEGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -31,6 +34,7 @@ STORAGE_IMPLEMENTATIONS = {
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
             "OpenSearchVectorDBStorage",
+            "HologresVectorStorage",
             # "ChromaVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -42,6 +46,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
             "OpenSearchDocStatusStorage",
+            "HologresDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_statuses"],
     },
@@ -116,6 +121,37 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "OpenSearchVectorDBStorage": [
         "OPENSEARCH_HOSTS",
     ],
+    # Hologres Storage Implementations
+    "HologresKVStorage": [
+        "HOLOGRES_HOST",
+        "HOLOGRES_USER",
+        "HOLOGRES_PASSWORD",
+        "HOLOGRES_DATABASE",
+    ],
+    "HologresVectorStorage": [
+        "HOLOGRES_HOST",
+        "HOLOGRES_USER",
+        "HOLOGRES_PASSWORD",
+        "HOLOGRES_DATABASE",
+    ],
+    "HologresDocStatusStorage": [
+        "HOLOGRES_HOST",
+        "HOLOGRES_USER",
+        "HOLOGRES_PASSWORD",
+        "HOLOGRES_DATABASE",
+    ],
+    "HologresGraphStorage": [
+        "HOLOGRES_HOST",
+        "HOLOGRES_USER",
+        "HOLOGRES_PASSWORD",
+        "HOLOGRES_DATABASE",
+    ],
+    "HologresAGEGraphStorage": [
+        "HOLOGRES_HOST",
+        "HOLOGRES_USER",
+        "HOLOGRES_PASSWORD",
+        "HOLOGRES_DATABASE",
+    ],
 }
 
 # Storage implementation module mapping
@@ -147,6 +183,11 @@ STORAGES = {
     "OpenSearchDocStatusStorage": ".kg.opensearch_impl",
     "OpenSearchGraphStorage": ".kg.opensearch_impl",
     "OpenSearchVectorDBStorage": ".kg.opensearch_impl",
+    "HologresKVStorage": ".kg.hologres.kv",
+    "HologresVectorStorage": ".kg.hologres.vector",
+    "HologresDocStatusStorage": ".kg.hologres.doc_status",
+    "HologresGraphStorage": ".kg.hologres.graph",
+    "HologresAGEGraphStorage": ".kg.hologres.graph_age",
 }
 
 

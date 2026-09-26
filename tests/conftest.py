@@ -155,6 +155,10 @@ def pytest_configure(config):
         "markers",
         "integration: marks tests requiring external services (skipped by default)",
     )
+    config.addinivalue_line(
+        "markers",
+        "hologres_live: marks isolated live Hologres tests (requires --run-hologres-live)",
+    )
     config.addinivalue_line("markers", "requires_db: marks tests requiring database")
     config.addinivalue_line(
         "markers", "requires_api: marks tests requiring LightRAG API server"
@@ -263,24 +267,55 @@ def pytest_addoption(parser):
         help="Run integration tests that require external services (database, API server, etc.)",
     )
 
+    parser.addoption(
+        "--run-hologres-live",
+        action="store_true",
+        default=False,
+        help="Run only explicitly marked Hologres live integration tests",
+    )
+
 
 def pytest_collection_modifyitems(config, items):
-    """Modify test collection to skip integration tests by default.
+    """Enforce the Hologres marker pair, then gate both suites independently.
 
-    Integration tests are skipped unless --run-integration flag is provided.
-    This allows running offline tests quickly without needing external services.
+    Every test in a ``test_hologres_live*`` module and every test carrying the
+    dedicated marker must carry both ``integration`` and ``hologres_live``.
+    Hologres tests then require only their dedicated option, while unrelated
+    integration tests retain the existing ``--run-integration`` behavior.
     """
-    if config.getoption("--run-integration"):
-        # If --run-integration is specified, run all tests
-        return
-
+    run_integration = config.getoption("--run-integration")
+    run_hologres_live = config.getoption("--run-hologres-live")
     skip_integration = pytest.mark.skip(
         reason="Requires external services(DB/API), use --run-integration to run"
     )
+    skip_hologres = pytest.mark.skip(
+        reason="Requires Hologres, use --run-hologres-live to run"
+    )
+    invalid_hologres_items = []
 
     for item in items:
-        if "integration" in item.keywords:
+        is_hologres_live = "hologres_live" in item.keywords
+        is_integration = "integration" in item.keywords
+        is_hologres_live_module = item.path.name.startswith(
+            "test_hologres_live"
+        )
+        if (is_hologres_live or is_hologres_live_module) and not (
+            is_hologres_live and is_integration
+        ):
+            invalid_hologres_items.append(item.nodeid)
+            continue
+        if is_hologres_live:
+            if not run_hologres_live:
+                item.add_marker(skip_hologres)
+        elif is_integration and not run_integration:
             item.add_marker(skip_integration)
+
+    if invalid_hologres_items:
+        nodeids = ", ".join(invalid_hologres_items)
+        raise pytest.UsageError(
+            "Hologres live tests require both integration and hologres_live "
+            f"markers: {nodeids}"
+        )
 
 
 @pytest.fixture(scope="session")
