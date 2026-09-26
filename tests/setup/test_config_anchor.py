@@ -2,7 +2,7 @@
 
 ``make env-validate`` refuses an ``.env`` whose configuration backend resolves
 to a TYPE other than the one the anchor binds -- the server refuses that start
-too -- and ``make env-storage`` reports the anchor and warns on a mismatch.
+too -- and ``make env-storage`` pins its selection to a readable anchor.
 The wizard only ever reads the anchor. See *The anchor and the container
 identity* in docs/design/ConfigurationStorageContract.md.
 """
@@ -206,6 +206,40 @@ def test_env_storage_says_nothing_without_an_anchor(tmp_path: Path) -> None:
     assert not (tmp_path / "rag_storage").exists()
 
 
+@pytest.mark.parametrize(
+    "previous_kv, new_kv, existing_config, anchored",
+    [
+        ("JsonKVStorage", "PGKVStorage", "", "JsonKVStorage"),
+        ("JsonKVStorage", "RedisKVStorage", "", "MongoKVStorage"),
+        ("JsonKVStorage", "PGKVStorage", "MongoKVStorage", "JsonKVStorage"),
+    ],
+)
+def test_storage_selection_uses_readable_anchor_without_prompt(
+    tmp_path: Path,
+    previous_kv: str,
+    new_kv: str,
+    existing_config: str,
+    anchored: str,
+) -> None:
+    anchor = _write_anchor(tmp_path / "rag_storage", anchored)
+    before = anchor.read_bytes()
+    result = _run(
+        tmp_path,
+        f"""
+ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]={previous_kv}
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]={existing_config}
+prompt_choice() {{ printf 'PROMPT_CALLED' >&2; return 1; }}
+select_config_storage {new_kv}
+printf 'CHOSEN=%s\\n' "$SELECTED_CONFIG_STORAGE"
+printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert parse_lines(result.stdout) == {"CHOSEN": anchored, "WRITTEN": anchored}
+    assert "PROMPT_CALLED" not in result.stderr
+    assert anchor.read_bytes() == before
+
+
 # The wizard's parser must never say "readable" about a file the server
 # refuses, nor read a different backend out of it than the server would.
 @pytest.mark.parametrize(
@@ -338,9 +372,82 @@ generate_env_file() { :; }
 """
         % finalizer,
     )
+    if finalizer == "finalize_storage_setup":
+        assert result.returncode == 1
+        assert "Missing required variables" in result.stderr
+        assert "Wrote .env" not in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "binds it to PGKVStorage" in result.stdout
+        assert "server will REFUSE to start" in result.stdout
+
+
+def test_storage_finalizer_pins_to_the_final_runtime_anchor(tmp_path: Path) -> None:
+    """A switch to Compose must use its anchor and show the final choice
+    before asking permission to write the resulting .env."""
+    anchor = _write_anchor(tmp_path / "data" / "rag_storage", "PGKVStorage")
+    before = anchor.read_bytes()
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+    result = _run(
+        tmp_path,
+        """
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]=NanoVectorDBStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=NetworkXStorage
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]=JsonDocStatusStorage
+ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=host
+ENV_VALUES[POSTGRES_USER]=rag
+ENV_VALUES[POSTGRES_PASSWORD]=secret
+ENV_VALUES[POSTGRES_DATABASE]=lightrag
+resolve_compose_output_action() {
+  local -n action_ref="$2" target_ref="$3" hint_ref="$4"
+  action_ref="write_env_only"; target_ref="compose"; hint_ref="no"
+}
+confirm_required_yes_no() {
+  printf 'CONFIRMED_CONFIG=%s\\n' "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+  return 0
+}
+backup_env_file() { :; }
+generate_env_file() { :; }
+finalize_storage_setup
+""",
+    )
     assert result.returncode == 0, result.stderr
-    assert "binds it to PGKVStorage" in result.stdout
-    assert "server will REFUSE to start" in result.stdout
+    assert parse_lines(result.stdout)["CONFIRMED_CONFIG"] == "PGKVStorage"
+    assert anchor.read_bytes() == before
+
+
+def test_storage_finalizer_does_not_carry_a_host_anchor_into_compose(
+    tmp_path: Path,
+) -> None:
+    _write_anchor(tmp_path / "rag_storage", "MongoKVStorage")
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+    result = _run(
+        tmp_path,
+        """
+ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_KV_STORAGE]=JsonKVStorage
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]=NanoVectorDBStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=NetworkXStorage
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]=JsonDocStatusStorage
+ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]=host
+select_config_storage JsonKVStorage
+resolve_compose_output_action() {
+  local -n action_ref="$2" target_ref="$3" hint_ref="$4"
+  action_ref="write_env_only"; target_ref="compose"; hint_ref="no"
+}
+confirm_required_yes_no() {
+  printf 'CONFIRMED_CONFIG=%s\\n' "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-<unset>}"
+  return 0
+}
+backup_env_file() { :; }
+generate_env_file() { :; }
+finalize_storage_setup
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert parse_lines(result.stdout)["CONFIRMED_CONFIG"] == "<unset>"
 
 
 def test_an_empty_working_dir_is_the_directory_the_server_starts_in(

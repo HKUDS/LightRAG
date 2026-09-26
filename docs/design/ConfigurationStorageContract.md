@@ -175,13 +175,14 @@ server then refuses:
 
 - **`make env-storage`**
   - asks for a configuration backend whenever the KV selection is not one of
-    the four;
+    the four and no readable anchor fixes the choice;
+  - pins `LIGHTRAG_CONFIG_STORAGE` to a readable anchor's backend without a
+    configuration-backend prompt, including when the business KV changes;
   - collects the chosen backend's connection settings;
-  - reports the anchor, and warns when the selection it just made resolves
-    to another backend type;
-  - reports only once the runtime target of the `.env` being written is
-    settled, since switching between host and Compose also switches the
-    directory the next server reads.
+  - rechecks the anchor after the runtime target is settled, since switching
+    between host and Compose also switches the directory the next server
+    reads; it refuses to write when that backend lacks connection settings;
+  - reports the final anchor before writing.
 - **`make env-validate`**
   - refuses an unadmitted configuration backend, whether it is set
     explicitly or inherited;
@@ -231,11 +232,10 @@ server then refuses:
   between host and Compose too, so they report the anchor the same way once
   their runtime target is settled.
 - **The wizard never moves the container as a side effect.**
-  `select_config_storage` computes *where the records are* once, from the
-  previous `.env`, and every branch reads that one answer:
-  - an explicit `LIGHTRAG_CONFIG_STORAGE` is never dropped;
-  - a changed KV backend prompts, defaulting to the backend the records are
-    in, instead of taking the container with it.
+  A readable anchor fixes the selected backend, including when `.env` names
+  another backend. Without one, `select_config_storage` computes *where the
+  records are* once from the previous `.env`: an explicit selection survives,
+  and a changed KV backend prompts with the previous backend as its default.
 - **The wizard reads the anchor and never writes, moves or deletes it.** It
   reads it at the `WORKING_DIR` the server will use on this host, which is
   `./data/rag_storage` for the compose runtime.
@@ -1195,6 +1195,11 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     forms other than `KEY=value`. `lightrag-migrate-config`
     resolves an empty
     `WORKING_DIR` as the start directory, as the server does.
+46. With a readable anchor, `make env-storage` writes its backend explicitly
+    without asking for a configuration backend, even when KV changes or an
+    explicit selection disagrees. If the runtime changes, the final runtime's
+    anchor decides; an anchor in the old runtime is not carried into an
+    unanchored new runtime. Missing connection settings prevent the write.
 
 ## History
 

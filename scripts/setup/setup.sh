@@ -1550,8 +1550,24 @@ select_config_storage() {
   # so the caller does not need a command substitution: this function also
   # writes ``ENV_VALUES``, and a subshell would throw that away.
   local kv_storage="$1"
+  local runtime_target="${2:-}"
   local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
   local records_in default_choice="JsonKVStorage"
+
+  # A readable anchor names the container this deployment is already bound to.
+  # Keep it explicit so changing the business KV backend cannot move config.
+  SELECTED_CONFIG_ANCHOR_PATH=""
+  read_config_anchor "$runtime_target"
+  if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+    SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
+    SELECTED_CONFIG_STORAGE="$CONFIG_ANCHOR_BACKEND"
+    if [[ "$existing" != "$SELECTED_CONFIG_STORAGE" ]]; then
+      log_info "Keeping configuration storage at the anchored backend" \
+        "$SELECTED_CONFIG_STORAGE ($CONFIG_ANCHOR_PATH)"
+    fi
+    ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
+    return 0
+  fi
 
   records_in="$(config_storage_records_in)"
   [[ -n "$records_in" ]] && default_choice="$records_in"
@@ -3156,13 +3172,6 @@ finalize_storage_setup() {
     return 1
   fi
 
-  show_summary
-
-  if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
-    log_warn "Setup cancelled."
-    return 1
-  fi
-
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
   record_existing_managed_root_services "$existing_compose"
@@ -3174,6 +3183,42 @@ finalize_storage_setup() {
     compose_action \
     runtime_target \
     show_host_start_hint
+
+  # Docker choices may change the runtime target after backend selection.
+  # Pin config to the anchor the next server will actually read.
+  read_config_anchor "$runtime_target"
+  if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+    if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
+      log_info "Keeping configuration storage at the anchored backend" \
+        "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
+    fi
+    ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$CONFIG_ANCHOR_BACKEND"
+    if ! validate_required_variables "$CONFIG_ANCHOR_BACKEND"; then
+      log_warn "The anchored configuration backend needs connection settings" \
+        "before this wizard can write .env; configure them and rerun make env-storage."
+      return 1
+    fi
+  elif [[ -n "${SELECTED_CONFIG_ANCHOR_PATH:-}" && \
+    "$CONFIG_ANCHOR_PATH" != "$SELECTED_CONFIG_ANCHOR_PATH" ]]; then
+    # The initial selection followed an anchor in another runtime directory.
+    # Restore the original .env choice and select for the final directory.
+    if [[ -n "${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+    else
+      unset 'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]'
+    fi
+    select_config_storage "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" "$runtime_target"
+    if ! validate_required_variables "$SELECTED_CONFIG_STORAGE"; then
+      return 1
+    fi
+  fi
+
+  show_summary
+
+  if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
+    log_warn "Setup cancelled."
+    return 1
+  fi
 
   report_config_anchor_for_output "$runtime_target"
 
