@@ -29,7 +29,7 @@ Each rule is expanded in the section named after it.
    `config_storage` / `LIGHTRAG_CONFIG_STORAGE`, which admits `JsonKVStorage`,
    `MongoKVStorage`, `PGKVStorage` and `OpenSearchKVStorage`. Anything else
    is refused at construction, by name, Redis and every vector storage
-   included. Unset, it follows `kv_storage`. *(The category.)*
+   included. Unset, it follows `kv_storage`, except Redis defaults to JSON. *(The category.)*
 2. **No workspace addresses the container.** Its name is written in code: a
    fixed table, collection or index, or a file in `config_dir`, whose default
    `<working_dir>/_lightrag_config` must never move.
@@ -150,10 +150,16 @@ recorded baseline read as absent.
   storage initializes.
 - **`RedisKVStorage` is excluded.** Redis is being retired from business
   storage, and the configuration path must not be what keeps it alive.
-- **Unset follows `kv_storage`.** An existing deployment's records are
-  already in that backend. When the inherited selection is not admitted (for
-  example Redis), it is refused with a message naming it and asking for an
-  explicit one of the four.
+- **Unset follows `kv_storage`, except Redis defaults to JSON.** Existing
+  admitted backends keep their container. Redis business KV selects
+  `JsonKVStorage` with a warning, so upgrading does not require a new setting.
+  Explicit Redis configuration and unknown backends are still refused.
+  This is a configuration default, never a fallback after a connection failure.
+  Old Redis configuration rows are not migrated, and missing baselines still
+  require evidence. Persist the JSON configuration directory; its single-server
+  lock still applies. Independent servers sharing configuration must explicitly
+  select a database backend. Anchor type and UUID checks are unchanged; an
+  anchor never silently overrides the runtime selection.
 - **One resolver for every caller.** `configuration_selection_from_env()`
   resolves `(config_storage, config_dir)` for `LightRAG`, the Gunicorn master
   and the maintenance tools alike. A second reading of the environment would
@@ -174,8 +180,8 @@ The wizard applies the same rules, so it never approves an `.env` that the
 server then refuses:
 
 - **`make env-storage`**
-  - asks for a configuration backend whenever the KV selection is not one of
-    the four and no readable anchor fixes the choice;
+  - uses the runtime default (JSON for Redis) and asks before moving an
+    existing configuration container or repairing an invalid selection;
   - pins `LIGHTRAG_CONFIG_STORAGE` to a readable anchor's backend without a
     configuration-backend prompt, including when the business KV changes;
   - collects the chosen backend's connection settings;
@@ -419,7 +425,7 @@ implemented yet*).
 ## The anchor and the container identity
 
 When `LIGHTRAG_CONFIG_STORAGE` is unset, the configuration backend is
-re-resolved from `kv_storage` on every start. Without an anchor, a changed KV
+re-resolved from `kv_storage` on every start (JSON for Redis). Without an anchor, a changed KV
 selection would silently move the container. The recorded baselines would be
 replaced by fresh probe verdicts, and records that probing cannot re-derive
 would be lost. The anchor turns that drift into a refusal.
@@ -1134,8 +1140,8 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     start, unchanged; a mismatching model still refuses; the same deployment
     with `config_dir` pointed elsewhere reads absence.
 23. A configuration backend outside the four is refused at construction by
-    name — a vector storage class, and `RedisKVStorage` both named and
-    inherited from `kv_storage`.
+    name — a vector storage class, or explicitly selected `RedisKVStorage`.
+    Unset configuration with Redis business KV selects JSON with a warning.
 24. A start with no baseline on record announces the container it looked in;
     a start with records, or missing only some, stays quiet.
 25. Two deployments sharing one container hold disjoint rows, per backend,
@@ -1147,8 +1153,8 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     it are released exactly once; storages never reached are untouched; the
     original exception propagates.
 28. A first start with no anchor creates the identity, then the anchor, on
-    each of the four backends; an inherited Redis selection is refused by
-    name.
+    each of the four backends; Redis business KV with unset configuration
+    uses JSON and the same anchor checks.
 29. A deployment with configuration rows but no identity binds by creating
     it; every baseline row is read unchanged.
 30. An anchor naming another backend type is refused at step 0c: nothing

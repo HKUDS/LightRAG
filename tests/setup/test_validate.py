@@ -370,10 +370,8 @@ def test_validate_env_file_handles_supported_and_unsupported_uri_schemes(
             "no",
             "Invalid NEO4J_URI",
         ),
-        # Both Redis cases name a configuration backend explicitly. Redis is
-        # not in the configuration category, so without it these environments
-        # are refused for that reason too and the case would stop isolating
-        # the URI scheme it exists to test.
+        # Both Redis cases explicitly pin JSON configuration while testing
+        # the business Redis URI scheme.
         "invalid-redis-scheme": (
             [
                 "LIGHTRAG_KV_STORAGE=RedisKVStorage",

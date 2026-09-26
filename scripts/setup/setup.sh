@@ -1194,12 +1194,23 @@ config_storage_is_admitted() {
   return 1
 }
 
+resolve_config_storage_selection() {
+  # Match the runtime resolver: only an unset Redis selection defaults to JSON.
+  local selected="$1" kv="$2"
+  if [[ -n "$selected" ]]; then
+    printf '%s' "$selected"
+  elif [[ "$kv" == "RedisKVStorage" ]]; then
+    printf '%s' "JsonKVStorage"
+  else
+    printf '%s' "$kv"
+  fi
+}
+
 config_storage_records_in() {
   # Where the baselines are NOW, as far as the previous .env can say: the
-  # explicit selection it carried, or the KV backend an implicit one followed.
-  # Empty on a first run, and empty when the previous backend is one the
-  # category never admitted -- in both cases no admitted container holds
-  # records, so there is nothing to strand.
+  # explicit selection it carried, or the resolved default (JSON for Redis).
+  # Empty on a first run or an unsupported selection. An implicit Redis
+  # deployment may already hold JSON records, so keep that container reachable.
   #
   # A previous .env that names no KV backend is not a deployment without one:
   # the server has been running on its default, and the records are in THAT
@@ -1215,7 +1226,9 @@ config_storage_records_in() {
   if [[ -n "$previous_config" ]]; then
     config_storage_is_admitted "$previous_config" && printf '%s' "$previous_config"
   elif [[ -n "$previous_kv" ]]; then
-    config_storage_is_admitted "$previous_kv" && printf '%s' "$previous_kv"
+    local resolved
+    resolved="$(resolve_config_storage_selection "" "$previous_kv")"
+    config_storage_is_admitted "$resolved" && printf '%s' "$resolved"
   fi
   # Never fail: the caller reads this in a command substitution under `set -e`,
   # and "no admitted backend holds records" is an answer, not an error.
@@ -1453,7 +1466,7 @@ report_config_anchor_for_output() {
   # directory the next server reads the anchor from. ``$1`` is that target.
   # An unset KV backend is the server's default; a configuration backend the
   # category does not admit is reported by the admitted check instead.
-  local candidate="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}"
+  local candidate="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}")"
 
   config_storage_is_admitted "$candidate" || return 0
   report_config_anchor "$candidate" "$1"
@@ -1484,7 +1497,7 @@ ensure_config_storage_is_startable() {
   # these flows keep their promise not to touch storage everywhere it holds.
   local kv="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
   local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
-  local resolved="${existing:-$kv}"
+  local resolved="$(resolve_config_storage_selection "$existing" "$kv")"
   local records_in default_choice="JsonKVStorage" option
   local offered=()
 
@@ -1561,7 +1574,7 @@ select_config_storage() {
   if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
     SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
     SELECTED_CONFIG_STORAGE="$CONFIG_ANCHOR_BACKEND"
-    if [[ "${existing:-$kv_storage}" != "$SELECTED_CONFIG_STORAGE" ]]; then
+    if [[ "$(resolve_config_storage_selection "$existing" "$kv_storage")" != "$SELECTED_CONFIG_STORAGE" ]]; then
       log_info "Keeping configuration storage at the anchored backend" \
         "$SELECTED_CONFIG_STORAGE ($CONFIG_ANCHOR_PATH)"
     fi
@@ -1585,12 +1598,13 @@ select_config_storage() {
     return 0
   fi
 
-  if [[ -z "$existing" ]] && config_storage_is_admitted "$kv_storage"; then
-    if [[ -n "$records_in" && "$records_in" != "$kv_storage" ]]; then
-      # Nothing is set, so the selection FOLLOWS the KV backend -- and that is
-      # only safe while the KV backend does not MOVE.
-      log_warn "The configuration storage follows LIGHTRAG_KV_STORAGE, which" \
-        "is changing to $kv_storage. The embedding baselines are in" \
+  local implicit
+  implicit="$(resolve_config_storage_selection "" "$kv_storage")"
+  if [[ -z "$existing" ]] && config_storage_is_admitted "$implicit"; then
+    if [[ -n "$records_in" && "$records_in" != "$implicit" ]]; then
+      # Keep existing records reachable when the resolved default changes.
+      log_warn "The implicit configuration storage is changing to $implicit." \
+        "The embedding baselines are in" \
         "$records_in and are NOT migrated; leaving them there keeps them" \
         "readable, and moving them makes the next start re-establish them" \
         "from evidence."
@@ -1599,9 +1613,9 @@ select_config_storage() {
       ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
       return 0
     fi
-    # First run, or the KV backend already holds the records: leave it unset
-    # so the selection follows it, which is where they already are.
-    SELECTED_CONFIG_STORAGE="$kv_storage"
+    # First run, or the resolved default already holds the records.
+    # Leave the setting unset, including the Redis-to-JSON default.
+    SELECTED_CONFIG_STORAGE="$implicit"
     return 0
   fi
 
@@ -3120,7 +3134,7 @@ env_storage_flow() {
 
   log_step "Storage backend selection"
   select_storage_backends "custom"
-  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-} config=${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-(follows kv)}"
+  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-} config=${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-(follows kv; JSON for Redis)}"
   clear_unused_storage_deployment_markers
 
   log_step "Database configuration"
@@ -3190,7 +3204,7 @@ finalize_storage_setup() {
     read_config_anchor "$runtime_target"
     if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
       SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
-      if [[ "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}}" != "$CONFIG_ANCHOR_BACKEND" ]]; then
+      if [[ "$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}")" != "$CONFIG_ANCHOR_BACKEND" ]]; then
         log_info "Keeping configuration storage at the anchored backend" \
           "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
       fi
@@ -3212,7 +3226,7 @@ finalize_storage_setup() {
     # runtime switch and select the old anchor again. The summary exposes
     # this residue; the next run recalculates requirements from the final
     # runtime. See *The setup wizard* in docs/design/ConfigurationStorageContract.md.
-    config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-${ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+    config_storage="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}")"
     config_db_type="${STORAGE_DB_TYPES[$config_storage]:-}"
     if [[ -n "$config_db_type" && -z "${REQUIRED_DB_TYPES[$config_db_type]+set}" ]]; then
       REQUIRED_DB_TYPES["$config_db_type"]=1
@@ -3499,9 +3513,9 @@ validate_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
-  # Unset, the configuration storage follows the KV backend; that default is
+  # Unset, configuration follows KV (JSON for Redis); that default is
   # what keeps an existing deployment's records where they already are.
-  config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-$kv}"
+  config_storage="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "$kv")"
   runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
 
   for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
@@ -3682,7 +3696,7 @@ security_check_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
-  config_storage="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-$kv}"
+  config_storage="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "$kv")"
   if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
     whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
     whitelist_is_set="yes"

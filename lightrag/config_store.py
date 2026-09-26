@@ -17,7 +17,8 @@ enforces, in the order a caller meets them:
   ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
   ``OpenSearchKVStorage``; anything else -- a vector storage, Redis -- is
   refused at construction, by name. Unset, the selection follows
-  ``kv_storage`` so an existing deployment lands where its rows already are.
+  ``kv_storage`` so an existing deployment lands where its rows already are,
+  except Redis business KV defaults to JSON configuration.
 
 * **Keys** are ``<workspace>/<suffix>`` or ``_lightrag_server/<suffix>``, with
   ``/`` as the separator (a workspace name cannot contain it). They are built
@@ -411,9 +412,10 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
 
     Unset, the selection FOLLOWS ``kv_storage`` -- an existing deployment's
     rows are already in that backend's container, so any other default would
-    orphan them silently. A ``kv_storage`` the category does not admit
-    (``RedisKVStorage`` today) is refused here, by name, rather than failing
-    later on a missing method: the operator picks one of the four explicitly.
+    orphan them silently. Redis business KV defaults to ``JsonKVStorage``
+    for upgrade compatibility; explicitly selecting Redis is still refused.
+    This is selection only: connection failures never trigger a fallback,
+    and anchor and baseline checks remain mandatory.
 
     Raises:
         ValueError: the selection, or the ``kv_storage`` it was derived from,
@@ -432,6 +434,14 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
                 f"independent of), and Redis is excluded."
             )
         return name
+    if kv_storage == "RedisKVStorage":
+        logger.warning(
+            "config_storage is unset with kv_storage=RedisKVStorage; using "
+            "JsonKVStorage for configuration. Persist the configuration directory "
+            "(LIGHTRAG_CONFIG_DIR, default WORKING_DIR/_lightrag_config). "
+            "Set LIGHTRAG_CONFIG_STORAGE explicitly to select another backend."
+        )
+        return "JsonKVStorage"
     if kv_storage not in admitted:
         raise ValueError(
             f"config_storage is unset, so it would follow kv_storage="
