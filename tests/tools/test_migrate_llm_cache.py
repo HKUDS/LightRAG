@@ -51,4 +51,9 @@ async def test_json_migration_includes_multimodal_analysis_caches():
     ]
     assert counted == 3
     assert [key for batch in streamed for key in batch] == list(loaded)
-    assert type_counts == {"extract": 1, "summary": 1, "analysis": 1}
+    assert type_counts == {
+        "extract": 1,
+        "summary": 1,
+        "analysis": 1,
+        "entity_merge": 0,
+    }
