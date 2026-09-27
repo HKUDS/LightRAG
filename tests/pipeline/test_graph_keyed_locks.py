@@ -98,6 +98,7 @@ def _make_graph_mock(
     graph.upsert_nodes_batch = AsyncMock(return_value=None)
     graph.upsert_edges_batch = AsyncMock(return_value=None)
     graph.has_nodes_batch = AsyncMock(return_value=set())
+    graph.get_edges_batch = AsyncMock(return_value={})
     graph.delete_node = AsyncMock(return_value=None)
     graph.get_edge = AsyncMock(
         return_value={
