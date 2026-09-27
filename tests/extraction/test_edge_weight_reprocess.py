@@ -177,6 +177,21 @@ async def test_edge_weight_grows_across_distinct_sources():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_edge_weight_not_double_counted_within_one_batch():
+    """A single merge call's edges_data can carry two records for the SAME
+    source (the LLM's extraction listed one relation twice from one chunk).
+    Each source must contribute weight once per call, not once per record."""
+    g = await _edge_graph_with_nodes()
+    await _merge_edges_then_upsert(
+        "A", "B", [_rel("c1"), _rel("c1")], g, _MemVdb(), _MemVdb(), _cfg()
+    )
+    edge = await g.get_edge("A", "B")
+    assert edge["source_id"] == "c1"
+    assert edge["weight"] == 1.0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_edge_weight_adds_only_the_new_source():
     """A reprocessed source followed by a genuinely new one adds only the new
     one's weight, not the re-fed duplicate's."""

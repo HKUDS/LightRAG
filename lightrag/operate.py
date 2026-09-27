@@ -2977,16 +2977,22 @@ async def _merge_edges_then_upsert(
         # persists), so it must not add weight either -- otherwise weight would
         # outgrow the stored source count. Count only sources that actually
         # persist: truthy AND not already reflected in the stored scalar.
+        #
+        # edges_data can also carry more than one record for the SAME
+        # source_id within this one call -- the LLM's extraction can list the
+        # same relation twice from a single chunk (a gleaning round, or the
+        # source text simply restating itself). Each source must contribute
+        # weight once, matching the "distinct contributing sources" intent
+        # above, not once per record; keep the first record seen per source,
+        # the same first-occurrence convention used for description dedup.
         already_edge_source_set = set(already_source_ids)
-        weight = sum(
-            [
-                dp["weight"]
-                for dp in edges_data
-                if dp.get("source_id")
-                and dp["source_id"] not in already_edge_source_set
-            ]
-            + already_weights
-        )
+        new_weight_by_source: dict[str, float] = {}
+        for dp in edges_data:
+            dp_source_id = dp.get("source_id")
+            if not dp_source_id or dp_source_id in already_edge_source_set:
+                continue
+            new_weight_by_source.setdefault(dp_source_id, dp["weight"])
+        weight = sum(list(new_weight_by_source.values()) + already_weights)
         # Repair legacy/manual rows that predate the shared weight contract:
         # every distinct real source contributes a baseline of 1, while an
         # existing larger weight remains an optional importance boost.
