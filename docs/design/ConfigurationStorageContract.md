@@ -789,7 +789,9 @@ start the server once, stop it and rerun the tool.
   non-empty snapshots on disk must agree in both directions -- a missing
   member or an extra snapshot, a metadata-only one included, refuses before
   the target is opened -- and every member must carry the anchored UUID and
-  its owner. Owner rows are layout metadata: hidden from the copy, never
+  its owner. A group with no member (a database container that held only its
+  identity, or a first start stopped before registering) is still valid and
+  migrates with the anchor's UUID. Owner rows are layout metadata: hidden from the copy, never
   written to a database. As a target, the source's workspaces and every
   snapshot already on disk are claimed and validated before any write; a
   same-UUID snapshot (a retained source of an earlier JSON-to-database

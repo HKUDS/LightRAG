@@ -382,6 +382,11 @@ class JsonShardGroup:
                 )
         for workspace in sorted(members):
             await self._open(workspace)
+        # Every member was just shown to carry the anchored UUID; a group
+        # with no member (a database container that held only its identity,
+        # or a first start stopped before registering) has no snapshot to
+        # carry it, and its identity is still the anchor's.
+        self._identity = anchor.storage_uuid
 
     async def prepare_target(
         self, source_scan: "ContainerScan", *, dry_run: bool

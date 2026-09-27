@@ -369,3 +369,33 @@ async def test_a_dry_run_into_json_creates_no_snapshot(tmp_path):
     )
     assert not (tmp_path / "teamalpha").exists()
     assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_an_empty_json_group_migrates_back_out_with_its_identity(tmp_path):
+    """A database container holding only its identity migrates into an
+    empty JSON group (no member, no snapshot). That group is valid and must
+    migrate out again: its identity is the anchor's, since no snapshot
+    carries one."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    source = Database({IDENTITY_KEY: _identity_row(storage_uuid)})
+    await _migrate(
+        tmp_path, source=source, target="json", target_backend="JsonKVStorage"
+    )
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        "JsonKVStorage", storage_uuid, members=()
+    )
+
+    database = Database()
+    result = await _migrate(
+        tmp_path, source="json", target=database, target_backend="PGKVStorage"
+    )
+
+    assert result.switched
+    assert set(database.rows) == {IDENTITY_KEY}
+    assert database.rows[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        "PGKVStorage", storage_uuid
+    )
