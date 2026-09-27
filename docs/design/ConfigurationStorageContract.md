@@ -806,7 +806,10 @@ start the server once, stop it and rerun the tool.
   there, since a snapshot written with it would fail verification and could
   not be converged by the next run, and so do distinct workspaces that differ
   only in ASCII letter case or trailing dots/spaces, which a case-insensitive
-  filesystem would store in one directory; a
+  filesystem would store in one directory, or whose existing directories
+  resolve (through symlinks) to one physical directory or to `WORKING_DIR`
+  itself -- the directory claim is reentrant by realpath, so nothing later
+  would stop both opening one snapshot; a
   same-UUID snapshot (a retained source of an earlier JSON-to-database
   migration) is this migration's to converge, anything foreign refuses. A
   snapshot whose workspace has no rows left in the source keeps identity and

@@ -457,6 +457,28 @@ class JsonShardGroup:
                 + ". Keep the configuration on a database backend, or rename "
                 "one of each group in the source"
             )
+        # Distinct names whose existing directories are symlinks to one
+        # physical directory -- or to WORKING_DIR itself, the empty
+        # workspace's -- would share one snapshot too: the claim is reentrant
+        # by realpath, so nothing later stops both opening it.
+        physical: dict[str, list[str]] = {os.path.realpath(self.working_dir): [""]}
+        for workspace in self._planned - {""}:
+            path = os.path.realpath(json_config_dir(self.working_dir, workspace))
+            physical.setdefault(path, []).append(workspace)
+        shared = sorted(
+            (path, sorted(names)) for path, names in physical.items() if len(names) > 1
+        )
+        if shared:
+            raise self._refuse(
+                "cannot give these workspaces separate snapshots, because "
+                "their directories resolve to one physical directory: "
+                + "; ".join(
+                    f"{', '.join(_workspace_label(n) for n in names)} -> {path}"
+                    for path, names in shared
+                )
+                + ". Replace the symlinks with separate directories, or keep "
+                "the configuration on a database backend"
+            )
         wanted = set(on_disk) if dry_run else self._planned
         for workspace in sorted(wanted):
             await self._open(workspace)

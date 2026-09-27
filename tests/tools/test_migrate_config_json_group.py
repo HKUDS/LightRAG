@@ -537,3 +537,41 @@ async def test_scopes_one_filesystem_directory_would_hold_refuse_before_any_writ
         ".lightrag_anchor.lock",
     }
     assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+@pytest.mark.parametrize(
+    ("links", "scopes"),
+    [
+        ({"alpha": "shared", "beta": "shared"}, ("alpha", "beta")),
+        ({"alpha": "."}, ("", "alpha")),
+        ({"alpha": "."}, ("alpha",)),
+    ],
+    ids=["two-links-one-dir", "link-to-root", "link-to-root-without-default"],
+)
+async def test_scopes_whose_directories_are_one_physical_dir_refuse_before_any_write(
+    tmp_path, links, scopes
+):
+    """Distinct workspaces whose existing directories are symlinks to one
+    physical directory -- or to WORKING_DIR, the default workspace's own --
+    would share one snapshot, and the realpath claim would not stop the
+    second open. Refused before anything is claimed or written."""
+    (tmp_path / "shared").mkdir()
+    for name, target in links.items():
+        (tmp_path / name).symlink_to(tmp_path / target, target_is_directory=True)
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    rows = {IDENTITY_KEY: _identity_row(storage_uuid)}
+    for scope in scopes:
+        rows[cs.embedding_baseline_key(scope, "entities")] = _baseline_row(scope)
+    database = Database(rows)
+
+    with pytest.raises(mc.MigrationRefused, match="one physical directory") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert all(repr(scope) in str(info.value) for scope in scopes if scope)
+    assert not list(tmp_path.rglob("kv_workspace_config.json"))
+    assert not list(tmp_path.rglob(".lightrag_storage.lock"))
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
