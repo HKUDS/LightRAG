@@ -141,11 +141,18 @@ def _drawing_pattern(item_id: str) -> re.Pattern[str]:
     )
 
 
-def _table_pattern(item_id: str) -> re.Pattern[str]:
+def _table_tag_pattern(item_id: str) -> re.Pattern[str]:
     esc = re.escape(item_id)
     return re.compile(
-        rf'<table\b[^>]*?\bid\s*=\s*"{esc}"[^>]*?>.*?</table>'
-        rf'|<cite\b(?=[^>]*\btype\s*=\s*"table")'
+        rf'<table\b[^>]*?\bid\s*=\s*"{esc}"[^>]*?>.*?</table>',
+        re.DOTALL,
+    )
+
+
+def _table_cite_pattern(item_id: str) -> re.Pattern[str]:
+    esc = re.escape(item_id)
+    return re.compile(
+        rf'<cite\b(?=[^>]*\btype\s*=\s*"table")'
         rf'(?=[^>]*\brefid\s*=\s*"{esc}")[^>]*>.*?</cite>',
         re.DOTALL,
     )
@@ -172,7 +179,22 @@ def find_target_span(
     if kind == "drawings":
         pattern = _drawing_pattern(item_id)
     elif kind == "tables":
-        pattern = _table_pattern(item_id)
+        # Prefer the actual <table id="..."> tag over a <cite refid="...">
+        # to the same id, regardless of which comes first in the text: a
+        # plain alternation's leftmost-match semantics would anchor on a
+        # self-citing <cite> that narrates the table before presenting it
+        # ("as shown in Table 1, <cite ...>Table 1</cite>: <table ...>"),
+        # scoping the surrounding leading/trailing text around the citation
+        # instead of the table it refers to. The cite pattern is only a
+        # fallback for a block that references the table without also
+        # containing its tag.
+        match = _table_tag_pattern(item_id).search(block_content)
+        if match:
+            return match.start(), match.end()
+        match = _table_cite_pattern(item_id).search(block_content)
+        if not match:
+            return None
+        return match.start(), match.end()
     elif kind == "equations":
         pattern = _equation_pattern(item_id)
     else:
