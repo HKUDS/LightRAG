@@ -863,7 +863,7 @@ unchanged, so existing cache entries keep hitting.
 
 ## Storage Backends
 
-### Sotrage Types
+### Storage Types
 
 LightRAG uses 4 types of storage for different purposes:
 

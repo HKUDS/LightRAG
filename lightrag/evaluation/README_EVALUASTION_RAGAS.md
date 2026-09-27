@@ -427,7 +427,7 @@ The evaluator queries a running LightRAG API server at `http://localhost:9621`. 
 ## 📝 Next Steps
 
 1. Start LightRAG API server
-2. Upload sample documents into LightRAG  throught  WebUI
+2. Upload sample documents into LightRAG  through  WebUI
 3. Run `python lightrag/evaluation/eval_rag_quality.py`
 4. Review results (JSON/CSV) in `results/` folder
 
