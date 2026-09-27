@@ -129,6 +129,17 @@ _DUPLICATE_KEY_CODE = 11000
 # migration's progress cadence).
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
+# Atlas Vector Search's $vectorSearch stage can only return as many documents
+# as it scans: numCandidates must be greater than or equal to limit, or the
+# stage cannot hand back `limit` results at all. A caller-controlled top_k
+# (MAX_QUERY_TOP_K allows up to 1000) must scale this rather than share one
+# fixed value with every query. Multiplying by 10 follows Atlas's own
+# recommendation for recall quality; the floor keeps small queries at the
+# previous fixed candidate pool, and the ceiling is Atlas's own hard limit.
+_VECTOR_SEARCH_NUM_CANDIDATES_MULTIPLIER = 10
+_VECTOR_SEARCH_MIN_NUM_CANDIDATES = 100
+_VECTOR_SEARCH_MAX_NUM_CANDIDATES = 10_000
+
 # Ceiling on how many same-depth candidates get a degree lookup before the
 # max_nodes cap in the bidirectional BFS. node_degrees_batch itself chunks
 # its $in queries at this same size (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so
@@ -4661,6 +4672,17 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
 
+        # numCandidates must be >= limit (see _VECTOR_SEARCH_NUM_CANDIDATES_MULTIPLIER
+        # above); scale it with top_k instead of a fixed value that silently caps
+        # every query whose top_k exceeds it.
+        num_candidates = min(
+            max(
+                top_k * _VECTOR_SEARCH_NUM_CANDIDATES_MULTIPLIER,
+                _VECTOR_SEARCH_MIN_NUM_CANDIDATES,
+            ),
+            _VECTOR_SEARCH_MAX_NUM_CANDIDATES,
+        )
+
         # Define the aggregation pipeline with the converted query vector
         pipeline = [
             {
@@ -4668,7 +4690,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     "index": self._index_name,  # Use stored index name for consistency
                     "path": "vector",
                     "queryVector": query_vector,
-                    "numCandidates": 100,  # Adjust for performance
+                    "numCandidates": num_candidates,
                     "limit": top_k,
                 }
             },
