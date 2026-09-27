@@ -324,8 +324,14 @@ symlinked snapshot into a regular file and leave its target stale. The JSON
 configuration storage applies the same check to its own snapshot before it
 opens it (a FIFO there would block the read forever), and a start and a
 maintenance tool's verification (`verify_configuration_identity`) repeat it,
-so neither serves or flushes a file a rebind or migration then refuses. Directories without
-a snapshot are not members.
+so neither serves or flushes a file a rebind or migration then refuses.
+One physical directory holds one workspace: a snapshot reachable under two
+names (a child symlinked to a sibling or to `working_dir`) refuses
+discovery, naming both, and a start or tool check whose own directory is
+one physical directory with `working_dir` or another direct child refuses
+before anything is written (`check_snapshot_location`), since the scan
+would otherwise find its snapshot under the other name and refuse it for
+its owner. Directories without a snapshot are not members.
 
 **Locking.** Registration is a read-modify-write of the member list, so it
 runs under the exclusive bind lock (a held lock is waited for, up to its
@@ -417,7 +423,8 @@ server then refuses:
   directory.** An ancestor that cannot be searched or is not a directory
   makes the server's `open()` fail and refuse, so the wizard reports that
   anchor as unreadable, never absent. So does a symlink that does not
-  resolve: it may be a loop (`ELOOP`) as well as dangling.
+  resolve: it may be a loop (`ELOOP`) as well as dangling. The anchor file
+  itself being a symlink is unreadable too, as the server refuses it.
 - **The migration command the wizard recommends names `WORKING_DIR`**
   whenever the anchor's directory is not the one the tool resolves from the
   host `.env`, as for every Compose deployment.
@@ -676,7 +683,12 @@ the same UUID. Clone, rollback and tamper detection are out of scope.
   carrying `layout` or `members` is refused. Only "file does not exist" is
   the no-anchor branch. A permission error, a directory in its place, a
   truncated or corrupt file or an unknown version refuses
-  (`ConfigurationIdentityError`, cause `anchor_unreadable`).
+  (`ConfigurationIdentityError`, cause `anchor_unreadable`), and so does
+  anything that is not a regular file -- checked with `lstat` before the
+  open, so a FIFO cannot block it. A symlink (valid or dangling) is refused
+  because every publish is an atomic replace of the path: it would swap the
+  link for a private regular file and leave its target with the old member
+  list. Persist the anchor by persisting `working_dir`, not the one file.
 - **The identity row is read strictly.** A backend error, a wrong schema
   version or scope, or a non-canonical UUID is an error, never absent.
 - **The identity is written through `flush_configuration_storage`**, with a

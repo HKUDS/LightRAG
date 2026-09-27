@@ -76,7 +76,7 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 
 ### Server instance contract
 
-**Full contract: [docs/design/ServerInstanceContract.md](docs/design/ServerInstanceContract.md) — read it before changing anything one server could share with another on the same host (files under `WORKING_DIR` / `INPUT_DIR`, anything keyed without the workspace, locks taken at startup).** In short: several servers may share one `WORKING_DIR` on one host when each serves its own workspace, the configuration storage is not local JSON, and each has its own port; a new server-wide record needs a guard the instances share.
+**Full contract: [docs/design/ServerInstanceContract.md](docs/design/ServerInstanceContract.md) — read it before changing anything one server could share with another on the same host (files under `WORKING_DIR` / `INPUT_DIR`, anything keyed without the workspace, locks taken at startup).** In short: several servers may share one `WORKING_DIR` on one host when each serves its own workspace, all use the same configuration container (a database backend, or `JsonKVStorage`'s per-workspace snapshots under one anchor), and each has its own port; first starts are serialized by the anchor bind lock, so on a filesystem without locks start one instance alone until every JSON workspace has registered. A new server-wide record needs a guard the instances share.
 
 ### Pipeline concurrency contract
 

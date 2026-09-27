@@ -41,6 +41,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import stat
 import uuid
 from dataclasses import dataclass
 
@@ -270,9 +271,27 @@ def read_anchor(working_dir: str) -> StorageAnchor | None:
     Raises ``ConfigurationIdentityError`` (cause
     ``IDENTITY_ANCHOR_UNREADABLE``) for every other outcome that is not a
     valid anchor: a permission error, a directory where the file should be,
-    undecodable or truncated content, a wrong structure or version.
+    undecodable or truncated content, a wrong structure or version -- and
+    anything that is not a regular file, a symlink included: every publish
+    is an atomic replace of the path, which would swap the link for a
+    private regular file and leave its target stale.
     """
     path = anchor_path(working_dir)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise _unreadable(path, f"{type(e).__name__}: {e}") from e
+    if stat.S_ISLNK(info.st_mode):
+        raise _unreadable(
+            path,
+            "it is a symlink, which the next atomic publish would replace with "
+            "a regular file (leaving its target stale); replace it with a copy "
+            "of the file it points to",
+        )
+    if not stat.S_ISREG(info.st_mode):
+        raise _unreadable(path, "it is not a regular file")
     try:
         with open(path, "rb") as f:
             raw = f.read()

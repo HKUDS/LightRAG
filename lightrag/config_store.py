@@ -84,10 +84,10 @@ from lightrag.config_anchor import (
     read_anchor,
 )
 from lightrag.config_shards import (
+    check_snapshot_location,
     discover_shards,
     json_config_dir,
     json_config_path,
-    probe_snapshot,
     read_shard_file,
 )
 from lightrag.exceptions import (
@@ -1520,7 +1520,7 @@ async def _bind_json(
     from lightrag.kg.anchor_lock import anchor_bind_lock
 
     # The snapshot this start serves must be one discovery accepts.
-    probe_snapshot(json_config_path(working_dir, workspace))
+    check_snapshot_location(working_dir, workspace)
     anchor = read_anchor(working_dir)
     if anchor is not None:
         check_anchor_backend(
@@ -1796,9 +1796,9 @@ async def verify_configuration_identity(
     with the advice to start the server once.
     """
     if backend == JSON_CONFIG_BACKEND:
-        # As at a start: a tool's next flush would replace a symlinked
-        # snapshot with a regular file and leave its target stale.
-        probe_snapshot(json_config_path(working_dir, workspace))
+        # As at a start: a tool must not serve or flush a snapshot that
+        # discovery refuses (a symlinked file, a shared directory).
+        check_snapshot_location(working_dir, workspace)
         if anchor is not None:
             check_anchor_backend(
                 anchor, backend, working_dir=working_dir, container=container

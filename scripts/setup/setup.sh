@@ -1399,7 +1399,9 @@ read_config_anchor() {
     path_is_confirmed_absent "$CONFIG_ANCHOR_PATH" && CONFIG_ANCHOR_STATE="absent"
     return 0
   fi
-  if [[ ! -f "$CONFIG_ANCHOR_PATH" || ! -r "$CONFIG_ANCHOR_PATH" ]]; then
+  # A symlink is unreadable, as the server refuses it: its next atomic
+  # publish would replace the link and leave the target stale.
+  if [[ -L "$CONFIG_ANCHOR_PATH" || ! -f "$CONFIG_ANCHOR_PATH" || ! -r "$CONFIG_ANCHOR_PATH" ]]; then
     return 0
   fi
   # The trailing "x" keeps trailing newlines; comparing the length with the

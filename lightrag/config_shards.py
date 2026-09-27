@@ -28,8 +28,10 @@ Full contract: *JSON configuration shards* in
   must be a regular file -- a symlinked one is refused, by a start too, since
   the first atomic save would replace the link. A read error is an error,
   never absence; a child that holds a snapshot under an illegal name is
-  refused by path, never skipped. It reports what survives -- it cannot
-  tell a never-created snapshot from a deleted one.
+  refused by path, never skipped, and so is one snapshot reachable under two
+  names (one physical directory holds one workspace; a start refuses to
+  create that layout via ``check_snapshot_location``). It reports what
+  survives -- it cannot tell a never-created snapshot from a deleted one.
 
 * **Offline reads are strict.** ``read_shard_file`` returns ``None`` only
   for a file that does not exist; undecodable content or a payload that is
@@ -190,30 +192,85 @@ def probe_snapshot(path: str) -> bool:
     return True
 
 
-def discover_shards(working_dir: str) -> list[DiscoveredShard]:
-    """Every JSON configuration snapshot under ``working_dir``, sorted by
-    workspace: the root one (the empty workspace), then one per direct child
-    directory (a symlink to a directory included) that holds one. See the
-    module rules."""
-    root = os.path.abspath(working_dir)
-    found: list[DiscoveredShard] = []
-    root_file = os.path.join(root, CONFIG_JSON_FILE_NAME)
-    if probe_snapshot(root_file):
-        found.append(DiscoveredShard(workspace="", path=root_file))
+def _physical_id(path: str) -> tuple[int, int] | None:
+    """``path``'s directory identity (device, inode), following symlinks;
+    ``None`` only when it does not exist."""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise _shard_error(path, f"{type(e).__name__}: {e}") from e
+    return (info.st_dev, info.st_ino)
+
+
+def _child_directories(root: str) -> list[os.DirEntry]:
+    """Every direct child of ``root`` that is a directory, a symlink to one
+    included (followed, like the running storage follows it)."""
     try:
         entries = list(os.scandir(root))
     except FileNotFoundError:
-        return found
+        return []
     except OSError as e:
         raise _shard_error(root, f"cannot list it ({type(e).__name__}: {e})") from e
+    children = []
     for entry in entries:
         try:
-            # Followed, like the running storage follows it; only the one
-            # snapshot file inside is probed, so a link loop cannot recurse.
-            if not entry.is_dir(follow_symlinks=True):
-                continue
+            if entry.is_dir(follow_symlinks=True):
+                children.append(entry)
         except OSError as e:
             raise _shard_error(entry.path, f"{type(e).__name__}: {e}") from e
+    return children
+
+
+def _one_directory_error(path: str, names: list[str]) -> ConfigurationIdentityError:
+    listed = ", ".join(repr(name) if name else "(default workspace)" for name in names)
+    return _shard_error(
+        path,
+        f"its directory is one physical directory reachable as {listed} "
+        f"(a symlink to WORKING_DIR or to another workspace directory, or a "
+        f"spelling a case-insensitive filesystem resolves to it), and one "
+        f"directory holds one workspace -- replace the symlink with a "
+        f"separate directory",
+    )
+
+
+def check_snapshot_location(working_dir: str, workspace: str) -> None:
+    """A start's and a maintenance tool's check of ``workspace``'s own
+    snapshot, before it is opened or bound: ``probe_snapshot``, and its
+    directory must not be one physical directory with ``WORKING_DIR`` or
+    another direct child -- ``discover_shards`` would find the snapshot under
+    that name too and refuse it."""
+    probe_snapshot(json_config_path(working_dir, workspace))
+    root = os.path.abspath(working_dir)
+    own = _physical_id(json_config_dir(working_dir, workspace))
+    if own is None:
+        return
+    others = [("", root)] + [(e.name, e.path) for e in _child_directories(root)]
+    shared = sorted(
+        name for name, path in others if name != workspace and _physical_id(path) == own
+    )
+    if shared:
+        raise _one_directory_error(
+            json_config_path(working_dir, workspace), sorted([workspace, *shared])
+        )
+
+
+def discover_shards(working_dir: str) -> list[DiscoveredShard]:
+    """Every JSON configuration snapshot under ``working_dir``, sorted by
+    workspace: the root one (the empty workspace), then one per direct child
+    directory (a symlink to a directory included) that holds one. One
+    snapshot reachable under two names refuses. See the module rules."""
+    root = os.path.abspath(working_dir)
+    found: list[DiscoveredShard] = []
+    seen: dict[tuple[int, int] | None, str] = {}
+    root_file = os.path.join(root, CONFIG_JSON_FILE_NAME)
+    if probe_snapshot(root_file):
+        found.append(DiscoveredShard(workspace="", path=root_file))
+        seen[_physical_id(root)] = ""
+    for entry in _child_directories(root):
+        # Only the one snapshot file inside is probed, so a link loop cannot
+        # recurse.
         path = os.path.join(entry.path, CONFIG_JSON_FILE_NAME)
         if not probe_snapshot(path):
             continue
@@ -221,6 +278,10 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
             validate_config_workspace(entry.name)
         except ValueError as e:
             raise _shard_error(path, f"its directory is not a legal workspace: {e}")
+        physical = _physical_id(entry.path)
+        if physical in seen:
+            raise _one_directory_error(path, sorted([seen[physical], entry.name]))
+        seen[physical] = entry.name
         found.append(DiscoveredShard(workspace=entry.name, path=path))
     return sorted(found, key=lambda shard: shard.workspace)
 

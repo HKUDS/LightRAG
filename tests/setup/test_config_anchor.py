@@ -842,6 +842,26 @@ def test_an_anchor_behind_a_symlink_loop_is_not_absent(tmp_path: Path) -> None:
     assert "could not be read" in result.stderr
 
 
+def test_a_symlinked_anchor_is_unreadable_to_both_parsers(tmp_path: Path) -> None:
+    """A publish atomically replaces the path, swapping the link for a
+    private file; the server refuses a symlinked anchor and so must this."""
+    from lightrag.config_anchor import read_anchor
+    from lightrag.exceptions import ConfigurationIdentityError
+
+    _write_anchor(tmp_path / "volume", "PGKVStorage")
+    working_dir = tmp_path / "rag_storage"
+    working_dir.mkdir()
+    (working_dir / "config_storage_anchor.json").symlink_to(
+        tmp_path / "volume" / "config_storage_anchor.json"
+    )
+    with pytest.raises(ConfigurationIdentityError, match="symlink"):
+        read_anchor(str(working_dir))
+
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert "could not be read" in result.stderr
+    assert "binds this deployment" not in result.stderr
+
+
 COMPOSE_ENV = ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "LIGHTRAG_RUNTIME_TARGET=compose"]
 
 

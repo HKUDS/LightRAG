@@ -612,6 +612,38 @@ class TestRebinding:
             await _open_config(tmp_path, "teamalpha")
         assert time.monotonic() - started < 5
 
+    @pytest.mark.parametrize(
+        ("workspace", "link_target"),
+        [("alias", "real"), ("alias", "."), ("", ".")],
+        ids=["link-to-sibling", "link-to-root", "default-beside-root-link"],
+    )
+    async def test_a_start_whose_directory_another_name_reaches_is_refused(
+        self, tmp_path, workspace, link_target
+    ):
+        """Discovery would find the snapshot under the other name too and
+        refuse it for its owner, blocking every later rebind or migration:
+        one physical directory holds one workspace, refused before any
+        write."""
+        (tmp_path / "real").mkdir()
+        (tmp_path / "alias").symlink_to(
+            (tmp_path / link_target).resolve(), target_is_directory=True
+        )
+
+        with pytest.raises(ConfigurationIdentityError, match="one physical directory"):
+            await _bind(tmp_path, workspace)
+        assert not list(tmp_path.rglob("kv_workspace_config.json"))
+        assert ca.read_anchor(str(tmp_path)) is None
+
+    def test_one_snapshot_reachable_under_two_names_is_refused_by_discovery(
+        self, tmp_path
+    ):
+        (tmp_path / "real").mkdir()
+        (tmp_path / "real" / "kv_workspace_config.json").write_text("{}")
+        (tmp_path / "alias").symlink_to(tmp_path / "real", target_is_directory=True)
+
+        with pytest.raises(ConfigurationIdentityError, match="'alias', 'real'"):
+            discover_shards(str(tmp_path))
+
     def test_a_snapshot_under_an_illegal_name_is_refused_by_path(self, tmp_path):
         bad = tmp_path / "config_storage_anchor.json"
         bad.mkdir()

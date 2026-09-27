@@ -129,6 +129,35 @@ class TestStrictRead:
         with pytest.raises(ConfigurationIdentityError):
             ca.read_anchor(str(tmp_path))
 
+    @pytest.mark.parametrize("dangling", [False, True], ids=["valid", "dangling"])
+    def test_a_symlinked_anchor_refuses_and_is_never_absent(self, tmp_path, dangling):
+        """Every publish atomically replaces the path, which would swap the
+        link for a private regular file and leave its target stale; a
+        dangling link is not proof of absence either."""
+        volume = tmp_path / "volume"
+        volume.mkdir()
+        ca.publish_anchor(
+            str(volume),
+            ca.StorageAnchor("PGKVStorage", ca.new_storage_uuid()),
+            replace=False,
+        )
+        target = ca.anchor_path(str(volume))
+        if dangling:
+            os.unlink(target)
+        working_dir = tmp_path / "rag"
+        working_dir.mkdir()
+        os.symlink(target, ca.anchor_path(str(working_dir)))
+
+        with pytest.raises(ConfigurationIdentityError, match="symlink") as info:
+            ca.read_anchor(str(working_dir))
+        assert info.value.cause == ca.IDENTITY_ANCHOR_UNREADABLE
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+    def test_a_fifo_anchor_refuses_without_opening_it(self, tmp_path):
+        os.mkfifo(ca.anchor_path(str(tmp_path)))
+        with pytest.raises(ConfigurationIdentityError, match="not a regular file"):
+            ca.read_anchor(str(tmp_path))
+
     def test_every_admitted_backend_is_accepted(self, tmp_path):
         for backend in (
             "JsonKVStorage",
