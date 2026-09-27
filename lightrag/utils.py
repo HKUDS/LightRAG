@@ -7617,7 +7617,13 @@ def convert_to_user_format(
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
 ) -> dict[str, Any]:
-    """Convert internal data format to user-friendly format using original database data"""
+    """Convert internal data format to user-friendly format using original database data.
+
+    Every entity, relationship and chunk carries ``vector_score``: the score its
+    own vector-store search returned (``distance`` in the storage result), or
+    ``None`` when the record was reached only through the graph or the backend
+    returns no score. Its scale is backend-specific; see ``aquery_data``.
+    """
 
     # Convert entities format using original data when available
     formatted_entities = []
@@ -7639,6 +7645,7 @@ def convert_to_user_format(
                     "source_id": original_entity.get("source_id", ""),
                     "file_path": original_entity.get("file_path", "unknown_source"),
                     "created_at": original_entity.get("created_at", ""),
+                    "vector_score": original_entity.get("vector_score"),
                 }
             )
         else:
@@ -7651,6 +7658,7 @@ def convert_to_user_format(
                     "source_id": entity.get("source_id", ""),
                     "file_path": entity.get("file_path", "unknown_source"),
                     "created_at": entity.get("created_at", ""),
+                    "vector_score": entity.get("vector_score"),
                 }
             )
 
@@ -7678,6 +7686,7 @@ def convert_to_user_format(
                     "source_id": original_relation.get("source_id", ""),
                     "file_path": original_relation.get("file_path", "unknown_source"),
                     "created_at": original_relation.get("created_at", ""),
+                    "vector_score": original_relation.get("vector_score"),
                 }
             )
         else:
@@ -7692,6 +7701,7 @@ def convert_to_user_format(
                     "source_id": relation.get("source_id", ""),
                     "file_path": relation.get("file_path", "unknown_source"),
                     "created_at": relation.get("created_at", ""),
+                    "vector_score": relation.get("vector_score"),
                 }
             )
 
@@ -7703,6 +7713,7 @@ def convert_to_user_format(
             "content": chunk.get("content", ""),
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
+            "vector_score": chunk.get("vector_score"),
         }
         formatted_chunks.append(chunk_data)
 

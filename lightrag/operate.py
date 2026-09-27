@@ -5268,6 +5268,8 @@ async def _get_vector_context(
                 "file_path": result.get("file_path", "unknown_source"),
                 "source_type": "vector",  # Mark the source type
                 "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                # Backend-native score, reported by /query/data; never sent to the LLM
+                "vector_score": result.get("distance"),
             }
             valid_chunks.append(chunk_with_metadata)
 
@@ -5275,6 +5277,32 @@ async def _get_vector_context(
         f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
     )
     return valid_chunks
+
+
+def _relation_pair_key(relation: dict) -> tuple:
+    if "src_tgt" in relation:
+        return tuple(sorted(relation["src_tgt"]))
+    return tuple(sorted([relation.get("src_id"), relation.get("tgt_id")]))
+
+
+def _carry_vector_scores(
+    merged: list[dict], scored: list[dict], key: Callable[[dict], Any]
+) -> list[dict]:
+    """Give each merged record the ``vector_score`` of its vector-retrieved twin.
+
+    Dedup keeps the first copy of a record, which may be the one reached by
+    graph traversal (no score) although the vector search also returned it.
+    Records are copied, never mutated: graph-derived dicts may be shared.
+    """
+    scores = {
+        key(r): r["vector_score"] for r in scored if r.get("vector_score") is not None
+    }
+    return [
+        {**r, "vector_score": scores[key(r)]}
+        if r.get("vector_score") is None and key(r) in scores
+        else r
+        for r in merged
+    ]
 
 
 async def _perform_kg_search(
@@ -5458,13 +5486,7 @@ async def _perform_kg_search(
         # First from local
         if i < len(local_relations):
             relation = local_relations[i]
-            # Build relation unique identifier
-            if "src_tgt" in relation:
-                rel_key = tuple(sorted(relation["src_tgt"]))
-            else:
-                rel_key = tuple(
-                    sorted([relation.get("src_id"), relation.get("tgt_id")])
-                )
+            rel_key = _relation_pair_key(relation)
 
             if rel_key not in seen_relations:
                 final_relations.append(relation)
@@ -5473,17 +5495,18 @@ async def _perform_kg_search(
         # Then from global
         if i < len(global_relations):
             relation = global_relations[i]
-            # Build relation unique identifier
-            if "src_tgt" in relation:
-                rel_key = tuple(sorted(relation["src_tgt"]))
-            else:
-                rel_key = tuple(
-                    sorted([relation.get("src_id"), relation.get("tgt_id")])
-                )
+            rel_key = _relation_pair_key(relation)
 
             if rel_key not in seen_relations:
                 final_relations.append(relation)
                 seen_relations.add(rel_key)
+
+    final_entities = _carry_vector_scores(
+        final_entities, local_entities, key=lambda e: e.get("entity_name")
+    )
+    final_relations = _carry_vector_scores(
+        final_relations, global_relations, key=_relation_pair_key
+    )
 
     logger.info(
         f"Raw search results: {len(final_entities)} entities, {len(final_relations)} relations, {len(vector_chunks)} vector chunks"
@@ -5856,6 +5879,15 @@ async def _merge_all_chunks(
                         "chunk_id": chunk_id,
                     }
                 )
+
+    # A chunk also returned by the chunk vector search keeps that score even
+    # when its entity/relation copy won the dedup above.
+    vector_scores = {
+        chunk.get("chunk_id") or chunk.get("id"): chunk.get("vector_score")
+        for chunk in vector_chunks
+    }
+    for chunk in merged_chunks:
+        chunk["vector_score"] = vector_scores.get(chunk["chunk_id"])
 
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
@@ -6237,6 +6269,7 @@ async def _get_node_data(
             "entity_name": k["entity_name"],
             "rank": d,
             "created_at": k.get("created_at"),
+            "vector_score": k.get("distance"),
         }
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
@@ -6567,6 +6600,7 @@ async def _get_edge_data(
                 "tgt_id": k["tgt_id"],
                 "created_at": k.get("created_at", None),
                 **edge_props,
+                "vector_score": k.get("distance"),
             }
             edge_datas.append(combined)
 
