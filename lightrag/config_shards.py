@@ -13,8 +13,8 @@ Full contract: *JSON configuration shards* in
   deployment-wide files directly under ``WORKING_DIR`` (the anchor, its two
   locks, the empty workspace's snapshot and claim): its directory would
   collide with that file. ``validate_config_workspace`` refuses them, and the
-  aliases ASCII letter case or Windows' trailing dot / space stripping maps
-  onto them, as well as a name of only dots and spaces (Windows strips it to
+  aliases Unicode case folding and normalization (``caseless_alias``) or
+  Windows' trailing dot / space stripping maps onto them, as well as a name of only dots and spaces (Windows strips it to
   ``WORKING_DIR`` itself) and a drive-qualified name such as ``C:`` (Windows
   joins it outside ``WORKING_DIR``), on every platform so data stays
   portable; it is applied to every workspace a start, an
@@ -66,29 +66,41 @@ RESERVED_WORKSPACE_NAMES = frozenset(
         ANCHOR_BIND_LOCK_FILE_NAME,
     }
 )
-_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-_RESERVED_FOLDED = frozenset(
-    name.translate(_ASCII_LOWER) for name in RESERVED_WORKSPACE_NAMES
-)
-
-
-def filesystem_alias(name: str) -> str:
-    """``name`` as a case-insensitive filesystem (macOS, Windows) resolves an
-    ASCII name: the trailing dots and spaces Windows strips removed, ASCII
-    letters folded. Only ASCII is folded, so the setup wizard, which cannot
-    decode ``\\u`` escapes, applies exactly the same rule."""
-    return name.rstrip(" .").translate(_ASCII_LOWER)
 
 
 def caseless_alias(name: str) -> str:
-    """The key under which any case-insensitive or normalization-insensitive
+    """The key under which a case-insensitive or normalization-insensitive
     filesystem (NTFS, APFS) may resolve ``name`` to one directory: Unicode
     canonical caseless matching, after Windows' trailing dot / space strip.
-    For comparing names that are to be CREATED side by side (a migration's
-    planned set); unlike ``filesystem_alias`` it is not the setup wizard's
-    rule and must not decide a reserved name."""
+
+    The setup wizard cannot decode ``\\u`` escapes, so it matches this rule
+    for the reserved names by mapping the only non-ASCII characters whose
+    fold is ASCII (``_ASCII_FOLDING_NON_ASCII``); keep the two in step.
+    """
     stripped = unicodedata.normalize("NFD", name.rstrip(" ."))
     return unicodedata.normalize("NFD", stripped.casefold())
+
+
+_RESERVED_CASELESS = frozenset(caseless_alias(n) for n in RESERVED_WORKSPACE_NAMES)
+# Every non-ASCII character whose caseless fold is pure ASCII: the only ones
+# a name can use to alias an ASCII reserved name. The setup wizard maps
+# exactly these (as the lower-case ``\\uXXXX`` escapes json.dumps writes)
+# before folding ASCII case; a test pins this table to ``caseless_alias``.
+_ASCII_FOLDING_NON_ASCII = {
+    "\u00df": "ss",
+    "\u017f": "s",
+    "\u037e": ";",
+    "\u1e9e": "ss",
+    "\u1fef": "`",
+    "\u212a": "k",
+    "\ufb00": "ff",
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "st",
+    "\ufb06": "st",
+}
 
 
 def validate_config_workspace(workspace: str) -> str:
@@ -103,20 +115,20 @@ def validate_config_workspace(workspace: str) -> str:
             f"':', so Windows reads it as drive-qualified and joins it outside "
             f"WORKING_DIR. Choose another name."
         )
-    if workspace and not filesystem_alias(workspace):
+    if workspace and not caseless_alias(workspace):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it consists only of dots "
             f"and spaces, which Windows strips from a path component, so its "
             f"directory would be WORKING_DIR itself -- the empty workspace's. "
             f"Choose another name."
         )
-    if filesystem_alias(workspace) in _RESERVED_FOLDED:
+    if caseless_alias(workspace) in _RESERVED_CASELESS:
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it is the name of a "
             f"deployment-wide file directly under WORKING_DIR "
-            f"({', '.join(sorted(RESERVED_WORKSPACE_NAMES))}, in any ASCII "
-            f"letter case or with trailing dots or spaces), so its directory would "
-            f"collide with that file. Choose another name."
+            f"({', '.join(sorted(RESERVED_WORKSPACE_NAMES))}, in any letter "
+            f"case or Unicode normalization, or with trailing dots or spaces), "
+            f"so its directory would collide with that file. Choose another name."
         )
     return workspace
 

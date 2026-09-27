@@ -210,13 +210,16 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   `.lightrag_anchor_bind.lock`, in `LightRAG.__post_init__` before any
   directory exists, whatever the backends: such a workspace directory would
   collide with a root-level file. So are their filesystem aliases -- another
-  ASCII letter case (macOS, Windows) or trailing dots and spaces (which
+  letter case or Unicode normalization (macOS, Windows; Unicode canonical
+  caseless matching, `caseless_alias`) or trailing dots and spaces (which
   Windows strips). A name of only dots and spaces is refused too: Windows
   strips it to `working_dir` itself, the empty workspace's directory. So is
   a drive-qualified name (second character `:`, as `ntpath` reads it), which
   Windows joins outside `working_dir`; refused on every platform so a
-  deployment stays portable. Only ASCII is folded, so the setup wizard applies the same rule without
-  decoding escapes. The same check applies to anchor members,
+  deployment stays portable. The setup wizard cannot decode escapes, so it
+  applies the same rule by mapping the only thirteen non-ASCII characters
+  whose case fold is ASCII (`_ASCII_FOLDING_NON_ASCII`, pinned by a test to
+  `caseless_alias` and to `setup.sh`) before folding ASCII case. The same check applies to anchor members,
   discovered snapshot locations and migration source scopes. Names are never
   rewritten. `_lightrag_config` is an ordinary workspace.
 - **One group per `working_dir`.** Every snapshot carries the normal
@@ -274,7 +277,11 @@ otherwise, under the bind lock, re-read the anchor:
   not a member -> its snapshot must be empty, or exactly identity + owner
                   of this group (an interrupted registration, reused);
                   application rows or a foreign UUID/owner refuse, untouched
-               -> write identity + owner, strict flush, read back
+               -> write identity + owner, strict flush, read back -- a reused
+                  pair is flushed too, and rewritten unless the FILE already
+                  holds it: the rows may be only in the shared memory of a
+                  worker whose flush failed or was cancelled
+               -> the file on disk must hold identity + owner
                -> append the workspace to the re-read anchor (atomic replace),
                   read back; unreadable read-back = indeterminate
 then the baseline precheck and the rest of the start, as for every backend
@@ -313,10 +320,11 @@ file. Something present that is not a regular file,
 a read or permission error, or a snapshot under a child name that is not a
 legal workspace refuses by path. The snapshot file itself is never
 followed: every save is an atomic replace, so the first flush would turn a
-symlinked snapshot into a regular file and leave its target stale. A start
-applies the same check to its own snapshot before it binds, and so does a
-maintenance tool's verification (`verify_configuration_identity`), so
-neither serves or flushes a file a rebind or migration then refuses. Directories without
+symlinked snapshot into a regular file and leave its target stale. The JSON
+configuration storage applies the same check to its own snapshot before it
+opens it (a FIFO there would block the read forever), and a start and a
+maintenance tool's verification (`verify_configuration_identity`) repeat it,
+so neither serves or flushes a file a rebind or migration then refuses. Directories without
 a snapshot are not members.
 
 **Locking.** Registration is a read-modify-write of the member list, so it
@@ -377,8 +385,9 @@ server then refuses:
   repeated key. Member names are compared literally, so each must have the
   one spelling the server writes: a raw non-ASCII byte, a `\u` escape of an
   ASCII character or one with an upper-case hex digit is unreadable. Then a
-  path separator, `.`/`..`, a reserved root name or its ASCII case / trailing
-  dot or space alias, or a repeat is unreadable -- exactly as the server
+  path separator, `.`/`..`, a reserved root name or its case (ASCII, or one
+  of the thirteen escapes whose fold is ASCII) / trailing dot or space
+  alias, or a repeat is unreadable -- exactly as the server
   refuses them.
 - **An empty host `WORKING_DIR=` is the server's start directory**, as
   `os.path.abspath("")` makes it; only an unset key gets `./rag_storage`.
@@ -819,8 +828,7 @@ start the server once, stop it and rerun the tool.
   only in letter case, Unicode normalization or trailing dots/spaces, which a
   case- or normalization-insensitive filesystem would store in one directory
   (Unicode canonical caseless matching, `caseless_alias`, over the whole
-  planned set before any directory exists -- stricter than the ASCII-only
-  reserved-name rule, which must match the setup wizard), and so does a planned workspace
+  planned set before any directory exists), and so does a planned workspace
   whose directory is one physical directory (same device and inode) with
   any other existing child directory or with `WORKING_DIR` itself -- through
   a symlink or a case-insensitive spelling, with or without a snapshot in

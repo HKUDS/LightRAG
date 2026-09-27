@@ -185,6 +185,10 @@ class TestPaths:
             ".LIGHTRAG_ANCHOR_BIND.LOCK",
             "config_storage_anchor.json.",
             ".lightrag_storage.lock ",
+            # Unicode case folding: KELVIN SIGN, the fi ligature, long s.
+            "\u212av_workspace_config.json",
+            "kv_workspace_con\ufb01g.json",
+            ".lightrag_\u017ftorage.lock",
         ],
     )
     def test_a_reserved_root_name_refuses_before_any_directory_exists(
@@ -194,6 +198,26 @@ class TestPaths:
         with pytest.raises(ValueError, match="deployment-wide file"):
             _rag(working_dir, name)
         assert not (working_dir / name).exists()
+
+    def test_the_wizard_fold_table_is_every_non_ascii_char_folding_to_ascii(self):
+        """setup.sh maps exactly these escapes before folding ASCII case; if
+        Unicode (or ``caseless_alias``) changes, the wizard must follow."""
+        from lightrag import config_shards
+
+        folding = {
+            chr(cp)
+            for cp in range(0x80, 0x110000)
+            if config_shards.caseless_alias(chr(cp)).isascii()
+        }
+        table = config_shards._ASCII_FOLDING_NON_ASCII
+        assert set(table) == folding
+        assert all(config_shards.caseless_alias(c) == a for c, a in table.items())
+        setup = (
+            Path(__file__).resolve().parents[2] / "scripts" / "setup" / "setup.sh"
+        ).read_text()
+        for char, ascii_fold in table.items():
+            escape = "\\\\u%04x" % ord(char)
+            assert f'folded="${{folded//{escape}/' in setup, char
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +348,44 @@ class TestRegistration:
         assert binding.action == "registered"
         assert _anchor(tmp_path).members == ("teamalpha",)
         assert Path(json_config_path(str(tmp_path), "teamalpha")).read_bytes() == before
+
+    async def test_metadata_only_in_shared_memory_is_flushed_before_registering(
+        self, tmp_path
+    ):
+        """Scenario: another worker put the metadata rows into the shared
+        dict and its flush failed or was cancelled. The rows read as an
+        interrupted registration, but the anchor must not name the snapshot
+        until they are on disk."""
+        storage_uuid = ca.new_storage_uuid()
+        ca.publish_anchor(
+            str(tmp_path),
+            ca.StorageAnchor("JsonKVStorage", storage_uuid, members=()),
+            replace=False,
+        )
+        snapshot = Path(json_config_path(str(tmp_path), "teamalpha"))
+        config = await _open_config(tmp_path, "teamalpha")
+        try:
+            await config.upsert(
+                cs.json_shard_metadata_rows(
+                    "teamalpha", storage_uuid, updated_by="test"
+                )
+            )
+            assert not snapshot.exists()
+
+            binding = await cs.bind_configuration_identity(
+                config,
+                working_dir=str(tmp_path),
+                backend="JsonKVStorage",
+                container="json:teamalpha",
+                workspace="teamalpha",
+            )
+
+            assert binding.action == "registered"
+            assert _anchor(tmp_path).members == ("teamalpha",)
+            on_disk = json.loads(snapshot.read_text())
+            assert on_disk[OWNER_KEY]["value"] == {"workspace": "teamalpha"}
+        finally:
+            await config.finalize()
 
     async def test_an_unregistered_snapshot_with_records_is_refused_untouched(
         self, tmp_path
@@ -524,6 +586,31 @@ class TestRebinding:
         with pytest.raises(ConfigurationIdentityError, match="symlink"):
             discover_shards(str(tmp_path))
         assert snapshot.is_symlink()
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+    async def test_a_fifo_snapshot_is_refused_before_it_is_opened(self, tmp_path):
+        """Opening a FIFO for reading blocks until a writer appears, so the
+        probe must run before the storage's load, not at bind time."""
+        import threading
+
+        snapshot = Path(json_config_path(str(tmp_path), "teamalpha"))
+        snapshot.parent.mkdir()
+        os.mkfifo(snapshot)
+
+        def _release_a_blocked_reader():
+            # Bounds a regression to a failure instead of a hang.
+            time.sleep(5)
+            try:
+                fd = os.open(snapshot, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:
+                return
+            os.close(fd)
+
+        threading.Thread(target=_release_a_blocked_reader, daemon=True).start()
+        started = time.monotonic()
+        with pytest.raises(ConfigurationIdentityError, match="not a regular file"):
+            await _open_config(tmp_path, "teamalpha")
+        assert time.monotonic() - started < 5
 
     def test_a_snapshot_under_an_illegal_name_is_refused_by_path(self, tmp_path):
         bad = tmp_path / "config_storage_anchor.json"

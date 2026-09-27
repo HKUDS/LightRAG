@@ -1672,12 +1672,32 @@ async def _register_json_member(
             working_dir=working_dir,
             container=container,
         )
+        # The rows read above may be only in the shared memory, left by a
+        # worker whose flush failed or was cancelled: the anchor must never
+        # name a snapshot whose metadata is not on disk.
+        await flush_configuration_storage(
+            config, f"the JSON snapshot metadata of workspace {workspace!r}"
+        )
+        if not _metadata_on_disk(working_dir, workspace, anchor.storage_uuid):
+            await _write_json_shard_metadata(
+                config,
+                workspace=workspace,
+                storage_uuid=anchor.storage_uuid,
+                location=container,
+            )
     else:
         await _write_json_shard_metadata(
             config,
             workspace=workspace,
             storage_uuid=anchor.storage_uuid,
             location=container,
+        )
+    if not _metadata_on_disk(working_dir, workspace, anchor.storage_uuid):
+        raise ConfigurationIdentityError(
+            f"the JSON configuration snapshot of workspace {workspace!r} does "
+            f"not hold its identity and owner on disk after a successful "
+            f"flush; it is not registered",
+            cause=IDENTITY_WRITE_FAILED,
         )
     registered = anchor.with_member(workspace)
     try:
@@ -1713,6 +1733,17 @@ async def _register_json_member(
         f"snapshot {container} in the group {anchor.storage_uuid}"
     )
     return IdentityBinding(storage_uuid=anchor.storage_uuid, action="registered")
+
+
+def _metadata_on_disk(working_dir: str, workspace: str, storage_uuid: str) -> bool:
+    """Whether ``workspace``'s snapshot FILE carries ``storage_uuid`` and
+    names ``workspace`` as owner -- the durable state, not the shared
+    memory a read through the storage answers from."""
+    path = json_config_path(working_dir, workspace)
+    stored = inspect_shard_rows(
+        read_shard_file(path) or {}, workspace=workspace, location=path
+    )
+    return stored.storage_uuid == storage_uuid and stored.owner == workspace
 
 
 async def _write_json_shard_metadata(

@@ -1361,7 +1361,8 @@ read_config_anchor() {
   # and a raw non-ASCII byte are refused (the server writes none of them:
   # json.dumps escapes only non-ASCII, as lower-case \u), which leaves every
   # name spelled as the server spells it. Then a separator, "." / "..", a
-  # reserved root file name -- in any letter case, with trailing dots or
+  # reserved root file name -- in any letter case (ASCII, or through the few
+  # non-ASCII characters whose case fold is ASCII), with trailing dots or
   # spaces, as the server refuses it --, a name of only dots and spaces, a
   # drive-qualified name (second character ':'), or a repeat is refused.
   local dir content rest value last name folded
@@ -1445,6 +1446,22 @@ read_config_anchor() {
       folded="${folded%\"}"
       while [[ "$folded" == *[' .'] ]]; do folded="${folded%?}"; done
       [[ -z "$folded" && "$name" != '""' ]] && return 0
+      # The only non-ASCII characters Unicode case folding maps to ASCII
+      # (config_shards._ASCII_FOLDING_NON_ASCII), so a reserved name spelled
+      # through one of them is refused as the server refuses it.
+      folded="${folded//\\u00df/ss}"
+      folded="${folded//\\u017f/s}"
+      folded="${folded//\\u037e/;}"
+      folded="${folded//\\u1e9e/ss}"
+      folded="${folded//\\u1fef/\`}"
+      folded="${folded//\\u212a/k}"
+      folded="${folded//\\ufb00/ff}"
+      folded="${folded//\\ufb01/fi}"
+      folded="${folded//\\ufb02/fl}"
+      folded="${folded//\\ufb03/ffi}"
+      folded="${folded//\\ufb04/ffl}"
+      folded="${folded//\\ufb05/st}"
+      folded="${folded//\\ufb06/st}"
       case "${folded,,}" in
         kv_workspace_config.json | config_storage_anchor.json | \
           .lightrag_storage.lock | .lightrag_anchor.lock | \

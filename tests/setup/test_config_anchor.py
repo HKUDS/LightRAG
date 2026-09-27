@@ -339,6 +339,11 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
         _json_anchor('["Kv_Workspace_Config.json"]'),
         _json_anchor('["config_storage_anchor.json."]'),
         _json_anchor('[".lightrag_anchor.lock "]'),
+        # Reserved names spelled through a non-ASCII character whose Unicode
+        # case fold is ASCII (KELVIN SIGN, the fi and long-s-t ligatures).
+        _json_anchor('["\\u212av_workspace_config.json"]'),
+        _json_anchor('["kv_workspace_con\\ufb01g.json"]'),
+        _json_anchor('[".lightrag_\\ufb05orage.lock"]'),
         # Drive-qualified names (decoded second character ':'), which Windows
         # joins outside WORKING_DIR: plain, escaped, a surrogate pair, a short
         # escape.
@@ -421,9 +426,9 @@ def test_the_wizard_reads_the_backend_the_server_reads(
         _json_anchor('["v1.0", "..a"]'),
         # ':' later than the second character is not a drive prefix.
         _json_anchor('["ab:c"]'),
-        # Only ASCII letter case is folded: a non-ASCII look-alike of a
-        # reserved name (KELVIN SIGN for "k") is an ordinary member.
-        _json_anchor('["\\u212av_workspace_config.json"]'),
+        # A look-alike of a reserved name whose case fold is not ASCII
+        # (FULLWIDTH LATIN CAPITAL LETTER K) is an ordinary member.
+        _json_anchor('["\\uff2bv_workspace_config.json"]'),
     ],
 )
 def test_the_wizard_reads_a_json_anchor_the_server_reads(

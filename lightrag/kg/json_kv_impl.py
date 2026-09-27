@@ -8,7 +8,7 @@ from lightrag.base import (
     BaseKVStorage,
 )
 from lightrag.file_atomic import reap_orphan_tmp_files
-from lightrag.config_shards import json_config_dir
+from lightrag.config_shards import json_config_dir, probe_snapshot
 from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
     CONFIG_JSON_FILE_NAME,
@@ -163,6 +163,10 @@ class JsonKVStorage(BaseKVStorage):
                     self.namespace, workspace=self._shared_workspace
                 )
                 if need_init:
+                    if self.namespace == NameSpace.KV_STORE_CONFIG:
+                        # Before the open: a FIFO or other non-regular file
+                        # at the snapshot path would block the read forever.
+                        probe_snapshot(self._file_name)
                     loaded_data = load_json(self._file_name) or {}
                     async with self._storage_lock:
                         # Migrate legacy cache structure if needed
