@@ -183,3 +183,24 @@ def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
         "Before\nGrouped paragraph\nSecond paragraph\vSoft break\n\n"
         "Group sibling\nAfter\nNext slide\n"
     )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("group_depth", [0, 2])
+def test_extract_text_pptx_preserves_table_text_and_order(group_depth):
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = "Before"
+    shape = slide.shapes.add_table(2, 2, 0, 0, Inches(4), Inches(2))
+    for row, values in enumerate((("Product", "Revenue"), ("Widget", "1200"))):
+        for column, value in enumerate(values):
+            shape.table.cell(row, column).text = value
+    for _ in range(group_depth):
+        shape = slide.shapes.add_group_shape([shape])
+    slide.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = "After"
+    file_bytes = BytesIO()
+    presentation.save(file_bytes)
+
+    assert extract_text(file_bytes.getvalue(), "pptx") == (
+        "Before\nProduct\tRevenue\nWidget\t1200\nAfter\n"
+    )
