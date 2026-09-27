@@ -1211,7 +1211,7 @@ def priority_limit_async_func_call(
     - Optional cross-process global concurrency gating (gunicorn multi-worker)
 
     Args:
-        max_size: Maximum number of concurrent calls
+        max_size: Maximum number of concurrent calls; must be positive
         max_queue_size: Maximum queue capacity to prevent memory overflow
         llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts
         max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
@@ -1236,6 +1236,9 @@ def priority_limit_async_func_call(
     Returns:
         Decorator function
     """
+
+    if max_size <= 0:
+        raise ValueError(f"max_size must be positive, got {max_size}")
 
     def final_dec(func):
         # Ensure func is callable

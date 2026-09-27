@@ -118,6 +118,12 @@ ROLE_MAX_ASYNC_ENV_KEYS = (
 )
 
 
+@pytest.mark.parametrize("max_size", [0, -1])
+def test_priority_queue_rejects_non_positive_max_size(max_size):
+    with pytest.raises(ValueError, match="max_size must be positive"):
+        priority_limit_async_func_call(max_size)
+
+
 @pytest.mark.asyncio
 async def test_priority_queue_stats_track_running_and_queued():
     started = asyncio.Event()
