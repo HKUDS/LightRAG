@@ -345,6 +345,41 @@ def test_the_no_op_skip_does_not_change_the_output():
     assert with_bomb[0]["content"].startswith("QX")
 
 
+@pytest.mark.parametrize("count", [1, 8, MAX_R_SEPARATORS - 1])
+@pytest.mark.parametrize("chunk_size", [16, 17, 20])
+def test_no_op_skip_preserves_token_sized_segments(count, chunk_size):
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    text = "Q" + "a" * 64
+    separators = ["Q"] * count + [""]
+    tokenizer, underlying = _tok()
+    expected = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=0,
+        separators=separators,
+        length_function=lambda value: len(tokenizer.encode(value)),
+    ).split_text(text)
+    underlying.encodes = 0
+
+    chunks = chunking_by_recursive_character(
+        tokenizer,
+        text,
+        chunk_size,
+        chunk_overlap_token_size=0,
+        separators=separators,
+    )
+
+    assert [chunk["content"] for chunk in chunks] == expected
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert text[span["start"] : span["end"]] == chunk["content"]
+    if chunk_size > 16:
+        assert expected == [text]
+        assert underlying.encodes <= 6
+    else:
+        assert len(expected) > 1
+
+
 def test_a_separator_that_really_splits_is_unaffected():
     """The skip must only trigger on a genuine no-op."""
     tokenizer, _ = _tok()
@@ -356,6 +391,18 @@ def test_a_separator_that_really_splits_is_unaffected():
 
     assert len(chunks) > 1
     assert "".join(c["content"] for c in chunks).replace(" ", "").count("alpha") == 50
+
+
+def test_no_op_skip_preserves_short_indented_text():
+    tokenizer, _ = _tok()
+    text = " " + "a" * 64
+
+    chunks = chunking_by_recursive_character(
+        tokenizer, text, 20, chunk_overlap_token_size=0
+    )
+
+    assert [chunk["content"] for chunk in chunks] == [text.strip()]
+    assert chunks[0]["_source_span"] == {"start": 1, "end": len(text)}
 
 
 def test_default_cascade_output_is_unchanged_by_the_skip():

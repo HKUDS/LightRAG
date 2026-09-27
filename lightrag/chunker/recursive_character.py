@@ -342,10 +342,12 @@ def _split_text_with_spans(
     ``O(len(separators) x len(text))`` reachable from a single request
     (GHSA-26pm-px5v-8c4w).
 
-    The loop below reaches the same state the recursion would, minus the wasted
-    encodes, so the output is unchanged.
+    Only oversized pieces descend to the next separator. Cache the length across
+    no-op levels so shorter pieces still reach the merge step without restoring
+    the repeated whole-text encodes.
     """
     remaining: Sequence[str] = separators
+    unsplit_length: int | None = None
     while True:
         separator = remaining[-1]
         new_separators: Sequence[str] = []
@@ -369,17 +371,18 @@ def _split_text_with_spans(
             base_offset=base_offset,
         )
 
-        # A no-op split: one piece, identical to the input. Recursing on it would
-        # re-encode the whole text to discover it is still oversized and then land
-        # exactly here with the next separator, so advance in place instead. When
-        # no separators remain the loop exits and the piece is emitted whole, as
-        # the recursion would have.
+        # A no-op split can advance in place only if the piece would recurse.
+        # Short pieces must reach the merge step before trying weaker separators.
         if (
             new_separators
             and len(splits) == 1
             and splits[0][0] == text
             and splits[0][1] == base_offset
         ):
+            if unsplit_length is None:
+                unsplit_length = length_function(text)
+            if unsplit_length < chunk_size:
+                break
             remaining = new_separators
             continue
         break
