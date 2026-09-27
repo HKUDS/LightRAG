@@ -21,6 +21,8 @@ from lightrag.kg.postgres_impl import (
     _is_transient_graph_write_error,
 )
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # Helpers

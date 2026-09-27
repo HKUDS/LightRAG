@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.offline
+
 
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",

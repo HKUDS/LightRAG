@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 from lightrag.kg.postgres_impl import PGDocStatusStorage
 from lightrag.namespace import NameSpace
 
+pytestmark = pytest.mark.offline
+
 
 def _make_storage():
     storage = PGDocStatusStorage.__new__(PGDocStatusStorage)

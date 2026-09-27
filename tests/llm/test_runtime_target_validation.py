@@ -6,6 +6,10 @@ from lightrag.api.runtime_validation import (
     validate_runtime_target_from_env_file,
 )
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 def test_validate_runtime_target_skips_when_not_declared() -> None:
     is_valid, error_message = validate_runtime_target(None)

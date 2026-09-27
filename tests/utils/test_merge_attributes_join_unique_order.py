@@ -50,6 +50,8 @@ from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import apply_source_ids_limit
 from lightrag.utils_graph import _merge_attributes
 
+pytestmark = pytest.mark.offline
+
 # Set iteration order is sensitive to the exact strings, and this spelling is
 # the one the seed probe covered: do not renumber or re-pad these.
 FIRST_HALF = [f"chunk-{i:02d}" for i in range(1, 11)]
