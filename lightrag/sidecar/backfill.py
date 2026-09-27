@@ -178,7 +178,14 @@ def _chunk_source_span(
         return None
     source_text = merged[start:end]
     if source_text != body and _normalize_text(source_text) != _normalize_text(body):
-        return None
+        if _REPLACEMENT_CHAR in body:
+            cleaned = body.replace(_REPLACEMENT_CHAR, "")
+            if source_text != cleaned and _normalize_text(source_text) != _normalize_text(
+                cleaned
+            ):
+                return None
+        else:
+            return None
     return start, end
 
 
