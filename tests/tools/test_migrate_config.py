@@ -1009,7 +1009,15 @@ class TestCommandLine:
         only this server's WORKSPACE."""
         working_dir = os.environ["WORKING_DIR"]
         _anchor(working_dir)
-        self._wire(monkeypatch, Container(_source_rows()), Container())
+        # Without the hand-built stand-in for a future server key: an
+        # unregistered key is classified by its ``workspace`` field, so it
+        # would be listed as the tenant ``_lightrag_server``.
+        rows = {
+            k: v
+            for k, v in _source_rows().items()
+            if not k.endswith("embedding.current")
+        }
+        self._wire(monkeypatch, Container(rows), Container())
         monkeypatch.setenv("WORKSPACE", "alpha")
         seen_before_prompt: list[str] = []
 

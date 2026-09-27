@@ -311,8 +311,12 @@ discovered by a rebind and a migration alike. It never recurses (a link back
 to `working_dir` is probed once, not walked) and never reads a business
 file. Something present that is not a regular file,
 a read or permission error, or a snapshot under a child name that is not a
-legal workspace refuses by path. Directories without a snapshot are not
-members.
+legal workspace refuses by path. The snapshot file itself is never
+followed: every save is an atomic replace, so the first flush would turn a
+symlinked snapshot into a regular file and leave its target stale. A start
+applies the same check to its own snapshot before it binds, so the server
+never serves a file a rebind or migration then refuses. Directories without
+a snapshot are not members.
 
 **Locking.** Registration is a read-modify-write of the member list, so it
 runs under the exclusive bind lock (a held lock is waited for, up to its
@@ -800,15 +804,24 @@ start the server once, stop it and rerun the tool.
   its owner. A group with no member (a database container that held only its
   identity, or a first start stopped before registering) is still valid and
   migrates with the anchor's UUID. Owner rows are layout metadata: hidden from the copy, never
-  written to a database. As a target, the source's workspaces and every
+  written to a database. A row is server-scoped by its key (a registered
+  server-global key), never by its `workspace` field, so a tenant named
+  `_lightrag_server` migrates like any other workspace; a server-global row
+  refuses a JSON target. A non-empty snapshot without an identity or owner
+  row is damaged and refuses on either side, as it does at a start and a
+  rebind: automatic recovery is limited to consistent state. As a target,
+  the source's workspaces and every
   snapshot already on disk are claimed and validated before any write -- a
   source row whose key is not a registered key of its own scope refuses
   there, since a snapshot written with it would fail verification and could
   not be converged by the next run, and so do distinct workspaces that differ
   only in ASCII letter case or trailing dots/spaces, which a case-insensitive
-  filesystem would store in one directory, or whose existing directories
-  resolve (through symlinks) to one physical directory or to `WORKING_DIR`
-  itself -- the directory claim is reentrant by realpath, so nothing later
+  filesystem would store in one directory, and so does a planned workspace
+  whose directory is one physical directory (same device and inode) with
+  any other existing child directory or with `WORKING_DIR` itself -- through
+  a symlink or a case-insensitive spelling, with or without a snapshot in
+  it, since the next discovery would find the snapshot through that name
+  too, and the directory claim is reentrant by realpath, so nothing later
   would stop both opening one snapshot; a
   same-UUID snapshot (a retained source of an earlier JSON-to-database
   migration) is this migration's to converge, anything foreign refuses. A

@@ -86,6 +86,8 @@ from lightrag.config_anchor import (
 from lightrag.config_shards import (
     discover_shards,
     json_config_dir,
+    json_config_path,
+    probe_snapshot,
     read_shard_file,
 )
 from lightrag.exceptions import (
@@ -1117,6 +1119,17 @@ def workspace_config_keys(workspace: str) -> frozenset[str]:
     )
 
 
+def server_config_keys() -> frozenset[str]:
+    """Every registered server-global key. A row is server-scoped by its key,
+    never by its ``workspace`` field: a tenant may be named like the server
+    prefix."""
+    return frozenset(
+        config_key(SERVER_SCOPE, suffix)
+        for suffix, spec in CONFIG_KEY_REGISTRY.items()
+        if spec.scope is ConfigScope.SERVER
+    )
+
+
 # What ``read_shard_rows`` records for a key whose stored value is not a row.
 DAMAGED_ROW = object()
 
@@ -1506,6 +1519,8 @@ async def _bind_json(
     """
     from lightrag.kg.anchor_lock import anchor_bind_lock
 
+    # The snapshot this start serves must be one discovery accepts.
+    probe_snapshot(json_config_path(working_dir, workspace))
     anchor = read_anchor(working_dir)
     if anchor is not None:
         check_anchor_backend(

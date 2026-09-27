@@ -575,3 +575,155 @@ async def test_scopes_whose_directories_are_one_physical_dir_refuse_before_any_w
     assert not list(tmp_path.rglob("kv_workspace_config.json"))
     assert not list(tmp_path.rglob(".lightrag_storage.lock"))
     assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_a_tenant_named_like_the_server_prefix_migrates_into_json(tmp_path):
+    """A row is server-scoped by its key, never by its ``workspace`` field:
+    the legal tenant ``_lightrag_server`` gets its own snapshot, while a real
+    server-global row still refuses."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    tenant = "_lightrag_server"
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key(tenant, "entities"): _baseline_row(tenant),
+        }
+    )
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+
+    assert result.switched is True
+    assert result.source_scan.scopes == {tenant: 1}
+    assert ca.read_anchor(str(tmp_path)).members == (tenant,)
+    rows = json.loads(Path(json_config_path(str(tmp_path), tenant)).read_text())
+    assert cs.embedding_baseline_key(tenant, "entities") in rows
+
+
+async def test_a_server_global_row_still_refuses_a_json_target(tmp_path):
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            OWNER_KEY: cs.make_config_row(
+                scope_workspace=cs.SERVER_SCOPE,
+                suffix=cs.JSON_SHARD_SUFFIX,
+                value={"workspace": "teamalpha"},
+                updated_by="test",
+            ),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="server-scope rows"):
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_a_target_snapshot_without_an_owner_refuses_before_any_claim(tmp_path):
+    """A non-empty snapshot missing its owner row is damaged, as every other
+    path treats it; with no source rows for its workspace no copy would
+    stamp one, and verification would fail after the claim on every retry."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    damaged = Path(json_config_path(str(tmp_path), "teamalpha"))
+    damaged.parent.mkdir()
+    damaged.write_text(json.dumps({IDENTITY_KEY: _identity_row(storage_uuid)}))
+    before = damaged.read_bytes()
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teambeta", "entities"): _baseline_row(
+                "teambeta"
+            ),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="no owner row"):
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert damaged.read_bytes() == before
+    assert not list(tmp_path.rglob(".lightrag_storage.lock"))
+    assert not (tmp_path / "teambeta").exists()
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (directory / "caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
+@pytest.mark.parametrize("alias", ["link", "case"])
+async def test_an_existing_alias_directory_outside_the_plan_refuses(tmp_path, alias):
+    """A child directory that is one physical directory with a planned
+    workspace's refuses even when it holds no snapshot and has no source
+    rows: the next discovery would find the snapshot through it."""
+    if alias == "link":
+        (tmp_path / "teamalpha").mkdir()
+        (tmp_path / "teambeta").symlink_to(
+            tmp_path / "teamalpha", target_is_directory=True
+        )
+        planned, other = "teamalpha", "teambeta"
+    else:
+        if not _case_insensitive(tmp_path):
+            pytest.skip("needs a case-insensitive filesystem")
+        (tmp_path / "foo").mkdir()
+        planned, other = "Foo", "foo"
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key(planned, "entities"): _baseline_row(planned),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="one physical directory") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert repr(planned) in str(info.value) and repr(other) in str(info.value)
+    assert not list(tmp_path.rglob("kv_workspace_config.json"))
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_unrelated_child_directories_do_not_refuse(tmp_path):
+    (tmp_path / "inputs").mkdir()
+    (tmp_path / "volume").mkdir()
+    (tmp_path / "data").symlink_to(tmp_path / "volume", target_is_directory=True)
+    (tmp_path / "data2").symlink_to(tmp_path / "volume", target_is_directory=True)
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+        }
+    )
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+    assert result.switched is True
+    assert ca.read_anchor(str(tmp_path)).members == ("teamalpha",)

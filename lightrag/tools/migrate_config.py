@@ -76,7 +76,6 @@ from lightrag.kg.anchor_lock import (
     acquire_anchor_lock_shared,
     release_anchor_lock_shared,
 )
-from lightrag.namespace import SERVER_CONFIG_SCOPE
 from lightrag.utils import normalize_server_workspace, setup_logger
 
 # Fields a backend adds to a row it returns and owns itself; never content.
@@ -185,14 +184,18 @@ class ContainerScan:
     """One full, paged enumeration of a configuration container."""
 
     digests: dict[str, str] = field(default_factory=dict)
+    # Rows per workspace, server-global rows (``server_keys``) excluded.
     scopes: dict[str, int] = field(default_factory=dict)
+    # Well-formed rows under a registered server-global key, told apart by
+    # key: a tenant may be named like the server prefix.
+    server_keys: list[str] = field(default_factory=list)
     # The key of every row that is not a well-formed row (``None`` when the
     # row carries no usable key at all).
     malformed: list[str | None] = field(default_factory=list)
     # For every field some backend reserves, the keys of the well-formed rows
     # whose envelope carries it as their own.
     reserved: dict[str, list[str]] = field(default_factory=dict)
-    # The ``workspace`` field of every well-formed row, by key.
+    # The ``workspace`` field of every well-formed workspace row, by key.
     scope_of: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -210,6 +213,7 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
     failure mid-stream propagates: a partial listing is never a complete one.
     """
     identity_key = cs.storage_identity_key()
+    server_keys = cs.server_config_keys()
     id_mirror = _mirrors_id(config)
     scan = ContainerScan()
     try:
@@ -226,6 +230,9 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
             scan.digests[key] = row_digest(payload)
             for name in _RESERVED_FIELDS.intersection(payload):
                 scan.reserved.setdefault(name, []).append(key)
+            if key in server_keys:
+                scan.server_keys.append(key)
+                continue
             scope = payload["workspace"]
             scan.scopes[scope] = scan.scopes.get(scope, 0) + 1
             scan.scope_of[key] = scope
@@ -333,7 +340,9 @@ class JsonShardGroup:
 
     def _validated_disk(self) -> dict[str, cs.ShardContents]:
         """Every non-empty snapshot on disk, validated against the workspace
-        its location names."""
+        its location names. One holding records but no identity or owner row
+        is damaged and refuses, as it does everywhere else: automatic
+        recovery is limited to consistent state."""
         found: dict[str, cs.ShardContents] = {}
         try:
             for shard in discover_shards(self.working_dir):
@@ -342,11 +351,72 @@ class JsonShardGroup:
                     workspace=shard.workspace,
                     location=shard.path,
                 )
-                if not contents.empty:
-                    found[shard.workspace] = contents
+                if contents.empty:
+                    continue
+                if contents.storage_uuid is None or contents.owner is None:
+                    raise cs.shard_invalid_error(
+                        shard.path,
+                        "it holds records but no "
+                        + ("identity" if contents.storage_uuid is None else "owner")
+                        + " row, so it cannot be attributed to a configuration group",
+                    )
+                found[shard.workspace] = contents
         except ConfigurationIdentityError as e:
             raise MigrationRefused(str(e)) from e
         return found
+
+    def _refuse_shared_directories(self) -> None:
+        """Refuse, before any claim, a planned workspace whose directory is
+        one physical directory with another name's: a symlink to another
+        workspace's directory or to ``WORKING_DIR`` (the default workspace's),
+        or another spelling a case-insensitive filesystem resolves to it. Any
+        existing child directory counts, with or without a snapshot -- the
+        next discovery would find the snapshot through it too -- and the
+        claim is reentrant by realpath, so nothing later stops both names
+        opening one snapshot."""
+        names = set(self._planned) | {""}
+        try:
+            entries = list(os.scandir(self.working_dir))
+        except FileNotFoundError:
+            entries = []
+        except OSError as e:
+            raise self._refuse(f"cannot be listed ({type(e).__name__}: {e})") from e
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=True):
+                    names.add(entry.name)
+            except OSError as e:
+                raise self._refuse(
+                    f"cannot inspect {entry.path} ({type(e).__name__}: {e})"
+                ) from e
+        physical: dict[tuple[int, int], list[str]] = {}
+        for name in names:
+            path = os.path.join(self.working_dir, name) if name else self.working_dir
+            try:
+                info = os.stat(path)
+            except FileNotFoundError:
+                continue  # Created by this run; the lexical check covers it.
+            except OSError as e:
+                raise self._refuse(
+                    f"cannot inspect {path} ({type(e).__name__}: {e})"
+                ) from e
+            physical.setdefault((info.st_dev, info.st_ino), []).append(name)
+        shared = sorted(
+            sorted(group)
+            for group in physical.values()
+            if len(group) > 1 and self._planned.intersection(group)
+        )
+        if shared:
+            raise self._refuse(
+                "cannot give these names separate snapshots, because their "
+                "directories are one physical directory (a symlink, or a "
+                "spelling a case-insensitive filesystem resolves to it): "
+                + "; ".join(
+                    ", ".join(_workspace_label(n) for n in group) for group in shared
+                )
+                + ". Replace the symlinks with separate directories, or keep "
+                "the configuration on a database backend"
+            )
 
     async def _open(self, workspace: str) -> None:
         from lightrag.kg.json_kv_impl import JsonKVStorage
@@ -387,7 +457,7 @@ class JsonShardGroup:
             )
         for workspace in sorted(members):
             contents = on_disk[workspace]
-            if contents.storage_uuid != anchor.storage_uuid or contents.owner is None:
+            if contents.storage_uuid != anchor.storage_uuid:
                 raise self._refuse(
                     f"has member {workspace!r} with identity "
                     f"{contents.storage_uuid!r} and owner {contents.owner!r}, "
@@ -409,9 +479,10 @@ class JsonShardGroup:
         the source's workspaces and every snapshot already on disk. A dry run
         opens only the snapshots that exist."""
         scopes = set(source_scan.scopes)
-        if SERVER_CONFIG_SCOPE in scopes:
+        if source_scan.server_keys:
             raise self._refuse(
-                "cannot hold the source's server-scope rows besides the identity: "
+                "cannot hold the source's server-scope rows besides the identity "
+                f"({', '.join(repr(k) for k in sorted(source_scan.server_keys))}): "
                 "JSON snapshots are per workspace, and this version defines no "
                 "rule for splitting a server-wide setting across them"
             )
@@ -457,28 +528,7 @@ class JsonShardGroup:
                 + ". Keep the configuration on a database backend, or rename "
                 "one of each group in the source"
             )
-        # Distinct names whose existing directories are symlinks to one
-        # physical directory -- or to WORKING_DIR itself, the empty
-        # workspace's -- would share one snapshot too: the claim is reentrant
-        # by realpath, so nothing later stops both opening it.
-        physical: dict[str, list[str]] = {os.path.realpath(self.working_dir): [""]}
-        for workspace in self._planned - {""}:
-            path = os.path.realpath(json_config_dir(self.working_dir, workspace))
-            physical.setdefault(path, []).append(workspace)
-        shared = sorted(
-            (path, sorted(names)) for path, names in physical.items() if len(names) > 1
-        )
-        if shared:
-            raise self._refuse(
-                "cannot give these workspaces separate snapshots, because "
-                "their directories resolve to one physical directory: "
-                + "; ".join(
-                    f"{', '.join(_workspace_label(n) for n in names)} -> {path}"
-                    for path, names in shared
-                )
-                + ". Replace the symlinks with separate directories, or keep "
-                "the configuration on a database backend"
-            )
+        self._refuse_shared_directories()
         wanted = set(on_disk) if dry_run else self._planned
         for workspace in sorted(wanted):
             await self._open(workspace)
@@ -869,16 +919,22 @@ async def migrate_configuration(
                 f"the anchor is never moved without a readable source."
             )
         scopes = ", ".join(
-            f"{_workspace_label(scope)} ({n})"
-            for scope, n in sorted(source_scan.scopes.items())
+            [
+                f"{_workspace_label(scope)} ({n})"
+                for scope, n in sorted(source_scan.scopes.items())
+            ]
+            + (
+                [f"server scope ({len(source_scan.server_keys)})"]
+                if source_scan.server_keys
+                else []
+            )
         )
         out(
             f"- Source:  {anchor.backend}, {source_scan.rows} row(s) besides the "
             f"identity; scopes: {scopes or '(none)'}"
         )
         workspaces = sorted(
-            set(source_scan.scopes) - {SERVER_CONFIG_SCOPE}
-            | set(getattr(source, "source_members", ()))
+            set(source_scan.scopes) | set(getattr(source, "source_members", ()))
         )
         out(
             "- Scope:   the WHOLE configuration container moves, every workspace "

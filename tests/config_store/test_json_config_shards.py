@@ -507,6 +507,24 @@ class TestRebinding:
         await _start_and_stop(working_dir, "teamalpha")
         assert _anchor(working_dir).members == ("teamalpha",)
 
+    async def test_a_symlinked_snapshot_file_is_refused_by_the_start_too(
+        self, tmp_path
+    ):
+        """The first atomic save replaces a symlinked snapshot with a regular
+        file, so discovery refuses one -- and a start must refuse it too
+        rather than serve a file a rebind or migration then cannot read."""
+        await _bind(tmp_path, "teamalpha")
+        real = tmp_path / "elsewhere.json"
+        snapshot = Path(json_config_path(str(tmp_path), "teamalpha"))
+        snapshot.rename(real)
+        snapshot.symlink_to(real)
+
+        with pytest.raises(ConfigurationIdentityError, match="symlink"):
+            await _bind(tmp_path, "teamalpha")
+        with pytest.raises(ConfigurationIdentityError, match="symlink"):
+            discover_shards(str(tmp_path))
+        assert snapshot.is_symlink()
+
     def test_a_snapshot_under_an_illegal_name_is_refused_by_path(self, tmp_path):
         bad = tmp_path / "config_storage_anchor.json"
         bad.mkdir()

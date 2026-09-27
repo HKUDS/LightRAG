@@ -24,7 +24,9 @@ Full contract: *JSON configuration shards* in
 * **The scan is bounded.** ``discover_shards`` probes the root snapshot and
   one file in each direct child directory -- a symlinked child included, as
   the running storage follows it too, so registration and discovery agree.
-  It never recurses and never reads a business file. A read error is an error,
+  It never recurses and never reads a business file. The snapshot file itself
+  must be a regular file -- a symlinked one is refused, by a start too, since
+  the first atomic save would replace the link. A read error is an error,
   never absence; a child that holds a snapshot under an illegal name is
   refused by path, never skipped. It reports what survives -- it cannot
   tell a never-created snapshot from a deleted one.
@@ -138,11 +140,13 @@ class DiscoveredShard:
     path: str
 
 
-def _probe(path: str) -> bool:
+def probe_snapshot(path: str) -> bool:
     """Whether ``path`` is a snapshot: ``False`` only when it does not exist.
 
     Anything present that is not a regular file -- a directory, a symlink --
-    is refused rather than followed or skipped.
+    is refused rather than followed or skipped. A start applies the same
+    check to its own snapshot, so a file it serves is never one discovery
+    refuses.
     """
     try:
         info = os.lstat(path)
@@ -150,6 +154,13 @@ def _probe(path: str) -> bool:
         return False
     except OSError as e:
         raise _shard_error(path, f"{type(e).__name__}: {e}") from e
+    if stat.S_ISLNK(info.st_mode):
+        raise _shard_error(
+            path,
+            "it is a symlink, which the first atomic save would replace with a "
+            "regular file (leaving its target stale); replace it with a copy "
+            "of the file it points to",
+        )
     if not stat.S_ISREG(info.st_mode):
         raise _shard_error(path, "it is not a regular file")
     return True
@@ -163,7 +174,7 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
     root = os.path.abspath(working_dir)
     found: list[DiscoveredShard] = []
     root_file = os.path.join(root, CONFIG_JSON_FILE_NAME)
-    if _probe(root_file):
+    if probe_snapshot(root_file):
         found.append(DiscoveredShard(workspace="", path=root_file))
     try:
         entries = list(os.scandir(root))
@@ -180,7 +191,7 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
         except OSError as e:
             raise _shard_error(entry.path, f"{type(e).__name__}: {e}") from e
         path = os.path.join(entry.path, CONFIG_JSON_FILE_NAME)
-        if not _probe(path):
+        if not probe_snapshot(path):
             continue
         try:
             validate_config_workspace(entry.name)
