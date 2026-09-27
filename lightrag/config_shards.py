@@ -42,6 +42,7 @@ import json
 import ntpath
 import os
 import stat
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,6 +78,17 @@ def filesystem_alias(name: str) -> str:
     letters folded. Only ASCII is folded, so the setup wizard, which cannot
     decode ``\\u`` escapes, applies exactly the same rule."""
     return name.rstrip(" .").translate(_ASCII_LOWER)
+
+
+def caseless_alias(name: str) -> str:
+    """The key under which any case-insensitive or normalization-insensitive
+    filesystem (NTFS, APFS) may resolve ``name`` to one directory: Unicode
+    canonical caseless matching, after Windows' trailing dot / space strip.
+    For comparing names that are to be CREATED side by side (a migration's
+    planned set); unlike ``filesystem_alias`` it is not the setup wizard's
+    rule and must not decide a reserved name."""
+    stripped = unicodedata.normalize("NFD", name.rstrip(" ."))
+    return unicodedata.normalize("NFD", stripped.casefold())
 
 
 def validate_config_workspace(workspace: str) -> str:

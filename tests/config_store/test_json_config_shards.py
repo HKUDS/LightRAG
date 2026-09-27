@@ -576,6 +576,19 @@ class TestToolVerification:
         assert binding.action == "verified"
         assert binding.storage_uuid == _anchor(tmp_path).storage_uuid
 
+    async def test_a_symlinked_member_snapshot_is_refused_like_a_start(self, tmp_path):
+        """clear-storage and rebuild-vdb verify here, then flush: an atomic
+        save would replace the link and leave its target stale."""
+        await _start_and_stop(tmp_path, "teamalpha")
+        real = tmp_path / "elsewhere.json"
+        snapshot = Path(json_config_path(str(tmp_path), "teamalpha"))
+        snapshot.rename(real)
+        snapshot.symlink_to(real)
+
+        with pytest.raises(ConfigurationIdentityError, match="symlink"):
+            await self._verify(tmp_path, "teamalpha")
+        assert snapshot.is_symlink()
+
 
 # ---------------------------------------------------------------------------
 # The anchor format

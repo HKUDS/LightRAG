@@ -509,8 +509,13 @@ async def test_a_source_key_a_json_snapshot_cannot_hold_refuses_before_any_write
 
 @pytest.mark.parametrize(
     "scopes",
-    [("Foo", "foo"), ("tenant", "tenant.")],
-    ids=["letter-case", "trailing-dot"],
+    [
+        ("Foo", "foo"),
+        ("tenant", "tenant."),
+        ("\u00c9quipe", "\u00e9quipe"),
+        ("\u00e9quipe", "e\u0301quipe"),
+    ],
+    ids=["letter-case", "trailing-dot", "unicode-case", "nfc-nfd"],
 )
 async def test_scopes_one_filesystem_directory_would_hold_refuse_before_any_write(
     tmp_path, scopes

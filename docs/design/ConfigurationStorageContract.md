@@ -314,8 +314,9 @@ a read or permission error, or a snapshot under a child name that is not a
 legal workspace refuses by path. The snapshot file itself is never
 followed: every save is an atomic replace, so the first flush would turn a
 symlinked snapshot into a regular file and leave its target stale. A start
-applies the same check to its own snapshot before it binds, so the server
-never serves a file a rebind or migration then refuses. Directories without
+applies the same check to its own snapshot before it binds, and so does a
+maintenance tool's verification (`verify_configuration_identity`), so
+neither serves or flushes a file a rebind or migration then refuses. Directories without
 a snapshot are not members.
 
 **Locking.** Registration is a read-modify-write of the member list, so it
@@ -815,8 +816,11 @@ start the server once, stop it and rerun the tool.
   source row whose key is not a registered key of its own scope refuses
   there, since a snapshot written with it would fail verification and could
   not be converged by the next run, and so do distinct workspaces that differ
-  only in ASCII letter case or trailing dots/spaces, which a case-insensitive
-  filesystem would store in one directory, and so does a planned workspace
+  only in letter case, Unicode normalization or trailing dots/spaces, which a
+  case- or normalization-insensitive filesystem would store in one directory
+  (Unicode canonical caseless matching, `caseless_alias`, over the whole
+  planned set before any directory exists -- stricter than the ASCII-only
+  reserved-name rule, which must match the setup wizard), and so does a planned workspace
   whose directory is one physical directory (same device and inode) with
   any other existing child directory or with `WORKING_DIR` itself -- through
   a symlink or a case-insensitive spelling, with or without a snapshot in

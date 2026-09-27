@@ -1765,6 +1765,9 @@ async def verify_configuration_identity(
     with the advice to start the server once.
     """
     if backend == JSON_CONFIG_BACKEND:
+        # As at a start: a tool's next flush would replace a symlinked
+        # snapshot with a regular file and leave its target stale.
+        probe_snapshot(json_config_path(working_dir, workspace))
         if anchor is not None:
             check_anchor_backend(
                 anchor, backend, working_dir=working_dir, container=container
