@@ -209,7 +209,10 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   `.lightrag_storage.lock`, `.lightrag_anchor.lock` or
   `.lightrag_anchor_bind.lock`, in `LightRAG.__post_init__` before any
   directory exists, whatever the backends: such a workspace directory would
-  collide with a root-level file. The same check applies to anchor members,
+  collide with a root-level file. So are their filesystem aliases -- another
+  ASCII letter case (macOS, Windows) or trailing dots and spaces (which
+  Windows strips). Only ASCII is folded, so the setup wizard applies the
+  same rule without decoding escapes. The same check applies to anchor members,
   discovered snapshot locations and migration source scopes. Names are never
   rewritten. `_lightrag_config` is an ordinary workspace.
 - **One group per `working_dir`.** Every snapshot carries the normal
@@ -358,10 +361,12 @@ server then refuses:
   array) and nothing around it, and a repeated key keeps its last value, as
   in Python's `json`. A per-field match would pass a file with an extra
   member, which the server refuses, and could read another backend out of a
-  repeated key. Member names are checked without decoding `\u` escapes: a
-  name that is, or decodes to, a path separator, `.`/`..`, a reserved root
-  name, or a repeat is unreadable; a repeat spelled with different escapes
-  is not modelled.
+  repeated key. Member names are compared literally, so each must have the
+  one spelling the server writes: a raw non-ASCII byte, a `\u` escape of an
+  ASCII character or one with an upper-case hex digit is unreadable. Then a
+  path separator, `.`/`..`, a reserved root name or its ASCII case / trailing
+  dot or space alias, or a repeat is unreadable -- exactly as the server
+  refuses them.
 - **An empty host `WORKING_DIR=` is the server's start directory**, as
   `os.path.abspath("")` makes it; only an unset key gets `./rag_storage`.
 - **A host `WORKING_DIR` using `${...}` is not resolved.** The server's

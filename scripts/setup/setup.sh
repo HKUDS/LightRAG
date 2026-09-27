@@ -1357,11 +1357,13 @@ read_config_anchor() {
   # Anything outside the narrow grammar below is "unreadable", never
   # "absent" -- a looser match would pass a file the server refuses. Member
   # names are compared literally, so each must have ONE spelling: a \u
-  # escape of an ASCII character and a raw non-ASCII byte are refused (the
-  # server writes neither: json.dumps escapes only non-ASCII, as \u), which
-  # leaves every name spelled as the server spells it. Then a separator,
-  # "." / "..", a reserved root file name or a repeat is refused, exactly.
-  local dir content rest value last name
+  # escape of an ASCII character, a \u escape with an upper-case hex digit
+  # and a raw non-ASCII byte are refused (the server writes none of them:
+  # json.dumps escapes only non-ASCII, as lower-case \u), which leaves every
+  # name spelled as the server spells it. Then a separator, "." / "..", a
+  # reserved root file name -- in any letter case, with trailing dots or
+  # spaces, as the server refuses it -- or a repeat is refused.
+  local dir content rest value last name folded
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
   local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -1429,11 +1431,19 @@ read_config_anchor() {
       name="${BASH_REMATCH[1]}"
       value="${value:${#BASH_REMATCH[0]}}"
       [[ "$name" == *[$'\200'-$'\377']* ]] && return 0
+      [[ "$name" =~ \\u[0-9a-f]{0,3}[A-F] ]] && return 0
       case "$name" in
-        *'/'* | *'\\'* | *'\/'* | *'\u00'[0-7][0-9a-fA-F]* | '"."' | '".."' | \
-          '"kv_workspace_config.json"' | '"config_storage_anchor.json"' | \
-          '".lightrag_storage.lock"' | '".lightrag_anchor.lock"' | \
-          '".lightrag_anchor_bind.lock"')
+        *'/'* | *'\\'* | *'\/'* | *'\u00'[0-7][0-9a-f]* | '"."' | '".."')
+          return 0
+          ;;
+      esac
+      folded="${name#\"}"
+      folded="${folded%\"}"
+      while [[ "$folded" == *[' .'] ]]; do folded="${folded%?}"; done
+      case "${folded,,}" in
+        kv_workspace_config.json | config_storage_anchor.json | \
+          .lightrag_storage.lock | .lightrag_anchor.lock | \
+          .lightrag_anchor_bind.lock)
           return 0
           ;;
       esac

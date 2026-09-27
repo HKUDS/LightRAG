@@ -12,9 +12,11 @@ Full contract: *JSON configuration shards* in
 * **Five reserved names.** A workspace may not be named after one of the
   deployment-wide files directly under ``WORKING_DIR`` (the anchor, its two
   locks, the empty workspace's snapshot and claim): its directory would
-  collide with that file. ``validate_config_workspace`` refuses them; it is
-  applied to every workspace a start, an anchor member list, a discovered
-  snapshot or a migration scope names. Names are never rewritten.
+  collide with that file. ``validate_config_workspace`` refuses them, and the
+  aliases ASCII letter case or Windows' trailing dot / space stripping maps
+  onto them; it is applied to every workspace a start, an
+  anchor member list, a discovered snapshot or a migration scope names.
+  Names are never rewritten.
 
 * **The scan is bounded.** ``discover_shards`` probes the root snapshot and
   one file in each direct child directory. It never recurses, never follows
@@ -56,6 +58,18 @@ RESERVED_WORKSPACE_NAMES = frozenset(
         ANCHOR_BIND_LOCK_FILE_NAME,
     }
 )
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_RESERVED_FOLDED = frozenset(
+    name.translate(_ASCII_LOWER) for name in RESERVED_WORKSPACE_NAMES
+)
+
+
+def _filesystem_alias(name: str) -> str:
+    """``name`` as a case-insensitive filesystem (macOS, Windows) resolves an
+    ASCII name: the trailing dots and spaces Windows strips removed, ASCII
+    letters folded. Only ASCII is folded, so the setup wizard, which cannot
+    decode ``\\u`` escapes, applies exactly the same rule."""
+    return name.rstrip(" .").translate(_ASCII_LOWER)
 
 
 def validate_config_workspace(workspace: str) -> str:
@@ -64,12 +78,13 @@ def validate_config_workspace(workspace: str) -> str:
     Raises ``ValueError``; returns the name unchanged.
     """
     validate_workspace(workspace)
-    if workspace in RESERVED_WORKSPACE_NAMES:
+    if _filesystem_alias(workspace) in _RESERVED_FOLDED:
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it is the name of a "
             f"deployment-wide file directly under WORKING_DIR "
-            f"({', '.join(sorted(RESERVED_WORKSPACE_NAMES))}), so its "
-            f"directory would collide with that file. Choose another name."
+            f"({', '.join(sorted(RESERVED_WORKSPACE_NAMES))}, in any ASCII "
+            f"letter case or with trailing dots or spaces), so its directory would "
+            f"collide with that file. Choose another name."
         )
     return workspace
 

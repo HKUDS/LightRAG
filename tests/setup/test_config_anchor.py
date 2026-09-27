@@ -330,6 +330,15 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
         _json_anchor('["\\u002e\\u002e"]'),
         _json_anchor('["\\u006bv_workspace_config.json"]'),
         _json_anchor('["a", "\\u0061"]'),
+        # One name with two escape spellings: the server decodes both to the
+        # same member and refuses the repeat.
+        _json_anchor('["caf\\u00e9", "caf\\u00E9"]'),
+        # Reserved names in another ASCII letter case or with trailing dots or
+        # spaces, which the server refuses as filesystem aliases.
+        _json_anchor('["CONFIG_STORAGE_ANCHOR.JSON"]'),
+        _json_anchor('["Kv_Workspace_Config.json"]'),
+        _json_anchor('["config_storage_anchor.json."]'),
+        _json_anchor('[".lightrag_anchor.lock "]'),
         # The five reserved root names.
         _json_anchor('["kv_workspace_config.json"]'),
         _json_anchor('["config_storage_anchor.json"]'),
@@ -399,6 +408,9 @@ def test_the_wizard_reads_the_backend_the_server_reads(
         _json_anchor("[]"),
         # Dots inside a name are legal: only "." and ".." are refused.
         _json_anchor('["v1.0", "..a"]'),
+        # Only ASCII letter case is folded: a non-ASCII look-alike of a
+        # reserved name (KELVIN SIGN for "k") is an ordinary member.
+        _json_anchor('["\\u212av_workspace_config.json"]'),
     ],
 )
 def test_the_wizard_reads_a_json_anchor_the_server_reads(
