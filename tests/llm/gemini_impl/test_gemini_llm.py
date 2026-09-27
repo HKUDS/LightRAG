@@ -247,6 +247,44 @@ def test_gemini_custom_base_url_is_preserved(monkeypatch, request):
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("value", ["true", "True", "1"])
+def test_gemini_vertexai_env_is_parsed_like_the_sdk(monkeypatch, request, value):
+    """google-genai enables Vertex AI for "true" or "1", so LightRAG must too.
+
+    Otherwise "1" is read as AI Studio mode: an API key is demanded, and the
+    client built with it is switched to Vertex AI by the SDK anyway.
+    """
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    gemini_module._get_gemini_client.cache_clear()
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", value)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    monkeypatch.delenv("LLM_BINDING_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    key = gemini_module._ensure_api_key(None)
+    client = gemini_module._get_gemini_client(key, None)
+
+    assert key == ""
+    assert client.kwargs["vertexai"] is True
+    assert client.kwargs["project"] == "test-project"
+    assert "api_key" not in client.kwargs
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("value", ["false", "0", ""])
+def test_gemini_vertexai_env_off_uses_api_key(monkeypatch, request, value):
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    gemini_module._get_gemini_client.cache_clear()
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", value)
+
+    client = gemini_module._get_gemini_client("test-key", None)
+
+    assert client.kwargs["api_key"] == "test-key"
+    assert "vertexai" not in client.kwargs
+
+
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, request):
     gemini_module = _load_gemini_module(monkeypatch, request)

@@ -87,9 +87,10 @@ def is_vertex_ai_mode() -> bool:
     Check if Vertex AI mode is enabled via environment variable.
 
     Returns:
-        True if GOOGLE_GENAI_USE_VERTEXAI is set to 'true', False otherwise
+        True if GOOGLE_GENAI_USE_VERTEXAI is set to 'true' or '1' (any case,
+        matching the google-genai SDK), False otherwise
     """
-    return os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    return os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
 
 
 def create_gemini_client(use_async: bool = False):
@@ -101,7 +102,7 @@ def create_gemini_client(use_async: bool = False):
     - Vertex AI: Uses ADC (GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
 
     Environment variables for Vertex AI mode:
-    - GOOGLE_GENAI_USE_VERTEXAI: Set to 'true' to enable Vertex AI mode
+    - GOOGLE_GENAI_USE_VERTEXAI: Set to 'true' or '1' to enable Vertex AI mode
     - GOOGLE_CLOUD_PROJECT: Required GCP project ID
     - GOOGLE_CLOUD_LOCATION: Optional region (default: us-central1)
     - GOOGLE_VERTEX_BASE_URL: Optional custom API endpoint (for API gateway proxies)
