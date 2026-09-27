@@ -150,6 +150,18 @@ class TestPaths:
         await _start_and_stop(tmp_path, "")
         await _start_and_stop(tmp_path, "_lightrag_config")
 
+    @pytest.mark.parametrize("name", ["C:", "a:b", "1:", "\u00e9:"])
+    def test_a_drive_qualified_name_refuses_before_any_directory_exists(
+        self, tmp_path, name
+    ):
+        """Windows joins a name whose second character is ':' outside
+        WORKING_DIR (``ntpath.join(root, "C:") == "C:"``); refused on every
+        platform so a deployment stays portable."""
+        working_dir = tmp_path / "rag"
+        with pytest.raises(ValueError, match="drive-qualified"):
+            _rag(working_dir, name)
+        assert not working_dir.exists() or not any(working_dir.iterdir())
+
     @pytest.mark.parametrize("name", [" ", "... ", ". ."])
     def test_a_name_of_only_dots_and_spaces_refuses_before_any_directory_exists(
         self, tmp_path, name

@@ -15,7 +15,9 @@ Full contract: *JSON configuration shards* in
   collide with that file. ``validate_config_workspace`` refuses them, and the
   aliases ASCII letter case or Windows' trailing dot / space stripping maps
   onto them, as well as a name of only dots and spaces (Windows strips it to
-  ``WORKING_DIR`` itself); it is applied to every workspace a start, an
+  ``WORKING_DIR`` itself) and a drive-qualified name such as ``C:`` (Windows
+  joins it outside ``WORKING_DIR``), on every platform so data stays
+  portable; it is applied to every workspace a start, an
   anchor member list, a discovered snapshot or a migration scope names.
   Names are never rewritten.
 
@@ -35,6 +37,7 @@ Full contract: *JSON configuration shards* in
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import stat
 from dataclasses import dataclass
@@ -80,6 +83,12 @@ def validate_config_workspace(workspace: str) -> str:
     Raises ``ValueError``; returns the name unchanged.
     """
     validate_workspace(workspace)
+    if ntpath.splitdrive(workspace)[0]:
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: its second character is "
+            f"':', so Windows reads it as drive-qualified and joins it outside "
+            f"WORKING_DIR. Choose another name."
+        )
     if workspace and not filesystem_alias(workspace):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it consists only of dots "

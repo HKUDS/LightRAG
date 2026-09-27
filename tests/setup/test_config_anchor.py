@@ -339,6 +339,14 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
         _json_anchor('["Kv_Workspace_Config.json"]'),
         _json_anchor('["config_storage_anchor.json."]'),
         _json_anchor('[".lightrag_anchor.lock "]'),
+        # Drive-qualified names (decoded second character ':'), which Windows
+        # joins outside WORKING_DIR: plain, escaped, a surrogate pair, a short
+        # escape.
+        _json_anchor('["C:"]'),
+        _json_anchor('["a:b"]'),
+        _json_anchor('["\\u00e9:"]'),
+        _json_anchor('["\\ud83d\\ude00:"]'),
+        _json_anchor('["\\t:"]'),
         # A name of only dots and spaces, which Windows strips to the root.
         _json_anchor('[" "]'),
         _json_anchor('["... "]'),
@@ -411,6 +419,8 @@ def test_the_wizard_reads_the_backend_the_server_reads(
         _json_anchor("[]"),
         # Dots inside a name are legal: only "." and ".." are refused.
         _json_anchor('["v1.0", "..a"]'),
+        # ':' later than the second character is not a drive prefix.
+        _json_anchor('["ab:c"]'),
         # Only ASCII letter case is folded: a non-ASCII look-alike of a
         # reserved name (KELVIN SIGN for "k") is an ordinary member.
         _json_anchor('["\\u212av_workspace_config.json"]'),

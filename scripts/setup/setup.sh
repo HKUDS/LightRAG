@@ -1362,8 +1362,8 @@ read_config_anchor() {
   # json.dumps escapes only non-ASCII, as lower-case \u), which leaves every
   # name spelled as the server spells it. Then a separator, "." / "..", a
   # reserved root file name -- in any letter case, with trailing dots or
-  # spaces, as the server refuses it --, a name of only dots and spaces, or a
-  # repeat is refused.
+  # spaces, as the server refuses it --, a name of only dots and spaces, a
+  # drive-qualified name (second character ':'), or a repeat is refused.
   local dir content rest value last name folded
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
@@ -1438,6 +1438,9 @@ read_config_anchor() {
           return 0
           ;;
       esac
+      # Drive-qualified (the decoded second character is ':'), as the server
+      # refuses it: ntpath joins such a name outside WORKING_DIR.
+      [[ "$name" =~ ^\"(\\ud[89ab][0-9a-f]{2}\\ud[c-f][0-9a-f]{2}|\\u[0-9a-f]{4}|\\[\"bfnrt]|[^\\\"]): ]] && return 0
       folded="${name#\"}"
       folded="${folded%\"}"
       while [[ "$folded" == *[' .'] ]]; do folded="${folded%?}"; done

@@ -212,8 +212,10 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   collide with a root-level file. So are their filesystem aliases -- another
   ASCII letter case (macOS, Windows) or trailing dots and spaces (which
   Windows strips). A name of only dots and spaces is refused too: Windows
-  strips it to `working_dir` itself, the empty workspace's directory. Only
-  ASCII is folded, so the setup wizard applies the same rule without
+  strips it to `working_dir` itself, the empty workspace's directory. So is
+  a drive-qualified name (second character `:`, as `ntpath` reads it), which
+  Windows joins outside `working_dir`; refused on every platform so a
+  deployment stays portable. Only ASCII is folded, so the setup wizard applies the same rule without
   decoding escapes. The same check applies to anchor members,
   discovered snapshot locations and migration source scopes. Names are never
   rewritten. `_lightrag_config` is an ordinary workspace.
