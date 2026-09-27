@@ -76,7 +76,7 @@ from lightrag.kg.anchor_lock import (
     release_anchor_lock_shared,
 )
 from lightrag.namespace import SERVER_CONFIG_SCOPE
-from lightrag.utils import setup_logger
+from lightrag.utils import normalize_server_workspace, setup_logger
 
 # Fields a backend adds to a row it returns and owns itself; never content.
 BACKEND_METADATA_KEYS = frozenset({"_id", "create_time", "update_time"})
@@ -288,6 +288,10 @@ async def classify_target(
 # ---------------------------------------------------------------------------
 
 
+def _workspace_label(workspace: str) -> str:
+    return repr(workspace) if workspace else "(default workspace)"
+
+
 class JsonShardGroup:
     """Every JSON configuration snapshot of one ``WORKING_DIR``, presented to
     the migration as ONE configuration container.
@@ -309,6 +313,11 @@ class JsonShardGroup:
         # The identity a claimed-but-still-empty target will stamp into each
         # snapshot it creates.
         self._identity: str | None = None
+        # For the migration report: the members a source opened, and the
+        # snapshots a target found on disk / is asked to hold.
+        self.source_members: tuple[str, ...] = ()
+        self._on_disk: set[str] = set()
+        self._planned: set[str] = set()
 
     # -- opening --------------------------------------------------------
 
@@ -382,6 +391,7 @@ class JsonShardGroup:
                 )
         for workspace in sorted(members):
             await self._open(workspace)
+        self.source_members = tuple(sorted(members))
         # Every member was just shown to carry the anchored UUID; a group
         # with no member (a database container that held only its identity,
         # or a first start stopped before registering) has no snapshot to
@@ -407,9 +417,38 @@ class JsonShardGroup:
             except ValueError as e:
                 raise self._refuse(f"cannot hold source scope {scope!r}: {e}") from e
         on_disk = self._validated_disk()
-        wanted = set(on_disk) if dry_run else set(on_disk) | scopes
+        self._on_disk = set(on_disk)
+        self._planned = set(on_disk) | scopes
+        wanted = set(on_disk) if dry_run else self._planned
         for workspace in sorted(wanted):
             await self._open(workspace)
+
+    def describe_target(self, source_scan: "ContainerScan") -> list[str]:
+        """The per-workspace plan a JSON target reports before it writes."""
+        lines = [f"- JSON snapshots under {self.working_dir} ({len(self._planned)}):"]
+        unknown: list[str] = []
+        for workspace in sorted(self._planned):
+            path = json_config_dir(self.working_dir, workspace)
+            if workspace not in source_scan.scopes:
+                what = "kept with identity and owner only (no rows in the source)"
+            elif workspace in self._on_disk:
+                what = "existing snapshot, converged to the source"
+            else:
+                what = "new snapshot"
+                if workspace and not os.path.isdir(path):
+                    unknown.append(workspace)
+            lines.append(f"    {_workspace_label(workspace)}: {what}")
+        if unknown:
+            lines.append(
+                "  Note: "
+                + ", ".join(_workspace_label(ws) for ws in unknown)
+                + (" has" if len(unknown) == 1 else " have")
+                + " no directory under WORKING_DIR yet. If a workspace "
+                "belongs to another deployment sharing the source container, "
+                "its snapshot here is only a stale copy; the source keeps the "
+                "live rows."
+            )
+        return lines
 
     # -- the container interface ----------------------------------------
 
@@ -698,6 +737,7 @@ async def migrate_configuration(
     out: Callable[[str], None] = print,
     release_claims: Callable[[], None] = lambda: None,
     expected_anchor: StorageAnchor | None = None,
+    current_workspace: str | None = None,
 ) -> MigrationResult:
     """Run the seven steps; raise ``MigrationRefused`` / ``MigrationFailed``
     (or a ``ConfigurationStorageError``) on anything short of "switched".
@@ -769,12 +809,45 @@ async def migrate_configuration(
                 f"the anchor is never moved without a readable source."
             )
         scopes = ", ".join(
-            f"{scope} ({n})" for scope, n in sorted(source_scan.scopes.items())
+            f"{_workspace_label(scope)} ({n})"
+            for scope, n in sorted(source_scan.scopes.items())
         )
         out(
             f"- Source:  {anchor.backend}, {source_scan.rows} row(s) besides the "
             f"identity; scopes: {scopes or '(none)'}"
         )
+        workspaces = sorted(
+            set(source_scan.scopes) - {SERVER_CONFIG_SCOPE}
+            | set(getattr(source, "source_members", ()))
+        )
+        out(
+            "- Scope:   the WHOLE configuration container moves, every workspace "
+            "below"
+            + (
+                f" -- not only this server's WORKSPACE "
+                f"({_workspace_label(current_workspace)})"
+                if current_workspace is not None
+                else ""
+            )
+        )
+        out(
+            f"- Workspaces to migrate ({len(workspaces)}): "
+            + (", ".join(_workspace_label(ws) for ws in workspaces) or "(none)")
+        )
+        members = getattr(source, "source_members", None)
+        if members is not None:
+            empty = sorted(set(members) - set(source_scan.scopes))
+            out(
+                f"  (every registered JSON snapshot under {working_dir}"
+                + (
+                    "; "
+                    + ", ".join(_workspace_label(ws) for ws in empty)
+                    + " hold no configuration rows, so nothing is copied for them"
+                    if empty
+                    else ""
+                )
+                + ")"
+            )
         if source_scan.malformed:
             raise MigrationRefused(
                 f"The source holds {len(source_scan.malformed)} row(s) that are "
@@ -812,6 +885,8 @@ async def migrate_configuration(
         prepare = getattr(target, "prepare_target", None)
         if prepare is not None:
             await prepare(source_scan, dry_run=dry_run)
+            for line in target.describe_target(source_scan):
+                out(line)
         verdict = await classify_target(
             target, anchor.storage_uuid, page_size=page_size
         )
@@ -1132,11 +1207,28 @@ async def async_main(argv: list[str] | None = None) -> int:
         os.environ.update(overlay)
         print("\nlightrag-migrate-config")
         print(f"- Working dir: {working_dir}")
+        current_workspace = normalize_server_workspace(os.environ.get("WORKSPACE", ""))
         if not args.dry_run and not args.yes:
+            # The inventory first, read-only, so the operator confirms the
+            # whole list -- the migration is never only this server's
+            # workspace.
+            print("\nWhat would be migrated (read-only preview):")
+            await migrate_configuration(
+                working_dir=working_dir,
+                target_backend=args.target_backend,
+                open_source=_opener(working_dir, claims, source=True),
+                open_target=_opener(working_dir, claims, source=False),
+                dry_run=True,
+                page_size=max(1, args.page_size),
+                release_claims=lambda: _release_claims(claims),
+                expected_anchor=anchor,
+                current_workspace=current_workspace or "",
+            )
             print(
-                "\nEvery server, SDK process and maintenance tool using this "
-                "working directory (and every deployment sharing the source "
-                "container) must be stopped."
+                "\nEvery workspace listed above is migrated, not only this "
+                "server's. Every server, SDK process and maintenance tool using "
+                "this working directory (and every deployment sharing the "
+                "source container) must be stopped."
             )
             answer = input("Type 'migrate' to continue: ").strip()
             if answer != "migrate":
@@ -1153,6 +1245,7 @@ async def async_main(argv: list[str] | None = None) -> int:
             release_claims=lambda: _release_claims(claims),
             # The overlay above chose the source's settings from this anchor.
             expected_anchor=anchor,
+            current_workspace=current_workspace or "",
         )
     except (
         MigrationRefused,

@@ -799,6 +799,14 @@ start the server once, stop it and rerun the tool.
   snapshot whose workspace has no rows left in the source keeps identity and
   owner only and stays a member, so it never becomes an unregistered stale
   snapshot. The committed JSON anchor lists every snapshot that holds rows.
+- **The report says the whole container moves.** Every run (and, before the
+  interactive confirmation, a read-only preview) lists every workspace to be
+  migrated, stating that it is not only the invoking server's `WORKSPACE`;
+  a JSON target also lists each snapshot's fate and flags workspaces with no
+  directory under `working_dir` as possibly another deployment's, copied as
+  stale. The scope itself is deliberately not narrowed: omitting a sibling
+  instance's workspace would lose its recorded baselines when the anchor
+  switches.
 - **It keeps the UUID.** The backend type already tells the source and the
   target apart.
 - **It resolves both sides' connections from separate env files.** Two

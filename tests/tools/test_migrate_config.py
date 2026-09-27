@@ -306,7 +306,7 @@ class TestTheHappyPath:
         assert target.calls and not _writes(target)
         assert open(ca.anchor_path(str(tmp_path)), "rb").read() == before
         report = "\n".join(lines)
-        assert "7 row(s)" in report and "alpha (3)" in report
+        assert "7 row(s)" in report and "'alpha' (3)" in report
         assert "will claim" in report
 
 
@@ -998,8 +998,32 @@ class TestCommandLine:
         monkeypatch.setattr("builtins.input", lambda prompt="": "no")
         assert await mc.async_main(["--target-backend", "MongoKVStorage"]) == 0
         assert "nothing was written" in capsys.readouterr().out
-        assert target.calls == []
+        # The read-only preview classifies the target; nothing is written.
+        assert [call for call in target.calls if call[0] != "read"] == []
         assert ca.read_anchor(working_dir).backend == "PGKVStorage"
+
+    async def test_the_whole_inventory_is_shown_before_the_prompt(
+        self, monkeypatch, capsys
+    ):
+        """The operator confirms the list of every workspace that moves, not
+        only this server's WORKSPACE."""
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        self._wire(monkeypatch, Container(_source_rows()), Container())
+        monkeypatch.setenv("WORKSPACE", "alpha")
+        seen_before_prompt: list[str] = []
+
+        def _answer(prompt=""):
+            seen_before_prompt.append(capsys.readouterr().out)
+            return "no"
+
+        monkeypatch.setattr("builtins.input", _answer)
+        assert await mc.async_main(["--target-backend", "MongoKVStorage"]) == 0
+        shown = seen_before_prompt[0]
+        assert "the WHOLE configuration container moves" in shown
+        assert "-- not only this server's WORKSPACE ('alpha')" in shown
+        assert "Workspaces to migrate (2): 'alpha', 'beta'" in shown
+        assert "not only this server's" in shown.split("Workspaces to migrate")[1]
 
     async def test_a_failure_says_the_anchor_is_unchanged(self, monkeypatch, capsys):
         working_dir = os.environ["WORKING_DIR"]

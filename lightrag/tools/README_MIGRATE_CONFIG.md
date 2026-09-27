@@ -81,7 +81,16 @@ lightrag-migrate-config --target-backend OpenSearchKVStorage \
 | `--target-env` | env file with the **target** connection (default: the current environment) |
 | `--dry-run` | report the anchor, the source (row count, workspace scopes), the target and the verdict on it; write no row (opening the target still provisions a missing table, collection or index, as any start does) |
 | `--assume-exclusive` | proceed where the anchor lock cannot be taken (see *Locking*) |
-| `--yes` | skip the confirmation prompt |
+| `--yes` | skip the confirmation prompt (and the read-only preview shown before it) |
+
+**The whole container moves, never only this server's workspace.** Before
+the confirmation prompt the tool prints a read-only preview: every workspace
+that will be migrated (with JSON, every registered snapshot under
+`WORKING_DIR`), and for a JSON target each snapshot it will create, converge
+or keep with identity and owner only. A workspace that has no directory under
+`WORKING_DIR` yet is flagged: if it belongs to another deployment sharing the
+source container, its snapshot here is only a stale copy, while the source
+keeps the live rows. `--dry-run` prints the same report.
 
 **Connections.** The two backends are of different types, so they read
 different variables: `POSTGRES_*`, `MONGO_*` / `MONGODB_*` and `OPENSEARCH_*`;

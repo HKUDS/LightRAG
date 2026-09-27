@@ -399,3 +399,73 @@ async def test_an_empty_json_group_migrates_back_out_with_its_identity(tmp_path)
     assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
         "PGKVStorage", storage_uuid
     )
+
+
+async def _report(working_dir, *, source, target, target_backend):
+    lines: list[str] = []
+    claims: list[str] = []
+
+    async def _open_database(backend):
+        return source if not isinstance(source, str) else target
+
+    await mc.migrate_configuration(
+        working_dir=str(working_dir),
+        target_backend=target_backend,
+        open_source=(
+            mc._opener(str(working_dir), claims, source=True)
+            if source == "json"
+            else _open_database
+        ),
+        open_target=(
+            mc._opener(str(working_dir), claims, source=False)
+            if target == "json"
+            else _open_database
+        ),
+        dry_run=True,
+        out=lines.append,
+        release_claims=lambda: mc._release_claims(claims),
+        current_workspace="teamalpha",
+    )
+    return "\n".join(lines)
+
+
+async def test_a_json_source_reports_every_registered_snapshot(tmp_path):
+    await _start_and_stop(tmp_path, "teamalpha")
+    await _start_and_stop(tmp_path, "teambeta")
+    report = await _report(
+        tmp_path, source="json", target=Database(), target_backend="PGKVStorage"
+    )
+    assert "-- not only this server's WORKSPACE ('teamalpha')" in report
+    assert "Workspaces to migrate (2): 'teamalpha', 'teambeta'" in report
+    assert "every registered JSON snapshot under" in report
+
+
+async def test_a_json_target_reports_each_snapshot_and_flags_unknown_ones(tmp_path):
+    """Into JSON, the plan names every snapshot and whether it is new,
+    converged or kept metadata-only, and flags a workspace with no directory
+    under WORKING_DIR -- possibly another deployment's, copied as stale."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    (tmp_path / "teamalpha").mkdir()
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+            cs.embedding_baseline_key("elsewhere", "entities"): _baseline_row(
+                "elsewhere"
+            ),
+        }
+    )
+    report = await _report(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+    assert "Workspaces to migrate (2): 'elsewhere', 'teamalpha'" in report
+    assert "'teamalpha': new snapshot" in report
+    assert "'elsewhere': new snapshot" in report
+    note = report.split("Note:")[1]
+    assert "'elsewhere'" in note and "'teamalpha'" not in note
+    assert "stale copy" in note
