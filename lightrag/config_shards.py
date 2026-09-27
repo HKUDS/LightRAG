@@ -14,7 +14,8 @@ Full contract: *JSON configuration shards* in
   locks, the empty workspace's snapshot and claim): its directory would
   collide with that file. ``validate_config_workspace`` refuses them, and the
   aliases ASCII letter case or Windows' trailing dot / space stripping maps
-  onto them; it is applied to every workspace a start, an
+  onto them, as well as a name of only dots and spaces (Windows strips it to
+  ``WORKING_DIR`` itself); it is applied to every workspace a start, an
   anchor member list, a discovered snapshot or a migration scope names.
   Names are never rewritten.
 
@@ -78,6 +79,13 @@ def validate_config_workspace(workspace: str) -> str:
     Raises ``ValueError``; returns the name unchanged.
     """
     validate_workspace(workspace)
+    if workspace and not _filesystem_alias(workspace):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: it consists only of dots "
+            f"and spaces, which Windows strips from a path component, so its "
+            f"directory would be WORKING_DIR itself -- the empty workspace's. "
+            f"Choose another name."
+        )
     if _filesystem_alias(workspace) in _RESERVED_FOLDED:
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it is the name of a "

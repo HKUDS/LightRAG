@@ -211,8 +211,10 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   directory exists, whatever the backends: such a workspace directory would
   collide with a root-level file. So are their filesystem aliases -- another
   ASCII letter case (macOS, Windows) or trailing dots and spaces (which
-  Windows strips). Only ASCII is folded, so the setup wizard applies the
-  same rule without decoding escapes. The same check applies to anchor members,
+  Windows strips). A name of only dots and spaces is refused too: Windows
+  strips it to `working_dir` itself, the empty workspace's directory. Only
+  ASCII is folded, so the setup wizard applies the same rule without
+  decoding escapes. The same check applies to anchor members,
   discovered snapshot locations and migration source scopes. Names are never
   rewritten. `_lightrag_config` is an ordinary workspace.
 - **One group per `working_dir`.** Every snapshot carries the normal
@@ -793,7 +795,10 @@ start the server once, stop it and rerun the tool.
   identity, or a first start stopped before registering) is still valid and
   migrates with the anchor's UUID. Owner rows are layout metadata: hidden from the copy, never
   written to a database. As a target, the source's workspaces and every
-  snapshot already on disk are claimed and validated before any write; a
+  snapshot already on disk are claimed and validated before any write -- a
+  source row whose key is not a registered key of its own scope refuses
+  there, since a snapshot written with it would fail verification and could
+  not be converged by the next run; a
   same-UUID snapshot (a retained source of an earlier JSON-to-database
   migration) is this migration's to converge, anything foreign refuses. A
   snapshot whose workspace has no rows left in the source keeps identity and

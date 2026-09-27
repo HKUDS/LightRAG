@@ -191,6 +191,8 @@ class ContainerScan:
     # For every field some backend reserves, the keys of the well-formed rows
     # whose envelope carries it as their own.
     reserved: dict[str, list[str]] = field(default_factory=dict)
+    # The ``workspace`` field of every well-formed row, by key.
+    scope_of: dict[str, str] = field(default_factory=dict)
 
     @property
     def rows(self) -> int:
@@ -225,6 +227,7 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
                 scan.reserved.setdefault(name, []).append(key)
             scope = payload["workspace"]
             scan.scopes[scope] = scan.scopes.get(scope, 0) + 1
+            scan.scope_of[key] = scope
     except ConfigurationStorageError:
         raise
     except CorruptStorageRecordError as e:
@@ -416,6 +419,22 @@ class JsonShardGroup:
                 validate_config_workspace(scope)
             except ValueError as e:
                 raise self._refuse(f"cannot hold source scope {scope!r}: {e}") from e
+        # Every row must be a key a JSON snapshot accepts for its scope, or
+        # the verification after the copy would refuse a snapshot this run
+        # already wrote -- one the next run could then not converge.
+        foreign = sorted(
+            key
+            for key, scope in source_scan.scope_of.items()
+            if key not in cs.workspace_config_keys(scope)
+        )
+        if foreign:
+            raise self._refuse(
+                f"cannot hold {len(foreign)} source row(s) whose key is not a "
+                f"registered key of the row's workspace: "
+                + ", ".join(repr(key) for key in foreign[:10])
+                + (", ..." if len(foreign) > 10 else "")
+                + ". Repair or remove them in the source and re-run"
+            )
         on_disk = self._validated_disk()
         self._on_disk = set(on_disk)
         self._planned = set(on_disk) | scopes

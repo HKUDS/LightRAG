@@ -150,6 +150,18 @@ class TestPaths:
         await _start_and_stop(tmp_path, "")
         await _start_and_stop(tmp_path, "_lightrag_config")
 
+    @pytest.mark.parametrize("name", [" ", "... ", ". ."])
+    def test_a_name_of_only_dots_and_spaces_refuses_before_any_directory_exists(
+        self, tmp_path, name
+    ):
+        """Windows strips trailing dots and spaces from a path component, so
+        such a workspace would use WORKING_DIR itself: the empty workspace's
+        snapshot."""
+        working_dir = tmp_path / "rag"
+        with pytest.raises(ValueError, match="only of dots"):
+            _rag(working_dir, name)
+        assert not working_dir.exists() or not any(working_dir.iterdir())
+
     @pytest.mark.parametrize(
         "name",
         [

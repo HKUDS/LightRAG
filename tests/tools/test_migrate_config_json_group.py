@@ -469,3 +469,39 @@ async def test_a_json_target_reports_each_snapshot_and_flags_unknown_ones(tmp_pa
     note = report.split("Note:")[1]
     assert "'elsewhere'" in note and "'teamalpha'" not in note
     assert "stale copy" in note
+
+
+async def test_a_source_key_a_json_snapshot_cannot_hold_refuses_before_any_write(
+    tmp_path,
+):
+    """A well-formed row under an unregistered key (or one that does not
+    belong to its scope) would be written and then refused by the layout
+    verification, leaving a snapshot the next run could not converge. It is
+    refused before the target is claimed."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    stray = {**_baseline_row("teamalpha"), "value": {"note": "future key"}}
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+            "teamalpha/some.future.key": stray,
+            # A registered key filed under another workspace's scope.
+            cs.embedding_baseline_key("teambeta", "chunks"): _baseline_row(
+                "teamalpha", "chunks"
+            ),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="not a registered key") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert "teamalpha/some.future.key" in str(info.value)
+    assert "teambeta/embedding/chunks" in str(info.value)
+    assert not (tmp_path / "teamalpha").exists()
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"

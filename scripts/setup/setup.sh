@@ -1362,7 +1362,8 @@ read_config_anchor() {
   # json.dumps escapes only non-ASCII, as lower-case \u), which leaves every
   # name spelled as the server spells it. Then a separator, "." / "..", a
   # reserved root file name -- in any letter case, with trailing dots or
-  # spaces, as the server refuses it -- or a repeat is refused.
+  # spaces, as the server refuses it --, a name of only dots and spaces, or a
+  # repeat is refused.
   local dir content rest value last name folded
   local LC_ALL=C
   local ws=$'[ \t\n\r]*'
@@ -1440,6 +1441,7 @@ read_config_anchor() {
       folded="${name#\"}"
       folded="${folded%\"}"
       while [[ "$folded" == *[' .'] ]]; do folded="${folded%?}"; done
+      [[ -z "$folded" && "$name" != '""' ]] && return 0
       case "${folded,,}" in
         kv_workspace_config.json | config_storage_anchor.json | \
           .lightrag_storage.lock | .lightrag_anchor.lock | \

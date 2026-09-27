@@ -339,6 +339,9 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
         _json_anchor('["Kv_Workspace_Config.json"]'),
         _json_anchor('["config_storage_anchor.json."]'),
         _json_anchor('[".lightrag_anchor.lock "]'),
+        # A name of only dots and spaces, which Windows strips to the root.
+        _json_anchor('[" "]'),
+        _json_anchor('["... "]'),
         # The five reserved root names.
         _json_anchor('["kv_workspace_config.json"]'),
         _json_anchor('["config_storage_anchor.json"]'),
