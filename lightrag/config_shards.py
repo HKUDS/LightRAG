@@ -20,8 +20,9 @@ Full contract: *JSON configuration shards* in
   Names are never rewritten.
 
 * **The scan is bounded.** ``discover_shards`` probes the root snapshot and
-  one file in each direct child directory. It never recurses, never follows
-  a symlink, and never reads a business file. A read error is an error,
+  one file in each direct child directory -- a symlinked child included, as
+  the running storage follows it too, so registration and discovery agree.
+  It never recurses and never reads a business file. A read error is an error,
   never absence; a child that holds a snapshot under an illegal name is
   refused by path, never skipped. It reports what survives -- it cannot
   tell a never-created snapshot from a deleted one.
@@ -65,7 +66,7 @@ _RESERVED_FOLDED = frozenset(
 )
 
 
-def _filesystem_alias(name: str) -> str:
+def filesystem_alias(name: str) -> str:
     """``name`` as a case-insensitive filesystem (macOS, Windows) resolves an
     ASCII name: the trailing dots and spaces Windows strips removed, ASCII
     letters folded. Only ASCII is folded, so the setup wizard, which cannot
@@ -79,14 +80,14 @@ def validate_config_workspace(workspace: str) -> str:
     Raises ``ValueError``; returns the name unchanged.
     """
     validate_workspace(workspace)
-    if workspace and not _filesystem_alias(workspace):
+    if workspace and not filesystem_alias(workspace):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it consists only of dots "
             f"and spaces, which Windows strips from a path component, so its "
             f"directory would be WORKING_DIR itself -- the empty workspace's. "
             f"Choose another name."
         )
-    if _filesystem_alias(workspace) in _RESERVED_FOLDED:
+    if filesystem_alias(workspace) in _RESERVED_FOLDED:
         raise ValueError(
             f"Invalid workspace name {workspace!r}: it is the name of a "
             f"deployment-wide file directly under WORKING_DIR "
@@ -147,8 +148,9 @@ def _probe(path: str) -> bool:
 
 def discover_shards(working_dir: str) -> list[DiscoveredShard]:
     """Every JSON configuration snapshot under ``working_dir``, sorted by
-    workspace: the root one (the empty workspace), then one per direct,
-    non-symlink child directory that holds one. See the module rules."""
+    workspace: the root one (the empty workspace), then one per direct child
+    directory (a symlink to a directory included) that holds one. See the
+    module rules."""
     root = os.path.abspath(working_dir)
     found: list[DiscoveredShard] = []
     root_file = os.path.join(root, CONFIG_JSON_FILE_NAME)
@@ -162,7 +164,9 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
         raise _shard_error(root, f"cannot list it ({type(e).__name__}: {e})") from e
     for entry in entries:
         try:
-            if not entry.is_dir(follow_symlinks=False):
+            # Followed, like the running storage follows it; only the one
+            # snapshot file inside is probed, so a link loop cannot recurse.
+            if not entry.is_dir(follow_symlinks=True):
                 continue
         except OSError as e:
             raise _shard_error(entry.path, f"{type(e).__name__}: {e}") from e

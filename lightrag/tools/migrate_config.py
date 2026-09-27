@@ -58,6 +58,7 @@ from lightrag.config_anchor import (
 )
 from lightrag.config_shards import (
     discover_shards,
+    filesystem_alias,
     json_config_dir,
     read_shard_file,
     validate_config_workspace,
@@ -438,6 +439,24 @@ class JsonShardGroup:
         on_disk = self._validated_disk()
         self._on_disk = set(on_disk)
         self._planned = set(on_disk) | scopes
+        # Distinct scopes that one case-insensitive (or trailing dot / space
+        # stripping) filesystem resolves to one directory would share one
+        # snapshot: refused for the complete set, before any claim.
+        aliases: dict[str, list[str]] = {}
+        for workspace in self._planned:
+            aliases.setdefault(filesystem_alias(workspace), []).append(workspace)
+        colliding = sorted(
+            sorted(names) for names in aliases.values() if len(names) > 1
+        )
+        if colliding:
+            raise self._refuse(
+                "cannot give these workspaces separate snapshots, because they "
+                "differ only in ASCII letter case or trailing dots/spaces and a "
+                "case-insensitive filesystem stores them in one directory: "
+                + "; ".join(", ".join(repr(n) for n in names) for names in colliding)
+                + ". Keep the configuration on a database backend, or rename "
+                "one of each group in the source"
+            )
         wanted = set(on_disk) if dry_run else self._planned
         for workspace in sorted(wanted):
             await self._open(workspace)

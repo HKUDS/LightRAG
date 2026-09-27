@@ -468,9 +468,32 @@ class TestRebinding:
         (tmp_path / "deep" / "deeper" / "kv_workspace_config.json").write_text("{}")
         (tmp_path / "real").mkdir()
         (tmp_path / "real" / "kv_workspace_config.json").write_text("{}")
-        (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+        (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
+        (tmp_path / "dangling").symlink_to(tmp_path / "gone", target_is_directory=True)
 
+        # Only one file per direct child is probed: the link back to the root
+        # finds the root snapshot's absence (none here) and never recurses.
         assert [s.workspace for s in discover_shards(str(tmp_path))] == ["real"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+    async def test_a_symlinked_workspace_directory_is_discovered_like_it_runs(
+        self, tmp_path
+    ):
+        """The running storage follows a symlinked workspace directory, so
+        the scan does too: the member it registers survives a rebind, and a
+        migration does not report it missing."""
+        volume = tmp_path / "volume" / "teamalpha"
+        volume.mkdir(parents=True)
+        working_dir = tmp_path / "rag"
+        working_dir.mkdir()
+        (working_dir / "teamalpha").symlink_to(volume, target_is_directory=True)
+        await _start_and_stop(working_dir, "teamalpha")
+        assert (volume / "kv_workspace_config.json").is_file()
+
+        assert [s.workspace for s in discover_shards(str(working_dir))] == ["teamalpha"]
+        (working_dir / "config_storage_anchor.json").unlink()
+        await _start_and_stop(working_dir, "teamalpha")
+        assert _anchor(working_dir).members == ("teamalpha",)
 
     def test_a_snapshot_under_an_illegal_name_is_refused_by_path(self, tmp_path):
         bad = tmp_path / "config_storage_anchor.json"

@@ -302,8 +302,12 @@ database migration may be stale; the rebind never claims to synchronize
 them. Conflicts, unreadable files and invalid metadata still refuse.
 
 **The scan is bounded.** `discover_shards` probes the root snapshot and one
-file in each direct, non-symlink child directory; it never recurses and
-never reads a business file. Something present that is not a regular file,
+file in each direct child directory. A child that is a symlink to a
+directory is followed for that one probe, because the running storage
+follows it too: a workspace registered through a symlinked directory is
+discovered by a rebind and a migration alike. It never recurses (a link back
+to `working_dir` is probed once, not walked) and never reads a business
+file. Something present that is not a regular file,
 a read or permission error, or a snapshot under a child name that is not a
 legal workspace refuses by path. Directories without a snapshot are not
 members.
@@ -798,7 +802,9 @@ start the server once, stop it and rerun the tool.
   snapshot already on disk are claimed and validated before any write -- a
   source row whose key is not a registered key of its own scope refuses
   there, since a snapshot written with it would fail verification and could
-  not be converged by the next run; a
+  not be converged by the next run, and so do distinct workspaces that differ
+  only in ASCII letter case or trailing dots/spaces, which a case-insensitive
+  filesystem would store in one directory; a
   same-UUID snapshot (a retained source of an earlier JSON-to-database
   migration) is this migration's to converge, anything foreign refuses. A
   snapshot whose workspace has no rows left in the source keeps identity and

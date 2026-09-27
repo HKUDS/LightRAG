@@ -505,3 +505,35 @@ async def test_a_source_key_a_json_snapshot_cannot_hold_refuses_before_any_write
     assert "teambeta/embedding/chunks" in str(info.value)
     assert not (tmp_path / "teamalpha").exists()
     assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [("Foo", "foo"), ("tenant", "tenant.")],
+    ids=["letter-case", "trailing-dot"],
+)
+async def test_scopes_one_filesystem_directory_would_hold_refuse_before_any_write(
+    tmp_path, scopes
+):
+    """Distinct database workspaces that a case-insensitive (or trailing dot
+    stripping) filesystem stores in one directory cannot get separate
+    snapshots; the whole set is checked before anything is claimed."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    rows = {IDENTITY_KEY: _identity_row(storage_uuid)}
+    for scope in scopes:
+        rows[cs.embedding_baseline_key(scope, "entities")] = _baseline_row(scope)
+    database = Database(rows)
+
+    with pytest.raises(mc.MigrationRefused, match="one directory") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert all(repr(scope) in str(info.value) for scope in scopes)
+    assert not any(tmp_path.iterdir()) or {p.name for p in tmp_path.iterdir()} <= {
+        "config_storage_anchor.json",
+        ".lightrag_anchor.lock",
+    }
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
