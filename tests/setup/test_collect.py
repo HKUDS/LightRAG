@@ -272,7 +272,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
             ['ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"'],
             "collect_neo4j_config yes",
             "NEO4J_URI",
-            "neo4j://localhost:7687",
+            "bolt://localhost:7687",
         ),
         (
             ['ENV_VALUES[MONGO_URI]="mongodb://mongo.example.com:27018/"'],
@@ -308,7 +308,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
             ['ENV_VALUES[NEO4J_URI]="neo4j://localhost:7777"'],
             "collect_neo4j_config yes",
             "NEO4J_URI",
-            "neo4j://localhost:7687",
+            "bolt://localhost:7687",
         ),
         (
             ['ENV_VALUES[MILVUS_URI]="http://localhost:29530"'],
@@ -1487,6 +1487,28 @@ printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file"
         in generated_compose
     )
     assert 'NEO4J_dbms_default__database: "custom-db-2"' in generated_compose
+
+
+def test_collect_neo4j_config_bundled_service_uses_direct_connection_scheme() -> None:
+    """Bundled single-node Neo4j should use a direct, non-routing URI."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_neo4j_config yes
+
+printf 'NEO4J_URI=%s\\n' "${{ENV_VALUES[NEO4J_URI]}}"
+printf 'COMPOSE_NEO4J_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[NEO4J_URI]}}"
+""")
+    values = parse_lines(output)
+    assert values["NEO4J_URI"] == "bolt://localhost:7687"
+    assert values["COMPOSE_NEO4J_URI"] == "bolt://neo4j:7687"
 
 
 def test_collect_neo4j_config_bundled_service_defaults_database_when_unset() -> None:

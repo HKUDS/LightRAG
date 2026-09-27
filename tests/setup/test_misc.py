@@ -475,7 +475,7 @@ validate_sensitive_env_literals() {{ return 0; }}
 finalize_base_setup
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'NEO4J_URI: "bolt://neo4j:7687"' in result
     assert 'MILVUS_URI: "http://milvus:19530"' in result
     assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
     assert 'MILVUS_URI: "http://host.docker.internal:19530"' not in result
@@ -942,7 +942,7 @@ env_storage_flow
             "mongodb://root:root@localhost:27017/",
             "mongodb://root:root@host.docker.internal:27017/",
         ),
-        ("NEO4J_URI", "neo4j://localhost:7687", "neo4j://host.docker.internal:7687"),
+        ("NEO4J_URI", "neo4j://localhost:7687", "bolt://host.docker.internal:7687"),
         ("MILVUS_URI", "http://localhost:19530", "http://host.docker.internal:19530"),
         ("QDRANT_URL", "http://127.0.0.1:6333", "http://host.docker.internal:6333"),
         ("MEMGRAPH_URI", "bolt://localhost:7687", "bolt://host.docker.internal:7687"),
@@ -988,6 +988,44 @@ prepare_compose_runtime_overrides
 printf '{env_key}=%s\\n' "${{COMPOSE_ENV_OVERRIDES[{env_key}]}}\"
 """)
     assert values[env_key] == expected_value
+
+
+def test_normalize_neo4j_uri_for_compose_preserves_cluster_routing_uri() -> None:
+    """Non-local Neo4j endpoints should retain routing semantics."""
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+printf 'NEO4J_URI=%s\\n' "$(normalize_neo4j_uri_for_compose 'neo4j://graph.example:7687')"
+""")
+    assert values["NEO4J_URI"] == "neo4j://graph.example:7687"
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        (
+            "neo4j://host.docker.internal:7687",
+            "bolt://host.docker.internal:7687",
+        ),
+        (
+            "neo4j://localhost:7687,localhost:7688",
+            "neo4j://localhost:7687,localhost:7688",
+        ),
+    ],
+    ids=["host-single-node", "multiple-routing-seeds"],
+)
+def test_normalize_neo4j_uri_for_compose_handles_single_node_only(
+    uri: str, expected: str
+) -> None:
+    """Only a single host endpoint may switch from routing to direct Bolt."""
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+printf 'NEO4J_URI=%s\\n' "$(normalize_neo4j_uri_for_compose '{uri}')"
+""")
+    assert values["NEO4J_URI"] == expected
 
 
 @pytest.mark.parametrize(
@@ -1119,7 +1157,7 @@ validate_security_config() {{ return 0; }}
 finalize_server_setup
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'NEO4J_URI: "bolt://neo4j:7687"' in result
     assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
 
 
