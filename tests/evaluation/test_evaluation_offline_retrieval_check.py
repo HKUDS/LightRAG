@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from lightrag.evaluation.offline_retrieval_check import (
+    QueryResult,
     audit_samples,
     load_cases,
     load_documents,
@@ -12,6 +13,18 @@ from lightrag.evaluation.offline_retrieval_check import (
 
 
 class OfflineRetrievalCheckTests(unittest.TestCase):
+    def test_recall_at_ignores_duplicate_expected_documents(self):
+        # Oracle data can list the same expected document twice. The single
+        # relevant document is retrieved, so recall should be 1.0, not
+        # deflated by counting the duplicate in the denominator.
+        result = QueryResult(
+            question="dup",
+            expected=["alpha.md", "alpha.md"],
+            ranked=["alpha.md", "beta.md"],
+        )
+
+        self.assertEqual(result.recall_at(2), 1.0)
+
     def test_expected_document_ranks_first(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
