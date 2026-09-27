@@ -15,13 +15,14 @@ Every "other process" here is a real subprocess (``_working_dir_lock_probe.py``
 in a fresh interpreter), never a ``fork`` of the pytest process: a session
 that has run thousands of tests is multi-threaded, and forking it makes CPython
 emit a DeprecationWarning that cannot be promoted to an error, only filtered.
-The probe is single-threaded, so it can assert the warning ABSENT. Each spawn
-costs about a second, which the whole file pays seven times.
+The probe waits until single-threaded, so it can assert the warning ABSENT.
+Each spawn costs about a second, which the whole file pays seven times.
 """
 
 from __future__ import annotations
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -111,6 +112,25 @@ def test_forked_workers_inherit_the_masters_claim(tmp_path):
     admitted = _probe("workers", tmp_path).stdout.split()
 
     assert admitted == ["OK"] * 4
+
+
+def test_fork_probe_waits_for_transient_threads():
+    probe = runpy.run_path(str(_PROBE))
+    wait = probe["_wait_for_single_thread"]
+    counts = iter((2, 2, 1))
+    wait.__globals__["_thread_count"] = lambda: next(counts)
+
+    wait(timeout=1)
+
+
+def test_fork_probe_rejects_persistent_threads():
+    probe = runpy.run_path(str(_PROBE))
+    wait = probe["_wait_for_single_thread"]
+    wait.__globals__["_thread_count"] = lambda: 2
+    wait.__globals__["_thread_names"] = lambda: ["main", "background"]
+
+    with pytest.raises(RuntimeError, match="2 threads still active.*background"):
+        wait(timeout=0.02)
 
 
 def test_a_holder_that_dies_leaves_nothing_to_reap(tmp_path):

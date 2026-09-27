@@ -9,9 +9,9 @@ multi-threaded -- other tests leave long-lived pools running, and on macOS
 libdispatch adds workqueue threads no Python code can join. Forking there makes
 CPython emit its multi-threaded-fork DeprecationWarning, which cannot be
 promoted to an error (it is emitted after ``fork()`` has already returned), so
-in-process the warning could only ever be filtered away. Here the process is
-single-threaded, which is also what a Gunicorn pre-fork master actually looks
-like, so the warning is asserted ABSENT rather than suppressed.
+in-process the warning could only ever be filtered away. Here the process waits
+until it is single-threaded before each fork, as a Gunicorn pre-fork master
+would be, so the warning is asserted ABSENT rather than suppressed.
 
 Commands (the directory is the second argument):
 
@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 import warnings
 
 
@@ -54,6 +56,36 @@ def dying(path: str) -> int:
     os._exit(0)  # dies holding it: no release, no cleanup
 
 
+def _thread_count() -> int:
+    if os.path.isdir("/proc/self/task"):
+        return len(os.listdir("/proc/self/task"))
+    return threading.active_count()
+
+
+def _thread_names() -> list[str]:
+    if os.path.isdir("/proc/self/task"):
+        names = []
+        for task_id in os.listdir("/proc/self/task"):
+            try:
+                with open(f"/proc/self/task/{task_id}/comm", encoding="utf-8") as task:
+                    names.append(f"{task_id}:{task.read().strip()}")
+            except FileNotFoundError:
+                continue  # a transient thread ended while listing it
+        return names
+    return [thread.name for thread in threading.enumerate()]
+
+
+def _wait_for_single_thread(timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while (count := _thread_count()) > 1:
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"fork probe requires a single thread; {count} threads still active "
+                f"after {timeout:g}s: {', '.join(_thread_names())}"
+            )
+        time.sleep(0.01)
+
+
 def workers(path: str) -> int:
     from lightrag.kg.working_dir_lock import acquire_working_dir_lock
 
@@ -61,6 +93,7 @@ def workers(path: str) -> int:
 
     failures = []
     for _ in range(4):
+        _wait_for_single_thread()
         read_fd, write_fd = os.pipe()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
