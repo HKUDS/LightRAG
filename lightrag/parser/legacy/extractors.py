@@ -38,11 +38,72 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
     return content
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DOCX_BLOCK_TAGS = frozenset({_W + "p", _W + "tbl"})
+# A block-level content control keeps its paragraphs and tables in w:sdtContent,
+# and custom XML markup wraps them directly. Cover pages, the fields of a form
+# template and whole template sections are such controls.
+_DOCX_BLOCK_WRAPPERS = frozenset({_W + "sdt", _W + "sdtContent", _W + "customXml"})
+# Runs below these are not text of their paragraph: deleted and moved-away
+# revisions, the pronunciation guide of ruby text, text boxes, and the fallback
+# copy of alternate content.
+_DOCX_SKIPPED_RUN_ANCESTORS = frozenset(
+    {
+        _W + "del",
+        _W + "moveFrom",
+        _W + "rt",
+        _W + "txbxContent",
+        "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback",
+    }
+)
+
+
+def _iter_docx_blocks(container):
+    """Yield the ``w:p`` and ``w:tbl`` elements of ``container`` in document order.
+
+    Unlike a loop over the container's own children, this includes the blocks
+    inside content controls and custom XML markup.
+    """
+    for child in container:
+        if child.tag in _DOCX_BLOCK_TAGS:
+            yield child
+        elif child.tag in _DOCX_BLOCK_WRAPPERS:
+            yield from _iter_docx_blocks(child)
+
+
+def _docx_paragraph_text(paragraph) -> str:
+    """Text of a ``w:p`` element, including runs nested below the paragraph.
+
+    ``Paragraph.text`` reads only direct runs and hyperlinks, so the text of an
+    inline content control, a tracked insertion, a simple field's result or a
+    smart tag is missing from it. Deleted text stays out.
+    """
+    parts = []
+    for run in paragraph.iter(_W + "r"):
+        ancestor = run.getparent()
+        while (
+            ancestor is not paragraph
+            and ancestor.tag not in _DOCX_SKIPPED_RUN_ANCESTORS
+        ):
+            ancestor = ancestor.getparent()
+        if ancestor is paragraph:
+            parts.append(run.text)
+    return "".join(parts)
+
+
+def _docx_cell_text(tc) -> str:
+    """Text of a ``w:tc`` element, one line per paragraph, like ``_Cell.text``."""
+    return "\n".join(
+        _docx_paragraph_text(block)
+        for block in _iter_docx_blocks(tc)
+        if block.tag == _W + "p"
+    )
+
+
 def _extract_docx(file_bytes: bytes) -> str:
     """Extract DOCX content including tables in document order (synchronous)."""
     from docx import Document  # type: ignore
     from docx.table import Table  # type: ignore
-    from docx.text.paragraph import Paragraph  # type: ignore
 
     docx_file = BytesIO(file_bytes)
     doc = Document(docx_file)
@@ -61,20 +122,21 @@ def _extract_docx(file_bytes: bytes) -> str:
 
     content_parts = []
     in_table = False
-    for element in doc.element.body:
+    for element in _iter_docx_blocks(doc.element.body):
         if element.tag.endswith("p"):
             if in_table:
                 content_parts.append("")
                 in_table = False
-            paragraph = Paragraph(element, doc)
-            content_parts.append(paragraph.text)
+            content_parts.append(_docx_paragraph_text(element))
         elif element.tag.endswith("tbl"):
             if content_parts and not in_table:
                 content_parts.append("")
             in_table = True
             table = Table(element, doc)
             for row in table.rows:
-                row_text = [escape_cell(cell.text) for cell in row.cells]
+                row_text = [
+                    escape_cell(_docx_cell_text(cell._tc)) for cell in row.cells
+                ]
                 if any(cell for cell in row_text):
                     content_parts.append("\t".join(row_text))
     return "\n".join(content_parts)
