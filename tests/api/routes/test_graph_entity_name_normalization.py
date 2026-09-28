@@ -472,7 +472,7 @@ async def test_create_relation_prefers_exact_legacy_source_key():
 
 @pytest.mark.asyncio
 async def test_create_relation_rejects_endpoints_removed_by_normalization():
-    """A name normalization erases leaves no identifier to look up."""
+    """A name normalization leaves no identifier to look up."""
     graph = _Graph(
         {
             "B公司": {
