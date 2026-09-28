@@ -315,15 +315,15 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
     )
     assert has_replacement or recovered_spans
 
-    # Must NOT raise: unlocatable (replacement-char) chunks are skipped, the rest are attributed.
+    # Must NOT raise: boundary-span recovery (#4112) can attribute slices that still
+    # decode with U+FFFD at a split emoji byte; empty tail chunks stay skipped.
     backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:
-        if "�" in ch["content"]:
-            assert "sidecar" not in ch  # provenance degraded, document not failed
-        elif ch["content"].strip():  # empty tail chunks are skipped entirely
-            assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
-    # At least the clean chunks resolved into the single source block.
+        if not ch["content"].strip():
+            assert "sidecar" not in ch
+            continue
+        assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
     assert any("sidecar" in ch for ch in chunks)
 
 
