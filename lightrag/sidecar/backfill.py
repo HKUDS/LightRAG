@@ -26,11 +26,12 @@ removed, not merely collapsed to a single space). A span whose text matches the
 chunk under neither test is treated as absent.
 
 A chunk that reaches this stage without a usable ``_source_span`` is a hard error:
-the document is marked FAILED via :class:`ChunkBlockMatchError`. The sole exception
-is a chunk whose decoded content carries the Unicode replacement character
-(:data:`_REPLACEMENT_CHAR`) — a multi-byte UTF-8 char split at a token-window
-boundary corrupts both its span probe and its own content, making provenance
-impossible; such a chunk degrades to no-sidecar rather than failing the document.
+the document is marked FAILED via :class:`ChunkBlockMatchError`. Two cases degrade
+to no-sidecar instead. A chunk whose decoded content carries the Unicode
+replacement character (:data:`_REPLACEMENT_CHAR`) lost bytes at a token-window
+boundary, so neither its span nor its text can be matched. A hard-split child
+marked ``_source_span_unavailable`` has no derivable span because its parent was
+boundary-damaged; the key is the marker, not a literal U+FFFD in the body.
 
 Multimodal placeholder tags (``<table …>…</table>``, ``<drawing …/>``,
 ``<equation …>…</equation>``) appear verbatim in both block content and chunk
@@ -178,7 +179,14 @@ def _chunk_source_span(
         return None
     source_text = merged[start:end]
     if source_text != body and _normalize_text(source_text) != _normalize_text(body):
-        return None
+        if _REPLACEMENT_CHAR in body:
+            cleaned = body.replace(_REPLACEMENT_CHAR, "")
+            if source_text != cleaned and _normalize_text(
+                source_text
+            ) != _normalize_text(cleaned):
+                return None
+        else:
+            return None
     return start, end
 
 
@@ -196,10 +204,9 @@ def backfill_chunk_sidecars(
     document FAILED.
 
     Exception: a chunk whose content carries the Unicode replacement character
-    (:data:`_REPLACEMENT_CHAR`) is inherently unlocatable — a multi-byte UTF-8
-    character was split at a token-window boundary, corrupting both its span probe
-    and its own content. Such a chunk is skipped (no sidecar) instead of failing the
-    document.
+    (:data:`_REPLACEMENT_CHAR`), or one marked ``_source_span_unavailable`` after
+    a hard split of a boundary-damaged parent, is skipped (no sidecar) instead of
+    failing the document.
     """
     if not blocks_path:
         return
@@ -224,6 +231,17 @@ def backfill_chunk_sidecars(
             continue
         body = chunk.get("content", "")
         if not isinstance(body, str) or not body.strip():
+            continue
+
+        # Hard-split children of a boundary-damaged parent carry this marker
+        # instead of a guessed span. The key is the marker; a literal U+FFFD
+        # in the body is not.
+        if "_source_span_unavailable" in chunk:
+            logger.warning(
+                f"[sidecar-backfill] chunk #{chunk.get('chunk_order_index', -1)} "
+                "has no derivable source span after a hard split of a "
+                "boundary-damaged parent; skipping provenance for it"
+            )
             continue
 
         source_span = _chunk_source_span(chunk, merged)
