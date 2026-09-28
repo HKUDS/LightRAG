@@ -804,18 +804,83 @@ async def adelete_by_relation(
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     relation_str = f"{source_entity} -> {target_entity}"
+    # ``acreate_entity`` stores the extraction-normalized identifier, so the
+    # existence check below has to ask under that name -- asking for the
+    # caller's raw spelling is why a delete of a relation whose entity was
+    # created by the manual API succeeded as a relation but then came back
+    # "not found" when deleted through the raw spelling. Resolve the way
+    # ``aedit_entity`` and ``amerge_entities`` do, an exact legacy key first,
+    # and lock both spellings so a historical node cannot race its canonical
+    # delete.
+    requested_source_entity = source_entity
+    requested_target_entity = target_entity
+    normalized_source_entity = _normalize_manual_entity_name(requested_source_entity)
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
+
     # Normalize entity order for undirected graph (ensures consistent key generation)
-    if source_entity > target_entity:
-        source_entity, target_entity = target_entity, source_entity
+    if requested_source_entity > requested_target_entity:
+        ordered_raw_source, ordered_raw_target = (
+            requested_target_entity,
+            requested_source_entity,
+        )
+    else:
+        ordered_raw_source, ordered_raw_target = (
+            requested_source_entity,
+            requested_target_entity,
+        )
+    # ``source_entity`` / ``target_entity`` stay raw until they are resolved
+    # under the keyed lock below; the resolution picks one of the two spellings
+    # of each side and assigns it here.
+    source_entity = ordered_raw_source
+    target_entity = ordered_raw_target
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-    sorted_edge_key = sorted([source_entity, target_entity])
+    edge_lock_keys = {requested_source_entity, requested_target_entity}
+    edge_lock_keys.update(
+        name for name in (normalized_source_entity, normalized_target_entity) if name
+    )
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        sorted(edge_lock_keys), namespace=namespace, enable_logging=False
     ):
         try:
+            # Prefer an exact legacy key when it exists. Otherwise resolve the
+            # caller's spelling to the extraction-normalized identifier. The
+            # resolution is done here under the lock because a concurrent
+            # rename could otherwise swap the legacy node out between the
+            # ``has_node`` probe and the edge mutation.
+            if (
+                requested_source_entity != normalized_source_entity
+                and await chunk_entity_relation_graph.has_node(requested_source_entity)
+            ):
+                source_entity = requested_source_entity
+            elif normalized_source_entity:
+                source_entity = normalized_source_entity
+            else:
+                raise ValueError(
+                    "Source entity name cannot be empty after normalization"
+                )
+
+            if (
+                requested_target_entity != normalized_target_entity
+                and await chunk_entity_relation_graph.has_node(requested_target_entity)
+            ):
+                target_entity = requested_target_entity
+            elif normalized_target_entity:
+                target_entity = normalized_target_entity
+            else:
+                raise ValueError(
+                    "Target entity name cannot be empty after normalization"
+                )
+
+            # Both spellings can resolve to one identifier, which the edge
+            # mutation below would treat as a self-edge -- refuse it here too,
+            # the way ``acreate_relation`` does after resolution.
+            _reject_self_loop_relation(
+                source_entity, target_entity, operation="delete"
+            )
+
             # Check if the relation exists
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -1906,18 +1971,84 @@ async def aedit_relation(
         reject_unknown=True,
     )
 
+    # ``acreate_entity`` stores the extraction-normalized identifier, so the
+    # existence check below has to ask under that name -- asking for the
+    # caller's raw spelling is why an edit of a relation whose endpoint was
+    # created by the manual API succeeded as a relation but then came back
+    # "Relation from ... does not exist" when edited through the raw spelling.
+    # Resolve the way ``aedit_entity`` and ``amerge_entities`` do, an exact
+    # legacy key first, and lock both spellings so a historical node cannot
+    # race its canonical edit.
+    requested_source_entity = source_entity
+    requested_target_entity = target_entity
+    normalized_source_entity = _normalize_manual_entity_name(requested_source_entity)
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
+
     # Normalize entity order for undirected graph (ensures consistent key generation)
-    if source_entity > target_entity:
-        source_entity, target_entity = target_entity, source_entity
+    if requested_source_entity > requested_target_entity:
+        ordered_raw_source, ordered_raw_target = (
+            requested_target_entity,
+            requested_source_entity,
+        )
+    else:
+        ordered_raw_source, ordered_raw_target = (
+            requested_source_entity,
+            requested_target_entity,
+        )
+    # ``source_entity`` / ``target_entity`` stay raw until they are resolved
+    # under the keyed lock below; the resolution picks one of the two spellings
+    # of each side and assigns it here.
+    source_entity = ordered_raw_source
+    target_entity = ordered_raw_target
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-    sorted_edge_key = sorted([source_entity, target_entity])
+    edge_lock_keys = {requested_source_entity, requested_target_entity}
+    edge_lock_keys.update(
+        name for name in (normalized_source_entity, normalized_target_entity) if name
+    )
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        sorted(edge_lock_keys), namespace=namespace, enable_logging=False
     ):
         try:
+            # Prefer an exact legacy key when it exists. Otherwise resolve the
+            # caller's spelling to the extraction-normalized identifier. The
+            # resolution is done here under the lock because a concurrent
+            # rename could otherwise swap the legacy node out between the
+            # ``has_node`` probe and the edge mutation.
+            if (
+                requested_source_entity != normalized_source_entity
+                and await chunk_entity_relation_graph.has_node(requested_source_entity)
+            ):
+                source_entity = requested_source_entity
+            elif normalized_source_entity:
+                source_entity = normalized_source_entity
+            else:
+                raise ValueError(
+                    "Source entity name cannot be empty after normalization"
+                )
+
+            if (
+                requested_target_entity != normalized_target_entity
+                and await chunk_entity_relation_graph.has_node(requested_target_entity)
+            ):
+                target_entity = requested_target_entity
+            elif normalized_target_entity:
+                target_entity = normalized_target_entity
+            else:
+                raise ValueError(
+                    "Target entity name cannot be empty after normalization"
+                )
+
+            # Both spellings can resolve to one identifier, which the edge
+            # mutation below would turn into a self-loop. The raw comparison
+            # earlier in the caller cannot see this because it ran before the
+            # resolution; the guard after resolution closes that hole.
+            _reject_self_loop_relation(
+                source_entity, target_entity, operation="edit"
+            )
+
             # 1. Get current relation information
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -1958,20 +2089,31 @@ async def aedit_relation(
             new_edge_data["source_id"] = source_id
             new_edge_data["weight"] = weight
 
+            # The VDB row mirrors the relation create endpoint's canonical
+            # sort-by-endpoint convention (`vdb_src = min(src, tgt)`); writing
+            # the row under caller order leaves the row that `create_relation`
+            # wrote intact while this edit writes a different one, and the two
+            # spellings no longer share a single vector record.
+            vdb_src, vdb_tgt = (
+                (target_entity, source_entity)
+                if source_entity > target_entity
+                else (source_entity, target_entity)
+            )
+
             content = _truncate_vdb_content(
-                f"{source_entity}\t{target_entity}\n{keywords}\n{description}",
+                f"{vdb_src}\t{vdb_tgt}\n{keywords}\n{description}",
                 relationships_vdb.global_config,
-                f"relation:{source_entity}-{target_entity}",
+                f"relation:{vdb_src}-{vdb_tgt}",
             )
 
             relation_id = compute_mdhash_id(
-                source_entity + target_entity, prefix="rel-"
+                vdb_src + vdb_tgt, prefix="rel-"
             )
             relation_data = {
                 relation_id: {
                     "content": content,
-                    "src_id": source_entity,
-                    "tgt_id": target_entity,
+                    "src_id": vdb_src,
+                    "tgt_id": vdb_tgt,
                     "source_id": source_id,
                     "description": description,
                     "keywords": keywords,
