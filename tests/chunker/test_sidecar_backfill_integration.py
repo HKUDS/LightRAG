@@ -314,6 +314,7 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
         "_source_span" in c for c in chunks if c.get("content", "").strip()
     )
     assert has_replacement or recovered_spans
+    raw_chunks = [dict(c) for c in chunks]
 
     # Must NOT raise: boundary-span recovery (#4112) can attribute slices that still
     # decode with U+FFFD at a split emoji byte; empty tail chunks stay skipped.
@@ -323,8 +324,33 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
         if not ch["content"].strip():
             assert "sidecar" not in ch
             continue
-        assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
+        # Follow the recovered span. A U+FFFD chunk with a span is attributable;
+        # one without a span degrades. Do not key this on the character alone.
+        if "_source_span" in ch:
+            assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
+        else:
+            assert "sidecar" not in ch
     assert any("sidecar" in ch for ch in chunks)
+
+    # Hard-splitting a boundary-recovered parent must degrade, not fail the doc.
+    split = enforce_chunk_token_limit_before_embedding(
+        raw_chunks, tok, max_tokens=8, overlap_tokens=0, source_content=merged
+    )
+    backfill_chunk_sidecars(split, blocks_path)
+    assert any(ch.get("_source_span_unavailable") for ch in split)
+    for ch in split:
+        if ch.get("_source_span_unavailable"):
+            assert "_source_span" not in ch
+            assert "sidecar" not in ch
+            continue
+        if ch["content"].strip() and "_source_span" in ch:
+            assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
+    stored = build_chunks_dict_from_chunking_result(
+        split, doc_id="doc-emoji", file_path="doc.txt"
+    )
+    for record in stored.values():
+        assert "_source_span" not in record
+        assert "_source_span_unavailable" not in record
 
 
 @pytest.mark.offline
