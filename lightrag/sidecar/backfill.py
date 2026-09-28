@@ -180,9 +180,9 @@ def _chunk_source_span(
     if source_text != body and _normalize_text(source_text) != _normalize_text(body):
         if _REPLACEMENT_CHAR in body:
             cleaned = body.replace(_REPLACEMENT_CHAR, "")
-            if source_text != cleaned and _normalize_text(source_text) != _normalize_text(
-                cleaned
-            ):
+            if source_text != cleaned and _normalize_text(
+                source_text
+            ) != _normalize_text(cleaned):
                 return None
         else:
             return None

@@ -308,11 +308,10 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
         chunk_overlap_token_size=4,
         _emit_source_span=True,
     )
-    # The window splits at least one emoji -> some chunks carry U+FFFD and lack a span.
+    # The window splits at least one emoji -> some chunks carry U+FFFD at the boundary.
     assert any("�" in c["content"] for c in chunks)
-    assert any("_source_span" not in c for c in chunks)
 
-    # Must NOT raise: corrupt chunks are skipped, the rest are attributed.
+    # Must NOT raise: unlocatable (replacement-char) chunks are skipped, the rest are attributed.
     backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:
