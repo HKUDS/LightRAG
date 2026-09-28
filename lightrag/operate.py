@@ -8,7 +8,6 @@ import inspect
 import json
 import logging
 import re
-import json_repair
 from typing import Any, AsyncIterator, overload, Literal, Callable, Awaitable
 from collections import Counter, defaultdict
 
@@ -5071,21 +5070,22 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
         try:
             payload = json.loads(cleaned_result)
         except json.JSONDecodeError as strict_error:
-            try:
-                payload = json_repair.loads(cleaned_result)
-                logger.warning(
-                    "Keyword extraction response required JSON repair: %s; response: %r",
-                    strict_error,
-                    cleaned_result[:500],
-                )
-            except Exception as repair_error:
+            # Recover the first object as entity extraction does: repairing the
+            # whole response folds trailing prose that carries a bracket or a
+            # brace ("[1]", "{...}") into a top-level list and loses the keywords.
+            payload = tolerant_load_json_dict(cleaned_result)
+            if not payload:
                 logger.error(
-                    "JSON parsing error: %s; repair failed: %s; response: %r",
+                    "JSON parsing error: %s; repair failed; response: %r",
                     strict_error,
-                    repair_error,
                     cleaned_result[:500],
                 )
                 return False, [], []
+            logger.warning(
+                "Keyword extraction response required JSON repair: %s; response: %r",
+                strict_error,
+                cleaned_result[:500],
+            )
     else:
         logger.error(
             "Unsupported keyword extraction response type: %s",
