@@ -21,6 +21,7 @@ from fastapi import HTTPException, Security, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from ..utils import safe_log_value
+from lightrag.kg import deprecated_storage_message
 from .auth import auth_handler
 from .config import (
     ollama_server_infos,
@@ -733,13 +734,13 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")
     ASCIIColors.white("    ├─ KV Storage: ", end="")
-    ASCIIColors.yellow(f"{args.kv_storage}")
+    _print_storage_name(args.kv_storage)
     ASCIIColors.white("    ├─ Vector Storage: ", end="")
     ASCIIColors.yellow(f"{args.vector_storage}")
     ASCIIColors.white("    ├─ Graph Storage: ", end="")
     ASCIIColors.yellow(f"{args.graph_storage}")
     ASCIIColors.white("    ├─ Document Status Storage: ", end="")
-    ASCIIColors.yellow(f"{args.doc_status_storage}")
+    _print_storage_name(args.doc_status_storage)
     ASCIIColors.white("    ├─ Configuration Storage: ", end="")
     ASCIIColors.yellow(
         f"{getattr(args, 'config_storage', '') or f'(follows {args.kv_storage})'}"
@@ -859,11 +860,43 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     open Ollama access, set WHITELIST_PATHS=/health to require authentication.
     """)
 
+    _warn_about_deprecated_storages(args)
     _warn_about_body_limits(args)
     _warn_about_svg_rasterizer()
 
     # Ensure splash output flush to system log
     sys.stdout.flush()
+
+
+def _print_storage_name(storage_name: str) -> None:
+    """Print a storage backend name in the splash, marking a deprecated one."""
+    if deprecated_storage_message(storage_name):
+        ASCIIColors.yellow(f"{storage_name}", end="")
+        ASCIIColors.red(" (deprecated)")
+    else:
+        ASCIIColors.yellow(f"{storage_name}")
+
+
+def _warn_about_deprecated_storages(args) -> None:
+    """Flag selected storage backends that are scheduled for removal.
+
+    The core logs the same notice when LightRAG is constructed, but that line
+    lands after the splash and is quickly buried by startup logs; this block
+    is what an operator reading the storage configuration actually sees.
+    """
+    messages = [
+        message
+        for message in (
+            deprecated_storage_message(args.kv_storage),
+            deprecated_storage_message(args.doc_status_storage),
+        )
+        if message
+    ]
+    if not messages:
+        return
+    ASCIIColors.red("\n⚠️  Deprecated Storage:")
+    for message in messages:
+        ASCIIColors.white(f"    {message}")
 
 
 def _warn_about_body_limits(args) -> None:

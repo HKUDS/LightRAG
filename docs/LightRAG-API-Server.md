@@ -912,6 +912,8 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 | GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
+> **Deprecated:** `RedisKVStorage` and `RedisDocStatusStorage` are deprecated and will be removed in a future release. They still work, but startup logs a warning and the server splash screen marks them. Migrate to `PGKVStorage` / `PGDocStatusStorage` (PostgreSQL).
+
 For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
 **Configuration Storage — a fifth category, selected separately.** Besides the four storage types above, the server keeps a small **configuration storage**: one namespace holding each workspace's embedding baselines, the record that lets a start refuse a changed embedding model *before* it writes vectors the existing ones cannot be compared with. It is chosen with `LIGHTRAG_CONFIG_STORAGE` and admits four implementations:
