@@ -8,7 +8,7 @@ import aiohttp
 from dotenv import load_dotenv
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -229,13 +229,35 @@ def aggregate_chunk_scores(
     return aggregated_results
 
 
+def _is_transient_rerank_error(error: BaseException) -> bool:
+    """tenacity predicate: retry connection failures and 429/5xx, not other 4xx.
+
+    ``generic_rerank_api`` raises ``ClientResponseError`` itself for every
+    non-200 status, so a status is always available here and is the thing worth
+    classifying. A bad API key (401), a wrong base URL (404) or a malformed
+    payload (422) is a property of the request, not of the moment: three
+    attempts plus the backoff only re-buy the same answer, and the caller waits
+    out the delay to be told the key is wrong. 429 and 5xx are the opposite.
+
+    ``ClientResponseError`` subclasses ``ClientError``, so it is classified
+    first -- the blanket ``ClientError`` match this replaces also retried
+    permanent 4xx. Same classification as ``llm/jina.py`` and ``llm/lollms.py``.
+    """
+    if isinstance(error, aiohttp.ClientResponseError):
+        return error.status == 429 or error.status >= 500
+    return isinstance(error, aiohttp.ClientError)
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=(
-        retry_if_exception_type(aiohttp.ClientError)
-        | retry_if_exception_type(aiohttp.ClientResponseError)
-    ),
+    retry=retry_if_exception(_is_transient_rerank_error),
+    # Re-raise the transport error once the attempts are spent. The non-200
+    # branch below composes a readable ``clean_error`` for the caller
+    # ("Bad Gateway (502) - ... Please try again in a few minutes."); tenacity's
+    # opaque ``RetryError`` would bury it, and ``lightrag.llm._error_utils``
+    # already documents that as the reason to avoid it.
+    reraise=True,
 )
 async def generic_rerank_api(
     query: str,
