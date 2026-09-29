@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from 'bun:test'
-// Dependency-free module — safe to import statically before the mocks below.
 import axios from 'axios'
+// Dependency-free module — safe to import statically before the mocks below.
 import { isAuthenticationRequiredError } from './errors'
 
 // ---------------------------------------------------------------------------
