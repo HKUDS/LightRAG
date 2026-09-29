@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from 'bun:test'
 // Dependency-free module — safe to import statically before the mocks below.
+import axios from 'axios'
 import { isAuthenticationRequiredError } from './errors'
 
 // ---------------------------------------------------------------------------
@@ -36,10 +37,11 @@ Object.defineProperty(globalThis, 'sessionStorage', {
 // - navigationService.navigateToUnauthenticated is neutralized with a
 //   RESTORABLE spy (mockRestore in afterAll) so the 401 paths under test
 //   don't navigate, while later files still see the real service.
-// The remaining mock.module targets are leaf-ish dependencies where an
-// overlay is sufficient: '@/lib/constants' (spread-real, pins the base URL)
-// and 'axios' (feeds the guest-token refresh; api/lightrag is imported
-// dynamically AFTER this mock so its axios instance is the mocked one).
+// The one remaining mock.module target is '@/lib/constants', a leaf-ish
+// dependency where an overlay is sufficient (spread-real, pins the base URL).
+// axios is NOT module-mocked: the api module must keep a real axios instance
+// for later files, so the guest-token refresh is answered by swapping the
+// global axios adapter in beforeAll (restored in afterAll).
 // An OVERLAY on the real module, not a replacement. `mock.module` is global for
 // the whole `bun test` run and is never undone, so a factory returning only the
 // three exports this file needs also deletes every OTHER export of that module
@@ -55,36 +57,6 @@ mock.module('@/lib/constants', () => ({
   popularLabelsDefaultLimit: 300,
   searchLabelsDefaultLimit: 50,
 }))
-
-// Mock axios — the module calls axios.create() at top level and
-// axios.get() in silentRefreshGuestToken
-mock.module('axios', () => {
-  const instance = {
-    get: () =>
-      Promise.resolve({
-        data: {
-          access_token: 'mock-guest-token',
-          auth_configured: false,
-          core_version: '1.0',
-          api_version: '1.0',
-        },
-        headers: {},
-      }),
-    post: () => Promise.resolve({ data: {}, headers: {} }),
-    interceptors: {
-      request: { use: () => {} },
-      response: { use: () => {} },
-    },
-  }
-  // The default export from axios is the main axios function, which also has
-  // .create, .get, .post, etc. as static methods.
-  const axiosFn: any = () => Promise.resolve({ data: {}, headers: {} })
-  axiosFn.create = () => instance
-  axiosFn.get = instance.get
-  axiosFn.post = instance.post
-  axiosFn.interceptors = instance.interceptors
-  return { default: axiosFn, __esModule: true }
-})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,11 +119,30 @@ let authStore: typeof import('@/stores/state').useAuthStore
 // observable contract through the onError callback, so silence the logs for
 // the whole file and restore the originals afterwards.
 let restoreMocks: (() => void) | undefined
+let previousAxiosAdapter: typeof axios.defaults.adapter
 
 beforeAll(async () => {
-  // Dynamic imports AFTER the axios/constants mocks above, so the api module's
-  // axios instance is the mocked one. These are the REAL store and navigation
-  // modules — see the isolation note at the top of this file.
+  // The guest-token refresh is the only axios call on these paths: it uses
+  // the GLOBAL axios.get('/auth-status'). Answer it at the adapter seam
+  // (restored in afterAll) rather than mocking the 'axios' module, which
+  // would leave a fake instance behind for every later test file.
+  previousAxiosAdapter = axios.defaults.adapter
+  axios.defaults.adapter = async (config) => ({
+    data: {
+      access_token: 'mock-guest-token',
+      auth_configured: false,
+      core_version: '1.0',
+      api_version: '1.0',
+    },
+    status: 200,
+    statusText: 'OK',
+    headers: {},
+    config,
+  })
+
+  // Dynamic imports AFTER the constants mock above, so the api module sees
+  // the pinned base URL. These are the REAL store and navigation modules —
+  // see the isolation note at the top of this file.
   settingsStore = (await import('@/stores/settings')).useSettingsStore
   authStore = (await import('@/stores/state')).useAuthStore
   const { navigationService } = await import('@/services/navigation')
@@ -171,6 +162,7 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
+  axios.defaults.adapter = previousAxiosAdapter
   restoreMocks?.()
 })
 
@@ -707,5 +699,13 @@ describe('queryTextStream — auth termination (401)', () => {
     expect(callCount).toBe(2)
     expect(isAuthenticationRequiredError(caught)).toBe(true)
     expect(capturedError).toBeNull()
+  })
+})
+
+describe('test isolation', () => {
+  // A module-level axios mock would leave the api module holding a fake
+  // instance for every later test file; it must stay a real one.
+  test('the api module keeps a real axios instance for later files', () => {
+    expect(() => apiModule.__setAxiosAdapterForTests(undefined)).not.toThrow()
   })
 })
