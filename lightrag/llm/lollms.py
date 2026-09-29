@@ -15,13 +15,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-)
-
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
+    retry_if_exception,
 )
 
 from typing import Any, List, Union
@@ -32,12 +26,33 @@ from lightrag.utils import (
 )
 
 
+def _is_transient_lollms_error(error: BaseException) -> bool:
+    """tenacity predicate: retry connection failures and 429/5xx, not other 4xx.
+
+    Same classification as ``jina.py``, the only other binding that speaks
+    aiohttp directly. The predicate this replaces matched
+    ``lightrag.exceptions``' httpx-shaped RateLimitError / APIConnectionError /
+    APITimeoutError, which nothing in LightRAG raises and aiohttp cannot
+    produce -- so it never matched and the three attempts never happened: a
+    server that was restarting failed the extraction on the first try.
+
+    ``ClientResponseError`` subclasses ``ClientError``, so it has to be
+    classified first: a bad API key or a malformed request is a property of the
+    call, and three requests plus backoff only re-buy the same failure.
+    """
+    if isinstance(error, aiohttp.ClientResponseError):
+        return error.status == 429 or error.status >= 500
+    return isinstance(error, aiohttp.ClientError)
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_transient_lollms_error),
+    # Re-raise the transport error once the attempts are spent, rather than
+    # wrapping it in tenacity's opaque ``RetryError`` whose message buries the
+    # reason the call failed. Same reasoning as ``lightrag.llm._error_utils``.
+    reraise=True,
 )
 async def lollms_model_if_cache(
     model,
