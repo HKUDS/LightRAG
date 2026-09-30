@@ -29,8 +29,8 @@ from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 pytestmark = pytest.mark.offline
 
 _DIM = 16
-IDENTITY_KEY = "_lightrag_server/storage_identity"
-OWNER_KEY = "_lightrag_server/json_shard"
+IDENTITY_KEY = "$meta/storage_identity"
+OWNER_KEY = "$meta/json_shard"
 
 
 @pytest.fixture(autouse=True)
@@ -133,10 +133,10 @@ async def _migrate(working_dir, *, source, target, target_backend, dry_run=False
     )
 
 
-def _rows_by_scope(database: Database) -> dict[str, set[str]]:
-    scopes: dict[str, set[str]] = {}
+def _rows_by_scope(database: Database) -> dict[str | None, set[str]]:
+    scopes: dict[str | None, set[str]] = {}
     for key, row in database.rows.items():
-        scopes.setdefault(row["workspace"], set()).add(key)
+        scopes.setdefault(row.get("workspace"), set()).add(key)
     return scopes
 
 
@@ -158,8 +158,8 @@ class TestJsonToDatabase:
 
         assert result.switched
         scopes = _rows_by_scope(database)
-        assert set(scopes) == {"teamalpha", "", "_lightrag_server"}
-        assert scopes["_lightrag_server"] == {IDENTITY_KEY}
+        assert set(scopes) == {"teamalpha", "", None}
+        assert scopes[None] == {IDENTITY_KEY}
         assert OWNER_KEY not in database.rows
         assert len(scopes["teamalpha"]) == len(scopes[""]) == 3
         assert database.rows[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
@@ -317,7 +317,9 @@ async def test_a_round_trip_after_clearing_a_workspace_keeps_it_a_member(tmp_pat
     )
 
     # Clear teambeta in the database, and change one teamalpha row.
-    for key in [k for k, r in database.rows.items() if r["workspace"] == "teambeta"]:
+    for key in [
+        k for k, r in database.rows.items() if r.get("workspace") == "teambeta"
+    ]:
         del database.rows[key]
     changed = cs.embedding_baseline_key("teamalpha", "chunks")
     database.rows[changed] = _baseline_row("teamalpha", "chunks")
@@ -732,3 +734,37 @@ async def test_unrelated_child_directories_do_not_refuse(tmp_path):
     )
     assert result.switched is True
     assert ca.read_anchor(str(tmp_path)).members == ("teamalpha",)
+
+
+async def test_empty_and_named_default_workspaces_round_trip_without_key_aliases(
+    tmp_path,
+):
+    for workspace in ("", "default"):
+        await _start_and_stop(tmp_path, workspace)
+    storage_uuid = ca.read_anchor(str(tmp_path)).storage_uuid
+    database = Database()
+    await _migrate(
+        tmp_path, source="json", target=database, target_backend="PGKVStorage"
+    )
+
+    assert "workspace" not in database.rows[IDENTITY_KEY]
+    assert OWNER_KEY not in database.rows
+    for workspace, prefix in (("", "$default"), ("default", "default")):
+        for target in cs.EMBEDDING_TARGETS:
+            row = database.rows[f"{prefix}/embedding/{target}"]
+            assert row["workspace"] == workspace
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+    assert result.switched
+    assert ca.read_anchor(str(tmp_path)).members == ("", "default")
+    for workspace, prefix in (("", "$default"), ("default", "default")):
+        rows = json.loads(Path(json_config_path(str(tmp_path), workspace)).read_text())
+        assert rows[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+        assert "workspace" not in rows[IDENTITY_KEY]
+        assert "workspace" not in rows[OWNER_KEY]
+        assert rows[OWNER_KEY]["value"] == {"workspace": workspace}
+        assert set(rows) == {IDENTITY_KEY, OWNER_KEY} | {
+            f"{prefix}/embedding/{target}" for target in cs.EMBEDDING_TARGETS
+        }

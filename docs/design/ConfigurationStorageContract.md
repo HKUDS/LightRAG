@@ -37,14 +37,16 @@ Each rule is expanded in the section named after it.
    setting moves it. `create_configuration_storage()` is the single way in,
    and no `*_WORKSPACE` variable reaches it. *(The container, JSON
    configuration shards.)*
-3. **Keys are scoped and never reparsed.** A key is `<workspace>/<suffix>` or
-   `_lightrag_server/<suffix>`. The separator is `/`, never `.`. The scope is
-   carried as a row field, and every suffix is declared in
+3. **Keys are scoped and never reparsed.** Named workspaces use
+   `<workspace>/<suffix>`, the empty workspace uses `$default/<suffix>`, and
+   metadata uses `$meta/<suffix>`. Workspace names starting with `$` are
+   reserved. Only business rows carry their real `workspace`; metadata is
+   classified by its registered key. Every suffix is declared in
    `CONFIG_KEY_REGISTRY` before anything writes it. *(Keys, Key registry.)*
 4. **Reads are strict.** A read that could not complete is a failure, never
    "absent". *(Reads are strict.)*
 5. **The container has an identity and each deployment an anchor.**
-   `_lightrag_server/storage_identity` holds a UUID.
+   `$meta/storage_identity` holds a UUID.
    `<working_dir>/config_storage_anchor.json` records `{backend,
    storage_uuid}`, plus the registered `members` for JSON. Every start
    checks both before reading any baseline. Deleting the anchor, with every
@@ -109,7 +111,7 @@ Two needs meet in one place.
 | `PGKVStorage` | table `LIGHTRAG_CONFIG (workspace, id, value JSONB, create_time, update_time)`, partition constant `_lightrag_config` |
 | `MongoKVStorage` | collection `_lightrag_config_config` |
 | `OpenSearchKVStorage` | index `x_lightrag_config_config` (the backend's sanitizer prepends `x`) |
-| identity | row `_lightrag_server/storage_identity`, `value = {"uuid": <UUIDv4>}` |
+| identity | row `$meta/storage_identity`, `value = {"uuid": <UUIDv4>}` |
 | anchor | `<working_dir>/config_storage_anchor.json`, fixed, for every backend, and resolved to an absolute path once at construction |
 
 **It is a KV namespace on purpose.** KV container names carry no model
@@ -227,7 +229,7 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   rewritten. `_lightrag_config` is an ordinary workspace.
 - **One group per `working_dir`.** Every snapshot carries the normal
   identity row with the anchor's UUID, its own workspace's registered rows,
-  and a server-scope owner row `_lightrag_server/json_shard` =
+  and a server-scope owner row `$meta/json_shard` =
   `{"workspace": w}`. `inspect_shard_rows` validates a snapshot before any
   baseline is read: the owner must equal the workspace its location names
   (`""` at the root, the child's exact name below it), checked first so a
@@ -573,21 +575,21 @@ cancellation detached before it hands the claim back, because
 ## Keys
 
 ```
-<workspace>/<suffix>          a per-workspace setting
-_lightrag_server/<suffix>     a server-global setting
+<workspace>/<suffix>          a named workspace's setting
+$default/<suffix>             the empty workspace's setting
+$meta/<suffix>                internal metadata
 ```
 
-- **The separator is `/`, never `.`.** `validate_workspace()` forbids `/` but
-  allows dots (`"v1.0"` is a legitimate workspace name), so a dotted key
-  could not be split back apart unambiguously.
-- **Keys are never reparsed anyway.** The row carries `workspace` as a field,
-  and every reader classifies by the field. The separator rule is a second
-  lock on a door the row shape already closes.
-- **The server scope is an object, not a string.** A tenant may legally be
-  called `_lightrag_server`. `SERVER_SCOPE` is a sentinel: `config_key()`
-  compares by identity and renders the prefix afterwards. A suffix is
-  registered with exactly one scope, so a tenant key and a server key can
-  never be the same key.
+- **The separator is `/`, never `.`.** `validate_workspace()` forbids `/`
+  and a leading `$`. Normal names such as `meta`, `default` and
+  `_lightrag_server` are legal and cannot collide with reserved key prefixes.
+- **Empty stays empty in data.** `$default` encodes only the key prefix;
+  business rows retain `workspace: ""`, and the shard owner retains
+  `value.workspace: ""`. Physical backend workspace and path rules do not change.
+- **Keys are never reparsed.** Registered metadata keys identify metadata.
+  Business rows carry the actual workspace for migration routing.
+- **Metadata requires `SERVER_SCOPE`.** The sentinel object addresses
+  registered metadata suffixes. A business workspace cannot request them.
 - **OpenSearch's lossy sanitization cannot reach the container.** For the
   `config` namespace, `_resolve_workspace` consults no workspace at all.
   `_build_index_name` refuses, before a client opens, any *other* namespace
@@ -595,17 +597,26 @@ _lightrag_server/<suffix>     a server-global setting
 
 ## Row shape
 
-Every row has the same shape:
+Business configuration rows have this shape:
 
 ```json
 {
   "schema_version": 1,
-  "workspace": "<workspace or _lightrag_server>",
+  "workspace": "<actual workspace, including the empty string>",
   "updated_at": "<iso8601>",
   "updated_by": "<component that wrote it>",
   "value": { }
 }
 ```
+
+The `$meta/storage_identity` and `$meta/json_shard` rows have the same audit,
+version and value fields but **no outer `workspace` field**. Identity contains
+`value: {"uuid": ...}`; shard ownership contains `value: {"workspace": ...}`.
+Readers reject an outer workspace on either metadata row. Workspace clear
+still deletes only registered business keys, never metadata.
+
+This replaces the unreleased dev format directly: there are no old-key
+aliases, fallback reads or automatic rewrites of the previous envelopes.
 
 `schema_version` is per key, not global. A reader requires an integer equal
 to the key's registered version before it interprets `value`. A missing,
@@ -640,7 +651,7 @@ would be lost. The anchor turns that drift into a refusal.
 
 **It has two pieces.**
 
-- **The identity.** `_lightrag_server/storage_identity`, registered with
+- **The identity.** `$meta/storage_identity`, registered with
   `SERVER_SCOPE`, holds `{"uuid": <UUIDv4>}` and identifies the whole
   container. Every workspace in the container shares it.
   - It is generated once, by `new_storage_uuid()` (`uuid.uuid4()`, drawn from
@@ -831,7 +842,7 @@ start the server once, stop it and rerun the tool.
   migrates with the anchor's UUID. Owner rows are layout metadata: hidden from the copy, never
   written to a database. A row is server-scoped by its key (a registered
   server-global key), never by its `workspace` field, so a tenant named
-  `_lightrag_server` migrates like any other workspace; a server-global row
+  `_lightrag_server` migrates like any other workspace; a metadata row
   refuses a JSON target. A non-empty snapshot without an identity or owner
   row is damaged and refuses on either side, as it does at a start and a
   rebind: automatic recovery is limited to consistent state. As a target,
@@ -1242,8 +1253,9 @@ storage.
   early. A missing index or a closed connection must not read as an empty
   listing. `OpenSearchKVStorage` refuses in the same index-missing states
   its strict point read refuses in.
-- **Classification is by the row's `workspace` field**
-  (`iter_configuration_rows`), and never by reparsing the key.
+- **Metadata is identified by its registered key.** Business scope comes
+  from the row's real `workspace`, never by reparsing the key.
+  `iter_configuration_rows` reports `workspace: null` for metadata rows.
 - **A page is a best-effort snapshot, not a set.** Redis `SCAN` may repeat a
   key. The chunk sampler keeps distinct ids and spends its budget on rows
   examined.
@@ -1373,7 +1385,7 @@ reason no longer holds.
 
 ## Not implemented yet
 
-- **The server-level pair `_lightrag_server/embedding.current` /
+- **The metadata pair `$meta/embedding.current` /
   `.previous`, and the startup inventory** naming which workspaces still
   need a rebuild, both built on `iter_rows()`. The pair must stay
   **diagnostic and never gate**: it flaps when differently configured
@@ -1535,6 +1547,14 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     every workspace, converges same-UUID retained snapshots, keeps a cleared
     workspace as a metadata-only member, refuses a foreign snapshot before
     any write, and a dry run creates no snapshot.
+
+
+51. `$meta` metadata has no outer workspace; `$default` business rows retain
+    the empty workspace and round-trip through whole-group migration.
+52. SDK, server normalization, backend overrides and maintenance tools refuse
+    workspace names starting with `$`; JSON anchor member validation and the
+    setup wizard refuse them too. Ordinary `meta`, `default` and
+    `_lightrag_server` names remain distinct from metadata and the empty workspace.
 
 ## History
 

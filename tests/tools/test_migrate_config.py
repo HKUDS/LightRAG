@@ -30,7 +30,7 @@ pytestmark = pytest.mark.offline
 
 UUID_A = "3f2b8c1e-6a4d-4e2f-9b7a-1c2d3e4f5a6b"
 UUID_B = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
-IDENTITY_KEY = "_lightrag_server/storage_identity"
+IDENTITY_KEY = "$meta/storage_identity"
 
 
 @pytest.fixture(autouse=True)
@@ -1246,3 +1246,19 @@ async def test_a_backend_that_cannot_be_constructed_is_reported(monkeypatch, cap
     assert "could not create the PGKVStorage configuration storage" in out
     # The source is what failed to open: the pre-claim refusal.
     assert "Nothing was written" in out and "restore or reconnect" in out
+
+
+@pytest.mark.parametrize("workspace", ["", "default", "meta", "_lightrag_server"])
+def test_migration_envelopes_distinguish_metadata_from_business(workspace):
+    rows = cs.json_shard_metadata_rows(workspace, UUID_A, updated_by="test")
+    for key, row in rows.items():
+        assert mc.is_well_formed(row, key=key)
+        assert not mc.is_well_formed({**row, "workspace": workspace}, key=key)
+    suffix = cs.embedding_baseline_suffix("entities")
+    key = cs.config_key(workspace, suffix)
+    row = cs.make_config_row(
+        scope_workspace=workspace, suffix=suffix, value={}, updated_by="test"
+    )
+    assert mc.is_well_formed(row, key=key)
+    del row["workspace"]
+    assert not mc.is_well_formed(row, key=key)

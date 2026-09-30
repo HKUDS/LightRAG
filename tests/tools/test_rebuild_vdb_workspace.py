@@ -38,7 +38,9 @@ def test_cli_passes_exact_workspace(monkeypatch, argv, expected):
     assert selected == [expected]
 
 
-@pytest.mark.parametrize("workspace", ["../other", "config_storage_anchor.json"])
+@pytest.mark.parametrize(
+    "workspace", ["../other", "config_storage_anchor.json", "$meta", "$default"]
+)
 def test_cli_refuses_invalid_workspace_before_run(monkeypatch, workspace):
     def unexpected(**kwargs):
         pytest.fail("invalid workspace must fail before loading the environment")

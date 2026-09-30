@@ -355,6 +355,11 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
         # A name of only dots and spaces, which Windows strips to the root.
         _json_anchor('[" "]'),
         _json_anchor('["... "]'),
+        # Dollar-prefixed members are reserved for internal configuration keys.
+        _json_anchor('["$meta"]'),
+        _json_anchor('["$default"]'),
+        _json_anchor('["$other"]'),
+        _json_anchor('["\\u0024meta"]'),
         # The five reserved root names.
         _json_anchor('["kv_workspace_config.json"]'),
         _json_anchor('["config_storage_anchor.json"]'),

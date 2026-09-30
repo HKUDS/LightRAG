@@ -479,17 +479,13 @@ class TestTheClaimFollowsTheConfigurationStorage:
 
 @pytest.mark.asyncio
 async def test_a_tenant_named_like_the_server_scope_gets_its_own_baselines(tmp_path):
-    """Retiring the reserved family made ``_lightrag_server`` a legal tenant
-    name -- and the server SCOPE was a string with that spelling, so keying a
-    baseline for that tenant raised and the startup died on a legal name.
+    """The former metadata prefix remains a valid ordinary workspace.
 
-    The scope is an object now, so a name cannot be one. The rows still
-    render under the same prefix, which is harmless: a suffix belongs to
-    exactly one scope, so no tenant key can be a server-global key.
+    Its baselines use the actual name; internal metadata uses $meta.
     """
-    from lightrag.namespace import SERVER_CONFIG_SCOPE, SERVER_SCOPE
+    from lightrag.namespace import SERVER_SCOPE
 
-    tenant = SERVER_CONFIG_SCOPE
+    tenant = "_lightrag_server"
 
     for target in cs.EMBEDDING_TARGETS:
         assert cs.embedding_baseline_key(tenant, target) == (

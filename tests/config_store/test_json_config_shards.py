@@ -103,8 +103,8 @@ def _anchor(working_dir) -> ca.StorageAnchor:
     return anchor
 
 
-IDENTITY_KEY = "_lightrag_server/storage_identity"
-OWNER_KEY = "_lightrag_server/json_shard"
+IDENTITY_KEY = "$meta/storage_identity"
+OWNER_KEY = "$meta/json_shard"
 
 
 # ---------------------------------------------------------------------------
@@ -241,12 +241,10 @@ async def test_two_workspaces_in_one_process_tree_keep_separate_snapshots(tmp_pa
         assert alpha_rows[OWNER_KEY]["value"] == {"workspace": "teamalpha"}
         assert beta_rows[OWNER_KEY]["value"] == {"workspace": "teambeta"}
         assert all(
-            row["workspace"] in ("teamalpha", "_lightrag_server")
-            for row in alpha_rows.values()
+            row.get("workspace") in ("teamalpha", None) for row in alpha_rows.values()
         )
         assert all(
-            row["workspace"] in ("teambeta", "_lightrag_server")
-            for row in beta_rows.values()
+            row.get("workspace") in ("teambeta", None) for row in beta_rows.values()
         )
     finally:
         await beta.finalize_storages()

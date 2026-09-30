@@ -21,10 +21,11 @@ enforces, in the order a caller meets them:
   ``kv_storage`` so an existing deployment lands where its rows already are,
   except Redis business KV defaults to JSON configuration.
 
-* **Keys** are ``<workspace>/<suffix>`` or ``_lightrag_server/<suffix>``, with
-  ``/`` as the separator (a workspace name cannot contain it). They are built
-  by ``config_key`` and **never reparsed**: the row carries ``workspace`` as a
-  field, and a reader classifies by the field. That scope is the CONTAINER's
+* **Keys** use ``<workspace>/<suffix>``, ``$default/<suffix>`` for the empty
+  workspace, or ``$meta/<suffix>`` for metadata. Business names cannot start
+  with ``$``. Keys are built by ``config_key`` and never reparsed: metadata
+  is classified by registered key; only business rows carry ``workspace``.
+  That scope is the CONTAINER's
   only discriminator -- two deployments sharing one PostgreSQL, MongoDB or
   OpenSearch share the container and are kept apart by their business
   workspace names, which the contract already requires to differ.
@@ -40,7 +41,7 @@ enforces, in the order a caller meets them:
   flush and a strict read-back inside the lock. The claim covers workers of
   one Gunicorn master and nothing wider.
 
-* **The container has an identity.** ``_lightrag_server/storage_identity``
+* **The container has an identity.** ``$meta/storage_identity``
   holds a UUID for the whole container, and the anchor file
   (``lightrag/config_anchor.py``) records which backend and UUID this
   deployment is bound to. ``bind_configuration_identity`` checks -- or, with
@@ -101,7 +102,8 @@ from lightrag.exceptions import (
 from lightrag.kg.vector_space import declared_dimension, declared_model_name
 from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
-    SERVER_CONFIG_SCOPE,
+    META_CONFIG_PREFIX,
+    DEFAULT_CONFIG_PREFIX,
     SERVER_SCOPE,
     NameSpace,
     _ServerScope,
@@ -276,18 +278,20 @@ def registry_spec(suffix: str) -> ConfigKeySpec:
 
 
 def scope_prefix(scope_workspace: str | _ServerScope) -> str:
-    """What a scope is written as in a key and in the row's ``workspace``
-    field: a workspace's own name, or the server prefix for ``SERVER_SCOPE``."""
-    return SERVER_CONFIG_SCOPE if scope_workspace is SERVER_SCOPE else scope_workspace
+    """Encode metadata and the empty workspace with reserved key prefixes."""
+    if scope_workspace is SERVER_SCOPE:
+        return META_CONFIG_PREFIX
+    from lightrag.utils import validate_workspace
+
+    validate_workspace(scope_workspace)
+    return scope_workspace or DEFAULT_CONFIG_PREFIX
 
 
 def config_key(scope_workspace: str | _ServerScope, suffix: str) -> str:
-    """Build a key. ``scope_workspace`` is a workspace NAME or ``SERVER_SCOPE``;
-    the suffix must be registered.
+    """Build a registered key; metadata requires ``SERVER_SCOPE``.
 
-    A workspace named like the server prefix is an ordinary tenant and gets
-    its own per-workspace keys: the scope is the sentinel object, never the
-    string, so no name can reach a server-global key (see ``_ServerScope``).
+    Business workspace names cannot start with ``$``. The empty workspace
+    uses ``$default`` in the key while retaining ``""`` in its row.
     """
     spec = registry_spec(suffix)
     is_server = scope_workspace is SERVER_SCOPE
@@ -321,12 +325,11 @@ def make_config_row(
     updated_by: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """The uniform row every configuration key is stored as.
+    """Build a registered row. Only business rows carry ``workspace``.
 
-    ``schema_version`` is the registry's for this suffix; ``workspace`` is the
-    scope the row is ABOUT (a tenant, or ``_lightrag_server``), carried as a
-    field so enumeration never has to reparse the key.
+    Metadata is identified by its registered key, not a fictional workspace.
     """
+    config_key(scope_workspace, suffix)
     spec = registry_spec(suffix)
     if not isinstance(value, dict):
         raise TypeError(
@@ -335,7 +338,7 @@ def make_config_row(
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     return {
         "schema_version": spec.schema_version,
-        "workspace": scope_prefix(scope_workspace),
+        **({} if scope_workspace is SERVER_SCOPE else {"workspace": scope_workspace}),
         "updated_at": stamp,
         "updated_by": updated_by,
         "value": dict(value),
@@ -975,7 +978,7 @@ async def delete_workspace_configuration(config: Any, workspace: str) -> None:
 
 
 def storage_identity_key() -> str:
-    """``_lightrag_server/storage_identity``."""
+    """``$meta/storage_identity``."""
     return config_key(SERVER_SCOPE, STORAGE_IDENTITY_SUFFIX)
 
 
@@ -989,7 +992,7 @@ def _identity_invalid(key: str, detail: str) -> ConfigurationIdentityError:
 
 
 def json_shard_owner_key() -> str:
-    """``_lightrag_server/json_shard``."""
+    """``$meta/json_shard``."""
     return config_key(SERVER_SCOPE, JSON_SHARD_SUFFIX)
 
 
@@ -1020,10 +1023,8 @@ def identity_from_row(row: Any, *, key: str) -> str:
             f"unsupported schema_version {version!r}; expected integer "
             f"{expected_version}",
         )
-    if row.get("workspace") != SERVER_CONFIG_SCOPE:
-        raise _identity_invalid(
-            key, f"scope {row.get('workspace')!r} is not {SERVER_CONFIG_SCOPE!r}"
-        )
+    if "workspace" in row:
+        raise _identity_invalid(key, "metadata must not contain a workspace field")
     value = row.get("value")
     storage_uuid = canonical_storage_uuid(
         value.get("uuid") if isinstance(value, dict) else None
@@ -1145,9 +1146,9 @@ def owner_from_row(row: Any, *, key: str, location: str) -> str:
             location,
             f"owner record {key!r} has unsupported schema_version {version!r}",
         )
-    if row.get("workspace") != SERVER_CONFIG_SCOPE:
+    if "workspace" in row:
         raise shard_invalid_error(
-            location, f"owner record {key!r} has scope {row.get('workspace')!r}"
+            location, f"owner record {key!r} must not contain a workspace field"
         )
     value = row.get("value")
     if (
@@ -1843,7 +1844,7 @@ async def verify_configuration_identity(
 async def iter_configuration_rows(
     config: Any, *, page_size: int = 200
 ) -> AsyncIterator[dict[str, Any]]:
-    """Stream every configuration row, classified by its ``workspace`` FIELD.
+    """Stream every row with its real workspace, or None for metadata.
 
     Rows that do not carry the uniform shape are yielded with
     ``workspace=None`` rather than skipped, so an inventory can report them

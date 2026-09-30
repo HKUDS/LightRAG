@@ -7981,6 +7981,7 @@ def warn_about_workspace_overrides() -> list[str]:
 def normalize_server_workspace(workspace: str | None) -> str | None:
     """The workspace the server serves: only alphanumeric characters and
     underscores survive, every other character becomes ``_``.
+    A leading ``$`` is reserved and rejected before normalization.
 
     The one rule the server, the Gunicorn master (which claims the
     workspace's JSON configuration directory before forking) and
@@ -7989,6 +7990,8 @@ def normalize_server_workspace(workspace: str | None) -> str | None:
     """
     if not workspace:
         return workspace
+    if workspace.startswith("$"):
+        validate_workspace(workspace)
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
     if sanitized != workspace:
         logging.warning(
@@ -8012,7 +8015,8 @@ def validate_workspace(workspace: str) -> str:
     while unsafe names are rejected so the caller fails fast instead of
     silently reading or writing outside the intended directory.
 
-    No name is reserved HERE: a tenant may be called ``_lightrag_config`` and
+    Names starting with ``$`` are reserved for internal configuration keys.
+    A tenant may still be called ``_lightrag_config`` and
     still shares nothing with the configuration container. ``LightRAG``
     additionally applies ``config_shards.validate_config_workspace``, which
     refuses the five names of the deployment-wide files directly under
@@ -8026,8 +8030,8 @@ def validate_workspace(workspace: str) -> str:
         The workspace name unchanged when it is valid.
 
     Raises:
-        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."``
-            or ``".."``.
+        ValueError: If the workspace starts with ``$``, contains ``/`` or
+            ``\\``, or is ``"."`` or ``".."``.
 
     Examples:
         >>> validate_workspace("my_workspace")
@@ -8039,6 +8043,11 @@ def validate_workspace(workspace: str) -> str:
             ...
         ValueError: Invalid workspace name '../../../etc': must not contain path separators ('/', '\\') or be a relative path reference ('.', '..')
     """
+    if workspace.startswith("$"):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: names starting with '$' "
+            "are reserved for internal configuration keys"
+        )
     if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: must not contain path "

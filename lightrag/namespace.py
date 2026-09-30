@@ -62,30 +62,19 @@ ANCHOR_BIND_LOCK_FILE_NAME = ".lightrag_anchor_bind.lock"
 CONFIG_CLAIM_FILE_NAME = ".lightrag_storage.lock"
 
 
-# The prefix a server-global configuration key is RENDERED with, so its rows
-# sort beside the per-workspace ones. It is a spelling, not an identity: what
-# marks a key as server-global is ``SERVER_SCOPE`` below.
-SERVER_CONFIG_SCOPE = "_lightrag_server"
+# Reserved configuration key prefixes; business workspace names cannot start
+# with "$". These encode keys only, never physical storage workspaces.
+META_CONFIG_PREFIX = "$meta"
+DEFAULT_CONFIG_PREFIX = "$default"
 
 
 class _ServerScope:
-    """The scope of a server-global configuration row.
-
-    An object rather than a magic string, because a workspace name IS a
-    string: any string sentinel is a name a tenant can also be given, and with
-    the reserved name family retired nothing stops one from being. A tenant so
-    named would otherwise be refused its own baseline -- its key would look
-    like the server's scope -- which is a startup failure over a legal name.
-
-    Two rows can still RENDER under the same prefix, and that is harmless:
-    a suffix is registered with exactly one scope, so a tenant's key and a
-    server-global one can never be the same key.
-    """
+    """Internal metadata scope, distinct from every business workspace."""
 
     __slots__ = ()
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
-        return f"<server scope {SERVER_CONFIG_SCOPE!r}>"
+        return f"<server scope {META_CONFIG_PREFIX!r}>"
 
 
 SERVER_SCOPE = _ServerScope()

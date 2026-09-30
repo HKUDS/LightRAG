@@ -24,7 +24,6 @@ from lightrag.exceptions import (
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
-    SERVER_CONFIG_SCOPE,
     SERVER_SCOPE,
 )
 
@@ -137,6 +136,28 @@ class TestKeysAndRows:
         # A dotted workspace is legitimate and stays intact: nothing reparses.
         assert cs.embedding_baseline_key("v1.0", "chunks") == "v1.0/embedding/chunks"
 
+    @pytest.mark.parametrize("workspace", ["", "default", "meta", "_lightrag_server"])
+    def test_reserved_prefixes_keep_real_workspace_in_business_rows(self, workspace):
+        expected = workspace or "$default"
+        assert _key("entities", workspace) == f"{expected}/embedding/entities"
+        assert _row(workspace=workspace)["workspace"] == workspace
+
+    def test_metadata_has_no_outer_workspace_and_owner_keeps_empty_workspace(self):
+        rows = cs.json_shard_metadata_rows(
+            "", "3f2b8c1e-6a4d-4e2f-9b7a-1c2d3e4f5a6b", updated_by="test"
+        )
+        assert set(rows) == {"$meta/storage_identity", "$meta/json_shard"}
+        assert all("workspace" not in row for row in rows.values())
+        assert rows["$meta/json_shard"]["value"] == {"workspace": ""}
+        assert cs.inspect_shard_rows(rows, workspace="", location="test").owner == ""
+
+    @pytest.mark.parametrize("workspace", ["$", "$meta", "$default", "$other"])
+    def test_system_prefixes_cannot_be_business_workspaces(self, workspace):
+        with pytest.raises(ValueError, match="reserved"):
+            _key("entities", workspace)
+        with pytest.raises(ValueError, match="reserved"):
+            _row(workspace=workspace)
+
     def test_a_workspace_name_cannot_carry_the_separator(self):
         with pytest.raises(ValueError):
             cs.config_key("a/b", cs.embedding_baseline_suffix("entities"))
@@ -158,16 +179,16 @@ class TestKeysAndRows:
         family is gone, so a string sentinel would refuse that tenant its own
         baseline. The scope is an object; the string is only how it renders."""
         assert (
-            cs.config_key(SERVER_CONFIG_SCOPE, cs.embedding_baseline_suffix("entities"))
-            == f"{SERVER_CONFIG_SCOPE}/embedding/entities"
+            cs.config_key("_lightrag_server", cs.embedding_baseline_suffix("entities"))
+            == "_lightrag_server/embedding/entities"
         )
         row = cs.make_config_row(
-            scope_workspace=SERVER_CONFIG_SCOPE,
+            scope_workspace="_lightrag_server",
             suffix=cs.embedding_baseline_suffix("entities"),
             value={"model": "m", "dim": 8, "origin": "probe"},
             updated_by="t",
         )
-        assert row["workspace"] == SERVER_CONFIG_SCOPE
+        assert row["workspace"] == "_lightrag_server"
 
     def test_the_registry_declares_the_five_fields_for_every_key(self):
         assert set(cs.CONFIG_KEY_REGISTRY) == {
@@ -996,3 +1017,15 @@ class TestCategory:
         vectors = set(STORAGE_IMPLEMENTATIONS["VECTOR_STORAGE"]["implementations"])
         assert admitted & vectors == set()
         assert "RedisKVStorage" not in admitted
+
+
+@pytest.mark.parametrize("outer_workspace", ["", "ws", "$meta", None])
+def test_shard_owner_refuses_an_outer_workspace(outer_workspace):
+    rows = cs.json_shard_metadata_rows(
+        "ws", "3f2b8c1e-6a4d-4e2f-9b7a-1c2d3e4f5a6b", updated_by="test"
+    )
+    rows[cs.json_shard_owner_key()]["workspace"] = outer_workspace
+    from lightrag.exceptions import ConfigurationIdentityError
+
+    with pytest.raises(ConfigurationIdentityError, match="must not contain"):
+        cs.inspect_shard_rows(rows, workspace="ws", location="test")

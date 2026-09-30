@@ -148,24 +148,28 @@ def _mirrors_id(config: Any) -> bool:
     return type(config).__name__ in _ID_MIRROR_BACKENDS
 
 
-def is_well_formed(row: Any) -> bool:
-    """The fields of the uniform row shape a reader interprets (*Row shape*
-    in the contract): an integer ``schema_version``, a string ``workspace``
-    and a mapping ``value``.
+def is_well_formed(row: Any, *, key: str) -> bool:
+    """Validate the envelope by registered key, without parsing its prefix.
 
-    ``updated_at`` / ``updated_by`` are diagnostic, read by no verdict, so a
-    row lacking them is not refused: it is copied verbatim and verified by
-    digest like every other, and the target serves it exactly as the source
-    did.
+    Metadata carries no workspace; business rows carry the real name (empty
+    included). Audit fields are diagnostic and copied verbatim when present.
     """
     if not isinstance(row, dict):
         return False
-    version = row.get("schema_version")
-    return (
-        type(version) is int
-        and isinstance(row.get("workspace"), str)
-        and isinstance(row.get("value"), dict)
-    )
+    if type(row.get("schema_version")) is not int or not isinstance(
+        row.get("value"), dict
+    ):
+        return False
+    if key in cs.server_config_keys():
+        return "workspace" not in row
+    workspace = row.get("workspace")
+    if not isinstance(workspace, str):
+        return False
+    try:
+        validate_config_workspace(workspace)
+    except ValueError:
+        return False
+    return True
 
 
 def row_digest(payload: dict[str, Any]) -> str:
@@ -224,7 +228,7 @@ async def scan_container(config: Any, *, page_size: int) -> ContainerScan:
             payload = (
                 row_payload(row, id_mirror=id_mirror) if isinstance(row, dict) else None
             )
-            if key is None or not is_well_formed(payload):
+            if key is None or not is_well_formed(payload, key=key):
                 scan.malformed.append(key)
                 continue
             scan.digests[key] = row_digest(payload)
@@ -781,7 +785,7 @@ async def _copy_rows(
                 if isinstance(row, dict)
                 else None
             )
-            if key is None or not is_well_formed(payload):
+            if key is None or not is_well_formed(payload, key=key):
                 raise MigrationRefused(
                     f"source row {key!r} is not a well-formed configuration row; "
                     f"repair it and re-run"

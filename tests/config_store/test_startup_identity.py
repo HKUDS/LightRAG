@@ -34,10 +34,10 @@ from tests.config_store.test_startup_sequence import _rag as _base_rag
 
 pytestmark = pytest.mark.offline
 
-IDENTITY_KEY = "_lightrag_server/storage_identity"
+IDENTITY_KEY = "$meta/storage_identity"
 
 
-OWNER_KEY = "_lightrag_server/json_shard"
+OWNER_KEY = "$meta/json_shard"
 
 
 def _rag(tmp_path, *, model_name, workspace=None):

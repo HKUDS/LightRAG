@@ -1030,7 +1030,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--ssl` | `False` | Enable HTTPS |
 | `--ssl-certfile` | `None` | Path to SSL certificate file, required if `--ssl` is enabled |
 | `--ssl-keyfile` | `None` | Path to SSL private key file, required if `--ssl` is enabled |
-| `--workspace` | `""` | Default workspace for storage isolation |
+| `--workspace` | `""` | Default workspace for storage isolation; names starting with `$` are reserved and rejected before normalization |
 | `--api-prefix` | `""` | Reverse-proxy path prefix, also configurable with `LIGHTRAG_API_PREFIX` |
 | `--workers` | `1` | Gunicorn worker count |
 | `--llm-binding` | `ollama` | LLM binding type (`lollms`, `ollama`, `openai`, `openai-ollama`, `azure_openai`, `bedrock`, `gemini`) |

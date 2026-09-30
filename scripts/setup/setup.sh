@@ -1436,6 +1436,8 @@ read_config_anchor() {
       value="${value:${#BASH_REMATCH[0]}}"
       [[ "$name" == *[$'\200'-$'\377']* ]] && return 0
       [[ "$name" =~ \\u[0-9a-f]{0,3}[A-F] ]] && return 0
+      # A leading dollar sign is reserved for configuration key prefixes.
+      [[ "$name" == '"$'* ]] && return 0
       case "$name" in
         *'/'* | *'\\'* | *'\/'* | *'\u00'[0-7][0-9a-f]* | '"."' | '".."')
           return 0
