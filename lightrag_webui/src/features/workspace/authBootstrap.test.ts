@@ -96,7 +96,7 @@ const seedNamedUserSession = () => {
 }
 
 const authDisabledStatus: AuthStatusResponse = {
-  auth_configured: false,
+  auth_configured: false, api_key_configured: false,
   access_token: FRESH_GUEST_TOKEN,
   auth_mode: 'disabled',
   core_version: '1.0.0',
@@ -168,6 +168,19 @@ describe('activateSessionFromAuthStatus', () => {
     const state = useAuthStore.getState()
     expect(state.username).toBe('alice')
     expect(state.isGuestMode).toBe(false)
+  })
+
+  test.each([true, undefined])('key-only or unknown discovery never reactivates a stored session: key=%s', (apiKeyConfigured) => {
+    seedNamedUserSession()
+    const before = useAuthStore.getState()
+
+    activateSessionFromAuthStatus(
+      { ...authDisabledStatus, api_key_configured: apiKeyConfigured }, NAMED_TOKEN
+    )
+
+    expect(useAuthStore.getState()).toBe(before)
+    expect(data.get(TOKEN_STORAGE_KEY)).toBe(NAMED_TOKEN)
+    expect(data.get(PREVIOUS_USER_KEY)).toBe('alice')
   })
 
   test('a status response with nothing to apply leaves the session untouched', () => {

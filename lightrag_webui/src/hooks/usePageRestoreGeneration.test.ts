@@ -39,17 +39,17 @@ describe('subscribeToPageRestore', () => {
 
 describe('BFCache consumers', () => {
   test('admin health and document polling restart without beforeunload poisoning', async () => {
-    const appSource = await Bun.file(new URL('../App.tsx', import.meta.url)).text()
-    const documentManagerSource = await Bun.file(
+    const appSource = (await Bun.file(new URL('../App.tsx', import.meta.url)).text()).replace(/\r\n/g, '\n')
+    const documentManagerSource = (await Bun.file(
       new URL('../features/DocumentManager.tsx', import.meta.url)
-    ).text()
+    ).text()).replace(/\r\n/g, '\n')
 
     for (const source of [appSource, documentManagerSource]) {
       expect(source).toContain('const pageRestoreGeneration = usePageRestoreGeneration()')
       expect(source).not.toContain('addEventListener(\'beforeunload\'')
     }
 
-    expect(appSource).toContain('[enableHealthCheck, apiKeyAlertOpen, pageRestoreGeneration]')
+    expect(appSource).toContain('[enableHealthCheck, pageRestoreGeneration]')
     expect(documentManagerSource).toContain(
       'pipelineActive, pageRestoreGeneration, startPollingInterval'
     )
@@ -57,9 +57,9 @@ describe('BFCache consumers', () => {
   })
 
   test('the initial document state is distinct from a confirmed empty response', async () => {
-    const source = await Bun.file(
+    const source = (await Bun.file(
       new URL('../features/DocumentManager.tsx', import.meta.url)
-    ).text()
+    ).text()).replace(/\r\n/g, '\n')
 
     expect(source).toContain('!hasLoadedDocuments && initialLoadError === null')
     expect(source).toContain('!hasLoadedDocuments && initialLoadError !== null')

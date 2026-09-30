@@ -270,8 +270,6 @@
         "node": "节点",
         "edge": "边",
         "degree": "邻边",
-        "apiKey": "API密钥",
-        "enterYourAPIkey": "输入您的API密钥",
         "save": "保存",
         "refreshLayout": "刷新布局"
       },
@@ -503,12 +501,6 @@
       "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。"
     }
   },
-  "apiKeyAlert": {
-    "title": "需要 API Key",
-    "description": "请输入您的 API Key 以访问服务",
-    "placeholder": "请输入 API Key",
-    "save": "保存"
-  },
   "pagination": {
     "showing": "显示第 {{start}} 到 {{end}} 条，共 {{total}} 条记录",
     "page": "页",
@@ -533,12 +525,20 @@
     "failedTitle": "本地设置准备失败",
     "failedBody": "您保存的设置暂时无法迁移到新的存储格式。数据未丢失——请刷新重试。",
     "dataLostTitle": "部分已保存的设置无法恢复",
-    "dataLostBody": "浏览器存储空间已满，您的部分设置（主题、语言、API 密钥）未能保留，且已无法恢复。继续将保留尚存的设置，其余使用默认值。",
+    "dataLostBody": "浏览器存储空间已满，您的部分设置（主题、语言、偏好设置）未能保留，且已无法恢复。继续将保留尚存的设置，其余使用默认值。",
     "continueAfterLoss": "继续",
     "retry": "重新加载",
     "historyDropped": "升级时聊天历史超出浏览器存储空间，已被放弃。其余设置已正常迁移。"
   },
   "retrievalHistory": {
     "quotaDropped": "浏览器存储空间已满：聊天历史已停止保存。当前对话在离开页面前仍然可见。"
+  },
+  "webuiAuth": {
+    "checking": "正在检查 WebUI 访问模式…",
+    "title": "需要配置用户账户",
+    "guidance": "此服务器仅配置了 API Key，尚未配置用户账户。要使用受保护的 WebUI，请配置 AUTH_ACCOUNTS 和高强度、非默认的 TOKEN_SECRET，重启服务器后登录。请保留 API Key 用于程序化访问，不要通过移除密钥启用访客访问。",
+    "unavailableTitle": "无法确定 WebUI 访问模式",
+    "unavailable": "请检查服务器连接，并部署配套版本的前端和后端。启用访客访问前，需要服务器提供认证模式发现信息。",
+    "retry": "重新检查"
   }
 }

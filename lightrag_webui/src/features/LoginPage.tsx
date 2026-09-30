@@ -1,3 +1,4 @@
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
@@ -119,7 +120,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
           markVersionCheckedFromLogin();
         }
 
-        if (!status.auth_configured && status.access_token) {
+        if (webuiAuthMode(status) === 'guest' && status.access_token) {
           if (!autoActivateGuest) {
             // Workspace entry: guest activation belongs to the welcome page's
             // explicit action — never to a (possibly bookmarked) login visit.
@@ -196,6 +197,18 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
     try {
       setLoading(true)
       const response = await loginToServer(username, password)
+
+      // The server may have removed accounts while this form was open.
+      // /login's legacy guest response alone cannot distinguish open from
+      // API-key-only deployments; never activate it without fresh discovery.
+      if (response.auth_mode === 'disabled') {
+        const status = await getAuthStatus()
+        if (webuiAuthMode(status) !== 'guest') return
+        if (!autoActivateGuest) {
+          navigate('/welcome')
+          return
+        }
+      }
 
       // Identity-change cleanup, shared with the guest activation paths: a
       // different user must not see the previous user's conversations in

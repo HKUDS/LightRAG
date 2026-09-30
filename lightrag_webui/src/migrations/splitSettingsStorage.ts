@@ -73,6 +73,7 @@ import {
 } from '@/lib/storageKeys'
 import { hasFutureEnvelope } from '@/lib/guardedStorage'
 import { isQuotaExceededError } from '@/lib/storageQuota'
+import { removeLegacyApiKey } from './removeLegacyApiKey'
 
 /** Envelope version of `settings-storage` after the split. */
 export const SETTINGS_STORAGE_VERSION_AFTER_SPLIT = 22
@@ -667,6 +668,19 @@ export function runSettingsStorageSplitMigration(
     }
     // Rule 6/7: keep whatever legacy state remains; record the failure so
     // dependent stores refuse to hydrate and the entry can offer a retry.
+    migrationError = error
+  }
+}
+
+/** Run entry migrations in order, keeping the existing failure/retry barrier. */
+export function runSettingsStorageMigration(
+  storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage
+): void {
+  runSettingsStorageSplitMigration(storage)
+  if (!storage || getSettingsMigrationError() != null) return
+  try {
+    removeLegacyApiKey(storage, SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+  } catch (error) {
     migrationError = error
   }
 }

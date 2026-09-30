@@ -14,6 +14,7 @@ import App from './App'
 import LoginPage from '@/features/LoginPage'
 import ThemeProvider from '@/components/ThemeProvider'
 import MigrationErrorScreen from '@/components/MigrationErrorScreen'
+import WebUIAuthBoundary from '@/components/WebUIAuthBoundary'
 
 const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
@@ -105,7 +106,9 @@ const AppRouter = () => {
   return (
     <ThemeProvider>
       <Router>
-        <AppContent />
+        <WebUIAuthBoundary>
+          <AppContent />
+        </WebUIAuthBoundary>
         <Toaster
           position="bottom-center"
           theme="system"
