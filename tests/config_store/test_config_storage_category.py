@@ -1,15 +1,17 @@
-"""The configuration storage as its own CATEGORY: selection, ``config_dir``
-and the fixed container names.
+"""The configuration storage as its own CATEGORY: selection, the fixed JSON
+snapshot paths and the fixed container names.
 
 The configuration storage is selected independently of the business backends
 and lives in a container named in code. The three things that carry real risk
 are pinned here:
 
-* ``config_dir`` is where the NEXT start reads its baselines, so a deployment
-  whose directory moves reads absence instead of its own records -- and
-  absence is the one answer that lets a start bootstrap;
-* a fixed container name is SHARED by two deployments on one server, so what
-  keeps their baselines apart is the row key's scope;
+* the JSON snapshot is where the NEXT start reads its baselines, so its path
+  is derived from ``working_dir`` and the workspace alone -- no setting moves
+  it (the former ``config_dir`` / ``LIGHTRAG_CONFIG_DIR`` is gone), so a
+  start cannot be pointed at a directory that reads absence;
+* a fixed database container name is SHARED by two deployments on one
+  server, so what keeps their baselines apart is the row key's scope (JSON
+  keeps one snapshot per workspace instead);
 * a separately selected backend is a new way to point a running deployment at
   an empty store, which is announced rather than enforced.
 
@@ -28,7 +30,9 @@ from lightrag import LightRAG, config_store as cs
 from lightrag.exceptions import EmbeddingBaselineMismatchError
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace, default_config_dir
+from lightrag import config_anchor as ca
+from lightrag.config_shards import json_config_dir
+from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace
 from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
 pytestmark = pytest.mark.offline
@@ -80,16 +84,31 @@ def _rag(tmp_path, *, model_name="bge-m3", **kwargs):
 
 
 def _write_recorded_baselines(tmp_path, workspace, *, model_name, dim=_DIM):
-    """A deployment that has already recorded its baselines: the file in the
-    default ``config_dir``, one row per target.
+    """A deployment that has already recorded its baselines: the workspace's
+    registered snapshot (identity, owner, one row per target) and the anchor
+    listing it as a member.
 
     Written by hand on purpose -- driving it through today's code would prove
     only that the code agrees with itself, where what is being pinned is that
     the on-disk shape is the contract and a later start reads it back.
     """
-    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path),
+        ca.StorageAnchor(
+            backend="JsonKVStorage", storage_uuid=storage_uuid, members=(workspace,)
+        ),
+        replace=False,
+    )
+    path = tmp_path / workspace / "kv_workspace_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = {
+        key: {**row, "_id": key, "create_time": 1, "update_time": 1}
+        for key, row in cs.json_shard_metadata_rows(
+            workspace, storage_uuid, updated_by=cs.UPDATED_BY_STARTUP
+        ).items()
+    }
+    rows |= {
         cs.embedding_baseline_key(workspace, target): {
             "schema_version": 1,
             "workspace": workspace,
@@ -114,8 +133,9 @@ class TestTheConfigurationDirectoryIsWhereBaselinesLive:
     """Deliverable 2 and 7: what is recorded is read back, from that directory
     and no other."""
 
-    def test_the_default_config_dir_is_under_the_working_dir(self, tmp_path):
-        assert default_config_dir(str(tmp_path)) == str(tmp_path / CONFIG_CONTAINER_TAG)
+    def test_the_snapshot_directory_is_the_workspace_directory(self, tmp_path):
+        assert json_config_dir(str(tmp_path), "ws") == str(tmp_path / "ws")
+        assert json_config_dir(str(tmp_path), "") == str(tmp_path)
 
     async def test_every_recorded_baseline_is_read_by_the_next_start(self, tmp_path):
         """A later start reads the recorded model unchanged -- not
@@ -128,7 +148,7 @@ class TestTheConfigurationDirectoryIsWhereBaselinesLive:
         await rag.initialize_storages()
         try:
             assert rag.config_storage == "JsonKVStorage"
-            assert rag.config_dir == str(tmp_path / CONFIG_CONTAINER_TAG)
+            assert rag.config_dir == str(tmp_path / workspace)
             recorded = await cs.read_embedding_baselines(
                 rag.configuration_storage, workspace
             )
@@ -141,13 +161,10 @@ class TestTheConfigurationDirectoryIsWhereBaselinesLive:
             assert {b.origin for b in recorded.values()} == {"probe"}
         finally:
             await rag.finalize_storages()
-        # A dev deployment with rows but no identity binds by CREATING the
-        # identity; every baseline row it already had is byte-for-byte the
-        # same, and the identity is the only row added.
-        after = _stored(path)
-        identity_key = cs.storage_identity_key()
-        assert set(after) == set(before) | {identity_key}
-        assert {k: v for k, v in after.items() if k != identity_key} == before
+        # A registered member verifies and rewrites nothing: every row it
+        # already had -- identity, owner, baselines -- is byte-for-byte the
+        # same.
+        assert _stored(path) == before
 
     async def test_a_mismatching_model_still_refuses(self, tmp_path):
         _write_recorded_baselines(tmp_path, _workspace(tmp_path), model_name="bge-m3")
@@ -158,22 +175,34 @@ class TestTheConfigurationDirectoryIsWhereBaselinesLive:
         assert "bge-m3" in str(excinfo.value)
         await rag.finalize_storages()
 
-    async def test_a_config_dir_pointed_elsewhere_reads_absence(self, tmp_path):
-        """The counterexample that makes the directory load bearing: the very
-        same deployment, one setting different, and every baseline is gone."""
+    def test_config_dir_is_no_longer_a_constructor_parameter(self, tmp_path):
+        """The setting that could point a start at a directory reading
+        absence is gone, not ignored: passing it fails loudly."""
+        with pytest.raises(TypeError, match="config_dir"):
+            _rag(tmp_path, config_dir=str(tmp_path / "elsewhere"))
+
+    async def test_the_removed_environment_setting_moves_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """The counterexample the old setting allowed: the very same
+        deployment with ``LIGHTRAG_CONFIG_DIR`` set still reads its own
+        records, because nothing reads that variable any more."""
         workspace = _workspace(tmp_path)
         _write_recorded_baselines(tmp_path, workspace, model_name="bge-m3")
+        monkeypatch.setenv("LIGHTRAG_CONFIG_DIR", str(tmp_path / "elsewhere"))
 
-        rag = _rag(tmp_path, config_dir=str(tmp_path / "elsewhere"))
+        rag = _rag(tmp_path)
+        assert rag.config_dir == str(tmp_path / workspace)
         await rag.initialize_storages()
         try:
             recorded = await cs.read_embedding_baselines(
                 rag.configuration_storage, workspace
             )
-            # Re-established from an empty deployment, not read.
-            assert {b.origin for b in recorded.values()} == {"empty"}
+            # Read, not re-established from an empty deployment.
+            assert {b.origin for b in recorded.values()} == {"probe"}
         finally:
             await rag.finalize_storages()
+        assert not (tmp_path / "elsewhere").exists()
 
 
 class TestTheSelectionIsRefusedByName:
@@ -198,7 +227,7 @@ class TestTheSelectionIsRefusedByName:
         assert rag.kv_storage == "RedisKVStorage"
         assert rag.config_storage == "JsonKVStorage"
         assert type(rag.configuration_storage) is JsonKVStorage
-        assert rag.config_dir == str(tmp_path / "_lightrag_config")
+        assert rag.config_dir == str(tmp_path / _workspace(tmp_path))
 
     async def test_redis_default_does_not_override_an_existing_anchor(
         self, tmp_path, monkeypatch
@@ -296,22 +325,21 @@ class TestTwoDeploymentsShareTheContainer:
         b = {cs.embedding_baseline_key("beta", t) for t in cs.EMBEDDING_TARGETS}
         assert a & b == set()
 
-    def test_json_two_deployments_one_file_disjoint_rows(self, tmp_path):
-        shared = tmp_path / "shared"
-        one = cs.create_configuration_storage(
-            JsonKVStorage,
-            global_config={"working_dir": str(tmp_path), "config_dir": str(shared)},
-            embedding_func=None,
-        )
-        two = cs.create_configuration_storage(
-            JsonKVStorage,
-            global_config={
-                "working_dir": str(tmp_path / "b"),
-                "config_dir": str(shared),
-            },
-            embedding_func=None,
-        )
-        assert one._file_name == two._file_name
+    def test_json_keeps_one_file_per_workspace(self, tmp_path):
+        """JSON is the exception: each workspace has its own snapshot, and the
+        same workspace under the same ``working_dir`` is the same file."""
+
+        def _open(workspace):
+            return cs.create_configuration_storage(
+                JsonKVStorage,
+                global_config={"working_dir": str(tmp_path), "workspace": workspace},
+                embedding_func=None,
+            )
+
+        alpha, beta, alpha_again = _open("alpha"), _open("beta"), _open("alpha")
+        assert alpha._file_name != beta._file_name
+        assert alpha._file_name == alpha_again._file_name
+        assert alpha._file_name == str(tmp_path / "alpha" / "kv_workspace_config.json")
 
     def test_mongodb_one_collection_whatever_the_caller_named(self):
         from lightrag.kg.mongo_impl import MongoKVStorage
@@ -379,7 +407,8 @@ class TestTheEmptyStoreGuard:
         assert len(warnings_seen) == 1
         message = warnings_seen[0]
         assert "JsonKVStorage at /x" in message
-        assert "config_storage / config_dir" in message
+        assert "LIGHTRAG_CONFIG_STORAGE" in message
+        assert "WORKING_DIR" in message
 
     def test_a_partial_absence_says_nothing(self, warnings_seen):
         """Two of three recorded is an interrupted first start, not a store
@@ -406,13 +435,14 @@ class TestTheEmptyStoreGuard:
         finally:
             await rag.finalize_storages()
 
-    async def test_a_store_pointed_away_from_the_records_is_announced(
+    async def test_another_workspaces_records_do_not_silence_the_guard(
         self, tmp_path, warnings_seen
     ):
-        """The failure this guard exists for: the deployment HAS records, and
-        one setting points the instance at a store that does not hold them."""
-        _write_recorded_baselines(tmp_path, _workspace(tmp_path), model_name="bge-m3")
-        rag = _rag(tmp_path, config_dir=str(tmp_path / "empty-store"))
+        """The deployment HAS records -- for another workspace. A start on a
+        workspace whose own snapshot holds none is announced: the rows of a
+        sibling snapshot are not this workspace's baselines."""
+        _write_recorded_baselines(tmp_path, "sibling", model_name="bge-m3")
+        rag = _rag(tmp_path)
         await rag.initialize_storages()
         try:
             assert [m for m in warnings_seen if "No embedding baseline" in m]
@@ -432,33 +462,30 @@ class TestTheClaimFollowsTheConfigurationStorage:
         for server_backed in ("PGKVStorage", "MongoKVStorage", "OpenSearchKVStorage"):
             assert uses_working_dir(server_backed) is False
 
-    async def test_the_claim_is_on_config_dir_not_working_dir(self, tmp_path):
+    async def test_the_claim_is_on_the_workspace_snapshot_dir(self, tmp_path):
         from lightrag.kg.working_dir_lock import holds_working_dir_lock
 
-        elsewhere = tmp_path / "conf"
-        rag = _rag(tmp_path, config_dir=str(elsewhere))
+        snapshot_dir = tmp_path / _workspace(tmp_path)
+        rag = _rag(tmp_path)
         await rag.initialize_storages()
         try:
-            assert holds_working_dir_lock(str(elsewhere)) is True
+            assert holds_working_dir_lock(str(snapshot_dir)) is True
+            # The root claim belongs to the empty workspace, not to this one.
             assert holds_working_dir_lock(str(tmp_path)) is False
         finally:
             await rag.finalize_storages()
-        assert holds_working_dir_lock(str(elsewhere)) is False
+        assert holds_working_dir_lock(str(snapshot_dir)) is False
 
 
 @pytest.mark.asyncio
 async def test_a_tenant_named_like_the_server_scope_gets_its_own_baselines(tmp_path):
-    """Retiring the reserved family made ``_lightrag_server`` a legal tenant
-    name -- and the server SCOPE was a string with that spelling, so keying a
-    baseline for that tenant raised and the startup died on a legal name.
+    """The former metadata prefix remains a valid ordinary workspace.
 
-    The scope is an object now, so a name cannot be one. The rows still
-    render under the same prefix, which is harmless: a suffix belongs to
-    exactly one scope, so no tenant key can be a server-global key.
+    Its baselines use the actual name; internal metadata uses $meta.
     """
-    from lightrag.namespace import SERVER_CONFIG_SCOPE, SERVER_SCOPE
+    from lightrag.namespace import SERVER_SCOPE
 
-    tenant = SERVER_CONFIG_SCOPE
+    tenant = "_lightrag_server"
 
     for target in cs.EMBEDDING_TARGETS:
         assert cs.embedding_baseline_key(tenant, target) == (
@@ -511,12 +538,18 @@ def test_the_public_init_table_documents_every_storage_selection():
         "graph_storage",
         "doc_status_storage",
         "config_storage",
-        "config_dir",
     ):
         assert f"| **{field}** |" in table, (
             f"{field} is a public LightRAG parameter with no row in the "
             f"LightRAG Init Parameters table"
         )
+
+    # ``config_dir`` is no longer a constructor parameter: the table must not
+    # advertise a setting that raises TypeError.
+    assert "| **config_dir** |" not in table, (
+        "config_dir was removed from LightRAG but the Init Parameters table "
+        "still documents it"
+    )
 
     # Document the Redis exception alongside the ordinary inherited default.
     row = next(line for line in table.splitlines() if "| **config_storage** |" in line)
@@ -532,7 +565,8 @@ def test_the_api_server_guide_documents_the_category_it_advertises_around():
     ).read_text(encoding="utf-8")
 
     assert "LIGHTRAG_CONFIG_STORAGE" in guide
-    assert "LIGHTRAG_CONFIG_DIR" in guide
+    # The removed setting is never advertised: nothing reads it any more.
+    assert "LIGHTRAG_CONFIG_DIR" not in guide
     for admitted in cs.configuration_storage_implementations():
         assert f"`{admitted}`" in guide, (
             f"{admitted} is an admitted configuration backend the API server "

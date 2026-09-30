@@ -30,7 +30,7 @@ pytestmark = pytest.mark.offline
 
 UUID_A = "3f2b8c1e-6a4d-4e2f-9b7a-1c2d3e4f5a6b"
 UUID_B = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
-IDENTITY_KEY = "_lightrag_server/storage_identity"
+IDENTITY_KEY = "$meta/storage_identity"
 
 
 @pytest.fixture(autouse=True)
@@ -306,7 +306,7 @@ class TestTheHappyPath:
         assert target.calls and not _writes(target)
         assert open(ca.anchor_path(str(tmp_path)), "rb").read() == before
         report = "\n".join(lines)
-        assert "7 row(s)" in report and "alpha (3)" in report
+        assert "7 row(s)" in report and "'alpha' (3)" in report
         assert "will claim" in report
 
 
@@ -856,35 +856,53 @@ class TestEnvironments:
             )
 
 
+async def _register_json_workspace(working_dir, workspace, rows=None):
+    """Register ``workspace`` in the JSON configuration group as a server
+    start does (``bind_configuration_identity`` on its real snapshot), seed
+    ``rows`` into that snapshot, and close it."""
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    storage = cs.create_configuration_storage(
+        JsonKVStorage,
+        global_config={"working_dir": str(working_dir), "workspace": workspace},
+        embedding_func=None,
+    )
+    await storage.initialize()
+    try:
+        await cs.bind_configuration_identity(
+            storage,
+            working_dir=str(working_dir),
+            backend="JsonKVStorage",
+            container="json",
+            workspace=workspace,
+        )
+        if rows:
+            await storage.upsert(dict(rows))
+            await cs.flush_configuration_storage(storage, "seed")
+    finally:
+        await storage.finalize()
+
+
 class TestEndToEndOnJson:
     async def test_json_to_a_server_backend_and_the_next_start_passes(
         self, tmp_path, monkeypatch
     ):
-        """A real JSON source bound by a real start; the target stands in for
-        a server backend. After the switch, a start with the target explicitly
-        selected is judged by the target's identity."""
-        from lightrag.kg.json_kv_impl import JsonKVStorage
+        """A real JSON group -- two workspaces registered by real starts --
+        opened as the source by the tool's own opener; the target stands in
+        for a server backend. The target receives every member's rows and one
+        identity, never the JSON owner rows. After the switch, a start with the
+        target explicitly selected is judged by the target's identity."""
+        from lightrag.config_shards import json_config_dir, json_config_path
+        from lightrag.kg.working_dir_lock import holds_working_dir_lock
 
-        source = cs.create_configuration_storage(
-            JsonKVStorage,
-            global_config={"working_dir": str(tmp_path)},
-            embedding_func=None,
-        )
-        await source.initialize()
-        await cs.bind_configuration_identity(
-            source,
-            working_dir=str(tmp_path),
-            backend="JsonKVStorage",
-            container="json",
-        )
-        await source.upsert(_baseline("alpha"))
-        await cs.flush_configuration_storage(source, "seed")
-        storage_uuid = ca.read_anchor(str(tmp_path)).storage_uuid
+        seeded = {"alpha": _baseline("alpha"), "beta": _baseline("beta")}
+        for workspace, rows in seeded.items():
+            await _register_json_workspace(tmp_path, workspace, rows)
+        anchor = ca.read_anchor(str(tmp_path))
+        assert anchor.members == ("alpha", "beta")
+        storage_uuid = anchor.storage_uuid
         target = Container()
-
-        async def _src(backend):
-            assert backend == "JsonKVStorage"
-            return source
+        claims: list[str] = []
 
         async def _tgt(backend):
             return target
@@ -892,12 +910,22 @@ class TestEndToEndOnJson:
         result = await mc.migrate_configuration(
             working_dir=str(tmp_path),
             target_backend="MongoKVStorage",
-            open_source=_src,
+            open_source=mc._opener(str(tmp_path), claims, source=True),
             open_target=_tgt,
             out=lambda line: None,
+            release_claims=lambda: mc._release_claims(claims),
         )
         assert result.switched
-        assert os.path.exists(tmp_path / "_lightrag_config" / "kv_server_config.json")
+        assert _data(target) == {
+            k: mc.row_payload(v)
+            for k, v in {**seeded["alpha"], **seeded["beta"]}.items()
+        }
+        assert target.visible[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+        assert cs.json_shard_owner_key() not in target.visible
+        # The JSON source is kept, and its claims were handed back.
+        for workspace in ("alpha", "beta"):
+            assert os.path.exists(json_config_path(str(tmp_path), workspace))
+            assert not holds_working_dir_lock(json_config_dir(str(tmp_path), workspace))
         assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
             backend="MongoKVStorage", storage_uuid=storage_uuid
         )
@@ -922,9 +950,11 @@ class TestCommandLine:
     The storages are the doubles above, behind the tool's own opener."""
 
     def _wire(self, monkeypatch, source, target):
-        def _opener(working_dir, config_dir, claims):
+        source_storage, target_storage = source, target
+
+        def _opener(working_dir, claims, *, source):
             async def _open(backend):
-                return source if backend == "PGKVStorage" else target
+                return source_storage if backend == "PGKVStorage" else target_storage
 
             return _open
 
@@ -968,8 +998,40 @@ class TestCommandLine:
         monkeypatch.setattr("builtins.input", lambda prompt="": "no")
         assert await mc.async_main(["--target-backend", "MongoKVStorage"]) == 0
         assert "nothing was written" in capsys.readouterr().out
-        assert target.calls == []
+        # The read-only preview classifies the target; nothing is written.
+        assert [call for call in target.calls if call[0] != "read"] == []
         assert ca.read_anchor(working_dir).backend == "PGKVStorage"
+
+    async def test_the_whole_inventory_is_shown_before_the_prompt(
+        self, monkeypatch, capsys
+    ):
+        """The operator confirms the list of every workspace that moves, not
+        only this server's WORKSPACE."""
+        working_dir = os.environ["WORKING_DIR"]
+        _anchor(working_dir)
+        # Without the hand-built stand-in for a future server key: an
+        # unregistered key is classified by its ``workspace`` field, so it
+        # would be listed as the tenant ``_lightrag_server``.
+        rows = {
+            k: v
+            for k, v in _source_rows().items()
+            if not k.endswith("embedding.current")
+        }
+        self._wire(monkeypatch, Container(rows), Container())
+        monkeypatch.setenv("WORKSPACE", "alpha")
+        seen_before_prompt: list[str] = []
+
+        def _answer(prompt=""):
+            seen_before_prompt.append(capsys.readouterr().out)
+            return "no"
+
+        monkeypatch.setattr("builtins.input", _answer)
+        assert await mc.async_main(["--target-backend", "MongoKVStorage"]) == 0
+        shown = seen_before_prompt[0]
+        assert "the WHOLE configuration container moves" in shown
+        assert "-- not only this server's WORKSPACE ('alpha')" in shown
+        assert "Workspaces to migrate (2): 'alpha', 'beta'" in shown
+        assert "not only this server's" in shown.split("Workspaces to migrate")[1]
 
     async def test_a_failure_says_the_anchor_is_unchanged(self, monkeypatch, capsys):
         working_dir = os.environ["WORKING_DIR"]
@@ -1095,25 +1157,16 @@ class TestCommandLine:
 async def test_the_cli_opens_a_real_json_source_through_its_own_opener(
     monkeypatch, capsys
 ):
-    """The tool's own opener on a real ``JsonKVStorage`` source (its
-    ``config_dir`` claimed and handed back), with the server backend stood in
-    for by a class behind the factory."""
+    """The tool's own opener on a real JSON source group (each member's
+    snapshot directory claimed and handed back), with the server backend
+    stood in for by a class behind the factory."""
+    from lightrag.config_shards import json_config_dir
     from lightrag.kg import factory
-    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.working_dir_lock import holds_working_dir_lock
 
     working_dir = os.environ["WORKING_DIR"]
-    source = cs.create_configuration_storage(
-        JsonKVStorage, global_config={"working_dir": working_dir}, embedding_func=None
-    )
-    await source.initialize()
-    await cs.bind_configuration_identity(
-        source, working_dir=working_dir, backend="JsonKVStorage", container="json"
-    )
     seeded = _baseline("alpha")
-    await source.upsert(dict(seeded))
-    await cs.flush_configuration_storage(source, "seed")
-    await source.finalize()
+    await _register_json_workspace(working_dir, "alpha", seeded)
     finalize_share_data()
 
     target = Container()
@@ -1137,7 +1190,7 @@ async def test_the_cli_opens_a_real_json_source_through_its_own_opener(
     assert code == 0, capsys.readouterr().out
     assert _data(target) == {k: mc.row_payload(v) for k, v in seeded.items()}
     assert ca.read_anchor(working_dir).backend == "MongoKVStorage"
-    assert not holds_working_dir_lock(cs.resolve_config_dir("", working_dir))
+    assert not holds_working_dir_lock(json_config_dir(working_dir, "alpha"))
     initialize_share_data(workers=1)
 
 
@@ -1193,3 +1246,19 @@ async def test_a_backend_that_cannot_be_constructed_is_reported(monkeypatch, cap
     assert "could not create the PGKVStorage configuration storage" in out
     # The source is what failed to open: the pre-claim refusal.
     assert "Nothing was written" in out and "restore or reconnect" in out
+
+
+@pytest.mark.parametrize("workspace", ["", "default", "meta", "_lightrag_server"])
+def test_migration_envelopes_distinguish_metadata_from_business(workspace):
+    rows = cs.json_shard_metadata_rows(workspace, UUID_A, updated_by="test")
+    for key, row in rows.items():
+        assert mc.is_well_formed(row, key=key)
+        assert not mc.is_well_formed({**row, "workspace": workspace}, key=key)
+    suffix = cs.embedding_baseline_suffix("entities")
+    key = cs.config_key(workspace, suffix)
+    row = cs.make_config_row(
+        scope_workspace=workspace, suffix=suffix, value={}, updated_by="test"
+    )
+    assert mc.is_well_formed(row, key=key)
+    del row["workspace"]
+    assert not mc.is_well_formed(row, key=key)

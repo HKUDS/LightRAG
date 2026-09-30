@@ -24,7 +24,7 @@ from lightrag.exceptions import (
     ConfigurationStorageError,
 )
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import SERVER_CONFIG_SCOPE, SERVER_SCOPE
+from lightrag.namespace import SERVER_SCOPE
 from tests.config_store.test_config_store import (
     FakeConfigKV,
     _RetainingKV,
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.offline
 
 UUID_A = "3f2b8c1e-6a4d-4e2f-9b7a-1c2d3e4f5a6b"
 UUID_B = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
-IDENTITY_KEY = "_lightrag_server/storage_identity"
+IDENTITY_KEY = "$meta/storage_identity"
 CONTAINER = "PGKVStorage (_lightrag_config)"
 
 
@@ -88,9 +88,9 @@ class TestTheRow:
         ``_lightrag_server`` is refused the server-global suffix, and its own
         keys never equal the identity key."""
         with pytest.raises(ValueError, match="server-global"):
-            cs.config_key(SERVER_CONFIG_SCOPE, cs.STORAGE_IDENTITY_SUFFIX)
+            cs.config_key("_lightrag_server", cs.STORAGE_IDENTITY_SUFFIX)
         tenant_keys = {
-            cs.embedding_baseline_key(SERVER_CONFIG_SCOPE, t)
+            cs.embedding_baseline_key("_lightrag_server", t)
             for t in cs.EMBEDDING_TARGETS
         }
         assert IDENTITY_KEY not in tenant_keys
@@ -216,7 +216,7 @@ class TestAnchoredStarts:
         self, tmp_path
     ):
         path = ca.anchor_path(str(tmp_path))
-        os.makedirs(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("{truncated")
         config = FakeConfigKV({IDENTITY_KEY: _identity_row()})

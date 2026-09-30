@@ -12,9 +12,9 @@ The design contract is *The anchor and the container identity* in
 ## When do I need this?
 
 Every deployment is anchored to one configuration container:
-`<WORKING_DIR>/_lightrag_config/config_storage_anchor.json` records the backend type
-and the container's UUID, and every start checks both before reading any
-baseline. When `LIGHTRAG_CONFIG_STORAGE` is unset, the configuration backend
+`<WORKING_DIR>/config_storage_anchor.json` records the backend type and the
+container's UUID (for JSON, also the registered workspaces), and every start
+checks both before reading any baseline. When `LIGHTRAG_CONFIG_STORAGE` is unset, the configuration backend
 follows `LIGHTRAG_KV_STORAGE`. Changing the KV backend therefore moves the
 configuration candidate, and the start is refused:
 
@@ -33,9 +33,30 @@ You have two ways out:
 
 This tool only moves a container **across types**. For a same-type move, such
 as PostgreSQL to another PostgreSQL, Mongo to Mongo, an OpenSearch
-snapshot/reindex, or copying the JSON file, use the backend's own dump and
-restore. The identity row travels with the data, and a container of the same
-type with the same UUID passes the start-up check.
+snapshot/reindex, or copying the whole `WORKING_DIR` for JSON, use the
+backend's own dump and restore. The identity row travels with the data, and a
+container of the same type with the same UUID passes the start-up check.
+
+**JSON is the whole group.** JSON configuration keeps one snapshot per
+workspace (`<WORKING_DIR>/<workspace>/kv_workspace_config.json`, the root for
+the empty workspace), and the anchor lists the registered workspaces. The
+tool always moves every snapshot of the `WORKING_DIR` at once, never the
+invoking workspace's alone, so stop every instance on the `WORKING_DIR`:
+
+- **From JSON**, the anchor's members and the snapshots on disk must agree in
+  both directions before anything is written. A registered workspace whose
+  snapshot is missing must be restored first. A snapshot the anchor does not
+  list (a lost registration or a stray file) refuses too: stop every server,
+  back up and delete the anchor and start one server to rebuild the member
+  list, or remove the stray file. The per-snapshot owner rows stay behind;
+  they only mean something in JSON.
+- **Into JSON**, every workspace of the source gets its snapshot, and
+  snapshots already on disk with the same identity -- the sources a previous
+  JSON-to-database migration left behind -- are converged to the current
+  source. A workspace with no rows left in the source keeps an identity-and-
+  owner-only snapshot and stays registered. A snapshot of another deployment
+  refuses before anything is written. New workspaces register on their first
+  start afterwards.
 
 ## Usage
 
@@ -60,18 +81,28 @@ lightrag-migrate-config --target-backend OpenSearchKVStorage \
 | `--target-env` | env file with the **target** connection (default: the current environment) |
 | `--dry-run` | report the anchor, the source (row count, workspace scopes), the target and the verdict on it; write no row (opening the target still provisions a missing table, collection or index, as any start does) |
 | `--assume-exclusive` | proceed where the anchor lock cannot be taken (see *Locking*) |
-| `--yes` | skip the confirmation prompt |
+| `--yes` | skip the confirmation prompt (and the read-only preview shown before it) |
+
+**The whole container moves, never only this server's workspace.** Before
+the confirmation prompt the tool prints a read-only preview: every workspace
+that will be migrated (with JSON, every registered snapshot under
+`WORKING_DIR`), and for a JSON target each snapshot it will create, converge
+or keep with identity and owner only. A workspace that has no directory under
+`WORKING_DIR` yet is flagged: if it belongs to another deployment sharing the
+source container, its snapshot here is only a stale copy, while the source
+keeps the live rows. `--dry-run` prints the same report.
 
 **Connections.** The two backends are of different types, so they read
-different variables: `POSTGRES_*`, `MONGO_*` / `MONGODB_*`, `OPENSEARCH_*`, and
-`LIGHTRAG_CONFIG_DIR` for JSON. The tool refuses when the two env files set
+different variables: `POSTGRES_*`, `MONGO_*` / `MONGODB_*` and `OPENSEARCH_*`;
+JSON reads none (its snapshots are derived from `WORKING_DIR`). The tool
+refuses when the two env files set
 different values for a variable that either selected backend reads. It never
 writes an env file and never logs a credential.
 
 **Working directory.** The anchor and its lock are resolved from the
 **current** environment's `WORKING_DIR`. The tool refuses when either env file
-names a different `WORKING_DIR`. A JSON source takes its `config_dir` from
-`--source-env`, and a JSON target takes its `config_dir` from `--target-env`.
+names a different `WORKING_DIR`. A JSON side is always the snapshots under
+that `WORKING_DIR`.
 
 ## What it does
 

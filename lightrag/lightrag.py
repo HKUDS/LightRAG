@@ -193,6 +193,7 @@ from lightrag.config_store import (
     resolve_configuration_storage,
     warn_about_unrecorded_baselines,
 )
+from lightrag.config_shards import validate_config_workspace
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
@@ -220,7 +221,6 @@ from lightrag.utils import (
     get_extract_cache_fence,
     convert_to_user_format,
     logger,
-    validate_workspace,
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
@@ -1466,19 +1466,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     Admits ``JsonKVStorage``, ``MongoKVStorage``, ``PGKVStorage`` and
     ``OpenSearchKVStorage``; anything else is refused by name at construction.
     Left empty it follows ``kv_storage``, except Redis defaults to JSON.
-    Existing admitted backends keep their configuration container. See
-    docs/design/ConfigurationStorageContract.md.
-    """
-
-    config_dir: str = field(
-        default_factory=lambda: os.getenv("LIGHTRAG_CONFIG_DIR", "")
-    )
-    """Directory a file-backed configuration storage keeps its file in.
-
-    Empty resolves to ``<working_dir>/_lightrag_config``, which is where that
-    file already is. Ignored by the server backends, which name their
-    container in code instead. This is also the directory the single-server
-    claim is taken on when the configuration storage is file-backed.
+    Existing admitted backends keep their configuration container. The JSON
+    backend keeps this workspace's snapshot at a fixed path under
+    ``working_dir`` (``WORKING_DIR/<workspace>/kv_workspace_config.json``);
+    no setting moves it. See docs/design/ConfigurationStorageContract.md.
     """
 
     def _mark_addon_params_dirty(self) -> None:
@@ -1781,20 +1772,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # rebuilding_vector_storage) and this is internal state, never a
         # constructor argument.
         self._startup_refusal: Exception | None = None
-        # Whether THIS instance holds a claim on ``config_dir``; see
-        # ``lightrag/kg/working_dir_lock.py``. Set at the top of
-        # ``initialize_storages``, cleared by whichever path gives it back.
+        # Whether THIS instance holds the claim on its JSON configuration
+        # directory (``config_dir``); see ``lightrag/kg/working_dir_lock.py``.
+        # Set at the top of ``initialize_storages``, cleared by whichever
+        # path gives it back.
         self._holds_working_dir: bool = False
         # Whether THIS instance holds a shared hold on the anchor lock; see
-        # ``lightrag/kg/anchor_lock.py``. Taken before the ``config_dir``
-        # claim and given back after it.
+        # ``lightrag/kg/anchor_lock.py``. Taken before the directory claim
+        # and given back after it.
         self._holds_anchor_lock: bool = False
 
         # Refused here, before any storage is built, so the message names the
-        # rule rather than whichever backend happened to construct first. Path
-        # traversal only: there is no reserved name family, because the
-        # configuration container is not addressed by a workspace.
-        validate_workspace(self.workspace)
+        # rule rather than whichever backend happened to construct first:
+        # path traversal, and the five names of the deployment-wide files
+        # directly under ``working_dir`` (``config_shards``) -- a workspace
+        # directory so named would collide with one of them, whatever the
+        # backends.
+        validate_config_workspace(self.workspace)
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
         # behaviour); a negative value is a misconfiguration, fail fast.
@@ -1865,17 +1859,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self.config_storage = resolve_configuration_storage(
             self.config_storage, kv_storage=self.kv_storage
         )
-        # Through the shared resolver, not a second copy of the rule: the
-        # Gunicorn master claims this directory BEFORE forking, and a master
-        # that resolved it differently would hand its workers no inheritable
-        # claim -- the first worker would take the lock and every other one
-        # would be refused at startup.
-        self.config_dir = resolve_config_dir(self.config_dir, self.working_dir)
+        # Derived, never chosen: the JSON snapshot directory of this
+        # workspace ("" for a database backend). Through the shared resolver,
+        # not a second copy of the rule: the Gunicorn master claims this
+        # directory BEFORE forking, and a master that resolved it differently
+        # would hand its workers no inheritable claim -- the first worker
+        # would take the lock and every other one would be refused.
+        self.config_dir = resolve_config_dir(
+            self.config_storage, working_dir=self.working_dir, workspace=self.workspace
+        )
         # The anchor, its lock and the bind lock are pinned to the directory
-        # as it resolves NOW, beside ``config_dir``: a relative
-        # ``working_dir`` re-resolved after the caller changed its CWD would
-        # read another deployment's anchor against this container, and would
-        # release a lock path other than the one it acquired.
+        # as it resolves NOW: a relative ``working_dir`` re-resolved after
+        # the caller changed its CWD would read another deployment's anchor
+        # against this container, and would release a lock path other than
+        # the one it acquired.
         self._anchor_working_dir = os.path.abspath(self.working_dir)
 
         # Verify storage implementation compatibility and environment variables
@@ -2451,22 +2448,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self._release_anchor_lock()
             raise
 
-        # Claim the CONFIGURATION DIRECTORY when the configuration storage is
-        # file-backed, and only then. Such a storage shares its in-memory copy
-        # inside ONE process tree and publishes by rewriting the whole file, so
-        # a second server on this directory would overwrite this one's
-        # baselines with neither able to see it happen -- and an overwritten
-        # baseline reads as ABSENT, which is the one answer that lets a start
-        # bootstrap over vectors nobody probed.
+        # Claim this workspace's JSON CONFIGURATION DIRECTORY when the
+        # configuration storage is file-backed, and only then. Such a storage
+        # shares its in-memory copy inside ONE process tree and publishes by
+        # rewriting the whole file, so a second server on the same workspace
+        # would overwrite this one's baselines with neither able to see it
+        # happen -- losing the recorded decisions they existed to enforce.
         #
-        # Taken on ``config_dir`` rather than on ``working_dir``: the claim
-        # exists for the configuration file and now follows it, so a
-        # deployment that moves configuration to a server backend stops
-        # claiming anything and one that gives it its own directory claims
-        # that. With ``config_dir`` at its default the two are the same
-        # deployment either way. What this deliberately does NOT do is refuse
-        # a deployment whose business data is file-backed while its
-        # configuration is not: see the residue in working_dir_lock.py.
+        # The claim follows the snapshot: servers on different workspaces
+        # claim different files and run side by side, and a second server on
+        # the same workspace is refused here. What this deliberately does NOT
+        # do is refuse a deployment whose business data is file-backed while
+        # its configuration is not: see the residue in working_dir_lock.py.
         self._holds_working_dir = uses_working_dir(
             type(self.configuration_storage).__name__
         )
@@ -2502,6 +2495,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 working_dir=self._anchor_working_dir,
                 backend=self.config_storage,
                 container=self._configuration_container(),
+                workspace=self.workspace,
             )
 
             # Steps 2 and 3. Strict-read the three baselines and compare the

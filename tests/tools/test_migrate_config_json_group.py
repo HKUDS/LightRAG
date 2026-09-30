@@ -1,0 +1,770 @@
+"""``lightrag-migrate-config`` with JSON on one side: the whole group.
+
+A JSON side is every workspace snapshot of the ``WORKING_DIR``
+(``JsonShardGroup``). As a source, the anchor's members and the snapshots on
+disk must agree in both directions before anything is written; as a target,
+same-identity snapshots are converged and a snapshot the source no longer
+has rows for is kept with its identity and owner only. See *Offline
+migration* and *JSON configuration shards* in
+docs/design/ConfigurationStorageContract.md.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from lightrag import LightRAG
+from lightrag import config_anchor as ca
+from lightrag import config_store as cs
+from lightrag.config_shards import json_config_path
+from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+from lightrag.tools import migrate_config as mc
+from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
+
+pytestmark = pytest.mark.offline
+
+_DIM = 16
+IDENTITY_KEY = "$meta/storage_identity"
+OWNER_KEY = "$meta/json_shard"
+
+
+@pytest.fixture(autouse=True)
+def _shared():
+    initialize_share_data(workers=1)
+    yield
+    finalize_share_data()
+
+
+class _SimpleTokenizer(TokenizerInterface):
+    def encode(self, content: str):
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens):
+        return "".join(chr(t) for t in tokens)
+
+
+async def _mock_llm(prompt, **kwargs):  # pragma: no cover - never called here
+    return "mock"
+
+
+async def _embed(texts, **kwargs):
+    out = np.zeros((len(texts), _DIM), dtype=np.float32)
+    for i, text in enumerate(texts):
+        out[i][sum(bytearray(text.encode())) % _DIM] = 1.0
+    return out
+
+
+def _rag(working_dir, workspace, *, config_storage="JsonKVStorage"):
+    return LightRAG(
+        working_dir=str(working_dir),
+        workspace=workspace,
+        kv_storage="JsonKVStorage",
+        config_storage=config_storage,
+        llm_model_func=_mock_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=_DIM, max_token_size=4096, func=_embed, model_name="bge-m3"
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizer()),
+    )
+
+
+async def _start_and_stop(working_dir, workspace):
+    rag = _rag(working_dir, workspace)
+    await rag.initialize_storages()
+    await rag.finalize_storages()
+
+
+class Database:
+    """A database configuration container: strict reads, paged enumeration,
+    whole-row upserts, deletes. Rows are visible immediately."""
+
+    supports_strict_point_reads = True
+
+    def __init__(self, rows=None):
+        self.rows: dict[str, dict] = copy.deepcopy(rows or {})
+        self.writes = 0
+
+    async def get_by_id_strict(self, key):
+        row = self.rows.get(key)
+        return None if row is None else {**copy.deepcopy(row), "_id": key}
+
+    async def upsert(self, data):
+        self.writes += 1
+        for key, row in data.items():
+            self.rows[key] = copy.deepcopy(row)
+
+    async def delete(self, ids):
+        self.writes += 1
+        for key in ids:
+            self.rows.pop(key, None)
+
+    async def iter_rows(self, *, page_size=200):
+        for key in sorted(self.rows):
+            yield {**copy.deepcopy(self.rows[key]), "_id": key}
+
+    async def index_done_callback(self):
+        return None
+
+    async def finalize(self):
+        return None
+
+
+async def _migrate(working_dir, *, source, target, target_backend, dry_run=False):
+    claims: list[str] = []
+
+    async def _open_database(backend):
+        return source if not isinstance(source, str) else target
+
+    json_source = mc._opener(str(working_dir), claims, source=True)
+    json_target = mc._opener(str(working_dir), claims, source=False)
+    return await mc.migrate_configuration(
+        working_dir=str(working_dir),
+        target_backend=target_backend,
+        open_source=json_source if source == "json" else _open_database,
+        open_target=json_target if target == "json" else _open_database,
+        dry_run=dry_run,
+        out=lambda line: None,
+        release_claims=lambda: mc._release_claims(claims),
+    )
+
+
+def _rows_by_scope(database: Database) -> dict[str | None, set[str]]:
+    scopes: dict[str | None, set[str]] = {}
+    for key, row in database.rows.items():
+        scopes.setdefault(row.get("workspace"), set()).add(key)
+    return scopes
+
+
+# ---------------------------------------------------------------------------
+# JSON -> database
+# ---------------------------------------------------------------------------
+
+
+class TestJsonToDatabase:
+    async def test_every_member_moves_and_the_owner_rows_stay_behind(self, tmp_path):
+        await _start_and_stop(tmp_path, "teamalpha")
+        await _start_and_stop(tmp_path, "")
+        storage_uuid = ca.read_anchor(str(tmp_path)).storage_uuid
+        database = Database()
+
+        result = await _migrate(
+            tmp_path, source="json", target=database, target_backend="PGKVStorage"
+        )
+
+        assert result.switched
+        scopes = _rows_by_scope(database)
+        assert set(scopes) == {"teamalpha", "", None}
+        assert scopes[None] == {IDENTITY_KEY}
+        assert OWNER_KEY not in database.rows
+        assert len(scopes["teamalpha"]) == len(scopes[""]) == 3
+        assert database.rows[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+        anchor = ca.read_anchor(str(tmp_path))
+        assert anchor == ca.StorageAnchor("PGKVStorage", storage_uuid)
+        # Source retention: the snapshots are untouched.
+        assert Path(json_config_path(str(tmp_path), "teamalpha")).is_file()
+
+    async def test_a_missing_member_refuses_before_any_target_write(self, tmp_path):
+        await _start_and_stop(tmp_path, "teamalpha")
+        await _start_and_stop(tmp_path, "teambeta")
+        Path(json_config_path(str(tmp_path), "teambeta")).unlink()
+        database = Database()
+
+        with pytest.raises(mc.MigrationRefused, match="without a snapshot"):
+            await _migrate(
+                tmp_path, source="json", target=database, target_backend="PGKVStorage"
+            )
+        assert database.writes == 0
+        assert ca.read_anchor(str(tmp_path)).backend == "JsonKVStorage"
+
+    @pytest.mark.parametrize("metadata_only", [False, True])
+    async def test_an_unregistered_snapshot_refuses_before_any_target_write(
+        self, tmp_path, metadata_only
+    ):
+        """A lost member append (or an interrupted registration) leaves a
+        snapshot the anchor does not list; copying the members alone would
+        silently omit it."""
+        await _start_and_stop(tmp_path, "teamalpha")
+        await _start_and_stop(tmp_path, "teambeta")
+        anchor = ca.read_anchor(str(tmp_path))
+        if metadata_only:
+            rows = json.loads(
+                Path(json_config_path(str(tmp_path), "teambeta")).read_text()
+            )
+            Path(json_config_path(str(tmp_path), "teambeta")).write_text(
+                json.dumps({k: rows[k] for k in (IDENTITY_KEY, OWNER_KEY)})
+            )
+        ca.publish_anchor(
+            str(tmp_path),
+            ca.StorageAnchor(
+                "JsonKVStorage", anchor.storage_uuid, members=("teamalpha",)
+            ),
+            replace=True,
+        )
+        database = Database()
+
+        with pytest.raises(mc.MigrationRefused, match="not registered"):
+            await _migrate(
+                tmp_path, source="json", target=database, target_backend="PGKVStorage"
+            )
+        assert database.writes == 0
+
+
+# ---------------------------------------------------------------------------
+# database -> JSON
+# ---------------------------------------------------------------------------
+
+
+def _baseline_row(workspace, target="entities"):
+    return cs.make_config_row(
+        scope_workspace=workspace,
+        suffix=cs.embedding_baseline_suffix(target),
+        value={"model": "bge-m3", "dim": _DIM, "origin": "probe"},
+        updated_by="test",
+    )
+
+
+def _identity_row(storage_uuid):
+    return cs.make_config_row(
+        scope_workspace=cs.SERVER_SCOPE,
+        suffix=cs.STORAGE_IDENTITY_SUFFIX,
+        value={"uuid": storage_uuid},
+        updated_by="test",
+    )
+
+
+class TestDatabaseToJson:
+    async def test_every_workspace_gets_a_registered_snapshot(self, tmp_path):
+        storage_uuid = ca.new_storage_uuid()
+        ca.publish_anchor(
+            str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+        )
+        database = Database(
+            {
+                IDENTITY_KEY: _identity_row(storage_uuid),
+                cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                    "teamalpha"
+                ),
+                cs.embedding_baseline_key("", "chunks"): _baseline_row("", "chunks"),
+            }
+        )
+
+        result = await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+
+        assert result.switched
+        anchor = ca.read_anchor(str(tmp_path))
+        assert anchor == ca.StorageAnchor(
+            "JsonKVStorage", storage_uuid, members=("", "teamalpha")
+        )
+        alpha = json.loads(
+            Path(json_config_path(str(tmp_path), "teamalpha")).read_text()
+        )
+        assert alpha[OWNER_KEY]["value"] == {"workspace": "teamalpha"}
+        assert alpha[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+        assert cs.embedding_baseline_key("teamalpha", "entities") in alpha
+        # The migrated snapshot serves a normal start.
+        await _start_and_stop(tmp_path, "teamalpha")
+
+    async def test_a_foreign_snapshot_on_disk_refuses_before_any_write(self, tmp_path):
+        foreign = tmp_path / "elsewhere"
+        await _start_and_stop(foreign, "teambeta")
+        storage_uuid = ca.new_storage_uuid()
+        ca.publish_anchor(
+            str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+        )
+        (tmp_path / "teambeta").mkdir()
+        foreign_bytes = Path(json_config_path(str(foreign), "teambeta")).read_bytes()
+        Path(json_config_path(str(tmp_path), "teambeta")).write_bytes(foreign_bytes)
+        database = Database(
+            {
+                IDENTITY_KEY: _identity_row(storage_uuid),
+                cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                    "teamalpha"
+                ),
+            }
+        )
+
+        with pytest.raises(mc.MigrationRefused, match="another identity"):
+            await _migrate(
+                tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+            )
+        assert not Path(json_config_path(str(tmp_path), "teamalpha")).exists()
+        assert (
+            Path(json_config_path(str(tmp_path), "teambeta")).read_bytes()
+            == foreign_bytes
+        )
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_a_round_trip_after_clearing_a_workspace_keeps_it_a_member(tmp_path):
+    """JSON -> database -> clear one workspace -> JSON. The retained JSON
+    sources carry the same UUID, so they are this migration's to converge:
+    current rows replace stale ones, the cleared workspace keeps identity and
+    owner only and stays listed -- neither its next start nor a later
+    migration is blocked by an unregistered snapshot."""
+    await _start_and_stop(tmp_path, "teamalpha")
+    await _start_and_stop(tmp_path, "teambeta")
+    storage_uuid = ca.read_anchor(str(tmp_path)).storage_uuid
+    database = Database()
+    await _migrate(
+        tmp_path, source="json", target=database, target_backend="PGKVStorage"
+    )
+
+    # Clear teambeta in the database, and change one teamalpha row.
+    for key in [
+        k for k, r in database.rows.items() if r.get("workspace") == "teambeta"
+    ]:
+        del database.rows[key]
+    changed = cs.embedding_baseline_key("teamalpha", "chunks")
+    database.rows[changed] = _baseline_row("teamalpha", "chunks")
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+
+    assert result.switched
+    anchor = ca.read_anchor(str(tmp_path))
+    assert anchor == ca.StorageAnchor(
+        "JsonKVStorage", storage_uuid, members=("teamalpha", "teambeta")
+    )
+    beta = json.loads(Path(json_config_path(str(tmp_path), "teambeta")).read_text())
+    assert set(beta) == {IDENTITY_KEY, OWNER_KEY}
+    alpha = json.loads(Path(json_config_path(str(tmp_path), "teamalpha")).read_text())
+    assert alpha[changed]["value"]["origin"] == "probe"
+
+    # teambeta starts again (and records fresh baselines on evidence)...
+    await _start_and_stop(tmp_path, "teambeta")
+    # ...and a later JSON -> database migration is not blocked.
+    again = Database()
+    result = await _migrate(
+        tmp_path, source="json", target=again, target_backend="PGKVStorage"
+    )
+    assert result.switched
+    assert {"teamalpha", "teambeta"} <= set(_rows_by_scope(again))
+
+
+async def test_a_dry_run_into_json_creates_no_snapshot(tmp_path):
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+        }
+    )
+    await _migrate(
+        tmp_path,
+        source=database,
+        target="json",
+        target_backend="JsonKVStorage",
+        dry_run=True,
+    )
+    assert not (tmp_path / "teamalpha").exists()
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_an_empty_json_group_migrates_back_out_with_its_identity(tmp_path):
+    """A database container holding only its identity migrates into an
+    empty JSON group (no member, no snapshot). That group is valid and must
+    migrate out again: its identity is the anchor's, since no snapshot
+    carries one."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    source = Database({IDENTITY_KEY: _identity_row(storage_uuid)})
+    await _migrate(
+        tmp_path, source=source, target="json", target_backend="JsonKVStorage"
+    )
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        "JsonKVStorage", storage_uuid, members=()
+    )
+
+    database = Database()
+    result = await _migrate(
+        tmp_path, source="json", target=database, target_backend="PGKVStorage"
+    )
+
+    assert result.switched
+    assert set(database.rows) == {IDENTITY_KEY}
+    assert database.rows[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        "PGKVStorage", storage_uuid
+    )
+
+
+async def _report(working_dir, *, source, target, target_backend):
+    lines: list[str] = []
+    claims: list[str] = []
+
+    async def _open_database(backend):
+        return source if not isinstance(source, str) else target
+
+    await mc.migrate_configuration(
+        working_dir=str(working_dir),
+        target_backend=target_backend,
+        open_source=(
+            mc._opener(str(working_dir), claims, source=True)
+            if source == "json"
+            else _open_database
+        ),
+        open_target=(
+            mc._opener(str(working_dir), claims, source=False)
+            if target == "json"
+            else _open_database
+        ),
+        dry_run=True,
+        out=lines.append,
+        release_claims=lambda: mc._release_claims(claims),
+        current_workspace="teamalpha",
+    )
+    return "\n".join(lines)
+
+
+async def test_a_json_source_reports_every_registered_snapshot(tmp_path):
+    await _start_and_stop(tmp_path, "teamalpha")
+    await _start_and_stop(tmp_path, "teambeta")
+    report = await _report(
+        tmp_path, source="json", target=Database(), target_backend="PGKVStorage"
+    )
+    assert "-- not only this server's WORKSPACE ('teamalpha')" in report
+    assert "Workspaces to migrate (2): 'teamalpha', 'teambeta'" in report
+    assert "every registered JSON snapshot under" in report
+
+
+async def test_a_json_target_reports_each_snapshot_and_flags_unknown_ones(tmp_path):
+    """Into JSON, the plan names every snapshot and whether it is new,
+    converged or kept metadata-only, and flags a workspace with no directory
+    under WORKING_DIR -- possibly another deployment's, copied as stale."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    (tmp_path / "teamalpha").mkdir()
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+            cs.embedding_baseline_key("elsewhere", "entities"): _baseline_row(
+                "elsewhere"
+            ),
+        }
+    )
+    report = await _report(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+    assert "Workspaces to migrate (2): 'elsewhere', 'teamalpha'" in report
+    assert "'teamalpha': new snapshot" in report
+    assert "'elsewhere': new snapshot" in report
+    note = report.split("Note:")[1]
+    assert "'elsewhere'" in note and "'teamalpha'" not in note
+    assert "stale copy" in note
+
+
+async def test_a_source_key_a_json_snapshot_cannot_hold_refuses_before_any_write(
+    tmp_path,
+):
+    """A well-formed row under an unregistered key (or one that does not
+    belong to its scope) would be written and then refused by the layout
+    verification, leaving a snapshot the next run could not converge. It is
+    refused before the target is claimed."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    stray = {**_baseline_row("teamalpha"), "value": {"note": "future key"}}
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+            "teamalpha/some.future.key": stray,
+            # A registered key filed under another workspace's scope.
+            cs.embedding_baseline_key("teambeta", "chunks"): _baseline_row(
+                "teamalpha", "chunks"
+            ),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="not a registered key") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert "teamalpha/some.future.key" in str(info.value)
+    assert "teambeta/embedding/chunks" in str(info.value)
+    assert not (tmp_path / "teamalpha").exists()
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        ("Foo", "foo"),
+        ("tenant", "tenant."),
+        ("\u00c9quipe", "\u00e9quipe"),
+        ("\u00e9quipe", "e\u0301quipe"),
+    ],
+    ids=["letter-case", "trailing-dot", "unicode-case", "nfc-nfd"],
+)
+async def test_scopes_one_filesystem_directory_would_hold_refuse_before_any_write(
+    tmp_path, scopes
+):
+    """Distinct database workspaces that a case-insensitive (or trailing dot
+    stripping) filesystem stores in one directory cannot get separate
+    snapshots; the whole set is checked before anything is claimed."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    rows = {IDENTITY_KEY: _identity_row(storage_uuid)}
+    for scope in scopes:
+        rows[cs.embedding_baseline_key(scope, "entities")] = _baseline_row(scope)
+    database = Database(rows)
+
+    with pytest.raises(mc.MigrationRefused, match="one directory") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert all(repr(scope) in str(info.value) for scope in scopes)
+    assert not any(tmp_path.iterdir()) or {p.name for p in tmp_path.iterdir()} <= {
+        "config_storage_anchor.json",
+        ".lightrag_anchor.lock",
+    }
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+@pytest.mark.parametrize(
+    ("links", "scopes"),
+    [
+        ({"alpha": "shared", "beta": "shared"}, ("alpha", "beta")),
+        ({"alpha": "."}, ("", "alpha")),
+        ({"alpha": "."}, ("alpha",)),
+    ],
+    ids=["two-links-one-dir", "link-to-root", "link-to-root-without-default"],
+)
+async def test_scopes_whose_directories_are_one_physical_dir_refuse_before_any_write(
+    tmp_path, links, scopes
+):
+    """Distinct workspaces whose existing directories are symlinks to one
+    physical directory -- or to WORKING_DIR, the default workspace's own --
+    would share one snapshot, and the realpath claim would not stop the
+    second open. Refused before anything is claimed or written."""
+    (tmp_path / "shared").mkdir()
+    for name, target in links.items():
+        (tmp_path / name).symlink_to(tmp_path / target, target_is_directory=True)
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    rows = {IDENTITY_KEY: _identity_row(storage_uuid)}
+    for scope in scopes:
+        rows[cs.embedding_baseline_key(scope, "entities")] = _baseline_row(scope)
+    database = Database(rows)
+
+    with pytest.raises(mc.MigrationRefused, match="one physical directory") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert all(repr(scope) in str(info.value) for scope in scopes if scope)
+    assert not list(tmp_path.rglob("kv_workspace_config.json"))
+    assert not list(tmp_path.rglob(".lightrag_storage.lock"))
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_a_tenant_named_like_the_server_prefix_migrates_into_json(tmp_path):
+    """A row is server-scoped by its key, never by its ``workspace`` field:
+    the legal tenant ``_lightrag_server`` gets its own snapshot, while a real
+    server-global row still refuses."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    tenant = "_lightrag_server"
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key(tenant, "entities"): _baseline_row(tenant),
+        }
+    )
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+
+    assert result.switched is True
+    assert result.source_scan.scopes == {tenant: 1}
+    assert ca.read_anchor(str(tmp_path)).members == (tenant,)
+    rows = json.loads(Path(json_config_path(str(tmp_path), tenant)).read_text())
+    assert cs.embedding_baseline_key(tenant, "entities") in rows
+
+
+async def test_a_server_global_row_still_refuses_a_json_target(tmp_path):
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            OWNER_KEY: cs.make_config_row(
+                scope_workspace=cs.SERVER_SCOPE,
+                suffix=cs.JSON_SHARD_SUFFIX,
+                value={"workspace": "teamalpha"},
+                updated_by="test",
+            ),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="server-scope rows"):
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_a_target_snapshot_without_an_owner_refuses_before_any_claim(tmp_path):
+    """A non-empty snapshot missing its owner row is damaged, as every other
+    path treats it; with no source rows for its workspace no copy would
+    stamp one, and verification would fail after the claim on every retry."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    damaged = Path(json_config_path(str(tmp_path), "teamalpha"))
+    damaged.parent.mkdir()
+    damaged.write_text(json.dumps({IDENTITY_KEY: _identity_row(storage_uuid)}))
+    before = damaged.read_bytes()
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teambeta", "entities"): _baseline_row(
+                "teambeta"
+            ),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="no owner row"):
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert damaged.read_bytes() == before
+    assert not list(tmp_path.rglob(".lightrag_storage.lock"))
+    assert not (tmp_path / "teambeta").exists()
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (directory / "caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
+@pytest.mark.parametrize("alias", ["link", "case"])
+async def test_an_existing_alias_directory_outside_the_plan_refuses(tmp_path, alias):
+    """A child directory that is one physical directory with a planned
+    workspace's refuses even when it holds no snapshot and has no source
+    rows: the next discovery would find the snapshot through it."""
+    if alias == "link":
+        (tmp_path / "teamalpha").mkdir()
+        (tmp_path / "teambeta").symlink_to(
+            tmp_path / "teamalpha", target_is_directory=True
+        )
+        planned, other = "teamalpha", "teambeta"
+    else:
+        if not _case_insensitive(tmp_path):
+            pytest.skip("needs a case-insensitive filesystem")
+        (tmp_path / "foo").mkdir()
+        planned, other = "Foo", "foo"
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key(planned, "entities"): _baseline_row(planned),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="one physical directory") as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert repr(planned) in str(info.value) and repr(other) in str(info.value)
+    assert not list(tmp_path.rglob("kv_workspace_config.json"))
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
+async def test_unrelated_child_directories_do_not_refuse(tmp_path):
+    (tmp_path / "inputs").mkdir()
+    (tmp_path / "volume").mkdir()
+    (tmp_path / "data").symlink_to(tmp_path / "volume", target_is_directory=True)
+    (tmp_path / "data2").symlink_to(tmp_path / "volume", target_is_directory=True)
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                "teamalpha"
+            ),
+        }
+    )
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+    assert result.switched is True
+    assert ca.read_anchor(str(tmp_path)).members == ("teamalpha",)
+
+
+async def test_empty_and_named_default_workspaces_round_trip_without_key_aliases(
+    tmp_path,
+):
+    for workspace in ("", "default"):
+        await _start_and_stop(tmp_path, workspace)
+    storage_uuid = ca.read_anchor(str(tmp_path)).storage_uuid
+    database = Database()
+    await _migrate(
+        tmp_path, source="json", target=database, target_backend="PGKVStorage"
+    )
+
+    assert "workspace" not in database.rows[IDENTITY_KEY]
+    assert OWNER_KEY not in database.rows
+    for workspace, prefix in (("", "$default"), ("default", "default")):
+        for target in cs.EMBEDDING_TARGETS:
+            row = database.rows[f"{prefix}/embedding/{target}"]
+            assert row["workspace"] == workspace
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+    assert result.switched
+    assert ca.read_anchor(str(tmp_path)).members == ("", "default")
+    for workspace, prefix in (("", "$default"), ("default", "default")):
+        rows = json.loads(Path(json_config_path(str(tmp_path), workspace)).read_text())
+        assert rows[IDENTITY_KEY]["value"] == {"uuid": storage_uuid}
+        assert "workspace" not in rows[IDENTITY_KEY]
+        assert "workspace" not in rows[OWNER_KEY]
+        assert rows[OWNER_KEY]["value"] == {"workspace": workspace}
+        assert set(rows) == {IDENTITY_KEY, OWNER_KEY} | {
+            f"{prefix}/embedding/{target}" for target in cs.EMBEDDING_TARGETS
+        }

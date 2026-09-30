@@ -7978,6 +7978,30 @@ def warn_about_workspace_overrides() -> list[str]:
     return in_effect
 
 
+def normalize_server_workspace(workspace: str | None) -> str | None:
+    """The workspace the server serves: only alphanumeric characters and
+    underscores survive, every other character becomes ``_``.
+    A leading ``$`` is reserved and rejected before normalization.
+
+    The one rule the server, the Gunicorn master (which claims the
+    workspace's JSON configuration directory before forking) and
+    ``lightrag-rebuild-vdb`` all apply to ``WORKSPACE``, so they resolve the
+    same workspace and the same directory.
+    """
+    if not workspace:
+        return workspace
+    if workspace.startswith("$"):
+        validate_workspace(workspace)
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+    if sanitized != workspace:
+        logging.warning(
+            f"Workspace name '{workspace}' contains invalid characters. "
+            f"It has been sanitized to '{sanitized}'. "
+            "Only alphanumeric characters and underscores are allowed."
+        )
+    return sanitized
+
+
 def validate_workspace(workspace: str) -> str:
     """Validate a workspace name used to build per-workspace directories.
 
@@ -7991,11 +8015,13 @@ def validate_workspace(workspace: str) -> str:
     while unsafe names are rejected so the caller fails fast instead of
     silently reading or writing outside the intended directory.
 
-    There is no reserved name family. The configuration storage is its own
-    category with a container named in code, so no workspace name can reach
-    it: a tenant may be called ``_lightrag_config`` and still shares nothing
-    with it -- different files, different tables, different collections. See
-    docs/design/ConfigurationStorageContract.md.
+    Names starting with ``$`` are reserved for internal configuration keys.
+    A tenant may still be called ``_lightrag_config`` and
+    still shares nothing with the configuration container. ``LightRAG``
+    additionally applies ``config_shards.validate_config_workspace``, which
+    refuses the five names of the deployment-wide files directly under
+    ``working_dir`` (a workspace directory so named would collide with one of
+    them). See docs/design/ConfigurationStorageContract.md.
 
     Args:
         workspace: Workspace name from configuration or environment variables.
@@ -8004,8 +8030,8 @@ def validate_workspace(workspace: str) -> str:
         The workspace name unchanged when it is valid.
 
     Raises:
-        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."``
-            or ``".."``.
+        ValueError: If the workspace starts with ``$``, contains ``/`` or
+            ``\\``, or is ``"."`` or ``".."``.
 
     Examples:
         >>> validate_workspace("my_workspace")
@@ -8017,6 +8043,11 @@ def validate_workspace(workspace: str) -> str:
             ...
         ValueError: Invalid workspace name '../../../etc': must not contain path separators ('/', '\\') or be a relative path reference ('.', '..')
     """
+    if workspace.startswith("$"):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: names starting with '$' "
+            "are reserved for internal configuration keys"
+        )
     if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: must not contain path "

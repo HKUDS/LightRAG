@@ -1,5 +1,6 @@
 """The configuration container's identity row on the real ``JsonKVStorage``:
-created, flushed to ``kv_server_config.json`` and read back, verified by a
+created, flushed to the workspace's ``kv_workspace_config.json`` and read back,
+together with the owner row that registers the workspace, verified by a
 fresh process-tree view of the file, and a damaged row refuses rather than
 reading as absent. See *The anchor and the container identity* in
 docs/design/ConfigurationStorageContract.md.
@@ -16,7 +17,7 @@ from lightrag import config_store as cs
 from lightrag.exceptions import ConfigurationStorageError
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG, CONFIG_JSON_FILE_NAME
+from lightrag.namespace import CONFIG_JSON_FILE_NAME
 
 pytestmark = pytest.mark.offline
 
@@ -43,22 +44,28 @@ async def _bind(storage, tmp_path):
         storage,
         working_dir=str(tmp_path),
         backend="JsonKVStorage",
-        container=f"JsonKVStorage at {tmp_path / CONFIG_CONTAINER_TAG}",
+        container=f"JsonKVStorage at {tmp_path}",
+        workspace="",
     )
 
 
 def _file(tmp_path):
-    return tmp_path / CONFIG_CONTAINER_TAG / CONFIG_JSON_FILE_NAME
+    """The empty workspace's snapshot, directly under ``working_dir``."""
+    return tmp_path / CONFIG_JSON_FILE_NAME
 
 
 async def test_the_identity_is_durable_and_verified_after_a_restart(tmp_path):
     storage = await _open(tmp_path)
     created = await _bind(storage, tmp_path)
     await storage.finalize()
+    assert created.action == "registered"
     on_disk = json.loads(_file(tmp_path).read_text())
     assert on_disk[cs.storage_identity_key()]["value"] == {"uuid": created.storage_uuid}
-    # The anchor sits beside the JSON file when config_dir is the default.
-    assert ca.read_anchor(str(tmp_path)).storage_uuid == created.storage_uuid
+    assert on_disk[cs.json_shard_owner_key()]["value"] == {"workspace": ""}
+    # The empty workspace's snapshot sits beside the anchor, and is a member.
+    anchor = ca.read_anchor(str(tmp_path))
+    assert anchor.storage_uuid == created.storage_uuid
+    assert anchor.members == ("",)
 
     finalize_share_data()
     initialize_share_data(workers=1)
@@ -71,7 +78,6 @@ async def test_the_identity_is_durable_and_verified_after_a_restart(tmp_path):
 
 async def test_a_damaged_identity_row_refuses_and_is_never_regenerated(tmp_path):
     path = _file(tmp_path)
-    path.parent.mkdir(parents=True)
     path.write_text(json.dumps({cs.storage_identity_key(): "not a row"}))
     storage = await _open(tmp_path)
     with pytest.raises(ConfigurationStorageError):

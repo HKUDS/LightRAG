@@ -72,11 +72,11 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 
 - **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`**: one in-memory copy per process, reconciled by reloading the file through the **two-channel fence** (file fingerprint OR `storage_updated`). On a write conflict the graph store **declines** the commit, the vector stores **reload and replay**; do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
 - **`JsonKVStorage`, `JsonDocStatusStorage`**: one `Manager().dict()` shared by every worker, so there is nothing to reload and `storage_updated` means the OPPOSITE ("dirty, still to flush"). Their load claim (`namespace_init_claim`) must be handed back on a failed or cancelled load, and `JsonDocStatusStorage` reimplements the protocol rather than inheriting it — a change to one of the pair almost always needs the other.
-- A file-backed **configuration** storage additionally claims its `config_dir` (`lightrag/kg/working_dir_lock.py`) — see *Configuration storage contract* below. `NetworkXStorage` alone declares `requires_single_writer`, which puts the admin flows under `LightRAG._admin_write_gate`.
+- A file-backed **configuration** storage additionally claims its workspace's snapshot directory (`lightrag/kg/working_dir_lock.py`) — see *Configuration storage contract* below. `NetworkXStorage` alone declares `requires_single_writer`, which puts the admin flows under `LightRAG._admin_write_gate`.
 
 ### Server instance contract
 
-**Full contract: [docs/design/ServerInstanceContract.md](docs/design/ServerInstanceContract.md) — read it before changing anything one server could share with another on the same host (files under `WORKING_DIR` / `INPUT_DIR`, anything keyed without the workspace, locks taken at startup).** In short: several servers may share one `WORKING_DIR` on one host when each serves its own workspace, the configuration storage is not local JSON, and each has its own port; a new server-wide record needs a guard the instances share.
+**Full contract: [docs/design/ServerInstanceContract.md](docs/design/ServerInstanceContract.md) — read it before changing anything one server could share with another on the same host (files under `WORKING_DIR` / `INPUT_DIR`, anything keyed without the workspace, locks taken at startup).** In short: several servers may share one `WORKING_DIR` on one host when each serves its own workspace, all use the same configuration container (a database backend, or `JsonKVStorage`'s per-workspace snapshots under one anchor), and each has its own port; first starts are serialized by the anchor bind lock, so on a filesystem without locks start one instance alone until every JSON workspace has registered. A new server-wide record needs a guard the instances share.
 
 ### Pipeline concurrency contract
 
@@ -103,7 +103,7 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 
 ### Configuration storage contract
 
-**Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` / `config_dir`, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here.
+**Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` or where the JSON configuration snapshots live, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here.
 
 ### Relation weight contract
 

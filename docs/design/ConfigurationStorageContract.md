@@ -6,16 +6,16 @@ the *Acceptance scenarios* at the end.
 
 | | |
 | --- | --- |
-| code | `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages()` / `finalize_storages()`, the `config` namespace branch in each admitted KV backend |
+| code | `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages()` / `finalize_storages()`, the `config` namespace branch in each admitted KV backend |
 | tools | `lightrag-rebuild-vdb`, `lightrag-clear-storage`, `lightrag-migrate-config`, and the setup wizard (`make env-storage`, `make env-validate`) |
 | tests | `tests/config_store/`, beside each backend under `tests/kg/<backend>_impl/`, `tests/tools/`, `tests/workspace/test_anchor_lock.py`, `tests/setup/test_config_anchor.py` |
 | read with | `VectorSpaceProvenance.md` (the verdict rules and the blind spots the baselines close) and `ServerInstanceContract.md` (several servers on one host) |
 
 Read this before touching any of:
-- `lightrag/config_store.py`, `lightrag/config_anchor.py` or `lightrag/kg/anchor_lock.py`;
+- `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py` or `lightrag/kg/anchor_lock.py`;
 - `LightRAG.initialize_storages` / `finalize_storages`;
 - the `config` KV namespace on any backend;
-- `config_storage` / `config_dir`;
+- `config_storage`, or where the JSON configuration snapshots live;
 - the baseline writes in `lightrag-rebuild-vdb`, the configuration cleanup in `/documents/clear` and `lightrag-clear-storage`, or `lightrag-migrate-config`.
 
 Also read it before adding a key or moving a setting out of an environment variable.
@@ -30,23 +30,28 @@ Each rule is expanded in the section named after it.
    `MongoKVStorage`, `PGKVStorage` and `OpenSearchKVStorage`. Anything else
    is refused at construction, by name, Redis and every vector storage
    included. Unset, it follows `kv_storage`, except Redis defaults to JSON. *(The category.)*
-2. **No workspace addresses the container.** Its name is written in code: a
-   fixed table, collection or index, or a file in `config_dir`, whose default
-   `<working_dir>/_lightrag_config` must never move.
-   `create_configuration_storage()` is the single way in, and no
-   `*_WORKSPACE` variable reaches it. *(The container.)*
-3. **Keys are scoped and never reparsed.** A key is `<workspace>/<suffix>` or
-   `_lightrag_server/<suffix>`. The separator is `/`, never `.`. The scope is
-   carried as a row field, and every suffix is declared in
+2. **No setting addresses the container.** Its name is written in code: a
+   fixed table, collection or index, or for JSON one snapshot per workspace
+   at the fixed path `<working_dir>/<workspace>/kv_workspace_config.json`
+   (the empty workspace: `<working_dir>/kv_workspace_config.json`). No
+   setting moves it. `create_configuration_storage()` is the single way in,
+   and no `*_WORKSPACE` variable reaches it. *(The container, JSON
+   configuration shards.)*
+3. **Keys are scoped and never reparsed.** Named workspaces use
+   `<workspace>/<suffix>`, the empty workspace uses `$default/<suffix>`, and
+   metadata uses `$meta/<suffix>`. Workspace names starting with `$` are
+   reserved. Only business rows carry their real `workspace`; metadata is
+   classified by its registered key. Every suffix is declared in
    `CONFIG_KEY_REGISTRY` before anything writes it. *(Keys, Key registry.)*
 4. **Reads are strict.** A read that could not complete is a failure, never
    "absent". *(Reads are strict.)*
 5. **The container has an identity and each deployment an anchor.**
-   `_lightrag_server/storage_identity` holds a UUID.
-   `<working_dir>/_lightrag_config/config_storage_anchor.json` records
-   `{backend, storage_uuid}`, and never follows `config_dir`. Every start
-   checks both before reading any baseline. Deleting the anchor is the
-   sanctioned rebind. *(The anchor and the container identity.)*
+   `$meta/storage_identity` holds a UUID.
+   `<working_dir>/config_storage_anchor.json` records `{backend,
+   storage_uuid}`, plus the registered `members` for JSON. Every start
+   checks both before reading any baseline. Deleting the anchor, with every
+   writer stopped, is the sanctioned rebind. *(The anchor and the container
+   identity.)*
 6. **Startup has a fixed order.** Steps 0a–0c come before step 1 and are not
    sticky. Steps 1 to 9 are sticky, cancellation included.
    - Only the precheck of records that exist runs before the vector
@@ -65,14 +70,20 @@ Each rule is expanded in the section named after it.
 8. **Data first, configuration last.** A rebuild records a target's baseline
    only after that target is durable and verified. A drop deletes the records
    only after every data storage dropped. *(Rebuild, Workspace drop.)*
-9. **Exclusion is per process tree, per host.** A file-backed configuration
-   claims `config_dir` exclusively. The anchor lock is shared by starters and
-   exclusive only for the migration. The bind lock serializes a first bind
-   across the servers that share one `working_dir`. Nothing here spans
-   hosts. *(One server at a time, What the lock does and does not span.)*
+9. **Exclusion is per process tree, per host.** A JSON configuration claims
+   its workspace's snapshot exclusively. The anchor lock is shared by
+   starters and exclusive only for the migration. The bind lock serializes a
+   first bind, and a JSON member registration, across the servers that share
+   one `working_dir`. Nothing here spans hosts. *(One server at a time, What
+   the lock does and does not span.)*
 10. **The baselines never suppress the other two checks.** They are ANDed
     with the coverage gate and the per-container markers. *(What the
     category does not retire.)*
+11. **JSON is one group of per-workspace snapshots.** Every snapshot of one
+    `working_dir` carries the anchor's UUID and an owner row naming its
+    workspace. A start registers its workspace once, under the bind lock; a
+    registered member's snapshot is never re-created in place; a migration
+    moves the whole group or nothing. *(JSON configuration shards.)*
 
 ## Why the configuration storage exists
 
@@ -96,12 +107,12 @@ Two needs meet in one place.
 | --- | --- |
 | KV namespace | `config` |
 | selected by | `config_storage` / `LIGHTRAG_CONFIG_STORAGE` — its own category |
-| `JsonKVStorage` | `config_dir/kv_server_config.json` (`CONFIG_JSON_FILE_NAME`), `config_dir` defaulting to `<working_dir>/_lightrag_config` |
+| `JsonKVStorage` | one snapshot per workspace: `<working_dir>/<workspace>/kv_workspace_config.json` (`CONFIG_JSON_FILE_NAME`), `<working_dir>/kv_workspace_config.json` for the empty workspace; see *JSON configuration shards* |
 | `PGKVStorage` | table `LIGHTRAG_CONFIG (workspace, id, value JSONB, create_time, update_time)`, partition constant `_lightrag_config` |
 | `MongoKVStorage` | collection `_lightrag_config_config` |
 | `OpenSearchKVStorage` | index `x_lightrag_config_config` (the backend's sanitizer prepends `x`) |
-| identity | row `_lightrag_server/storage_identity`, `value = {"uuid": <UUIDv4>}` |
-| anchor | `<working_dir>/_lightrag_config/config_storage_anchor.json`, fixed, never following `config_dir`, and resolved to an absolute path once at construction, as `config_dir` is |
+| identity | row `$meta/storage_identity`, `value = {"uuid": <UUIDv4>}` |
+| anchor | `<working_dir>/config_storage_anchor.json`, fixed, for every backend, and resolved to an absolute path once at construction |
 
 **It is a KV namespace on purpose.** KV container names carry no model
 suffix, so a record kept here does not move when the embedding model changes.
@@ -110,6 +121,8 @@ record can serve as evidence where the name cannot.
 
 **One fixed container holds every row**: the server's own and every
 workspace's. Configuration does not follow the knowledge base it configures.
+The JSON backend is the one exception in layout, not in meaning: its
+container is the group of per-workspace snapshots under one identity.
 
 **No workspace addresses it.**
 - Every name in the table is written in code. The four backends branch on
@@ -121,16 +134,19 @@ workspace's. Configuration does not follow the knowledge base it configures.
 - `create_configuration_storage()` is the single way in. After construction
   it refuses a backend that re-bound the container elsewhere.
 - A tenant may legally be called `_lightrag_config`. On each backend that is a
-  different file, table, collection or index, so nothing is shared.
+  different file, table, collection or index, so nothing is shared. The
+  only names a workspace may not take are the five deployment-wide files
+  directly under `working_dir` (*JSON configuration shards*).
 
 **The PostgreSQL `workspace` column is a partition constant, not a
 workspace.** The table keeps the `(workspace, id)` primary key every other
 table has, and writes the container tag into it. The workspace a row is about
 lives in the payload, and in `id`.
 
-**The JSON file name is fixed.** It is named for what it holds, not derived
-from the namespace. Renaming it, like moving `config_dir`, makes every
-recorded baseline read as absent.
+**The JSON file name is fixed.** It is named for its workspace-local role,
+not derived from the namespace, and it differs from every business snapshot
+name (`kv_store_*.json`, the graph and vector files), so a snapshot and a
+workspace's data sit side by side without colliding.
 
 ### The category, and the four it admits
 
@@ -156,23 +172,198 @@ recorded baseline read as absent.
   Explicit Redis configuration and unknown backends are still refused.
   This is a configuration default, never a fallback after a connection failure.
   Old Redis configuration rows are not migrated, and missing baselines still
-  require evidence. Persist the JSON configuration directory; its single-server
-  lock still applies. Independent servers sharing configuration must explicitly
-  select a database backend. Anchor type and UUID checks are unchanged; an
+  require evidence. Persist `WORKING_DIR`, where the JSON snapshots live; the
+  per-workspace claim still applies, so servers sharing `WORKING_DIR` must
+  serve different workspaces. Anchor type and UUID checks are unchanged; an
   anchor never silently overrides the runtime selection.
 - **One resolver for every caller.** `configuration_selection_from_env()`
-  resolves `(config_storage, config_dir)` for `LightRAG`, the Gunicorn master
-  and the maintenance tools alike. A second reading of the environment would
-  claim or open a different container than the workers do.
+  resolves `(config_storage, config_dir)` -- `config_dir` being the derived
+  JSON snapshot directory of the given workspace, `""` for a database -- for
+  `LightRAG`, the Gunicorn master and the maintenance tools alike. A second
+  reading of the environment would claim or open a different container than
+  the workers do. The Gunicorn master gets the **parsed, normalized**
+  workspace from `run_with_gunicorn` (`resolved_workspace()`), for the same
+  reason it gets the parsed working directory.
+  The rebuild tool follows the server normalization for `WORKSPACE` by default;
+  an explicit `--workspace` instead selects an exact, validated SDK workspace
+  name (including the empty workspace), consistently for every storage and claim.
 
-### `config_dir`, and why its default is load bearing
+### JSON configuration shards
 
-The JSON backend keeps its file in `config_dir`, not under
-`working_dir/<workspace>/`. The default is `<working_dir>/_lightrag_config`,
-which is where the file has always been. Pointing the default anywhere else
-makes every recorded baseline read as **absent** on the next start, and
-absent is the one answer that lets a start bootstrap. A test writes that
-layout by hand and asserts the recorded model comes back unchanged.
+`lightrag/config_shards.py`, the JSON branch of `bind_configuration_identity`
+and `verify_configuration_identity`, and `JsonShardGroup` in
+`lightrag/tools/migrate_config.py`.
+
+| artifact | path |
+| --- | --- |
+| anchor | `<working_dir>/config_storage_anchor.json` |
+| anchor lock, bind lock | `<working_dir>/.lightrag_anchor.lock`, `<working_dir>/.lightrag_anchor_bind.lock` |
+| snapshot of workspace `w` | `<working_dir>/w/kv_workspace_config.json` |
+| snapshot of the empty workspace | `<working_dir>/kv_workspace_config.json` |
+| lifetime claim | `.lightrag_storage.lock` beside each snapshot |
+
+- **Derived, never chosen.** `json_config_dir(working_dir, workspace)` is the
+  only rule. `working_dir` resolves against the process CWD; `workspace` is
+  the final one the server normalizes or the SDK validates. No
+  `*_WORKSPACE` override and no setting moves a snapshot; there is no
+  configuration-directory setting or constructor argument. A snapshot sits
+  beside its workspace's business files: a subdirectory would add no
+  isolation.
+- **Five reserved names.** `validate_config_workspace` refuses a workspace
+  named `kv_workspace_config.json`, `config_storage_anchor.json`,
+  `.lightrag_storage.lock`, `.lightrag_anchor.lock` or
+  `.lightrag_anchor_bind.lock`, in `LightRAG.__post_init__` before any
+  directory exists, whatever the backends: such a workspace directory would
+  collide with a root-level file. So are their filesystem aliases -- another
+  letter case or Unicode normalization (macOS, Windows; Unicode canonical
+  caseless matching, `caseless_alias`) or trailing dots and spaces (which
+  Windows strips). A name of only dots and spaces is refused too: Windows
+  strips it to `working_dir` itself, the empty workspace's directory. So is
+  a drive-qualified name (second character `:`, as `ntpath` reads it), which
+  Windows joins outside `working_dir`; refused on every platform so a
+  deployment stays portable. The setup wizard cannot decode escapes, so it
+  applies the same rule by mapping the only thirteen non-ASCII characters
+  whose case fold is ASCII (`_ASCII_FOLDING_NON_ASCII`, pinned by a test to
+  `caseless_alias` and to `setup.sh`) before folding ASCII case. The same check applies to anchor members,
+  discovered snapshot locations and migration source scopes. Names are never
+  rewritten. `_lightrag_config` is an ordinary workspace.
+- **One group per `working_dir`.** Every snapshot carries the normal
+  identity row with the anchor's UUID, its own workspace's registered rows,
+  and a server-scope owner row `$meta/json_shard` =
+  `{"workspace": w}`. `inspect_shard_rows` validates a snapshot before any
+  baseline is read: the owner must equal the workspace its location names
+  (`""` at the root, the child's exact name below it), checked first so a
+  copied or moved snapshot is named as such; any other workspace's row, an
+  unregistered key or a foreign server-scope row refuses. Classification is
+  by key; the content of a registered per-workspace row is judged by that
+  row's own reader (a start refuses a malformed baseline when it reads it,
+  and the clear tool still deletes one by key). Neither the UUID nor the
+  owner proves freshness or baseline correctness.
+- **In-process bookkeeping is per physical file.** A JSON configuration
+  storage keeps `workspace == CONFIG_CONTAINER_TAG` (the category requires
+  it) but keys its shared-namespace bookkeeping (init claim, namespace lock,
+  update flags, cleanup) by the snapshot's real path, so several workspaces'
+  snapshots can be open in one process tree without aliasing.
+- **The only server-scope setting is the identity.** A future mutable
+  server-scope key needs a sharing or split policy before it is introduced;
+  it must not be replicated into divergent snapshots as if they were a
+  shared database. A migration into JSON refuses server-scope rows other
+  than the identity.
+
+**Decision: the anchor keeps the member list.** `members` is the
+authoritative set of registered snapshots. Its purpose is complete-group
+migration: JSON-to-database refuses if even one registered member is
+missing, while that inventory survives. It also tells a lost registered
+snapshot from a new workspace.
+*Alternative considered:* an immutable anchor, snapshots copying its UUID,
+and migration discovering them by scanning. That removes the anchor rewrite
+at startup, registration serialization and two resumable residues; a lost
+snapshot would only need fresh EMPTY/PROBE evidence. *Why not:* discovery
+cannot tell a never-created snapshot from a deleted one, so a migration
+could report success while omitting an inactive workspace; business
+directories are not an inventory of configuration members; an
+operator-supplied inventory only moves the obligation.
+*Cost accepted:* a first use appends to the anchor under the bind lock, so a
+normal start may now replace the anchor -- membership append only; its
+backend and UUID change only through the offline migration or a
+stopped-writer deletion and rebind.
+
+**Startup (the JSON branch of step 1b):**
+
+```
+anchor lists this workspace -> verify: snapshot holds identity == anchor UUID
+                               and owner == workspace; otherwise refuse
+                               (member_missing / shard_invalid / uuid_mismatch)
+otherwise, under the bind lock, re-read the anchor:
+  no anchor  -> scan the surviving snapshots (below)
+                  none: new UUID; publish {uuid, members: []} no-clobber FIRST
+                  consistent: adopt their UUID; publish their owners as members
+                  conflicting UUIDs / invalid / unreadable: refuse
+  not a member -> its snapshot must be empty, or exactly identity + owner
+                  of this group (an interrupted registration, reused);
+                  application rows or a foreign UUID/owner refuse, untouched
+               -> write identity + owner, strict flush, read back -- a reused
+                  pair is flushed too, and rewritten unless the FILE already
+                  holds it: the rows may be only in the shared memory of a
+                  worker whose flush failed or was cancelled
+               -> the file on disk must hold identity + owner
+               -> append the workspace to the re-read anchor (atomic replace),
+                  read back; unreadable read-back = indeterminate
+then the baseline precheck and the rest of the start, as for every backend
+```
+
+| interruption / condition | residue and recovery |
+| --- | --- |
+| group anchor published, first snapshot not written | empty membership is valid; the retry reuses the UUID and registers |
+| snapshot metadata durable, member append not published | the retry validates the metadata-only snapshot and appends |
+| registered, baselines not yet established | the existing evidence gates run again; registration is not model evidence |
+| registered snapshot missing or corrupt | refused; restore the complete snapshot. Never re-created in place |
+| anchor missing, consistent snapshots survive | adopted, members rebuilt from them, bytes unchanged, WARNING |
+| anchor missing, the selected database identity survives | adopted; retained JSON sources are not scanned |
+| publish or fsync reports failure after a possible replace | read back: committed, unchanged, or indeterminate -- never a false rollback |
+
+**Rebinding after the anchor is deleted.** With every server and maintenance
+writer stopped, deleting the anchor remains the sanctioned rebind; no recovery
+command exists or is needed. A JSON candidate adopts the surviving
+consistent snapshots; a database candidate adopts the selected container's
+identity and never scans JSON paths. The warning names the backend, the
+UUID, the anchor path and the discovered members, and says the previous
+binding and historical member list could not be verified. *Residue:* a
+snapshot lost before the deletion is not listed and not recovered -- its
+records were already gone. If it reappears, the migration's extra-snapshot
+check catches it. Consistent retained JSON sources adopted after a JSON-to-
+database migration may be stale; the rebind never claims to synchronize
+them. Conflicts, unreadable files and invalid metadata still refuse.
+
+**The scan is bounded.** `discover_shards` probes the root snapshot and one
+file in each direct child directory. A child that is a symlink to a
+directory is followed for that one probe, because the running storage
+follows it too: a workspace registered through a symlinked directory is
+discovered by a rebind and a migration alike. It never recurses (a link back
+to `working_dir` is probed once, not walked) and never reads a business
+file. Something present that is not a regular file,
+a read or permission error, or a snapshot under a child name that is not a
+legal workspace refuses by path. The snapshot file itself is never
+followed: every save is an atomic replace, so the first flush would turn a
+symlinked snapshot into a regular file and leave its target stale. The JSON
+configuration storage applies the same check to its own snapshot before it
+opens it (a FIFO there would block the read forever), and a start and a
+maintenance tool's verification (`verify_configuration_identity`) repeat it,
+so neither serves or flushes a file a rebind or migration then refuses.
+One physical directory holds one workspace: a snapshot reachable under two
+names (a child symlinked to a sibling or to `working_dir`) refuses
+discovery, naming both, and a start or tool check whose own directory is
+one physical directory with `working_dir` or another direct child refuses
+before anything is written (`check_snapshot_location`), since the scan
+would otherwise find its snapshot under the other name and refuse it for
+its owner. Directories without a snapshot are not members.
+
+**Locking.** Registration is a read-modify-write of the member list, so it
+runs under the exclusive bind lock (a held lock is waited for, up to its
+timeout, never bypassed). Where POSIX reports that locking is unsupported,
+the bind lock **fails open with a warning**, so a single JSON server (the
+unset-Redis default included) still starts on such a volume; serialize first
+starts there. Windows' `msvcrt.locking` cannot tell "unsupported" from
+"held", so every failure there reads as contention and a genuinely
+unsupported filesystem times out and refuses, even for one instance. *Residue
+of failing open:* two concurrent appends can lose a member even though both
+report success. The next start of that workspace refuses its unregistered
+snapshot (it holds rows), and a JSON-to-database migration refuses on the
+extra snapshot; *recovery:* stop every instance, back up and delete the
+anchor, start again. If both the member entry and its snapshot vanish, no
+scan can tell; neither can one detect an old anchor restored with matching
+old data. Offline operations keep requiring `--assume-exclusive` where their
+exclusive lock cannot be enforced.
+
+**Maintenance tools never register.** The rebuild and clear tools derive
+one workspace's snapshot, verify owner, UUID and membership, and refuse an
+unanchored or unregistered JSON workspace with `member_unregistered` and the
+advice to start the server once, stop it and rerun. Registration comes
+before the embedding checks, so a later model or probe refusal does not stop
+a rebuild. A registered but damaged snapshot needs restoring, not that
+advice. Database backends keep their unanchored behavior.
+
+**The migration moves the whole group** (*Offline migration*).
 
 ### The setup wizard
 
@@ -197,10 +388,18 @@ server then refuses:
   - only warns about an anchor its narrow parser cannot confirm, since the
     server reads that one strictly and says why.
 - **"Readable" means what the server's parser accepts.** The whole file
-  must be one JSON object with exactly the three members and nothing around
-  it, and a repeated key keeps its last value, as in Python's `json`. A
-  per-field match would pass a file with an extra member, which the server
-  refuses, and could read another backend out of a repeated key.
+  must be one JSON object with exactly the three members (five for
+  `JsonKVStorage`: plus `"layout": "json_shards"` and the `members` string
+  array) and nothing around it, and a repeated key keeps its last value, as
+  in Python's `json`. A per-field match would pass a file with an extra
+  member, which the server refuses, and could read another backend out of a
+  repeated key. Member names are compared literally, so each must have the
+  one spelling the server writes: a raw non-ASCII byte, a `\u` escape of an
+  ASCII character or one with an upper-case hex digit is unreadable. Then a
+  path separator, `.`/`..`, a reserved root name or its case (ASCII, or one
+  of the thirteen escapes whose fold is ASCII) / trailing dot or space
+  alias, or a repeat is unreadable -- exactly as the server
+  refuses them.
 - **An empty host `WORKING_DIR=` is the server's start directory**, as
   `os.path.abspath("")` makes it; only an unset key gets `./rag_storage`.
 - **A host `WORKING_DIR` using `${...}` is not resolved.** The server's
@@ -229,7 +428,8 @@ server then refuses:
   directory.** An ancestor that cannot be searched or is not a directory
   makes the server's `open()` fail and refuse, so the wizard reports that
   anchor as unreadable, never absent. So does a symlink that does not
-  resolve: it may be a loop (`ELOOP`) as well as dangling.
+  resolve: it may be a loop (`ELOOP`) as well as dangling. The anchor file
+  itself being a symlink is unreadable too, as the server refuses it.
 - **The migration command the wizard recommends names `WORKING_DIR`**
   whenever the anchor's directory is not the one the tool resolves from the
   host `.env`, as for every Compose deployment.
@@ -306,25 +506,31 @@ section rejects is in *Rejected alternatives*.
 ### One server at a time on a file-backed configuration
 
 `JsonKVStorage` shares its in-memory copy only inside one process tree and
-publishes by rewriting the whole file. Two process trees on one `config_dir`
+publishes by rewriting the whole file. Two process trees on one snapshot
 would each rewrite the file over the other. An overwritten baseline reads
-back as **absent**, which lets the next start bootstrap the configured model
-over vectors nobody probed, with nothing in any log. The in-process guard
-(*One file per namespace per process tree* in `FileBackedSnapshotContract.md`)
-cannot see another process tree.
+back as **absent**: the recorded decision is lost, and a new one needs fresh
+evidence. The shared identity may survive the overwrite, so the anchor alone
+cannot detect lost workspace rows. The in-process guard (*One file per
+namespace per process tree* in `FileBackedSnapshotContract.md`) cannot see
+another process tree.
 
-So a file-backed configuration storage **claims `config_dir`** for the life
-of its process tree (`acquire_working_dir_lock`), and a second process tree
-is refused with `WorkingDirectoryInUseError`.
+So a JSON configuration storage **claims its workspace's snapshot
+directory** for the life of its process tree (`acquire_working_dir_lock` on
+`json_config_dir(working_dir, workspace)`), and a second process tree on the
+same workspace is refused with `WorkingDirectoryInUseError`. A claim locks
+its own file, not a subtree: servers on different workspaces claim
+different files and run side by side, and the empty workspace's root claim
+does not block them. That also newly **detects** two JSON-configured servers
+on the same workspace and `working_dir` where the OS lock works.
 
 - **It is an OS lock, not a PID file.** The kernel releases it when the
   holder dies, so nothing stale is left to reap.
 - **`fork` shares it.** The Gunicorn master takes it in `on_starting`, before
   forking. The workers inherit it and count themselves in. The master
   resolves the directory with `configuration_selection_from_env()`, fed the
-  **parsed** working directory: `--working-dir` is never written back to the
-  environment, so `run_with_gunicorn` hands the parsed value to the config
-  module, and `resolved_working_dir()` prefers it.
+  **parsed** working directory and workspace: neither is written back to the
+  environment, so `run_with_gunicorn` hands the parsed values to the config
+  module, and `resolved_working_dir()` / `resolved_workspace()` prefer them.
 - **It fails open.** Where the filesystem cannot lock (NFSv3 without lockd,
   SMB/CIFS), it logs a warning and proceeds.
 - **Only a file-backed configuration storage claims.** A server-backed one
@@ -332,20 +538,23 @@ is refused with `WorkingDirectoryInUseError`.
 - **`lightrag-rebuild-vdb` and `lightrag-clear-storage` take the claim too.**
   Each is a second process tree by construction.
 
-Three lock files can sit in `<working_dir>/_lightrag_config/`, and each one
-makes a separate statement:
+Three lock files make separate statements. The two anchor locks sit
+directly in `<working_dir>`; the claim sits beside each JSON snapshot (for
+the empty workspace, also directly in `<working_dir>`):
 
 | file | mode | taken by | purpose |
 | --- | --- | --- | --- |
-| `.lightrag_storage.lock` | exclusive | a JSON configuration storage's process tree | one server per JSON configuration file |
+| `.lightrag_storage.lock` | exclusive | a JSON configuration storage's process tree | one server per JSON workspace snapshot |
 | `.lightrag_anchor.lock` | **shared** for every starter, **exclusive** for `lightrag-migrate-config` | server, Gunicorn master before fork, SDK, rebuild and clear tools; the migration | no migration while anything runs on this `working_dir` |
-| `.lightrag_anchor_bind.lock` | exclusive, polled, bounded wait | only a start that finds **no** anchor | one first bind across the servers sharing this `working_dir` |
+| `.lightrag_anchor_bind.lock` | exclusive, polled, bounded wait | a start that finds **no** anchor, or a JSON start whose workspace is not a member | one first bind, and one member append, at a time across the servers sharing this `working_dir` |
 
-The order is: the anchor lock, the `config_dir` claim, then the bind lock
-inside step 1b. Where locking is unavailable (a filesystem without locks, a
+The order is: the anchor lock, the snapshot claim, then the bind lock inside
+step 1b. Where locking is unavailable (a filesystem without locks, a
 read-only directory, or Windows, whose `msvcrt.locking` has no shared mode),
-every starter lock fails open with a warning. The migration then refuses
-unless the operator passes `--assume-exclusive`.
+the shared anchor lock and the claim fail open with a warning; the bind lock
+fails open only where POSIX reports locking unsupported, and on Windows
+treats every failure as contention (*JSON configuration shards*). The
+migration refuses unless the operator passes `--assume-exclusive`.
 
 #### The claim goes back last, and only after the teardown
 
@@ -355,7 +564,7 @@ unflushed writes would let the next server rewrite the same file. So
 
 - keeps the queue drains interruptible, and absorbs a cancellation there;
 - runs the storage teardown as a shielded task, drained to completion;
-- releases the `config_dir` claim, then the anchor lock, in a `finally`,
+- releases the snapshot claim, then the anchor lock, in a `finally`,
   after that task;
 - re-raises the absorbed cancellation.
 
@@ -366,21 +575,21 @@ cancellation detached before it hands the claim back, because
 ## Keys
 
 ```
-<workspace>/<suffix>          a per-workspace setting
-_lightrag_server/<suffix>     a server-global setting
+<workspace>/<suffix>          a named workspace's setting
+$default/<suffix>             the empty workspace's setting
+$meta/<suffix>                internal metadata
 ```
 
-- **The separator is `/`, never `.`.** `validate_workspace()` forbids `/` but
-  allows dots (`"v1.0"` is a legitimate workspace name), so a dotted key
-  could not be split back apart unambiguously.
-- **Keys are never reparsed anyway.** The row carries `workspace` as a field,
-  and every reader classifies by the field. The separator rule is a second
-  lock on a door the row shape already closes.
-- **The server scope is an object, not a string.** A tenant may legally be
-  called `_lightrag_server`. `SERVER_SCOPE` is a sentinel: `config_key()`
-  compares by identity and renders the prefix afterwards. A suffix is
-  registered with exactly one scope, so a tenant key and a server key can
-  never be the same key.
+- **The separator is `/`, never `.`.** `validate_workspace()` forbids `/`
+  and a leading `$`. Normal names such as `meta`, `default` and
+  `_lightrag_server` are legal and cannot collide with reserved key prefixes.
+- **Empty stays empty in data.** `$default` encodes only the key prefix;
+  business rows retain `workspace: ""`, and the shard owner retains
+  `value.workspace: ""`. Physical backend workspace and path rules do not change.
+- **Keys are never reparsed.** Registered metadata keys identify metadata.
+  Business rows carry the actual workspace for migration routing.
+- **Metadata requires `SERVER_SCOPE`.** The sentinel object addresses
+  registered metadata suffixes. A business workspace cannot request them.
 - **OpenSearch's lossy sanitization cannot reach the container.** For the
   `config` namespace, `_resolve_workspace` consults no workspace at all.
   `_build_index_name` refuses, before a client opens, any *other* namespace
@@ -388,17 +597,26 @@ _lightrag_server/<suffix>     a server-global setting
 
 ## Row shape
 
-Every row has the same shape:
+Business configuration rows have this shape:
 
 ```json
 {
   "schema_version": 1,
-  "workspace": "<workspace or _lightrag_server>",
+  "workspace": "<actual workspace, including the empty string>",
   "updated_at": "<iso8601>",
   "updated_by": "<component that wrote it>",
   "value": { }
 }
 ```
+
+The `$meta/storage_identity` and `$meta/json_shard` rows have the same audit,
+version and value fields but **no outer `workspace` field**. Identity contains
+`value: {"uuid": ...}`; shard ownership contains `value: {"workspace": ...}`.
+Readers reject an outer workspace on either metadata row. Workspace clear
+still deletes only registered business keys, never metadata.
+
+This replaces the unreleased dev format directly: there are no old-key
+aliases, fallback reads or automatic rewrites of the previous envelopes.
 
 `schema_version` is per key, not global. A reader requires an integer equal
 to the key's registered version before it interprets `value`. A missing,
@@ -417,6 +635,7 @@ touches a row, and `tests/config_store/test_config_store.py` pins the lists.
 | suffix | scope | readers | writers |
 | --- | --- | --- | --- |
 | `storage_identity` | server | startup, rebuild tool, clear tool, migration | startup (bind), migration (into its target) |
+| `json_shard` | server, JSON snapshots only | startup, rebuild tool, clear tool, migration | startup (registration), migration (into a JSON target); never copied out of JSON |
 | `embedding/entities`, `embedding/relationships`, `embedding/chunks` | workspace | startup, rebuild tool, clear tool, migration | startup (claim), rebuild tool (record), `/documents/clear` and clear tool (delete), migration (copy) |
 
 No key is `sensitive` yet. What that flag must *do* is an open item (*Not
@@ -432,7 +651,7 @@ would be lost. The anchor turns that drift into a refusal.
 
 **It has two pieces.**
 
-- **The identity.** `_lightrag_server/storage_identity`, registered with
+- **The identity.** `$meta/storage_identity`, registered with
   `SERVER_SCOPE`, holds `{"uuid": <UUIDv4>}` and identifies the whole
   container. Every workspace in the container shares it.
   - It is generated once, by `new_storage_uuid()` (`uuid.uuid4()`, drawn from
@@ -441,16 +660,17 @@ would be lost. The anchor turns that drift into a refusal.
   - A workspace clear, a rebuild and row maintenance never touch it:
     `delete_workspace_configuration` deletes only registered per-workspace
     suffixes.
-- **The anchor.** `<working_dir>/_lightrag_config/config_storage_anchor.json`
-  (`lightrag/config_anchor.py`) holds exactly `schema_version`, `backend` and
-  `storage_uuid`. It holds no host, port, credential or connection string.
-  Its path depends only on `working_dir` and does **not** follow
-  `config_dir`: moving the anchor with the data would move the check along
-  with the thing it checks.
+- **The anchor.** `<working_dir>/config_storage_anchor.json`
+  (`lightrag/config_anchor.py`) holds exactly `schema_version` (integer
+  `1`), `backend` and `storage_uuid`; a `JsonKVStorage` anchor adds
+  `layout: "json_shards"` and `members`. It holds no host, port, path,
+  credential or connection string. Its path depends only on `working_dir`:
+  it lives directly under it, outside every workspace, the empty one
+  included.
 
 A UUID is used rather than only the backend type because a type-only anchor
 catches KV drift and nothing else. The UUID also catches a same-type change:
-another database or an empty one, a changed `LIGHTRAG_CONFIG_DIR`, or a
+another database or an empty one, a snapshot from another deployment, or a
 restore from a backup older than the identity.
 
 ### What is compared
@@ -461,7 +681,7 @@ restore from a backup older than the identity.
 | same backend type, different UUID | refused |
 | anchor present, container UUID missing | refused; no UUID is created |
 | backend type changed, even with the UUID copied over | refused |
-| JSON `config_dir` changed | the fixed anchor is still read, and the verdict is the target container's UUID |
+| a JSON snapshot copied from another deployment | refused by the UUID (and by the owner when copied under another workspace name) |
 | identity matches, an embedding baseline does not | refused by the baselines, unchanged |
 | anchor deleted by the operator | the no-anchor branch: adopt the container's UUID, or create one |
 
@@ -472,10 +692,17 @@ the same UUID. Clone, rollback and tamper detection are out of scope.
 ### Reads and writes
 
 - **The anchor is read strictly.** Its structure, the exact `schema_version`,
-  an admitted backend and a canonical UUID are all validated. Only "file does
-  not exist" is the no-anchor branch. A permission error, a directory in its
-  place, a truncated or corrupt file or an unknown version refuses
-  (`ConfigurationIdentityError`, cause `anchor_unreadable`).
+  an admitted backend, a canonical UUID and, for JSON, the layout and a list
+  of distinct legal member names are all validated; a database anchor
+  carrying `layout` or `members` is refused. Only "file does not exist" is
+  the no-anchor branch. A permission error, a directory in its place, a
+  truncated or corrupt file or an unknown version refuses
+  (`ConfigurationIdentityError`, cause `anchor_unreadable`), and so does
+  anything that is not a regular file -- checked with `lstat` before the
+  open, so a FIFO cannot block it. A symlink (valid or dangling) is refused
+  because every publish is an atomic replace of the path: it would swap the
+  link for a private regular file and leave its target with the old member
+  list. Persist the anchor by persisting `working_dir`, not the one file.
 - **The identity row is read strictly.** A backend error, a wrong schema
   version or scope, or a non-canonical UUID is an error, never absent.
 - **The identity is written through `flush_configuration_storage`**, with a
@@ -494,8 +721,10 @@ the same UUID. Clone, rollback and tamper detection are out of scope.
     anchor is an empty file that every reader refuses as unreadable. A crash
     in that window leaves the empty file for the operator to delete, which
     is the sanctioned rebind.
-  - The **migration** publishes by atomic replace. Nothing else ever
-    replaces an anchor, and a normal start never overwrites or deletes one.
+  - The **migration** publishes by atomic replace, and so does a JSON start
+    appending its workspace to the member list -- under the bind lock, from
+    an anchor re-read inside it. Nothing else replaces an anchor; a normal
+    start never changes its backend or UUID and never deletes one.
 - **`WORKING_DIR` must persist,** whichever backends are selected, and the
   anchor belongs in backup and restore. An ephemeral `WORKING_DIR` loses the
   anchor on every restart and makes the check vacuous, which is why the
@@ -509,7 +738,7 @@ the same UUID. Clone, rollback and tamper detection are out of scope.
 0b. strict-read the anchor
 0c. anchor present and the candidate backend type differs
       -> refuse before the configuration storage initializes
-    (then the JSON config_dir claim)
+    (then the JSON snapshot claim)
 1.  initialize the configuration storage
 1b. under keyed lock "configuration_identity"             (sticky; rolled
       re-read the anchor                                     back like step 2)
@@ -522,6 +751,7 @@ the same UUID. Clone, rollback and tamper detection are out of scope.
                                         strict read-back, compare
                     publish the anchor {candidate backend, uuid}, no-clobber
                     WARNING: container, uuid, adopted or created
+      JSON:         see *JSON configuration shards* (membership, rebind)
 2-9. see *Startup sequence*
 ```
 
@@ -534,10 +764,11 @@ the same UUID. Clone, rollback and tamper detection are out of scope.
   any business storage initializes. It records the binding, not whether any
   baseline is recorded.
 - **The keyed lock serializes the workers of one master.** The bind lock
-  serializes a first bind across the servers sharing a `working_dir`: those
-  servers all bind the same container-wide row, and the keyed lock cannot
-  see them. An anchored start never takes the bind lock, so running servers
-  never serialize on it.
+  serializes a first bind, and a JSON member registration, across the
+  servers sharing a `working_dir`: those servers all bind the same
+  container-wide row or member list, and the keyed lock cannot see them. A
+  registered start never takes the bind lock, so running servers never
+  serialize on it.
 
 **Why there is no `pending` state.** The identity is written first and the
 anchor second, so every interruption heals by adoption:
@@ -550,16 +781,22 @@ anchor second, so every interruption heals by adoption:
 
 ### Refusals, and the rebind
 
-**Deleting `config_storage_anchor.json` is the sanctioned rebind.** The next start
-binds to whatever container the current configuration selects, and logs a
-WARNING naming the container and the UUID. For that one start, drift
-detection is off and protection falls back to the baselines, the coverage
-gate and the per-container markers.
+**Deleting `config_storage_anchor.json`, with every server and maintenance
+writer on this `working_dir` stopped, is the sanctioned rebind.** The next
+start binds to whatever container the current configuration selects -- for
+JSON, the surviving consistent snapshots, whose owners become the members --
+and logs a WARNING naming the container, the UUID and, for JSON, the
+discovered members. For that one start, drift detection is off and
+protection falls back to the baselines, the coverage gate and the
+per-container markers. A JSON rebind cannot list a snapshot that was lost
+before the deletion; conflicting snapshot UUIDs, unreadable files and
+invalid metadata still refuse.
 
-It is the recovery for a container intentionally emptied or replaced, or
-restored from a backup older than its identity. Never delete the anchor while
-servers run: running processes do not re-read it, and a respawned Gunicorn
-worker would rebind.
+It is the recovery for a container intentionally emptied or replaced, for a
+backup older than its identity, and for a JSON member lost by an unprotected
+concurrent append. Back the anchor up first where possible. Never delete it
+while servers run: running processes do not re-read it, and a respawned
+Gunicorn worker would rebind.
 
 Every refusal names the expected and actual backend type and UUID, and the
 anchor's path, and hides credentials. The advice depends on the cause:
@@ -569,6 +806,8 @@ anchor's path, and hides credentials. The advice depends on the cause:
 | container UUID missing | if the container was intentionally emptied, replaced or restored from an old backup, delete the anchor (path given) | primary recovery |
 | backend type differs | set `LIGHTRAG_CONFIG_STORAGE` to the anchored backend explicitly, or run `lightrag-migrate-config` | listed last, marked as abandoning every record in the old container |
 | same type, different UUID | check that the connection settings point at the intended database | listed last, same warning |
+| JSON: registered snapshot missing or without identity/owner (`member_missing`) | restore the complete snapshot from backup | does not help: a lost snapshot is never re-created in place |
+| JSON: unregistered snapshot holding records (`shard_invalid`) | a lost registration or a copied/restored file: stop every instance, back up and delete the anchor, start again | primary recovery for a lost registration |
 
 ### Maintenance tools
 
@@ -579,8 +818,11 @@ anchor's path, and hides credentials. The advice depends on the cause:
 - **verify** the identity (`verify_configuration_identity`) after the
   configuration storage opens and before any data storage does.
 
-They never create or rewrite the anchor or the identity. With no anchor they
-say that nothing was verified, and proceed.
+They never create or rewrite the anchor, the identity or a JSON member. With
+no anchor and a database backend they say that nothing was verified, and
+proceed. With JSON, the workspace must be a registered member: an unanchored
+or unregistered workspace refuses (`member_unregistered`) with the advice to
+start the server once, stop it and rerun the tool.
 
 ### Offline migration: `lightrag-migrate-config`
 
@@ -588,8 +830,50 @@ say that nothing was verified, and proceed.
 `lightrag/tools/README_MIGRATE_CONFIG.md`.
 
 - **It moves the container across backend types only.** A same-type move is
-  the backend's own dump/restore: the identity travels with the data, and
-  "same type, same UUID" passes.
+  the backend's own dump/restore (for JSON, copying the whole `working_dir`):
+  the identity travels with the data, and "same type, same UUID" passes.
+- **A JSON side is the whole group** (`JsonShardGroup`), never the invoking
+  workspace's snapshot alone. As a source, the anchor's members and the
+  non-empty snapshots on disk must agree in both directions -- a missing
+  member or an extra snapshot, a metadata-only one included, refuses before
+  the target is opened -- and every member must carry the anchored UUID and
+  its owner. A group with no member (a database container that held only its
+  identity, or a first start stopped before registering) is still valid and
+  migrates with the anchor's UUID. Owner rows are layout metadata: hidden from the copy, never
+  written to a database. A row is server-scoped by its key (a registered
+  server-global key), never by its `workspace` field, so a tenant named
+  `_lightrag_server` migrates like any other workspace; a metadata row
+  refuses a JSON target. A non-empty snapshot without an identity or owner
+  row is damaged and refuses on either side, as it does at a start and a
+  rebind: automatic recovery is limited to consistent state. As a target,
+  the source's workspaces and every
+  snapshot already on disk are claimed and validated before any write -- a
+  source row whose key is not a registered key of its own scope refuses
+  there, since a snapshot written with it would fail verification and could
+  not be converged by the next run, and so do distinct workspaces that differ
+  only in letter case, Unicode normalization or trailing dots/spaces, which a
+  case- or normalization-insensitive filesystem would store in one directory
+  (Unicode canonical caseless matching, `caseless_alias`, over the whole
+  planned set before any directory exists), and so does a planned workspace
+  whose directory is one physical directory (same device and inode) with
+  any other existing child directory or with `WORKING_DIR` itself -- through
+  a symlink or a case-insensitive spelling, with or without a snapshot in
+  it, since the next discovery would find the snapshot through that name
+  too, and the directory claim is reentrant by realpath, so nothing later
+  would stop both opening one snapshot; a
+  same-UUID snapshot (a retained source of an earlier JSON-to-database
+  migration) is this migration's to converge, anything foreign refuses. A
+  snapshot whose workspace has no rows left in the source keeps identity and
+  owner only and stays a member, so it never becomes an unregistered stale
+  snapshot. The committed JSON anchor lists every snapshot that holds rows.
+- **The report says the whole container moves.** Every run (and, before the
+  interactive confirmation, a read-only preview) lists every workspace to be
+  migrated, stating that it is not only the invoking server's `WORKSPACE`;
+  a JSON target also lists each snapshot's fate and flags workspaces with no
+  directory under `working_dir` as possibly another deployment's, copied as
+  stale. The scope itself is deliberately not narrowed: omitting a sibling
+  instance's workspace would lose its recorded baselines when the anchor
+  switches.
 - **It keeps the UUID.** The backend type already tells the source and the
   target apart.
 - **It resolves both sides' connections from separate env files.** Two
@@ -617,9 +901,9 @@ say that nothing was verified, and proceed.
 
 - **`--dry-run`** takes the lock shared, runs steps 1–3 and writes no row.
   Opening the target at step 3 is an ordinary backend `initialize()`, which
-  provisions a missing container as any start on that backend would. The
-  identity is the first **row** the migration writes, not the first byte on
-  the target.
+  provisions a missing container as any start on that backend would; a JSON
+  target opens only the snapshots that already exist. The identity is the
+  first **row** the migration writes, not the first byte on the target.
 - **Before step 7 the anchor is unchanged**, and a re-run resumes, converging
   the target onto the *current* source. A source lost during the copy is such
   a failure too, never a raw backend error. So is a claim whose identity
@@ -635,7 +919,7 @@ say that nothing was verified, and proceed.
   digest; they are never grounds to refuse. A backend's typed corruption
   (`CorruptStorageRecordError`) is one damaged row, refused by name, not a
   store failure.
-- **The tool gives back its `config_dir` claims before the anchor lock,**
+- **The tool gives back its JSON snapshot claims before the anchor lock,**
   the order every starter uses. A storage whose `initialize()` fails is
   finalized before the failure is reported.
 - **The anchor read under the lock must be the one the command started
@@ -752,9 +1036,10 @@ Per target:
 `LightRAG.initialize_storages()`:
 
 ```
-0a-0c. the anchor lock, the anchor, the backend-type check; the config_dir claim
+0a-0c. the anchor lock, the anchor, the backend-type check; the JSON snapshot claim
 1.  initialize the configuration storage
 1b. verify the container's identity against the anchor, or bind it
+    (JSON: verify the member, or rebind and register it)
 2.  strict-read this workspace's three baselines
 3.  PRECHECK the records that exist:
       any mismatch -> refuse; no vector storage is initialized
@@ -945,7 +1230,7 @@ drop every data storage of the workspace
 | residue | consequence |
 | --- | --- |
 | data gone, configuration remains | a workspace recreated under the same name may be refused until the rows are cleaned. **Accepted** (loud, recoverable) |
-| configuration gone, data remains | the next start bootstraps over surviving vectors. **Never acceptable** |
+| configuration gone, data remains | the recorded decision is lost while the vectors it describes survive; a new one needs fresh evidence, and a decision probing cannot re-derive (a rebuild) is gone. **Never acceptable** |
 
 - If **any** drop fails, all three records stay. A partial drop never
   deletes the records "for the parts that dropped".
@@ -968,8 +1253,9 @@ storage.
   early. A missing index or a closed connection must not read as an empty
   listing. `OpenSearchKVStorage` refuses in the same index-missing states
   its strict point read refuses in.
-- **Classification is by the row's `workspace` field**
-  (`iter_configuration_rows`), and never by reparsing the key.
+- **Metadata is identified by its registered key.** Business scope comes
+  from the row's real `workspace`, never by reparsing the key.
+  `iter_configuration_rows` reports `workspace: null` for metadata rows.
 - **A page is a best-effort snapshot, not a set.** Redis `SCAN` may repeat a
   key. The chunk sampler keeps distinct ids and spends its budget on rows
   examined.
@@ -984,8 +1270,8 @@ emptiness walks the keyspace, but so does the `is_empty()` it replaces.
 - **The working-directory claim stays.** Two servers on one `working_dir`
   and one **workspace** still overwrite each other's file-backed business
   data. On different workspaces they share only the configuration container
-  (`ServerInstanceContract.md`). The claim follows the configuration file
-  onto `config_dir`.
+  (`ServerInstanceContract.md`). The claim follows the JSON configuration
+  snapshot, so it is per workspace.
 - **The baselines answer one question: identity** — is the configured space
   the one adopted for this target? Two mechanisms answer different questions
   and stay:
@@ -1024,7 +1310,8 @@ in `AGENTS.md`).
   whose scope names a workspace with no data.
 - **Without an anchor, a replaced or cleared store loses every baseline.**
   With an anchor, step 1b refuses. Without one, reads confirm absent and the
-  start bootstraps; this is announced by `warn_about_unrecorded_baselines()`,
+  start re-establishes baselines only where fresh evidence allows; this is
+  announced by `warn_about_unrecorded_baselines()`,
   not enforced, because it is indistinguishable from a first start. Even
   then, nothing is adopted on the configured model alone.
 - **The no-anchor boundary.** A deleted anchor, a replaced volume and an
@@ -1053,11 +1340,24 @@ in `AGENTS.md`).
 - **Two deployments sharing one backend AND one workspace name overwrite
   each other's baselines.** This is unsupported. *Recovery:* give them
   different workspaces, and rebuild.
-- **The JSON backend publishes its whole namespace on flush,** so one file
-  is the write point for every workspace in the process. This is accepted
-  under the "file-backed storages are for small-scale testing" limit.
-- **Every workspace's configuration is colocated in one container.**
-  Configuration is server-owned, so combining it is the correct semantics.
+- **The JSON backend publishes its whole snapshot on flush,** one file per
+  workspace. This is accepted under the "file-backed storages are for
+  small-scale testing" limit.
+- **Every workspace's configuration is colocated in one container** (for
+  JSON: one group under one identity). Configuration is server-owned, so
+  combining it is the correct semantics.
+- **JSON registration residues.** An empty-member anchor, and a metadata-only
+  snapshot whose append did not land, are both resumed by the next start.
+  *Recovery:* none needed.
+- **A lost JSON member append where the bind lock fails open.** Detected by
+  the next start of that workspace and by the migration's extra-snapshot
+  check; *recovery:* stop every instance, back up and delete the anchor,
+  start again. A member whose entry and snapshot both vanish is not
+  detectable.
+- **A JSON rebind lists only surviving snapshots.** A snapshot lost before the
+  anchor was deleted is not recovered, and retained JSON sources adopted
+  after a JSON-to-database migration may be stale. *Recovery:* restore from
+  backup; the rebind never claims completeness or synchronization.
 
 ## Rejected alternatives
 
@@ -1069,7 +1369,10 @@ reason no longer holds.
 | a reserved workspace name for the container (`_lightrag_config` as a tenant name) | a reserved name must be defended everywhere a name can be chosen (case-insensitively for OpenSearch, and at every `*_WORKSPACE` override). A container nobody can address by workspace needs no defence |
 | a deployment id as a row discriminator | an operator-set id can be copied into a clone, and a derived id moves when the container does; either way records read as absent after a redeploy |
 | keying baselines by the effective (`*_WORKSPACE`) workspace | it would bake a legacy override into the record format, and bless using one to move data |
-| a default `config_dir` anywhere but `<working_dir>/_lightrag_config` | every existing baseline would read as absent |
+| an operator-selected JSON configuration directory (a setting or constructor argument) | a second way to defeat the fixed layout; separate directories with independent identities fail the shared anchor, and copied identities are not a supported group |
+| one aggregate JSON file for every workspace on a shared `working_dir` | two servers would rewrite one file; per-workspace snapshots let the per-workspace claim protect each |
+| discovering JSON members by scanning instead of recording them | a scan cannot tell a never-created snapshot from a deleted one, so a migration could silently omit an inactive workspace (*JSON configuration shards*) |
+| a `--recover-anchor` command or operator completeness confirmation | deletion already destroyed the historical inventory; a command cannot prove an unknown set complete, and the rebind from consistent survivors needs none |
 | moving `INITIALIZED` ahead of the storage loop, or an `INITIALIZING` status | teardown would call `finalize()` on storages that never initialized, which no backend contract offers |
 | a retry on the same instance after a step 1–9 failure | not every `finalize()` can be undone (OpenSearch flushes its buffer before its client guard); a new instance is the retry |
 | a type-only anchor | it catches KV drift only; same-type container changes need the UUID |
@@ -1082,7 +1385,7 @@ reason no longer holds.
 
 ## Not implemented yet
 
-- **The server-level pair `_lightrag_server/embedding.current` /
+- **The metadata pair `$meta/embedding.current` /
   `.previous`, and the startup inventory** naming which workspaces still
   need a rebuild, both built on `iter_rows()`. The pair must stay
   **diagnostic and never gate**: it flaps when differently configured
@@ -1118,7 +1421,8 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
 11. Two workers of one Gunicorn master claim concurrently → exactly one
     baseline.
 12. A tenant called `_lightrag_config` starts normally and shares no file,
-    table, collection or index with the container.
+    table, collection or index with the container; with JSON it runs beside
+    the empty workspace.
 13. Any workspace storage fails to drop → all three records are kept.
 14. Every drop succeeds → the three records are deleted, and a workspace of
     the same name can be recreated and started.
@@ -1137,8 +1441,7 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
 21. Concurrent claims are covered only for workers of one Gunicorn master;
     nothing asserts anything about two independent masters on one workspace.
 22. A deployment whose baselines are recorded has every one read by the next
-    start, unchanged; a mismatching model still refuses; the same deployment
-    with `config_dir` pointed elsewhere reads absence.
+    start, unchanged; a mismatching model still refuses.
 23. A configuration backend outside the four is refused at construction by
     name — a vector storage class, or explicitly selected `RedisKVStorage`.
     Unset configuration with Redis business KV selects JSON with a warning.
@@ -1146,39 +1449,49 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     a start with records, or missing only some, stays quiet.
 25. Two deployments sharing one container hold disjoint rows, per backend,
     with keys that differ by scope.
-26. The single-server claim is taken on `config_dir`, not `working_dir`, and
-    only when the configuration storage is file-backed.
+26. The single-server claim is taken on the workspace's JSON snapshot
+    directory, not on `working_dir`, and only when the configuration storage
+    is file-backed.
 27. A storage in step 4 raises (first, middle, last member of the loop): the
     configuration storage, the storage that raised and every storage before
     it are released exactly once; storages never reached are untouched; the
     original exception propagates.
 28. A first start with no anchor creates the identity, then the anchor, on
-    each of the four backends; Redis business KV with unset configuration
-    uses JSON and the same anchor checks.
-29. A deployment with configuration rows but no identity binds by creating
-    it; every baseline row is read unchanged.
+    each of the three database backends; on JSON it publishes the group
+    anchor first, then registers the workspace. Redis business KV with unset
+    configuration uses JSON and the same anchor checks.
+29. A database container with configuration rows but no identity binds by
+    creating it; every baseline row is read unchanged. A JSON snapshot of an
+    unregistered workspace that holds rows refuses, untouched.
 30. An anchor naming another backend type is refused at step 0c: nothing
     initialized, nothing written, the anchor untouched, and not sticky; an
     explicit `LIGHTRAG_CONFIG_STORAGE` naming the anchored backend passes.
 31. Same type and UUID passes; a different UUID, a missing UUID, an invalid
     row or a read error each refuse and create nothing.
 32. A no-anchor bind whose identity read fails at transport level creates
-    neither a UUID nor an anchor.
+    neither a UUID nor an anchor; a JSON rebind that meets an unreadable or
+    conflicting snapshot publishes nothing.
 33. A Gunicorn master refuses a type mismatch before forking.
-34. A changed `config_dir` still reads the fixed anchor and is judged by the
-    target's UUID; a moved directory that keeps its identity passes.
+34. The anchor, its locks and every JSON snapshot are at their fixed paths;
+    no setting or constructor argument moves them.
 35. An anchor that cannot be read is never absent; a failed write, publish or
-    directory fsync is loud; a start never overwrites an anchor.
+    directory fsync is loud; a start never changes an anchor's backend or
+    UUID (a JSON start only appends its workspace to the members).
 36. A crash or cancellation between the identity write and the anchor
-    publish heals by adoption; a 1b failure is sticky and releases every
+    publish heals by adoption; on JSON an empty-member anchor and a
+    metadata-only snapshot resume; a 1b failure is sticky and releases every
     resource and the anchor lock.
 37. Concurrent binds in one process tree create exactly one identity and
     publish the anchor once; two process trees on one `working_dir` binding
     at once do too (one creates, the other waits on the bind lock and
-    verifies); an anchored start never waits on the bind lock; a bind lock
-    held past its timeout refuses with nothing written.
+    verifies), and two JSON workspaces registering at once both end up
+    members; a registered start never waits on the bind lock; a bind lock
+    held past its timeout refuses with nothing written, and on Windows every
+    `msvcrt` failure is contention, never fail-open.
 38. Deleting the anchor rebinds with a WARNING naming the container and the
-    UUID; each refusal carries its per-cause advice.
+    UUID; a JSON rebind re-enrolls every surviving consistent snapshot with
+    its bytes unchanged, and refuses conflicting UUIDs or unreadable
+    snapshots; each refusal carries its per-cause advice.
 39. Starters share the anchor lock; an exclusive hold refuses them and any
     starter refuses the exclusive hold; on a filesystem that cannot lock,
     starters warn and proceed and the exclusive hold needs
@@ -1218,6 +1531,30 @@ the numbering is stable: new scenarios are appended, and none is renumbered.
     anchor decides; an anchor in the old runtime is not carried into an
     unanchored new runtime. A database first required by the final selection
     is collected and included in the generated Compose services.
+47. JSON snapshots live at `<working_dir>/<workspace>/kv_workspace_config.json`
+    (the root for the empty workspace), each with the group's identity and
+    its own owner; two workspaces in one process tree keep separate
+    snapshots; each of the five reserved root names is refused before any
+    directory exists.
+48. A registered JSON member whose snapshot is missing refuses and is never
+    re-created; a snapshot copied under another workspace name refuses by
+    its owner.
+49. The rebuild and clear tools refuse an unanchored or unregistered JSON
+    workspace with the first-start advice, and never register one.
+50. A JSON-to-database migration refuses a missing member and an
+    unregistered snapshot (metadata-only included) before any target write,
+    and never copies the owner rows; a database-to-JSON migration registers
+    every workspace, converges same-UUID retained snapshots, keeps a cleared
+    workspace as a metadata-only member, refuses a foreign snapshot before
+    any write, and a dry run creates no snapshot.
+
+
+51. `$meta` metadata has no outer workspace; `$default` business rows retain
+    the empty workspace and round-trip through whole-group migration.
+52. SDK, server normalization, backend overrides and maintenance tools refuse
+    workspace names starting with `$`; JSON anchor member validation and the
+    setup wizard refuse them too. Ordinary `meta`, `default` and
+    `_lightrag_server` names remain distinct from metadata and the empty workspace.
 
 ## History
 
@@ -1226,7 +1563,10 @@ facility), [#4020](https://github.com/HKUDS/LightRAG/issues/4020) (its own
 category, fixed containers) and
 [#4059](https://github.com/HKUDS/LightRAG/issues/4059) (identity, anchor and
 migration). It builds on the embedding-space work of
-[#3978](https://github.com/HKUDS/LightRAG/issues/3978).
+[#3978](https://github.com/HKUDS/LightRAG/issues/3978). Per-workspace JSON
+snapshots with a shared anchor at the `working_dir` root replaced the single
+`_lightrag_config/kv_server_config.json` file and its directory setting
+before either shipped in a release.
 
 This file replaces `docs/design/ConfigurationStorage.md`, the design guide
 written before implementation. Everything that guide asked for is either

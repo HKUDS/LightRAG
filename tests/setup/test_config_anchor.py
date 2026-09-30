@@ -29,15 +29,31 @@ BASE_ENV = [
 ]
 
 
+# The two members a JsonKVStorage anchor carries beyond the three every
+# anchor has, spelled as a raw JSON fragment for hand-written payloads.
+JSON_TAIL = ', "layout": "json_shards", "members": []'
+
+
+def _json_anchor(members: str = "[]", *, extra: str = "") -> str:
+    """A raw JsonKVStorage anchor with ``members`` spliced in verbatim."""
+    return (
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",'
+        ' "layout": "json_shards", "members": %s%s}' % (UUID, members, extra)
+    )
+
+
 def _write_anchor(working_dir: Path, backend: str, *, raw: str | None = None) -> Path:
-    path = working_dir / "_lightrag_config" / "config_storage_anchor.json"
+    path = working_dir / "config_storage_anchor.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     if raw is None:
-        raw = json.dumps(
-            {"backend": backend, "schema_version": 1, "storage_uuid": UUID},
-            indent=2,
-            sort_keys=True,
-        )
+        payload: dict[str, object] = {
+            "backend": backend,
+            "schema_version": 1,
+            "storage_uuid": UUID,
+        }
+        if backend == "JsonKVStorage":
+            payload.update(layout="json_shards", members=["", "team_a"])
+        raw = json.dumps(payload, indent=2, sort_keys=True)
     path.write_text(raw)
     return path
 
@@ -161,11 +177,12 @@ def test_validate_reads_the_compose_mount_for_a_compose_runtime(
     "raw",
     [
         "{",
-        '{"schema_version": 2, "backend": "JsonKVStorage", "storage_uuid": "%s"}'
-        % UUID,
+        '{"schema_version": 2, "backend": "JsonKVStorage", "storage_uuid": "%s"%s}'
+        % (UUID, JSON_TAIL),
         '{"schema_version": 1, "backend": "RedisKVStorage", "storage_uuid": "%s"}'
         % UUID,
-        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "x"}',
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "x"%s}'
+        % JSON_TAIL,
     ],
 )
 def test_an_anchor_the_wizard_cannot_confirm_is_a_warning_not_a_pass(
@@ -249,34 +266,113 @@ printf 'WRITTEN=%s\\n' "${{ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}}"
 
 # The wizard's parser must never say "readable" about a file the server
 # refuses, nor read a different backend out of it than the server would.
+# Every JsonKVStorage case below is a valid five-member anchor but for the one
+# defect it names.
 @pytest.mark.parametrize(
     "raw",
     [
-        # An extra member: the server requires exactly the three fields.
-        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",'
+        # An extra member: the server requires exactly the five fields.
+        _json_anchor(extra=', "note": "x"'),
+        # ... and exactly the three for a database backend.
+        '{"schema_version": 1, "backend": "PGKVStorage", "storage_uuid": "%s",'
         ' "note": "x"}' % UUID,
         # A duplicate key alongside an extra one.
         '{"schema_version": 1, "backend": "JsonKVStorage", "backend":'
-        ' "JsonKVStorage", "storage_uuid": "%s", "x": 1}' % UUID,
+        ' "JsonKVStorage", "storage_uuid": "%s"%s, "x": 1}' % (UUID, JSON_TAIL),
         # An empty object, and a trailing comma.
         "{}",
-        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",}'
-        % UUID,
+        _json_anchor(extra=","),
         # A raw newline inside a string is not JSON.
-        '{"schema_version": 1, "backend": "JsonKV\nStorage", "storage_uuid": "%s"}'
-        % UUID,
-        # Not a JSON integer 1.
-        '{"schema_version": 1.0, "backend": "JsonKVStorage", "storage_uuid": "%s"}'
+        '{"schema_version": 1, "backend": "JsonKV\nStorage", "storage_uuid": "%s"%s}'
+        % (UUID, JSON_TAIL),
+        # Not a JSON integer 1, and not an integer at all (bool is an int
+        # subclass in Python; the server checks the exact type).
+        '{"schema_version": 1.0, "backend": "JsonKVStorage", "storage_uuid": "%s"%s}'
+        % (UUID, JSON_TAIL),
+        '{"schema_version": true, "backend": "JsonKVStorage", "storage_uuid":'
+        ' "%s"%s}' % (UUID, JSON_TAIL),
+        '{"schema_version": true, "backend": "PGKVStorage", "storage_uuid": "%s"}'
         % UUID,
         # Trailing content after the object.
-        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s"} x'
-        % UUID,
+        _json_anchor() + " x",
         # A byte-order mark, which the server's UTF-8 decode keeps.
-        '﻿{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid":'
-        ' "%s"}' % UUID,
+        "\ufeff" + _json_anchor(),
         # A NUL byte, which bash would silently drop.
-        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid":'
-        ' "%s"}\x00' % UUID,
+        _json_anchor() + "\x00",
+        # The pre-shard three-member JsonKVStorage anchor: layout and members
+        # are required now.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s"}'
+        % UUID,
+        # One of the two missing, the wrong layout, members not a list.
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",'
+        ' "layout": "json_shards"}' % UUID,
+        '{"schema_version": 1, "backend": "JsonKVStorage", "storage_uuid": "%s",'
+        ' "members": []}' % UUID,
+        _json_anchor().replace('"json_shards"', '"json"'),
+        _json_anchor('"team_a"'),
+        _json_anchor("{}"),
+        # A member that is not a string, or a repeat.
+        _json_anchor("[1]"),
+        _json_anchor('["team_a", null]'),
+        _json_anchor('["team_a", "team_a"]'),
+        _json_anchor('["", ""]'),
+        # A member that is not a single path component, spelled plainly or
+        # with escapes that decode to a separator.
+        _json_anchor('["a/b"]'),
+        _json_anchor('["a\\\\b"]'),
+        _json_anchor('["a\\/b"]'),
+        _json_anchor('["a\\u002fb"]'),
+        _json_anchor('["a\\u005Cb"]'),
+        _json_anchor('["."]'),
+        _json_anchor('[".."]'),
+        # Escapes the server decodes into a refused name or a repeat.
+        _json_anchor('["\\u002e"]'),
+        _json_anchor('["\\u002e\\u002e"]'),
+        _json_anchor('["\\u006bv_workspace_config.json"]'),
+        _json_anchor('["a", "\\u0061"]'),
+        # One name with two escape spellings: the server decodes both to the
+        # same member and refuses the repeat.
+        _json_anchor('["caf\\u00e9", "caf\\u00E9"]'),
+        # Reserved names in another ASCII letter case or with trailing dots or
+        # spaces, which the server refuses as filesystem aliases.
+        _json_anchor('["CONFIG_STORAGE_ANCHOR.JSON"]'),
+        _json_anchor('["Kv_Workspace_Config.json"]'),
+        _json_anchor('["config_storage_anchor.json."]'),
+        _json_anchor('[".lightrag_anchor.lock "]'),
+        # Reserved names spelled through a non-ASCII character whose Unicode
+        # case fold is ASCII (KELVIN SIGN, the fi and long-s-t ligatures).
+        _json_anchor('["\\u212av_workspace_config.json"]'),
+        _json_anchor('["kv_workspace_con\\ufb01g.json"]'),
+        _json_anchor('[".lightrag_\\ufb05orage.lock"]'),
+        # Drive-qualified names (decoded second character ':'), which Windows
+        # joins outside WORKING_DIR: plain, escaped, a surrogate pair, a short
+        # escape.
+        _json_anchor('["C:"]'),
+        _json_anchor('["a:b"]'),
+        _json_anchor('["\\u00e9:"]'),
+        _json_anchor('["\\ud83d\\ude00:"]'),
+        _json_anchor('["\\t:"]'),
+        # A name of only dots and spaces, which Windows strips to the root.
+        _json_anchor('[" "]'),
+        _json_anchor('["... "]'),
+        # Dollar-prefixed members are reserved for internal configuration keys.
+        _json_anchor('["$meta"]'),
+        _json_anchor('["$default"]'),
+        _json_anchor('["$other"]'),
+        _json_anchor('["\\u0024meta"]'),
+        # The five reserved root names.
+        _json_anchor('["kv_workspace_config.json"]'),
+        _json_anchor('["config_storage_anchor.json"]'),
+        _json_anchor('[".lightrag_storage.lock"]'),
+        _json_anchor('[".lightrag_anchor.lock"]'),
+        _json_anchor('["team_a", ".lightrag_anchor_bind.lock"]'),
+        # A database anchor carrying either shard member.
+        '{"schema_version": 1, "backend": "PGKVStorage", "storage_uuid": "%s",'
+        ' "layout": "json_shards"}' % UUID,
+        '{"schema_version": 1, "backend": "PGKVStorage", "storage_uuid": "%s",'
+        ' "members": []}' % UUID,
+        '{"schema_version": 1, "backend": "PGKVStorage", "storage_uuid": "%s"%s}'
+        % (UUID, JSON_TAIL),
     ],
 )
 def test_the_wizard_accepts_only_what_the_server_accepts(
@@ -320,6 +416,80 @@ def test_the_wizard_reads_the_backend_the_server_reads(
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # The non-ASCII name escaped, as json.dumps writes it.
+        _json_anchor('["", "team_a", "caf\\u00e9"]'),
+        # Other whitespace and member order, and an empty member list.
+        '\n{ "members" : [ "" ,\r\n\t"team_a" ] , "layout":"json_shards",'
+        '"storage_uuid":"%s","backend":"JsonKVStorage","schema_version":1 }\n' % UUID,
+        _json_anchor("[]"),
+        # Dots inside a name are legal: only "." and ".." are refused.
+        _json_anchor('["v1.0", "..a"]'),
+        # ':' later than the second character is not a drive prefix.
+        _json_anchor('["ab:c"]'),
+        # A look-alike of a reserved name whose case fold is not ASCII
+        # (FULLWIDTH LATIN CAPITAL LETTER K) is an ordinary member.
+        _json_anchor('["\\uff2bv_workspace_config.json"]'),
+    ],
+)
+def test_the_wizard_reads_a_json_anchor_the_server_reads(
+    tmp_path: Path, raw: str
+) -> None:
+    from lightrag.config_anchor import read_anchor
+
+    working_dir = tmp_path / "rag_storage"
+    _write_anchor(working_dir, "", raw=raw)
+    anchor = read_anchor(str(working_dir))
+    assert anchor is not None
+    assert anchor.backend == "JsonKVStorage"
+    assert anchor.storage_uuid == UUID
+    # StorageAnchor keeps its members sorted.
+    assert anchor.members == tuple(sorted(json.loads(raw)["members"]))
+
+    result = _run(
+        tmp_path,
+        "read_config_anchor host\n"
+        'printf "STATE=%s\\n" "$CONFIG_ANCHOR_STATE"\n'
+        'printf "BACKEND=%s\\n" "$CONFIG_ANCHOR_BACKEND"\n'
+        'printf "UUID=%s\\n" "$CONFIG_ANCHOR_UUID"',
+    )
+    assert parse_lines(result.stdout) == {
+        "STATE": "readable",
+        "BACKEND": "JsonKVStorage",
+        "UUID": UUID,
+    }, result.stderr
+
+    validated = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=PGKVStorage"])
+    assert parse_lines(validated.stdout)["VALID"] == "no"
+    assert "binds this deployment to JsonKVStorage" in validated.stderr
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Raw UTF-8, and an escaped ASCII character: the server accepts both
+        # but never writes either, so the wizard, comparing names literally,
+        # cannot confirm them -- the safe direction.
+        _json_anchor('["", "team_a", "café"]'),
+        _json_anchor('["\\u0061"]'),
+    ],
+)
+def test_a_json_anchor_the_wizard_cannot_spell_uniquely_is_only_a_warning(
+    tmp_path: Path, raw: str
+) -> None:
+    from lightrag.config_anchor import read_anchor
+
+    working_dir = tmp_path / "rag_storage"
+    _write_anchor(working_dir, "", raw=raw)
+    assert read_anchor(str(working_dir)).backend == "JsonKVStorage"
+
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert parse_lines(result.stdout)["VALID"] == "yes", result.stderr
+    assert "could not be read" in result.stderr
 
 
 def test_an_interpolated_working_dir_is_reported_as_unchecked(
@@ -604,7 +774,7 @@ def test_an_empty_working_dir_is_the_directory_the_server_starts_in(
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "WORKING_DIR="])
     assert parse_lines(result.stdout)["VALID"] == "no"
     assert "binds this deployment to PGKVStorage" in result.stderr
-    assert f"{tmp_path}/_lightrag_config/config_storage_anchor.json" in result.stderr
+    assert f"{tmp_path}/config_storage_anchor.json" in result.stderr
 
 
 def test_a_hash_inside_an_unquoted_value_is_not_a_comment(tmp_path: Path) -> None:
@@ -615,12 +785,25 @@ def test_a_hash_inside_an_unquoted_value_is_not_a_comment(tmp_path: Path) -> Non
     assert "binds this deployment to PGKVStorage" in result.stderr
 
 
-def test_an_anchor_behind_a_non_directory_is_not_absent(tmp_path: Path) -> None:
-    """``_lightrag_config`` is a file: the server's open() fails with
-    ENOTDIR and refuses, so this is not the absence that lets it bootstrap."""
-    (tmp_path / "rag_storage").mkdir()
-    (tmp_path / "rag_storage" / "_lightrag_config").write_text("x")
-    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+@pytest.mark.parametrize(
+    "file_name, working_dir", [("rag_storage", None), ("parent", "./parent/rag")]
+)
+def test_an_anchor_behind_a_non_directory_is_not_absent(
+    tmp_path: Path, file_name: str, working_dir: str | None
+) -> None:
+    """WORKING_DIR, or one of its ancestors, is a file: the server's open()
+    fails with ENOTDIR and refuses, so this is not the absence that lets it
+    bootstrap."""
+    from lightrag.config_anchor import read_anchor
+    from lightrag.exceptions import ConfigurationIdentityError
+
+    (tmp_path / file_name).write_text("x")
+    env = ["LIGHTRAG_KV_STORAGE=JsonKVStorage"]
+    if working_dir is not None:
+        env.append(f"WORKING_DIR={working_dir}")
+    with pytest.raises(ConfigurationIdentityError):
+        read_anchor(str(tmp_path / (working_dir or "rag_storage")))
+    result = _validate(tmp_path, env)
     assert "could not be read" in result.stderr
 
 
@@ -662,6 +845,26 @@ def test_an_anchor_behind_a_symlink_loop_is_not_absent(tmp_path: Path) -> None:
     (tmp_path / "rag_storage").symlink_to(tmp_path / "rag_storage")
     result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
     assert "could not be read" in result.stderr
+
+
+def test_a_symlinked_anchor_is_unreadable_to_both_parsers(tmp_path: Path) -> None:
+    """A publish atomically replaces the path, swapping the link for a
+    private file; the server refuses a symlinked anchor and so must this."""
+    from lightrag.config_anchor import read_anchor
+    from lightrag.exceptions import ConfigurationIdentityError
+
+    _write_anchor(tmp_path / "volume", "PGKVStorage")
+    working_dir = tmp_path / "rag_storage"
+    working_dir.mkdir()
+    (working_dir / "config_storage_anchor.json").symlink_to(
+        tmp_path / "volume" / "config_storage_anchor.json"
+    )
+    with pytest.raises(ConfigurationIdentityError, match="symlink"):
+        read_anchor(str(working_dir))
+
+    result = _validate(tmp_path, ["LIGHTRAG_KV_STORAGE=JsonKVStorage"])
+    assert "could not be read" in result.stderr
+    assert "binds this deployment" not in result.stderr
 
 
 COMPOSE_ENV = ["LIGHTRAG_KV_STORAGE=JsonKVStorage", "LIGHTRAG_RUNTIME_TARGET=compose"]
@@ -712,10 +915,7 @@ def test_working_dir_is_normalized_like_the_servers_abspath(
         ],
     )
     assert parse_lines(result.stdout)["VALID"] == "no"
-    assert (
-        f"{tmp_path}/actual/_lightrag_config/config_storage_anchor.json"
-        in result.stderr
-    )
+    assert f"{tmp_path}/actual/config_storage_anchor.json" in result.stderr
 
 
 def test_operator_compose_edits_are_kept_and_not_interpreted(
@@ -752,7 +952,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
 """,
     )
     assert result.returncode == 0, result.stderr
-    assert f"{tmp_path}/data/rag_storage/_lightrag_config" in result.stdout
+    assert f"{tmp_path}/data/rag_storage/config_storage_anchor.json" in result.stdout
     assert "binds it to PGKVStorage" in result.stdout
     generated = compose.read_text(encoding="utf-8")
     assert "LIGHTRAG_CONFIG_STORAGE: PGKVStorage" in generated
@@ -827,8 +1027,8 @@ def test_a_single_quoted_doubled_backslash_reads_as_the_server_reads_it(
 @pytest.mark.parametrize(
     "working_dir, expected",
     [
-        ("/", "/_lightrag_config/config_storage_anchor.json"),
-        ("//", "//_lightrag_config/config_storage_anchor.json"),
+        ("/", "/config_storage_anchor.json"),
+        ("//", "//config_storage_anchor.json"),
     ],
 )
 def test_the_anchor_path_is_joined_as_os_path_join_does(

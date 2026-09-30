@@ -73,7 +73,7 @@ async def test_the_identity_is_created_read_back_and_then_verified(tmp_path):
     assert created.action == "created"
     doc = collection.docs[cs.storage_identity_key()]
     assert doc["value"] == {"uuid": created.storage_uuid}
-    assert doc["workspace"] == "_lightrag_server"
+    assert "workspace" not in doc
     assert ca.read_anchor(str(tmp_path)).backend == "MongoKVStorage"
 
     writes = collection.writes

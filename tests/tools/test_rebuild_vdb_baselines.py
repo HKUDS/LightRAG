@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.config_shards import json_config_dir
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag import config_store as cs
@@ -289,9 +289,9 @@ class TestTheToolIsASecondProcessTree:
         monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
         monkeypatch.setenv("WORKSPACE", "rebuildws")
 
-        # The claim is on the CONFIGURATION directory, which is where the
-        # file the two would overwrite actually lives.
-        config_dir = str(tmp_path / CONFIG_CONTAINER_TAG)
+        # The claim is on the workspace's JSON CONFIGURATION directory, which
+        # is where the snapshot the two would overwrite actually lives.
+        config_dir = json_config_dir(str(tmp_path), "rebuildws")
         wdl.acquire_working_dir_lock(config_dir)
         holder = dict(wdl._claims)
         wdl._claims.clear()  # the tool must look like a different tree
@@ -301,7 +301,7 @@ class TestTheToolIsASecondProcessTree:
             ok = await tool.setup_storages()
 
             assert ok is False, "the tool ran while another process tree held it"
-            assert "already in use" in capsys.readouterr().out
+            assert "already claimed" in capsys.readouterr().out
             assert tool.configuration_storage is None, (
                 "the configuration storage was opened despite the refusal"
             )

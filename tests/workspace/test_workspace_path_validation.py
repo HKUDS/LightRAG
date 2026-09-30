@@ -168,3 +168,44 @@ class TestUploadPath:
         upload_subdir = dm.input_dir.relative_to(inputs)
         storage_subdir = Path(kv._file_name).parent.relative_to(working)
         assert upload_subdir == storage_subdir
+
+
+@pytest.mark.parametrize("workspace", ["$", "$meta", "$default", "$custom"])
+def test_reserved_prefix_rejected_before_server_normalization(workspace):
+    from lightrag.utils import normalize_server_workspace, validate_workspace_override
+
+    with pytest.raises(ValueError, match="reserved"):
+        validate_workspace(workspace)
+    with pytest.raises(ValueError, match="reserved"):
+        normalize_server_workspace(workspace)
+    with pytest.raises(ValueError, match="reserved"):
+        validate_workspace_override("POSTGRES_WORKSPACE", workspace)
+
+
+@pytest.mark.parametrize("workspace", ["", "meta", "default", "_lightrag_server"])
+def test_ordinary_names_and_empty_workspace_remain_valid(workspace):
+    from lightrag.utils import normalize_server_workspace
+
+    assert validate_workspace(workspace) == workspace
+    assert normalize_server_workspace(workspace) == workspace
+
+
+@pytest.mark.parametrize("workspace", ["$meta", "$default"])
+def test_sdk_rejects_reserved_workspace_before_creating_storage(tmp_path, workspace):
+    from lightrag import LightRAG
+
+    working_dir = tmp_path / "not-created"
+    with pytest.raises(ValueError, match="reserved"):
+        LightRAG(working_dir=str(working_dir), workspace=workspace)
+    assert not working_dir.exists()
+
+
+@pytest.mark.parametrize("workspace", ["$meta", "$default"])
+def test_server_rejects_reserved_workspace_from_environment(monkeypatch, workspace):
+    import sys
+    from lightrag.api.config import parse_args
+
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("WORKSPACE", workspace)
+    with pytest.raises(ValueError, match="reserved"):
+        parse_args()

@@ -1,13 +1,14 @@
 """The anchor lock: SHARED for every starter, EXCLUSIVE for the offline
 configuration migration.
 
-``<working_dir>/_lightrag_config/.lightrag_anchor.lock``, beside the anchor
-file it protects (``lightrag/config_anchor.py``). It is a DIFFERENT file from
-the exclusive ``.lightrag_storage.lock`` a file-backed configuration storage
-takes on ``config_dir`` (``lightrag/kg/working_dir_lock.py``), even when both
-sit in the same directory, and the two answer different questions:
+``<working_dir>/.lightrag_anchor.lock``, beside the anchor file it protects
+(``lightrag/config_anchor.py``). It is a DIFFERENT file from the exclusive
+``.lightrag_storage.lock`` a JSON configuration storage takes beside its
+workspace snapshot (``lightrag/kg/working_dir_lock.py``) -- for the empty
+workspace both sit directly in ``working_dir`` -- and the two answer
+different questions:
 
-* the ``config_dir`` claim keeps a second SERVER off one JSON configuration
+* the snapshot claim keeps a second SERVER off one JSON configuration
   file -- exclusive between starters;
 * this lock keeps a MIGRATION off a deployment that is running -- starters
   share it with each other and are only excluded against the migration.
@@ -19,24 +20,29 @@ Rules:
 
 * **Starters take it shared** -- the server, the Gunicorn master in
   ``on_starting`` before forking (workers inherit its hold and count
-  themselves in, exactly as with the ``config_dir`` claim), the SDK,
+  themselves in, exactly as with the snapshot claim), the SDK,
   ``lightrag-rebuild-vdb``, ``lightrag-clear-storage``. A starter is refused
   only while a migration holds the lock.
 * **Starters fail open** where the filesystem or platform cannot lock
   (NFSv3 without lockd, SMB/CIFS, a read-only directory, or Windows, whose
   ``msvcrt.locking`` has no shared mode): a warning, then proceed -- the
-  posture the ``config_dir`` claim already takes.
+  posture the snapshot claim already takes.
 * **The migration refuses** in exactly those places unless the operator
   passes ``assume_exclusive`` (``--assume-exclusive``), which records that
   every reader and writer has been stopped by hand. A lock that works and
   is held is refused regardless.
-* **Order**: this lock first, then the ``config_dir`` claim; released in
-  reverse, after the storage teardown.
+* **Order**: this lock first, then the snapshot claim, then (only when
+  needed) the bind lock; released in reverse, after the storage teardown.
 
-A third file, ``.lightrag_anchor_bind.lock``, is taken exclusively and ONLY
-by a start that finds no anchor (``anchor_bind_lock``): servers sharing one
-``working_dir`` with different workspaces all bind the same container-wide
-identity row, and the in-tree keyed lock cannot see each other's first bind.
+A third file, ``.lightrag_anchor_bind.lock``, is taken exclusively by a start
+that finds no anchor or, on JSON, a workspace not yet listed in the anchor's
+members (``anchor_bind_lock``): servers sharing one ``working_dir`` with
+different workspaces bind the same identity and append to the same member
+list, and the in-tree keyed lock cannot see each other. A held bind lock is
+waited for, never bypassed. Where POSIX reports that locking is unsupported
+it fails open with a warning (a lost member append is then detected by the
+migration's cross-check, see the contract); Windows' ``msvcrt`` cannot tell
+"unsupported" from "held", so every failure there is treated as contention.
 
 A local directory lock does not cover a deployment using another
 ``working_dir`` against the same remote configuration container; those must
@@ -54,10 +60,11 @@ from typing import Any, AsyncIterator
 
 from lightrag.config_anchor import anchor_dir
 from lightrag.exceptions import ConfigurationAnchorLockError
+from lightrag.namespace import ANCHOR_BIND_LOCK_FILE_NAME, ANCHOR_LOCK_FILE_NAME
 from lightrag.utils import logger
 
-LOCK_FILENAME = ".lightrag_anchor.lock"
-BIND_LOCK_FILENAME = ".lightrag_anchor_bind.lock"
+LOCK_FILENAME = ANCHOR_LOCK_FILE_NAME
+BIND_LOCK_FILENAME = ANCHOR_BIND_LOCK_FILE_NAME
 
 # How long a start waits for another process tree's bind to finish. A bind is
 # one identity write, flush and read-back plus a file publish; this is ample.
@@ -262,25 +269,36 @@ def anchor_bind_lock_path(working_dir: str) -> str:
     return os.path.join(os.path.realpath(anchor_dir(working_dir)), BIND_LOCK_FILENAME)
 
 
+def _msvcrt():
+    try:
+        import msvcrt
+    except ImportError:
+        return None
+    return msvcrt
+
+
 @asynccontextmanager
 async def anchor_bind_lock(
     working_dir: str, *, timeout: float = DEFAULT_BIND_LOCK_TIMEOUT_SECONDS
 ) -> AsyncIterator[None]:
-    """Serialize the NO-ANCHOR bind across process trees on one host.
+    """Serialize a bind or a JSON member append across process trees on one
+    host.
 
-    Several servers may share one ``working_dir`` with different workspaces
-    (on a non-file configuration backend), and every one of them binds the
-    same container-wide identity row. The in-tree keyed lock cannot see a
-    second server, so without this two first starts can each create a UUID
-    and leave the anchor naming one while the container holds the other.
-    Taken ONLY when no anchor exists -- an anchored start never waits here --
-    and the caller re-reads the anchor inside it. Waits (polling, never
-    blocking the event loop) up to ``timeout`` and then raises
-    ``ConfigurationAnchorLockError``; fails OPEN with a warning where the
-    filesystem or platform cannot lock, like the shared lock.
+    Several servers may share one ``working_dir`` with different workspaces:
+    every one of them binds the same container-wide identity and, on JSON,
+    appends itself to the same member list. The in-tree keyed lock cannot
+    see a second server, so without this two first starts could each create
+    a UUID, or two appends could each rewrite the list without the other's
+    entry. Taken when there is no anchor or the workspace is not a member --
+    a registered start never waits here -- and the caller re-reads the
+    anchor inside it. Waits (polling, never blocking the event loop) up to
+    ``timeout`` and then raises ``ConfigurationAnchorLockError``. Fails OPEN
+    with a warning only where POSIX says locking is unsupported; on Windows
+    every ``msvcrt`` failure reads as contention (see the module rules).
     """
     path = anchor_bind_lock_path(working_dir)
     fcntl = _fcntl()
+    msvcrt = None if fcntl is not None else _msvcrt()
     try:
         handle = _open_lock_file(path)
     except OSError as e:
@@ -289,32 +307,46 @@ async def anchor_bind_lock(
         return
     locked = False
     try:
-        if fcntl is None:
-            _warn_bind_unlocked(path, "this platform has no shared file lock")
+        if fcntl is None and msvcrt is None:
+            _warn_bind_unlocked(path, "this platform has no file lock")
         else:
             deadline = time.monotonic() + max(0.0, timeout)
             while not locked:
                 try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if fcntl is not None:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    else:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     locked = True
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise ConfigurationAnchorLockError(
-                            f"Another process has held the configuration "
-                            f"anchor bind lock {path} for more than "
-                            f"{timeout:.0f}s while binding this working "
-                            f"directory; nothing was written. Retry once it "
-                            f"has finished starting."
-                        ) from None
-                    await asyncio.sleep(0.05)
+                    pass
                 except OSError as e:
-                    _warn_bind_unlocked(path, f"{type(e).__name__}: {e}")
+                    if fcntl is not None:
+                        _warn_bind_unlocked(path, f"{type(e).__name__}: {e}")
+                        break
+                    # msvcrt: "held by another process" and "cannot lock
+                    # here" are the same error; the safe reading is "held".
+                if locked:
                     break
+                if time.monotonic() >= deadline:
+                    raise ConfigurationAnchorLockError(
+                        f"Another process has held the configuration anchor "
+                        f"bind lock {path} for more than {timeout:.0f}s while "
+                        f"binding this working directory or registering a "
+                        f"workspace; nothing was written. Retry once it has "
+                        f"finished starting."
+                    ) from None
+                await asyncio.sleep(0.05)
         yield
     finally:
         if locked:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                else:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             except OSError:
                 pass
         _close(handle)
@@ -324,5 +356,6 @@ def _warn_bind_unlocked(path: str, reason: str) -> None:
     logger.warning(
         f"Could not take the configuration anchor bind lock {path} ({reason}); "
         f"binding without it. Start servers sharing this working directory "
-        f"one at a time until the anchor exists."
+        f"one at a time until the anchor exists and, with JSON configuration, "
+        f"until every workspace has been registered once."
     )

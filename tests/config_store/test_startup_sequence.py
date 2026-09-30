@@ -33,7 +33,7 @@ from lightrag.kg import json_kv_impl
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.namespace import CONFIG_JSON_FILE_NAME
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
@@ -84,7 +84,9 @@ def _embedding_in_space(space: str, *, failing: bool = False):
 
 
 def _workspace(tmp_path) -> str:
-    return f"cfg-{tmp_path.name}"
+    # A name the server's normalization leaves unchanged, so the CLI rebuild
+    # (which normalizes ``WORKSPACE`` as the server does) targets it too.
+    return f"cfg_{tmp_path.name}"
 
 
 def _rag(tmp_path, *, model_name, space="A", failing_embedder=False, rebuilding=False):
@@ -189,8 +191,17 @@ async def _seed(tmp_path, *, model_name, space="A"):
     await rag.finalize_storages()
 
 
+def _config_dir(tmp_path):
+    """The JSON configuration snapshot directory of the test workspace."""
+    return tmp_path / _workspace(tmp_path)
+
+
+def _config_file(tmp_path):
+    return _config_dir(tmp_path) / CONFIG_JSON_FILE_NAME
+
+
 def _records(tmp_path) -> dict[str, dict]:
-    path = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
+    path = _config_file(tmp_path)
     if not path.exists():
         return {}
     payload = json.loads(path.read_text())
@@ -206,7 +217,7 @@ async def _write_record(tmp_path, target, *, model_name, dim=_DIM):
     """Put a baseline on record the way the rebuild tool would, for one target."""
     config = cs.create_configuration_storage(
         JsonKVStorage,
-        global_config={"working_dir": str(tmp_path)},
+        global_config={"working_dir": str(tmp_path), "workspace": _workspace(tmp_path)},
         embedding_func=None,
     )
     await config.initialize()
@@ -403,12 +414,18 @@ async def test_a_process_without_a_model_name_keeps_no_baselines(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("version", [None, 2])
+@pytest.mark.parametrize(
+    ("version", "refusal"),
+    [
+        (None, "unsupported schema_version"),
+        (2, "unsupported schema_version"),
+    ],
+)
 async def test_unsupported_baseline_version_refuses_before_business_storages(
-    tmp_path, version
+    tmp_path, version, refusal
 ):
     await _seed(tmp_path, model_name="bge-m3")
-    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
+    config_file = _config_file(tmp_path)
     records = json.loads(config_file.read_text())
     key = cs.embedding_baseline_key(_workspace(tmp_path), "chunks")
     if version is None:
@@ -423,9 +440,7 @@ async def test_unsupported_baseline_version_refuses_before_business_storages(
     full_docs_init = _Spy(rag.full_docs, "initialize")
     config_upsert = _Spy(rag.configuration_storage, "upsert")
     try:
-        with pytest.raises(
-            ConfigurationStorageError, match="unsupported schema_version"
-        ):
+        with pytest.raises(ConfigurationStorageError, match=refusal):
             await rag.initialize_storages()
         assert full_docs_init.calls == 0
         assert config_upsert.calls == 0
@@ -583,7 +598,7 @@ async def test_an_unreadable_configuration_file_is_read_again_by_the_next_instan
     handed back instead, so the file is read again and still governs.
     """
     await _seed(tmp_path, model_name="bge-m3")
-    config_file = tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
+    config_file = _config_file(tmp_path)
     recorded = json.loads(config_file.read_text())
     assert _records(tmp_path)["entities"]["model"] == "bge-m3"
 
@@ -700,7 +715,7 @@ async def test_a_cancellation_during_rollback_still_finishes_the_releases(tmp_pa
     assert config_finalize.calls == 1, (
         "the cancellation stopped the rollback before the configuration storage"
     )
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False, (
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is False, (
         "the working-directory claim survived the rollback and would refuse a retry"
     )
     assert rag._storages_status is StoragesStatus.CREATED
@@ -724,14 +739,14 @@ async def test_a_cancelled_shutdown_still_gives_the_directory_back(tmp_path):
 
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is True
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is True
 
     # The first storage the teardown reaches is cancelled.
     _Spy(rag.full_docs, "finalize", raise_with=asyncio.CancelledError())
 
     await rag.finalize_storages()
 
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False, (
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is False, (
         "a cancelled shutdown kept the working-directory claim"
     )
 
@@ -754,7 +769,7 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
 
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is True
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is True
 
     _Spy(rag, "_shutdown_model_queues", raise_with=asyncio.CancelledError())
     config_finalize = _Spy(rag.configuration_storage, "finalize")
@@ -763,7 +778,7 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
     with pytest.raises(asyncio.CancelledError):
         await rag.finalize_storages()
 
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False, (
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is False, (
         "a cancel in the pre-teardown awaits kept the working-directory claim"
     )
     assert chunks_finalize.calls == 1, (
@@ -816,7 +831,7 @@ async def test_an_external_cancel_mid_teardown_finishes_before_unlocking(tmp_pat
     assert config_finalize.calls == 1, (
         "the cancel abandoned the storages after the one it interrupted"
     )
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is False
 
 
 async def test_a_cancelled_rollback_release_is_drained_before_unlocking(tmp_path):
@@ -856,7 +871,7 @@ async def test_a_cancelled_rollback_release_is_drained_before_unlocking(tmp_path
     assert finished == ["full_docs"], (
         "the rollback gave the directory back with a release still detached"
     )
-    assert holds_working_dir_lock(str(tmp_path / CONFIG_CONTAINER_TAG)) is False
+    assert holds_working_dir_lock(str(_config_dir(tmp_path))) is False
 
 
 async def test_a_gate_refusal_leaves_everything_releasable(tmp_path):
@@ -1057,7 +1072,7 @@ async def test_corrupt_nano_startup_is_sticky_preserves_file_and_releases_claim(
     rag = _rag(tmp_path, model_name="bge-m3")
     await rag.initialize_storages()
     await rag.finalize_storages()
-    config_file = tmp_path / "_lightrag_config" / "kv_server_config.json"
+    config_file = _config_file(tmp_path)
     baseline = config_file.read_bytes()
     broken = _rag(tmp_path, model_name="bge-m3")
     path = Path(getattr(broken, target + "_vdb")._client_file_name)
@@ -1086,7 +1101,6 @@ async def test_corrupt_nano_cli_rebuild_preserves_backup_and_commits_baselines_l
         path.write_bytes(b'{"matrix": "truncated')
     monkeypatch.setenv("WORKING_DIR", str(tmp_path))
     monkeypatch.setenv("WORKSPACE", _workspace(tmp_path))
-    monkeypatch.setenv("LIGHTRAG_CONFIG_DIR", str(tmp_path / "_lightrag_config"))
     tool = RebuildTool()
     monkeypatch.setattr(
         tool,

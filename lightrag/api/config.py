@@ -3,12 +3,11 @@ Configs for the LightRAG API.
 """
 
 import os
-import re
 import argparse
 import logging
 from dotenv import load_dotenv
 from lightrag import ROLES
-from lightrag.utils import get_env_value, logger
+from lightrag.utils import get_env_value, logger, normalize_server_workspace
 from lightrag.llm.binding_options import (
     BedrockLLMOptions,
     GeminiEmbeddingOptions,
@@ -637,11 +636,12 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
-    # The configuration storage is its own category. Both are passed through
-    # UNRESOLVED: empty means "follow kv_storage" / "the default config_dir",
-    # and LightRAG resolves them once so there is a single answer to report.
+    # The configuration storage is its own category. Passed through
+    # UNRESOLVED: empty means "follow kv_storage", and LightRAG resolves it
+    # once so there is a single answer to report. The JSON backend's
+    # location is derived from WORKING_DIR and the workspace; no setting
+    # moves it.
     args.config_storage = get_env_value("LIGHTRAG_CONFIG_STORAGE", "")
-    args.config_dir = get_env_value("LIGHTRAG_CONFIG_DIR", "")
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(
@@ -983,16 +983,7 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
-    # Sanitize workspace: only alphanumeric characters and underscores are allowed
-    if args.workspace:
-        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
-        if sanitized != args.workspace:
-            logging.warning(
-                f"Workspace name '{args.workspace}' contains invalid characters. "
-                f"It has been sanitized to '{sanitized}'. "
-                "Only alphanumeric characters and underscores are allowed."
-            )
-            args.workspace = sanitized
+    args.workspace = normalize_server_workspace(args.workspace)
 
     validate_auth_configuration(args)
     validate_bedrock_auth_configuration(args)
