@@ -155,19 +155,31 @@ class Neo4JStorage(BaseGraphStorage):
         suffix = self._normalize_index_suffix(workspace_label)
         return f"entity_id_fulltext_idx_{suffix}"
 
-    def _is_chinese_text(self, text: str) -> bool:
-        """Check if text contains Chinese/CJK characters.
+    # Scripts the Lucene `cjk` analyzer indexes as overlapping bigrams. A query
+    # in these scripts must NOT get a trailing `*`: a wildcard term bypasses the
+    # analyzer, so `삼성전자*` is compared against 2-character bigram terms and
+    # silently matches nothing once the query is longer than one bigram.
+    _CJK_BIGRAM_PATTERN = re.compile(
+        r"[\u1100-\u11ff"  # Hangul Jamo
+        r"\u3040-\u30ff"  # Hiragana, Katakana
+        r"\u3130-\u318f"  # Hangul Compatibility Jamo
+        r"\u31f0-\u31ff"  # Katakana Phonetic Extensions
+        r"\u3400-\u4dbf"  # CJK Unified Ideographs Extension A
+        r"\u4e00-\u9fff"  # CJK Unified Ideographs
+        r"\ua960-\ua97f"  # Hangul Jamo Extended-A
+        r"\uac00-\ud7ff"  # Hangul Syllables, Hangul Jamo Extended-B
+        r"\uf900-\ufaff"  # CJK Compatibility Ideographs
+        r"\uff66-\uffdc]"  # Halfwidth Katakana and Hangul
+        r"|[\U00020000-\U0002fa1f]"  # CJK Extension B-F, Compatibility Supplement
+    )
 
-        Covers:
-        - CJK Unified Ideographs (U+4E00-U+9FFF)
-        - CJK Extension A (U+3400-U+4DBF)
-        - CJK Compatibility Ideographs (U+F900-U+FAFF)
-        - CJK Extension B-F (U+20000-U+2FA1F) - supplementary planes
+    def _is_cjk_text(self, text: str) -> bool:
+        """Check if text contains Chinese, Japanese or Korean characters.
+
+        True routes ``search_labels`` to the no-wildcard query path; see
+        ``_CJK_BIGRAM_PATTERN`` for why Korean and kana must take it too.
         """
-        cjk_pattern = re.compile(
-            r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\U00020000-\U0002fa1f]"
-        )
-        return bool(cjk_pattern.search(text))
+        return bool(self._CJK_BIGRAM_PATTERN.search(text))
 
     @classmethod
     def _sanitize_fulltext_query(cls, text: str) -> str:
@@ -1993,7 +2005,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
         Search labels(entity names) with fuzzy matching, using a full-text index for performance if available.
-        Enhanced with Chinese text support using CJK analyzer.
+        Enhanced with Chinese, Japanese and Korean support using the CJK analyzer.
         Falls back to a slower CONTAINS search if the index is not available or fails.
         """
         workspace_label = self._get_workspace_label()
@@ -2002,7 +2014,7 @@ class Neo4JStorage(BaseGraphStorage):
             return []
 
         query_lower = query_strip.lower()
-        is_chinese = self._is_chinese_text(query_strip)
+        is_cjk = self._is_cjk_text(query_strip)
         index_name = self._get_fulltext_index_name(workspace_label)
 
         # Strip Lucene reserved characters before handing the text to the
@@ -2019,8 +2031,8 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                if is_chinese:
-                    # For Chinese text, use different search strategies
+                if is_cjk:
+                    # For CJK text, use different search strategies
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
@@ -2036,10 +2048,10 @@ class Neo4JStorage(BaseGraphStorage):
                     ORDER BY final_score DESC, label ASC
                     LIMIT $limit
                     """
-                    # For Chinese, don't add wildcard as it may not work properly with CJK analyzer
+                    # No wildcard: it bypasses the CJK analyzer (see _CJK_BIGRAM_PATTERN)
                     search_query = sanitized_query
                 else:
-                    # For non-Chinese text, use the original logic with wildcard
+                    # For non-CJK text, use the original logic with wildcard
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
@@ -2070,7 +2082,7 @@ class Neo4JStorage(BaseGraphStorage):
                 await result.consume()
 
                 logger.debug(
-                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Full-text search ({'CJK' if is_cjk else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
                 )
                 return labels
 
@@ -2085,8 +2097,8 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                if is_chinese:
-                    # For Chinese text, use direct CONTAINS without case conversion
+                if is_cjk:
+                    # For CJK text, use direct CONTAINS without case conversion
                     cypher_query = f"""
                     MATCH (n:`{workspace_label}`)
                     WHERE n.entity_id IS NOT NULL
@@ -2106,7 +2118,7 @@ class Neo4JStorage(BaseGraphStorage):
                         cypher_query, query_strip=query_strip, limit=limit
                     )
                 else:
-                    # For non-Chinese text, use the original fallback logic
+                    # For non-CJK text, use the original fallback logic
                     cypher_query = f"""
                     MATCH (n:`{workspace_label}`)
                     WHERE n.entity_id IS NOT NULL
@@ -2129,7 +2141,7 @@ class Neo4JStorage(BaseGraphStorage):
                 labels = [record["label"] async for record in result]
                 await result.consume()
                 logger.debug(
-                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Fallback search ({'CJK' if is_cjk else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
                 )
                 return labels
 
