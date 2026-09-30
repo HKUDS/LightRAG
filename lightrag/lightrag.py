@@ -102,6 +102,7 @@ from lightrag.utils import get_env_value
 from lightrag.parser.routing import _chunk_env_int
 
 from lightrag.kg import (
+    deprecated_storage_message,
     verify_storage_implementation,
 )
 
@@ -1891,6 +1892,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             verify_storage_implementation(storage_type, storage_name)
             # Check environment variables
             check_storage_env_vars(storage_name)
+            deprecation = deprecated_storage_message(storage_name)
+            if deprecation:
+                logger.warning(deprecation)
 
         # Ensure vector_db_storage_cls_kwargs has required fields
         self.vector_db_storage_cls_kwargs = {

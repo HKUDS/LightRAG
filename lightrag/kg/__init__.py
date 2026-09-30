@@ -70,6 +70,13 @@ STORAGE_IMPLEMENTATIONS = {
     },
 }
 
+# Backends still accepted but scheduled for removal, mapped to the recommended
+# replacement. Selecting one works unchanged; startup only warns about it.
+DEPRECATED_STORAGES: dict[str, str] = {
+    "RedisKVStorage": "PGKVStorage",
+    "RedisDocStatusStorage": "PGDocStatusStorage",
+}
+
 # Storage implementation environment variable without default value
 STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     # KV Storage Implementations
@@ -192,3 +199,19 @@ def verify_storage_implementation(storage_type: str, storage_name: str) -> None:
             f"Storage implementation '{storage_name}' is not compatible with {storage_type}. "
             f"Compatible implementations are: {', '.join(storage_info['implementations'])}"
         )
+
+
+def deprecated_storage_message(storage_name: str) -> str | None:
+    """Return the deprecation notice for a storage backend.
+
+    Returns None when the backend is not deprecated. The core startup warning
+    and the server splash screen both print this text, so the wording lives
+    in one place.
+    """
+    replacement = DEPRECATED_STORAGES.get(storage_name)
+    if replacement is None:
+        return None
+    return (
+        f"{storage_name} is deprecated and will be removed in a future release; "
+        f"migrate to {replacement} (PostgreSQL)."
+    )

@@ -912,6 +912,8 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
+> **已废弃：** `RedisKVStorage` 与 `RedisDocStatusStorage` 已被标记为废弃，将在未来版本中移除。目前仍可正常使用，但启动时会输出警告，Server 启动画面也会标注。请迁移到 `PGKVStorage` / `PGDocStatusStorage`（PostgreSQL）。
+
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL（推荐）、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
 **PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
