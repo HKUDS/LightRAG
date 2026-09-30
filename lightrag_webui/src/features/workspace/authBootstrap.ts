@@ -1,3 +1,4 @@
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import type { AuthStatusResponse } from '@/api/lightrag'
 import { useAuthStore } from '@/stores/state'
 import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
@@ -8,8 +9,8 @@ import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
  *
  * Two cases, in this order:
  *
- * 1. **Authentication is disabled server-side.** Whatever token this browser
- *    still holds is stale by definition — a leftover named-user token stays
+ * 1. **The server is fully open (no accounts or API key).** Any token it
+ *    previously issued is stale by definition — a leftover named-user token stays
  *    LOCALLY valid until its own expiry, so the router admits it and the
  *    welcome page never runs. Keeping it would leave that user's name and
  *    workspace history on a session that is really a guest's, and its
@@ -23,15 +24,17 @@ import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
  *    (an unauthenticated visitor is routed to /welcome, whose explicit
  *    action remains the only way in).
  *
- * 2. **Otherwise**, refresh the stored token's session metadata (versions,
+ * 2. **Accounts are configured**, refresh the stored session metadata (versions,
  *    deployment title/description) in place. The guest flag can only be
  *    turned ON here, never off: a guest token stays a guest token.
+ *
+ * Key-only and unknown modes must not activate or relabel a stored session.
  */
 export function activateSessionFromAuthStatus(
   status: AuthStatusResponse,
   storedToken: string | null
 ): void {
-  if (!status.auth_configured && status.access_token) {
+  if (webuiAuthMode(status) === 'guest' && status.access_token) {
     activateLoginIdentityFromToken(status.access_token)
     useAuthStore
       .getState()
@@ -47,6 +50,7 @@ export function activateSessionFromAuthStatus(
   }
 
   if (
+    webuiAuthMode(status) === 'account' &&
     storedToken &&
     (status.core_version ||
       status.api_version ||

@@ -10,7 +10,8 @@ import {
 import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
 import { decodeBase64Url } from '@/lib/base64url'
-import { useSettingsStore } from '@/stores/settings'
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
+import { applyWebUIAuthStatus } from '@/stores/webuiAuth'
 import { useAuthStore } from '@/stores/state'
 import { applyAiContentNoticeFlag } from '@/stores/aiContentNotice'
 import { navigationService } from '@/services/navigation'
@@ -344,6 +345,7 @@ export type PaginatedDocsResponse = {
 
 export type AuthStatusResponse = {
   auth_configured: boolean
+  api_key_configured?: boolean
   access_token?: string
   token_type?: string
   auth_mode?: 'enabled' | 'disabled'
@@ -408,27 +410,19 @@ const silentRefreshGuestToken = async (): Promise<string> => {
   isRefreshingGuestToken = true;
   refreshTokenPromise = (async () => {
     try {
-      // Call /auth-status to get new guest token
-      const response = await axios.get('/auth-status', {
-        baseURL: backendBaseUrl,
-        // This request must skip the interceptor to avoid adding expired token
-        headers: { 'X-Skip-Interceptor': 'true' }
-      });
-
-      applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
-
-      if (response.data.access_token && !response.data.auth_configured) {
-        const newToken = response.data.access_token;
+      const status = await getAuthStatus();
+      if (status.access_token && webuiAuthMode(status) === 'guest') {
+        const newToken = status.access_token;
         // Update localStorage
         localStorage.setItem('LIGHTRAG-API-TOKEN', newToken);
         // Update auth state
         useAuthStore.getState().login(
           newToken,
           true,
-          response.data.core_version,
-          response.data.api_version,
-          response.data.webui_title || null,
-          response.data.webui_description || null
+          status.core_version,
+          status.api_version,
+          status.webui_title || null,
+          status.webui_description || null
         );
         return newToken;
       } else {
@@ -443,23 +437,22 @@ const silentRefreshGuestToken = async (): Promise<string> => {
   return refreshTokenPromise;
 };
 
-// Interceptor: add api key and check authentication
+// Supported WebUI requests carry only the current user or guest token.
 axiosInstance.interceptors.request.use((config) => {
-  // Skip interceptor for token refresh requests
+  // Never retain credentials from a legacy or retried request config.
+  config.headers.delete('X-API-Key')
+  config.headers.delete('Authorization')
+  // Public discovery and login must not carry a stale session.
   if (config.headers['X-Skip-Interceptor']) {
     delete config.headers['X-Skip-Interceptor'];
     return config;
   }
 
-  const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
 
   // Always include token if it exists, regardless of path
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`
-  }
-  if (apiKey) {
-    config.headers['X-API-Key'] = apiKey
   }
   return config
 })
@@ -535,6 +528,8 @@ axiosInstance.interceptors.response.use(
   },
   async (error: AxiosError) => {
     if (error.response) {
+      // Discovery failures must not recursively refresh or rediscover themselves.
+      if (error.config?.url === '/auth-status') throw error;
       if (error.response?.status === 401) {
         const originalRequest = error.config;
 
@@ -582,6 +577,9 @@ axiosInstance.interceptors.response.use(
         // 5. Non-guest mode: navigate to login page
         navigationService.navigateToUnauthenticated();
         return Promise.reject(new AuthenticationRequiredError());
+      }
+      if (error.response.status === 403) {
+        await rediscoverOnKeyFailure(error.response.data);
       }
       throw toHttpRequestError(
         error.response.status,
@@ -639,15 +637,7 @@ export const checkHealth = async (): Promise<
   }
 }
 
-/**
- * Probe whether the caller's credentials satisfy the API's combined auth.
- * /health CANNOT serve this purpose: it sits on the default whitelist and
- * deliberately answers "healthy" to unauthenticated callers, so it never
- * distinguishes valid, invalid and missing API keys. /auth/verify always
- * runs the combined dependency — a missing or wrong X-API-Key REJECTS with
- * the standard 403 detail ("API Key required" / "Invalid API Key"), which
- * the axios interceptor surfaces in the thrown error's message.
- */
+/** Verify the current bearer on a protected route; /health is whitelisted. */
 export const verifyCredentials = async (): Promise<void> => {
   await axiosInstance.get('/auth/verify')
 }
@@ -779,7 +769,6 @@ async function _readNdjsonStream(
  * Build auth headers for the streaming fetch request.
  */
 function _buildStreamHeaders(): HeadersInit {
-  const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
@@ -787,9 +776,6 @@ function _buildStreamHeaders(): HeadersInit {
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
-  }
-  if (apiKey) {
-    headers['X-API-Key'] = apiKey;
   }
   return headers;
 }
@@ -814,12 +800,8 @@ function _classifyStreamError(
     const statusCode = parseInt(statusCodeMatch[1], 10);
     switch (statusCode) {
       case 403:
-        // A 403 raised by the API-key check must KEEP that detail: the
-        // workspace entry recognizes these messages to re-probe credentials
-        // and reopen its API-key dialog, which is the only way back in after
-        // a key is rotated (and streaming is the default query mode, so
-        // flattening them here disabled that path entirely). Unrelated 403s
-        // keep the generic wording.
+        // Keep useful backend diagnostics; capability rediscovery happens
+        // before classification, never by retrying with another credential.
         if (message.includes(InvalidApiKeyError)) {
           return `${InvalidApiKeyError} (403 Forbidden)`;
         }
@@ -856,6 +838,15 @@ function _classifyStreamError(
   return message;
 }
 
+/** Re-discover deployment capabilities, without retrying the failed request. */
+async function rediscoverOnKeyFailure(data: unknown): Promise<void> {
+  const detail = data && typeof data === 'object' ? (data as { detail?: unknown }).detail : null;
+  if (detail === InvalidApiKeyError || detail === RequireApiKeError) {
+    // The capability response, not a 403 by itself, selects the UI flow.
+    try { await getAuthStatus(); } catch { /* Preserve the original request error. */ }
+  }
+}
+
 /**
  * Format a non-ok streaming ``Response`` into the canonical error string that
  * ``_classifyStreamError`` understands (``"<status> <statusText>\n{...}\n<url>"``)
@@ -868,6 +859,9 @@ async function _throwStreamHttpError(response: Response): Promise<never> {
   let errorBody = 'Unknown error';
   try {
     errorBody = await response.text();
+    if (response.status === 403) {
+      try { await rediscoverOnKeyFailure(JSON.parse(errorBody)); } catch { /* Non-JSON error. */ }
+    }
   } catch {
     /* ignore */
   }
@@ -1071,61 +1065,25 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     const response = await axiosInstance.get('/auth-status', {
       timeout: 5000, // 5 second timeout
       headers: {
-        'Accept': 'application/json' // Explicitly request JSON
+        'Accept': 'application/json',
+        'X-Skip-Interceptor': 'true'
       }
     });
 
-    // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentTypeHeader = response.headers['content-type'];
-    const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
-    if (contentType.includes('text/html')) {
-      console.warn('Received HTML response instead of JSON for auth-status endpoint');
-      return {
-        auth_configured: true,
-        auth_mode: 'enabled'
-      };
+    const data = response.data;
+    if (!data || typeof data !== 'object' || typeof data.auth_configured !== 'boolean') {
+      throw new Error('Invalid authentication discovery response');
     }
-
-    // Deployment display configuration the caller never looks at: adopted here,
-    // once, before the validation below picks one of its several return shapes
-    // (this is the request BOTH entries make at boot, so it is the one place
-    // that covers the admin shell, the login page and the workspace entry).
-    applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
-
-    // Strict validation of the response data
-    if (response.data &&
-        typeof response.data === 'object' &&
-        'auth_configured' in response.data &&
-        typeof response.data.auth_configured === 'boolean') {
-
-      // For unconfigured auth, ensure we have an access token
-      if (!response.data.auth_configured) {
-        if (response.data.access_token && typeof response.data.access_token === 'string') {
-          return response.data;
-        } else {
-          console.warn('Auth not configured but no valid access token provided');
-        }
-      } else {
-        // For configured auth, just return the data
-        return response.data;
-      }
+    if (webuiAuthMode(data) === 'guest' &&
+        (typeof data.access_token !== 'string' || !data.access_token.trim())) {
+      throw new Error('Guest access requires a guest token');
     }
-
-    // If response data is invalid but we got a response, log it
-    console.warn('Received invalid auth status response:', response.data);
-
-    // Default to auth configured if response is invalid
-    return {
-      auth_configured: true,
-      auth_mode: 'enabled'
-    };
+    applyAiContentNoticeFlag(data.ai_content_notice_enabled);
+    applyWebUIAuthStatus(data);
+    return data;
   } catch (error) {
-    // If the request fails, assume authentication is configured
     console.error('Failed to get auth status:', errorMessage(error));
-    return {
-      auth_configured: true,
-      auth_mode: 'enabled'
-    };
+    throw error;
   }
 }
 
@@ -1151,7 +1109,11 @@ export const loginToServer = async (username: string, password: string): Promise
   formData.append('grant_type', 'password');
 
   const response = await axiosInstance.post('/login', formData, {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      // Login establishes a new identity; do not send a stale session token.
+      'X-Skip-Interceptor': 'true'
+    }
   });
 
   applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);

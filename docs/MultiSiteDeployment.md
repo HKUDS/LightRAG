@@ -395,3 +395,27 @@ Confirm the backend is also running with the matching `LIGHTRAG_API_PREFIX`. The
 ### I want to disable the WebUI entirely
 
 Don't build the frontend — `lightrag/api/webui/index.html` will not exist and the server will skip the WebUI mount, redirecting `/` and the WebUI path to `/docs` instead (or, when `ENABLE_API_DOCS=false` also disables the docs, answering them with a small JSON service-info payload whose `health_url` honors the configured prefix). The `/workspace` entry degrades separately: when `workspace.html` is missing (e.g. an older prebuilt bundle), `/webui` stays fully functional while `/workspace` answers with a fixed JSON service-info payload that never redirects to or mentions the API docs; with `LIGHTRAG_DEFAULT_UI=workspace`, `/` follows that same workspace degradation instead of rerouting to `/webui/` or `/docs`. The runtime-config injection is purely opt-in via the existence of the build artifact. The `/docs,/redoc,/openapi.json,/static` entries in the `VITE_API_ENDPOINTS` examples above stay valid with docs disabled — those routes simply return 404 through the proxy.
+
+## WebUI authentication migration
+
+Protected `/webui` and `/workspace` now use **account login only**. Neither entry
+prompts for, stores, or sends an API key, including streaming requests and retries.
+
+For an existing API-key-only site, **keep its API key** for programmatic clients,
+configure `AUTH_ACCOUNTS` and a strong, non-default `TOKEN_SECRET`, restart the
+backend, reload all browser tabs, and sign in. Until accounts are configured,
+both entries show configuration guidance instead of granting guest application
+access. Do not regain access by removing API protection at the backend or proxy.
+Fully open sites (neither accounts nor an effective key) retain their guest-token
+flow; the workspace still requires its explicit welcome-page action.
+
+Deploy matching frontend/backend builds for both entries. Route `/auth-status`
+through the same API prefix as `/login` and query requests: its new non-secret
+`api_key_configured` field distinguishes key-only from fully open sites. Missing
+metadata is not treated as permission for guest access. Known legacy browser
+settings have only their `apiKey` removed; future storage versions are untouched.
+
+Programmatic clients should continue to send one credential per request
+(`X-API-Key` or a bearer token). Backend credential acceptance, whitelist behavior,
+and token renewal are unchanged. See the [API server migration guide](LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access)
+for the complete deployment-mode table.

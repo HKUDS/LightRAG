@@ -270,8 +270,6 @@
         "node": "節點",
         "edge": "邊",
         "degree": "鄰邊",
-        "apiKey": "API key",
-        "enterYourAPIkey": "輸入您的 API key",
         "save": "儲存",
         "refreshLayout": "重新整理版面配置"
       },
@@ -503,12 +501,6 @@
       "maxTotalTokensTooltip": "整個查詢上下文的最大總詞元預算（實體+關係+文檔塊+系統提示）"
     }
   },
-  "apiKeyAlert": {
-    "title": "需要 API key",
-    "description": "請輸入您的 API key 以存取服務",
-    "placeholder": "請輸入 API key",
-    "save": "儲存"
-  },
   "pagination": {
     "showing": "顯示第 {{start}} 到 {{end}} 筆，共 {{total}} 筆記錄",
     "page": "頁",
@@ -533,7 +525,7 @@
     "failedTitle": "本機設定準備失敗",
     "failedBody": "您儲存的設定暫時無法遷移到新的儲存格式。資料未遺失——請重新整理重試。",
     "dataLostTitle": "部分已儲存的設定無法復原",
-    "dataLostBody": "瀏覽器儲存空間已滿，您的部分設定（主題、語言、API 金鑰）未能保留，且已無法復原。繼續將保留尚存的設定，其餘使用預設值。",
+    "dataLostBody": "瀏覽器儲存空間已滿，您的部分設定（主題、語言）未能保留，且已無法復原。繼續將保留尚存的設定，其餘使用預設值。",
     "continueAfterLoss": "繼續",
     "retry": "重新載入",
     "historyDropped": "升級時聊天歷史超出瀏覽器儲存空間，已被捨棄。其餘設定已正常遷移。"

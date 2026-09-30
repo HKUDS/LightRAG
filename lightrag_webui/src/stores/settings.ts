@@ -1,3 +1,4 @@
+import { withoutLegacyApiKey } from '@/migrations/removeLegacyApiKey'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
@@ -19,7 +20,7 @@ type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
 // stores/webuiRetrievalHistory.ts, stores/workspaceRetrievalHistory.ts and
 // migrations/splitSettingsStorage.ts. This store keeps theme/language, graph
 // display preferences and the not-yet-partitioned site-scoped state
-// (apiKey, userPromptHistory, queryLabel, backendMaxGraphNodes, ...).
+// (userPromptHistory, queryLabel, backendMaxGraphNodes, ...).
 interface SettingsState {
   // Document manager settings
   showFileName: boolean
@@ -64,10 +65,6 @@ interface SettingsState {
   // Retrieval settings
   queryLabel: string
   setQueryLabel: (queryLabel: string) => void
-
-  // Auth settings
-  apiKey: string | null
-  setApiKey: (key: string | null) => void
 
   // App settings
   theme: Theme
@@ -125,8 +122,6 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       enableHealthCheck: true,
 
-      apiKey: null,
-
       currentTab: 'documents',
       showFileName: false,
       documentsPageSize: 10,
@@ -174,8 +169,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       setMaxEdgeSize: (size: number) => set({ maxEdgeSize: size }),
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
-
-      setApiKey: (apiKey: string | null) => set({ apiKey }),
 
       setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
 
@@ -235,6 +228,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       // See splitSettingsStorage rule 7: never hydrate on a half-migrated
       // storage state.
       skipHydration: getSettingsMigrationError() != null,
+      // Same-version/old-tab hydration must not resurrect removed credentials.
+      merge: (persisted, current) => ({ ...current, ...withoutLegacyApiKey(persisted as object) }),
+      partialize: (state) => withoutLegacyApiKey(state),
       migrate: (state: any, version: number) => {
         if (version > SETTINGS_STORAGE_VERSION_AFTER_SPLIT) {
           // Belt over the session-only storage guard above (e.g. a newer
@@ -266,7 +262,7 @@ const useSettingsStoreBase = create<SettingsState>()(
               typeof state.language === 'string' && state.language !== 'en'
           }
         }
-        return state
+        return withoutLegacyApiKey(state)
       }
     }
   )

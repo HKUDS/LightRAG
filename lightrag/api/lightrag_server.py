@@ -2733,6 +2733,7 @@ def create_app(args):
             )
             return {
                 "auth_configured": False,
+                "api_key_configured": bool(api_key),
                 "access_token": guest_token,
                 "token_type": "bearer",
                 "auth_mode": "disabled",
@@ -2746,6 +2747,7 @@ def create_app(args):
 
         return {
             "auth_configured": True,
+            "api_key_configured": bool(api_key),
             "auth_mode": "enabled",
             "core_version": core_version,
             "api_version": api_version_display,
