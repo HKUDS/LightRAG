@@ -63,6 +63,7 @@ function is constructed through the same factory the server uses, so rebuilt
 vectors live in exactly the same embedding space.
 """
 
+import argparse
 import asyncio
 import os
 import sys
@@ -94,6 +95,7 @@ from lightrag.config_store import (
     resolve_configuration_storage,
     verify_configuration_identity,
 )
+from lightrag.config_shards import validate_config_workspace
 from lightrag.exceptions import (
     ConfigurationAnchorLockError,
     ConfigurationStorageError,
@@ -770,7 +772,8 @@ async def check_vdb_consistency(
 class RebuildTool:
     """Interactive CLI for the offline VDB rebuild."""
 
-    def __init__(self):
+    def __init__(self, *, workspace: str | None = None):
+        self._workspace_override = workspace
         self.graph = None
         self.entities_vdb = None
         self.relationships_vdb = None
@@ -910,10 +913,15 @@ class RebuildTool:
         from lightrag.kg.factory import get_storage_class
 
         self.storage_names = self.resolve_storage_names()
-        # Normalized exactly as the server normalizes it: the workspace it
-        # registered is the one whose snapshot and membership are checked.
-        self.workspace = normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
+        # Environment defaults follow the server; an explicit override names
+        # an existing SDK workspace exactly, including the empty workspace.
+        self.workspace = (
+            self._workspace_override
+            if self._workspace_override is not None
+            else normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
+        )
         try:
+            validate_config_workspace(self.workspace)
             self.config_dir = self.resolve_config_dir()
         except ValueError as e:
             print(f"\n✗ {e}")
@@ -1678,23 +1686,34 @@ class RebuildTool:
             self.release_anchor_lock()
 
 
-async def async_main() -> bool:
+async def async_main(*, workspace: str | None = None) -> bool:
     """Async main entry point. Returns True on success, False on failure."""
-    tool = RebuildTool()
+    tool = RebuildTool(workspace=workspace)
     return await tool.run()
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Synchronous entry point for CLI command.
 
     Exits non-zero on failure (storage-init failure, unhandled error,
     interruption, or a rebuild that finished with errors) so automation and
     operators do not mistake a partial/failed recovery for a clean one.
     """
+    parser = argparse.ArgumentParser(
+        description="Check or rebuild workspace vector storages."
+    )
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        type=validate_config_workspace,
+        help="Exact workspace name (no character replacement); use an empty string "
+        "for the default workspace. If omitted, WORKSPACE is normalized as by the server.",
+    )
+    args = parser.parse_args(argv)
     # Load environment and configure logging only when run as a tool, never on import.
     load_dotenv(dotenv_path=".env", override=False)
     setup_logger("lightrag", level="INFO")
-    success = asyncio.run(async_main())
+    success = asyncio.run(async_main(workspace=args.workspace))
     if not success:
         raise SystemExit(1)
 

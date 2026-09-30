@@ -1047,13 +1047,13 @@ def test_main_exits_nonzero_on_failure(monkeypatch):
     monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
     monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
 
-    async def _fail():
+    async def _fail(**kwargs):
         return False
 
     monkeypatch.setattr(rebuild_vdb, "async_main", _fail)
 
     with pytest.raises(SystemExit) as excinfo:
-        rebuild_vdb.main()
+        rebuild_vdb.main([])
     assert excinfo.value.code == 1
 
 
@@ -1061,13 +1061,13 @@ def test_main_exits_zero_on_success(monkeypatch):
     monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
     monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
 
-    async def _ok():
+    async def _ok(**kwargs):
         return True
 
     monkeypatch.setattr(rebuild_vdb, "async_main", _ok)
 
     # No SystemExit on success.
-    rebuild_vdb.main()
+    rebuild_vdb.main([])
 
 
 # ---------------------------------------------------------------------------

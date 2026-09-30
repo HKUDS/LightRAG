@@ -182,6 +182,9 @@ workspace's data sit side by side without colliding.
   the workers do. The Gunicorn master gets the **parsed, normalized**
   workspace from `run_with_gunicorn` (`resolved_workspace()`), for the same
   reason it gets the parsed working directory.
+  The rebuild tool follows the server normalization for `WORKSPACE` by default;
+  an explicit `--workspace` instead selects an exact, validated SDK workspace
+  name (including the empty workspace), consistently for every storage and claim.
 
 ### JSON configuration shards
 
