@@ -36,6 +36,7 @@ _RESERVED = frozenset(
 )
 _CHUNKING_CONTEXT_MARKER = "__lightrag_accepts_chunking_context__"
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:\\")
+_URI_DRIVE_PREFIX = re.compile(r"^/[A-Za-z]:")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -76,14 +77,38 @@ def _windows_drive_path_in_netloc(netloc: str, path: str) -> Path | None:
     return Path(head)
 
 
+def _local_uri_path_error(path: str) -> str | None:
+    """Explain why a local ``file://`` URI path names no local directory.
+
+    Checked on the percent-decoded URI path, with backslashes read as
+    separators, so the answer is the same on every platform.
+    """
+    normalized = unquote(path).replace("\\", "/")
+    if not normalized.strip("/"):
+        return "the URI path names no directory"
+    if not normalized.startswith("/"):
+        return "the URI path is relative"
+    if normalized.startswith("//"):
+        return "the URI path names a network (UNC) location"
+    drive = _URI_DRIVE_PREFIX.match(normalized)
+    if drive and normalized[drive.end() :][:1] not in ("", "/"):
+        return "the URI path is relative to a drive"
+    return None
+
+
 def resolve_sidecar_location(location: str | None) -> Path | None:
     """Resolve ``ChunkingContext.sidecar_location`` to a local directory path.
 
     Returns ``None`` when the document has no known sidecar: ``None``, an empty
     string, or the unknown-source sentinel. A local ``file://`` URI returns its
-    ``Path`` without checking that the directory still exists. Any other
-    scheme, a bare path, or a ``file://`` URI naming a remote host raises
-    ``ValueError`` instead of being reinterpreted as a local path.
+    ``Path`` without checking that the directory still exists; a standard
+    drive URI such as ``file:///C:/tmp/report.parsed/`` returns the drive path
+    ``C:/tmp/report.parsed``. Any other scheme, a bare path, or a ``file://``
+    URI naming a remote host raises ``ValueError`` instead of being
+    reinterpreted as a local path -- and so does a local URI whose path is
+    empty, relative, relative to a drive, or a network (UNC) path such as
+    ``file:////server/share/``, since each would silently resolve to some other
+    directory.
 
     One legacy form is accepted as local: a sidecar persisted on Windows
     percent-encodes its separators, so ``C:\\tmp\\report.parsed`` becomes
@@ -115,6 +140,14 @@ def resolve_sidecar_location(location: str | None) -> Path | None:
             f"unsupported sidecar location {location!r}: "
             f"file:// URI names remote host {parts.netloc!r}"
         )
+    error = _local_uri_path_error(parts.path)
+    if error is not None:
+        raise ValueError(f"unsupported sidecar location {location!r}: {error}")
+    decoded = unquote(parts.path)
+    if _URI_DRIVE_PREFIX.match(decoded.replace("\\", "/")):
+        # file:///C:/x: the leading slash only separates authority from path.
+        drive_path = decoded[1:].rstrip("/\\")
+        return Path(drive_path + "/" if drive_path.endswith(":") else drive_path)
     return resolve_sidecar_uri(location)
 
 

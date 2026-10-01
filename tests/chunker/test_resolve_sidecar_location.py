@@ -2,7 +2,7 @@
 
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -70,7 +70,54 @@ def test_resolver_accepts_the_legacy_windows_uri_form(location, expected):
     # Compared against the same literal on every platform: on Linux this is a
     # PosixPath whose single name contains backslashes, which is still the
     # value a Windows deployment resolves.
-    assert resolve_sidecar_location(location) == Path(expected)
+    resolved = resolve_sidecar_location(location)
+    assert resolved == Path(expected)
+    assert PureWindowsPath(str(resolved)).drive == expected[:2]
+
+
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        ("file:///C:/tmp/report.parsed/", "C:/tmp/report.parsed"),
+        (
+            "file://localhost/D:/inputs/in%20put/report.pdf.parsed/",
+            "D:/inputs/in put/report.pdf.parsed",
+        ),
+        ("file:///Z:/", "Z:/"),
+    ],
+)
+def test_resolver_normalizes_the_standard_drive_uri_form(location, expected):
+    # The slash before the drive only separates authority from path; kept, it
+    # turns C:/tmp into a drive-less /C:/tmp on Windows. Checked through
+    # PureWindowsPath so the Windows reading is pinned on every platform.
+    resolved = resolve_sidecar_location(location)
+    assert resolved == Path(expected)
+    windows = PureWindowsPath(str(resolved))
+    assert windows.drive == expected[:2]
+    assert windows.is_absolute()
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        # Empty: would resolve to the current working directory.
+        "file:",
+        "file://",
+        "file:///",
+        # Relative: would resolve against the current working directory.
+        "file:relative/sidecar/",
+        # Drive-relative: C:tmp depends on the drive's current directory.
+        "file:///C:tmp/report.parsed/",
+        # UNC through an empty or localhost authority: a network share, not a
+        # local directory, once Windows reads the leading double separator.
+        "file:////fileserver/share/report.parsed/",
+        "file://localhost//fileserver/share/report.parsed/",
+        "file:///%5C%5Cfileserver/share/report.parsed/",
+    ],
+)
+def test_resolver_rejects_a_local_uri_path_that_names_no_local_directory(location):
+    with pytest.raises(ValueError, match="unsupported sidecar location"):
+        resolve_sidecar_location(location)
 
 
 @pytest.mark.parametrize(
