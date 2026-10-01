@@ -9,12 +9,14 @@ import pipmaster as pm
 if not pm.is_installed("ollama"):
     pm.install("ollama")
 
+import httpx
 import ollama
 
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 from lightrag.exceptions import (
@@ -482,11 +484,41 @@ async def ollama_model_complete(
     )
 
 
+def _is_retryable_ollama_server_error(exc: BaseException) -> bool:
+    """True for an HTTP 5xx ``ollama.ResponseError``.
+
+    The Ollama server itself can fail mid-request -- its llama-server runner
+    subprocess dying under memory pressure from a large embedding batch is
+    the common case -- and reports that as an HTTP 500 whose body is the
+    runner's own error text (e.g. "Post http://127.0.0.1:PORT/embedding:
+    EOF"). ``ollama.AsyncClient`` converts that into
+    ``ollama.ResponseError(body, status_code=500)``, not a raw connection
+    exception, so this has to read the status code rather than rely on
+    exception type alone. A 4xx (bad model name, bad request) is a caller
+    error, not a transient one, and must not be retried.
+    """
+    return isinstance(exc, ollama.ResponseError) and exc.status_code >= 500
+
+
 @wrap_embedding_func_with_attrs(
     embedding_dim=1024,
     max_token_size=8192,
     model_name="bge-m3:latest",
     supports_asymmetric=True,
+)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    # ConnectionError / httpx.TimeoutException: the same connection-level
+    # types retried on the completion path above -- ollama.AsyncClient
+    # catches httpx.ConnectError internally and re-raises it as the builtin
+    # ConnectionError, and leaves httpx timeouts to propagate unwrapped.
+    # ollama.ResponseError(5xx) is the extra case this path needs: see
+    # _is_retryable_ollama_server_error.
+    retry=(
+        retry_if_exception_type((ConnectionError, httpx.TimeoutException))
+        | retry_if_exception(_is_retryable_ollama_server_error)
+    ),
 )
 async def ollama_embed(
     texts: list[str],
