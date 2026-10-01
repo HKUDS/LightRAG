@@ -12,7 +12,9 @@ import logging
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from lightrag.utils import Tokenizer
@@ -33,6 +35,8 @@ _RESERVED = frozenset(
     }
 )
 _CHUNKING_CONTEXT_MARKER = "__lightrag_accepts_chunking_context__"
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:\\")
+_URI_DRIVE_PREFIX = re.compile(r"^/[A-Za-z]:")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -42,6 +46,8 @@ class ChunkingContext:
     The context is intentionally separate from the chunk text and legacy
     sizing arguments.  Chunkers can use it for source-aware policies without
     changing the text that is embedded or requiring a second callback shape.
+    Resolve ``sidecar_location`` with :func:`resolve_sidecar_location`; never
+    cast the URI to a ``Path`` by hand.
     """
 
     doc_id: str
@@ -50,6 +56,117 @@ class ChunkingContext:
     parse_format: str
     parse_engine: str | None
     process_options: str
+
+
+def _windows_drive_path_in_netloc(netloc: str, path: str) -> str | None:
+    """Read a legacy Windows sidecar URI whose whole path landed in ``netloc``.
+
+    Returns ``None`` unless the percent-decoded ``netloc`` is unambiguously an
+    absolute Windows drive path (``C:\\``...) and the URI carries no path of
+    its own. Anything else is a host name, or a mixed shape LightRAG never
+    wrote, and must not be reinterpreted as a local path.
+    """
+    if path not in ("", "/"):
+        return None
+    head = unquote(netloc)
+    if not _WINDOWS_DRIVE_PATH.match(head):
+        return None
+    head = head.rstrip("/\\")
+    return head + "\\" if head.endswith(":") else head  # Keep a bare drive rooted.
+
+
+def _local_uri_path(path: str) -> str:
+    """Turn a validated local ``file://`` URI path into a filesystem path.
+
+    In ``file:///C:/x`` the slash before the drive only separates authority
+    from path, so it is dropped; any other path keeps its leading slash.
+    """
+    decoded = unquote(path)
+    if _URI_DRIVE_PREFIX.match(decoded.replace("\\", "/")):
+        decoded = decoded[1:]
+    stripped = decoded.rstrip("/\\")
+    return stripped + "/" if stripped.endswith(":") else stripped
+
+
+def _local_uri_path_error(path: str) -> str | None:
+    """Explain why a local ``file://`` URI path names no local directory.
+
+    Checked on the percent-decoded URI path, with backslashes read as
+    separators, so the answer is the same on every platform.
+    """
+    normalized = unquote(path).replace("\\", "/")
+    if not normalized.strip("/"):
+        return "the URI path names no directory"
+    if not normalized.startswith("/"):
+        return "the URI path is relative"
+    if normalized.startswith("//"):
+        return "the URI path names a network (UNC) location"
+    drive = _URI_DRIVE_PREFIX.match(normalized)
+    if drive and normalized[drive.end() :][:1] not in ("", "/"):
+        return "the URI path is relative to a drive"
+    return None
+
+
+def resolve_sidecar_location(location: str | None) -> Path | None:
+    """Resolve ``ChunkingContext.sidecar_location`` to a local directory path.
+
+    Returns ``None`` when the document has no known sidecar: ``None``, an empty
+    string, or the unknown-source sentinel. A local ``file://`` URI returns its
+    ``Path`` without checking that the directory still exists; a standard
+    drive URI such as ``file:///C:/tmp/report.parsed/`` returns the drive path
+    ``C:/tmp/report.parsed``. Any other scheme, a bare path, or a ``file://``
+    URI naming a remote host raises ``ValueError`` instead of being
+    reinterpreted as a local path -- and so does a local URI whose path is
+    empty, relative, relative to a drive, or a network (UNC) path such as
+    ``file:////server/share/``, since each would silently resolve to some other
+    directory.
+
+    The returned path is always absolute on the platform running LightRAG. A
+    location that is absolute only on another one raises ``ValueError``: a
+    drive path read on POSIX is relative there, and a POSIX path read on
+    Windows would take its drive from the current directory.
+
+    One legacy form is accepted as local: a sidecar persisted on Windows
+    percent-encodes its separators, so ``C:\\tmp\\report.parsed`` becomes
+    ``file://C%3A%5Ctmp%5Creport.parsed/`` and the whole path parses as the
+    host. Such documents already exist, so on Windows the URI resolves rather
+    than being rejected as remote. The exception is narrow on purpose: it
+    applies only when the decoded host starts with a drive letter, a colon and
+    a backslash, and the URI carries no path of its own. A decoded host with
+    any other shape -- a forward slash, a longer prefix before the colon -- is
+    a host name and still raises, and so does a mixed
+    ``file://C%3A%5Ctmp/sub/``, which is not a form LightRAG persists.
+    """
+    # Deferred: the pipeline helpers are heavy, and this module must stay cheap.
+    from lightrag.utils_pipeline import SIDECAR_LOCATION_UNKNOWN
+
+    if not location or location == SIDECAR_LOCATION_UNKNOWN:
+        return None
+    parts = urlsplit(location)
+    if parts.scheme != "file":
+        raise ValueError(
+            f"unsupported sidecar location {location!r}: "
+            "only local file:// URIs can be resolved"
+        )
+    if parts.netloc not in ("", "localhost"):
+        candidate = _windows_drive_path_in_netloc(parts.netloc, parts.path)
+        if candidate is None:
+            raise ValueError(
+                f"unsupported sidecar location {location!r}: "
+                f"file:// URI names remote host {parts.netloc!r}"
+            )
+    else:
+        error = _local_uri_path_error(parts.path)
+        if error is not None:
+            raise ValueError(f"unsupported sidecar location {location!r}: {error}")
+        candidate = _local_uri_path(parts.path)
+    resolved = Path(candidate)
+    if not resolved.is_absolute():
+        raise ValueError(
+            f"unsupported sidecar location {location!r}: it is not an absolute "
+            "local path on this platform"
+        )
+    return resolved
 
 
 def accepts_chunking_context(callback: Callable[..., Any]) -> Callable[..., Any]:

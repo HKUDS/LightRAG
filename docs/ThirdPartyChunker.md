@@ -70,15 +70,43 @@ def chunk(tokenizer, content, split_by_character, split_by_character_only,
     ...
 ```
 
-`sidecar_location` is the durable URI for the parser sidecar directory. When a
-local path is needed, resolve it with `resolve_sidecar_uri` from
-`lightrag.utils_pipeline`; do not cast arbitrary URI schemes directly to
-`pathlib.Path`.
+`sidecar_location` is the durable URI for the parser sidecar directory, or
+`None` when the document has none: an absent, empty or `unknown_source`
+location arrives as `None`, and any other value, a non-local scheme such as
+`s3://` included, is passed through verbatim. Resolve it with
+`resolve_sidecar_location` rather than casting the URI to `pathlib.Path`:
+
+```python
+from lightrag.chunker import resolve_sidecar_location
+
+sidecar_dir = resolve_sidecar_location(context.sidecar_location)
+```
+
+It returns `None` when there is no known sidecar, and a `Path` for a local
+`file://` URI without checking that the directory still exists. The returned
+path is always absolute on the platform running LightRAG. On Windows both drive
+forms resolve to the drive path: the standard `file:///C:/...` and the
+percent-encoded form LightRAG writes there (`file://C%3A%5C...`). Any other
+scheme, a bare path, or a `file://` URI naming a remote host raises
+`ValueError` instead of being reinterpreted as a local path, and so does a
+local URI whose path is empty, relative, relative to a drive (`C:tmp`), or a
+network (UNC) path such as `file:////server/share/` — each would otherwise
+resolve to some other directory. A location that is absolute only on another
+platform raises too: a drive path read on Linux would be relative there, and a
+POSIX path read on Windows would take its drive from the current directory. A chunker must cope with `None` — raw inserts have no
+sidecar — and decides for itself whether a location it cannot resolve is fatal.
+
+Two more fields need care. `parse_engine` is the persisted value verbatim, or
+`None`; an engine configured with parameters carries them, for example
+`mineru(lang=en)`, so treat it as opaque rather than comparing it with `==`
+against a bare engine name. `file_path` is the logical display/citation name,
+and is the literal `unknown_source` when LightRAG has no usable name.
 
 For an entry-point plugin, set `accepts_context=True` on `ChunkerSpec` and
 accept the same keyword-only `context` argument. The six legacy arguments and
 the context are passed exactly once; the context is immutable for the duration
-of the call.
+of the call. Built-in F/R/V/P chunkers and the `C` fallback to fixed-token
+never receive a context, because no custom code runs there.
 
 ## Select in the Server
 
