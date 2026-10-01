@@ -598,7 +598,14 @@ async def test_hf_embed_runs_forward_pass_off_the_event_loop_thread(hf_module):
             return self
 
     class _FakeTokenizer:
-        def __call__(self, texts, return_tensors="pt", padding=True, truncation=True):
+        def __call__(
+            self,
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=None,
+        ):
             return _FakeTokenizerOutput(
                 {"input_ids": _FakeHidden(), "attention_mask": _FakeHidden()}
             )
@@ -668,7 +675,14 @@ async def test_hf_embed_runs_cpu_conversion_off_the_event_loop_thread(hf_module)
             return self
 
     class _FakeTokenizer:
-        def __call__(self, texts, return_tensors="pt", padding=True, truncation=True):
+        def __call__(
+            self,
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=None,
+        ):
             return _FakeTokenizerOutput(
                 {"input_ids": _FakeHidden(), "attention_mask": _FakeHidden()}
             )
@@ -735,7 +749,14 @@ async def test_hf_embed_logs_and_repropagates_cancellation(hf_module, monkeypatc
             return self
 
     class _FakeTokenizer:
-        def __call__(self, texts, return_tensors="pt", padding=True, truncation=True):
+        def __call__(
+            self,
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=None,
+        ):
             return _FakeTokenizerOutput(
                 {"input_ids": _FakeHidden(), "attention_mask": _FakeHidden()}
             )
