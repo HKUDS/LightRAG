@@ -520,13 +520,37 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
                     return tail.end(), line[source_start:source_end]
         return None
 
+    # Index matching backtick runs once. Searching the suffix again for every
+    # unmatched run would make malformed literal examples quadratic.
+    candidates = list(re.finditer(r"`+|!\[", line))
+    next_run: dict[int, int] = {}
+    code_ends: dict[int, int] = {}
+    for candidate in reversed(candidates):
+        if candidate.group().startswith("`"):
+            length = candidate.end() - candidate.start()
+            if length in next_run:
+                code_ends[candidate.start()] = next_run[length]
+            next_run[length] = candidate.end()
+
     parts: list[str] = []
     position = 0
-    while True:
-        start = line.find("![", position)
-        if start < 0:
-            parts.append(line[position:])
-            return "".join(parts)
+    for candidate in candidates:
+        start = candidate.start()
+        if start < position:
+            continue
+        backslash_start = start
+        while backslash_start > 0 and line[backslash_start - 1] == "\\":
+            backslash_start -= 1
+        if (start - backslash_start) % 2:
+            # An odd number of backslashes escapes this prefix, so it stays
+            # literal text rather than an image.
+            continue
+        if candidate.group().startswith("`"):
+            end = code_ends.get(start)
+            if end is not None:
+                parts.append(line[position:end])
+                position = end
+            continue
         matched = _match_end(start) or _lenient_match_end(start)
         if matched is None:
             # No match begins at this prefix.  Advance only past ``![`` so a
@@ -538,6 +562,8 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         parts.append(line[position:start])
         parts.append(replace(src))
         position = end
+    parts.append(line[position:])
+    return "".join(parts)
 
 
 def extract_markdown(
