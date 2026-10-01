@@ -12,7 +12,9 @@ import logging
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from lightrag.utils import Tokenizer
@@ -33,6 +35,7 @@ _RESERVED = frozenset(
     }
 )
 _CHUNKING_CONTEXT_MARKER = "__lightrag_accepts_chunking_context__"
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:\\")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -42,6 +45,8 @@ class ChunkingContext:
     The context is intentionally separate from the chunk text and legacy
     sizing arguments.  Chunkers can use it for source-aware policies without
     changing the text that is embedded or requiring a second callback shape.
+    Resolve ``sidecar_location`` with :func:`resolve_sidecar_location`; never
+    cast the URI to a ``Path`` by hand.
     """
 
     doc_id: str
@@ -50,6 +55,67 @@ class ChunkingContext:
     parse_format: str
     parse_engine: str | None
     process_options: str
+
+
+def _windows_drive_path_in_netloc(netloc: str, path: str) -> Path | None:
+    """Read a legacy Windows sidecar URI whose whole path landed in ``netloc``.
+
+    Returns ``None`` unless the percent-decoded ``netloc`` is unambiguously an
+    absolute Windows drive path (``C:\\``...) and the URI carries no path of
+    its own. Anything else is a host name, or a mixed shape LightRAG never
+    wrote, and must not be reinterpreted as a local path.
+    """
+    if path not in ("", "/"):
+        return None
+    head = unquote(netloc)
+    if not _WINDOWS_DRIVE_PATH.match(head):
+        return None
+    head = head.rstrip("/\\")
+    if head.endswith(":"):
+        return Path(head + "\\")  # Bare drive root; keep it rooted.
+    return Path(head)
+
+
+def resolve_sidecar_location(location: str | None) -> Path | None:
+    """Resolve ``ChunkingContext.sidecar_location`` to a local directory path.
+
+    Returns ``None`` when the document has no known sidecar: ``None``, an empty
+    string, or the unknown-source sentinel. A local ``file://`` URI returns its
+    ``Path`` without checking that the directory still exists. Any other
+    scheme, a bare path, or a ``file://`` URI naming a remote host raises
+    ``ValueError`` instead of being reinterpreted as a local path.
+
+    One legacy form is accepted as local: a sidecar persisted on Windows
+    percent-encodes its separators, so ``C:\\tmp\\report.parsed`` becomes
+    ``file://C%3A%5Ctmp%5Creport.parsed/`` and the whole path parses as the
+    host. Such documents already exist, so the URI resolves rather than being
+    rejected as remote. The exception is narrow on purpose: it applies only
+    when the decoded host starts with a drive letter, a colon and a backslash,
+    and the URI carries no path of its own. A decoded host with any other shape
+    -- a forward slash, a longer prefix before the colon -- is a host name and
+    still raises, and so does a mixed ``file://C%3A%5Ctmp/sub/``, which is not
+    a form LightRAG persists.
+    """
+    # Deferred: the pipeline helpers are heavy, and this module must stay cheap.
+    from lightrag.utils_pipeline import SIDECAR_LOCATION_UNKNOWN, resolve_sidecar_uri
+
+    if not location or location == SIDECAR_LOCATION_UNKNOWN:
+        return None
+    parts = urlsplit(location)
+    if parts.scheme != "file":
+        raise ValueError(
+            f"unsupported sidecar location {location!r}: "
+            "only local file:// URIs can be resolved"
+        )
+    if parts.netloc not in ("", "localhost"):
+        legacy_windows = _windows_drive_path_in_netloc(parts.netloc, parts.path)
+        if legacy_windows is not None:
+            return legacy_windows
+        raise ValueError(
+            f"unsupported sidecar location {location!r}: "
+            f"file:// URI names remote host {parts.netloc!r}"
+        )
+    return resolve_sidecar_uri(location)
 
 
 def accepts_chunking_context(callback: Callable[..., Any]) -> Callable[..., Any]:
