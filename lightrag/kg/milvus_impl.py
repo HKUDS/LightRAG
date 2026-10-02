@@ -2375,23 +2375,42 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error in _create_collection_if_not_exist for {self.namespace}: {e}"
             )
 
-            # If there's any error (other than validation failure), try to force create the collection
+            # If there's any error (other than validation failure), create the
+            # collection only if it is missing and would hide nothing.
+            # Never drop an existing collection here: an unclassified error
+            # (a load the cluster refuses, a transient "server is busy") says
+            # nothing about corruption, and dropping would destroy its
+            # vectors. Nor create one that would hide data: an empty target
+            # permanently shadows an unmigrated legacy collection or an
+            # interrupted migration's _old/_temp. Only create when none of
+            # them exists; if existence cannot be established, fail closed.
+            if self._client.has_collection(self.final_namespace):
+                raise RuntimeError(
+                    f"Collection '{self.final_namespace}' exists but could not be "
+                    f"initialized; refusing to drop and recreate it. Original error: {e}"
+                ) from e
+            shadowed = [
+                name
+                for name in (
+                    self.legacy_namespace
+                    if self.legacy_namespace != self.final_namespace
+                    else None,
+                    f"{self.final_namespace}_old",
+                    f"{self.final_namespace}_temp",
+                )
+                if name and self._client.has_collection(name)
+            ]
+            if shadowed:
+                raise RuntimeError(
+                    f"Collection '{self.final_namespace}' could not be initialized; "
+                    f"refusing to create it over existing data in {shadowed}. "
+                    f"Original error: {e}"
+                ) from e
+
             logger.info(
                 f"[{self.workspace}] Attempting to force create collection {self.namespace}..."
             )
             try:
-                # Try to drop the collection first if it exists in a bad state
-                try:
-                    if self._client.has_collection(self.final_namespace):
-                        logger.info(
-                            f"[{self.workspace}] Dropping potentially corrupted collection {self.namespace}"
-                        )
-                        self._client.drop_collection(self.final_namespace)
-                except Exception as drop_error:
-                    logger.warning(
-                        f"[{self.workspace}] Could not drop collection {self.namespace}: {drop_error}"
-                    )
-
                 # Create fresh collection
                 self._create_collection_with_schema(self.final_namespace)
 
