@@ -195,7 +195,9 @@ def create_openai_async_client(
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url). Pass ``max_retries`` here to
-            re-enable the SDK's own retry loop (see below).
+            re-enable the SDK's own retry loop (see below). For non-Azure clients,
+            ``default_headers`` are merged with LightRAG's defaults, with caller
+            values taking precedence.
 
     Returns:
         An AsyncOpenAI or AsyncAzureOpenAI client instance.
@@ -259,6 +261,8 @@ def create_openai_async_client(
 
         if client_configs is None:
             client_configs = {}
+
+        default_headers.update(client_configs.get("default_headers") or {})
 
         # Create a merged config dict with precedence: explicit params > client_configs > defaults
         merged_configs = {
