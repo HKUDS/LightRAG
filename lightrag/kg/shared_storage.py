@@ -1128,8 +1128,11 @@ class _KeyedLockContext:
         self._namespace = namespace
 
         # The sorting is critical to ensure proper lock and release order
-        # to avoid deadlocks
-        self._keys = sorted(keys)
+        # to avoid deadlocks. Duplicates are dropped because each key's lock
+        # is not reentrant: a repeated key (e.g. ``sorted([src, tgt])`` for a
+        # self-loop edge) would wait forever on the lock this context already
+        # holds.
+        self._keys = sorted(set(keys))
         self._enable_logging = (
             enable_logging
             if enable_logging is not None
