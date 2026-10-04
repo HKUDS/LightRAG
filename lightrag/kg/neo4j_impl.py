@@ -1687,6 +1687,13 @@ class Neo4JStorage(BaseGraphStorage):
                                 f"[{self.workspace}] Skipping edge {edge_id} due to missing entity_id on target node"
                             )
 
+        # A discovered neighbor may be queued but excluded by the node cap.
+        # Return only edges whose endpoints survived the bounded traversal.
+        result.edges = [
+            edge
+            for edge in result.edges
+            if edge.source in visited_nodes and edge.target in visited_nodes
+        ]
         logger.info(
             f"[{self.workspace}] BFS subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
         )

@@ -120,6 +120,10 @@ async def test_robust_fallback_reports_truncated_over_cap():
 
     assert result.is_truncated is True
     assert len(result.nodes) <= 3
+    kept_ids = {node.id for node in result.nodes}
+    assert all(
+        edge.source in kept_ids and edge.target in kept_ids for edge in result.edges
+    )
 
 
 @pytest.mark.asyncio
