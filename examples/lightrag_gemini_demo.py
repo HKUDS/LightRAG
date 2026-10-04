@@ -64,9 +64,14 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
     max_token_size=2048,
     model_name="models/text-embedding-004",
 )
-async def embedding_func(texts: list[str]) -> np.ndarray:
+async def embedding_func(
+    texts: list[str], embedding_dim: int | None = None
+) -> np.ndarray:
     return await gemini_embed.func(
-        texts, api_key=GEMINI_API_KEY, model="models/text-embedding-004"
+        texts,
+        api_key=GEMINI_API_KEY,
+        model="models/text-embedding-004",
+        embedding_dim=embedding_dim,
     )
 
 
