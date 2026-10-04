@@ -6973,6 +6973,7 @@ class _PipelineMixin:
         # metadata, not just the server log. Created BEFORE the try so the
         # every-exit hand-off in its finally can always read it.
         mm_truncation_tally = TokenLimitTruncationTally()
+        task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()
             if not lines:
@@ -7788,7 +7789,7 @@ class _PipelineMixin:
                         pipeline_status, pipeline_status_lock
                     )
 
-                task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
+                task_meta = {}
                 for item_id, item in items.items():
                     if not isinstance(item, dict):
                         continue
@@ -7937,6 +7938,13 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         finally:
+            # External cancellation can interrupt the polling loop before its
+            # fail-fast drain. Finish these children before recovery starts.
+            if any(not task.done() for task in task_meta):
+                for task in task_meta:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*task_meta, return_exceptions=True)
             # Analyze→process hand-off of the truncation record, on EVERY
             # exit — not just success. Ride the hand-off dict rather than
             # doc_status: LLM_TRUNCATION_METADATA_KEY is per-attempt (not
