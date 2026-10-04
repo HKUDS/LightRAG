@@ -1,499 +1,147 @@
-"""Offline tests for retrying transient Zhipu API errors and preserving exception types.
-
-The ZhipuAI SDK raises its own exception types (such as RateLimitError,
-APIReachLimitError, APIConnectionError, APITimeoutError, InternalServerError,
-and APIInternalError). The retry predicates and handlers must match those native
-SDK exceptions, fail fast on permanent spend stops (account in arrears, quota
-exhaustion, plan expiration), re-raise the underlying causes instead of wrapping
-them in tenacity.RetryError, and allow embedding exceptions to propagate with
-their native types intact.
-"""
+"""Exercise retry ownership through the real SDK and an offline HTTP transport."""
 
 import importlib
+import json
 import sys
-from types import SimpleNamespace
 
-import numpy as np
+import httpx
 import pytest
 from tenacity import wait_none
 
-pytestmark = pytest.mark.offline
+import lightrag.llm
+
+sdk = pytest.importorskip("zhipuai")
+pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
 
-class FakeZhipuAIError(Exception):
-    """Base error for ZhipuAI SDK."""
+@pytest.fixture(params=["chat", "embedding"])
+def call_sdk(request, monkeypatch):
+    # Import afresh: other provider tests replace modules with test doubles.
+    monkeypatch.setattr(lightrag.llm, "zhipu", None, raising=False)
+    monkeypatch.setitem(sys.modules, "lightrag.llm.zhipu", None)
+    monkeypatch.delitem(sys.modules, "lightrag.llm.zhipu")
+    module = importlib.import_module("lightrag.llm.zhipu")
+    monkeypatch.setattr(module.zhipu_complete_if_cache.retry, "wait", wait_none())
+    monkeypatch.setattr(module.zhipu_embedding.func.retry, "wait", wait_none())
+    # Keep SDK retries active so accidentally re-enabling them changes counts.
+    from zhipuai.core import _http_client
 
-
-class FakeAPIError(FakeZhipuAIError):
-    """API error for ZhipuAI SDK."""
-
-
-class FakeAPIStatusError(FakeAPIError):
-    """Status error with HTTP status code."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        status_code: int | None = None,
-        body: dict | None = None,
-        code: str | None = None,
-    ):
-        super().__init__(message)
-        self.status_code = status_code
-        self.body = body
-        self.code = code
-
-
-class FakeRateLimitError(FakeAPIStatusError):
-    """429 Rate limit error."""
-
-    def __init__(
-        self,
-        message: str = "Rate limit exceeded",
-        *,
-        body: dict | None = None,
-        code: str | None = None,
-    ):
-        super().__init__(message, status_code=429, body=body, code=code)
-
-
-class FakeAPIReachLimitError(FakeAPIStatusError):
-    """Alternative rate limit error class in some SDK versions."""
-
-    def __init__(
-        self,
-        message: str = "Rate limit reached",
-        *,
-        body: dict | None = None,
-        code: str | None = None,
-    ):
-        super().__init__(message, status_code=429, body=body, code=code)
-
-
-class FakeAPIConnectionError(FakeAPIError):
-    """Network connection error."""
-
-    def __init__(self, message: str = "Connection error"):
-        super().__init__(message)
-
-
-class FakeAPITimeoutError(FakeAPIConnectionError):
-    """Request timeout error."""
-
-    def __init__(self, message: str = "Request timed out"):
-        super().__init__(message)
-
-
-class FakeInternalServerError(FakeAPIStatusError):
-    """5xx Server error."""
-
-    def __init__(self, message: str = "Internal server error"):
-        super().__init__(message, status_code=500)
-
-
-class FakeAPIInternalError(FakeAPIStatusError):
-    """Alternative 5xx server error class in some SDK versions."""
-
-    def __init__(self, message: str = "Internal error"):
-        super().__init__(message, status_code=500)
-
-
-class FakeAuthenticationError(FakeAPIStatusError):
-    """401 Authentication error."""
-
-    def __init__(self, message: str = "Invalid API key"):
-        super().__init__(message, status_code=401)
-
-
-def _fake_chat_response(content="ok"):
-    message = SimpleNamespace(content=content, reasoning_content="")
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=message, finish_reason="stop")],
-        usage=None,
-    )
-
-
-def _fake_embedding_vector(dim=1024):
-    return [0.1] * dim
-
-
-def _load_zhipu_module_with_exceptions(monkeypatch, client_factory):
-    fake_pm = SimpleNamespace(
-        is_installed=lambda name: True,
-        install=lambda name: None,
-    )
-    fake_zhipuai = SimpleNamespace(
-        ZhipuAI=client_factory,
-        ZhipuAIError=FakeZhipuAIError,
-        APIError=FakeAPIError,
-        APIStatusError=FakeAPIStatusError,
-        RateLimitError=FakeRateLimitError,
-        APIReachLimitError=FakeAPIReachLimitError,
-        APIConnectionError=FakeAPIConnectionError,
-        APITimeoutError=FakeAPITimeoutError,
-        InternalServerError=FakeInternalServerError,
-        APIInternalError=FakeAPIInternalError,
-        AuthenticationError=FakeAuthenticationError,
-    )
-
-    monkeypatch.setitem(sys.modules, "pipmaster", fake_pm)
-    monkeypatch.setitem(sys.modules, "zhipuai", fake_zhipuai)
-    sys.modules.pop("lightrag.llm.zhipu", None)
-
-    return importlib.import_module("lightrag.llm.zhipu")
-
-
-def _make_flaky_chat_client(*, failures: int, exc_factory):
-    calls = {"count": 0}
-
-    def create(**kwargs):
-        calls["count"] += 1
-        if calls["count"] <= failures:
-            raise exc_factory()
-        return _fake_chat_response(content="chat-ok")
-
-    class FakeClient:
-        def __init__(self, api_key=None):
-            self.api_key = api_key
-            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
-
-    return FakeClient, calls
-
-
-def _make_flaky_embedding_client(*, failures: int, exc_factory):
-    calls = {"count": 0}
-
-    def create(**kwargs):
-        calls["count"] += 1
-        if calls["count"] <= failures:
-            raise exc_factory()
-        return SimpleNamespace(
-            data=[SimpleNamespace(embedding=_fake_embedding_vector())]
+    if hasattr(_http_client.HttpClient, "_calculate_retry_timeout"):
+        monkeypatch.setattr(
+            _http_client.HttpClient, "_calculate_retry_timeout", lambda *a: 0
         )
+    client_type = sdk.ZhipuAI
+    clients = []
+    requests = []
+    responses = []
 
-    class FakeClient:
-        def __init__(self, api_key=None):
-            self.api_key = api_key
-            self.embeddings = SimpleNamespace(create=create)
+    async def invoke(outcomes, texts=None):
+        def respond(http_request):
+            requests.append(json.loads(http_request.content))
+            outcome = outcomes[min(len(requests) - 1, len(outcomes) - 1)]
+            if isinstance(outcome, Exception):
+                raise outcome
+            if outcome == 200:
+                body = {
+                    "id": "test-response",
+                    "created": 1,
+                    "model": "test-model",
+                    "object": "chat.completion" if request.param == "chat" else "list",
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+                if request.param == "chat":
+                    body["choices"] = [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                else:
+                    body["data"] = [
+                        {"object": "embedding", "embedding": [0.1] * 1024, "index": 0}
+                    ]
+                response = httpx.Response(200, json=body)
+            else:
+                status, body = outcome
+                response = httpx.Response(status, json=body)
+            responses.append(response)
+            return response
 
-    return FakeClient, calls
+        def factory(**kwargs):
+            transport = httpx.Client(transport=httpx.MockTransport(respond))
+            clients.append(transport)
+            return client_type(http_client=transport, **kwargs)
+
+        monkeypatch.setattr(sdk, "ZhipuAI", factory)
+        if request.param == "chat":
+            return await module.zhipu_complete_if_cache("hello", api_key="test.secret")
+        return await module.zhipu_embedding(texts or ["hello"], api_key="test.secret")
+
+    yield invoke, requests, responses
+    for client in clients:
+        client.close()
 
 
-@pytest.mark.asyncio
-async def test_zhipu_complete_retries_transient_rate_limit_error(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=2,
-        exc_factory=lambda: FakeRateLimitError(
-            "429 Too Many Requests",
-            body={"error": {"code": "1302", "message": "Rate limit exceeded"}},
-        ),
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 503])
+async def test_transient_status_retries_then_succeeds(call_sdk, status):
+    invoke, requests, _ = call_sdk
+    # Digits in a message are not an account error code.
+    result = await invoke(
+        [(status, {"error": {"code": "1302", "message": "id 1113"}}), 200]
     )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    result = await zhipu_module.zhipu_complete_if_cache(
-        prompt="hello", api_key="test-key"
-    )
-
-    assert result == "chat-ok"
-    assert calls["count"] == 3
+    assert len(requests) == 2
+    assert result == "ok" if isinstance(result, str) else result.shape == (1, 1024)
 
 
-@pytest.mark.asyncio
-async def test_zhipu_complete_retries_transient_connection_error(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1, exc_factory=lambda: FakeAPIConnectionError("connect failed")
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    result = await zhipu_module.zhipu_complete_if_cache(
-        prompt="hello", api_key="test-key"
-    )
-
-    assert result == "chat-ok"
-    assert calls["count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_retries_transient_timeout_error(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1, exc_factory=lambda: FakeAPITimeoutError("request timed out")
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    result = await zhipu_module.zhipu_complete_if_cache(
-        prompt="hello", api_key="test-key"
-    )
-
-    assert result == "chat-ok"
-    assert calls["count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_retries_api_reach_limit_and_api_internal_error(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "status,code,error_name,attempts",
+    [
+        (400, "1210", "APIRequestFailedError", 1),
+        (401, "1000", "APIAuthenticationError", 1),
+        (429, "1113", "APIReachLimitError", 1),
+        (429, "1309", "APIReachLimitError", 1),
+        (429, "1308", "APIReachLimitError", 3),
+        (429, "1310", "APIReachLimitError", 3),
+        (429, "1302", "APIReachLimitError", 3),
+        (500, "1200", "APIInternalError", 3),
+        (503, "", "APIServerFlowExceedError", 3),
+    ],
+)
+async def test_failure_preserves_native_error_and_exact_attempts(
+    call_sdk, status, code, error_name, attempts
 ):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1, exc_factory=lambda: FakeAPIReachLimitError("reach limit")
+    invoke, requests, responses = call_sdk
+    with pytest.raises(getattr(sdk, error_name)) as caught:
+        await invoke([(status, {"error": {"code": code}})])
+    assert len(requests) == attempts
+    assert caught.value.response is responses[-1]
+    assert caught.value.response.json()["error"]["code"] == code
+
+
+@pytest.mark.parametrize("transport_error", [httpx.ReadTimeout, httpx.ConnectError])
+async def test_transport_failure_has_three_attempts(call_sdk, transport_error):
+    invoke, requests, _ = call_sdk
+    original = transport_error("offline transport failure")
+    expected = (
+        sdk.APITimeoutError
+        if transport_error is httpx.ReadTimeout
+        else getattr(sdk, "APIConnectionError", httpx.ConnectError)
     )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    result = await zhipu_module.zhipu_complete_if_cache(
-        prompt="hello", api_key="test-key"
-    )
-    assert result == "chat-ok"
-    assert calls["count"] == 2
-
-    client_cls2, calls2 = _make_flaky_chat_client(
-        failures=1, exc_factory=lambda: FakeAPIInternalError("internal error")
-    )
-    zhipu_module2 = _load_zhipu_module_with_exceptions(monkeypatch, client_cls2)
-    zhipu_module2.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    result2 = await zhipu_module2.zhipu_complete_if_cache(
-        prompt="hello", api_key="test-key"
-    )
-    assert result2 == "chat-ok"
-    assert calls2["count"] == 2
+    with pytest.raises(expected) as caught:
+        await invoke([original])
+    assert len(requests) == 3
+    assert caught.value is original or caught.value.__cause__ is original
 
 
-@pytest.mark.asyncio
-async def test_zhipu_complete_fails_fast_on_arrears_code_1113(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1,
-        exc_factory=lambda: FakeRateLimitError(
-            'Error code: 429, with error text {"error":{"code":"1113","message":"您的账户已欠费，请充值后重试。"}}',
-            body={
-                "error": {"code": "1113", "message": "您的账户已欠费，请充值后重试。"}
-            },
-            code="1113",
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    with pytest.raises(FakeRateLimitError) as exc_info:
-        await zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
-
-    assert calls["count"] == 1
-    assert "您的账户已欠费" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_fails_fast_on_quota_limits_code_1308_and_1310(
-    monkeypatch,
-):
-    for code, desc in [("1308", "达到时间段使用上限"), ("1310", "达到周期使用上限")]:
-        client_cls, calls = _make_flaky_chat_client(
-            failures=1,
-            exc_factory=lambda c=code, d=desc: FakeRateLimitError(
-                f"Rate limit: {d}",
-                body={"error": {"code": c, "message": d}},
-                code=c,
-            ),
-        )
-        zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-        zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-        with pytest.raises(FakeRateLimitError):
-            await zhipu_module.zhipu_complete_if_cache(
-                prompt="hello", api_key="test-key"
-            )
-
-        assert calls["count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_fails_fast_on_plan_expired_code_1309(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1,
-        exc_factory=lambda: FakeRateLimitError(
-            "Rate limit: 套餐已到期",
-            body={"error": {"code": "1309", "message": "套餐已到期"}},
-            code="1309",
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    with pytest.raises(FakeRateLimitError):
-        await zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
-
-    assert calls["count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_fails_fast_on_proxy_insufficient_quota(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1,
-        exc_factory=lambda: FakeRateLimitError(
-            "insufficient quota",
-            body={"error": {"type": "insufficient_quota", "message": "quota exceeded"}},
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    with pytest.raises(FakeRateLimitError):
-        await zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
-
-    assert calls["count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_exhausted_retries_reraises_original_error(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=10,
-        exc_factory=lambda: FakeRateLimitError(
-            "rate limited",
-            body={"error": {"code": "1302", "message": "rate limited"}},
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    with pytest.raises(FakeRateLimitError) as exc_info:
-        await zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
-
-    assert calls["count"] == 3
-    assert "rate limited" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_zhipu_complete_fails_fast_on_non_transient_error(monkeypatch):
-    client_cls, calls = _make_flaky_chat_client(
-        failures=1, exc_factory=lambda: FakeAuthenticationError("invalid api key")
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_complete_if_cache.retry.wait = wait_none()
-
-    with pytest.raises(FakeAuthenticationError):
-        await zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
-
-    assert calls["count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_retries_transient_connection_error(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(
-        failures=1, exc_factory=lambda: FakeAPIConnectionError("connect dropped")
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_embedding.func.retry.wait = wait_none()
-
-    result = await zhipu_module.zhipu_embedding(["text"], api_key="test-key")
-
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (1, 1024)
-    assert calls["count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_retries_transient_rate_limit_error(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(
-        failures=2,
-        exc_factory=lambda: FakeRateLimitError(
-            "429 Too Many Requests",
-            body={"error": {"code": "1302", "message": "Too many requests"}},
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_embedding.func.retry.wait = wait_none()
-
-    result = await zhipu_module.zhipu_embedding(["text"], api_key="test-key")
-
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (1, 1024)
-    assert calls["count"] == 3
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_fails_fast_on_arrears_code_1113(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(
-        failures=1,
-        exc_factory=lambda: FakeRateLimitError(
-            'Error code: 429, with error text {"error":{"code":"1113","message":"您的账户已欠费，请充值后重试。"}}',
-            body={
-                "error": {"code": "1113", "message": "您的账户已欠费，请充值后重试。"}
-            },
-            code="1113",
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_embedding.func.retry.wait = wait_none()
-
-    with pytest.raises(FakeRateLimitError) as exc_info:
-        await zhipu_module.zhipu_embedding(["text"], api_key="test-key")
-
-    assert calls["count"] == 1
-    assert "您的账户已欠费" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_preserves_exception_type_on_failure(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(
-        failures=1, exc_factory=lambda: FakeAuthenticationError("invalid key")
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_embedding.func.retry.wait = wait_none()
-
-    with pytest.raises(FakeAuthenticationError) as exc_info:
-        await zhipu_module.zhipu_embedding(["text"], api_key="test-key")
-
-    assert calls["count"] == 1
-    assert "invalid key" in str(exc_info.value)
-    assert "Error calling ChatGLM" not in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_exhausted_retries_reraises_original_error(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(
-        failures=10,
-        exc_factory=lambda: FakeRateLimitError(
-            "rate limited",
-            body={"error": {"code": "1302", "message": "rate limited"}},
-        ),
-    )
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-    zhipu_module.zhipu_embedding.func.retry.wait = wait_none()
-
-    with pytest.raises(FakeRateLimitError) as exc_info:
-        await zhipu_module.zhipu_embedding(["text"], api_key="test-key")
-
-    assert calls["count"] == 3
-    assert "rate limited" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_empty_texts_returns_2d_array(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(failures=0, exc_factory=None)
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-
-    result = await zhipu_module.zhipu_embedding([], api_key="test-key")
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (0, 1024)
-    assert calls["count"] == 0
-
-    result_dim = await zhipu_module.zhipu_embedding(
-        [], api_key="test-key", embedding_dim=512
-    )
-    assert isinstance(result_dim, np.ndarray)
-    assert result_dim.shape == (0, 512)
-    assert calls["count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_zhipu_embedding_single_string_converts_to_batch(monkeypatch):
-    client_cls, calls = _make_flaky_embedding_client(failures=0, exc_factory=None)
-    zhipu_module = _load_zhipu_module_with_exceptions(monkeypatch, client_cls)
-
-    result = await zhipu_module.zhipu_embedding(
-        "single string text", api_key="test-key"
-    )
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (1, 1024)
-    assert calls["count"] == 1
+@pytest.mark.parametrize("call_sdk", ["embedding"], indirect=True)
+async def test_embedding_batch_retry_replays_successful_prefix(call_sdk):
+    invoke, requests, _ = call_sdk
+    fail = (500, {"error": {"code": "1200"}})
+    with pytest.raises(sdk.APIInternalError):
+        await invoke([200, fail, 200, fail, 200, fail], texts=["first", "second"])
+    assert [r["input"] for r in requests] == [["first"], ["second"]] * 3
