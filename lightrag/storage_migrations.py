@@ -15,8 +15,30 @@ from __future__ import annotations
 
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.exceptions import StorageCapabilityError
 from lightrag.kg.shared_storage import get_data_init_lock
-from lightrag.utils import logger, make_relation_chunk_key
+from lightrag.utils import has_chunk_tracking_row, logger, make_relation_chunk_key
+
+
+async def _migration_chunk_ids(
+    storage, key: str, graph_sources: str | None
+) -> list[str]:
+    """Read authoritative tracking before the graph's capped provenance view.
+
+    A present empty tracking row is authoritative too. A read failure must
+    abort before any recovery anchors are written; trusting a best-effort miss
+    could persist incomplete anchors that later authorize an incomplete purge.
+    Older deployments with no tracking namespace keep the legacy fallback.
+    """
+    if storage is not None:
+        if not getattr(storage, "supports_strict_point_reads", False):
+            raise StorageCapabilityError(
+                "Legacy recovery-anchor migration requires strict chunk-tracking reads"
+            )
+        row = await storage.get_by_id_strict(key)
+        if has_chunk_tracking_row(row):
+            return row["chunk_ids"]
+    return (graph_sources or "").split(GRAPH_FIELD_SEP)
 
 
 class _StorageMigrationMixin:
@@ -131,41 +153,37 @@ class _StorageMigrationMixin:
 
         # Process all nodes once
         for node in all_nodes:
-            if "source_id" in node:
-                entity_id = node.get("entity_id") or node.get("id")
-                if not entity_id:
-                    continue
-
-                # Get chunk IDs from source_id
-                source_ids = node["source_id"].split(GRAPH_FIELD_SEP)
-
-                # Find which documents this entity belongs to
-                for chunk_id in source_ids:
-                    doc_id = chunk_to_doc.get(chunk_id)
-                    if doc_id:
-                        if doc_id not in doc_entities:
-                            doc_entities[doc_id] = set()
-                        doc_entities[doc_id].add(entity_id)
+            entity_id = node.get("entity_id") or node.get("id")
+            if not entity_id:
+                continue
+            source_ids = await _migration_chunk_ids(
+                self.entity_chunks, entity_id, node.get("source_id")
+            )
+            for chunk_id in source_ids:
+                doc_id = chunk_to_doc.get(chunk_id)
+                if doc_id:
+                    if doc_id not in doc_entities:
+                        doc_entities[doc_id] = set()
+                    doc_entities[doc_id].add(entity_id)
 
         # Process all edges once
         for edge in all_edges:
-            if "source_id" in edge:
-                src = edge.get("source")
-                tgt = edge.get("target")
-                if not src or not tgt:
-                    continue
-
-                # Get chunk IDs from source_id
-                source_ids = edge["source_id"].split(GRAPH_FIELD_SEP)
-
-                # Find which documents this relation belongs to
-                for chunk_id in source_ids:
-                    doc_id = chunk_to_doc.get(chunk_id)
-                    if doc_id:
-                        if doc_id not in doc_relations:
-                            doc_relations[doc_id] = set()
-                        # Use tuple for set operations, convert to list later
-                        doc_relations[doc_id].add(tuple(sorted((src, tgt))))
+            src = edge.get("source")
+            tgt = edge.get("target")
+            if not src or not tgt:
+                continue
+            source_ids = await _migration_chunk_ids(
+                self.relation_chunks,
+                make_relation_chunk_key(src, tgt),
+                edge.get("source_id"),
+            )
+            for chunk_id in source_ids:
+                doc_id = chunk_to_doc.get(chunk_id)
+                if doc_id:
+                    if doc_id not in doc_relations:
+                        doc_relations[doc_id] = set()
+                    # Use tuple for set operations, convert to list later
+                    doc_relations[doc_id].add(tuple(sorted((src, tgt))))
 
         # Store the results in full_entities and full_relations
         migration_count = 0
