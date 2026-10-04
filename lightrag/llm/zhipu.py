@@ -12,12 +12,13 @@ from tenacity import (
     retry_if_exception,
 )
 
+from lightrag.llm._error_utils import is_permanent_rate_limit_error
 from lightrag.utils import (
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
     logger,
+    verbose_debug,
 )
-from ..utils import verbose_debug
 
 # install specific modules
 if not pm.is_installed("zhipuai"):
@@ -41,42 +42,137 @@ APIConnectionError = getattr(zhipuai, "APIConnectionError", None) or type(
 RateLimitError = getattr(zhipuai, "RateLimitError", None) or type(
     "RateLimitError", (_ZhipuFallbackError,), {}
 )
+APIReachLimitError = getattr(zhipuai, "APIReachLimitError", None) or type(
+    "APIReachLimitError", (_ZhipuFallbackError,), {}
+)
 APITimeoutError = getattr(zhipuai, "APITimeoutError", None) or type(
     "APITimeoutError", (_ZhipuFallbackError,), {}
 )
 InternalServerError = getattr(zhipuai, "InternalServerError", None) or type(
     "InternalServerError", (_ZhipuFallbackError,), {}
 )
+APIInternalError = getattr(zhipuai, "APIInternalError", None) or type(
+    "APIInternalError", (_ZhipuFallbackError,), {}
+)
 APIStatusError = getattr(zhipuai, "APIStatusError", None) or type(
     "APIStatusError", (_ZhipuFallbackError,), {}
 )
+
+ZHIPU_PERMANENT_ERROR_CODES = frozenset(
+    {
+        "1113",  # 账户已欠费 / 余额不足
+        "1308",  # 达到时间段使用上限
+        "1309",  # 套餐已到期
+        "1310",  # 达到周期使用上限
+    }
+)
+
+ZHIPU_PERMANENT_ERROR_KEYWORDS = (
+    "账户已欠费",
+    "欠费",
+    "余额不足",
+    "无可用资源包",
+    "套餐已到期",
+)
+
+
+def _is_permanent_zhipu_error(error: BaseException) -> bool:
+    """Report whether a Zhipu error is a permanent spend stop or quota exhaustion.
+
+    OpenAI/LiteLLM-style spend limits are caught via ``is_permanent_rate_limit_error``.
+    Native Zhipu codes include 1113 (arrears/balance exhausted), 1308/1310 (usage limits),
+    and 1309 (plan expired). Retrying these errors wastes retry windows and delays
+    actionable user feedback.
+    """
+    if is_permanent_rate_limit_error(error):
+        return True
+
+    body = getattr(error, "body", None)
+    if body is None and hasattr(error, "response"):
+        resp = getattr(error, "response", None)
+        if resp is not None and hasattr(resp, "json"):
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+
+    candidates = [body]
+    if isinstance(body, dict):
+        candidates.append(body.get("error"))
+
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            code = str(candidate.get("code", "")).strip()
+            if code in ZHIPU_PERMANENT_ERROR_CODES:
+                return True
+            msg = str(candidate.get("message", ""))
+            if any(kw in msg for kw in ZHIPU_PERMANENT_ERROR_KEYWORDS):
+                return True
+
+    err_code = getattr(error, "code", None)
+    if err_code is not None and str(err_code).strip() in ZHIPU_PERMANENT_ERROR_CODES:
+        return True
+
+    err_msg = getattr(error, "message", None)
+    if isinstance(err_msg, str) and any(
+        kw in err_msg for kw in ZHIPU_PERMANENT_ERROR_KEYWORDS
+    ):
+        return True
+
+    rendered = str(error)
+    if any(code in rendered for code in ZHIPU_PERMANENT_ERROR_CODES):
+        return True
+    if any(kw in rendered for kw in ZHIPU_PERMANENT_ERROR_KEYWORDS):
+        return True
+
+    return False
 
 
 def _is_retryable_zhipu_error(error: BaseException) -> bool:
     """Classify transient Zhipu errors eligible for retry.
 
-    Retries rate limits (429), timeouts, connection failures, and server errors (>=500)
-    raised by the Zhipu SDK or underlying transport.
+    Retries transient rate limits (429 without permanent spend stop),
+    timeouts, connection failures, and server errors (>=500, 408, 409).
+    Fails fast on permanent spend stops (1113 arrears, 1308/1309/1310 limits),
+    authentication errors (401), and client errors (400).
     """
+    if _is_permanent_zhipu_error(error):
+        return False
+
+    status_code = getattr(error, "status_code", None)
+    if status_code is None and hasattr(error, "response"):
+        status_code = getattr(error.response, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code == 429 or status_code >= 500 or status_code in (408, 409):
+            return True
+        if 400 <= status_code < 500:
+            return False
+
     known_retryable = (
         APIConnectionError,
         RateLimitError,
+        APIReachLimitError,
         APITimeoutError,
         InternalServerError,
+        APIInternalError,
     )
     if isinstance(error, known_retryable):
         return True
+
+    known_retryable_names = {
+        "RateLimitError",
+        "APIReachLimitError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "InternalServerError",
+        "APIInternalError",
+    }
 
     zhipuai_mod = sys.modules.get("zhipuai")
     if zhipuai_mod is not None:
         dynamic_types = tuple(
             cls
-            for name in (
-                "APIConnectionError",
-                "RateLimitError",
-                "APITimeoutError",
-                "InternalServerError",
-            )
+            for name in known_retryable_names
             if (cls := getattr(zhipuai_mod, name, None)) is not None
             and isinstance(cls, type)
             and issubclass(cls, BaseException)
@@ -84,19 +180,8 @@ def _is_retryable_zhipu_error(error: BaseException) -> bool:
         if dynamic_types and isinstance(error, dynamic_types):
             return True
 
-    status_code = getattr(error, "status_code", None)
-    if status_code is None and hasattr(error, "response"):
-        status_code = getattr(error.response, "status_code", None)
-    if isinstance(status_code, int) and (status_code == 429 or status_code >= 500):
-        return True
-
     type_name = type(error).__name__
-    if type_name in (
-        "RateLimitError",
-        "APIConnectionError",
-        "APITimeoutError",
-        "InternalServerError",
-    ):
+    if type_name in known_retryable_names:
         return True
 
     if isinstance(error, (ConnectionError, TimeoutError)):
@@ -334,6 +419,14 @@ async def zhipu_embedding(
     embedding_dim: int | None = None,
     **kwargs,
 ) -> np.ndarray:
+    # Convert single text to list if needed
+    if isinstance(texts, str):
+        texts = [texts]
+
+    if not texts:
+        dim = embedding_dim or 1024
+        return np.empty((0, dim))
+
     # dynamically load ZhipuAI
     try:
         from zhipuai import ZhipuAI
@@ -345,10 +438,6 @@ async def zhipu_embedding(
         # please set ZHIPUAI_API_KEY in your environment
         # os.environ["ZHIPUAI_API_KEY"]
         client = ZhipuAI()
-
-    # Convert single text to list if needed
-    if isinstance(texts, str):
-        texts = [texts]
 
     embeddings = []
     for text in texts:
