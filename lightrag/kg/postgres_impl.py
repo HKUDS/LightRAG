@@ -485,6 +485,13 @@ class PostgreSQLDB:
             self.connection_retry_backoff_max,
             self.pool_close_timeout,
         )
+                # No-DDL mode for enterprise databases with restricted permissions
+        _no_ddl = config.get("no_ddl", False)
+        self.no_ddl = (
+            _no_ddl
+            if isinstance(_no_ddl, bool)
+            else str(_no_ddl).lower() in ("true", "1", "yes", "on")
+        )
 
     def _create_ssl_context(self) -> ssl.SSLContext | None:
         """Create SSL context based on configuration parameters."""
@@ -891,6 +898,18 @@ class PostgreSQLDB:
         When vector_index_type is HNSW_HALFVEC, validates that pgvector >= 0.7.0
         (required for halfvec support) and raises RuntimeError if older.
         """
+        if self.no_ddl:
+            # Read-only check: verify vector extension exists without running DDL
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            if not row or not row["extversion"]:
+                raise RuntimeError(
+                    "POSTGRES_NO_DDL is enabled, but the required 'vector' extension "
+                    "is not installed in the PostgreSQL database. Please install it before running."
+                )
+            logger.info("PostgreSQL, VECTOR extension verified (no-DDL mode)")
+            return
         try:
             await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
             logger.info("PostgreSQL, VECTOR extension enabled")
@@ -2316,6 +2335,30 @@ class PostgreSQLDB:
             "LIGHTRAG_VDB_ENTITY",
             "LIGHTRAG_VDB_RELATION",
         }
+                # If running in enterprise no-DDL mode, validate pre-created tables in read-only mode
+        if self.no_ddl:
+            logger.info("PostgreSQL running in NO-DDL mode; validating pre-created schema...")
+            table_names = [k for k in TABLES.keys() if k not in vector_tables_to_skip]
+            table_names_lower = [t.lower() for t in table_names]
+
+            # 1. Validate all required tables exist in information_schema
+            check_sql = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_name = ANY($1)
+            """
+            rows = await self.query(check_sql, [table_names_lower], multirows=True)
+            existing_tables = {r["table_name"].lower() for r in (rows or [])}
+
+            missing_tables = [t for t in table_names_lower if t not in existing_tables]
+            if missing_tables:
+                raise RuntimeError(
+                    f"POSTGRES_NO_DDL is enabled, but the following required LightRAG tables "
+                    f"are missing in PostgreSQL: {missing_tables}. Please create them before startup."
+                )
+
+            logger.info("PostgreSQL schema successfully validated in read-only mode (no DDL executed).")
+            return
 
         # First create all tables (except vector tables)
         for k, v in TABLES.items():
@@ -3035,6 +3078,10 @@ class ClientManager:
                         config.get("postgres", "pool_close_timeout", fallback=5.0),
                     )
                 ),
+            ),
+            "no_ddl": os.environ.get(
+                "POSTGRES_NO_DDL",
+                config.get("postgres", "no_ddl", fallback="false"),
             ),
         }
 
@@ -4141,7 +4188,15 @@ class PGVectorStorage(BaseVectorStorage):
         legacy_exists = legacy_table_name and await db.check_table_exists(
             legacy_table_name
         )
-
+                # In enterprise no-DDL mode, verify vector table exists and skip creation
+        if db.no_ddl:
+            if not new_table_exists:
+                raise RuntimeError(
+                    f"POSTGRES_NO_DDL is enabled, but required vector table '{table_name}' "
+                    f"does not exist in PostgreSQL. Please pre-create it with dimension {embedding_dim}."
+                )
+            logger.info(f"PostgreSQL vector table '{table_name}' verified in read-only mode.")
+            return
         # Case 1: Only new table exists or new table is the same as legacy table
         #         No data migration needed, ensuring index is created then return
         if (new_table_exists and not legacy_exists) or (
