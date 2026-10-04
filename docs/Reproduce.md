@@ -208,7 +208,7 @@ def get_summary(context, tot_tokens=2000):
     half_tokens = tot_tokens // 2
 
     start_tokens = tokens[1000:1000 + half_tokens]
-    end_tokens = tokens[-(1000 + half_tokens):1000]
+    end_tokens = tokens[-(1000 + half_tokens):-1000]
 
     summary_tokens = start_tokens + end_tokens
     summary = tokenizer.convert_tokens_to_string(summary_tokens)
