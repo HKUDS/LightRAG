@@ -79,6 +79,9 @@ export default function QueryComposer({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      // Enter confirms an IME candidate before it means send (or newline).
+      // Some browsers report keyCode 229 as composition finishes.
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
       if (e.key === 'Enter' && e.shiftKey) {
         // Shift+Enter: Insert newline
         e.preventDefault()
