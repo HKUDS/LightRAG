@@ -127,16 +127,17 @@ export function AsyncSelect<T>({
 
   // Fetch options whenever search term changes (skip filtering-only re-runs in preload mode)
   useEffect(() => {
+    let cancelled = false
     const fetchOptions = async () => {
       try {
         setLoading(true)
         setError(null)
         const data = await fetcher(debouncedSearchTerm)
-        setOriginalOptions(data)
+        if (!cancelled) setOriginalOptions(data)
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch options')
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to fetch options')
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
@@ -145,6 +146,7 @@ export function AsyncSelect<T>({
       return
     }
     fetchOptions()
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher, debouncedSearchTerm, preload])
 
