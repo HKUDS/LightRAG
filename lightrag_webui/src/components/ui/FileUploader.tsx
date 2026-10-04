@@ -181,6 +181,13 @@ function FileUploader(props: FileUploaderProps) {
     onChange: onValueChange
   })
 
+  const ownedPreviews = React.useRef(new Set<string>())
+  const createPreview = React.useCallback((file: File) => {
+    const preview = URL.createObjectURL(file)
+    ownedPreviews.current.add(preview)
+    return preview
+  }, [])
+
   const onDrop = React.useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
       // Calculate total file count including both accepted and rejected files
@@ -213,14 +220,14 @@ function FileUploader(props: FileUploaderProps) {
       // Process accepted files
       const newAcceptedFiles = acceptedFiles.map((file) =>
         Object.assign(file, {
-          preview: URL.createObjectURL(file)
+          preview: createPreview(file)
         })
       )
 
       // Process rejected files for UI display
       const newRejectedFiles = rejectedFiles.map(({ file }) =>
         Object.assign(file, {
-          preview: URL.createObjectURL(file),
+          preview: createPreview(file),
           rejected: true
         })
       )
@@ -255,11 +262,15 @@ function FileUploader(props: FileUploaderProps) {
         }
       }
     },
-    [files, maxFileCount, multiple, onUpload, onReject, setFiles, t, acceptedExts, engineMatrix, maxSize]
+    [files, maxFileCount, multiple, onUpload, onReject, setFiles, t, acceptedExts, engineMatrix, maxSize, createPreview]
   )
 
   function onRemove(index: number) {
     if (!files) return
+    const file = files[index]
+    if (isFileWithPreview(file) && ownedPreviews.current.delete(file.preview)) {
+      URL.revokeObjectURL(file.preview)
+    }
     const newFiles = files.filter((_, i) => i !== index)
     setFiles(newFiles)
     onValueChange?.(newFiles)
@@ -267,15 +278,11 @@ function FileUploader(props: FileUploaderProps) {
 
   // Revoke preview url when component unmounts
   React.useEffect(() => {
+    const previews = ownedPreviews.current
     return () => {
-      if (!files) return
-      files.forEach((file) => {
-        if (isFileWithPreview(file)) {
-          URL.revokeObjectURL(file.preview)
-        }
-      })
+      previews.forEach((preview) => URL.revokeObjectURL(preview))
+      previews.clear()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const isDisabled = disabled || (files?.length ?? 0) >= maxFileCount
