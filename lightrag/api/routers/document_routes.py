@@ -159,8 +159,6 @@ def format_datetime(dt: Any) -> Optional[str]:
 # same router each time, accumulating duplicate routes and triggering
 # FastAPI's "Duplicate Operation ID" warnings.
 
-# Temporary file prefix
-temp_prefix = "__tmp__"
 UNKNOWN_FILE_SOURCE = "unknown_source"
 LEGACY_EMPTY_FILE_PATH_SENTINELS = {"", "no-file-path"}
 ARCHIVED_FILE_SUFFIX_RE = re.compile(r"_(?:\d{3}|\d{10,})$")
@@ -2548,12 +2546,6 @@ async def pipeline_enqueue_file(
         logger.error(f"Enqueuing file {file_path.name} error: {str(e)}")
         logger.error(traceback.format_exc())
         return False, track_id
-    finally:
-        if file_path.name.startswith(temp_prefix):
-            try:
-                file_path.unlink()
-            except Exception as e:
-                logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
 async def pipeline_index_file(
@@ -4497,7 +4489,7 @@ async def background_delete_documents(
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
-    # Fresh router per call — see the note above the temp_prefix constant.
+    # Fresh router per call — see the module-level note above.
     router = APIRouter(
         prefix="/documents",
         tags=["documents"],
