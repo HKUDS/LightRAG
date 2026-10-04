@@ -1,28 +1,15 @@
 import asyncio
 import sys
+from typing import Any, Union, List, Optional, Dict
 import warnings
-from ..utils import verbose_debug
 
-if sys.version_info < (3, 9):
-    pass
-else:
-    pass
+import numpy as np
 import pipmaster as pm  # Pipmaster for dynamic library install
-
-# install specific modules
-if not pm.is_installed("zhipuai"):
-    pm.install("zhipuai")
-
-from openai import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 
 from lightrag.utils import (
@@ -30,17 +17,99 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     logger,
 )
+from ..utils import verbose_debug
 
-import numpy as np
-from typing import Any, Union, List, Optional, Dict
+# install specific modules
+if not pm.is_installed("zhipuai"):
+    pm.install("zhipuai")
+
+try:
+    import zhipuai
+except ImportError:
+    zhipuai = None
+
+
+class _ZhipuFallbackError(Exception):
+    """Fallback exception base when zhipuai is not yet installed."""
+
+    pass
+
+
+APIConnectionError = getattr(zhipuai, "APIConnectionError", None) or type(
+    "APIConnectionError", (_ZhipuFallbackError,), {}
+)
+RateLimitError = getattr(zhipuai, "RateLimitError", None) or type(
+    "RateLimitError", (_ZhipuFallbackError,), {}
+)
+APITimeoutError = getattr(zhipuai, "APITimeoutError", None) or type(
+    "APITimeoutError", (_ZhipuFallbackError,), {}
+)
+InternalServerError = getattr(zhipuai, "InternalServerError", None) or type(
+    "InternalServerError", (_ZhipuFallbackError,), {}
+)
+APIStatusError = getattr(zhipuai, "APIStatusError", None) or type(
+    "APIStatusError", (_ZhipuFallbackError,), {}
+)
+
+
+def _is_retryable_zhipu_error(error: BaseException) -> bool:
+    """Classify transient Zhipu errors eligible for retry.
+
+    Retries rate limits (429), timeouts, connection failures, and server errors (>=500)
+    raised by the Zhipu SDK or underlying transport.
+    """
+    known_retryable = (
+        APIConnectionError,
+        RateLimitError,
+        APITimeoutError,
+        InternalServerError,
+    )
+    if isinstance(error, known_retryable):
+        return True
+
+    zhipuai_mod = sys.modules.get("zhipuai")
+    if zhipuai_mod is not None:
+        dynamic_types = tuple(
+            cls
+            for name in (
+                "APIConnectionError",
+                "RateLimitError",
+                "APITimeoutError",
+                "InternalServerError",
+            )
+            if (cls := getattr(zhipuai_mod, name, None)) is not None
+            and isinstance(cls, type)
+            and issubclass(cls, BaseException)
+        )
+        if dynamic_types and isinstance(error, dynamic_types):
+            return True
+
+    status_code = getattr(error, "status_code", None)
+    if status_code is None and hasattr(error, "response"):
+        status_code = getattr(error.response, "status_code", None)
+    if isinstance(status_code, int) and (status_code == 429 or status_code >= 500):
+        return True
+
+    type_name = type(error).__name__
+    if type_name in (
+        "RateLimitError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "InternalServerError",
+    ):
+        return True
+
+    if isinstance(error, (ConnectionError, TimeoutError)):
+        return True
+
+    return False
 
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_zhipu_error),
+    reraise=True,
 )
 async def zhipu_complete_if_cache(
     prompt: Union[str, List[Dict[str, str]]],
@@ -255,9 +324,8 @@ async def zhipu_complete(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_zhipu_error),
+    reraise=True,
 )
 async def zhipu_embedding(
     texts: list[str],
@@ -284,21 +352,18 @@ async def zhipu_embedding(
 
     embeddings = []
     for text in texts:
-        try:
-            request_kwargs = dict(kwargs)
-            if embedding_dim is not None:
-                request_kwargs["dimensions"] = embedding_dim
-            # Same blocking-client concern as zhipu_complete_if_cache, same
-            # cancellation caveat: run each synchronous HTTP call off the
-            # event loop thread, but a timeout here cannot stop it early.
-            response = await asyncio.to_thread(
-                client.embeddings.create,
-                model=model,
-                input=[text],
-                **request_kwargs,
-            )
-            embeddings.append(response.data[0].embedding)
-        except Exception as e:
-            raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}")
+        request_kwargs = dict(kwargs)
+        if embedding_dim is not None:
+            request_kwargs["dimensions"] = embedding_dim
+        # Same blocking-client concern as zhipu_complete_if_cache, same
+        # cancellation caveat: run each synchronous HTTP call off the
+        # event loop thread, but a timeout here cannot stop it early.
+        response = await asyncio.to_thread(
+            client.embeddings.create,
+            model=model,
+            input=[text],
+            **request_kwargs,
+        )
+        embeddings.append(response.data[0].embedding)
 
     return np.array(embeddings)
