@@ -6,6 +6,8 @@ introduced when ``full_docs`` collapsed its four path fields to
 from __future__ import annotations
 
 from pathlib import Path
+import os
+from urllib.parse import quote
 
 import pytest
 
@@ -18,6 +20,7 @@ from lightrag.utils_pipeline import (
     sidecar_blocks_path,
     sidecar_modality_path,
     sidecar_uri_for,
+    load_lightrag_document_content,
 )
 
 
@@ -104,6 +107,38 @@ def test_sidecar_blocks_path_returns_none_when_missing(tmp_path):
     assert sidecar_blocks_path(uri) is None
     assert sidecar_modality_path(uri, "drawings") is None
     assert sidecar_assets_dir_for_uri(uri) is None
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_standard_file_uri_reads_document_blocks(tmp_path):
+    sidecar_dir = tmp_path / "中文 报告.docx.parsed"
+    sidecar_dir.mkdir()
+    blocks = sidecar_dir / "report.blocks.jsonl"
+    blocks.write_text(
+        '{"type":"meta"}\n{"type":"content","content":"document body"}\n',
+        encoding="utf-8",
+    )
+    assert await load_lightrag_document_content(sidecar_dir.as_uri() + "/") == (
+        "document body",
+        str(blocks),
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.skipif(os.name != "nt", reason="Windows persisted path format")
+def test_resolve_legacy_windows_sidecar_uri(tmp_path):
+    sidecar_dir = tmp_path / "中文 报告.docx.parsed"
+    legacy_uri = "file://" + quote(str(sidecar_dir), safe="/") + "/"
+    assert resolve_sidecar_uri(legacy_uri) == sidecar_dir
+
+
+@pytest.mark.offline
+@pytest.mark.skipif(os.name != "nt", reason="Windows UNC path semantics")
+def test_resolve_windows_unc_sidecar_uri():
+    assert resolve_sidecar_uri("file://server/share/space%20name.parsed/") == Path(
+        r"\\server\share\space name.parsed"
+    )
 
 
 @pytest.mark.offline
