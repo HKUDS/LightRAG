@@ -155,7 +155,9 @@ def _extract_xlsx(file_bytes: bytes) -> str:
             row_has_content = False
             for cell_value, formula_value in zip(value_row, formula_row):
                 if cell_value is None:
-                    cell_value = formula_value
+                    # openpyxl >= 3.1 wraps array formulas in an object;
+                    # earlier versions and ordinary formulas use strings.
+                    cell_value = getattr(formula_value, "text", formula_value)
                 cell_text = escape_cell(cell_value)
                 row_parts.append(cell_text)
                 if cell_text:
