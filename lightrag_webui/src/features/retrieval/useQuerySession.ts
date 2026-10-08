@@ -350,6 +350,8 @@ export function useQuerySession({
           assistantMessage.aiGenerated = true
         }
         assistantMessage.content += chunk
+        // History is saved before React may evaluate the state updater below.
+        assistantMessage.isError = isError
 
         // Start thinking timer on first sight of think tag
         if (assistantMessage.content.includes('<think>') && !thinkingStartTime.current) {
