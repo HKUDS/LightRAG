@@ -253,7 +253,6 @@ async def llama_index_embed(
     if embed_model is None:
         raise ValueError("embed_model must be provided")
 
-    # Use the async batch method -- the sync _get_text_embeddings would
-    # block the event loop for the whole embedding call.
-    embeddings = await embed_model._aget_text_embeddings(texts)
+    # Preserve the model's batching, cache, and callbacks on the async path.
+    embeddings = await embed_model.aget_text_embedding_batch(texts)
     return np.array(embeddings)

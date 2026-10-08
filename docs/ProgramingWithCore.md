@@ -449,6 +449,11 @@ For low-RAM GPUs (e.g. 6GB), select a small model and tune the context window. F
 
 LightRAG supports integration with LlamaIndex (`llm/llama_index_impl.py`):
 
+`llama_index_embed` honors the supplied model's `embed_batch_size` and
+`embeddings_cache` through its asynchronous batch API. LightRAG's
+`embedding_batch_num` controls how many texts reach the adapter; the model can
+split that batch further before calling its embedding service.
+
 ```python
 import asyncio
 from lightrag import LightRAG
