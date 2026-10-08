@@ -371,6 +371,13 @@ def extract_markdown(
 
     heading_stack: list[tuple[int, str]] = []  # (level, clean_text)
     counters = {"t": 0, "e": 0, "d": 0}
+    # Author-written marker examples must never alias generated side-table refs,
+    # including examples in later blocks or fenced code.
+    source_refs = {
+        match.group(1)
+        for pattern in (TABLE_MARKER_RE, EQUATION_MARKER_RE, DRAWING_MARKER_RE)
+        for match in pattern.finditer(text)
+    }
 
     cur_heading = PREFACE_HEADING
     cur_level = 0
@@ -404,8 +411,11 @@ def extract_markdown(
         cur_lines.append(render_heading_line(level, raw))
 
     def _next_ref(kind: str) -> str:
-        counters[kind] += 1
-        return f"{kind}{counters[kind]}"
+        while True:
+            counters[kind] += 1
+            ref = f"{kind}{counters[kind]}"
+            if ref not in source_refs:
+                return ref
 
     def _resolve_image(src: str) -> str:
         src = src.strip()

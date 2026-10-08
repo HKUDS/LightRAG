@@ -15,11 +15,12 @@ import pytest
 
 import lightrag.parser.markdown.parser as md_parser
 from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
+from lightrag.parser.base import ParseContext
 from lightrag.parser.markdown.parser import NativeMarkdownParser
 from lightrag.sidecar import write_sidecar
 from lightrag.table_markup import TABLE_TAG_RE
 from lightrag.utils import Tokenizer, TokenizerInterface
-from lightrag.utils_pipeline import compute_text_content_hash
+from lightrag.utils_pipeline import compute_text_content_hash, make_lightrag_doc_content
 
 _MD = """# Doc Title
 
@@ -162,6 +163,84 @@ def test_reparse_content_is_byte_stable(tmp_path: Path):
     first = _content_lines(_build_sidecar(tmp_path / "a"))
     second = _content_lines(_build_sidecar(tmp_path / "b"))
     assert first == second
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "wrapper", ["{}", "`{}`", "```xml\n{}\n```", "~~~text\n{}\n~~~"]
+)
+@pytest.mark.parametrize("literals_first", [True, False])
+def test_source_marker_literals_survive_real_multimodal_items(
+    tmp_path: Path, wrapper: str, literals_first: bool
+):
+    literals = (
+        '<mdtable ref="t1"/> <mdequation ref="e1"/> <mddrawing ref="d1"/>\n'
+        "{{TBL:tb1}} {{EQ:eq2}} {{IMG:im3}} {{EQI:eq2}}\n"
+        "{{TBL:unknown}} {{IMG:unknown}} {{EQ:unknown}} {{EQI:unknown}}"
+    )
+    literal_block = wrapper.format(literals)
+    actual = (
+        "| Column |\n| --- |\n| Actual table |\n\n$$ x^2 $$\n\n"
+        "![image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==)"
+    )
+    sections = ["# Literals\n\n" + literal_block, "# Actual\n\n" + actual]
+    if not literals_first:
+        sections.reverse()
+    markdown = "\n\n".join(sections)
+    parsed = _build_sidecar(tmp_path / "first", markdown)
+    content = "\n\n".join(
+        json.loads(line)["content"] for line in _content_lines(parsed)
+    )
+    assert literal_block in content
+    assert content.count("Actual table") == 1
+    for plural, tag in [
+        ("tables", "table"),
+        ("equations", "equation"),
+        ("drawings", "drawing"),
+    ]:
+        entries = json.loads((parsed / f"doc.{plural}.json").read_text())[plural]
+        assert len(entries) == 1
+        assert content.count(f'<{tag} id="') == 1
+    assert _content_lines(parsed) == _content_lines(
+        _build_sidecar(tmp_path / "second", markdown)
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_parser_persists_literal_examples_verbatim(tmp_path: Path):
+    source = tmp_path / "literal.md"
+    literal = (
+        '```text\n<mdtable ref="t1"/> <mdequation ref="e1"/>\n'
+        "{{TBL:tb1}} {{IMG:unknown}} {{EQ:eq2}} {{EQI:unknown}}\n```"
+    )
+    source.write_text(
+        "# Literal\n\n"
+        + literal
+        + "\n\n| Column |\n| --- |\n| Actual |\n\n$$ x^2 $$\n",
+        encoding="utf-8",
+    )
+
+    class Rag:
+        saved = None
+
+        def _resolve_source_file_for_parser(self, file_path, **kwargs):
+            return str(source)
+
+        async def _persist_parsed_full_docs(self, doc_id, data):
+            self.saved = data
+
+    rag = Rag()
+    result = await NativeMarkdownParser().parse(
+        ParseContext(rag, "doc-literal", source.name, {"parse_engine": "native"})
+    )
+    assert literal in result.content
+    assert result.content.count("Actual") == 1
+    assert rag.saved["content"] == make_lightrag_doc_content(result.content)
+    rows = [
+        json.loads(line) for line in Path(result.blocks_path).read_text().splitlines()
+    ]
+    assert any(literal in row.get("content", "") for row in rows)
 
 
 _MD_EXTERNAL = """# T
