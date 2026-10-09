@@ -267,6 +267,33 @@ def _char_trim_trailing(text: str, max_tokens: int, tokenizer: Tokenizer) -> str
 # ---------------------------------------------------------------------------
 
 
+def _largest_fitting_row_prefix(
+    row_count: int,
+    build,
+    max_tokens: int,
+    tokenizer: Tokenizer,
+) -> str | None:
+    """Return ``build(k)`` for the largest ``k`` in ``[1, row_count - 1]`` that fits.
+
+    ``build(k)`` renders a table holding ``k`` rows; its token count grows
+    with ``k``, so the search bisects instead of probing every ``k``: each
+    probe re-serializes and re-tokenizes the whole candidate, and a linear
+    scan over a large table is quadratic.  Bisection relies on that growth
+    being monotonic, the same tokenizer assumption ``_char_trim_trailing``
+    makes over characters.  Returns ``None`` when not even one row fits.
+    """
+    lo, hi = 0, row_count - 1
+    best: str | None = None
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = build(mid)
+        if _count_tokens(tokenizer, candidate) <= max_tokens:
+            lo, best = mid, candidate
+        else:
+            hi = mid - 1
+    return best
+
+
 def _row_trim_table_leading(
     tag_text: str, max_tokens: int, tokenizer: Tokenizer
 ) -> str | None:
@@ -288,14 +315,18 @@ def _row_trim_table_leading(
         if not parsed:
             return None
         attrs_str, rows = parsed
-        for k in range(len(rows) - 1, 0, -1):
-            candidate = (
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: (
                 f"<table {attrs_str}>"
                 f"{json.dumps(rows[-k:], ensure_ascii=False)}"
                 f"</table>"
-            )
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+            ),
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_json_table(
             attrs_str,
             json.dumps(rows[-1], ensure_ascii=False) if rows else body,
@@ -307,11 +338,14 @@ def _row_trim_table_leading(
         rows = split_html_rows(body)
         if not rows:
             return None
-        for k in range(len(rows) - 1, 0, -1):
-            inner = serialize_html_rows(rows[-k:])
-            candidate = f"<table {attrs}>{inner}</table>"
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs}>{serialize_html_rows(rows[-k:])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_html_table(
             attrs,
             rows[-1][1] if rows else body,
@@ -337,12 +371,16 @@ def _row_trim_table_trailing(
         if not parsed:
             return None
         attrs_str, rows = parsed
-        for k in range(len(rows) - 1, 0, -1):
-            candidate = (
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: (
                 f"<table {attrs_str}>{json.dumps(rows[:k], ensure_ascii=False)}</table>"
-            )
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+            ),
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_json_table(
             attrs_str,
             json.dumps(rows[0], ensure_ascii=False) if rows else body,
@@ -354,11 +392,14 @@ def _row_trim_table_trailing(
         rows = split_html_rows(body)
         if not rows:
             return None
-        for k in range(len(rows) - 1, 0, -1):
-            inner = serialize_html_rows(rows[:k])
-            candidate = f"<table {attrs}>{inner}</table>"
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs}>{serialize_html_rows(rows[:k])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_html_table(
             attrs,
             rows[0][1] if rows else body,

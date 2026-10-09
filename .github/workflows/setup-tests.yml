@@ -1,0 +1,60 @@
+name: Setup Wizard Tests
+
+# tests/setup/ drives the real scripts/setup/*.sh flows (~320 tests, ~70 s
+# serial) and never imports the lightrag package, so ordinary code changes
+# cannot affect it. It runs here, only when a file it reads changes, and is
+# excluded from the main offline job (tests.yml). Keep the path list in sync
+# with what the wizard and its tests read.
+on:
+  push:
+    branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'scripts/setup/**'
+      - 'tests/setup/**'
+      - 'tests/conftest.py'
+      - 'env.example'
+      - 'docker-compose*.yml'
+      - 'Makefile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/setup-tests.yml'
+  pull_request:
+    branches: [ main, dev, 'dev-*' ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'scripts/setup/**'
+      - 'tests/setup/**'
+      - 'tests/conftest.py'
+      - 'env.example'
+      - 'docker-compose*.yml'
+      - 'Makefile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/setup-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  setup-tests:
+    name: Setup Wizard Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        # Bash-driven flows; one interpreter version is enough.
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7  # no floating major tag exists past v7
+      with:
+        enable-cache: true
+
+    - name: Install dependencies (locked)
+      run: uv sync --frozen --python 3.12 --extra pytest
+
+    - name: Run setup wizard tests
+      run: uv run --no-sync pytest tests/setup -m offline -v --tb=short

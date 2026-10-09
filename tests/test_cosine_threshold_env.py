@@ -7,37 +7,12 @@ which raises ``ValueError`` when the variable is present but empty (common in
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests._env_import_probe import import_defaults_with_blank_env
 
 
 @pytest.mark.offline
 @pytest.mark.parametrize("env_value", ["", "  ", "\t"])
 def test_empty_cosine_threshold_env_falls_back_on_import(env_value: str) -> None:
-    env = os.environ.copy()
-    env["COSINE_THRESHOLD"] = env_value
-    env["PYTHONPATH"] = str(REPO_ROOT) + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
-    )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from lightrag.lightrag import LightRAG; "
-            "print(LightRAG.__dataclass_fields__"
-            "['cosine_better_than_threshold'].default)",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0.2"
+    assert import_defaults_with_blank_env(env_value)["COSINE_THRESHOLD"] == "0.2"
