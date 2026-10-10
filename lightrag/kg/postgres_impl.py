@@ -631,6 +631,7 @@ class PostgreSQLDB:
                 from pgvector.asyncpg import register_vector  # type: ignore
 
                 await register_vector(connection)
+                await self.configure_hnsw_iterative_scan(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 await self.configure_vchordrq(connection)
 
@@ -667,7 +668,12 @@ class PostgreSQLDB:
                 )
                 raise
 
-            # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
+            # RESET ALL clears session GUCs; restore the session settings this
+            # backend depends on afterward — HNSW scan behaviour included, since
+            # without it a filtered search silently returns nothing for a
+            # workspace that holds a minority of the rows.
+            if self.enable_vector:
+                await self.configure_hnsw_iterative_scan(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 try:
                     await self.configure_vchordrq(connection)
@@ -1314,6 +1320,49 @@ class PostgreSQLDB:
                     )
 
             self._ensured_age_graphs.add(graph_name)
+
+    async def configure_hnsw_iterative_scan(self, connection: asyncpg.Connection) -> None:
+        """Let the HNSW scan continue past candidates a filter rejects.
+
+        The chunk query is ``WHERE workspace = $1 AND content_vector <=> $q < $t
+        ORDER BY content_vector <=> $q LIMIT $k``, while the HNSW index is
+        **global** — one table holds every workspace's vectors. The planner may
+        walk the index in distance order and apply the workspace filter
+        afterwards, in which case it only ever sees the ~``ef_search``
+        candidates the index yielded. For a workspace holding a small share of
+        the table that is **0 rows, with no error**: measured on a deployment
+        with 70,654 chunks for one workspace out of 935,602 rows (7.5%), a
+        question whose nearest chunk sat at distance 0.43 against a 0.8 bound
+        returned nothing through ``_dense_query`` and 5-20 rows once the scan
+        was allowed to continue past rejected candidates.
+
+        ``strict_order`` rather than ``relaxed_order``: the caller depends on the
+        distance bound and on nearest-first ordering, and relaxed order may
+        return rows outside the requested order.
+
+        Best-effort on purpose: pgvector < 0.8 has no such GUC, and a deployment
+        whose HNSW lives elsewhere must not fail to connect over it. A failure
+        here leaves today's behaviour, which is what every query had before.
+
+        ``LOAD 'vector'`` first: the GUC is registered by the extension's shared
+        library when it loads into the backend. With
+        ``shared_preload_libraries`` not naming ``vector`` — the common
+        deployment — a fresh connection does not have the parameter yet, and
+        ``SET`` is then accepted as an unknown placeholder (a silent no-op)
+        rather than taking effect.
+        """
+        try:
+            await connection.execute("LOAD 'vector'")
+        except Exception as exc:  # noqa: BLE001 - see "best-effort" above
+            logger.debug(f"PostgreSQL, LOAD 'vector' skipped: {exc}")
+            return
+        try:
+            await connection.execute("SET hnsw.iterative_scan = strict_order")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"PostgreSQL, hnsw.iterative_scan not applied ({exc}); "
+                "filtered vector search may return fewer rows than exist"
+            )
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
         """Configure VCHORDRQ extension for vector similarity search.
