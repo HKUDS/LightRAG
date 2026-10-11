@@ -8,10 +8,10 @@ SET r.key = value all silently fail for DIRECTED edges).
 """
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
+import pytest
 from tenacity import wait_none
 
 from lightrag.kg.postgres_impl import (
@@ -20,7 +20,6 @@ from lightrag.kg.postgres_impl import (
     PGGraphStorage,
     _is_transient_graph_write_error,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -334,6 +333,77 @@ async def test_upsert_edge_does_not_retry_non_transient_errors(monkeypatch):
     assert excinfo.value.__cause__ is boom
     assert _is_transient_graph_write_error(excinfo.value) is False
     assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_retries_age_concurrency_race_unicode_decode_error(
+    monkeypatch,
+):
+    """Corrupted relation-not-found message from an AGE concurrency race that surfaces
+    as UnicodeDecodeError must be recognised as transient and retried.
+    """
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+
+    storage = make_graph_storage()
+    raw_bytes = b'relation "test_graph.\x9c\xff" does not exist'
+    age_race = UnicodeDecodeError("utf-8", raw_bytes, 22, 23, "invalid start byte")
+
+    call_count = 0
+
+    async def fake_run_with_retry(_operation, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise age_race
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+
+    with pytest.raises(PGGraphQueryException) as excinfo:
+        await storage.upsert_edge("Alice", "Bob", {"weight": "1.0"})
+
+    assert excinfo.value.__cause__ is age_race
+    assert _is_transient_graph_write_error(excinfo.value) is True
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_retries_age_concurrency_race_undefined_table_error(
+    monkeypatch,
+):
+    """AGE concurrency race whose corrupted relation name is valid UTF-8 surfaces as
+    asyncpg UndefinedTableError and must be recognised as transient and retried.
+    """
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+
+    storage = make_graph_storage()
+    age_race = asyncpg.exceptions.UndefinedTableError(
+        'relation "test_graph.garbage_rel" does not exist'
+    )
+
+    call_count = 0
+
+    async def fake_run_with_retry(_operation, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise age_race
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+
+    with pytest.raises(PGGraphQueryException) as excinfo:
+        await storage.upsert_edge("Alice", "Bob", {"weight": "1.0"})
+
+    assert excinfo.value.__cause__ is age_race
+    assert _is_transient_graph_write_error(excinfo.value) is True
+    assert call_count == 3
+
+
+def test_is_transient_graph_write_error_rejects_unrelated_unicode_decode_error():
+    """Unrelated UnicodeDecodeError (without relation ... does not exist) is not transient."""
+    unrelated = UnicodeDecodeError(
+        "utf-8", b"some random bytes", 0, 1, "invalid start byte"
+    )
+    wrapped = PGGraphQueryException({"message": "error"})
+    wrapped.__cause__ = unrelated
+    assert _is_transient_graph_write_error(wrapped) is False
 
 
 async def _capture_upsert_edges_batch(storage: PGGraphStorage, edges):

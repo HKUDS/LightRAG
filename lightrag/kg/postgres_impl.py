@@ -7197,21 +7197,49 @@ class PGGraphEdgeWriteLostError(PGGraphQueryException):
         self.args = (message,)
 
 
+def _is_age_concurrency_race(cause: BaseException) -> bool:
+    """Return True when an Apache AGE concurrency race manifests as a corrupted
+    relation-not-found error.
+
+    Under concurrent document ingestion, Apache AGE graph writes can race during
+    internal catalog lookups and produce a transient
+    `relation "<graph>.<garbage>" does not exist` error message.
+    Depending on the bytes in the relation name, asyncpg surfaces this in one of two shapes:
+      1. UnicodeDecodeError while decoding the message (the raw bytes in `cause.object`
+         contain b'relation "' and b"does not exist").
+      2. An asyncpg.PostgresError (e.g. UndefinedTableError) whose message contains
+         'relation "' and 'does not exist'.
+    Both shapes are transient and succeed on retry.
+    """
+    if isinstance(cause, UnicodeDecodeError):
+        blob = getattr(cause, "object", None)
+        return (
+            isinstance(blob, bytes)
+            and b'relation "' in blob
+            and b"does not exist" in blob
+        )
+    if isinstance(cause, asyncpg.PostgresError):
+        msg = str(cause)
+        return 'relation "' in msg and "does not exist" in msg
+    return False
+
+
 def _is_transient_graph_write_error(exc: BaseException) -> bool:
     """Return True when a PGGraphQueryException wraps a transient write-time error.
 
     The inner _run_with_retry already handles connection-level transient errors
     (pool reset, TCP failures, etc.).  This predicate covers query-level transient
     errors that survive the connection layer and surface as PGGraphQueryException:
-    deadlocks, serialization conflicts, and lock-acquisition timeouts that can
-    occur under concurrent document ingestion.
+    deadlocks, serialization conflicts, lock-acquisition timeouts, and Apache AGE
+    concurrency races (e.g. transient relation-not-found errors) that can occur
+    under concurrent document ingestion.
     """
     if not isinstance(exc, PGGraphQueryException):
         return False
     cause = exc.__cause__
     if cause is None:
         return False
-    return isinstance(
+    if isinstance(
         cause,
         (
             asyncpg.exceptions.DeadlockDetectedError,
@@ -7219,7 +7247,9 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
             asyncpg.exceptions.LockNotAvailableError,
             asyncpg.exceptions.QueryCanceledError,
         ),
-    )
+    ):
+        return True
+    return _is_age_concurrency_race(cause)
 
 
 # Transaction-scoped advisory lock that serialises concurrent upserts of the
