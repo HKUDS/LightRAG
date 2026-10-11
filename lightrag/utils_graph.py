@@ -877,9 +877,7 @@ async def adelete_by_relation(
             # Both spellings can resolve to one identifier, which the edge
             # mutation below would treat as a self-edge -- refuse it here too,
             # the way ``acreate_relation`` does after resolution.
-            _reject_self_loop_relation(
-                source_entity, target_entity, operation="delete"
-            )
+            _reject_self_loop_relation(source_entity, target_entity, operation="delete")
 
             # Check if the relation exists
             edge_exists = await chunk_entity_relation_graph.has_edge(
@@ -2045,9 +2043,7 @@ async def aedit_relation(
             # mutation below would turn into a self-loop. The raw comparison
             # earlier in the caller cannot see this because it ran before the
             # resolution; the guard after resolution closes that hole.
-            _reject_self_loop_relation(
-                source_entity, target_entity, operation="edit"
-            )
+            _reject_self_loop_relation(source_entity, target_entity, operation="edit")
 
             # 1. Get current relation information
             edge_exists = await chunk_entity_relation_graph.has_edge(
@@ -2106,9 +2102,7 @@ async def aedit_relation(
                 f"relation:{vdb_src}-{vdb_tgt}",
             )
 
-            relation_id = compute_mdhash_id(
-                vdb_src + vdb_tgt, prefix="rel-"
-            )
+            relation_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
             relation_data = {
                 relation_id: {
                     "content": content,
