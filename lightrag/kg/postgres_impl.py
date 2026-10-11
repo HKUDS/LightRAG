@@ -7140,9 +7140,11 @@ class PGGraphQueryException(Exception):
         if isinstance(exception, dict):
             self.message = exception["message"] if "message" in exception else "unknown"
             self.details = exception["details"] if "details" in exception else "unknown"
+            self.graph_name = exception.get("graph_name")
         else:
             self.message = exception
             self.details = "unknown"
+            self.graph_name = None
 
     def get_message(self) -> str:
         return self.message
@@ -7197,21 +7199,68 @@ class PGGraphEdgeWriteLostError(PGGraphQueryException):
         self.args = (message,)
 
 
-def _is_transient_graph_write_error(exc: BaseException) -> bool:
+_AGE_REAL_LABEL_TABLES: frozenset[str] = frozenset(
+    {"base", "DIRECTED", "_ag_label_vertex", "_ag_label_edge"}
+)
+
+
+def _is_age_dangling_label_error(
+    cause: BaseException, graph_name: str | None = None
+) -> bool:
+    """Return True when an error matches the Apache AGE label-cache dangling pointer defect.
+
+    Rules:
+    - Known Apache AGE 1.7.x defect: ``_label_name`` returns a pointer into the
+      backend-local label cache that cache invalidation can free during property detoast.
+    - Retried as an application-level mitigation; the root fix belongs upstream in AGE.
+    - Does not indicate graph or data corruption in LightRAG.
+    """
+    if not graph_name:
+        return False
+
+    if isinstance(cause, UnicodeDecodeError):
+        blob = getattr(cause, "object", None)
+        if not isinstance(blob, bytes):
+            return False
+        schema_prefix = f'relation "{graph_name}.'.encode("utf-8")
+        return schema_prefix in blob and b"does not exist" in blob
+
+    if isinstance(cause, asyncpg.exceptions.UndefinedTableError):
+        msg = str(cause)
+        prefix = f'relation "{graph_name}.'
+        suffix = '" does not exist'
+        idx_prefix = msg.find(prefix)
+        if idx_prefix == -1:
+            return False
+        idx_label_start = idx_prefix + len(prefix)
+        idx_suffix = msg.find(suffix, idx_label_start)
+        if idx_suffix == -1:
+            return False
+        label_name = msg[idx_label_start:idx_suffix]
+        if label_name in _AGE_REAL_LABEL_TABLES:
+            return False
+        return True
+
+    return False
+
+
+def _is_transient_graph_write_error(
+    exc: BaseException, graph_name: str | None = None
+) -> bool:
     """Return True when a PGGraphQueryException wraps a transient write-time error.
 
     The inner _run_with_retry already handles connection-level transient errors
     (pool reset, TCP failures, etc.).  This predicate covers query-level transient
     errors that survive the connection layer and surface as PGGraphQueryException:
-    deadlocks, serialization conflicts, and lock-acquisition timeouts that can
-    occur under concurrent document ingestion.
+    deadlocks, serialization conflicts, lock-acquisition timeouts, and Apache AGE
+    label-cache dangling pointer errors that can occur during concurrent ingestion.
     """
     if not isinstance(exc, PGGraphQueryException):
         return False
     cause = exc.__cause__
     if cause is None:
         return False
-    return isinstance(
+    if isinstance(
         cause,
         (
             asyncpg.exceptions.DeadlockDetectedError,
@@ -7219,7 +7268,10 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
             asyncpg.exceptions.LockNotAvailableError,
             asyncpg.exceptions.QueryCanceledError,
         ),
-    )
+    ):
+        return True
+    resolved_graph_name = graph_name or getattr(exc, "graph_name", None)
+    return _is_age_dangling_label_error(cause, graph_name=resolved_graph_name)
 
 
 # Transaction-scoped advisory lock that serialises concurrent upserts of the
@@ -7656,6 +7708,7 @@ class PGGraphStorage(BaseGraphStorage):
                     "wrapped": query,
                     "detail": repr(e),
                     "error_type": e.__class__.__name__,
+                    "graph_name": self.graph_name,
                 }
             ) from e
 
@@ -8084,9 +8137,10 @@ class PGGraphStorage(BaseGraphStorage):
             # Re-raise as PGGraphQueryException so the outer @retry's
             # _is_transient_graph_write_error predicate can inspect __cause__ and
             # retry on DeadlockDetectedError / SerializationError /
-            # LockNotAvailableError / QueryCanceledError — mirrors what _query
-            # does for upsert_node and the rest of the AGE write paths. Without
-            # this wrapping, query-level transient errors from connection.execute
+            # LockNotAvailableError / QueryCanceledError /
+            # Apache AGE label-cache dangling pointer errors (_is_age_dangling_label_error) —
+            # mirrors what _query does for upsert_node and the rest of the AGE write paths.
+            # Without this wrapping, query-level transient errors from connection.execute
             # would surface as raw asyncpg exceptions, fail isinstance() in the
             # predicate, and skip retries.
             if isinstance(e, PGGraphQueryException):
@@ -8100,6 +8154,7 @@ class PGGraphStorage(BaseGraphStorage):
                     "wrapped": cypher_sql,
                     "detail": repr(e),
                     "error_type": e.__class__.__name__,
+                    "graph_name": self.graph_name,
                 }
             ) from e
 
@@ -8146,6 +8201,7 @@ class PGGraphStorage(BaseGraphStorage):
                     "wrapped": built[0][0] if built else "",
                     "detail": repr(e),
                     "error_type": e.__class__.__name__,
+                    "graph_name": self.graph_name,
                 }
             ) from e
 
@@ -8265,6 +8321,7 @@ class PGGraphStorage(BaseGraphStorage):
                     "wrapped": built[0][0] if built else "",
                     "detail": repr(e),
                     "error_type": e.__class__.__name__,
+                    "graph_name": self.graph_name,
                 }
             ) from e
 
