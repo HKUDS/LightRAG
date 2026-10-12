@@ -87,7 +87,8 @@ def safe_extract_zip(
         for name in names:
             norm = os.path.normpath(name)
             if (
-                norm.startswith("..")
+                norm == os.pardir
+                or norm.startswith(os.pardir + os.sep)
                 or os.path.isabs(norm)
                 or norm.startswith(("/", os.sep))
             ):
