@@ -1435,45 +1435,29 @@ class Neo4JStorage(BaseGraphStorage):
                             )
                             record = full_record
                         else:
-                            # If node count exceeds limit, set truncated flag and run limited query
+                            # If node count exceeds limit, set truncated flag and
+                            # keep the first max_nodes nodes of the walk in hand.
+                            # subgraphAll lists nodes in traversal order, the same
+                            # nodes its `limit` key keeps, so walking again with
+                            # `limit` would return this. Do not reintroduce that
+                            # second walk: Neo4j Aura (5.27-aura) fails it with
+                            # Neo.DatabaseError.Database.Unknown, which the
+                            # ClientError fallback below does not catch.
                             result.is_truncated = True
                             logger.info(
                                 f"[{self.workspace}] Graph truncated: {total_nodes} nodes found, breadth-first search limited to {max_nodes}"
                             )
-
-                            # Run limited query
-                            limited_query = f"""
-                            MATCH (start:`{workspace_label}`)
-                            WHERE start.entity_id = $entity_id
-                            WITH start
-                            CALL apoc.path.subgraphAll(start, {{
-                                relationshipFilter: '',
-                                labelFilter: $label_filter,
-                                minLevel: 0,
-                                maxLevel: $max_depth,
-                                limit: $max_nodes,
-                                bfs: true
-                            }})
-                            YIELD nodes, relationships
-                            UNWIND nodes AS node
-                            WITH collect({{node: node}}) AS node_info, relationships
-                            RETURN node_info, relationships
-                            """
-                            result_set = None
-                            try:
-                                result_set = await session.run(
-                                    limited_query,
-                                    {
-                                        "entity_id": node_label,
-                                        "max_depth": max_depth,
-                                        "max_nodes": max_nodes,
-                                        "label_filter": workspace_label_raw,
-                                    },
-                                )
-                                record = await result_set.single()
-                            finally:
-                                if result_set:
-                                    await result_set.consume()
+                            node_info = full_record["node_info"][:max_nodes]
+                            kept_ids = {info["node"].id for info in node_info}
+                            record = {
+                                "node_info": node_info,
+                                "relationships": [
+                                    rel
+                                    for rel in full_record["relationships"]
+                                    if rel.start_node.id in kept_ids
+                                    and rel.end_node.id in kept_ids
+                                ],
+                            }
                     finally:
                         if full_result:
                             await full_result.consume()
