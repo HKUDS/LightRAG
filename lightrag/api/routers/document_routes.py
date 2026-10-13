@@ -5427,9 +5427,37 @@ def create_document_routes(
             out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
 
             opened = False
+            out_file = None
+            pending_cancel = None
+
+            async def settle_file_io(operation):
+                # Cancelling aiofiles does not stop its executor thread. Settle
+                # each operation before closing/unlinking or releasing admission.
+                nonlocal pending_cancel
+                future = asyncio.ensure_future(operation)
+                future.add_done_callback(_consume_future_exception)
+                pending_cancel = await _wait_deferring_cancellation(
+                    future, pending_cancel
+                )
+                if pending_cancel is not None:
+                    if not future.cancelled() and future.exception() is not None:
+                        logger.error(
+                            f"File IO failed while cancelling upload {safe_filename}: "
+                            f"{future.exception()}"
+                        )
+                    raise pending_cancel
+                return future.result()
+
+            async def open_output():
+                nonlocal opened, out_file
+                out_file = await out_file_context.__aenter__()
+                # Record ownership inside the protected operation, including
+                # when cancellation arrives before __aenter__ returns to us.
+                opened = True
+
             try:
-                async with out_file_context as out_file:
-                    opened = True
+                try:
+                    await settle_file_io(open_output())
                     while True:
                         # Read chunk from upload stream
                         chunk = await file.read(chunk_size)
@@ -5447,11 +5475,21 @@ def create_document_routes(
                                 break
 
                         # Write chunk to file
-                        await out_file.write(chunk)
+                        await settle_file_io(out_file.write(chunk))
+                except asyncio.CancelledError as exc:
+                    pending_cancel = pending_cancel or exc
+                    raise
+                finally:
+                    if opened:
+                        await settle_file_io(
+                            out_file_context.__aexit__(None, None, None)
+                        )
 
-            except OSError as e:
+            except BaseException as e:
                 if not opened:
-                    if isinstance(e, FileExistsError) or e.errno == errno.ELOOP:
+                    if isinstance(e, OSError) and (
+                        isinstance(e, FileExistsError) or e.errno == errno.ELOOP
+                    ):
                         # The O_EXCL/O_NOFOLLOW conflict this opener exists to
                         # enforce (name already taken, or refused to follow a
                         # symlink). No file was created.
@@ -5466,12 +5504,9 @@ def create_document_routes(
                     # ENOSPC/EDQUOT, read-only filesystem, ...) rather than a
                     # name conflict. No file was created, nothing to clean up.
                     raise
-                # Failure after the file was already created (e.g. ENOSPC/EIO
-                # during write or close) is a server-side fault, not a
-                # client-fixable conflict -- clean up the partial file so a
-                # retry isn't permanently blocked by the exclusive-create
-                # check, then let it propagate to the endpoint's
-                # internal_server_error(e) path.
+                # Every failed copy, including cancellation or a broken read
+                # stream, must remove the file this request exclusively created.
+                # Otherwise scan can ingest truncated bytes as a complete source.
                 try:
                     file_path.unlink()
                 except OSError as cleanup_error:
