@@ -199,8 +199,10 @@ class MinerUIRBuilder:
             placeholder_counter += 1
             return f"{prefix}{placeholder_counter}"
 
-        # Heading hierarchy stack — index = level-1 (level 1 lives at [0]).
-        heading_stack: list[str] = []
+        # Heading hierarchy stack of (level, heading) with strictly increasing
+        # levels, so it holds only true ancestors even when levels skip or
+        # the document starts below level 1.
+        heading_stack: list[tuple[int, str]] = []
 
         # Current-block accumulator. The block is materialized when the next
         # heading arrives (or at end-of-document). The initial block is the
@@ -322,9 +324,10 @@ class MinerUIRBuilder:
                 # Heading hierarchy is updated unconditionally so deeper
                 # parents resolve correctly once the next real body item
                 # opens a fresh block.
-                heading_stack = heading_stack[: max(heading_level - 1, 0)]
-                parents = [h for h in heading_stack if h]
-                heading_stack.append(clean_heading)
+                while heading_stack and heading_stack[-1][0] >= heading_level:
+                    heading_stack.pop()
+                parents = [h for _, h in heading_stack if h]
+                heading_stack.append((heading_level, clean_heading))
 
                 # Every recognized heading starts its own block: flush the
                 # in-flight block (whether it had body or was a bare heading)
