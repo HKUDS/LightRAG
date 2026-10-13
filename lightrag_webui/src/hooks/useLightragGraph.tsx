@@ -148,8 +148,6 @@ export type EdgeType = {
 }
 
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
-  let rawData: any
-
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
   useGraphStore.getState().setLabelsFetchAttempted(true)
@@ -157,19 +155,9 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   // If label is empty, use default label '*'
   const queryLabel = label || '*'
 
-  try {
-    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`)
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes)
-  } catch (e) {
-    // Record the backend error, then RETHROW so the caller's .catch() runs its
-    // bounded-retry path. Returning null here would resolve the promise
-    // "successfully" and the .then() handler would treat a transient
-    // network/API failure as an empty graph (reset state, render the "Graph Is
-    // Empty" placeholder, stamp the signature as succeeded) — and retries would
-    // never fire. A genuinely empty result still resolves normally below.
-    useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!')
-    throw e
-  }
+  console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`)
+  // The owning request reports failures; a superseded fetch must not publish errors.
+  const rawData: any = await queryGraphs(queryLabel, maxDepth, maxNodes)
 
   let rawGraph = null
 
@@ -245,7 +233,10 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 }
 
 // Create a new graph instance with the raw graph data
-const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGraph | null> => {
+const createSigmaGraph = async (
+  rawGraph: RawGraph | null,
+  isCurrent: () => boolean
+): Promise<UndirectedGraph | null> => {
   if (!rawGraph || !rawGraph.nodes.length) return null
 
   const graph = new UndirectedGraph()
@@ -276,9 +267,6 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
       borderColor: NODE_BORDER_COLOR
     })
   }
-
-  // Single store write for the whole build (keeps the Legend in sync)
-  typeColors.commit()
 
   rawGraph.edgeDynamicIdMap = Object.create(null) as Record<string, number>
   let skippedEdges = 0
@@ -322,6 +310,9 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     console.warn(`[useLightragGraph] ${skippedEdges} edges could not be added to the graph`)
   }
 
+  // Building yields to the browser; publish colors only while this query still owns the result.
+  if (!isCurrent()) return null
+  typeColors.commit()
   return graph
 }
 
@@ -378,10 +369,31 @@ const useLightrangeGraph = () => {
   })
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [retryNonce, setRetryNonce] = useState(0)
+  const mountedRef = useRef(false)
+  const requestIdRef = useRef(0)
+  const requestedSignatureRef = useRef<string | null>(null)
+  const queryGenerationRef = useRef(0)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestIdRef.current += 1
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
+      if (fetchInProgressRef.current) {
+        fetchInProgressRef.current = false
+        useGraphStore.getState().setIsFetching(false)
+        useGraphStore.getState().setGraphDataFetchAttempted(false)
+      }
+    }
+  }, [])
 
   // Reset graph when query label is cleared
   useEffect(() => {
-    if (!queryLabel && (rawGraph !== null || sigmaGraph !== null)) {
+    if (!queryLabel && !emptyDataHandledRef.current && (rawGraph !== null || sigmaGraph !== null)) {
       const state = useGraphStore.getState()
       state.reset()
       state.setGraphDataFetchAttempted(false)
@@ -393,6 +405,19 @@ const useLightrangeGraph = () => {
 
   // Graph data fetching logic
   useEffect(() => {
+    const fetchSignature = `${queryLabel}|${maxQueryDepth}|${maxNodes}|v${graphDataVersion}`
+    if (requestedSignatureRef.current !== fetchSignature) {
+      requestedSignatureRef.current = fetchSignature
+      queryGenerationRef.current += 1
+      emptyDataHandledRef.current = false
+      retryStateRef.current = { signature: '', attempts: 0 }
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
+      useGraphStore.getState().setGraphDataFetchAttempted(false)
+    }
+
     // Skip if fetch is already in progress
     if (fetchInProgressRef.current) {
       return
@@ -412,7 +437,6 @@ const useLightrangeGraph = () => {
       // with an identical signature, some code path reset
       // graphDataFetchAttempted after a completed fetch — refetching would
       // start an infinite request loop against the backend.
-      const fetchSignature = `${queryLabel}|${maxQueryDepth}|${maxNodes}|v${graphDataVersion}`
       if (lastFetchSignatureRef.current === fetchSignature) {
         console.warn(
           '[useLightragGraph] Suppressed duplicate graph fetch:',
@@ -432,6 +456,16 @@ const useLightrangeGraph = () => {
 
       // Set flags
       fetchInProgressRef.current = true
+      const requestId = ++requestIdRef.current
+      const queryGeneration = queryGenerationRef.current
+      const isCurrent = () => {
+        const settings = useSettingsStore.getState()
+        const graph = useGraphStore.getState()
+        return mountedRef.current && requestIdRef.current === requestId &&
+          queryGenerationRef.current === queryGeneration &&
+          settings.queryLabel === queryLabel && settings.graphQueryMaxDepth === maxQueryDepth &&
+          settings.graphMaxNodes === maxNodes && graph.graphDataVersion === graphDataVersion
+      }
       useGraphStore.getState().setGraphDataFetchAttempted(true)
 
       const state = useGraphStore.getState()
@@ -475,18 +509,13 @@ const useLightrangeGraph = () => {
       // 3. Process data
       dataPromise
         .then(async (result) => {
+          if (!isCurrent()) return
           const state = useGraphStore.getState()
           const data = result?.rawGraph
 
-          if (result?.is_truncated) {
-            toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'))
-          }
-
-          // Reset state
-          state.reset()
-
           // Check if data is empty or invalid
           if (!data || !data.nodes || data.nodes.length === 0) {
+            state.reset()
             // Create a graph with a single "Graph Is Empty" node
             const emptyGraph = new UndirectedGraph()
 
@@ -536,14 +565,17 @@ const useLightrangeGraph = () => {
             // here would otherwise be indistinguishable from a fetch error.
             let newSigmaGraph: UndirectedGraph | null
             try {
-              newSigmaGraph = await createSigmaGraph(data)
+              newSigmaGraph = await createSigmaGraph(data, isCurrent)
             } catch (buildError) {
               console.error('[useLightragGraph] createSigmaGraph failed (graph build):', buildError)
               throw new GraphBuildError(buildError)
             }
 
+            if (!isCurrent()) return
+
             try {
               // Set new graph data
+              state.reset()
               state.setSigmaGraph(newSigmaGraph)
               state.setRawGraph(data)
               state.setGraphIsEmpty(false)
@@ -566,6 +598,10 @@ const useLightrangeGraph = () => {
             state.setMoveToSelectedNode(true)
           }
 
+          if (result?.is_truncated) {
+            toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'))
+          }
+
           // Fetch succeeded: stamp the signature so a later reset of
           // graphDataFetchAttempted cannot re-issue this completed query in a
           // loop, and clear the retry budget.
@@ -575,8 +611,6 @@ const useLightrangeGraph = () => {
           // Update flags
           dataLoadedRef.current = true
           initialLoadRef.current = true
-          fetchInProgressRef.current = false
-          state.setIsFetching(false)
 
           // Mark empty data as handled if data is empty and query label is empty
           if ((!data || !data.nodes || data.nodes.length === 0) && !currentQueryLabel) {
@@ -584,6 +618,7 @@ const useLightrangeGraph = () => {
           }
         })
         .catch((error) => {
+          if (!isCurrent()) return
           console.error(
             '[useLightragGraph] graph load failed (see preceding log for stage):',
             error
@@ -591,9 +626,7 @@ const useLightrangeGraph = () => {
 
           // Reset state on error
           const state = useGraphStore.getState()
-          state.setIsFetching(false)
           dataLoadedRef.current = false
-          fetchInProgressRef.current = false
           state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
 
           // Terminal failure: the network fetch succeeded but building/applying
@@ -612,6 +645,8 @@ const useLightrangeGraph = () => {
             )
             return
           }
+
+          useBackendState.getState().setErrorMessage(errorMessage(error), 'Query Graphs Error!')
 
           // Bounded retry. graphDataFetchAttempted is KEPT true here so the
           // immediate re-fire (isFetching flips false -> effect deps change)
@@ -636,6 +671,7 @@ const useLightrangeGraph = () => {
             }
             retryTimerRef.current = setTimeout(() => {
               retryTimerRef.current = null
+              if (!isCurrent()) return
               // Re-open the gate and bump the nonce (NOT graphDataVersion, so
               // the signature — and therefore the retry counter — is stable)
               // to re-run the fetch effect for the same query.
@@ -660,18 +696,18 @@ const useLightrangeGraph = () => {
             )
           }
         })
+        .finally(() => {
+          if (!mountedRef.current || requestIdRef.current !== requestId) return
+          fetchInProgressRef.current = false
+          if (!isCurrent()) {
+            // A newer selection arrived during the single in-flight request.
+            useGraphStore.getState().setGraphDataFetchAttempted(false)
+            setRetryNonce((n) => n + 1)
+          }
+          useGraphStore.getState().setIsFetching(false)
+        })
     }
   }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, retryNonce])
-
-  // Clean up any pending backoff retry timer on unmount.
-  useEffect(() => {
-    return () => {
-      if (retryTimerRef.current !== null) {
-        clearTimeout(retryTimerRef.current)
-        retryTimerRef.current = null
-      }
-    }
-  }, [])
 
   // Handle node expansion
   useEffect(() => {
