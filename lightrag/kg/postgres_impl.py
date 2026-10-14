@@ -978,11 +978,9 @@ class PostgreSQLDB:
     ) -> None:
         """Record whether pgvector has iterative index scans (>= 0.8.0).
 
-        Decided from the extension version once at startup instead of from a
-        failed ``SET``: on a fresh connection an unknown ``hnsw.*`` parameter is
-        accepted as a placeholder and dropped later with only a server-side
-        WARNING, so a client-side exception cannot be relied on. An unreadable
-        version leaves the flag ``None`` and the ``SET`` is still attempted.
+        Never fatal. An unreadable version leaves the flag ``None``, and the
+        ``SET LOCAL`` is then still attempted. Why the version, not a failed
+        ``SET``, decides: docs/design/PgVectorFilteredSearch.md.
         """
         if getattr(self, "vector_index_type", None) not in _ITERATIVE_SCAN_SQL:
             return
@@ -1397,31 +1395,19 @@ class PostgreSQLDB:
     def iterative_scan_statement(self) -> str | None:
         """Return the ``SET LOCAL`` that lets a filtered ANN scan keep going.
 
-        The vector queries filter on ``workspace`` while the vector index is
-        global, so without iterative scan a workspace holding a small share of
-        the table can get 0 rows and no error. ``None`` means nothing to apply:
-        an index type this does not cover, or pgvector < 0.8.
+        ``None`` means nothing to apply: an index type this does not cover
+        (VCHORDRQ), or pgvector < 0.8.
 
         Rules:
 
-        * HNSW / HNSW_HALFVEC use ``strict_order``, which keeps the distance
-          bound and nearest-first order the callers rely on. IVFFLAT accepts
-          only ``relaxed_order``, whose rows can arrive out of order: the
-          IVFFLAT query must be wrapped by ``_with_distance_resort``.
-          VCHORDRQ is not covered.
-        * Apply it with ``_fetch_with_iterative_scan`` — ``SET LOCAL`` in the
-          query's own transaction. A session ``SET`` is not enough behind a
-          transaction-pooling proxy, which may serve the next statement from
-          another backend.
-        * No ``LOAD 'vector'``: ``SET`` of a not-yet-loaded extension GUC is
-          kept as a placeholder and adopted when the library loads, while
-          ``LOAD`` is refused for non-superusers (managed databases).
-        * pgvector < 0.8 is decided once from the extension version at startup;
-          an unknown ``hnsw.*`` SET cannot be detected from the exception.
+        * Apply it only through ``_fetch_with_iterative_scan``, in the query's
+          own transaction. Never as a session ``SET`` and never after a
+          ``LOAD 'vector'``.
+        * IVFFLAT yields ``relaxed_order`` rows: its query must go through
+          ``_with_distance_resort``.
+        * This is a mitigation, not a guarantee; the scan stays bounded.
 
-        This is a mitigation, not a guarantee: the scan is still bounded by
-        ``hnsw.max_scan_tuples`` and ``work_mem``. Measurements, the residual
-        cases and the rejected alternatives are in
+        Mechanism, measurements and residual cases:
         docs/design/PgVectorFilteredSearch.md.
         """
         if getattr(self, "iterative_scan_supported", None) is False:
