@@ -63,6 +63,7 @@ from lightrag.chunker.registry import (
     accepts_chunking_context,
     callback_supports_context,
     invoke_chunker,
+    resolve_sidecar_location,
 )
 
 if TYPE_CHECKING:
@@ -104,4 +105,5 @@ __all__ = [
     "chunking_by_semantic_vector",
     "chunking_by_token_size",
     "invoke_chunker",
+    "resolve_sidecar_location",
 ]

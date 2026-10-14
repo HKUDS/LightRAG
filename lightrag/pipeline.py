@@ -157,6 +157,7 @@ from lightrag.utils_pipeline import (
     resolve_existing_doc_source,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
+    SIDECAR_LOCATION_UNKNOWN,
     source_candidate_set_lock,
     strip_lightrag_doc_prefix,
 )
@@ -5106,15 +5107,28 @@ class _PipelineMixin:
                 doc_process_opts = parse_process_options(
                     (content_data or {}).get("process_options", "")
                 )
-                chunking_context = ChunkingContext(
-                    doc_id=doc_id,
-                    file_path=str(file_path),
-                    sidecar_location=(content_data or {}).get("sidecar_location"),
-                    parse_format=(content_data or {}).get("parse_format")
-                    or FULL_DOCS_FORMAT_RAW,
-                    parse_engine=(content_data or {}).get("parse_engine"),
-                    process_options=(content_data or {}).get("process_options") or "",
-                )
+
+                def build_chunking_context() -> ChunkingContext:
+                    """Describe this document to a custom chunking callback.
+
+                    Call it only where user-supplied code runs: built-in
+                    chunkers and the C fallback to fixed-token never build a
+                    context. An absent, empty or unknown-source sidecar
+                    location arrives as ``None``; any other value, a non-local
+                    scheme included, is passed through verbatim.
+                    """
+                    row = content_data or {}
+                    sidecar_location = row.get("sidecar_location") or None
+                    if sidecar_location == SIDECAR_LOCATION_UNKNOWN:
+                        sidecar_location = None
+                    return ChunkingContext(
+                        doc_id=doc_id,
+                        file_path=str(file_path),
+                        sidecar_location=sidecar_location,
+                        parse_format=row.get("parse_format") or FULL_DOCS_FORMAT_RAW,
+                        parse_engine=row.get("parse_engine") or None,
+                        process_options=row.get("process_options") or "",
+                    )
 
                 # Resume guard: if content was already extracted under
                 # earlier process_options, purge stale chunks + KG before
@@ -5309,6 +5323,10 @@ class _PipelineMixin:
                             logger.info(
                                 f"Chunking C(custom): {chunk_opts_str}, doc_id: {doc_id}"
                             )
+                            # Built outside the try: a context that cannot be
+                            # built is not a callback failure and must not be
+                            # reported as one.
+                            c_context = build_chunking_context()
                             try:
                                 # Keep the documented extension point on the
                                 # event loop; synchronous factories may touch
@@ -5318,7 +5336,7 @@ class _PipelineMixin:
                                 chunking_result = invoke_chunker(
                                     self.chunking_func,
                                     *c_args,
-                                    context=chunking_context,
+                                    context=c_context,
                                 )
                                 if inspect.isawaitable(chunking_result):
                                     chunking_result = await chunking_result
@@ -5540,7 +5558,7 @@ class _PipelineMixin:
                         chunking_result = invoke_chunker(
                             self.chunking_func,
                             *legacy_args,
-                            context=chunking_context,
+                            context=build_chunking_context(),
                         )
                     chunk_method = "legacy_chunking_func"
                     sidecar_backfill_eligible = is_builtin_chunker

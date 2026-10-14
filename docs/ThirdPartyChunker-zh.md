@@ -67,13 +67,37 @@ def chunk(tokenizer, content, split_by_character, split_by_character_only,
     ...
 ```
 
-`sidecar_location` 是解析 sidecar 目录的持久 URI。需要本地路径时，请使用
-`lightrag.utils_pipeline.resolve_sidecar_uri` 解析，不要直接把任意 URI scheme
-转换为 `pathlib.Path`。
+`sidecar_location` 是解析 sidecar 目录的持久 URI；文档没有 sidecar 时为
+`None`：缺失、为空或为 `unknown_source` 的位置都以 `None` 传入，其它值（包括
+`s3://` 等非本地 scheme）原样传入。请使用 `resolve_sidecar_location` 解析，
+不要把 URI 直接转换为 `pathlib.Path`：
+
+```python
+from lightrag.chunker import resolve_sidecar_location
+
+sidecar_dir = resolve_sidecar_location(context.sidecar_location)
+```
+
+没有已知 sidecar 时返回 `None`；本地 `file://` URI 返回对应的 `Path`，不检查
+目录是否仍然存在。返回的路径在运行 LightRAG 的平台上始终是绝对路径。在
+Windows 上，两种盘符形式都会解析为对应的盘符路径：标准的 `file:///C:/...`，
+以及 LightRAG 在该平台写入的百分号编码形式（`file://C%3A%5C...`）。其它
+scheme、裸路径，或指向远程主机的 `file://` URI 会抛出 `ValueError`，而不会被
+重新解释为本地路径；路径为空、为相对路径、相对于盘符（`C:tmp`），或为网络
+（UNC）路径（例如 `file:////server/share/`）的本地 URI 同样会抛出，因为它们都会
+被解析成另一个目录。只在其它平台上才是绝对路径的位置也会抛出：盘符路径在
+Linux 上读取时是相对路径，POSIX 路径在 Windows 上读取时会从当前目录获取盘符。分块器必须能处理
+`None`（原始文本插入没有 sidecar），并自行决定无法解析的位置是否属于致命错误。
+
+另有两个字段需要注意。`parse_engine` 是原样传入的持久化值，或为 `None`；带参
+数配置的引擎会携带参数，例如 `mineru(lang=en)`，因此请视为不透明值，不要用
+`==` 与裸引擎名比较。`file_path` 是逻辑显示/引用名称，LightRAG 没有可用名称时
+为字面值 `unknown_source`。
 
 entry-point 插件则在 `ChunkerSpec` 中设置 `accepts_context=True`，并接收同
 样的 keyword-only `context` 参数。六个旧参数和上下文只会传入一次；上下文
-在回调期间不可变。
+在回调期间不可变。内置 F/R/V/P 分块器以及 `C` 回退到定长分块时从不接收上下
+文，因为那里没有运行自定义代码。
 
 ## Server 选择
 
