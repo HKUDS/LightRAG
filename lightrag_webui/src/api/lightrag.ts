@@ -382,6 +382,13 @@ export type LoginResponse = {
   ai_content_notice_enabled?: boolean
 }
 
+export type LangfuseTracingStatus = {
+  installed: boolean
+  configured: boolean
+  enabled: boolean
+  active: boolean
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -637,6 +644,16 @@ export const checkHealth = async (): Promise<
       message: errorMessage(error)
     }
   }
+}
+
+export const getLangfuseTracingStatus = async (): Promise<LangfuseTracingStatus> => {
+  const response = await axiosInstance.get('/observability/langfuse/tracing')
+  return response.data
+}
+
+export const updateLangfuseTracing = async (enabled: boolean): Promise<LangfuseTracingStatus> => {
+  const response = await axiosInstance.put('/observability/langfuse/tracing', { enabled })
+  return response.data
 }
 
 /**

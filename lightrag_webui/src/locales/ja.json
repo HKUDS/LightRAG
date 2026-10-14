@@ -4,7 +4,12 @@
     "theme": "テーマ",
     "light": "ライト",
     "dark": "ダーク",
-    "system": "システム"
+    "system": "システム",
+    "langfuseTracing": "Langfuse トレーシング",
+    "langfuseTracingDescription": "運用者が設定した Langfuse 接続を通じて、OpenAI 互換の LLM トレースをエクスポートします。",
+    "langfuseUnavailable": "この切り替えを使用するには、オブザーバビリティ拡張をインストールし、Langfuse の認証情報を設定してください。",
+    "langfuseLoadFailed": "Langfuse トレーシングの状態を読み込めませんでした。",
+    "langfuseUpdateFailed": "Langfuse トレーシングを更新できませんでした。"
   },
   "header": {
     "documents": "ドキュメント",
