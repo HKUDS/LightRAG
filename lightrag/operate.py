@@ -3719,6 +3719,8 @@ async def merge_nodes_and_edges(
         if on_anchors_durable is not None:
             await on_anchors_durable()
 
+    entity_tasks: list[asyncio.Task] = []
+    edge_tasks: list[asyncio.Task] = []
     try:
         # Get max async tasks limit from global_config for semaphore control
         graph_max_async = global_config.get("llm_model_max_async", 4) * 2
@@ -3790,7 +3792,6 @@ async def merge_nodes_and_edges(
                         raise prefixed_exception from e
 
         # Create entity processing tasks
-        entity_tasks = []
         for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
             task = asyncio.create_task(
                 _locked_process_entity_name(entity_name, entities)
@@ -3887,7 +3888,6 @@ async def merge_nodes_and_edges(
                         raise prefixed_exception from e
 
         # Create relationship processing tasks
-        edge_tasks = []
         edge_task_labels: dict[asyncio.Task, str] = {}
         for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
             task = asyncio.create_task(_locked_process_edges(edge_key, edges))
@@ -3925,6 +3925,16 @@ async def merge_nodes_and_edges(
         # exceptions — is gone: a merge whose anchors cannot be persisted no
         # longer mutates the graph at all.
 
+    except BaseException:
+        # Scheduling yields happen before the per-phase drain helper runs.
+        # Stop every scheduled writer before recovery can observe this exit.
+        tasks = entity_tasks + edge_tasks
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     finally:
         # On EVERY exit — the inter-phase await points (sleep(0) yields,
         # status-lock acquires) sit outside any narrower handler, and a
@@ -4633,6 +4643,14 @@ async def extract_entities(
                 first_exception, progress_prefix
             )
             raise prefixed_exception from first_exception
+    except BaseException:
+        # Cancelling the waiter does not cancel tasks passed to asyncio.wait.
+        # Drain children before the caller commits failure/recovery state.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     finally:
         # On EVERY exit — mirrors merge_nodes_and_edges. The success and
         # failure paths used to publish explicitly, but an external
