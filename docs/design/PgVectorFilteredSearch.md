@@ -119,3 +119,38 @@ When many workspaces share one vector table, prefer **`HNSW` or
 re-sort, no ordering caveat. `IVFFLAT` is protected too but relies on the
 re-sort wrapper and on `ivfflat.probes` for recall. `VCHORDRQ` is unexamined.
 A single-workspace deployment is not exposed to this defect whatever the index.
+
+### When the shared table is the wrong shape: Qdrant
+
+The defect exists because workspaces share one global ANN index and the
+workspace filter runs after it. Iterative scan reduces the symptom; it does not
+remove the shape. For a deployment with many workspaces, or many small ones next
+to a large one, the backend built around tenant-local search is the structural
+answer:
+
+* `QdrantVectorDBStorage` keeps all workspaces in one collection but tags every
+  point with `workspace_id`, indexes that field as a tenant
+  (`KeywordIndexParams(is_tenant=True)`), and builds the collection with
+  `HnswConfigDiff(m=0, payload_m=16)`: **no global graph, one graph per tenant**.
+  A workspace-filtered query is tenant-local by construction, so it cannot hit
+  this defect and needs no scan budget. See `VectorSpaceProvenance.md`.
+* `MilvusVectorDBStorage` is not exposed either, for a different reason: it
+  uses one collection per workspace (`{workspace}_{namespace}_{model_suffix}`),
+  so there is no shared index. Its cost is collection count, not recall.
+
+What this is **not** a recommendation about:
+
+* **It is about multiple workspaces, not multiple Gunicorn workers.** Worker
+  processes only need a network-reachable store; PostgreSQL, Qdrant and Milvus
+  are all fine, and the file-backed stores are the ones that are not.
+* **It is not free.** PGVectorStorage can share one PostgreSQL with the KV,
+  graph (AGE) and doc-status stores; Qdrant adds a second system to operate,
+  back up and monitor. Changing the vector backend means rebuilding the vector
+  data (a full re-embedding, e.g. `lightrag-rebuild-vdb` against the new backend); the other three stores are unaffected.
+* **Latency and recall were not measured here.** The Qdrant argument is
+  structural (what the index can and cannot return), not a benchmark.
+
+Pick PostgreSQL + HNSW (pgvector >= 0.8) when workspaces are few or large and a
+single database is worth more than tenant-local search; pick Qdrant when the
+workspace count is large, sizes are very uneven, or the defect above has
+already been observed.
