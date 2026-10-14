@@ -815,7 +815,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )  # higher priority for query
             embedding = embedding_result[0]
 
-        results = self._client.query_points(
+        # query_points() is a synchronous network round trip; running it
+        # directly here would occupy the whole asyncio event loop for its
+        # duration, stalling every other coroutine in the process (other
+        # concurrent queries, pipeline background work) until Qdrant
+        # responds. Offload it to a worker thread instead.
+        response = await asyncio.to_thread(
+            self._client.query_points,
             collection_name=self.final_namespace,
             query=embedding,
             limit=top_k,
@@ -824,7 +830,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             query_filter=models.Filter(
                 must=[workspace_filter_condition(self.effective_workspace)]
             ),
-        ).points
+        )
+        results = response.points
 
         return [
             {
