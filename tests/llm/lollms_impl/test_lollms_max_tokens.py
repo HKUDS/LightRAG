@@ -44,11 +44,11 @@ class StreamingFakeResponse:
 
     @property
     def content(self):
-        async def lines():
-            yield b"first chunk\n"
-            yield b"second chunk\n"
+        return self
 
-        return lines()
+    async def iter_any(self):
+        yield b"first chunk\n"
+        yield b"second chunk\n"
 
 
 class StreamingFakeSession:
@@ -138,6 +138,6 @@ async def test_stream_keeps_client_session_open_while_consumed(monkeypatch):
         stream=True,
     )
 
-    assert [chunk async for chunk in stream] == ["first chunk", "second chunk"]
+    assert [chunk async for chunk in stream] == ["first chunk\n", "second chunk\n"]
     assert len(StreamingFakeSession.instances) == 1
     assert StreamingFakeSession.instances[0].closed
