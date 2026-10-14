@@ -618,12 +618,13 @@ class PostgreSQLDB:
         )
 
         async def _init_connection(connection: asyncpg.Connection) -> None:
-            """Initialize each new connection with pgvector codec and VCHORDRQ session params.
+            """Initialize each new connection with pgvector codec and session params.
 
             Called once per physical connection creation (not on pool reuse).
             register_vector is a Python-level codec registration that survives
-            asyncpg's RESET ALL; VCHORDRQ GUCs do not — they are re-applied in
-            _reset_connection after each pool release.
+            asyncpg's RESET ALL; the HNSW iterative-scan and VCHORDRQ GUCs do
+            not — they are re-applied in _reset_connection after each pool
+            release.
             """
             if self.enable_vector:
                 if not pm.is_installed("pgvector"):
@@ -668,10 +669,8 @@ class PostgreSQLDB:
                 )
                 raise
 
-            # RESET ALL clears session GUCs; restore the session settings this
-            # backend depends on afterward — HNSW scan behaviour included, since
-            # without it a filtered search silently returns nothing for a
-            # workspace that holds a minority of the rows.
+            # RESET ALL clears session GUCs; restore the ones this backend
+            # depends on (HNSW iterative scan, VCHORDRQ) afterward.
             if self.enable_vector:
                 await self.configure_hnsw_iterative_scan(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
@@ -1321,44 +1320,38 @@ class PostgreSQLDB:
 
             self._ensured_age_graphs.add(graph_name)
 
-    async def configure_hnsw_iterative_scan(self, connection: asyncpg.Connection) -> None:
-        """Let the HNSW scan continue past candidates a filter rejects.
+    async def configure_hnsw_iterative_scan(
+        self, connection: asyncpg.Connection
+    ) -> None:
+        """Let a filtered HNSW scan continue past candidates the filter rejects.
 
-        The chunk query is ``WHERE workspace = $1 AND content_vector <=> $q < $t
-        ORDER BY content_vector <=> $q LIMIT $k``, while the HNSW index is
-        **global** — one table holds every workspace's vectors. The planner may
-        walk the index in distance order and apply the workspace filter
-        afterwards, in which case it only ever sees the ~``ef_search``
-        candidates the index yielded. For a workspace holding a small share of
-        the table that is **0 rows, with no error**: measured on a deployment
-        with 70,654 chunks for one workspace out of 935,602 rows (7.5%), a
-        question whose nearest chunk sat at distance 0.43 against a 0.8 bound
-        returned nothing through ``_dense_query`` and 5-20 rows once the scan
-        was allowed to continue past rejected candidates.
+        The vector queries filter on ``workspace`` while the HNSW index is global,
+        so without iterative scan a workspace holding a small share of the table
+        can get 0 rows and no error. ``strict_order`` (not ``relaxed_order``)
+        keeps the distance bound and nearest-first ordering the callers rely on.
 
-        ``strict_order`` rather than ``relaxed_order``: the caller depends on the
-        distance bound and on nearest-first ordering, and relaxed order may
-        return rows outside the requested order.
+        Rules:
 
-        Best-effort on purpose: pgvector < 0.8 has no such GUC, and a deployment
-        whose HNSW lives elsewhere must not fail to connect over it. A failure
-        here leaves today's behaviour, which is what every query had before.
+        * HNSW index types only. IVFFlat has its own GUC, VCHORDRQ needs none.
+        * Plain ``SET``; do not ``LOAD 'vector'`` first. ``SET`` of a not-yet-
+          loaded extension GUC is kept as a placeholder and adopted when the
+          library loads, while ``LOAD`` is refused for non-superusers
+          (managed databases) and would skip the ``SET`` silently.
+        * Session state: ``RESET ALL`` clears it, so ``_reset_connection`` must
+          call this again.
+        * Best-effort: pgvector < 0.8 must not fail the connection; the failure
+          is logged at warning level because the symptom is otherwise silent.
 
-        ``LOAD 'vector'`` first: the GUC is registered by the extension's shared
-        library when it loads into the backend. With
-        ``shared_preload_libraries`` not naming ``vector`` — the common
-        deployment — a fresh connection does not have the parameter yet, and
-        ``SET`` is then accepted as an unknown placeholder (a silent no-op)
-        rather than taking effect.
+        This is a mitigation, not a guarantee: the scan is still bounded by
+        ``hnsw.max_scan_tuples`` and ``work_mem``. Measurements, the residual
+        cases and the rejected alternatives are in
+        docs/design/PgVectorFilteredSearch.md.
         """
-        try:
-            await connection.execute("LOAD 'vector'")
-        except Exception as exc:  # noqa: BLE001 - see "best-effort" above
-            logger.debug(f"PostgreSQL, LOAD 'vector' skipped: {exc}")
+        if getattr(self, "vector_index_type", None) not in ("HNSW", "HNSW_HALFVEC"):
             return
         try:
             await connection.execute("SET hnsw.iterative_scan = strict_order")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
             logger.warning(
                 f"PostgreSQL, hnsw.iterative_scan not applied ({exc}); "
                 "filtered vector search may return fewer rows than exist"

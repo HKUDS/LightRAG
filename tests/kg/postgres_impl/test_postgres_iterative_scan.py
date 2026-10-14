@@ -1,71 +1,152 @@
-"""过滤式向量检索：HNSW 迭代扫描的会话设置必须真的下发到每条连接。
+"""HNSW iterative scan must be applied on every pooled connection.
 
-回归点（2026-09-29 实测）：分块检索是
-``WHERE workspace = $1 AND content_vector <=> $q < $t ORDER BY … LIMIT $k``，
-而 HNSW 索引是**全局**的（一张表装所有 workspace 的向量）。规划器可以先按距离走索引、
-再按 workspace 过滤——那样只看到索引吐出的 ~``ef_search`` 个候选，对"少数派 workspace"
-结果是 **0 行且不报错**：
-
-* 5009 代码库 70,654 块（占 935,602 行的 7.5%），问一个最近邻距离 0.43（阈值 0.8）
-  的问题 → `_dense_query` 返回 0；
-* 同一现象在跨库联动侧早已踩过（``application/scoped_retrieval.py`` 用
-  ``MATERIALIZED`` 把范围先物化），但代码库自己的问答没人验证过，所以一直没人发现。
-
-修法：连接初始化时 ``LOAD 'vector'`` + ``SET hnsw.iterative_scan = strict_order``，
-让索引扫描继续越过被过滤掉的候选；池回收（``RESET ALL``）后必须重放，否则下一位借出者
-又回到"静默返回空"。这两个点各一条测试，因为第二种失效只在复用连接时才出现。
+The vector queries filter on ``workspace`` while the HNSW index is global, so
+without ``hnsw.iterative_scan`` a workspace that holds a minority of the rows
+can get 0 rows and no error.  The setting is session state: it has to be issued
+on a new connection and again after ``RESET ALL`` on pool release.  See
+``docs/design/PgVectorFilteredSearch.md``.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from lightrag.kg.postgres_impl import PostgreSQLDB
 
+SET_SQL = "SET hnsw.iterative_scan = strict_order"
 
-def _db() -> PostgreSQLDB:
-    db = PostgreSQLDB.__new__(PostgreSQLDB)  # 不走 __init__：只测配置方法本身
+
+def _db(index_type: str | None = "HNSW", enable_vector: bool = True) -> PostgreSQLDB:
+    # Bypass __init__: only the attributes the code under test reads are set.
+    db = PostgreSQLDB.__new__(PostgreSQLDB)
     db.workspace = "gw"
+    db.enable_vector = enable_vector
+    db.vector_index_type = index_type
     return db
 
 
+def _statements(connection: AsyncMock) -> list[str]:
+    return [call.args[0] for call in connection.execute.await_args_list]
+
+
+@pytest.mark.offline
 @pytest.mark.asyncio
-async def test_iterative_scan_is_set_after_load() -> None:
+@pytest.mark.parametrize("index_type", ["HNSW", "HNSW_HALFVEC"])
+async def test_hnsw_sets_iterative_scan_without_load(index_type) -> None:
     connection = AsyncMock()
-    db = _db()
 
-    await db.configure_hnsw_iterative_scan(connection)
+    await _db(index_type).configure_hnsw_iterative_scan(connection)
 
-    statements = [call.args[0] for call in connection.execute.await_args_list]
-    # LOAD 在前：GUC 由扩展的共享库注册，本部署 shared_preload_libraries 只有 age，
-    # 不先 LOAD 的话 SET 会被当成未知占位符**静默忽略**（看起来像成功）。
-    assert statements == ["LOAD 'vector'", "SET hnsw.iterative_scan = strict_order"]
+    # A bare SET: LOAD 'vector' is refused for non-superusers (managed
+    # databases), and a refused LOAD must not take the SET down with it.
+    assert _statements(connection) == [SET_SQL]
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
-async def test_missing_pgvector_or_guc_is_not_fatal() -> None:
-    """老 pgvector 没有这个 GUC，不该因此连不上库（退回旧行为，但要留痕）。"""
+@pytest.mark.parametrize("index_type", ["IVFFLAT", "VCHORDRQ", None])
+async def test_non_hnsw_index_issues_nothing(index_type) -> None:
     connection = AsyncMock()
-    connection.execute.side_effect = [None, Exception("unrecognized configuration parameter")]
-    db = _db()
 
-    # LightRAG 的 logger 自带 handler，caplog 抓不到 —— 直接盯调用
+    await _db(index_type).configure_hnsw_iterative_scan(connection)
+
+    assert _statements(connection) == []
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_missing_guc_is_not_fatal_but_is_logged() -> None:
+    """pgvector < 0.8 has no such GUC: connect anyway, leave a trace."""
+    connection = AsyncMock()
+    connection.execute.side_effect = Exception("unrecognized configuration parameter")
+
+    # LightRAG's logger does not propagate, so caplog sees nothing.
     with patch("lightrag.kg.postgres_impl.logger") as logger:
-        await db.configure_hnsw_iterative_scan(connection)  # 不抛
+        await _db().configure_hnsw_iterative_scan(connection)  # must not raise
 
     assert logger.warning.called
     assert "iterative_scan" in str(logger.warning.call_args)
 
 
+async def _pool_callbacks(db: PostgreSQLDB):
+    """Run ``initdb`` against a stubbed asyncpg and return (init, reset)."""
+    for name, value in {
+        "user": "u",
+        "password": "p",
+        "database": "d",
+        "host": "h",
+        "port": 5432,
+        "max": 2,
+        "statement_cache_size": None,
+        "ssl_mode": None,
+        "server_settings": None,
+        "connection_retry_attempts": 1,
+        "connection_retry_backoff": 0,
+        "connection_retry_backoff_max": 0,
+    }.items():
+        setattr(db, name, value)
+    db._transient_exceptions = (ConnectionError,)
+    db._create_ssl_context = lambda: None
+    db.configure_vector_extension = AsyncMock()
+
+    captured: dict = {}
+
+    async def fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with (
+        patch("lightrag.kg.postgres_impl.asyncpg.connect", AsyncMock()),
+        patch(
+            "lightrag.kg.postgres_impl.asyncpg.create_pool",
+            side_effect=fake_create_pool,
+        ),
+        patch("pgvector.asyncpg.register_vector", AsyncMock()),
+    ):
+        await db.initdb()
+    return captured["init"], captured["reset"]
+
+
+@pytest.mark.offline
 @pytest.mark.asyncio
-async def test_load_failure_stops_before_set() -> None:
-    """LOAD 都失败（库不在 $libdir）时不必再 SET —— 那只会是一次无声的 no-op。"""
+async def test_new_connection_gets_iterative_scan() -> None:
+    init, _ = await _pool_callbacks(_db())
     connection = AsyncMock()
-    connection.execute.side_effect = Exception("could not open extension control file")
-    db = _db()
 
-    await db.configure_hnsw_iterative_scan(connection)
+    with patch("pgvector.asyncpg.register_vector", AsyncMock()):
+        await init(connection)
 
-    assert [call.args[0] for call in connection.execute.await_args_list] == ["LOAD 'vector'"]
+    assert _statements(connection) == [SET_SQL]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_pool_reset_reapplies_iterative_scan_after_reset_all() -> None:
+    """The failure only shows on a recycled connection: RESET ALL clears it."""
+    _, reset = await _pool_callbacks(_db())
+    connection = MagicMock()
+    connection.get_reset_query.return_value = "RESET ALL"
+    connection.execute = AsyncMock()
+
+    await reset(connection)
+
+    # Cleanup first, then the setting; the other order would be undone.
+    assert [c.args[0] for c in connection.execute.await_args_list] == [
+        "RESET ALL",
+        SET_SQL,
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_vector_disabled_backend_never_touches_the_guc() -> None:
+    _, reset = await _pool_callbacks(_db(enable_vector=False))
+    connection = MagicMock()
+    connection.get_reset_query.return_value = "RESET ALL"
+    connection.execute = AsyncMock()
+
+    await reset(connection)
+
+    assert [c.args[0] for c in connection.execute.await_args_list] == ["RESET ALL"]
