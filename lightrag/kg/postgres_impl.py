@@ -444,6 +444,10 @@ class PostgreSQLDB:
             else str(_ev).lower() in ("true", "1", "yes", "on")
         )  # True for backward compatibility, can be set to False to disable vector features
         self.vector_index_type = config.get("vector_index_type")
+        # None = not probed yet; False = pgvector < 0.8 (no iterative scan GUC).
+        # Probed once by configure_vector_extension, read per connection.
+        self.hnsw_iterative_scan_supported: bool | None = None
+        self._hnsw_iterative_scan_warned = False
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
@@ -932,6 +936,41 @@ class PostgreSQLDB:
                     "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
                 )
 
+        await self._probe_hnsw_iterative_scan_support(connection)
+
+    async def _probe_hnsw_iterative_scan_support(
+        self, connection: asyncpg.Connection
+    ) -> None:
+        """Record whether pgvector has ``hnsw.iterative_scan`` (>= 0.8.0).
+
+        Decided from the extension version once at startup instead of from a
+        failed ``SET``: on a fresh connection an unknown ``hnsw.*`` parameter is
+        accepted as a placeholder and dropped later with only a server-side
+        WARNING, so a client-side exception cannot be relied on. An unreadable
+        version leaves the flag ``None`` and the ``SET`` is still attempted.
+        """
+        if getattr(self, "vector_index_type", None) not in ("HNSW", "HNSW_HALFVEC"):
+            return
+        try:
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            match = re.match(r"(\d+)\.(\d+)", str(row["extversion"])) if row else None
+        except Exception as exc:  # noqa: BLE001 - never fatal, see docstring
+            logger.debug(f"PostgreSQL, pgvector version probe skipped: {exc}")
+            return
+        if match is None:
+            return
+        supported = (int(match.group(1)), int(match.group(2))) >= (0, 8)
+        self.hnsw_iterative_scan_supported = supported
+        if not supported:
+            logger.warning(
+                f"PostgreSQL, pgvector {row['extversion']} has no "
+                "hnsw.iterative_scan (needs >= 0.8.0): a workspace holding a "
+                "minority of the rows in a shared vector table can get no "
+                "dense-search results. Upgrade pgvector."
+            )
+
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
         """Refuse AGE versions known to break PGGraphStorage, then create the extension.
@@ -1339,8 +1378,10 @@ class PostgreSQLDB:
           (managed databases) and would skip the ``SET`` silently.
         * Session state: ``RESET ALL`` clears it, so ``_reset_connection`` must
           call this again.
-        * Best-effort: pgvector < 0.8 must not fail the connection; the failure
-          is logged at warning level because the symptom is otherwise silent.
+        * Best-effort: pgvector < 0.8 must not fail the connection. That case
+          is decided once from the extension version at startup (a fresh
+          connection accepts an unknown ``hnsw.*`` SET silently); any other
+          ``SET`` failure is logged at warning level, once per instance.
 
         This is a mitigation, not a guarantee: the scan is still bounded by
         ``hnsw.max_scan_tuples`` and ``work_mem``. Measurements, the residual
@@ -1349,13 +1390,17 @@ class PostgreSQLDB:
         """
         if getattr(self, "vector_index_type", None) not in ("HNSW", "HNSW_HALFVEC"):
             return
+        if getattr(self, "hnsw_iterative_scan_supported", None) is False:
+            return  # reported once at startup by the version probe
         try:
             await connection.execute("SET hnsw.iterative_scan = strict_order")
         except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
-            logger.warning(
-                f"PostgreSQL, hnsw.iterative_scan not applied ({exc}); "
-                "filtered vector search may return fewer rows than exist"
-            )
+            if not getattr(self, "_hnsw_iterative_scan_warned", False):
+                self._hnsw_iterative_scan_warned = True
+                logger.warning(
+                    f"PostgreSQL, hnsw.iterative_scan not applied ({exc}); "
+                    "filtered vector search may return fewer rows than exist"
+                )
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
         """Configure VCHORDRQ extension for vector similarity search.

@@ -57,17 +57,91 @@ async def test_non_hnsw_index_issues_nothing(index_type) -> None:
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_missing_guc_is_not_fatal_but_is_logged() -> None:
-    """pgvector < 0.8 has no such GUC: connect anyway, leave a trace."""
+async def test_set_failure_is_not_fatal_and_logged_once() -> None:
+    """A failing SET must not fail the connection, nor flood the log."""
     connection = AsyncMock()
-    connection.execute.side_effect = Exception("unrecognized configuration parameter")
+    connection.execute.side_effect = Exception("permission denied")
+    db = _db()
 
     # LightRAG's logger does not propagate, so caplog sees nothing.
     with patch("lightrag.kg.postgres_impl.logger") as logger:
-        await _db().configure_hnsw_iterative_scan(connection)  # must not raise
+        await db.configure_hnsw_iterative_scan(connection)  # must not raise
+        await db.configure_hnsw_iterative_scan(connection)  # every pool release
 
-    assert logger.warning.called
+    assert logger.warning.call_count == 1
     assert "iterative_scan" in str(logger.warning.call_args)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_old_pgvector_skips_the_set() -> None:
+    """On a fresh connection an unknown hnsw.* SET is accepted and dropped
+    silently, so the version decides, not the exception."""
+    connection = AsyncMock()
+    db = _db()
+    db.hnsw_iterative_scan_supported = False
+
+    await db.configure_hnsw_iterative_scan(connection)
+
+    assert _statements(connection) == []
+
+
+def _version_connection(version: str | None) -> AsyncMock:
+    connection = AsyncMock()
+    connection.fetchrow.return_value = (
+        None if version is None else {"extversion": version}
+    )
+    return connection
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [("0.7.4", False), ("0.8.0", True), ("0.8.6", True), ("1.0.0", True)],
+)
+async def test_version_probe_decides_support(version, supported) -> None:
+    db = _db()
+    with patch("lightrag.kg.postgres_impl.logger") as logger:
+        await db._probe_hnsw_iterative_scan_support(_version_connection(version))
+
+    assert db.hnsw_iterative_scan_supported is supported
+    assert logger.warning.called is (not supported)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, "garbage"])
+async def test_unreadable_version_leaves_support_unknown(version) -> None:
+    db = _db()
+    db.hnsw_iterative_scan_supported = None
+
+    await db._probe_hnsw_iterative_scan_support(_version_connection(version))
+
+    assert db.hnsw_iterative_scan_supported is None  # SET is still attempted
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_version_probe_failure_is_not_fatal() -> None:
+    connection = AsyncMock()
+    connection.fetchrow.side_effect = Exception("boom")
+    db = _db()
+    db.hnsw_iterative_scan_supported = None
+
+    await db._probe_hnsw_iterative_scan_support(connection)  # must not raise
+
+    assert db.hnsw_iterative_scan_supported is None
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_version_probe_ignores_non_hnsw_index() -> None:
+    connection = _version_connection("0.7.0")
+
+    await _db("IVFFLAT")._probe_hnsw_iterative_scan_support(connection)
+
+    assert connection.fetchrow.await_count == 0
 
 
 async def _pool_callbacks(db: PostgreSQLDB):

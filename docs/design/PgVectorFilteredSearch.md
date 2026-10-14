@@ -30,6 +30,17 @@ It is session state, so it is issued on every new connection and again after
 GUC is stored as a placeholder and adopted when the library loads, whereas
 `LOAD 'vector'` is refused for non-superusers (managed databases).
 
+### Old pgvector (< 0.8)
+
+The parameter does not exist, and the failure is **silent on a new
+connection**: `SET hnsw.<unknown>` is accepted as a placeholder and only
+dropped when the library first loads, with a server-side `WARNING`; the client
+sees no exception. After the library is loaded (the pool-reset path) the same
+`SET` raises `InvalidNameError`. The outcome therefore cannot be read from the
+exception, so the extension version is probed once at startup
+(`_probe_hnsw_iterative_scan_support`): below 0.8 the `SET` is skipped and one
+warning is logged. If the version cannot be read, the `SET` is still attempted.
+
 ## Measured behaviour
 
 PostgreSQL 18.4, pgvector 0.8.6, 212,240 rows of 16-d random vectors, HNSW
@@ -59,8 +70,17 @@ giving up.
    the distance threshold (common for entities / relationships), the scan always
    runs to its budget. A ~30 ms floor replaces ~1 ms. This was measured on a
    small table; larger rows or dimensions cost more.
-3. **IVFFlat and VCHORDRQ** are not covered. IVFFlat has
-   `ivfflat.iterative_scan` (0.8+) and was left out of this change.
+3. **IVFFlat and VCHORDRQ** are not covered.
+   * IVFFlat has the same defect. It scans only `ivfflat.probes` lists
+     (default 1 of `lists`) and filters afterwards. Measured (212,240 rows,
+     `lists=100`, `LIMIT 20`, threshold loose): a 0.09% workspace (200 rows)
+     returned 2.1 rows; 0.94% (2,000) returned 19.1; 4.7% returned 20. With
+     `ivfflat.iterative_scan = relaxed_order` all three returned 20 (14.6 ms
+     for the small one vs 2.4 ms).
+   * IVFFlat accepts **only** `relaxed_order`; `strict_order` is rejected with
+     a server WARNING and ignored. Rows may then arrive out of distance order,
+     which the callers do not tolerate today, so it was not applied.
+   * VCHORDRQ filtering behaviour was not examined.
 4. **pgvector < 0.8** keeps the old behaviour (a warning is logged).
 
 ## Rejected / deferred
@@ -73,3 +93,11 @@ giving up.
   `VectorSpaceProvenance.md`), at the cost of DDL per workspace. Deferred.
 * Materialising the workspace first (`WITH scoped AS MATERIALIZED ...`): exact,
   but linear in the workspace size on every query.
+
+## Index choice for multi-workspace deployments
+
+When many workspaces share one vector table, use **`HNSW` or `HNSW_HALFVEC`
+with pgvector >= 0.8**. It is the only combination this change protects, and
+the only one with a strict-order iterative scan. `IVFFLAT` shows the same
+silent-empty result and has no strict-order remedy; `VCHORDRQ` is unexamined.
+A single-workspace deployment is not exposed to this defect whatever the index.
