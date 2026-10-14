@@ -318,6 +318,7 @@ async def openai_complete_if_cache(
     azure_deployment: str | None = None,
     api_version: str | None = None,
     image_inputs: list[Any] | None = None,
+    video_inputs: list[str | dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> str:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
@@ -325,6 +326,11 @@ async def openai_complete_if_cache(
     This function supports automatic integration of reasoning content from models that provide
     Chain of Thought capabilities. The reasoning content is seamlessly integrated into the response
     using <think>...</think> tags.
+
+    Video inputs may be URL strings (including data URLs and uploaded-file
+    references) or dictionaries with a nonempty ``url`` and endpoint-specific
+    options such as ``fps`` and ``detail``. They are sent as ``video_url``
+    content parts; the configured endpoint and model must support video input.
 
     Structured output design note:
     - This adapter supports dict-based OpenAI response_format payloads,
@@ -456,20 +462,33 @@ async def openai_complete_if_cache(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
-    if image_inputs:
-        from lightrag.llm._vision_utils import normalize_image_inputs
-
-        normalized_images = normalize_image_inputs(image_inputs)
+    if image_inputs or video_inputs:
         user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for img in normalized_images:
-            user_content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{img.mime_type};base64,{img.base64_str}"
-                    },
-                }
-            )
+        if image_inputs:
+            from lightrag.llm._vision_utils import normalize_image_inputs
+
+            for img in normalize_image_inputs(image_inputs):
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{img.mime_type};base64,{img.base64_str}"
+                        },
+                    }
+                )
+        for video in video_inputs or []:
+            if isinstance(video, str):
+                video_url = {"url": video}
+            elif isinstance(video, dict):
+                video_url = dict(video)
+            else:
+                raise TypeError("video_inputs elements must be URL strings or dicts")
+            if (
+                not isinstance(video_url.get("url"), str)
+                or not video_url["url"].strip()
+            ):
+                raise ValueError("video_inputs elements must contain a nonempty url")
+            user_content.append({"type": "video_url", "video_url": video_url})
         messages.append({"role": "user", "content": user_content})
     else:
         messages.append({"role": "user", "content": prompt})
