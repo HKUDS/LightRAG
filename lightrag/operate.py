@@ -5648,6 +5648,21 @@ async def _apply_token_truncation(
             tokenizer=tokenizer,
         )
 
+    # Entities and relations are truncated against separate budgets, so a
+    # relation can survive its own budget while one of its endpoints gets
+    # cut from entities_context by max_entity_tokens. Drop those here --
+    # otherwise the LLM (and convert_to_user_format's structured API
+    # response) receives a relationship naming an entity that never appears
+    # in the accompanying entity list.
+    if relations_context:
+        surviving_entity_names = {e["entity"] for e in entities_context}
+        relations_context = [
+            r
+            for r in relations_context
+            if r["entity1"] in surviving_entity_names
+            and r["entity2"] in surviving_entity_names
+        ]
+
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
