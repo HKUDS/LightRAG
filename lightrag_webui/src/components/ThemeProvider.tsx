@@ -1,21 +1,10 @@
-import { createContext, useEffect } from 'react'
-import { Theme, useSettingsStore } from '@/stores/settings'
+import { useEffect } from 'react'
+import { ThemeProviderContext } from '@/contexts/ThemeProviderContext'
+import { useSettingsStore } from '@/stores/settings'
 
 type ThemeProviderProps = {
   children: React.ReactNode
 }
-
-type ThemeProviderState = {
-  theme: Theme
-  setTheme: (theme: Theme) => void
-}
-
-const initialState: ThemeProviderState = {
-  theme: 'system',
-  setTheme: () => null
-}
-
-const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
 
 /**
  * Component that provides the theme state and setter function to its children.
@@ -55,5 +44,3 @@ export default function ThemeProvider({ children, ...props }: ThemeProviderProps
     </ThemeProviderContext.Provider>
   )
 }
-
-export { ThemeProviderContext }
