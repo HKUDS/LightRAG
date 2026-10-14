@@ -701,9 +701,26 @@ lightrag-hash-password --username admin
 
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
 
-如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
+### WebUI 兼容性变更：受保护访问仅使用账户登录
 
-> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
+`/webui` 和 `/workspace` 均不再提示输入、保存或发送 API Key。API Key 继续用于程序化 API 访问；本次迁移不改变后端凭据接受规则、双凭据失败行为或 token 续期规则。
+
+| 账户（`AUTH_ACCOUNTS`） | 有效 API Key（`LIGHTRAG_API_KEY` 或 `--key`） | WebUI |
+| --- | --- | --- |
+| 未配置 | 未配置 | 保留 guest token 的获取、发送、刷新与续期 |
+| 已配置 | 未配置 | 账户登录，仅发送用户 token |
+| 已配置 | 已配置 | 账户登录，仅发送用户 token |
+| 未配置 | 已配置 | 显示配置提示，不进入 guest 业务界面、不弹出密钥输入框 |
+
+**原 API-key-only WebUI 用户的迁移步骤：** 保留 API Key，配置 `AUTH_ACCOUNTS` 和高强度、非默认的 `TOKEN_SECRET`，重启服务器，刷新所有 WebUI 标签页后登录。不要通过移除 API Key 保护恢复 WebUI 访问。
+请配套部署前后端版本。旧后端缺少模式发现字段时，新 WebUI 无法安全区分完全开放与 API-key-only，因此显示提示而不会猜测为访客模式。已知旧版浏览器设置仅清理 `apiKey`，保留其他设置；未知未来版本的存储保持不变，也不会被用于发送凭据。
+
+完全开放的 WebUI 仍使用 guest token；guest 并非已认证的用户账户。完全开放模式下的程序化请求仍可不携带 token。仅凭 guest token **不能**绕过受保护路由的 API Key 检查。API-key-only 服务器仍可正常启动并服务程序化客户端。
+
+`GET /auth-status` 仅新增非敏感布尔字段 `api_key_configured`，依据服务器实际生效的密钥计算。包括 `auth_configured`（仅表示账户配置）在内的原字段含义不变，`/login` 行为不变。前端据此选择支持的流程，不引入新的后端授权策略；白名单路由保持原有行为。
+
+
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个程序化请求通常应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。本次 WebUI 迁移不改变后端对同时携带两种凭据的处理方式；客户端不应依赖双凭据行为。
 
 ## Azure OpenAI 后端配置
 

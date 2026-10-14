@@ -270,8 +270,6 @@
         "node": "Nút",
         "edge": "Cạnh",
         "degree": "Bậc",
-        "apiKey": "Khóa API",
-        "enterYourAPIkey": "Nhập khóa API của bạn",
         "save": "Lưu",
         "refreshLayout": "Làm Mới Bố Cục"
       },
@@ -503,12 +501,6 @@
       "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True."
     }
   },
-  "apiKeyAlert": {
-    "title": "Cần Có Khóa API",
-    "description": "Vui lòng nhập khóa API để truy cập dịch vụ",
-    "placeholder": "Nhập khóa API của bạn",
-    "save": "Lưu"
-  },
   "pagination": {
     "showing": "Hiển thị {{start}} đến {{end}} của {{total}} mục",
     "page": "Trang",
@@ -533,7 +525,7 @@
     "failedTitle": "Không thể chuẩn bị cài đặt cục bộ",
     "failedBody": "Không thể di chuyển cài đặt đã lưu sang định dạng lưu trữ mới. Không có gì bị mất — hãy tải lại để thử lại.",
     "dataLostTitle": "Không thể khôi phục một số cài đặt đã lưu",
-    "dataLostBody": "Bộ nhớ trình duyệt đã đầy nên một số cài đặt của bạn (giao diện, ngôn ngữ, khóa API) không được giữ lại và không còn khôi phục được. Tiếp tục sẽ giữ những gì còn lại và dùng giá trị mặc định cho phần còn lại.",
+    "dataLostBody": "Bộ nhớ trình duyệt đã đầy nên một số cài đặt của bạn (giao diện, ngôn ngữ) không được giữ lại và không còn khôi phục được. Tiếp tục sẽ giữ những gì còn lại và dùng giá trị mặc định cho phần còn lại.",
     "continueAfterLoss": "Tiếp tục",
     "retry": "Tải lại",
     "historyDropped": "Lịch sử trò chuyện vượt quá dung lượng lưu trữ của trình duyệt trong quá trình nâng cấp và đã bị loại bỏ. Các cài đặt đã được di chuyển bình thường."

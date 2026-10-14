@@ -404,6 +404,8 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 
 把最终用户引导到 `/workspace` 之前有两点需要了解。其一，那里的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的设置（未保存时使用前端默认值），这是按浏览器的本地状态，不是服务端全局策略。其二，隐藏后台界面是使用体验上的划分，**不是**安全边界——服务端仍会对每个接口执行鉴权。查询入口的完整行为参见 [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md#workspace-查询入口)。
 
+**WebUI 认证迁移：** 受保护的 `/webui` 与 `/workspace` 需要配置 `AUTH_ACCOUNTS` 和高强度、非默认的 `TOKEN_SECRET`。API Key 继续用于程序化访问，WebUI 不再输入或发送密钥。原 API-key-only WebUI 用户应保留密钥、配置账户与 secret、重启并刷新所有标签页后登录。完全开放部署（账户和有效 API Key 均未配置）保留 guest token 流程。详见 [迁移说明](docs/LightRAG-API-Server-zh.md#webui-兼容性变更受保护访问仅使用账户登录)。
+
 ## 使用LightRAG SDK
 
 > ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG SDK通常用于嵌入式应用，或供希望进行研究与评估的学者使用。

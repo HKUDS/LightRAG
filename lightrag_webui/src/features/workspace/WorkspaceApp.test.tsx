@@ -65,19 +65,7 @@ const sharedStores = [
   // remount key, so an advanced one leaking into a later file would remount its
   // query view against a session key nothing in that file set.
   useIdentityEpochStore,
-  // Unlike the epoch above, this one DOES move under this file. The shell's
-  // startup `runCredentialProbe` resolves against the stubbed
-  // `verifyCredentials`, and a probe that succeeds while an API-key failure is
-  // still recorded calls `useBackendState.clear()` -- `health: true`,
-  // `message: null`. So a mount here does not merely read the backend store,
-  // it ERASES a credential error some earlier file was relying on, and does it
-  // silently: every assertion in this file passes either way.
-  //
-  // Measured with an `Invalid API Key` seeded at file entry, as a previous
-  // file would leave it: without this entry 1 of 6 tests starts with the error
-  // and the other 5 start clean, and the file hands a healthy store to
-  // everything after it. With it, all 6 start with the error and it is still
-  // there at file exit.
+  // The shell can update backend status; preserve it across rendered tests.
   useBackendState
 ]
 let processSnapshot: ProcessStateSnapshot
@@ -87,14 +75,12 @@ let fileSnapshot: ProcessStateSnapshot
 
 beforeAll(async () => {
   realApiModule = { ...(await import('@/api/lightrag')) }
-  // The shell probes credentials and starts a health check on mount. Both are
-  // stubbed BEFORE the dynamic import below, because `stores/state` binds
-  // `checkHealth` at import time.
+  // Stub discovery and health checks before mounting the shell.
   mock.module('@/api/lightrag', () => ({
     ...realApiModule,
     getAuthStatus: mock(async () => ({
       ...((authStatusFetches += 1), {}),
-      auth_configured: false,
+      auth_configured: false, api_key_configured: false,
       access_token: 'test-token',
       token_type: 'bearer',
       auth_mode: 'disabled',
@@ -109,8 +95,7 @@ beforeAll(async () => {
       api_version: '1.0.0',
       webui_title: TITLE,
       webui_description: DESCRIPTION
-    })),
-    verifyCredentials: mock(async () => ({ ok: true }))
+    }))
   }))
 
   WorkspaceApp = (await import('./WorkspaceApp')).default

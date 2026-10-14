@@ -701,9 +701,41 @@ The command prompts for the password and prints an `admin:{bcrypt}...` entry rea
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 
-If Account credentials are not configured, the Web UI will access the system as a Guest. Therefore, even if only an API Key is configured, all APIs can still be accessed through the Guest account, which remains insecure. Hence, to safeguard the API, it is necessary to configure both authentication methods simultaneously.
+### WebUI compatibility change: account-only protected access
 
-> Although the server can be configured with **both** an API key and account credentials, a single request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied.
+Both `/webui` and `/workspace` no longer prompt for, store, or send API keys.
+API keys remain supported for programmatic API access; this transition does not
+change backend credential acceptance, dual-credential failures, or token renewal.
+
+| Accounts (`AUTH_ACCOUNTS`) | Effective API key (`LIGHTRAG_API_KEY` or `--key`) | WebUI |
+| --- | --- | --- |
+| Not configured | Not configured | Existing guest-token acquisition, transmission, refresh and renewal |
+| Configured | Not configured | Account login; user token only |
+| Configured | Configured | Account login; user token only |
+| Not configured | Configured | Configuration guidance; no guest application access or API-key prompt |
+
+**Migration for existing API-key-only WebUI users:** keep the API key, configure
+`AUTH_ACCOUNTS` and a strong, non-default `TOKEN_SECRET`, restart, reload all WebUI
+tabs, and sign in. Do not remove API-key protection to regain WebUI access.
+Deploy matching frontend/backend builds. A new WebUI cannot safely distinguish
+fully open from API-key-only on an older server without the discovery field and
+shows guidance instead of guessing guest access. Known legacy browser settings
+have only their `apiKey` removed; unrelated settings are retained. Unknown future
+storage versions remain untouched and are never used as credentials.
+
+Fully open WebUI access still uses guest tokens; a guest is not an authenticated
+account. Tokenless programmatic requests remain supported in fully open mode.
+A guest token alone does **not** bypass API-key protection on protected routes.
+The server still starts and serves programmatic clients in API-key-only mode.
+
+`GET /auth-status` adds the non-secret boolean `api_key_configured`, calculated
+from the effective server key. Existing fields, including `auth_configured`
+(account configuration only), retain their meanings; `/login` is unchanged.
+The browser uses discovery to choose its supported flow, not to enforce a new
+backend authorization policy. Whitelisted routes retain their existing behavior.
+
+
+> Although the server can be configured with **both** an API key and account credentials, a single programmatic request should normally send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. This WebUI migration does not change how the backend handles requests that contain both credentials; clients should avoid relying on dual-credential behavior.
 
 ## For Azure OpenAI Backend
 

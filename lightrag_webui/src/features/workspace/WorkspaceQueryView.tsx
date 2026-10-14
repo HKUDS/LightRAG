@@ -6,7 +6,6 @@ import QueryComposer from '@/features/retrieval/QueryComposer'
 import { useQuerySession } from '@/features/retrieval/useQuerySession'
 import WorkspaceEmptyState from './WorkspaceEmptyState'
 import type { QuerySettings } from '@/stores/querySettings'
-import { isApiKeyFailure, runCredentialProbe } from './credentialProbe'
 import { useTranslation } from 'react-i18next'
 import { prepareQueryInput, SUPPORTED_QUERY_MODES } from '@/features/retrieval/queryInput'
 import { workspaceQuerySettingsSnapshot } from './querySettingsSnapshot'
@@ -22,9 +21,6 @@ import { workspaceQuerySettingsSnapshot } from './querySettingsSnapshot'
  *   about that clamping);
  * - its history is the workspace entry's own store;
  * - the message area is always active (no admin tab lifecycle);
- * - a query rejected on API-key grounds re-probes credentials, which reopens
- *   the shell's API-key dialog: the server key can be rotated long after the
- *   startup probe succeeded, and this entry exposes no other way in.
  */
 export default function WorkspaceQueryView() {
   const { t } = useTranslation()
@@ -35,15 +31,9 @@ export default function WorkspaceQueryView() {
     []
   )
 
-  const handleQueryError = useCallback((message: string) => {
-    // Entry-specific: the shared session layer stays message-agnostic.
-    if (isApiKeyFailure(message)) runCredentialProbe()
-  }, [])
-
   const session = useQuerySession({
     historyStore: useWorkspaceRetrievalHistoryStore,
-    getQuerySettingsSnapshot,
-    onQueryError: handleQueryError
+    getQuerySettingsSnapshot
     // No onUserPromptUsed: the inherited user_prompt is not recorded into the
     // admin prompt-history from this entry (that would write settings-storage).
   })

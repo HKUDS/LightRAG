@@ -12,6 +12,7 @@ import { toast, Toaster } from 'sonner'
 import i18n from '@/i18n'
 import ThemeProvider from '@/components/ThemeProvider'
 import MigrationErrorScreen from '@/components/MigrationErrorScreen'
+import WebUIAuthBoundary from '@/components/WebUIAuthBoundary'
 import LoginPage from '@/features/LoginPage'
 import WorkspaceWelcome from '@/features/workspace/WorkspaceWelcome'
 import WorkspaceApp from '@/features/workspace/WorkspaceApp'
@@ -79,7 +80,9 @@ const WorkspaceAppRouter = () => {
   return (
     <ThemeProvider>
       <Router>
-        <WorkspaceAppContent />
+        <WebUIAuthBoundary>
+          <WorkspaceAppContent />
+        </WebUIAuthBoundary>
         <Toaster position="bottom-center" theme="system" closeButton richColors />
       </Router>
     </ThemeProvider>

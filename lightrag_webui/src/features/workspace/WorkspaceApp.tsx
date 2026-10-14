@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import TouchDescriptionPopover from '@/components/ui/TouchDescriptionPopover'
 import AppSettings from '@/components/AppSettings'
-import ApiKeyAlert, { type ApiKeyAlertCloseReason } from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
@@ -15,12 +14,6 @@ import {
   wasVersionCheckedThisPageLoad
 } from '@/lib/versionCheckCache'
 import { activateSessionFromAuthStatus } from './authBootstrap'
-import {
-  handleApiKeyDialogClose,
-  initialDialogAcknowledgement,
-  runCredentialProbe,
-  useCredentialProbeStore
-} from './credentialProbe'
 import { entryHomeHref } from '@/lib/pathPrefix'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
@@ -38,17 +31,6 @@ export default function WorkspaceApp() {
   const { t } = useTranslation()
   const { isGuestMode, username, webuiTitle, webuiDescription } = useAuthStore()
   const [initializing, setInitializing] = useState(true)
-  // Dialog visibility is DERIVED, not synced: the probe signals through a
-  // monotonic counter and this records the count the user last dismissed, so
-  // two consecutive failures with the IDENTICAL message still reopen it (and
-  // no effect has to push state, which would cascade renders).
-  //
-  // The baseline is the counter as it stands at THIS mount, not zero: the
-  // counter is module state that outlives the shell, and the shell can mount
-  // again within the same page load (see `initialDialogAcknowledgement`).
-  const [dismissedDialogRequests, setDismissedDialogRequests] = useState(
-    initialDialogAcknowledgement
-  )
   // Bumped by the cross-tab identity watch: remounting the query view drops
   // the live session state that belonged to the previous identity.
   const identityEpoch = useIdentityEpochStore((s) => s.epoch)
@@ -87,29 +69,6 @@ export default function WorkspaceApp() {
 
     checkVersion()
   }, [])
-
-  // Startup probe: an API-key-only deployment rejects queries until a key is
-  // stored, and this entry has no other place to enter one.
-  useEffect(() => {
-    if (initializing) return
-    runCredentialProbe()
-  }, [initializing])
-
-  // Requests come from the startup probe AND from a query rejected on
-  // credential grounds (the server key can be rotated long after startup).
-  const apiKeyDialogRequests = useCredentialProbeStore((s) => s.apiKeyDialogRequests)
-  const apiKeyAlertOpen = apiKeyDialogRequests > dismissedDialogRequests
-
-  const handleApiKeyAlertOpenChange = useCallback(
-    (open: boolean, reason?: ApiKeyAlertCloseReason) => {
-      if (open) return // opening is driven by the probe's request counter
-      // Record the dismissal so the dialog stays closed until a NEW request;
-      // whether the close is worth re-verifying is the probe's decision.
-      setDismissedDialogRequests(useCredentialProbeStore.getState().apiKeyDialogRequests)
-      handleApiKeyDialogClose(reason)
-    },
-    []
-  )
 
   const handleLogout = () => {
     navigationService.navigateToUnauthenticated()
@@ -190,7 +149,6 @@ export default function WorkspaceApp() {
           </ErrorBoundary>
         )}
       </div>
-      <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={handleApiKeyAlertOpenChange} />
     </main>
   )
 }
