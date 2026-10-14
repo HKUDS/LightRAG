@@ -235,6 +235,63 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "name",
+    [
+        "foo.[ -iet].docx",
+        "foo.[-iet ].docx",
+        "foo.[ native-iet ].docx",
+        "foo.[ -R(chunk_ts=800) ].md",
+    ],
+)
+def test_filename_hint_validation_ignores_surrounding_whitespace(name):
+    """Resolution must accept every hint the non-throwing classifier accepts;
+    the classifier strips the bracket inner, so validation strips it too.
+    """
+    from lightrag.parser.routing import (
+        filename_parser_directives,
+        resolve_file_parser_directives,
+    )
+
+    engine, options = filename_parser_directives(name)
+    assert options
+    resolved_engine, resolved_options = resolve_file_parser_directives(
+        name, parser_rules="", require_external_endpoint=False
+    )
+    assert resolved_options == options
+    if engine:
+        assert resolved_engine == engine
+
+
+@pytest.mark.offline
+def test_filename_hint_whitespace_only_options_report_empty_options():
+    from lightrag.parser.routing import resolve_file_parser_directives
+
+    with pytest.raises(FilenameParserHintError, match="empty process options"):
+        resolve_file_parser_directives("foo.[ - ].docx")
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["foo.[xyz-R(chunk_ts=800)].docx", "foo.[R(chunk_ts=800)].docx"]
+)
+def test_parameterised_hint_without_engine_or_hyphen_stays_unrecognised(name):
+    """A parameter block must not turn an unrecognised hint into a recognised
+    one: ``foo.[xyz-R].docx`` is left alone, so ``foo.[xyz-R(...)].docx`` is too.
+    """
+    from lightrag.parser.routing import (
+        canonicalize_parser_hinted_basename,
+        filename_parser_directives,
+        resolve_file_parser_directives,
+    )
+
+    assert canonicalize_parser_hinted_basename(name) == name
+    assert filename_parser_directives(name) == (None, "")
+    with pytest.raises(FilenameParserHintError):
+        resolve_file_parser_directives(name)
+
+
+@pytest.mark.offline
 def test_filename_hint_missing_required_endpoint_rejects(monkeypatch):
     from lightrag.parser.routing import resolve_file_parser_directives
 

@@ -922,7 +922,9 @@ def _filename_hint_match(
         return None
     if engine in supported_parser_engines():
         return m, engine, options, chunk_params, engine_params
-    if engine is None and (options or chunk_params):
+    # Without a recognised engine only the ``-OPTIONS`` form is a hint;
+    # ``xyz-R(...)`` must stay unrecognised just like ``xyz-R``.
+    if engine is None and inner.startswith("-") and (options or chunk_params):
         return m, "", options, chunk_params, engine_params
     return None
 
@@ -938,7 +940,7 @@ def _validate_filename_hint_for_resolution(
     if not m:
         return
 
-    inner = m.group(1)
+    inner = m.group(1).strip()
     errors: list[str] = []
 
     if not inner.strip():
@@ -951,6 +953,7 @@ def _validate_filename_hint_for_resolution(
     # branches below then run on a parameter-free string exactly as before.
     hint_label = f"filename hint {m.group(0)!r}"
     inner, engine_param, chunk_param_texts, struct_errors = _extract_param_blocks(inner)
+    inner = inner.strip()
     errors.extend(f"{hint_label}: {msg}" for msg in struct_errors)
     _, param_errors = _parse_chunk_param_texts(chunk_param_texts, label=hint_label)
     errors.extend(param_errors)
