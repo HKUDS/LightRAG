@@ -13,16 +13,18 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 if not pm.is_installed("zhipuai"):
     pm.install("zhipuai")
 
-from openai import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
+from zhipuai import APIStatusError, APITimeoutError
+
+try:
+    from zhipuai import APIConnectionError
+except ImportError:
+    # zhipuai 2.0.1 exposes httpx transport errors without a native wrapper.
+    from httpx import TransportError as APIConnectionError
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 
 from lightrag.utils import (
@@ -35,12 +37,31 @@ import numpy as np
 from typing import Any, Union, List, Optional, Dict
 
 
+def _is_retryable_zhipu_error(error: BaseException) -> bool:
+    """Retry transient SDK failures; billing errors require account changes."""
+    if isinstance(error, APIStatusError):
+        if error.status_code == 429:
+            try:
+                body = error.response.json()
+            except ValueError:
+                body = None
+            detail = body.get("error") if isinstance(body, dict) else None
+            # Arrears and expired plans need payment, not a short backoff.
+            # Time-window quotas (1308/1310) can reset and remain retryable.
+            if isinstance(detail, dict) and str(detail.get("code")) in {
+                "1113",
+                "1309",
+            }:
+                return False
+        return error.status_code in (408, 409, 429) or error.status_code >= 500
+    return isinstance(error, (APIConnectionError, APITimeoutError))
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_zhipu_error),
+    reraise=True,
 )
 async def zhipu_complete_if_cache(
     prompt: Union[str, List[Dict[str, str]]],
@@ -77,12 +98,13 @@ async def zhipu_complete_if_cache(
     except ImportError:
         raise ImportError("Please install zhipuai before initialize zhipuai backend.")
 
+    # Tenacity owns retries; SDK retries would multiply the request count.
     if api_key:
-        client = ZhipuAI(api_key=api_key)
+        client = ZhipuAI(api_key=api_key, max_retries=0)
     else:
         # please set ZHIPUAI_API_KEY in your environment
         # os.environ["ZHIPUAI_API_KEY"]
-        client = ZhipuAI()
+        client = ZhipuAI(max_retries=0)
 
     messages = []
 
@@ -255,9 +277,8 @@ async def zhipu_complete(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_zhipu_error),
+    reraise=True,
 )
 async def zhipu_embedding(
     texts: list[str],
@@ -271,12 +292,13 @@ async def zhipu_embedding(
         from zhipuai import ZhipuAI
     except ImportError:
         raise ImportError("Please install zhipuai before initialize zhipuai backend.")
+    # Tenacity owns retries; SDK retries would multiply the request count.
     if api_key:
-        client = ZhipuAI(api_key=api_key)
+        client = ZhipuAI(api_key=api_key, max_retries=0)
     else:
         # please set ZHIPUAI_API_KEY in your environment
         # os.environ["ZHIPUAI_API_KEY"]
-        client = ZhipuAI()
+        client = ZhipuAI(max_retries=0)
 
     # Convert single text to list if needed
     if isinstance(texts, str):
@@ -284,21 +306,18 @@ async def zhipu_embedding(
 
     embeddings = []
     for text in texts:
-        try:
-            request_kwargs = dict(kwargs)
-            if embedding_dim is not None:
-                request_kwargs["dimensions"] = embedding_dim
-            # Same blocking-client concern as zhipu_complete_if_cache, same
-            # cancellation caveat: run each synchronous HTTP call off the
-            # event loop thread, but a timeout here cannot stop it early.
-            response = await asyncio.to_thread(
-                client.embeddings.create,
-                model=model,
-                input=[text],
-                **request_kwargs,
-            )
-            embeddings.append(response.data[0].embedding)
-        except Exception as e:
-            raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}")
+        request_kwargs = dict(kwargs)
+        if embedding_dim is not None:
+            request_kwargs["dimensions"] = embedding_dim
+        # Same blocking-client concern as zhipu_complete_if_cache, same
+        # cancellation caveat: run each synchronous HTTP call off the
+        # event loop thread, but a timeout here cannot stop it early.
+        response = await asyncio.to_thread(
+            client.embeddings.create,
+            model=model,
+            input=[text],
+            **request_kwargs,
+        )
+        embeddings.append(response.data[0].embedding)
 
     return np.array(embeddings)
