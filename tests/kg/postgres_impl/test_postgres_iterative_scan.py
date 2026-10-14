@@ -138,14 +138,14 @@ async def test_failing_set_falls_back_and_warns_once() -> None:
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_query_failure_is_not_retried_or_swallowed() -> None:
+async def test_query_failure_is_reraised_without_a_plain_fallback() -> None:
     connection = _Connection()
     connection.fetch_error = RuntimeError("query failed")
 
     with pytest.raises(RuntimeError, match="query failed"):
         await _db()._fetch_with_iterative_scan(connection, "SELECT 1", ())
 
-    # exactly one attempt: the failure is the query's, not the setting's
+    # the helper does not rerun it plain; _run_with_retry owns any retry
     assert connection.log.count("FETCH") == 1
 
 

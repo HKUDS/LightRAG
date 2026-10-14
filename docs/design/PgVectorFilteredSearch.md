@@ -45,7 +45,9 @@ non-superusers (managed databases).
 
 If the `SET LOCAL` fails, only that transaction is aborted: the failure is
 logged once and the query runs without the setting, as before this change.
-A failure of the query itself is never retried or swallowed.
+A failure of the query itself is re-raised and does not fall back to a plain
+query. The normal transient-error retry around `PostgreSQLDB.query`
+(`_run_with_retry`) still applies to it, as to every other query.
 
 ### Old pgvector (< 0.8)
 

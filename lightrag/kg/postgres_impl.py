@@ -1417,7 +1417,9 @@ class PostgreSQLDB:
 
         Best-effort: a failing ``SET LOCAL`` (aborting only its own
         transaction) is logged once and the query runs without it, as it did
-        before. A failure of the query itself is never retried or swallowed.
+        before. A failure of the query itself is re-raised: this helper adds
+        no fallback and no retry of its own, so only the caller's normal
+        transient-error retry (``_run_with_retry``) can run it again.
         """
         statement = self.iterative_scan_statement()
         if statement is not None:
