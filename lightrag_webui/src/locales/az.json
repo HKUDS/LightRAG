@@ -1,0 +1,544 @@
+{
+  "settings": {
+    "language": "Dil",
+    "theme": "Tema",
+    "light": "İşıqlı",
+    "dark": "Qaranlıq",
+    "system": "Sistem"
+  },
+  "header": {
+    "documents": "Sənədlər",
+    "knowledgeGraph": "Bilik qrafı",
+    "retrieval": "Sorğu",
+    "apiDocs": "API sənədləri",
+    "projectRepository": "Layihənin kod anbarı",
+    "appSettings": "Parametrlər",
+    "deploymentInfo": "Yerləşdirmə məlumatları",
+    "logout": "Çıxış",
+    "frontendNeedsRebuild": "İstifadəçi interfeysi yenidən yığılmalıdır",
+    "themeToggle": {
+      "switchToLight": "İşıqlı temaya keç",
+      "switchToDark": "Qaranlıq temaya keç"
+    }
+  },
+  "login": {
+    "description": "Sistemə daxil olmaq üçün hesabınızı və parolunuzu daxil edin",
+    "username": "İstifadəçi adı",
+    "usernamePlaceholder": "İstifadəçi adını daxil edin",
+    "password": "Parol",
+    "passwordPlaceholder": "Parolu daxil edin",
+    "loginButton": "Daxil ol",
+    "loggingIn": "Sistemə daxil olunur...",
+    "successMessage": "Giriş uğurla tamamlandı",
+    "errorEmptyFields": "İstifadəçi adınızı və parolunuzu daxil edin",
+    "errorInvalidCredentials": "Giriş alınmadı, istifadəçi adını və parolu yoxlayın",
+    "authDisabled": "Kimliyin yoxlanması söndürülüb. Giriş tələb olunmayan rejim istifadə olunur.",
+    "guestMode": "Giriş tələb olunmur",
+    "consentLabel": "{{documents}} sənədinin şərtləri ilə razıyam",
+    "consentDocuments": "Məxfilik siyasəti haqqında razılaşma",
+    "errorConsentRequired": "Daxil olmamışdan əvvəl razılaşmaları oxuyun və qəbul edin"
+  },
+  "common": {
+    "cancel": "Ləğv et",
+    "save": "Yadda saxla",
+    "saving": "Yadda saxlanılır...",
+    "saveFailed": "Yadda saxlamaq mümkün olmadı",
+    "errorBoundaryTitle": "Xəta baş verdi",
+    "errorBoundaryDescription": "Bu paneli göstərmək mümkün olmadı. Yenidən cəhd edin və ya başqa vərəqə keçin.",
+    "errorBoundaryRetry": "Yenidən cəhd et"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Təmizlə",
+      "tooltip": "Sənədləri təmizlə",
+      "title": "Sənədləri təmizlə",
+      "description": "Bu əməliyyat bütün sənədləri sistemdən çıxaracaq",
+      "warning": "Xəbərdarlıq: bu əməliyyat bütün sənədləri həmişəlik siləcək və geri qaytarıla bilməz!",
+      "confirm": "Bütün sənədləri təmizləmək istədiyinizə əminsiniz?",
+      "confirmPrompt": "Bu əməliyyatı təsdiqləmək üçün 'yes' yazın",
+      "confirmPlaceholder": "Təsdiqləmək üçün yes yazın",
+      "clearCache": "LLM keşini təmizlə",
+      "confirmButton": "Bəli",
+      "clearing": "Təmizlənir...",
+      "timeout": "Təmizləmə əməliyyatının vaxtı bitdi, yenidən cəhd edin",
+      "success": "Sənədlər uğurla təmizləndi",
+      "successWithCache": "Sənədlər və LLM keşi uğurla təmizləndi",
+      "partialSuccess": "Təmizləmə xətalarla tamamlandı:\n{{message}}",
+      "failed": "Sənədləri təmizləmək mümkün olmadı:\n{{message}}",
+      "error": "Sənədləri təmizləmək mümkün olmadı:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Sil",
+      "tooltip": "Seçilmiş sənədləri sil",
+      "title": "Sənədləri sil",
+      "description": "Bu əməliyyat seçilmiş sənədləri sistemdən həmişəlik siləcək",
+      "warning": "Xəbərdarlıq: bu əməliyyat seçilmiş sənədləri həmişəlik siləcək və geri qaytarıla bilməz!",
+      "confirm": "Seçilmiş {{count}} sənədi silmək istədiyinizə əminsiniz?",
+      "confirmPrompt": "Bu əməliyyatı təsdiqləmək üçün 'yes' yazın",
+      "confirmPlaceholder": "Təsdiqləmək üçün yes yazın",
+      "confirmButton": "Bəli",
+      "deleteFileOption": "Yüklənmiş faylları da sil",
+      "deleteFileTooltip": "Serverdəki müvafiq yüklənmiş faylları da silmək üçün bu seçimi işarələyin",
+      "deleteLLMCacheOption": "Məlumatların çıxarılması zamanı yaradılmış LLM keşini də sil",
+      "success": "Sənədlərin silinməsi prosesi uğurla başladıldı",
+      "failed": "Sənədləri silmək mümkün olmadı:\n{{message}}",
+      "error": "Sənədləri silmək mümkün olmadı:\n{{error}}",
+      "busy": "Emal prosesi məşğuldur, daha sonra yenidən cəhd edin",
+      "notAllowed": "Bu əməliyyatı yerinə yetirmək üçün icazə yoxdur"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Cari səhifəni seç ({{count}})",
+      "deselectAll": "Bütün seçimləri ləğv et ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "Yüklə",
+      "tooltip": "Sənədləri yüklə",
+      "title": "Sənədləri yüklə",
+      "description": "Sənədlərinizi buraya sürükləyib buraxın və ya seçmək üçün klikləyin.",
+      "single": {
+        "uploading": "{{name}} yüklənir: {{percent}}%",
+        "success": "Yükləmə uğurla tamamlandı:\n{{name}} uğurla yükləndi",
+        "failed": "Yükləmə alınmadı:\n{{name}}\n{{message}}",
+        "error": "Yükləmə alınmadı:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Fayllar yüklənir...",
+        "success": "Fayllar uğurla yükləndi",
+        "error": "Bəzi faylları yükləmək mümkün olmadı"
+      },
+      "generalError": "Yükləmə alınmadı\n{{error}}",
+      "fileTypes": "Dəstəklənən növlər: {{types}}",
+      "fileUploader": {
+        "singleFileLimit": "Eyni vaxtda 1-dən çox fayl yükləmək olmaz",
+        "maxFilesLimit": "{{count}} fayldan çox yükləmək olmaz",
+        "fileRejected": "{{name}} faylı qəbul edilmədi",
+        "unsupportedType": "Dəstəklənməyən fayl növü",
+        "fileTooLarge": "Fayl çox böyükdür, maksimum ölçü {{maxSize}} təşkil edir",
+        "dropHere": "Faylları buraya buraxın",
+        "dragAndDrop": "Faylları buraya sürükləyib buraxın və ya fayl seçmək üçün klikləyin",
+        "removeFile": "Faylı çıxar",
+        "uploadDescription": "Yüklənə bilən fayl sayı: {{isMultiple ? 'multiple' : count}} (hər biri ən çox {{maxSize}})",
+        "duplicateFile": "Bu adda fayl artıq serverin keşində mövcuddur"
+      }
+    },
+    "documentManager": {
+      "title": "Sənədlərin idarə edilməsi",
+      "scanButton": "Yoxla/yenidən cəhd et",
+      "scanTooltip": "Giriş qovluğundakı sənədləri yoxla və emal et, həmçinin emalı alınmamış bütün sənədləri yenidən emal et",
+      "refreshTooltip": "Sənəd siyahısını sıfırla",
+      "pipelineStatusButton": "Emal prosesi",
+      "pipelineStatusTooltip": "Sənədlərin emal prosesinin vəziyyətinə bax",
+      "uploadedTitle": "Yüklənmiş sənədlər",
+      "uploadedDescription": "Yüklənmiş sənədlərin və onların vəziyyətlərinin siyahısı.",
+      "loading": "Sənədlər yüklənir...",
+      "loadErrorTitle": "Sənədləri yükləmək mümkün olmadı",
+      "retry": "Yenidən cəhd et",
+      "emptyTitle": "Sənəd yoxdur",
+      "emptyDescription": "Hələ heç bir sənəd yüklənməyib.",
+      "columns": {
+        "id": "ID",
+        "fileName": "Fayl adı",
+        "summary": "Xülasə",
+        "status": "Vəziyyət",
+        "length": "Uzunluq",
+        "chunks": "Hissələr",
+        "created": "Yaradılıb",
+        "updated": "Yenilənib",
+        "metadata": "Metaverilənlər",
+        "select": "Seç"
+      },
+      "filters": {
+        "all": "Hamısı",
+        "completed": "Tamamlanıb",
+        "parse": "Sənədin quruluşu təhlil olunur",
+        "analyze": "Təhlil edilir",
+        "process": "Emal olunur",
+        "failed": "Uğursuz"
+      },
+      "status": {
+        "all": "Hamısı",
+        "completed": "Tamamlanıb",
+        "preprocessed": "İlkin emal olunub",
+        "parsing": "Sənədin quruluşu təhlil olunur",
+        "analyzing": "Təhlil edilir",
+        "processing": "Emal olunur",
+        "pending": "Gözləyir",
+        "failed": "Uğursuz"
+      },
+      "errors": {
+        "loadFailed": "Sənədləri yükləmək mümkün olmadı\n{{error}}",
+        "scanFailed": "Sənədləri yoxlamaq mümkün olmadı\n{{error}}",
+        "scanProgressFailed": "Yoxlamanın gedişi haqqında məlumat almaq mümkün olmadı\n{{error}}"
+      },
+      "fileNameLabel": "Fayl adı",
+      "showButton": "Göstər",
+      "hideButton": "Gizlət",
+      "showFileNameTooltip": "Fayl adını göstər",
+      "hideFileNameTooltip": "Fayl adını gizlət",
+      "details": {
+        "title": "Vəziyyət haqqında ətraflı məlumat",
+        "openTooltip": "Vəziyyət haqqında ətraflı məlumata bax",
+        "content": "Ətraflı məlumat",
+        "copyButton": "Kopyala",
+        "copyTooltip": "Vəziyyət haqqında ətraflı məlumatı kopyala",
+        "copySuccess": "Vəziyyət haqqında ətraflı məlumat kopyalandı",
+        "copyFailed": "Vəziyyət haqqında ətraflı məlumatı kopyalamaq mümkün olmadı"
+      }
+    },
+    "pipelineStatus": {
+      "title": "Emal prosesinin vəziyyəti",
+      "busy": "Emal prosesi məşğuldur",
+      "cancellationRequested": "Ləğv sorğusu göndərilib",
+      "jobName": "Tapşırığın adı",
+      "startTime": "Başlama vaxtı",
+      "progress": "Gediş",
+      "unit": "Dəstə",
+      "pipelineMessages": "Emal prosesinin mesajları",
+      "cancelButton": "Ləğv et",
+      "cancelTooltip": "Emal prosesini ləğv et",
+      "cancelConfirmTitle": "Emal prosesinin ləğvini təsdiqlə",
+      "cancelConfirmDescription": "Bu əməliyyat davam edən emal prosesini dayandıracaq. Davam etmək istədiyinizə əminsiniz?",
+      "cancelConfirmButton": "Ləğvi təsdiqlə",
+      "cancelInProgress": "Ləğv edilir...",
+      "pipelineNotRunning": "Emal prosesi işləmir",
+      "cancelSuccess": "Emal prosesinin ləğvi üçün sorğu göndərildi",
+      "cancelFailed": "Emal prosesini ləğv etmək mümkün olmadı\n{{error}}",
+      "cancelNotBusy": "Emal prosesi işləmir, ləğv etməyə ehtiyac yoxdur",
+      "errors": {
+        "fetchFailed": "Emal prosesinin vəziyyətini almaq mümkün olmadı\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "Qraf məlumatları maksimum düyün sayına uyğun məhdudlaşdırılıb",
+    "fetchRetriesExhausted": "Qraf məlumatlarını yükləmək mümkün olmadı. Yenidən cəhd etmək üçün yenilə düyməsindən istifadə edin.",
+    "graphBuildFailed": "Qraf məlumatlarını göstərmək mümkün olmadı. Yenidən cəhd etmək üçün yenilə düyməsindən istifadə edin.",
+    "statusDialog": {
+      "title": "LightRAG serverinin parametrləri",
+      "description": "Sistemin cari vəziyyətinə və əlaqə məlumatlarına bax"
+    },
+    "legend": "Şərti işarələr",
+    "nodeTypes": {
+      "person": "Şəxs",
+      "category": "Kateqoriya",
+      "geo": "Coğrafi",
+      "location": "Məkan",
+      "organization": "Təşkilat",
+      "event": "Hadisə",
+      "equipment": "Avadanlıq",
+      "weapon": "Silah",
+      "animal": "Heyvan",
+      "unknown": "Naməlum",
+      "object": "Obyekt",
+      "group": "Qrup",
+      "technology": "Texnologiya",
+      "product": "Məhsul",
+      "document": "Sənəd",
+      "content": "Məzmun",
+      "data": "Məlumat",
+      "artifact": "Artefakt",
+      "concept": "Anlayış",
+      "naturalobject": "Təbii obyekt",
+      "method": "Üsul",
+      "creature": "Canlı",
+      "plant": "Bitki",
+      "disease": "Xəstəlik",
+      "drug": "Dərman",
+      "food": "Qida",
+      "table": "Cədvəl",
+      "drawing": "Rəsm",
+      "equation": "Tənlik",
+      "other": "Digər"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "Parametrlər",
+        "healthCheck": "İşləkliyin yoxlanması",
+        "showPropertyPanel": "Xüsusiyyətlər panelini göstər",
+        "showSearchBar": "Axtarış sətrini göstər",
+        "showNodeLabel": "Düyün etiketini göstər",
+        "nodeDraggable": "Düyünü sürükləməyə icazə ver",
+        "showEdgeLabel": "Kənar etiketini göstər",
+        "hideUnselectedEdges": "Seçilməmiş kənarları gizlət",
+        "edgeEvents": "Kənar hadisələri",
+        "edgeEventsDisabledHint": "Kənar sayı {{count}} həddini aşan qraflarda söndürülüb",
+        "maxQueryDepth": "Maksimum sorğu dərinliyi",
+        "maxNodes": "Maksimum düyün sayı",
+        "resetToDefault": "Standart parametrləri bərpa et",
+        "edgeSizeRange": "Kənar ölçüsünün aralığı",
+        "depth": "D",
+        "node": "düyün",
+        "edge": "kənar",
+        "degree": "Dərəcə",
+        "apiKey": "API açarı",
+        "enterYourAPIkey": "API açarınızı daxil edin",
+        "save": "Yadda saxla",
+        "refreshLayout": "Yerləşməni yenilə"
+      },
+      "zoomControl": {
+        "zoomIn": "Yaxınlaşdır",
+        "zoomOut": "Uzaqlaşdır",
+        "resetZoom": "Miqyası sıfırla",
+        "rotateCamera": "Saat əqrəbinin hərəkəti istiqamətində döndər",
+        "rotateCameraCounterClockwise": "Saat əqrəbinin hərəkətinə əks istiqamətdə döndər"
+      },
+      "layoutsControl": {
+        "startAnimation": "Yerləşmə animasiyasını davam etdir",
+        "stopAnimation": "Yerləşmə animasiyasını dayandır",
+        "layoutGraph": "Qrafı yerləşdir",
+        "layouts": {
+          "Circular": "Dairəvi",
+          "Circlepack": "Circlepack",
+          "Random": "Təsadüfi",
+          "Noverlaps": "Noverlaps",
+          "Force Directed": "Qüvvə ilə istiqamətləndirilən",
+          "Force Atlas": "Force Atlas"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Tam ekran",
+        "windowed": "Pəncərə rejimi"
+      },
+      "legendControl": {
+        "toggleLegend": "Şərti işarələri göstər/gizlət"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Əlaqə qurulub",
+      "disconnected": "Əlaqə kəsilib"
+    },
+    "statusCard": {
+      "unavailable": "Vəziyyət haqqında məlumat əlçatan deyil",
+      "serverInfo": "Server məlumatları",
+      "inputDirectory": "Giriş qovluğu",
+      "parser": "Parser",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Digər parametrlər",
+      "llmConfig": "Model parametrləri",
+      "llmBinding": "LLM inteqrasiyası",
+      "llmBindingHost": "LLM xidmət ünvanı",
+      "llmModel": "LLM modeli",
+      "embeddingConfig": "Vektorlaşdırma parametrləri",
+      "embeddingBinding": "Vektorlaşdırma inteqrasiyası",
+      "embeddingBindingHost": "Vektorlaşdırma xidmət ünvanı",
+      "embeddingModel": "Vektorlaşdırma modeli",
+      "storageConfig": "Saxlama parametrləri",
+      "kvStorage": "KV anbarı",
+      "docStatusStorage": "Sənəd vəziyyətləri anbarı",
+      "graphStorage": "Qraf anbarı",
+      "vectorStorage": "Vektor anbarı",
+      "workspace": "İş sahəsi",
+      "rerankerConfig": "Yenidən sıralama parametrləri",
+      "rerankerBindingHost": "Yenidən sıralama xidmət ünvanı",
+      "rerankerModel": "Yenidən sıralama modeli",
+      "lockStatus": "Kilidin vəziyyəti"
+    },
+    "propertiesView": {
+      "editProperty": "{{property}} xüsusiyyətini redaktə et",
+      "editLockedByPipeline": "Emal prosesi məşğuldur; redaktə söndürülüb",
+      "editPropertyDescription": "Xüsusiyyətin dəyərini aşağıdakı mətn sahəsində redaktə edin.",
+      "errors": {
+        "duplicateName": "Düyün adı artıq mövcuddur",
+        "invalidEntityName": "Etibarlı düyün adı daxil edin",
+        "updateFailed": "Düyünü yeniləmək mümkün olmadı",
+        "tryAgainLater": "Daha sonra yenidən cəhd edin",
+        "updateSuccessButMergeFailed": "Xüsusiyyətlər yeniləndi, lakin birləşdirmək mümkün olmadı: {{error}}",
+        "mergeFailed": "Birləşdirmək mümkün olmadı: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "Düyün uğurla yeniləndi",
+        "relationUpdated": "Əlaqə uğurla yeniləndi",
+        "entityMerged": "Düyünlər uğurla birləşdirildi"
+      },
+      "mergeOptionLabel": "Təkrarlanan ad tapıldıqda avtomatik birləşdir",
+      "mergeOptionDescription": "Bu seçim aktiv olduqda, düyünə artıq mövcud olan ad verilsə, xəta baş verməyəcək: düyün həmin adı daşıyan düyünlə birləşdiriləcək.",
+      "mergeDialog": {
+        "title": "Düyün birləşdirildi",
+        "description": "\"{{source}}\" düyünü \"{{target}}\" düyününə birləşdirildi.",
+        "refreshHint": "Ən son quruluşu yükləmək üçün qrafı yeniləyin.",
+        "keepCurrentStart": "Yenilə və cari başlanğıc düyününü saxla",
+        "useMergedStart": "Yenilə və birləşdirilmiş düyündən istifadə et",
+        "refreshing": "Qraf yenilənir..."
+      },
+      "node": {
+        "title": "Düyün",
+        "id": "ID",
+        "labels": "Etiketlər",
+        "degree": "Dərəcə",
+        "properties": "Xüsusiyyətlər",
+        "relationships": "Əlaqələr (altqraf daxilində)",
+        "expandNode": "Düyünü genişləndir",
+        "pruneNode": "Düyünü gizlət",
+        "deleteAllNodesError": "Qrafdakı bütün düyünləri silmək olmaz",
+        "nodesRemoved": "Əlaqəsiz düyünlər də daxil olmaqla {{count}} düyün çıxarıldı",
+        "noNewNodes": "Genişləndirilə bilən düyün tapılmadı",
+        "propertyNames": {
+          "description": "Təsvir",
+          "entity_id": "Ad",
+          "entity_type": "Növ",
+          "source_id": "C-ID",
+          "Neighbour": "Qonşu",
+          "file_path": "Fayl",
+          "keywords": "Açar sözlər",
+          "weight": "Çəki"
+        }
+      },
+      "edge": {
+        "title": "Əlaqə",
+        "id": "ID",
+        "type": "Növ",
+        "source": "Mənbə",
+        "target": "Hədəf",
+        "properties": "Xüsusiyyətlər"
+      }
+    },
+    "search": {
+      "placeholder": "Səhifədəki düyünləri axtar...",
+      "message": "Və daha {{count}} düyün"
+    },
+    "graphLabels": {
+      "selectTooltip": "Düyünün altqrafını əldə et (etiket)",
+      "noLabels": "Uyğun düyün tapılmadı",
+      "label": "Düyün adını axtar",
+      "placeholder": "Düyün adını axtar...",
+      "andOthers": "Və daha {{count}} düyün",
+      "refreshGlobalTooltip": "Ümumi qraf məlumatlarını yenilə və axtarış tarixçəsini sıfırla",
+      "refreshCurrentLabelTooltip": "Cari səhifənin qraf məlumatlarını yenilə",
+      "refreshingTooltip": "Məlumatlar yenilənir..."
+    },
+    "emptyGraph": "Boşdur (yenidən yükləməyə cəhd edin)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "aiContentNotice": "Süni intellekt tərəfindən yaradılmış məzmundur — yoxlayın.",
+      "copyTooltip": "Mübadilə buferinə kopyala",
+      "copyError": "Mətni mübadilə buferinə kopyalamaq mümkün olmadı",
+      "copyEmpty": "Kopyalanacaq məzmun yoxdur",
+      "copySuccess": "Məzmun mübadilə buferinə kopyalandı",
+      "copySuccessLegacy": "Məzmun kopyalandı (köhnə üsul)",
+      "copySuccessManual": "Məzmun kopyalandı (əl ilə)",
+      "copyFailed": "Məzmunu kopyalamaq mümkün olmadı",
+      "copyManualInstruction": "Mətni əl ilə seçin və kopyalayın",
+      "thinking": "Düşünür...",
+      "thinkingTime": "Düşünmə müddəti {{time}} san.",
+      "thinkingInProgress": "Düşünmə davam edir...",
+      "responseTime": "Cavab müddəti {{time}} san.",
+      "firstTokenTime": "İlk token {{time}} san.",
+      "progress": {
+        "extracting_keywords": "Açar sözlər çıxarılır...",
+        "retrieving_entities": "Obyektlər axtarılır...",
+        "retrieving_relations": "Əlaqələr axtarılır...",
+        "retrieving_chunks": "Mətn hissələri axtarılır...",
+        "reranking": "Nəticələr yenidən sıralanır...",
+        "generating_response": "Cavab hazırlanır..."
+      }
+    },
+    "retrieval": {
+      "startPrompt": "Başlamaq üçün sorğunuzu aşağıya yazın",
+      "scrollToBottom": "Son mesaja keç",
+      "clear": "Təmizlə",
+      "send": "Göndər",
+      "stop": "Dayandır",
+      "userTerminated": "İstifadəçi dayandırdı — cavab natamam ola bilər",
+      "placeholder": "Sorğunuzu daxil edin (dəstəklənən prefiks: /<Query Mode>)",
+      "error": "Xəta: cavab almaq mümkün olmadı",
+      "queryModeError": "Yalnız bu sorğu rejimləri dəstəklənir: {{modes}}",
+      "queryModePrefixInvalid": "Sorğu rejiminin prefiksi etibarsızdır. Bu qaydada yazın: /<mode> [boşluq] sorğunuz",
+      "queryEmpty": "Göndərməzdən əvvəl sual daxil edin.",
+      "queryTooShort": "Sorğunuz çox qısadır. Ən azı 3 ingilis simvolu və ya ekvivalent simvol birləşməsi daxil edin; hər çin, yapon və ya koreya simvolu 2 simvol sayılır.",
+      "dismissError": "Xəta bildirişini bağla"
+    },
+    "querySettings": {
+      "parametersTitle": "Parametrlər",
+      "parametersDescription": "Sorğu parametrlərinizi təyin edin",
+      "parametersScopeNotice": "Bu brauzerdən göndərilən sorğulara təsir edir",
+      "parametersScopeTooltip": "Bu parametrlər brauzerdə yadda saxlanılır və siz onları dəyişənədək qüvvədə qalır. Bu brauzerdə açılmış /workspace səhifəsindən göndərilən sorğulara da tətbiq olunur. Parametrlər yalnız bu brauzer üçün keçərlidir və digər brauzerlərə və cihazlara təsir etmir.",
+      "parametersScopeHelpLabel": "Parametrlərin əhatə dairəsi haqqında",
+      "queryMode": "Sorğu rejimi",
+      "queryModeTooltip": "Sorğu strategiyasını seçin:\n• Naive: Mətn hissələri üzrə ənənəvi vektor sorğusu\n• Local: Obyektlərin axtarışına yönəlir\n• Global: Əlaqələrin axtarışına yönəlir\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Axtarışı ötürür, söhbət tarixçəsini və cari sualı LLM modelinə göndərir",
+      "queryModeWarning": "Sorğunun keyfiyyətini azalda bilər",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "Cavab formatı",
+      "responseFormatTooltip": "Cavab formatını müəyyən edir. Nümunələr:\n• Bir neçə abzas\n• Bir abzas\n• İşarəli siyahı",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Bir neçə abzas",
+        "singleParagraph": "Bir abzas",
+        "bulletPoints": "İşarəli siyahı"
+      },
+      "topK": "Bilik qrafı üzrə ilk K nəticə",
+      "topKTooltip": "Əldə ediləcək obyekt və əlaqələrin sayı. Naive rejimindən başqa bütün rejimlərə tətbiq olunur.",
+      "topKPlaceholder": "top_k dəyərini daxil edin",
+      "chunkTopK": "Mətn hissələri üzrə ilk K nəticə",
+      "chunkTopKTooltip": "Əldə ediləcək mətn hissələrinin sayı, bütün rejimlərə tətbiq olunur.",
+      "chunkTopKPlaceholder": "chunk_top_k dəyərini daxil edin",
+      "maxEntityTokens": "Obyektlər üçün maksimum token sayı",
+      "maxEntityTokensTooltip": "Vahid limit sistemi çərçivəsində obyekt konteksti üçün ayrılan maksimum token sayı",
+      "maxRelationTokens": "Əlaqələr üçün maksimum token sayı",
+      "maxRelationTokensTooltip": "Vahid limit sistemi çərçivəsində əlaqə konteksti üçün ayrılan maksimum token sayı",
+      "maxTotalTokens": "Maksimum ümumi token sayı",
+      "maxTotalTokensTooltip": "Bütün sorğu konteksti üçün ayrılan maksimum ümumi token limiti (obyektlər + əlaqələr + mətn hissələri + sistem təlimatı)",
+      "historyTurns": "Tarixçədəki söhbət növbələri",
+      "historyTurnsTooltip": "Cavab kontekstində nəzərə alınacaq tam söhbət növbələrinin sayı (istifadəçi-köməkçi cütləri)",
+      "historyTurnsPlaceholder": "Tarixçədəki söhbət növbələrinin sayı",
+      "onlyNeedContext": "Yalnız kontekst lazımdır",
+      "onlyNeedContextTooltip": "Aktiv olduqda cavab yaratmadan yalnız əldə edilmiş konteksti qaytarır",
+      "onlyNeedPrompt": "Yalnız təlimat lazımdır",
+      "onlyNeedPromptTooltip": "Aktiv olduqda cavab yaratmadan yalnız hazırlanmış təlimatı qaytarır",
+      "streamResponse": "Cavabı hissə-hissə göstər",
+      "streamResponseTooltip": "Aktiv olduqda cavabların real vaxtda hissə-hissə göstərilməsini təmin edir",
+      "userPrompt": "Cavab üçün əlavə təlimat",
+      "userPromptTooltip": "LLM modelinə cavabla bağlı əlavə tələblər verin (sorğunun məzmununa aid deyil, yalnız cavabın emalı üçündür). Server bunun əvvəlinə ümumi təlimat əlavə edə bilər. Yalnız serverin ümumi təlimatını göndərmək üçün sahəni boş saxlayın.",
+      "userPromptPlaceholder": "Öz təlimatınızı daxil edin (məcburi deyil)",
+      "disableUserPromptPrefix": "Ümumi təlimatı nəzərə alma",
+      "disableUserPromptPrefixTooltip": "Bu seçim aktiv olduqda, serverin cavab üçün ümumi təlimatı yuxarıdakı əlavə təlimatın əvvəlinə əlavə olunmur. Yekun təlimatları tamamilə buradan idarə etmək üçün bu seçimi aktivləşdirin.",
+      "enableRerank": "Yenidən sıralamanı aktivləşdir",
+      "enableRerankTooltip": "Əldə edilmiş mətn hissələrinin yenidən sıralanmasını aktivləşdirin. Bu seçim aktiv olduğu halda yenidən sıralama modeli təyin edilməyibsə, xəbərdarlıq göstəriləcək. Standart olaraq aktivdir."
+    }
+  },
+  "apiKeyAlert": {
+    "title": "API açarı tələb olunur",
+    "description": "Xidmətdən istifadə etmək üçün API açarınızı daxil edin",
+    "placeholder": "API açarınızı daxil edin",
+    "save": "Yadda saxla"
+  },
+  "pagination": {
+    "showing": "{{total}} qeyddən {{start}}–{{end}} aralığı göstərilir",
+    "page": "Səhifə",
+    "pageSize": "Səhifə ölçüsü",
+    "firstPage": "İlk səhifə",
+    "prevPage": "Əvvəlki səhifə",
+    "nextPage": "Növbəti səhifə",
+    "lastPage": "Son səhifə"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Xoş gəlmisiniz! Bilik bazası haqqında suallar verin və mənbələrə istinad edən cavablar alın. Başlamaq üçün daxil olun.",
+      "enterButton": "İş sahəsinə daxil ol",
+      "loginButton": "Daxil ol",
+      "enterFailed": "Serverlə əlaqə qurmaq mümkün olmadı. Yenidən cəhd edin."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Başlamaq üçün bilik bazası haqqında istənilən sualı verin."
+    }
+  },
+  "migration": {
+    "failedTitle": "Yerli parametrləri hazırlamaq mümkün olmadı",
+    "failedBody": "Yadda saxlanmış parametrlərinizi yeni saxlama formatına köçürmək mümkün olmadı. Heç nə itirilməyib — yenidən cəhd etmək üçün səhifəni yenidən yükləyin.",
+    "dataLostTitle": "Yadda saxlanmış bəzi parametrləri bərpa etmək mümkün olmadı",
+    "dataLostBody": "Brauzer yaddaşı dolu olduğu üçün yadda saxlanmış bəzi parametrləriniz (tema, dil, API açarı) qorunub saxlanıla bilmədi və artıq bərpa oluna bilməz. Davam etsəniz, qalan parametrlər saxlanacaq, digərləri üçün isə standart dəyərlərdən istifadə olunacaq.",
+    "continueAfterLoss": "Davam et",
+    "retry": "Yenidən yüklə",
+    "historyDropped": "Yeniləmə zamanı söhbət tarixçəsi brauzer yaddaşına sığmadığı üçün silindi. Parametrlər normal qaydada köçürüldü."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Brauzer yaddaşı doludur: söhbət tarixçəsi artıq yadda saxlanılmır. Cari söhbət səhifədən çıxanadək görünəcək."
+  }
+}
