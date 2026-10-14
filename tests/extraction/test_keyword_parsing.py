@@ -172,3 +172,39 @@ async def test_extract_keywords_only_partitions_cache_by_keyword_llm_identity():
     assert second_ll == ["rag"]
     assert calls == 2
     assert len(cache._store) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n[1]',
+        '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n'
+        'Note: I followed the {"high_level_keywords": [...]} format.',
+        '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n\n'
+        '{"note": "a second object"}',
+        'Result #1: {"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}',
+    ],
+    ids=["bracket-citation", "brace-prose", "second-object", "hash-lead-in"],
+)
+def test_parse_keywords_payload_recovers_object_amid_bracketed_prose(result):
+    """Prose carrying a bracket, a brace or a '#' must not lose the keywords.
+
+    Repairing the whole response turned such prose into a list or a string,
+    so the payload was rejected and every KG query of 50+ characters answered
+    with the fail response.
+    """
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+def test_parse_keywords_payload_rejects_unrecoverable_text():
+    with patch("lightrag.operate.logger.error") as mocked_error:
+        is_valid, hl_keywords, ll_keywords = _parse_keywords_payload("no keywords here")
+
+    assert (is_valid, hl_keywords, ll_keywords) == (False, [], [])
+    mocked_error.assert_called_once()
