@@ -5,8 +5,13 @@ with the kwargs the role LLM wrapper forwards into them.
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
+from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.storage.kvstore import SimpleKVStore
+from pydantic import Field
 
 from lightrag.llm.llama_index_impl import llama_index_complete, llama_index_embed
 
@@ -105,22 +110,74 @@ async def test_llama_index_complete_max_tokens_does_not_override_explicit_chat_k
     assert llm.received_kwargs == {"max_tokens": 64, "temperature": 0.1}
 
 
-class _FakeEmbedModel:
-    def __init__(self, vectors) -> None:
-        self._vectors = vectors
+class _RecordingEmbedModel(BaseEmbedding):
+    vectors: dict[str, list[float]]
+    batches: list[list[str]] = Field(default_factory=list)
 
-    async def _aget_text_embeddings(self, texts):
-        return [self._vectors[t] for t in texts]
+    def _get_query_embedding(self, query: str) -> list[float]:
+        raise AssertionError("Query embedding is not used")
+
+    async def _aget_query_embedding(self, query: str) -> list[float]:
+        raise AssertionError("Query embedding is not used")
+
+    def _get_text_embedding(self, text: str) -> list[float]:
+        raise AssertionError("Synchronous embedding must not be used")
+
+    async def _aget_text_embeddings(self, texts: list[str]) -> list[list[float]]:
+        self.batches.append(list(texts))
+        await asyncio.sleep(0)
+        return [self.vectors[text] for text in texts]
 
 
 @pytest.mark.asyncio
-async def test_llama_index_embed_uses_async_batch_method():
-    model = _FakeEmbedModel({"a": [0.1, 0.2], "b": [0.3, 0.4]})
+@pytest.mark.parametrize("texts", [["a", "b"], []])
+async def test_llama_index_embed_uses_async_batch_method(texts: list[str]) -> None:
+    model = _RecordingEmbedModel(vectors={"a": [0.1, 0.2], "b": [0.3, 0.4]})
 
-    result = await llama_index_embed.func(["a", "b"], embed_model=model)
+    result = await llama_index_embed.func(texts, embed_model=model)
 
     assert isinstance(result, np.ndarray)
-    np.testing.assert_array_equal(result, np.array([[0.1, 0.2], [0.3, 0.4]]))
+    np.testing.assert_array_equal(
+        result, np.array([model.vectors[text] for text in texts])
+    )
+
+
+@pytest.mark.asyncio
+async def test_llama_index_embed_respects_batch_size_and_order() -> None:
+    texts = ["c", "a", "b", "d", "e"]
+    model = _RecordingEmbedModel(
+        vectors={text: [float(i), 0.5] for i, text in enumerate(texts)},
+        embed_batch_size=2,
+    )
+
+    result = await llama_index_embed.func(texts, embed_model=model)
+
+    assert sorted(model.batches) == sorted([["c", "a"], ["b", "d"], ["e"]])
+    np.testing.assert_array_equal(
+        result, np.array([model.vectors[text] for text in texts])
+    )
+
+
+@pytest.mark.asyncio
+async def test_llama_index_embed_reuses_cache_and_preserves_order() -> None:
+    model = _RecordingEmbedModel(
+        vectors={"a": [0.1, 0.2], "b": [0.3, 0.4], "c": [0.5, 0.6]},
+        embeddings_cache=SimpleKVStore(),
+    )
+    await model.aget_text_embedding_batch(["b"])
+    model.batches.clear()
+    texts = ["c", "b", "a"]
+
+    result = await llama_index_embed.func(texts, embed_model=model)
+
+    assert model.batches == [["c", "a"]]
+    np.testing.assert_array_equal(
+        result, np.array([model.vectors[text] for text in texts])
+    )
+    model.batches.clear()
+    repeated = await llama_index_embed.func(texts, embed_model=model)
+    assert model.batches == []
+    np.testing.assert_array_equal(repeated, result)
 
 
 @pytest.mark.asyncio
