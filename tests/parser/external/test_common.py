@@ -143,6 +143,34 @@ def test_safe_extract_zip_rejects_absolute_path(tmp_path: Path) -> None:
         safe_extract_zip(payload, tmp_path / "raw")
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["..notes.md", "...report.md", "..assets/figure.png", "nested/..notes.md"]
+)
+def test_safe_extract_zip_allows_dot_prefixed_names(tmp_path: Path, name: str) -> None:
+    payload = _make_zip({name: b"Document content"})
+
+    assert safe_extract_zip(payload, tmp_path) == [name]
+    assert (tmp_path / name).read_bytes() == b"Document content"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["..", "../outside.md", "nested/../../outside.md", "/outside.md"]
+)
+def test_safe_extract_zip_rejects_unsafe_bundle_before_writing(
+    tmp_path: Path, name: str
+) -> None:
+    destination = tmp_path / "bundle"
+    payload = _make_zip({"safe.md": b"safe", name: b"unsafe"})
+
+    with pytest.raises(RuntimeError, match="unsafe path"):
+        safe_extract_zip(payload, destination)
+
+    assert not (destination / "safe.md").exists()
+    assert not (tmp_path / "outside.md").exists()
+
+
 # ---------------------------------------------------------------------------
 # env coercion
 # ---------------------------------------------------------------------------
