@@ -22,6 +22,57 @@ def _normalize(blocks, meta, *, document_name="doc.md"):
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "marker",
+    [table_marker("author"), equation_marker("author"), drawing_marker("author")],
+)
+def test_undeclared_source_markers_remain_literal(marker):
+    ir = _normalize([{"content": marker}], {})
+    (block,) = ir.blocks
+    assert block.content_template == marker
+    assert not block.tables
+    assert not block.equations
+    assert not block.drawings
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "token, marker, meta, collection, key",
+    [
+        ("{{TBL:tb1}}", table_marker("t1"), {"md_tables": {"t1": {}}}, "tables", "tb1"),
+        (
+            "{{EQ:eq1}}",
+            equation_marker("e1"),
+            {"md_equations": {"e1": "x"}},
+            "equations",
+            "eq1",
+        ),
+        (
+            "{{EQI:eq1}}",
+            equation_marker("e1"),
+            {"md_equations": {"e1": "x"}},
+            "equations",
+            "eq1",
+        ),
+        (
+            "{{IMG:im1}}",
+            drawing_marker("d1"),
+            {"md_drawings": {"d1": {"kind": "external"}}},
+            "drawings",
+            "im1",
+        ),
+    ],
+)
+def test_generated_placeholder_keys_do_not_alias_source_tokens(
+    token, marker, meta, collection, key
+):
+    ir = _normalize([{"content": marker}, {"content": token}], meta)
+    (item,) = getattr(ir.blocks[0], collection)
+    assert item.placeholder_key != key
+    assert ir.blocks[1].content_template == token
+
+
+@pytest.mark.offline
 def test_pipe_table_becomes_json_irtable_with_header_grid():
     blocks = [
         {

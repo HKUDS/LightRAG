@@ -494,7 +494,7 @@ def _render_block_content(
     asset_prefix: str,
     block_drawing_path_style: str = "with_prefix",
 ) -> str:
-    """Expand placeholder tokens in ``block.content_template``."""
+    """Expand declared placeholders, preserving undeclared source literals."""
 
     tables_by_key = {t.placeholder_key: t for t in block.tables}
     drawings_by_key = {d.placeholder_key: d for d in block.drawings}
@@ -503,7 +503,7 @@ def _render_block_content(
     def _table(key: str) -> str:
         table = tables_by_key.get(key)
         if table is None:
-            return ""
+            return f"{{{{TBL:{key}}}}}"
         tb_id = table_id_by_key.get(key, "")
         if table.body_override is not None:
             # Verbatim block-text body — used by adapters that need to
@@ -520,7 +520,7 @@ def _render_block_content(
     def _drawing(key: str) -> str:
         drawing = drawings_by_key.get(key)
         if drawing is None:
-            return ""
+            return f"{{{{IMG:{key}}}}}"
         im_id = drawing_id_by_key.get(key, "")
         filename = asset_paths.get(drawing.asset_ref, "")
         if not filename:
@@ -540,7 +540,7 @@ def _render_block_content(
     def _equation(key: str) -> str:
         eq = equations_by_key.get(key)
         if eq is None:
-            return ""
+            return f"{{{{EQ:{key}}}}}"
         if not eq.is_block:
             # Adapter mistake: an EQ token should only be used for block
             # equations. Treat as inline to avoid a dangling token.
@@ -551,7 +551,7 @@ def _render_block_content(
     def _inline_equation(key: str) -> str:
         eq = equations_by_key.get(key)
         if eq is None:
-            return ""
+            return f"{{{{EQI:{key}}}}}"
         return render_equation_tag(None, eq.latex, eq.caption)
 
     return render_template(

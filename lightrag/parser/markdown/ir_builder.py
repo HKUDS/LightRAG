@@ -48,9 +48,16 @@ from lightrag.sidecar.ir import (
 )
 
 
-def _placeholder_keyspace() -> Callable[[str], str]:
+def _placeholder_keyspace(reserved: set[str]) -> Callable[[str], str]:
     counter = itertools.count(1)
-    return lambda prefix: f"{prefix}{next(counter)}"
+
+    def next_key(prefix: str) -> str:
+        while True:
+            key = f"{prefix}{next(counter)}"
+            if key not in reserved:
+                return key
+
+    return next_key
 
 
 class NativeMarkdownIRBuilder:
@@ -75,7 +82,16 @@ class NativeMarkdownIRBuilder:
         drawings_meta: dict[str, dict] = meta.get("md_drawings") or {}
         assets_meta: dict[str, dict] = meta.get("md_assets") or {}
 
-        next_key = _placeholder_keyspace()
+        # Reserve author-written IR token examples across the whole document.
+        source_keys = {
+            key
+            for block in blocks
+            for key in re.findall(
+                r"\{\{(?:TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}",
+                block.get("content") or "",
+            )
+        }
+        next_key = _placeholder_keyspace(source_keys)
         ir_blocks: list[IRBlock] = []
         assets: list[AssetSpec] = []
         seen_asset_refs: set[str] = set()
@@ -93,14 +109,18 @@ class NativeMarkdownIRBuilder:
 
             def _replace_table(match: "re.Match[str]") -> str:
                 ref = match.group(1)
-                spec = tables_meta.get(ref) or {}
+                if ref not in tables_meta:
+                    return match.group(0)
+                spec = tables_meta[ref] or {}
                 placeholder = next_key("tb")
                 tables.append(_build_table(placeholder, spec))
                 return f"{{{{TBL:{placeholder}}}}}"
 
             def _replace_equation(match: "re.Match[str]") -> str:
                 ref = match.group(1)
-                latex = equations_meta.get(ref, "")
+                if ref not in equations_meta:
+                    return match.group(0)
+                latex = equations_meta[ref]
                 placeholder = next_key("eq")
                 equations.append(
                     IREquation(placeholder_key=placeholder, latex=latex, is_block=True)
@@ -109,7 +129,9 @@ class NativeMarkdownIRBuilder:
 
             def _replace_drawing(match: "re.Match[str]") -> str:
                 ref = match.group(1)
-                spec = drawings_meta.get(ref) or {}
+                if ref not in drawings_meta:
+                    return match.group(0)
+                spec = drawings_meta[ref] or {}
                 placeholder = next_key("im")
                 drawings.append(
                     _build_drawing(
