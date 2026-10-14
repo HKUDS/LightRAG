@@ -4380,6 +4380,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    _merge_attributes,
+                    apply_relation_weight_floor,
                     relation_evidence_source_ids,
                     validate_relation_weight,
                 )
@@ -4653,6 +4655,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                     )
 
+                    # Batch-fetch any relation already on the graph for these
+                    # pairs. upsert_edges_batch below writes edge_data's keys
+                    # wholesale (no per-backend merge), so a relation that
+                    # already exists needs its weight/source_id combined with
+                    # what this call is about to write -- otherwise this
+                    # call's evidence silently replaces, and can shrink, the
+                    # prior evidence instead of adding to it. The per-call
+                    # validation above cannot catch this: it only checks this
+                    # call's own source_id against this call's own weight.
+                    existing_edges = (
+                        await self.chunk_entity_relation_graph.get_edges_batch(
+                            [
+                                {
+                                    "src": relationship_data["src_id"],
+                                    "tgt": relationship_data["tgt_id"],
+                                }
+                                for relationship_data in deduped_relationships.values()
+                            ]
+                        )
+                    )
+
                     # Create missing nodes in batch
                     missing_nodes: list[tuple[str, dict[str, str]]] = []
                     for relationship_data in deduped_relationships.values():
@@ -4687,10 +4710,49 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                         normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
+                        weight = relationship_data["weight"]
+                        description = relationship_data["description"]
+                        keywords = relationship_data["keywords"]
+                        existing_edge = existing_edges.get(
+                            (src_id, tgt_id)
+                        ) or existing_edges.get((tgt_id, src_id))
+                        if existing_edge is not None:
+                            # Same merge every other existing-relation path uses
+                            # (_merge_entities_impl's relation_updates): union
+                            # source_id/file_path, combine description/keywords,
+                            # take the larger weight, then re-floor it to the
+                            # combined evidence count.
+                            merged = _merge_attributes(
+                                [
+                                    existing_edge,
+                                    {
+                                        "weight": weight,
+                                        "description": description,
+                                        "keywords": keywords,
+                                        "source_id": source_id,
+                                        "file_path": file_path,
+                                    },
+                                ],
+                                {
+                                    "description": "concatenate",
+                                    "keywords": "join_unique_comma",
+                                    "source_id": "join_unique",
+                                    "file_path": "join_unique",
+                                    "weight": "max",
+                                },
+                                filter_none_only=True,
+                            )
+                            source_id = merged.get("source_id", source_id)
+                            description = merged.get("description", description)
+                            keywords = merged.get("keywords", keywords)
+                            weight = apply_relation_weight_floor(
+                                merged.get("weight", weight), source_id
+                            )
+
                         edge_data = {
-                            "weight": relationship_data["weight"],
-                            "description": relationship_data["description"],
-                            "keywords": relationship_data["keywords"],
+                            "weight": weight,
+                            "description": description,
+                            "keywords": keywords,
                             "source_id": source_id,
                             "file_path": file_path,
                             "created_at": int(time.time()),
@@ -4701,10 +4763,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             {
                                 "src_id": normalized_src_id,
                                 "tgt_id": normalized_tgt_id,
-                                "description": relationship_data["description"],
-                                "keywords": relationship_data["keywords"],
+                                "description": description,
+                                "keywords": keywords,
                                 "source_id": source_id,
-                                "weight": relationship_data["weight"],
+                                "weight": weight,
                                 "file_path": file_path,
                                 "created_at": int(time.time()),
                             }
