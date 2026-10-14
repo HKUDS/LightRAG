@@ -27,7 +27,10 @@ from lightrag.parser.docx.parse_document import (
     extract_docx_blocks,
     extract_paragraph_content,
 )
-from lightrag.parser.docx.table_extractor import extract_paragraph_content_table
+from lightrag.parser.docx.table_extractor import (
+    TableExtractor,
+    extract_paragraph_content_table,
+)
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 PARAGRAPH_NS = {
@@ -387,6 +390,51 @@ def test_empty_tables_are_skipped(tmp_path) -> None:
         "must be dropped before the placeholder is emitted"
     )
     assert any('"A"' in b["content"] and '"B"' in b["content"] for b in blocks)
+
+
+def _one_row_table_with_first_cell_span(span_val: str | None):
+    """A 1x3 table (A, B, C) whose first cell carries ``w:gridSpan``.
+
+    ``span_val=None`` emits the element without ``w:val``.
+    """
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    for cell, text in zip(table.rows[0].cells, "ABC"):
+        _populate_cell(cell, text)
+    grid_span = OxmlElement("w:gridSpan")
+    if span_val is not None:
+        grid_span.set(qn("w:val"), span_val)
+    table.rows[0].cells[0]._tc.get_or_add_tcPr().append(grid_span)
+    return table
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("span_val", ["1", "0", "-1", "-5", None, "", "abc"])
+def test_table_grid_span_below_one_or_malformed_is_one_column(span_val) -> None:
+    """A ``w:gridSpan`` below 1, missing its value, or non-integer must not
+    shift, overwrite, or drop cells, nor fail the document."""
+    table = _one_row_table_with_first_cell_span(span_val)
+
+    assert TableExtractor.extract(table) == [["A", "B", "C"]]
+
+
+@pytest.mark.offline
+def test_table_grid_span_valid_merge_still_advances() -> None:
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    merged = table.rows[0].cells[0].merge(table.rows[0].cells[1])
+    _populate_cell(merged, "AB")
+    _populate_cell(table.rows[0].cells[2], "C")
+
+    assert TableExtractor.extract(table) == [["AB", "", "C"]]
+
+
+@pytest.mark.offline
+def test_table_grid_span_past_the_grid_keeps_first_cell() -> None:
+    """An oversized span only pushes the remaining cells off the grid."""
+    table = _one_row_table_with_first_cell_span("999999999")
+
+    assert TableExtractor.extract(table) == [["A", "", ""]]
 
 
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------
