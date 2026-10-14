@@ -1175,6 +1175,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "content": {"type": "string"},
                                                     "file_path": {"type": "string"},
                                                     "chunk_id": {"type": "string"},
+                                                    "document_date": {
+                                                        "type": "string",
+                                                        "description": (
+                                                            "Optional source-document fact date in YYYY, YYYY-MM, "
+                                                            "or YYYY-MM-DD format; omitted when unavailable"
+                                                        ),
+                                                    },
                                                     "reference_id": {"type": "string"},
                                                 },
                                             },
@@ -1357,6 +1364,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "content": "Deep learning is a subset of machine learning that uses neural networks with multiple layers...",
                                                 "file_path": "/documents/deep_learning.pdf",
                                                 "chunk_id": "chunk-789",
+                                                "document_date": "2018-10-01",
                                                 "reference_id": "3",
                                             }
                                         ],
@@ -1448,7 +1456,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         **Data Structure:**
         - **entities**: Knowledge graph entities with descriptions and metadata
         - **relationships**: Connections between entities with weights and descriptions
-        - **chunks**: Text segments from documents with source information
+        - **chunks**: Text segments from documents with source information and an optional document date
         - **references**: Citation information mapping reference IDs to file paths
         - **metadata**: Processing information, keywords, and query statistics
 
