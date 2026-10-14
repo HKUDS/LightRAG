@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from typing import final
 import configparser
 
-from ..utils import logger, validate_workspace
+from ..utils import logger, get_env_value, validate_workspace
 from ..base import BaseGraphStorage
+from ..constants import DEFAULT_MAX_GRAPH_NODES
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
@@ -24,7 +25,10 @@ from dotenv import load_dotenv
 # use the .env that is inside the current folder
 load_dotenv(dotenv_path=".env", override=False)
 
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+# Read through get_env_value like ``LightRAG.max_graph_nodes``: this runs at
+# import time, so the same knob that only costs a default there would raise
+# ValueError out of the storage module import here.
+MAX_GRAPH_NODES = get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
