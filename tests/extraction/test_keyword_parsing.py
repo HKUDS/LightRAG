@@ -2,7 +2,11 @@ import pytest
 from unittest.mock import patch
 
 from lightrag.base import QueryParam
-from lightrag.operate import _parse_keywords_payload, extract_keywords_only
+from lightrag.operate import (
+    _is_unsupported_response_format_error,
+    _parse_keywords_payload,
+    extract_keywords_only,
+)
 
 
 class _FakeKeywordModel:
@@ -172,3 +176,175 @@ async def test_extract_keywords_only_partitions_cache_by_keyword_llm_identity():
     assert second_ll == ["rag"]
     assert calls == 2
     assert len(cache._store) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_auto_sends_response_format_by_default():
+    """Supported providers must not be downgraded: the first attempt carries the
+    API-enforced JSON constraint unless the policy says otherwise."""
+    captured_kwargs = {}
+
+    async def keyword_model(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello",
+        QueryParam(),
+        _keyword_global_config("model-a", keyword_func=keyword_model),
+        hashing_kv=None,
+    )
+
+    assert captured_kwargs["response_format"] == {"type": "json_object"}
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_auto_retries_once_without_response_format_on_compat_error():
+    """The regression for servers such as LM Studio that reject response_format.
+
+    The first request dies with a 'response_format.type' must be 'json_schema' or
+    'text' style 400; auto mode retries the same prompt without the constraint and the
+    second response carries the keywords.
+    """
+    calls = []
+
+    async def keyword_model(*_args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError(
+                "'response_format.type' must be 'json_schema' or 'text'"
+            )
+        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello",
+        QueryParam(),
+        _keyword_global_config("model-a", keyword_func=keyword_model),
+        hashing_kv=None,
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[1]
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_auto_does_not_retry_unrelated_errors():
+    """The fallback is only for the compatibility error, never for a generic failure:
+    a transient transport error must surface, not silently degrade to a prompt-only
+    JSON request that may parse to nothing."""
+    calls = []
+
+    async def keyword_model(*_args, **kwargs):
+        calls.append(kwargs)
+        raise ConnectionResetError("connection reset by peer")
+
+    with pytest.raises(ConnectionResetError, match="connection reset"):
+        await extract_keywords_only(
+            "hello",
+            QueryParam(),
+            _keyword_global_config("model-a", keyword_func=keyword_model),
+            hashing_kv=None,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_object_always_sends_response_format():
+    captured_kwargs = {}
+
+    async def keyword_model(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return '{"high_level_keywords":[],"low_level_keywords":[]}'
+
+    global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
+    global_config["keyword_extraction_json_mode"] = "json_object"
+
+    await extract_keywords_only("hello", QueryParam(), global_config, hashing_kv=None)
+
+    assert captured_kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_none_never_sends_response_format():
+    captured_kwargs = {}
+
+    async def keyword_model(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+    global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
+    global_config["keyword_extraction_json_mode"] = "none"
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello", QueryParam(), global_config, hashing_kv=None
+    )
+
+    assert "response_format" not in captured_kwargs
+    # The tolerant parser reads plain JSON text as well as a JSON-mode response.
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_non_json_response_is_not_treated_as_valid_keyword_output():
+    """A provider that ignores the constraint and rambles must yield no keywords:
+    prose that merely mentions the topic is not structured keyword output, and
+    empty keywords — not fabricated ones — are what a caller can act on."""
+    async def keyword_model(*_args, **kwargs):
+        return "AI and RAG are two interesting topics for retrieval, graph and memory."
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello",
+        QueryParam(),
+        _keyword_global_config("model-a", keyword_func=keyword_model),
+        hashing_kv=None,
+    )
+
+    assert hl_keywords == []
+    assert ll_keywords == []
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_keyword_extraction_json_mode_rejects_unknown_value():
+    global_config = _keyword_global_config("model-a", keyword_func=None)
+    global_config["keyword_extraction_json_mode"] = "sometimes"
+
+    with pytest.raises(ValueError, match="keyword_extraction_json_mode"):
+        await extract_keywords_only(
+            "hello", QueryParam(), global_config, hashing_kv=None
+        )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        # The field itself is rejected — retry without it is safe.
+        ("'response_format.type' must be 'json_schema' or 'text'", True),
+        ("Invalid response_format: json_object is not supported", True),
+        ("response_format json_schema is not supported by this model", True),
+        ("json_object mode is not allowed for this deployment", True),
+        # Anything without the field in the message must propagate.
+        ("Connection reset by peer", False),
+        ("Request timed out while waiting for response_format", False),
+        ("HTTP 429: rate limit exceeded", False),
+        ("invalid JSON in prompt", False),
+    ],
+)
+def test_is_unsupported_response_format_error(message, expected):
+    assert _is_unsupported_response_format_error(RuntimeError(message)) is expected
+

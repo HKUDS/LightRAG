@@ -894,6 +894,18 @@ MAX_EXTRACTION_ENTITIES=40
 
 If an old `.env` still contains `ENTITY_TYPES`, remove it before startup. The server fails fast because this variable has been replaced by prompt profiles.
 
+### Query Keyword Extraction Configuration
+
+Keyword extraction runs on the query path (the `KEYWORD` role LLM) for the `hybrid`, `local` and `global` modes. Its structured-output policy is independent of `ENTITY_EXTRACTION_USE_JSON`:
+
+- `KEYWORD_EXTRACTION_JSON_MODE`: `auto` (default) requests `response_format={"type": "json_object"}` and retries the same prompt once without it, but only when the provider rejects that field itself; `json_object` always sends it; `none` never sends it. Set `json_object` or `none` only when you know your provider's position: servers such as LM Studio accept only `json_schema`/`text` and answer HTTP 400, which the query path surfaces as an empty retrieval result.
+
+Example:
+
+```bash
+KEYWORD_EXTRACTION_JSON_MODE=auto
+```
+
 ### Storage Types Supported
 
 LightRAG uses 4 types of storage for different purposes:
