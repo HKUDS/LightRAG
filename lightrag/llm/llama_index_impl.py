@@ -42,11 +42,13 @@ def configure_llama_index(settings: Any = None, **kwargs):
     Configure LlamaIndex settings.
 
     Args:
-        settings: LlamaIndex Settings instance. If None, uses default settings.
+        settings: Settings object to configure in place. If None, uses the
+            LlamaIndex Settings singleton. Provided objects are not installed
+            as global settings.
         **kwargs: Additional settings to override/configure
     """
     if settings is None:
-        settings = LlamaIndexSettings()
+        settings = LlamaIndexSettings
 
     # Update settings with any provided kwargs
     for key, value in kwargs.items():
@@ -55,8 +57,6 @@ def configure_llama_index(settings: Any = None, **kwargs):
         else:
             logger.warning(f"Unknown LlamaIndex setting: {key}")
 
-    # Set as global settings
-    LlamaIndexSettings.set_global(settings)
     return settings
 
 
