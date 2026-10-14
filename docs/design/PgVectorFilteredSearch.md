@@ -1,7 +1,7 @@
-# PostgreSQL filtered vector search (HNSW iterative scan)
+# PostgreSQL filtered vector search (iterative index scan)
 
 Status: mitigation, not a guarantee. This document states what
-`PostgreSQLDB.configure_hnsw_iterative_scan` fixes, what it leaves, and why.
+`PostgreSQLDB.configure_iterative_scan` fixes, what it leaves, and why.
 
 ## The defect
 
@@ -38,7 +38,7 @@ dropped when the library first loads, with a server-side `WARNING`; the client
 sees no exception. After the library is loaded (the pool-reset path) the same
 `SET` raises `InvalidNameError`. The outcome therefore cannot be read from the
 exception, so the extension version is probed once at startup
-(`_probe_hnsw_iterative_scan_support`): below 0.8 the `SET` is skipped and one
+(`_probe_iterative_scan_support`): below 0.8 the `SET` is skipped and one
 warning is logged. If the version cannot be read, the `SET` is still attempted.
 
 ## Measured behaviour
@@ -70,18 +70,36 @@ giving up.
    the distance threshold (common for entities / relationships), the scan always
    runs to its budget. A ~30 ms floor replaces ~1 ms. This was measured on a
    small table; larger rows or dimensions cost more.
-3. **IVFFlat and VCHORDRQ** are not covered.
-   * IVFFlat has the same defect. It scans only `ivfflat.probes` lists
-     (default 1 of `lists`) and filters afterwards. Measured (212,240 rows,
-     `lists=100`, `LIMIT 20`, threshold loose): a 0.09% workspace (200 rows)
-     returned 2.1 rows; 0.94% (2,000) returned 19.1; 4.7% returned 20. With
-     `ivfflat.iterative_scan = relaxed_order` all three returned 20 (14.6 ms
-     for the small one vs 2.4 ms).
-   * IVFFlat accepts **only** `relaxed_order`; `strict_order` is rejected with
-     a server WARNING and ignored. Rows may then arrive out of distance order,
-     which the callers do not tolerate today, so it was not applied.
-   * VCHORDRQ filtering behaviour was not examined.
-4. **pgvector < 0.8** keeps the old behaviour (a warning is logged).
+3. **VCHORDRQ** is not covered; its filtering behaviour was not examined.
+4. **IVFFlat is covered, with a weaker guarantee** (see below).
+5. **pgvector < 0.8** keeps the old behaviour (a warning is logged).
+
+## IVFFlat
+
+IVFFlat has the same defect: it scans `ivfflat.probes` lists (default 1 of
+`lists`) and filters afterwards. Measured (212,240 rows, `lists=100`,
+`LIMIT 20`, threshold loose):
+
+| workspace share (rows) | default (`probes=1`) | `relaxed_order` |
+|---|---|---|
+| 4.7% (10,000) | 20 rows | 20 rows |
+| 0.94% (2,000) | 19.1 rows | 20 rows |
+| 0.09% (200) | **2.1 rows** | 20 rows (14.6 ms vs 2.4 ms) |
+
+IVFFlat accepts **only** `relaxed_order`; `strict_order` is ignored with a
+server WARNING. Under `relaxed_order` the rows are **not in distance order**
+(30 of 30 sampled queries) and the planner adds no sort, so the result would
+break the nearest-first contract the callers rely on. The IVFFlat query is
+therefore wrapped (`_with_distance_resort`):
+
+```sql
+WITH relaxed AS MATERIALIZED (<template> + distance AS _distance)
+SELECT * FROM relaxed ORDER BY _distance + 0
+```
+
+This is the pgvector-documented remedy. It restores *order* only: which rows
+make the top `LIMIT` is still decided by the approximate scan, as it always was
+for an ANN index. The helper column is removed before rows reach callers.
 
 ## Rejected / deferred
 
@@ -96,8 +114,8 @@ giving up.
 
 ## Index choice for multi-workspace deployments
 
-When many workspaces share one vector table, use **`HNSW` or `HNSW_HALFVEC`
-with pgvector >= 0.8**. It is the only combination this change protects, and
-the only one with a strict-order iterative scan. `IVFFLAT` shows the same
-silent-empty result and has no strict-order remedy; `VCHORDRQ` is unexamined.
+When many workspaces share one vector table, prefer **`HNSW` or
+`HNSW_HALFVEC` with pgvector >= 0.8**: a strict-order iterative scan, no
+re-sort, no ordering caveat. `IVFFLAT` is protected too but relies on the
+re-sort wrapper and on `ivfflat.probes` for recall. `VCHORDRQ` is unexamined.
 A single-workspace deployment is not exposed to this defect whatever the index.

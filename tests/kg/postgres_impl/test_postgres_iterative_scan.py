@@ -13,9 +13,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lightrag.kg.postgres_impl import PostgreSQLDB
+from lightrag.kg.postgres_impl import (
+    SQL_TEMPLATES,
+    PostgreSQLDB,
+    _with_distance_resort,
+)
 
 SET_SQL = "SET hnsw.iterative_scan = strict_order"
+IVFFLAT_SET_SQL = "SET ivfflat.iterative_scan = relaxed_order"
 
 
 def _db(index_type: str | None = "HNSW", enable_vector: bool = True) -> PostgreSQLDB:
@@ -37,7 +42,7 @@ def _statements(connection: AsyncMock) -> list[str]:
 async def test_hnsw_sets_iterative_scan_without_load(index_type) -> None:
     connection = AsyncMock()
 
-    await _db(index_type).configure_hnsw_iterative_scan(connection)
+    await _db(index_type).configure_iterative_scan(connection)
 
     # A bare SET: LOAD 'vector' is refused for non-superusers (managed
     # databases), and a refused LOAD must not take the SET down with it.
@@ -46,13 +51,96 @@ async def test_hnsw_sets_iterative_scan_without_load(index_type) -> None:
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("index_type", ["IVFFLAT", "VCHORDRQ", None])
-async def test_non_hnsw_index_issues_nothing(index_type) -> None:
+@pytest.mark.parametrize("index_type", ["VCHORDRQ", None])
+async def test_uncovered_index_issues_nothing(index_type) -> None:
     connection = AsyncMock()
 
-    await _db(index_type).configure_hnsw_iterative_scan(connection)
+    await _db(index_type).configure_iterative_scan(connection)
 
     assert _statements(connection) == []
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_ivfflat_uses_relaxed_order_only() -> None:
+    """IVFFLAT rejects strict_order (server WARNING, value ignored)."""
+    connection = AsyncMock()
+
+    await _db("IVFFLAT").configure_iterative_scan(connection)
+
+    assert _statements(connection) == [IVFFLAT_SET_SQL]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("namespace", ["chunks", "entities", "relationships"])
+@pytest.mark.parametrize("vector_cast", ["vector", "halfvec"])
+def test_resort_wrapper_restores_distance_order(namespace, vector_cast) -> None:
+    """relaxed_order rows come out unsorted and the planner adds no sort, so the
+    scan is materialised and re-sorted; ``+ 0`` defeats sort elimination."""
+    raw = SQL_TEMPLATES[namespace].format(table_name="t", vector_cast=vector_cast)
+
+    wrapped = _with_distance_resort(raw, vector_cast)
+
+    assert wrapped.startswith("WITH relaxed AS MATERIALIZED (")
+    assert wrapped.endswith("ORDER BY _distance + 0")
+    assert wrapped.count(f"content_vector <=> $4::{vector_cast} AS _distance") == 1
+    assert "LIMIT $3" in wrapped  # the bound stays inside the scan
+    assert ";" not in wrapped
+
+
+@pytest.mark.offline
+def test_resort_wrapper_refuses_a_template_it_cannot_parse() -> None:
+    with pytest.raises(RuntimeError):
+        _with_distance_resort("SELECT 1", "vector")
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("index_type", "wrapped"),
+    [("IVFFLAT", True), ("HNSW", False), ("HNSW_HALFVEC", False)],
+)
+async def test_query_resorts_only_for_ivfflat(index_type, wrapped) -> None:
+    from lightrag.kg.postgres_impl import PGVectorStorage
+
+    storage = PGVectorStorage.__new__(PGVectorStorage)
+    storage.namespace = "chunks"
+    storage.workspace = "gw"
+    storage.table_name = "t"
+    storage.cosine_better_than_threshold = 0.2
+    storage.db = _db(index_type)
+    storage.db.query = AsyncMock(
+        return_value=[{"id": "a", "content": "x", "_distance": 0.1}]
+    )
+
+    rows = await storage.query("q", top_k=5, query_embedding=[0.1, 0.2])
+
+    sql = storage.db.query.await_args.args[0]
+    assert sql.startswith("WITH relaxed AS MATERIALIZED") is wrapped
+    if wrapped:
+        # the helper column never reaches callers
+        assert rows == [{"id": "a", "content": "x"}]
+    else:
+        assert rows == [{"id": "a", "content": "x", "_distance": 0.1}]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_query_skips_resort_when_iterative_scan_unsupported() -> None:
+    from lightrag.kg.postgres_impl import PGVectorStorage
+
+    storage = PGVectorStorage.__new__(PGVectorStorage)
+    storage.namespace = "chunks"
+    storage.workspace = "gw"
+    storage.table_name = "t"
+    storage.cosine_better_than_threshold = 0.2
+    storage.db = _db("IVFFLAT")
+    storage.db.iterative_scan_supported = False
+    storage.db.query = AsyncMock(return_value=[])
+
+    await storage.query("q", top_k=5, query_embedding=[0.1])
+
+    assert not storage.db.query.await_args.args[0].startswith("WITH relaxed")
 
 
 @pytest.mark.offline
@@ -65,11 +153,11 @@ async def test_set_failure_is_not_fatal_and_logged_once() -> None:
 
     # LightRAG's logger does not propagate, so caplog sees nothing.
     with patch("lightrag.kg.postgres_impl.logger") as logger:
-        await db.configure_hnsw_iterative_scan(connection)  # must not raise
-        await db.configure_hnsw_iterative_scan(connection)  # every pool release
+        await db.configure_iterative_scan(connection)  # must not raise
+        await db.configure_iterative_scan(connection)  # every pool release
 
     assert logger.warning.call_count == 1
-    assert "iterative_scan" in str(logger.warning.call_args)
+    assert "iterative scan not applied" in str(logger.warning.call_args)
 
 
 @pytest.mark.offline
@@ -79,9 +167,9 @@ async def test_old_pgvector_skips_the_set() -> None:
     silently, so the version decides, not the exception."""
     connection = AsyncMock()
     db = _db()
-    db.hnsw_iterative_scan_supported = False
+    db.iterative_scan_supported = False
 
-    await db.configure_hnsw_iterative_scan(connection)
+    await db.configure_iterative_scan(connection)
 
     assert _statements(connection) == []
 
@@ -103,9 +191,9 @@ def _version_connection(version: str | None) -> AsyncMock:
 async def test_version_probe_decides_support(version, supported) -> None:
     db = _db()
     with patch("lightrag.kg.postgres_impl.logger") as logger:
-        await db._probe_hnsw_iterative_scan_support(_version_connection(version))
+        await db._probe_iterative_scan_support(_version_connection(version))
 
-    assert db.hnsw_iterative_scan_supported is supported
+    assert db.iterative_scan_supported is supported
     assert logger.warning.called is (not supported)
 
 
@@ -114,11 +202,11 @@ async def test_version_probe_decides_support(version, supported) -> None:
 @pytest.mark.parametrize("version", [None, "garbage"])
 async def test_unreadable_version_leaves_support_unknown(version) -> None:
     db = _db()
-    db.hnsw_iterative_scan_supported = None
+    db.iterative_scan_supported = None
 
-    await db._probe_hnsw_iterative_scan_support(_version_connection(version))
+    await db._probe_iterative_scan_support(_version_connection(version))
 
-    assert db.hnsw_iterative_scan_supported is None  # SET is still attempted
+    assert db.iterative_scan_supported is None  # SET is still attempted
 
 
 @pytest.mark.offline
@@ -127,19 +215,19 @@ async def test_version_probe_failure_is_not_fatal() -> None:
     connection = AsyncMock()
     connection.fetchrow.side_effect = Exception("boom")
     db = _db()
-    db.hnsw_iterative_scan_supported = None
+    db.iterative_scan_supported = None
 
-    await db._probe_hnsw_iterative_scan_support(connection)  # must not raise
+    await db._probe_iterative_scan_support(connection)  # must not raise
 
-    assert db.hnsw_iterative_scan_supported is None
+    assert db.iterative_scan_supported is None
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_version_probe_ignores_non_hnsw_index() -> None:
+async def test_version_probe_ignores_uncovered_index() -> None:
     connection = _version_connection("0.7.0")
 
-    await _db("IVFFLAT")._probe_hnsw_iterative_scan_support(connection)
+    await _db("VCHORDRQ")._probe_iterative_scan_support(connection)
 
     assert connection.fetchrow.await_count == 0
 

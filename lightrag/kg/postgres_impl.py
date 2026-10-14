@@ -325,6 +325,43 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
 
 
 # All known vector index suffixes, used to drop conflicting indexes when switching types
+# Session statement that makes a filtered ANN scan continue past rejected
+# candidates, per vector index type (pgvector >= 0.8).
+_ITERATIVE_SCAN_SQL: dict[str, str] = {
+    "HNSW": "SET hnsw.iterative_scan = strict_order",
+    "HNSW_HALFVEC": "SET hnsw.iterative_scan = strict_order",
+    "IVFFLAT": "SET ivfflat.iterative_scan = relaxed_order",
+}
+
+_DISTANCE_COLUMN = "_distance"
+
+
+def _with_distance_resort(sql: str, vector_cast: str) -> str:
+    """Re-sort a vector-search query whose index scan may emit rows out of order.
+
+    ``ivfflat.iterative_scan = relaxed_order`` rows are not in distance order,
+    and the planner trusts the index and adds no sort. The documented remedy
+    is to materialise the scan and sort the result; ``+ 0`` keeps the planner
+    from deciding the sort is redundant. The distance column is added here and
+    must be removed by the caller (``_DISTANCE_COLUMN``).
+    """
+    with_distance, replaced = re.subn(
+        r"\n(\s*)FROM ",
+        lambda m: (
+            f",\n{m.group(1)}content_vector <=> $4::{vector_cast} "
+            f"AS {_DISTANCE_COLUMN}\n{m.group(1)}FROM "
+        ),
+        sql.strip().rstrip(";"),
+        count=1,
+    )
+    if replaced != 1:
+        raise RuntimeError("vector query template has no top-level FROM line")
+    return (
+        f"WITH relaxed AS MATERIALIZED ({with_distance}) "
+        f"SELECT * FROM relaxed ORDER BY {_DISTANCE_COLUMN} + 0"
+    )
+
+
 _VECTOR_INDEX_SUFFIXES = [
     "hnsw_cosine",
     "hnsw_halfvec_cosine",
@@ -446,8 +483,8 @@ class PostgreSQLDB:
         self.vector_index_type = config.get("vector_index_type")
         # None = not probed yet; False = pgvector < 0.8 (no iterative scan GUC).
         # Probed once by configure_vector_extension, read per connection.
-        self.hnsw_iterative_scan_supported: bool | None = None
-        self._hnsw_iterative_scan_warned = False
+        self.iterative_scan_supported: bool | None = None
+        self._iterative_scan_warned = False
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
@@ -636,7 +673,7 @@ class PostgreSQLDB:
                 from pgvector.asyncpg import register_vector  # type: ignore
 
                 await register_vector(connection)
-                await self.configure_hnsw_iterative_scan(connection)
+                await self.configure_iterative_scan(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 await self.configure_vchordrq(connection)
 
@@ -676,7 +713,7 @@ class PostgreSQLDB:
             # RESET ALL clears session GUCs; restore the ones this backend
             # depends on (HNSW iterative scan, VCHORDRQ) afterward.
             if self.enable_vector:
-                await self.configure_hnsw_iterative_scan(connection)
+                await self.configure_iterative_scan(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 try:
                     await self.configure_vchordrq(connection)
@@ -936,12 +973,12 @@ class PostgreSQLDB:
                     "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
                 )
 
-        await self._probe_hnsw_iterative_scan_support(connection)
+        await self._probe_iterative_scan_support(connection)
 
-    async def _probe_hnsw_iterative_scan_support(
+    async def _probe_iterative_scan_support(
         self, connection: asyncpg.Connection
     ) -> None:
-        """Record whether pgvector has ``hnsw.iterative_scan`` (>= 0.8.0).
+        """Record whether pgvector has iterative index scans (>= 0.8.0).
 
         Decided from the extension version once at startup instead of from a
         failed ``SET``: on a fresh connection an unknown ``hnsw.*`` parameter is
@@ -949,7 +986,7 @@ class PostgreSQLDB:
         WARNING, so a client-side exception cannot be relied on. An unreadable
         version leaves the flag ``None`` and the ``SET`` is still attempted.
         """
-        if getattr(self, "vector_index_type", None) not in ("HNSW", "HNSW_HALFVEC"):
+        if getattr(self, "vector_index_type", None) not in _ITERATIVE_SCAN_SQL:
             return
         try:
             row = await connection.fetchrow(
@@ -962,11 +999,11 @@ class PostgreSQLDB:
         if match is None:
             return
         supported = (int(match.group(1)), int(match.group(2))) >= (0, 8)
-        self.hnsw_iterative_scan_supported = supported
+        self.iterative_scan_supported = supported
         if not supported:
             logger.warning(
                 f"PostgreSQL, pgvector {row['extversion']} has no "
-                "hnsw.iterative_scan (needs >= 0.8.0): a workspace holding a "
+                "iterative index scan (needs >= 0.8.0): a workspace holding a "
                 "minority of the rows in a shared vector table can get no "
                 "dense-search results. Upgrade pgvector."
             )
@@ -1359,19 +1396,20 @@ class PostgreSQLDB:
 
             self._ensured_age_graphs.add(graph_name)
 
-    async def configure_hnsw_iterative_scan(
-        self, connection: asyncpg.Connection
-    ) -> None:
-        """Let a filtered HNSW scan continue past candidates the filter rejects.
+    async def configure_iterative_scan(self, connection: asyncpg.Connection) -> None:
+        """Let a filtered ANN scan continue past candidates the filter rejects.
 
-        The vector queries filter on ``workspace`` while the HNSW index is global,
-        so without iterative scan a workspace holding a small share of the table
-        can get 0 rows and no error. ``strict_order`` (not ``relaxed_order``)
-        keeps the distance bound and nearest-first ordering the callers rely on.
+        The vector queries filter on ``workspace`` while the vector index is
+        global, so without iterative scan a workspace holding a small share of
+        the table can get 0 rows and no error.
 
         Rules:
 
-        * HNSW index types only. IVFFlat has its own GUC, VCHORDRQ needs none.
+        * HNSW / HNSW_HALFVEC use ``strict_order``, which keeps the distance
+          bound and nearest-first order the callers rely on. IVFFLAT accepts
+          only ``relaxed_order``, whose rows can arrive out of order: the
+          IVFFLAT query must be wrapped by ``_with_distance_resort``.
+          VCHORDRQ is not covered.
         * Plain ``SET``; do not ``LOAD 'vector'`` first. ``SET`` of a not-yet-
           loaded extension GUC is kept as a placeholder and adopted when the
           library loads, while ``LOAD`` is refused for non-superusers
@@ -1388,17 +1426,18 @@ class PostgreSQLDB:
         cases and the rejected alternatives are in
         docs/design/PgVectorFilteredSearch.md.
         """
-        if getattr(self, "vector_index_type", None) not in ("HNSW", "HNSW_HALFVEC"):
+        statement = _ITERATIVE_SCAN_SQL.get(getattr(self, "vector_index_type", None))
+        if statement is None:
             return
-        if getattr(self, "hnsw_iterative_scan_supported", None) is False:
+        if getattr(self, "iterative_scan_supported", None) is False:
             return  # reported once at startup by the version probe
         try:
-            await connection.execute("SET hnsw.iterative_scan = strict_order")
+            await connection.execute(statement)
         except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
-            if not getattr(self, "_hnsw_iterative_scan_warned", False):
-                self._hnsw_iterative_scan_warned = True
+            if not getattr(self, "_iterative_scan_warned", False):
+                self._iterative_scan_warned = True
                 logger.warning(
-                    f"PostgreSQL, hnsw.iterative_scan not applied ({exc}); "
+                    f"PostgreSQL, iterative scan not applied ({exc}); "
                     "filtered vector search may return fewer rows than exist"
                 )
 
@@ -5023,6 +5062,13 @@ class PGVectorStorage(BaseVectorStorage):
         sql = SQL_TEMPLATES[self.namespace].format(
             table_name=self.table_name, vector_cast=vector_cast
         )
+        # IVFFLAT iterative scan is relaxed_order only: restore distance order.
+        resort = (
+            getattr(self.db, "vector_index_type", None) == "IVFFLAT"
+            and getattr(self.db, "iterative_scan_supported", None) is not False
+        )
+        if resort:
+            sql = _with_distance_resort(sql, vector_cast)
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
@@ -5030,6 +5076,9 @@ class PGVectorStorage(BaseVectorStorage):
             "embedding": embedding,
         }
         results = await self.db.query(sql, params=list(params.values()), multirows=True)
+        if resort and results:
+            for row in results:
+                row.pop(_DISTANCE_COLUMN, None)
         return results
 
     async def index_done_callback(self) -> None:
