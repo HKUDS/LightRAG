@@ -115,7 +115,9 @@ WITH relaxed AS MATERIALIZED (<template> + distance AS _distance)
 SELECT * FROM relaxed ORDER BY _distance + 0
 ```
 
-This is the pgvector-documented remedy. It restores *order* only: which rows
+This is the pgvector-documented remedy. `MATERIALIZED` forces the scan to
+finish before the sort, and `+ 0` keeps the planner from deciding the sort is
+redundant because the index "already" ordered the rows. It restores *order* only: which rows
 make the top `LIMIT` is still decided by the approximate scan, as it always was
 for an ANN index. The helper column is removed before rows reach callers.
 

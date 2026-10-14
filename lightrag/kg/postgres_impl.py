@@ -324,12 +324,9 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
     return upsert_payload_bytes, upsert_records, delete_records
 
 
-# All known vector index suffixes, used to drop conflicting indexes when switching types
-# Transaction-local statement that makes a filtered ANN scan continue past
-# rejected candidates, per vector index type (pgvector >= 0.8). LOCAL, not
-# session: a transaction-pooling proxy may serve the next statement from a
-# different backend, so only a setting made in the query's own transaction is
-# guaranteed to be in force when the scan runs.
+# Transaction-local statement that lets a filtered ANN scan continue past
+# rejected candidates, per vector index type (pgvector >= 0.8). Must stay LOCAL;
+# see docs/design/PgVectorFilteredSearch.md.
 _ITERATIVE_SCAN_SQL: dict[str, str] = {
     "HNSW": "SET LOCAL hnsw.iterative_scan = strict_order",
     "HNSW_HALFVEC": "SET LOCAL hnsw.iterative_scan = strict_order",
@@ -340,13 +337,11 @@ _DISTANCE_COLUMN = "_distance"
 
 
 def _with_distance_resort(sql: str, vector_cast: str) -> str:
-    """Re-sort a vector-search query whose index scan may emit rows out of order.
+    """Wrap an IVFFLAT vector query so its rows come back in distance order.
 
-    ``ivfflat.iterative_scan = relaxed_order`` rows are not in distance order,
-    and the planner trusts the index and adds no sort. The documented remedy
-    is to materialise the scan and sort the result; ``+ 0`` keeps the planner
-    from deciding the sort is redundant. The distance column is added here and
-    must be removed by the caller (``_DISTANCE_COLUMN``).
+    Required for ``ivfflat.iterative_scan = relaxed_order``, whose rows are not
+    ordered. The wrapper adds a ``_DISTANCE_COLUMN`` that the caller must remove
+    from every row. Why this form: docs/design/PgVectorFilteredSearch.md.
     """
     with_distance, replaced = re.subn(
         r"\n(\s*)FROM ",
@@ -365,6 +360,7 @@ def _with_distance_resort(sql: str, vector_cast: str) -> str:
     )
 
 
+# All known vector index suffixes, used to drop conflicting indexes when switching types
 _VECTOR_INDEX_SUFFIXES = [
     "hnsw_cosine",
     "hnsw_halfvec_cosine",
