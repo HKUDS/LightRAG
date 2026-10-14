@@ -1,7 +1,8 @@
 # PostgreSQL filtered vector search (iterative index scan)
 
 Status: mitigation, not a guarantee. This document states what
-`PostgreSQLDB.configure_iterative_scan` fixes, what it leaves, and why.
+`PostgreSQLDB.iterative_scan_statement` and `_fetch_with_iterative_scan` fix,
+what they leave, and why.
 
 ## The defect
 
@@ -51,12 +52,12 @@ A failure of the query itself is never retried or swallowed.
 The parameter does not exist, and the failure is **silent on a new
 connection**: `SET hnsw.<unknown>` is accepted as a placeholder and only
 dropped when the library first loads, with a server-side `WARNING`; the client
-sees no exception. After the library is loaded (the pool-reset path) the same
+sees no exception. Once the library is loaded on the connection the same
 `SET` raises `InvalidNameError`. The outcome therefore cannot be read from the
 exception, so the extension version is probed once at startup
 (`_probe_iterative_scan_support`): below 0.8 the `SET` is skipped and one
-warning is logged. If the version cannot be read, the `SET LOCAL` is still attempted
-and its failure falls back as described above.
+warning is logged. If the version cannot be read, the `SET LOCAL` is still
+attempted and its failure falls back as described above.
 
 ## Measured behaviour
 
