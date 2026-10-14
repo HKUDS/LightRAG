@@ -752,6 +752,47 @@ class OpenAILLMOptions(BindingOptions):
 
 
 # =============================================================================
+# Binding Options for OpenAI Responses API
+# =============================================================================
+#
+# Deliberately a separate namespace from ``openai_llm``: the Responses API
+# spells several parameters differently (``max_output_tokens`` rather than
+# ``max_completion_tokens``, a nested ``reasoning`` object rather than a flat
+# ``reasoning_effort``) and does not accept others at all. Sharing the
+# ``OPENAI_LLM_*`` namespace would let Chat Completions settings leak into the
+# Responses driver, where they are either wrong or rejected.
+# =============================================================================
+@dataclass
+class OpenAIResponsesLLMOptions(BindingOptions):
+    """Options for the OpenAI Responses API (``/v1/responses``)."""
+
+    # mandatory name of binding
+    _binding_name: ClassVar[str] = "openai_responses_llm"
+
+    # Sampling and generation parameters
+    max_output_tokens: int = None  # Maximum number of output tokens to generate
+    reasoning_effort: str = ""  # Reasoning effort level (minimal, low, medium, high)
+    service_tier: str = ""  # Service tier for API usage
+    store: bool = False  # Whether OpenAI retains the response server-side
+    temperature: float = DEFAULT_TEMPERATURE  # Controls randomness (0.0 to 2.0)
+    top_p: float = 1.0  # Nucleus sampling parameter (0.0 to 1.0)
+    truncation: str = ""  # Context-overflow strategy (auto, disabled)
+    extra_body: dict = None  # Extra body parameters for compatible gateways
+
+    # Help descriptions
+    _help: ClassVar[dict[str, str]] = {
+        "max_output_tokens": "Maximum number of output tokens to generate (optional, leave empty for model default)",
+        "reasoning_effort": "Reasoning effort for reasoning models (minimal, low, medium, high); sent as reasoning.effort",
+        "service_tier": "Service tier for API usage (optional)",
+        "store": "Whether OpenAI retains the response server-side for later retrieval",
+        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
+        "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
+        "truncation": "Context-overflow strategy (auto, disabled)",
+        "extra_body": 'Extra body parameters for OpenAI-compatible gateways (JSON dict, e.g., \'{"foo": "bar"}\')',
+    }
+
+
+# =============================================================================
 # Binding Options for AWS Bedrock
 # =============================================================================
 #
