@@ -9,6 +9,7 @@ import pipmaster as pm
 if not pm.is_installed("ollama"):
     pm.install("ollama")
 
+import httpx
 import ollama
 
 from tenacity import (
@@ -202,8 +203,23 @@ def _ollama_usage_counts(payload: Any) -> dict[str, int] | None:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
+    # RateLimitError / APIConnectionError / APITimeoutError are
+    # lightrag.exceptions types the `ollama` package never raises. Its actual
+    # client (ollama._client.BaseClient) catches httpx.ConnectError and
+    # re-raises it as the builtin ConnectionError ("Failed to connect to
+    # Ollama..."), and leaves httpx timeouts (httpx.TimeoutException and its
+    # subclasses, e.g. a slow model load) to propagate unwrapped. Neither was
+    # in the predicate, so a purely transient connect failure -- a container
+    # startup race being the common case -- failed the document permanently
+    # on the first attempt instead of being retried.
     retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
+        (
+            RateLimitError,
+            APIConnectionError,
+            APITimeoutError,
+            ConnectionError,
+            httpx.TimeoutException,
+        )
     ),
 )
 async def _ollama_model_if_cache(
