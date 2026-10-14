@@ -1066,6 +1066,7 @@ async def openai_embed(
     context: str = "document",
     query_prefix: str | None = None,
     document_prefix: str | None = None,
+    **kwargs: Any,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API with automatic text truncation.
 
@@ -1108,6 +1109,9 @@ async def openai_embed(
             when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
+        **kwargs: Additional keyword arguments to pass to the OpenAI embeddings API
+            (e.g. extra_headers). These are per-call, unlike client_configs, which
+            configures the client itself.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -1191,6 +1195,8 @@ async def openai_embed(
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:
             api_params["dimensions"] = embedding_dim
+
+        api_params.update(kwargs)
 
         # Make API call
         response = await openai_async_client.embeddings.create(**api_params)
