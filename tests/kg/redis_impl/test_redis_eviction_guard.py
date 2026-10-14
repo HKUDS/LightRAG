@@ -120,6 +120,16 @@ async def test_full_docs_kv_is_guarded_too(fake):
 
 
 @pytest.mark.asyncio
+async def test_refused_policy_is_not_cached_as_safe(fake):
+    """A failed startup must not let another storage bypass the same guard."""
+    fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
+    for storage in (_doc_status_storage(), _kv_storage()):
+        with pytest.raises(StorageControlPlaneError, match="evicting cache"):
+            await storage.initialize()
+        assert storage._initialized is False
+
+
+@pytest.mark.asyncio
 async def test_allkeys_policy_without_a_memory_cap_is_safe(fake):
     """maxmemory=0 means no limit, so the policy never fires."""
     fake.config_values = {"maxmemory": "0", "maxmemory-policy": "allkeys-lru"}
