@@ -1557,10 +1557,15 @@ async def _process_extraction_result(
         entity_records = split_string_by_multi_markers(
             record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
         )
-        for entity_record in entity_records:
-            if not entity_record.startswith("entity") and not entity_record.startswith(
-                "relation"
-            ):
+        for idx, entity_record in enumerate(entity_records):
+            if idx > 0:
+                # The split consumed this record's "entity<|#|>" prefix, so put
+                # the whole prefix back; a bare "entity<|" leaves the record
+                # one field short and it is then dropped as malformed.
+                entity_record = f"entity{tuple_delimiter}{entity_record}"
+            elif not entity_record.startswith(
+                "entity"
+            ) and not entity_record.startswith("relation"):
                 entity_record = f"entity<|{entity_record}"
             entity_relation_records = split_string_by_multi_markers(
                 # treat "relationship" and "relation" interchangeable
