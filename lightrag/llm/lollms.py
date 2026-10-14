@@ -142,7 +142,7 @@ async def lollms_model_if_cache(
 
         async def inner():
             async with aiohttp.ClientSession(
-                timeout=timeout, headers=headers
+                timeout=timeout, headers=headers, raise_for_status=True
             ) as session:
                 async with session.post(
                     f"{base_url}/lollms_generate", json=request_data
@@ -152,7 +152,9 @@ async def lollms_model_if_cache(
 
         return inner()
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+    async with aiohttp.ClientSession(
+        timeout=timeout, headers=headers, raise_for_status=True
+    ) as session:
         async with session.post(
             f"{base_url}/lollms_generate", json=request_data
         ) as response:
@@ -212,7 +214,7 @@ async def lollms_embed(
         if api_key
         else {"Content-Type": "application/json"}
     )
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with aiohttp.ClientSession(headers=headers, raise_for_status=True) as session:
         embeddings = []
         for text in texts:
             request_data = {"text": text}
