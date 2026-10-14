@@ -27,6 +27,8 @@ from lightrag.parser.routing import (
     validate_smart_heading_dependencies,
 )
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.fixture(autouse=True)
 def _clean_switch(monkeypatch):

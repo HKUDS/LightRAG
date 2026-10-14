@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from lightrag.kg.postgres_impl import PGGraphQueryException, PGGraphStorage
 
+pytestmark = pytest.mark.offline
+
 
 def make_graph_storage() -> PGGraphStorage:
     """Construct a PGGraphStorage instance with a mocked db."""

@@ -14,6 +14,8 @@ import pytest
 
 from lightrag.parser.external.docling.manifest import select_main_json
 
+pytestmark = pytest.mark.offline
+
 
 def _touch(path: Path, content: str = "{}") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

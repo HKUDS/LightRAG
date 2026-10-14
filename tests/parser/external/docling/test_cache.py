@@ -25,6 +25,8 @@ from lightrag.parser.external.docling.cache import (
 )
 from lightrag.parser.external.docling.client import FIXED_CONSTANTS
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.fixture(autouse=True)
 def _clear_envs(monkeypatch: pytest.MonkeyPatch) -> None:

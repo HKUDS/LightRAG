@@ -26,6 +26,8 @@ from lxml import etree
 from lightrag.parser.docx.numbering_resolver import NumberingResolver
 from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
+pytestmark = pytest.mark.offline
+
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 # One all-decimal abstractNum ("10"): ilvl i renders "1.1...."(i+1 components).

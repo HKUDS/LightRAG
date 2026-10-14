@@ -25,6 +25,8 @@ import pytest
 
 from lightrag.kg.postgres_impl import PGGraphStorage, PostgreSQLDB
 
+pytestmark = pytest.mark.offline
+
 SEARCH_PATH_SQL = 'SET search_path = ag_catalog, "$user", public'
 GRAPH_LOOKUP_SQL = "SELECT 1 FROM ag_catalog.ag_graph WHERE name = left($1, 63)::name"
 

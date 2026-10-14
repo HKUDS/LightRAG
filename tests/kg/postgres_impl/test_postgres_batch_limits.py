@@ -22,6 +22,10 @@ from lightrag.kg.postgres_impl import (
     _resolve_pg_batch_limits,
 )
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # _resolve_pg_batch_limits

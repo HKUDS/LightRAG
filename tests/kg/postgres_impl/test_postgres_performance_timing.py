@@ -7,6 +7,8 @@ import lightrag.utils as utils_module
 from lightrag.kg.postgres_impl import PGGraphStorage, PostgreSQLDB
 from lightrag.namespace import NameSpace
 
+pytestmark = pytest.mark.offline
+
 
 def make_db() -> PostgreSQLDB:
     return PostgreSQLDB(

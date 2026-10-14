@@ -32,6 +32,8 @@ import pytest
 
 from lightrag.parser.cli import main
 
+pytestmark = pytest.mark.offline
+
 
 def _make_main_json(
     *,

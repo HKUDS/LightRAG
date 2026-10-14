@@ -4,6 +4,8 @@ import pytest
 
 from lightrag.kg.postgres_impl import PostgreSQLDB
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.mark.asyncio
 async def test_check_table_exists_uses_search_path_visible_regclass():

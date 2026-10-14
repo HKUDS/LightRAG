@@ -18,6 +18,8 @@ import pytest
 
 from lightrag.parser.external.docling.ir_builder import DoclingIRBuilder
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # Helpers to build inline fixtures

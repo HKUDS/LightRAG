@@ -7,6 +7,10 @@ reach the live request.  These tests assert both for MinerU and Docling.
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 # --------------------------------------------------------------------------- #
 # MinerU
