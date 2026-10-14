@@ -301,6 +301,14 @@ class QueryParam:
 
 > The default value of `top_k` can be changed by the environment variable `TOP_K`.
 
+For graph query modes (`local`, `global`, `hybrid`, `mix`), `max_total_tokens`
+also caps the graph context when the entity and relationship limits are larger.
+Whole records are retained in ranking order before selecting their source chunks;
+the final check includes the rendered system prompt, user query, chunk references,
+and configured user instructions. If the required prompt and query alone cannot
+fit, the query returns no result without calling the answer model. Conversation
+history and provider-specific message framing are outside this context budget.
+
 
 ## LLM and Embedding Injection
 
