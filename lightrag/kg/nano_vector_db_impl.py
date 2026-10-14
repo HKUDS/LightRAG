@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, StorageCapabilityError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -1379,6 +1379,30 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     result_map[str(requested_id)] = self._format_record(redo.record)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
+
+    async def get_exact_count(self) -> int:
+        """Count persisted addressable rows, excluding pending writes."""
+        async with self._storage_lock:
+            self._reload_client_from_disk_locked()
+            try:
+                storage = getattr(self._client, "_NanoVectorDB__storage")
+                rows = storage["data"]
+            except (AttributeError, KeyError, TypeError) as exc:
+                raise StorageCapabilityError("malformed_persisted_data") from exc
+            if not isinstance(rows, list):
+                raise StorageCapabilityError("malformed_persisted_data")
+            seen: set[str] = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise StorageCapabilityError("malformed_persisted_row")
+                row_id = row.get("__id__")
+                if row_id is None or not str(row_id).strip():
+                    raise StorageCapabilityError("unidentifiable_persisted_row")
+                normalized = str(row_id)
+                if normalized in seen:
+                    raise StorageCapabilityError("duplicate_persisted_id")
+                seen.add(normalized)
+            return len(rows)
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs (read-your-writes), returning only ID and vector.

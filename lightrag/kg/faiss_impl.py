@@ -8,7 +8,7 @@ import json
 import numpy as np
 from dataclasses import dataclass
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, StorageCapabilityError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -1770,6 +1770,28 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     result_map[str(cid)] = self._format_record(metadata)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
+
+    async def get_exact_count(self) -> int:
+        """Count persisted addressable rows only when index and metadata agree."""
+        async with self._storage_lock:
+            self._reload_index_from_disk_locked()
+            index_total = int(self._index.ntotal)
+            metadata_total = len(self._id_to_meta)
+            valid_positions = all(
+                isinstance(fid, int) and 0 <= fid < index_total
+                for fid in self._id_to_meta
+            )
+            record_ids = [meta.get("__id__") for meta in self._id_to_meta.values()]
+            valid_ids = all(
+                record_id is not None and str(record_id).strip()
+                for record_id in record_ids
+            ) and len({str(record_id) for record_id in record_ids}) == metadata_total
+            if index_total != metadata_total or not valid_positions or not valid_ids:
+                raise StorageCapabilityError(
+                    "index_meta_skew: "
+                    f"index_total={index_total}, metadata_total={metadata_total}"
+                )
+            return metadata_total
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs (read-your-writes), returning only ID and vector.

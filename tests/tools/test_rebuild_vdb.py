@@ -17,7 +17,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
-from lightrag.exceptions import VectorSpaceMismatchError
+from lightrag.exceptions import StorageCapabilityError, VectorSpaceMismatchError
+from lightrag.kg.faiss_impl import FaissVectorDBStorage
+from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
 from lightrag.namespace import NameSpace
 from lightrag.tools.rebuild_vdb import (
@@ -99,19 +101,47 @@ class MockVDB:
             self.records.update(payload)
 
         async def _get_by_ids(ids):
-            return [self.records.get(i) for i in ids]
+            return [
+                ({"id": i, **self.records[i]} if i in self.records else None)
+                for i in ids
+            ]
+
+        async def _get_exact_count():
+            return len(self.records)
 
         self.drop = AsyncMock(side_effect=_drop)
         self.upsert = AsyncMock(side_effect=_upsert)
         self.get_by_ids = AsyncMock(side_effect=_get_by_ids)
+        self.get_exact_count = AsyncMock(side_effect=_get_exact_count)
         self.delete = AsyncMock()
         self.index_done_callback = AsyncMock()
 
 
 def make_graph(nodes=None, edges=None):
+    nodes = nodes or []
+    edges = edges or []
     graph = MagicMock()
-    graph.get_all_nodes = AsyncMock(return_value=nodes or [])
-    graph.get_all_edges = AsyncMock(return_value=edges or [])
+    graph.get_all_nodes = AsyncMock(return_value=nodes)
+    graph.get_all_edges = AsyncMock(return_value=edges)
+    graph.get_nodes_batch = AsyncMock(
+        side_effect=lambda labels: {
+            str(item.get("entity_id") or item.get("id")): item
+            for item in nodes
+            if item.get("entity_id") is not None or item.get("id") is not None
+        }
+    )
+
+    async def iter_labels(batch_size):
+        labels = [item.get("entity_id") or item.get("id") for item in nodes]
+        for start in range(0, len(labels), batch_size):
+            yield labels[start : start + batch_size]
+
+    async def iter_edges(batch_size):
+        for start in range(0, len(edges), batch_size):
+            yield edges[start : start + batch_size]
+
+    graph.iter_labels = iter_labels
+    graph.iter_edges = iter_edges
     return graph
 
 
@@ -124,14 +154,21 @@ class _FakeLock:
 
 
 class JsonKVStorage:
-    """Minimal stand-in; the class NAME drives enumerate_kv_keys dispatch."""
+    """Minimal bounded-key KV stand-in."""
 
     def __init__(self, data):
         self._data = data
         self._storage_lock = _FakeLock()
 
     async def get_by_ids(self, ids):
-        return [self._data.get(i) for i in ids]
+        return [
+            ({"_id": i, **self._data[i]} if i in self._data else None) for i in ids
+        ]
+
+    async def iter_keys(self, batch_size):
+        keys = list(self._data)
+        for start in range(0, len(keys), batch_size):
+            yield keys[start : start + batch_size]
 
 
 def node(name, **overrides):
@@ -1256,3 +1293,135 @@ async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
     # Option 2 rebuilds entities + relationships only, so only those are
     # recovered; chunks stays refused until its own rebuild.
     tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
+
+
+# ---------------------------------------------------------------------------
+# Bounded consistency capabilities
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebuild_preflights_source_iterator_before_drop():
+    graph = make_graph(nodes=[node("Alice")])
+    vdb = MockVDB()
+
+    async def unsupported(_batch_size):
+        raise StorageCapabilityError("bounded iteration unavailable")
+        yield []
+
+    graph.iter_labels = unsupported
+    with pytest.raises(StorageCapabilityError, match="bounded iteration unavailable"):
+        await rebuild_entities_vdb(graph, vdb, {})
+    vdb.drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_unidentifiable_probe_is_inconclusive_not_inconsistent():
+    graph = make_graph(nodes=[node("Alice")])
+    entities = MockVDB()
+    entities.get_by_ids = AsyncMock(return_value=[{"content": "missing id"}])
+
+    report = await check_vdb_consistency(graph, entities, MockVDB())
+
+    assert report["targets"]["entities"]["status"] == "inconclusive"
+    assert report["targets"]["entities"]["reason"] == "unidentifiable_probe_record"
+
+
+@pytest.mark.asyncio
+async def test_check_incomplete_probe_is_inconclusive_not_inconsistent():
+    graph = make_graph(nodes=[node("Alice")])
+    entities = MockVDB()
+    entities.get_by_ids = AsyncMock(return_value=[])
+
+    report = await check_vdb_consistency(graph, entities, MockVDB())
+
+    assert report["targets"]["entities"]["status"] == "inconclusive"
+    assert report["targets"]["entities"]["reason"] == "incomplete_probe_response"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_chunks_rejects_incomplete_source_batch():
+    text_chunks = JsonKVStorage({"chunk-1": {"content": "hello"}})
+    text_chunks.get_by_ids = AsyncMock(return_value=[])
+    chunks = MockVDB()
+
+    with pytest.raises(RuntimeError, match="incomplete batch"):
+        await rebuild_chunks_vdb(text_chunks, chunks)
+
+    chunks.drop.assert_awaited_once()
+    chunks.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_faiss_exact_count_rejects_index_metadata_skew():
+    storage = object.__new__(FaissVectorDBStorage)
+    storage._storage_lock = _FakeLock()
+    storage._reload_index_from_disk_locked = MagicMock()
+    storage._index = SimpleNamespace(ntotal=2)
+    storage._id_to_meta = {0: {"__id__": "one"}}
+
+    with pytest.raises(StorageCapabilityError, match="index_meta_skew"):
+        await storage.get_exact_count()
+
+
+@pytest.mark.asyncio
+async def test_faiss_exact_count_accepts_addressable_rows():
+    storage = object.__new__(FaissVectorDBStorage)
+    storage._storage_lock = _FakeLock()
+    storage._reload_index_from_disk_locked = MagicMock()
+    storage._index = SimpleNamespace(ntotal=2)
+    storage._id_to_meta = {
+        0: {"__id__": "one"},
+        1: {"__id__": "two"},
+    }
+
+    assert await storage.get_exact_count() == 2
+
+
+@pytest.mark.asyncio
+async def test_faiss_exact_count_rejects_invalid_position():
+    storage = object.__new__(FaissVectorDBStorage)
+    storage._storage_lock = _FakeLock()
+    storage._reload_index_from_disk_locked = MagicMock()
+    storage._index = SimpleNamespace(ntotal=1)
+    storage._id_to_meta = {2: {"__id__": "one"}}
+
+    with pytest.raises(StorageCapabilityError, match="index_meta_skew"):
+        await storage.get_exact_count()
+
+
+@pytest.mark.asyncio
+async def test_nano_exact_count_rejects_duplicate_ids():
+    storage = object.__new__(NanoVectorDBStorage)
+    storage._storage_lock = _FakeLock()
+    storage._reload_client_from_disk_locked = MagicMock()
+    storage._client = SimpleNamespace()
+    storage._client._NanoVectorDB__storage = {
+        "data": [{"__id__": "same"}, {"__id__": "same"}]
+    }
+
+    with pytest.raises(StorageCapabilityError, match="duplicate_persisted_id"):
+        await storage.get_exact_count()
+
+
+@pytest.mark.asyncio
+async def test_nano_exact_count_accepts_empty_persisted_data():
+    storage = object.__new__(NanoVectorDBStorage)
+    storage._storage_lock = _FakeLock()
+    storage._reload_client_from_disk_locked = MagicMock()
+    storage._client = SimpleNamespace()
+    storage._client._NanoVectorDB__storage = {"data": []}
+
+    assert await storage.get_exact_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_nano_exact_count_rejects_missing_id():
+    storage = object.__new__(NanoVectorDBStorage)
+    storage._storage_lock = _FakeLock()
+    storage._reload_client_from_disk_locked = MagicMock()
+    storage._client = SimpleNamespace()
+    storage._client._NanoVectorDB__storage = {"data": [{"content": "orphan"}]}
+
+    with pytest.raises(StorageCapabilityError, match="unidentifiable_persisted_row"):
+        await storage.get_exact_count()
