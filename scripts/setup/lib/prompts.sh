@@ -175,7 +175,7 @@ prompt_until_valid() {
       printf '%s' "$value"
       return 0
     fi
-    echo "Invalid value. Please try again."
+    echo "Invalid value. Please try again." >&2
   done
 }
 
@@ -191,7 +191,7 @@ prompt_secret_until_valid() {
       printf '%s' "$value"
       return 0
     fi
-    echo "Invalid value. Please try again."
+    echo "Invalid value. Please try again." >&2
   done
 }
 
@@ -208,7 +208,7 @@ prompt_secret_until_valid_with_default() {
       printf '%s' "$value"
       return 0
     fi
-    echo "Invalid value. Please try again."
+    echo "Invalid value. Please try again." >&2
   done
 }
 
@@ -222,7 +222,7 @@ prompt_required_secret() {
       printf '%s' "$value"
       return 0
     fi
-    echo "Value cannot be empty. Please try again."
+    echo "Value cannot be empty. Please try again." >&2
   done
 }
 
