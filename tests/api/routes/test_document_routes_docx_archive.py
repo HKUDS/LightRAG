@@ -1414,6 +1414,231 @@ async def test_upload_write_failure_cleans_up_partial_file_and_returns_500(
     assert not (tmp_path / "safe.pdf").exists()
 
 
+@pytest.mark.parametrize("failure", ["cancel", "read_error"])
+async def test_incomplete_upload_is_removed_and_can_be_retried(
+    tmp_path, monkeypatch, failure
+):
+    import asyncio
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        initialize_pipeline_status,
+    )
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    await initialize_pipeline_status(workspace=rag.workspace)
+    router = create_document_routes(rag, doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    managed = set()
+    indexed = []
+
+    async def index_file(rag_arg, file_path, track_id, **kwargs):
+        indexed.append(file_path.read_bytes())
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", index_file)
+    upload = _document_routes.UploadFile(filename="report.txt", file=BytesIO())
+    reading = asyncio.Event()
+    calls = 0
+
+    async def read(size):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return b"truncated report"
+        reading.set()
+        if failure == "read_error":
+            raise ValueError("broken upload stream")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(upload, "read", read)
+    task = asyncio.create_task(endpoint(managed, upload))
+    await asyncio.wait_for(reading.wait(), 5)
+    if failure == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(_document_routes.HTTPException) as excinfo:
+            await task
+        assert excinfo.value.status_code == 500
+
+    assert not (tmp_path / "report.txt").exists()
+    assert list(doc_manager.iter_new_files()) == []
+    status = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+    assert status["pending_enqueues"] == 0
+    assert indexed == []
+
+    retry = _document_routes.UploadFile(
+        filename="report.txt", file=BytesIO(b"complete")
+    )
+    response = await endpoint(managed, retry)
+    await _await_managed(managed)
+    assert response.status == "success"
+    assert indexed == [b"complete"]
+
+
+@pytest.mark.parametrize("stage", ["open", "write", "close"])
+async def test_upload_cancellation_waits_for_inflight_file_io(
+    tmp_path, monkeypatch, stage
+):
+    """Cancel while a real aiofiles executor thread owns the output file."""
+    import asyncio
+    import io
+    import threading
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        initialize_pipeline_status,
+    )
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    await initialize_pipeline_status(workspace=rag.workspace)
+    router = create_document_routes(rag, doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    started = threading.Event()
+    release = threading.Event()
+    original_open = _document_routes.aiofiles.threadpool.sync_open
+    handles = []
+
+    def pause():
+        started.set()
+        assert release.wait(5), "test did not release the file IO thread"
+
+    class ControlledWriter(io.BufferedWriter):
+        def write(self, data):
+            result = super().write(data)
+            if stage == "write":
+                pause()
+            return result
+
+        def close(self):
+            if stage == "close" and not self.closed:
+                pause()
+            super().close()
+
+    def open_file(path, mode, *args, **kwargs):
+        kwargs["buffering"] = 0
+        handle = ControlledWriter(original_open(path, mode, *args, **kwargs))
+        handles.append(handle)
+        if stage == "open":
+            pause()
+        return handle
+
+    monkeypatch.setattr(_document_routes.aiofiles.threadpool, "sync_open", open_file)
+    upload = _document_routes.UploadFile(
+        filename="report.txt", file=BytesIO(b"complete report")
+    )
+    task = asyncio.create_task(endpoint(set(), upload))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel("shutdown")
+        await asyncio.sleep(0)
+        task.cancel("shutdown again")
+        await asyncio.sleep(0)
+        assert not task.done()
+        status = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        assert status["pending_enqueues"] == 1
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    # In the broken open path the executor can finish after the cancelled
+    # endpoint returned; wait for it before inspecting the resulting residue.
+    await asyncio.to_thread(lambda: None)
+    try:
+        assert handles and all(handle.closed for handle in handles)
+        assert not (tmp_path / "report.txt").exists()
+        assert list(doc_manager.iter_new_files()) == []
+        status = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        assert status["pending_enqueues"] == 0
+    finally:
+        for handle in handles:
+            handle.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_upload_open_conflict_never_removes_another_writers_file(
+    tmp_path, monkeypatch, cancel
+):
+    import asyncio
+    import threading
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    router = create_document_routes(_DuplicateUploadRag({}), doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    original_open = _document_routes.aiofiles.threadpool.sync_open
+    started = threading.Event()
+    release = threading.Event()
+    path = tmp_path / "report.txt"
+
+    def competing_open(*args, **kwargs):
+        # Another writer wins the exclusive create after the route's precheck.
+        path.write_bytes(b"other writer's complete report")
+        started.set()
+        assert release.wait(5)
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        _document_routes.aiofiles.threadpool, "sync_open", competing_open
+    )
+    upload = _document_routes.UploadFile(
+        filename=path.name, file=BytesIO(b"replacement")
+    )
+    task = asyncio.create_task(endpoint(set(), upload))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        if cancel:
+            task.cancel()
+    finally:
+        release.set()
+    if cancel:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+    else:
+        with pytest.raises(_document_routes.HTTPException) as excinfo:
+            await asyncio.wait_for(task, 5)
+        assert excinfo.value.status_code == 409
+    assert path.read_bytes() == b"other writer's complete report"
+
+
+async def test_upload_streaming_size_limit_removes_owned_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=4)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    router = create_document_routes(_DuplicateUploadRag({}), doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    upload = _document_routes.UploadFile(filename="report.txt", file=BytesIO())
+    chunks = iter([b"four", b"extra"])
+
+    async def read(size):
+        return next(chunks, b"")
+
+    monkeypatch.setattr(upload, "read", read)
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await endpoint(set(), upload)
+    assert excinfo.value.status_code == 413
+    assert not (tmp_path / "report.txt").exists()
+    assert list(doc_manager.iter_new_files()) == []
+
+
 async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     """A malformed filename hint fails the upload synchronously with the
     detailed hint error in the 400 body (it used to be accepted and only
