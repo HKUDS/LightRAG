@@ -25,10 +25,26 @@ resume and fetch further batches until `LIMIT` is satisfied, or a scan budget
 is exhausted. `strict_order` keeps nearest-first order and the distance bound;
 `relaxed_order` may return rows out of order and is not acceptable here.
 
-It is session state, so it is issued on every new connection and again after
-`RESET ALL` on pool release. It is a plain `SET`: a not-yet-loaded extension
-GUC is stored as a placeholder and adopted when the library loads, whereas
-`LOAD 'vector'` is refused for non-superusers (managed databases).
+It is applied with **`SET LOCAL` in the query's own transaction**
+(`_fetch_with_iterative_scan`: `BEGIN`, `SET LOCAL`, the query, `COMMIT`), not
+as a session setting at connection init or pool reset. Behind a
+transaction-pooling proxy (PgBouncer / Supavisor in transaction mode, a
+deployment `env.example` already anticipates) the backend that took a session
+`SET` can be returned to the proxy before the `SELECT`, which then runs with
+the scan off and no error. A setting made in the same transaction as the query
+is the only one guaranteed to be in force when the scan runs, in session and
+transaction pooling alike, and nothing has to be replayed after `RESET ALL`.
+
+Cost: two to three extra round trips per vector query (measured locally, trivial
+statement: 0.3 ms to 1.3 ms; the absolute figure grows with network latency,
+against scans that already take 5-30 ms). The setting is plain `SET LOCAL`;
+do not `LOAD 'vector'` first. A not-yet-loaded extension GUC is kept as a
+placeholder and adopted when the library loads, whereas `LOAD` is refused for
+non-superusers (managed databases).
+
+If the `SET LOCAL` fails, only that transaction is aborted: the failure is
+logged once and the query runs without the setting, as before this change.
+A failure of the query itself is never retried or swallowed.
 
 ### Old pgvector (< 0.8)
 
@@ -39,7 +55,8 @@ sees no exception. After the library is loaded (the pool-reset path) the same
 `SET` raises `InvalidNameError`. The outcome therefore cannot be read from the
 exception, so the extension version is probed once at startup
 (`_probe_iterative_scan_support`): below 0.8 the `SET` is skipped and one
-warning is logged. If the version cannot be read, the `SET` is still attempted.
+warning is logged. If the version cannot be read, the `SET LOCAL` is still attempted
+and its failure falls back as described above.
 
 ## Measured behaviour
 

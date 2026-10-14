@@ -325,12 +325,15 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
 
 
 # All known vector index suffixes, used to drop conflicting indexes when switching types
-# Session statement that makes a filtered ANN scan continue past rejected
-# candidates, per vector index type (pgvector >= 0.8).
+# Transaction-local statement that makes a filtered ANN scan continue past
+# rejected candidates, per vector index type (pgvector >= 0.8). LOCAL, not
+# session: a transaction-pooling proxy may serve the next statement from a
+# different backend, so only a setting made in the query's own transaction is
+# guaranteed to be in force when the scan runs.
 _ITERATIVE_SCAN_SQL: dict[str, str] = {
-    "HNSW": "SET hnsw.iterative_scan = strict_order",
-    "HNSW_HALFVEC": "SET hnsw.iterative_scan = strict_order",
-    "IVFFLAT": "SET ivfflat.iterative_scan = relaxed_order",
+    "HNSW": "SET LOCAL hnsw.iterative_scan = strict_order",
+    "HNSW_HALFVEC": "SET LOCAL hnsw.iterative_scan = strict_order",
+    "IVFFLAT": "SET LOCAL ivfflat.iterative_scan = relaxed_order",
 }
 
 _DISTANCE_COLUMN = "_distance"
@@ -659,13 +662,12 @@ class PostgreSQLDB:
         )
 
         async def _init_connection(connection: asyncpg.Connection) -> None:
-            """Initialize each new connection with pgvector codec and session params.
+            """Initialize each new connection with pgvector codec and VCHORDRQ session params.
 
             Called once per physical connection creation (not on pool reuse).
             register_vector is a Python-level codec registration that survives
-            asyncpg's RESET ALL; the HNSW iterative-scan and VCHORDRQ GUCs do
-            not — they are re-applied in _reset_connection after each pool
-            release.
+            asyncpg's RESET ALL; VCHORDRQ GUCs do not — they are re-applied in
+            _reset_connection after each pool release.
             """
             if self.enable_vector:
                 if not pm.is_installed("pgvector"):
@@ -673,7 +675,6 @@ class PostgreSQLDB:
                 from pgvector.asyncpg import register_vector  # type: ignore
 
                 await register_vector(connection)
-                await self.configure_iterative_scan(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 await self.configure_vchordrq(connection)
 
@@ -710,10 +711,7 @@ class PostgreSQLDB:
                 )
                 raise
 
-            # RESET ALL clears session GUCs; restore the ones this backend
-            # depends on (HNSW iterative scan, VCHORDRQ) afterward.
-            if self.enable_vector:
-                await self.configure_iterative_scan(connection)
+            # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 try:
                     await self.configure_vchordrq(connection)
@@ -1396,12 +1394,13 @@ class PostgreSQLDB:
 
             self._ensured_age_graphs.add(graph_name)
 
-    async def configure_iterative_scan(self, connection: asyncpg.Connection) -> None:
-        """Let a filtered ANN scan continue past candidates the filter rejects.
+    def iterative_scan_statement(self) -> str | None:
+        """Return the ``SET LOCAL`` that lets a filtered ANN scan keep going.
 
         The vector queries filter on ``workspace`` while the vector index is
         global, so without iterative scan a workspace holding a small share of
-        the table can get 0 rows and no error.
+        the table can get 0 rows and no error. ``None`` means nothing to apply:
+        an index type this does not cover, or pgvector < 0.8.
 
         Rules:
 
@@ -1410,36 +1409,52 @@ class PostgreSQLDB:
           only ``relaxed_order``, whose rows can arrive out of order: the
           IVFFLAT query must be wrapped by ``_with_distance_resort``.
           VCHORDRQ is not covered.
-        * Plain ``SET``; do not ``LOAD 'vector'`` first. ``SET`` of a not-yet-
-          loaded extension GUC is kept as a placeholder and adopted when the
-          library loads, while ``LOAD`` is refused for non-superusers
-          (managed databases) and would skip the ``SET`` silently.
-        * Session state: ``RESET ALL`` clears it, so ``_reset_connection`` must
-          call this again.
-        * Best-effort: pgvector < 0.8 must not fail the connection. That case
-          is decided once from the extension version at startup (a fresh
-          connection accepts an unknown ``hnsw.*`` SET silently); any other
-          ``SET`` failure is logged at warning level, once per instance.
+        * Apply it with ``_fetch_with_iterative_scan`` — ``SET LOCAL`` in the
+          query's own transaction. A session ``SET`` is not enough behind a
+          transaction-pooling proxy, which may serve the next statement from
+          another backend.
+        * No ``LOAD 'vector'``: ``SET`` of a not-yet-loaded extension GUC is
+          kept as a placeholder and adopted when the library loads, while
+          ``LOAD`` is refused for non-superusers (managed databases).
+        * pgvector < 0.8 is decided once from the extension version at startup;
+          an unknown ``hnsw.*`` SET cannot be detected from the exception.
 
         This is a mitigation, not a guarantee: the scan is still bounded by
         ``hnsw.max_scan_tuples`` and ``work_mem``. Measurements, the residual
         cases and the rejected alternatives are in
         docs/design/PgVectorFilteredSearch.md.
         """
-        statement = _ITERATIVE_SCAN_SQL.get(getattr(self, "vector_index_type", None))
-        if statement is None:
-            return
         if getattr(self, "iterative_scan_supported", None) is False:
-            return  # reported once at startup by the version probe
-        try:
-            await connection.execute(statement)
-        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
-            if not getattr(self, "_iterative_scan_warned", False):
-                self._iterative_scan_warned = True
-                logger.warning(
-                    f"PostgreSQL, iterative scan not applied ({exc}); "
-                    "filtered vector search may return fewer rows than exist"
-                )
+            return None  # reported once at startup by the version probe
+        return _ITERATIVE_SCAN_SQL.get(getattr(self, "vector_index_type", None))
+
+    async def _fetch_with_iterative_scan(
+        self, connection: asyncpg.Connection, sql: str, params: tuple
+    ) -> list:
+        """Fetch ``sql`` in a transaction that first applies the scan setting.
+
+        Best-effort: a failing ``SET LOCAL`` (aborting only its own
+        transaction) is logged once and the query runs without it, as it did
+        before. A failure of the query itself is never retried or swallowed.
+        """
+        statement = self.iterative_scan_statement()
+        if statement is not None:
+            applied = False
+            try:
+                async with connection.transaction():
+                    await connection.execute(statement)
+                    applied = True
+                    return await connection.fetch(sql, *params)
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                if applied:
+                    raise
+                if not getattr(self, "_iterative_scan_warned", False):
+                    self._iterative_scan_warned = True
+                    logger.warning(
+                        f"PostgreSQL, iterative scan not applied ({exc}); "
+                        "filtered vector search may return fewer rows than exist"
+                    )
+        return await connection.fetch(sql, *params)
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
         """Configure VCHORDRQ extension for vector similarity search.
@@ -2849,11 +2864,16 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
         timing_label: str | None = None,
+        iterative_scan: bool = False,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
             fetch_start = time.perf_counter()
-            if prepared_params:
+            if iterative_scan:
+                rows = await self._fetch_with_iterative_scan(
+                    connection, sql, prepared_params
+                )
+            elif prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
             else:
                 rows = await connection.fetch(sql)
@@ -5075,7 +5095,12 @@ class PGVectorStorage(BaseVectorStorage):
             "top_k": top_k,
             "embedding": embedding,
         }
-        results = await self.db.query(sql, params=list(params.values()), multirows=True)
+        results = await self.db.query(
+            sql,
+            params=list(params.values()),
+            multirows=True,
+            iterative_scan=True,
+        )
         if resort and results:
             for row in results:
                 row.pop(_DISTANCE_COLUMN, None)

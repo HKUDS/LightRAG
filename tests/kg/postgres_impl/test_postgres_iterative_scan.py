@@ -1,26 +1,28 @@
-"""HNSW iterative scan must be applied on every pooled connection.
+"""Filtered ANN search must run with iterative scan inside its own transaction.
 
-The vector queries filter on ``workspace`` while the HNSW index is global, so
-without ``hnsw.iterative_scan`` a workspace that holds a minority of the rows
-can get 0 rows and no error.  The setting is session state: it has to be issued
-on a new connection and again after ``RESET ALL`` on pool release.  See
-``docs/design/PgVectorFilteredSearch.md``.
+The vector queries filter on ``workspace`` while the vector index is global, so
+without an iterative scan a workspace that holds a minority of the rows can get
+0 rows and no error.  The setting is applied with ``SET LOCAL`` in the query's
+own transaction: behind a transaction-pooling proxy a session ``SET`` may land
+on another backend than the query.  See ``docs/design/PgVectorFilteredSearch.md``.
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from lightrag.kg.postgres_impl import (
     SQL_TEMPLATES,
+    PGVectorStorage,
     PostgreSQLDB,
     _with_distance_resort,
 )
 
-SET_SQL = "SET hnsw.iterative_scan = strict_order"
-IVFFLAT_SET_SQL = "SET ivfflat.iterative_scan = relaxed_order"
+HNSW_SQL = "SET LOCAL hnsw.iterative_scan = strict_order"
+IVFFLAT_SQL = "SET LOCAL ivfflat.iterative_scan = relaxed_order"
 
 
 def _db(index_type: str | None = "HNSW", enable_vector: bool = True) -> PostgreSQLDB:
@@ -32,129 +34,103 @@ def _db(index_type: str | None = "HNSW", enable_vector: bool = True) -> PostgreS
     return db
 
 
-def _statements(connection: AsyncMock) -> list[str]:
-    return [call.args[0] for call in connection.execute.await_args_list]
+class _Connection:
+    """Records the order of transaction boundaries and statements."""
+
+    def __init__(self, *, execute_error: Exception | None = None, rows=None):
+        self.log: list[str] = []
+        self._execute_error = execute_error
+        self._rows = rows if rows is not None else [{"id": "a"}]
+        self.fetch_error: Exception | None = None
+
+    @asynccontextmanager
+    async def transaction(self):
+        self.log.append("BEGIN")
+        try:
+            yield
+        except BaseException:
+            self.log.append("ROLLBACK")
+            raise
+        else:
+            self.log.append("COMMIT")
+
+    async def execute(self, sql, *args):
+        self.log.append(sql)
+        if self._execute_error is not None:
+            raise self._execute_error
+
+    async def fetch(self, sql, *args):
+        self.log.append("FETCH")
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        return self._rows
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
-@pytest.mark.parametrize("index_type", ["HNSW", "HNSW_HALFVEC"])
-async def test_hnsw_sets_iterative_scan_without_load(index_type) -> None:
-    connection = AsyncMock()
-
-    await _db(index_type).configure_iterative_scan(connection)
-
-    # A bare SET: LOAD 'vector' is refused for non-superusers (managed
-    # databases), and a refused LOAD must not take the SET down with it.
-    assert _statements(connection) == [SET_SQL]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-@pytest.mark.parametrize("index_type", ["VCHORDRQ", None])
-async def test_uncovered_index_issues_nothing(index_type) -> None:
-    connection = AsyncMock()
-
-    await _db(index_type).configure_iterative_scan(connection)
-
-    assert _statements(connection) == []
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_ivfflat_uses_relaxed_order_only() -> None:
-    """IVFFLAT rejects strict_order (server WARNING, value ignored)."""
-    connection = AsyncMock()
-
-    await _db("IVFFLAT").configure_iterative_scan(connection)
-
-    assert _statements(connection) == [IVFFLAT_SET_SQL]
-
-
-@pytest.mark.offline
-@pytest.mark.parametrize("namespace", ["chunks", "entities", "relationships"])
-@pytest.mark.parametrize("vector_cast", ["vector", "halfvec"])
-def test_resort_wrapper_restores_distance_order(namespace, vector_cast) -> None:
-    """relaxed_order rows come out unsorted and the planner adds no sort, so the
-    scan is materialised and re-sorted; ``+ 0`` defeats sort elimination."""
-    raw = SQL_TEMPLATES[namespace].format(table_name="t", vector_cast=vector_cast)
-
-    wrapped = _with_distance_resort(raw, vector_cast)
-
-    assert wrapped.startswith("WITH relaxed AS MATERIALIZED (")
-    assert wrapped.endswith("ORDER BY _distance + 0")
-    assert wrapped.count(f"content_vector <=> $4::{vector_cast} AS _distance") == 1
-    assert "LIMIT $3" in wrapped  # the bound stays inside the scan
-    assert ";" not in wrapped
-
-
-@pytest.mark.offline
-def test_resort_wrapper_refuses_a_template_it_cannot_parse() -> None:
-    with pytest.raises(RuntimeError):
-        _with_distance_resort("SELECT 1", "vector")
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("index_type", "wrapped"),
-    [("IVFFLAT", True), ("HNSW", False), ("HNSW_HALFVEC", False)],
+    ("index_type", "statement"),
+    [
+        ("HNSW", HNSW_SQL),
+        ("HNSW_HALFVEC", HNSW_SQL),
+        ("IVFFLAT", IVFFLAT_SQL),
+        ("VCHORDRQ", None),
+        (None, None),
+    ],
 )
-async def test_query_resorts_only_for_ivfflat(index_type, wrapped) -> None:
-    from lightrag.kg.postgres_impl import PGVectorStorage
+def test_statement_per_index_type(index_type, statement) -> None:
+    # Never LOAD 'vector': refused for non-superusers (managed databases).
+    assert _db(index_type).iterative_scan_statement() == statement
 
-    storage = PGVectorStorage.__new__(PGVectorStorage)
-    storage.namespace = "chunks"
-    storage.workspace = "gw"
-    storage.table_name = "t"
-    storage.cosine_better_than_threshold = 0.2
-    storage.db = _db(index_type)
-    storage.db.query = AsyncMock(
-        return_value=[{"id": "a", "content": "x", "_distance": 0.1}]
-    )
 
-    rows = await storage.query("q", top_k=5, query_embedding=[0.1, 0.2])
+@pytest.mark.offline
+def test_old_pgvector_has_no_statement() -> None:
+    """On a fresh connection an unknown hnsw.* SET is accepted and dropped
+    silently, so the version decides, not the exception."""
+    db = _db()
+    db.iterative_scan_supported = False
 
-    sql = storage.db.query.await_args.args[0]
-    assert sql.startswith("WITH relaxed AS MATERIALIZED") is wrapped
-    if wrapped:
-        # the helper column never reaches callers
-        assert rows == [{"id": "a", "content": "x"}]
-    else:
-        assert rows == [{"id": "a", "content": "x", "_distance": 0.1}]
+    assert db.iterative_scan_statement() is None
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_query_skips_resort_when_iterative_scan_unsupported() -> None:
-    from lightrag.kg.postgres_impl import PGVectorStorage
+async def test_setting_is_local_to_the_query_transaction() -> None:
+    """Setting and query share one transaction, in this order.
 
-    storage = PGVectorStorage.__new__(PGVectorStorage)
-    storage.namespace = "chunks"
-    storage.workspace = "gw"
-    storage.table_name = "t"
-    storage.cosine_better_than_threshold = 0.2
-    storage.db = _db("IVFFLAT")
-    storage.db.iterative_scan_supported = False
-    storage.db.query = AsyncMock(return_value=[])
+    This is the property a transaction-pooling proxy needs: nothing is carried
+    in session state between the SET and the SELECT.
+    """
+    connection = _Connection()
 
-    await storage.query("q", top_k=5, query_embedding=[0.1])
+    rows = await _db()._fetch_with_iterative_scan(connection, "SELECT 1", ())
 
-    assert not storage.db.query.await_args.args[0].startswith("WITH relaxed")
+    assert connection.log == ["BEGIN", HNSW_SQL, "FETCH", "COMMIT"]
+    assert rows == [{"id": "a"}]
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_set_failure_is_not_fatal_and_logged_once() -> None:
-    """A failing SET must not fail the connection, nor flood the log."""
-    connection = AsyncMock()
-    connection.execute.side_effect = Exception("permission denied")
+async def test_uncovered_index_runs_a_plain_fetch() -> None:
+    connection = _Connection()
+
+    await _db("VCHORDRQ")._fetch_with_iterative_scan(connection, "SELECT 1", ())
+
+    assert connection.log == ["FETCH"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_failing_set_falls_back_and_warns_once() -> None:
+    """A failed SET LOCAL must neither fail the query nor flood the log."""
     db = _db()
 
-    # LightRAG's logger does not propagate, so caplog sees nothing.
     with patch("lightrag.kg.postgres_impl.logger") as logger:
-        await db.configure_iterative_scan(connection)  # must not raise
-        await db.configure_iterative_scan(connection)  # every pool release
+        for _ in range(2):
+            connection = _Connection(execute_error=Exception("permission denied"))
+            rows = await db._fetch_with_iterative_scan(connection, "SELECT 1", ())
+            # its own transaction is rolled back, then the query runs plain
+            assert connection.log == ["BEGIN", HNSW_SQL, "ROLLBACK", "FETCH"]
+            assert rows == [{"id": "a"}]
 
     assert logger.warning.call_count == 1
     assert "iterative scan not applied" in str(logger.warning.call_args)
@@ -162,16 +138,64 @@ async def test_set_failure_is_not_fatal_and_logged_once() -> None:
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_old_pgvector_skips_the_set() -> None:
-    """On a fresh connection an unknown hnsw.* SET is accepted and dropped
-    silently, so the version decides, not the exception."""
-    connection = AsyncMock()
+async def test_query_failure_is_not_retried_or_swallowed() -> None:
+    connection = _Connection()
+    connection.fetch_error = RuntimeError("query failed")
+
+    with pytest.raises(RuntimeError, match="query failed"):
+        await _db()._fetch_with_iterative_scan(connection, "SELECT 1", ())
+
+    # exactly one attempt: the failure is the query's, not the setting's
+    assert connection.log.count("FETCH") == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_pool_callbacks_carry_no_session_setting() -> None:
+    """Nothing is set at connection init or pool reset any more."""
     db = _db()
-    db.iterative_scan_supported = False
+    for name, value in {
+        "user": "u",
+        "password": "p",
+        "database": "d",
+        "host": "h",
+        "port": 5432,
+        "max": 2,
+        "statement_cache_size": None,
+        "ssl_mode": None,
+        "server_settings": None,
+        "connection_retry_attempts": 1,
+        "connection_retry_backoff": 0,
+        "connection_retry_backoff_max": 0,
+    }.items():
+        setattr(db, name, value)
+    db._transient_exceptions = (ConnectionError,)
+    db._create_ssl_context = lambda: None
+    db.configure_vector_extension = AsyncMock()
+    captured: dict = {}
 
-    await db.configure_iterative_scan(connection)
+    async def fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
 
-    assert _statements(connection) == []
+    with (
+        patch("lightrag.kg.postgres_impl.asyncpg.connect", AsyncMock()),
+        patch(
+            "lightrag.kg.postgres_impl.asyncpg.create_pool",
+            side_effect=fake_create_pool,
+        ),
+        patch("pgvector.asyncpg.register_vector", AsyncMock()),
+    ):
+        await db.initdb()
+        connection = AsyncMock()
+        await captured["init"](connection)
+        assert [c.args[0] for c in connection.execute.await_args_list] == []
+
+        connection = MagicMock()
+        connection.get_reset_query.return_value = "RESET ALL"
+        connection.execute = AsyncMock()
+        await captured["reset"](connection)
+        assert [c.args[0] for c in connection.execute.await_args_list] == ["RESET ALL"]
 
 
 def _version_connection(version: str | None) -> AsyncMock:
@@ -206,7 +230,7 @@ async def test_unreadable_version_leaves_support_unknown(version) -> None:
 
     await db._probe_iterative_scan_support(_version_connection(version))
 
-    assert db.iterative_scan_supported is None  # SET is still attempted
+    assert db.iterative_scan_supported is None  # the SET LOCAL is still attempted
 
 
 @pytest.mark.offline
@@ -232,83 +256,69 @@ async def test_version_probe_ignores_uncovered_index() -> None:
     assert connection.fetchrow.await_count == 0
 
 
-async def _pool_callbacks(db: PostgreSQLDB):
-    """Run ``initdb`` against a stubbed asyncpg and return (init, reset)."""
-    for name, value in {
-        "user": "u",
-        "password": "p",
-        "database": "d",
-        "host": "h",
-        "port": 5432,
-        "max": 2,
-        "statement_cache_size": None,
-        "ssl_mode": None,
-        "server_settings": None,
-        "connection_retry_attempts": 1,
-        "connection_retry_backoff": 0,
-        "connection_retry_backoff_max": 0,
-    }.items():
-        setattr(db, name, value)
-    db._transient_exceptions = (ConnectionError,)
-    db._create_ssl_context = lambda: None
-    db.configure_vector_extension = AsyncMock()
+@pytest.mark.offline
+@pytest.mark.parametrize("namespace", ["chunks", "entities", "relationships"])
+@pytest.mark.parametrize("vector_cast", ["vector", "halfvec"])
+def test_resort_wrapper_restores_distance_order(namespace, vector_cast) -> None:
+    """relaxed_order rows come out unsorted and the planner adds no sort, so the
+    scan is materialised and re-sorted; ``+ 0`` defeats sort elimination."""
+    raw = SQL_TEMPLATES[namespace].format(table_name="t", vector_cast=vector_cast)
 
-    captured: dict = {}
+    wrapped = _with_distance_resort(raw, vector_cast)
 
-    async def fake_create_pool(**kwargs):
-        captured.update(kwargs)
-        return MagicMock()
+    assert wrapped.startswith("WITH relaxed AS MATERIALIZED (")
+    assert wrapped.endswith("ORDER BY _distance + 0")
+    assert wrapped.count(f"content_vector <=> $4::{vector_cast} AS _distance") == 1
+    assert "LIMIT $3" in wrapped  # the bound stays inside the scan
+    assert ";" not in wrapped
 
-    with (
-        patch("lightrag.kg.postgres_impl.asyncpg.connect", AsyncMock()),
-        patch(
-            "lightrag.kg.postgres_impl.asyncpg.create_pool",
-            side_effect=fake_create_pool,
-        ),
-        patch("pgvector.asyncpg.register_vector", AsyncMock()),
-    ):
-        await db.initdb()
-    return captured["init"], captured["reset"]
+
+@pytest.mark.offline
+def test_resort_wrapper_refuses_a_template_it_cannot_parse() -> None:
+    with pytest.raises(RuntimeError):
+        _with_distance_resort("SELECT 1", "vector")
+
+
+def _storage(index_type: str, *, supported=None) -> PGVectorStorage:
+    storage = PGVectorStorage.__new__(PGVectorStorage)
+    storage.namespace = "chunks"
+    storage.workspace = "gw"
+    storage.table_name = "t"
+    storage.cosine_better_than_threshold = 0.2
+    storage.db = _db(index_type)
+    storage.db.iterative_scan_supported = supported
+    storage.db.query = AsyncMock(
+        return_value=[{"id": "a", "content": "x", "_distance": 0.1}]
+    )
+    return storage
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_new_connection_gets_iterative_scan() -> None:
-    init, _ = await _pool_callbacks(_db())
-    connection = AsyncMock()
+@pytest.mark.parametrize(
+    ("index_type", "wrapped"),
+    [("IVFFLAT", True), ("HNSW", False), ("HNSW_HALFVEC", False)],
+)
+async def test_query_resorts_only_for_ivfflat(index_type, wrapped) -> None:
+    storage = _storage(index_type)
 
-    with patch("pgvector.asyncpg.register_vector", AsyncMock()):
-        await init(connection)
+    rows = await storage.query("q", top_k=5, query_embedding=[0.1, 0.2])
 
-    assert _statements(connection) == [SET_SQL]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_pool_reset_reapplies_iterative_scan_after_reset_all() -> None:
-    """The failure only shows on a recycled connection: RESET ALL clears it."""
-    _, reset = await _pool_callbacks(_db())
-    connection = MagicMock()
-    connection.get_reset_query.return_value = "RESET ALL"
-    connection.execute = AsyncMock()
-
-    await reset(connection)
-
-    # Cleanup first, then the setting; the other order would be undone.
-    assert [c.args[0] for c in connection.execute.await_args_list] == [
-        "RESET ALL",
-        SET_SQL,
-    ]
+    call = storage.db.query.await_args
+    assert call.args[0].startswith("WITH relaxed AS MATERIALIZED") is wrapped
+    assert call.kwargs["iterative_scan"] is True
+    if wrapped:
+        # the helper column never reaches callers
+        assert rows == [{"id": "a", "content": "x"}]
+    else:
+        assert rows == [{"id": "a", "content": "x", "_distance": 0.1}]
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_vector_disabled_backend_never_touches_the_guc() -> None:
-    _, reset = await _pool_callbacks(_db(enable_vector=False))
-    connection = MagicMock()
-    connection.get_reset_query.return_value = "RESET ALL"
-    connection.execute = AsyncMock()
+async def test_query_skips_resort_when_iterative_scan_unsupported() -> None:
+    storage = _storage("IVFFLAT", supported=False)
 
-    await reset(connection)
+    await storage.query("q", top_k=5, query_embedding=[0.1])
 
-    assert [c.args[0] for c in connection.execute.await_args_list] == ["RESET ALL"]
+    assert not storage.db.query.await_args.args[0].startswith("WITH relaxed")
