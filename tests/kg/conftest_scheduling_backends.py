@@ -96,6 +96,33 @@ def _ensure_shared_data() -> None:
     initialize_share_data()
 
 
+def _lancedb_importable() -> bool:
+    """LanceDB is embedded (no service), but it is an optional dependency."""
+    from importlib.util import find_spec
+
+    return find_spec("lancedb") is not None
+
+
+async def _build_lancedb(tmp_path) -> Any:
+    from lightrag.kg.lancedb_impl import LanceDBDocStatusStorage
+
+    _ensure_shared_data()
+
+    with _workspace_env_isolated("LANCEDB_WORKSPACE"):
+        # A per-test database directory: the contract covers deletes, source
+        # multimaps and drop(), so a shared directory would leak rows between
+        # cases exactly as a shared workspace would.
+        os.environ["LANCEDB_URI"] = str(tmp_path / "lancedb")
+        storage = LanceDBDocStatusStorage(
+            namespace="doc_status",
+            global_config={"working_dir": str(tmp_path)},
+            embedding_func=_DummyEmbeddingFunc(),
+            workspace=_unique_workspace(),
+        )
+        await storage.initialize()
+    return storage
+
+
 async def _build_json(tmp_path) -> Any:
     from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
 
@@ -225,11 +252,21 @@ _JSON_BACKEND = BackendSpec(
     unavailable_hint="never unavailable",
 )
 
+# Embedded like JSON — no service to probe — so it belongs in the default
+# offline suite; only its optional package can be missing.
+_LANCEDB_BACKEND = BackendSpec(
+    name="lancedb",
+    build=_build_lancedb,
+    probe=_lancedb_importable,
+    unavailable_hint="lancedb is not installed",
+)
+
 # Marked per PARAMETER, not per module: JSON needs no service, so it must run in
 # the default offline suite — a contract test that only executes behind
 # ``--run-integration`` would go stale between the runs that use it.
 BACKEND_PARAMS = [
     pytest.param(_JSON_BACKEND, id=_JSON_BACKEND.name),
+    pytest.param(_LANCEDB_BACKEND, id=_LANCEDB_BACKEND.name),
     *[
         pytest.param(
             spec,
@@ -240,4 +277,8 @@ BACKEND_PARAMS = [
     ],
 ]
 
-BACKEND_SPECS: tuple[BackendSpec, ...] = (_JSON_BACKEND, *_SERVICE_BACKENDS)
+BACKEND_SPECS: tuple[BackendSpec, ...] = (
+    _JSON_BACKEND,
+    _LANCEDB_BACKEND,
+    *_SERVICE_BACKENDS,
+)
