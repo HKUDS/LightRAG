@@ -322,6 +322,13 @@ async def _ollama_model_if_cache(
             user_message["images"] = [img.base64_str for img in normalized_images]
         messages.append(user_message)
 
+        # A caller (e.g. a vision_model_func) may pass messages= directly;
+        # there is no explicit messages parameter above, so it would
+        # otherwise land in kwargs and collide with the messages= keyword
+        # below. Popping it out lets an explicit messages kwarg override the
+        # list built here instead of crashing, matching openai.py's binding.
+        messages = kwargs.pop("messages", messages)
+
         response = await ollama_client.chat(model=model, messages=messages, **kwargs)
         if stream:
             """cannot cache stream response and process reasoning"""
