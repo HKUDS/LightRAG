@@ -156,6 +156,36 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("formula", ["=A1:A2*2", "=_xlfn._xlws.FILTER(A1:A2,A1:A2>1)"])
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_preserves_array_formula_content(formula, cached_value):
+    """Array formula objects must yield cached values or their formula text."""
+    file_bytes = _make_xlsx_bytes(cached_formula_value=cached_value)
+    patched = BytesIO()
+    with (
+        ZipFile(BytesIO(file_bytes)) as source,
+        ZipFile(patched, "w", ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                cell = root.find(".//main:c[@r='B1']", _NS)
+                formula_node = cell.find("main:f", _NS)
+                formula_node.set("t", "array")
+                formula_node.set("ref", "B1:B2")
+                formula_node.text = formula.removeprefix("=")
+                data = ET.tostring(root, encoding="utf-8")
+            target.writestr(item, data)
+
+    text = extract_text(patched.getvalue(), "xlsx")
+
+    expected = formula if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "ArrayFormula object" not in text
+
+
+@pytest.mark.offline
 @pytest.mark.parametrize("group_depth", [0, 1, 2])
 def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
     presentation = Presentation()
