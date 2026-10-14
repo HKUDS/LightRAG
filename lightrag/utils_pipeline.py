@@ -17,7 +17,8 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -1243,8 +1244,7 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
     from a file at the URI level. Non-ASCII characters are percent-encoded.
     """
     p = Path(parsed_artifact_dir).resolve()
-    encoded = quote(str(p), safe="/")
-    return f"file://{encoded}/"
+    return p.as_uri().rstrip("/") + "/"
 
 
 def resolve_sidecar_uri(uri: str | None) -> Path | None:
@@ -1258,7 +1258,17 @@ def resolve_sidecar_uri(uri: str | None) -> Path | None:
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    path_str = unquote(parts.path)
+    # Older Windows writers encoded the complete path as the URI authority.
+    # Keep those persisted locations readable alongside standard file URIs.
+    legacy_path = unquote(parts.netloc)
+    if os.name == "nt" and (
+        re.match(r"^[A-Za-z]:[\\/]", legacy_path) or legacy_path.startswith("\\\\")
+    ):
+        return Path(legacy_path)
+    path = parts.path
+    if parts.netloc and parts.netloc.lower() != "localhost":
+        path = f"//{parts.netloc}{path}"
+    path_str = url2pathname(path)
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
     return Path(path_str)
