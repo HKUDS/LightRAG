@@ -1242,6 +1242,15 @@ def priority_limit_async_func_call(
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
 
+        # A non-positive ``llm_timeout`` means "no provider timeout": env.example
+        # documents ``LLM_TIMEOUT=0`` that way and llm/ollama.py turns it into a
+        # None httpx timeout. Normalize it to the unset state here, otherwise the
+        # derivation below produces a 0s worker budget and ``asyncio.wait_for``
+        # fails every call before the wrapped function starts.
+        nonlocal llm_timeout
+        if llm_timeout is not None and llm_timeout <= 0:
+            llm_timeout = None
+
         # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)
         if llm_timeout is not None:
             nonlocal max_execution_timeout, max_task_duration
