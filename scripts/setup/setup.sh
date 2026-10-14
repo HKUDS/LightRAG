@@ -282,6 +282,25 @@ normalize_loopback_uri_for_compose() {
   printf '%s' "$uri"
 }
 
+normalize_neo4j_uri_for_compose() {
+  local uri="$1"
+
+  if [[ "$uri" == *,* ]]; then
+    printf '%s' "$uri"
+    return 0
+  fi
+
+  if [[ "$uri" =~ ^neo4j://([^/?#]+@)?(localhost|127\.0\.0\.1|0\.0\.0\.0|host\.docker\.internal)(:[0-9]+)?([/?#].*)?$ ]]; then
+    printf 'bolt://%shost.docker.internal%s%s' \
+      "${BASH_REMATCH[1]}" \
+      "${BASH_REMATCH[3]}" \
+      "${BASH_REMATCH[4]}"
+    return 0
+  fi
+
+  normalize_loopback_uri_for_compose "$uri"
+}
+
 ensure_mongodb_direct_connection_suffix() {
   local suffix="${1:-}"
   local path query fragment filtered_query=""
@@ -359,8 +378,7 @@ normalize_neo4j_uri_for_local_service() {
   local uri="$1"
 
   if [[ "$uri" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^/?#]+@)?(neo4j|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
-    printf '%s%slocalhost:7687%s' \
-      "${BASH_REMATCH[1]}" \
+    printf 'bolt://%slocalhost:7687%s' \
       "${BASH_REMATCH[2]}" \
       "${BASH_REMATCH[5]}"
     return 0
@@ -566,7 +584,7 @@ set_managed_service_compose_overrides() {
       ;;
     neo4j)
       if [[ -z "${COMPOSE_ENV_OVERRIDES[NEO4J_URI]+set}" ]]; then
-        set_compose_override "NEO4J_URI" "neo4j://neo4j:7687"
+        set_compose_override "NEO4J_URI" "bolt://neo4j:7687"
       fi
       ;;
     mongodb)
@@ -655,7 +673,11 @@ prepare_compose_runtime_overrides() {
       continue
     fi
     if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
-      normalized_value="$(normalize_loopback_uri_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$key" == "NEO4J_URI" ]]; then
+        normalized_value="$(normalize_neo4j_uri_for_compose "${ENV_VALUES[$key]}")"
+      else
+        normalized_value="$(normalize_loopback_uri_for_compose "${ENV_VALUES[$key]}")"
+      fi
       if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
         set_compose_override "$key" "$normalized_value"
       fi
@@ -1433,7 +1455,7 @@ collect_neo4j_config() {
   ENV_VALUES["NEO4J_PASSWORD"]="$password"
   ENV_VALUES["NEO4J_DATABASE"]="$database"
   if [[ "$use_docker" == "yes" ]]; then
-    set_compose_override "NEO4J_URI" "neo4j://neo4j:7687"
+    set_compose_override "NEO4J_URI" "bolt://neo4j:7687"
   else
     set_compose_override "NEO4J_URI" ""
   fi
