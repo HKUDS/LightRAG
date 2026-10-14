@@ -1216,6 +1216,14 @@ class RedisDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         counts = {status.value: 0 for status in DocStatus}
+        # SCAN's contract guarantees every key present for the whole
+        # iteration is returned AT LEAST once, not exactly once -- a
+        # concurrent rehash of the keyspace (routine under write load) can
+        # hand the same key back in a later batch (see the duplicate-return
+        # handling in ``_publish_rebuilt_index``). This is a plain counter
+        # with no per-doc_id key to dedupe against, so an unfiltered replay
+        # would silently inflate a status's count.
+        seen_keys: set[str] = set()
         async with self._get_redis_connection() as redis:
             try:
                 # Use SCAN to iterate through all keys in the namespace
@@ -1224,10 +1232,12 @@ class RedisDocStatusStorage(DocStatusStorage):
                     cursor, keys = await redis.scan(
                         cursor, match=f"{self.final_namespace}:*", count=1000
                     )
-                    if keys:
+                    new_keys = [key for key in keys if key not in seen_keys]
+                    if new_keys:
+                        seen_keys.update(new_keys)
                         # Get all values in batch
                         pipe = redis.pipeline()
-                        for key in keys:
+                        for key in new_keys:
                             pipe.get(key)
                         values = await pipe.execute()
 
