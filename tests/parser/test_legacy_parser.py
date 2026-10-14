@@ -89,6 +89,29 @@ async def test_legacy_parse_pptx_with_only_grouped_text(tmp_path, archived):
     assert archived == [str(source)]
 
 
+async def test_legacy_parse_pptx_with_only_table_text(tmp_path, archived):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    table = slide.shapes.add_table(1, 2, 0, 0, Inches(4), Inches(1)).table
+    table.cell(0, 0).text = "Product"
+    table.cell(0, 1).text = "Revenue"
+    source = tmp_path / "table.pptx"
+    presentation.save(source)
+    rag = _FakeRag()
+
+    result = await LegacyParser().parse(_ctx(rag, source))
+
+    assert result.content == "Product\tRevenue\n"
+    assert result.parse_format == FULL_DOCS_FORMAT_RAW
+    assert result.parse_engine == "legacy"
+    assert len(rag.persisted) == 1
+    assert rag.persisted[0][1]["content"] == result.content
+    assert archived == [str(source)]
+
+
 async def test_legacy_parse_unsupported_suffix_raises(tmp_path, archived):
     source = tmp_path / "image.xyz"
     source.write_bytes(b"not parseable")

@@ -81,7 +81,7 @@ def _extract_docx(file_bytes: bytes) -> str:
 
 
 def _extract_pptx(file_bytes: bytes) -> str:
-    """Extract PPTX text, including nested groups, in shape order (synchronous)."""
+    """Extract PPTX text and table rows, including nested groups, in shape order."""
     from collections.abc import Iterator
 
     from pptx import Presentation  # type: ignore
@@ -96,6 +96,9 @@ def _extract_pptx(file_bytes: bytes) -> str:
             # Groups have no text of their own; their children can include groups.
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 yield from iter_text(shape.shapes)
+            elif shape.has_table:
+                for row in shape.table.rows:
+                    yield "\t".join(cell.text for cell in row.cells) + "\n"
             elif hasattr(shape, "text"):
                 yield shape.text + "\n"
 
