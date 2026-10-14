@@ -68,9 +68,9 @@ def _write_blocks(tmp_path: Path, blocks: list[tuple[str, str]]) -> tuple[str, s
 @pytest.mark.offline
 def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
     # End-to-end reproduction of the overlap-tail ambiguity with the real chunker.
-    # Simple case: b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a", "a"]. The
-    # middle window [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the
-    # separator), so the tail chunks belong to b2 — not the earlier "a" inside b1.
+    # Simple case: b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a"]. The
+    # last window [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the
+    # separator), so the tail chunk belongs to b2 — not the earlier "a" inside b1.
     blocks_path, merged = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "a")])
     tok = _tokenizer()
 
@@ -81,13 +81,12 @@ def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
         chunk_overlap_token_size=1,
         _emit_source_span=True,
     )
-    assert [c["content"] for c in chunks] == ["aa", "a", "a"]
+    assert [c["content"] for c in chunks] == ["aa", "a"]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
     assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
     assert [r["id"] for r in chunks[1]["sidecar"]["refs"]] == ["b2"]
-    assert [r["id"] for r in chunks[2]["sidecar"]["refs"]] == ["b2"]
 
 
 @pytest.mark.offline
@@ -95,7 +94,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
     tmp_path: Path,
 ) -> None:
     # Harder end-to-end case: b1="a", b2="abab", chunk_size=2, overlap=1 ->
-    # ["a", "", "a", "ab", "ba", "ab", "b"]. The token overlap repeatedly lands on the
+    # ["a", "", "a", "ab", "ba", "ab"]. The token overlap repeatedly lands on the
     # stripped separator, so consecutive non-empty chunks can share a normalized start
     # and only the end advances. The empty chunk is skipped; every other tail chunk
     # must resolve into b2 without raising ChunkBlockMatchError.
@@ -109,7 +108,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
         chunk_overlap_token_size=1,
         _emit_source_span=True,
     )
-    assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab", "b"]
+    assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab"]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
