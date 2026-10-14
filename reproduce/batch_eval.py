@@ -6,21 +6,42 @@ import jsonlines
 from openai import OpenAI
 
 
+def _align_answers(queries, rows, source):
+    answers = {}
+    for row in rows:
+        query = row.get("query")
+        if query not in queries or query in answers or "result" not in row:
+            raise ValueError(
+                f"{source}: unknown, duplicate, or incomplete query result"
+            )
+        answers[query] = row["result"]
+    if set(answers) != set(queries):
+        raise ValueError(
+            f"{source}: missing query results; recover failed queries before evaluation"
+        )
+    return [answers[query] for query in queries]
+
+
 def batch_eval(query_file, result1_file, result2_file, output_file_path):
-    client = OpenAI()
 
     with open(query_file, "r") as f:
         data = f.read()
 
-    queries = re.findall(r"- Question \d+: (.+)", data)
+    queries = re.findall(r"- Question \d+: (.+)", data.replace("**", ""))
+    if not queries or len(set(queries)) != len(queries):
+        raise ValueError(
+            "Questions must be nonempty and unique for unambiguous evaluation"
+        )
 
     with open(result1_file, "r") as f:
         answers1 = json.load(f)
-    answers1 = [i["result"] for i in answers1]
+    answers1 = _align_answers(queries, answers1, result1_file)
 
     with open(result2_file, "r") as f:
         answers2 = json.load(f)
-    answers2 = [i["result"] for i in answers2]
+    answers2 = _align_answers(queries, answers2, result2_file)
+
+    client = OpenAI()
 
     requests = []
     for i, (query, answer1, answer2) in enumerate(zip(queries, answers1, answers2)):
