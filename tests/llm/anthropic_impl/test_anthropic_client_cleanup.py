@@ -23,12 +23,13 @@ def _make_fake_response(content_text: str = "hello world") -> SimpleNamespace:
     """A minimal object that looks like an Anthropic Messages response."""
 
     class _Content:
+        type = "text"
         text = content_text
 
     class _Message:
         content = [_Content()]
 
-    return SimpleNamespace(content=[_Content()])
+    return SimpleNamespace(content=[_Content()], stop_reason="end_turn")
 
 
 def _make_error_client(error: BaseException) -> SimpleNamespace:
