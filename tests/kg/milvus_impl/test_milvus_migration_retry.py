@@ -8,7 +8,8 @@ killed worker startup:
 1. Connection-class failures retry the whole migration with a rebuilt client.
 2. Non-connection failures keep failing fast (single attempt).
 3. _is_retryable_connection_error classifies errors through cause chains.
-4. The force-create fallback never fires on a connection error.
+4. The force-create fallback never fires on a connection error, and never
+   drops an existing collection.
 5. The temp collection is not loaded during the bulk copy.
 6. Backup collections are released from memory after a successful migration.
 7. A stale _old backup is dropped so the in-place rename can succeed.
@@ -314,15 +315,106 @@ class TestForceCreateGuard:
         storage._client.drop_collection.assert_not_called()
 
     def test_non_connection_error_still_force_creates(self):
+        # The fallback still creates a collection confirmed absent.
         storage = _make_model_storage()
         storage._client = MagicMock()
-        storage._client.has_collection.side_effect = KeyError("boom")
+        checks = iter([KeyError("boom")])
+
+        def has_collection(name):
+            # The first existence check fails; afterwards nothing exists.
+            error = next(checks, None)
+            if error is not None:
+                raise error
+            return False
+
+        storage._client.has_collection.side_effect = has_collection
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_ensure_collection_loaded"):
                 storage._create_collection_if_not_exist()
 
         storage._client.create_collection.assert_called_once()
+
+    def test_fallback_never_drops_an_existing_collection(self):
+        # A transient, unclassified error on the first existence check used
+        # to reach the fallback, whose own check then succeeded -- and the
+        # healthy collection was dropped and recreated empty.
+        storage = _make_model_storage()
+        storage._client = MagicMock()
+        storage._client.has_collection.side_effect = [
+            MilvusException(message="server is busy"),
+            True,
+        ]
+
+        with pytest.raises(RuntimeError, match="refusing to drop and recreate"):
+            storage._create_collection_if_not_exist()
+
+        storage._client.drop_collection.assert_not_called()
+        storage._client.create_collection.assert_not_called()
+
+    @pytest.mark.parametrize("leftover", ["legacy", "_old", "_temp"])
+    def test_fallback_never_creates_over_data_it_would_shadow(self, leftover):
+        # With the target absent, creating it empty would permanently hide an
+        # unmigrated legacy collection or an interrupted migration's
+        # _old/_temp: the next start sees the target and never migrates.
+        storage = _make_model_storage()
+        storage._client = MagicMock()
+        existing = {
+            "legacy": storage.legacy_namespace,
+            "_old": f"{storage.final_namespace}_old",
+            "_temp": f"{storage.final_namespace}_temp",
+        }[leftover]
+        checks = iter([MilvusException(message="server is busy")])
+
+        def has_collection(name):
+            error = next(checks, None)
+            if error is not None:
+                raise error
+            return name == existing
+
+        storage._client.has_collection.side_effect = has_collection
+
+        with pytest.raises(RuntimeError, match="refusing to create it over existing"):
+            storage._create_collection_if_not_exist()
+
+        storage._client.drop_collection.assert_not_called()
+        storage._client.create_collection.assert_not_called()
+
+    def test_fallback_fails_closed_when_existence_stays_unknown(self):
+        storage = _make_model_storage()
+        storage._client = MagicMock()
+        storage._client.has_collection.side_effect = MilvusException(
+            message="server is busy"
+        )
+
+        with pytest.raises(MilvusException, match="server is busy"):
+            storage._create_collection_if_not_exist()
+
+        storage._client.drop_collection.assert_not_called()
+        storage._client.create_collection.assert_not_called()
+
+    def test_refused_load_of_an_existing_collection_never_drops_it(self):
+        # Reproduced live on Milvus 2.6.11: with no query node in the
+        # resource group, LoadCollection is refused outright ("resource group
+        # node not enough"). That error is neither a RuntimeError nor a
+        # connection error, so it reached the fallback, which dropped the
+        # collection and recreated it empty.
+        storage = _make_model_storage()
+        storage._client = MagicMock()
+        storage._client.has_collection.side_effect = lambda name: (
+            name == storage.final_namespace
+        )
+        storage._client.load_collection.side_effect = MilvusException(
+            message="call query coordinator LoadCollection: resource group node "
+            "not enough[rg=__default_resource_group][currentNodeNum=0]"
+        )
+
+        with patch.object(storage, "_validate_collection_compatibility"):
+            with pytest.raises(RuntimeError, match="refusing to drop and recreate"):
+                storage._create_collection_if_not_exist()
+
+        storage._client.drop_collection.assert_not_called()
+        storage._client.create_collection.assert_not_called()
 
 
 @pytest.mark.offline
