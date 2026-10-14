@@ -89,6 +89,7 @@ async def initialize_rag():
 
 
 async def main():
+    rag = None
     # Check if OPENAI_API_KEY environment variable exists
     if not os.getenv("OPENAI_API_KEY"):
         print(
