@@ -1,4 +1,5 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
+import asyncio
 import os
 import logging
 import warnings
@@ -505,6 +506,12 @@ async def openai_complete_if_cache(
         response = await openai_async_client.chat.completions.create(
             model=api_model, messages=messages, **kwargs
         )
+    except asyncio.CancelledError:
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
+        raise
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         try:
