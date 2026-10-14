@@ -4951,17 +4951,6 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
         # Streaming response (AsyncIterator)
@@ -7106,18 +7095,6 @@ async def naive_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response[len(sys_prompt) :]
-                .replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=raw_data)
     else:
         # Streaming response (AsyncIterator)
