@@ -35,9 +35,8 @@ def get_actual_sanitization_logic():
     for file_path in files:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-            # Find the _get_workspace_label method body. The backends differ in
-            # shape -- memgraph escapes ``workspace`` inline while neo4j delegates
-            # to ``_get_raw_workspace_label()`` -- but both end in a backtick-doubling
+            # Find the _get_workspace_label method body. Both backends delegate
+            # to ``_get_raw_workspace_label()`` and end in a backtick-doubling
             # ``return <expr>.replace("`", "``")`` line.
             match = re.search(r"return .+?\.replace\(\"`\", \"``\"\)", content)
             if not match:
