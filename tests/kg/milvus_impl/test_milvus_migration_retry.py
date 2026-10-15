@@ -22,7 +22,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 from pymilvus import MilvusException
 
-from lightrag.kg.milvus_impl import MilvusVectorDBStorage
+from lightrag.kg.milvus_impl import (
+    MilvusCollectionLoadError,
+    MilvusVectorDBStorage,
+)
 
 
 class _EmbeddingFunc:
@@ -398,7 +401,8 @@ class TestForceCreateGuard:
         # resource group, LoadCollection is refused outright ("resource group
         # node not enough"). That error is neither a RuntimeError nor a
         # connection error, so it reached the fallback, which dropped the
-        # collection and recreated it empty.
+        # collection and recreated it empty. It is now a typed load error,
+        # re-raised before the fallback, with the cluster's message kept.
         storage = _make_model_storage()
         storage._client = MagicMock()
         storage._client.has_collection.side_effect = lambda name: (
@@ -410,9 +414,33 @@ class TestForceCreateGuard:
         )
 
         with patch.object(storage, "_validate_collection_compatibility"):
-            with pytest.raises(RuntimeError, match="refusing to drop and recreate"):
+            with pytest.raises(
+                MilvusCollectionLoadError, match="resource group node not enough"
+            ):
                 storage._create_collection_if_not_exist()
 
+        storage._client.drop_collection.assert_not_called()
+        storage._client.create_collection.assert_not_called()
+
+    def test_load_timeout_on_existing_collection_never_force_creates(self):
+        # A load still incomplete at MILVUS_LOAD_TIMEOUT says nothing about
+        # the data: it surfaces as itself, never reaching the fallback.
+        storage = _make_model_storage()
+        storage._client = MagicMock()
+        storage._client.has_collection.side_effect = lambda name: (
+            name == storage.final_namespace
+        )
+        storage._client.load_collection.side_effect = MilvusException(
+            message="wait for loading collection timeout, collection: x"
+        )
+
+        with patch.object(storage, "_validate_collection_compatibility"):
+            with pytest.raises(
+                MilvusCollectionLoadError, match="loading collection timeout"
+            ) as exc_info:
+                storage._create_collection_if_not_exist()
+
+        assert isinstance(exc_info.value.__cause__, MilvusException)
         storage._client.drop_collection.assert_not_called()
         storage._client.create_collection.assert_not_called()
 

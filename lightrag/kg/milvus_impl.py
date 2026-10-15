@@ -25,7 +25,7 @@ from ..constants import (
     GRAPH_FIELD_SEP,
     MILVUS_SUBMIT_LIMIT,
 )
-from ..exceptions import VectorSpaceMismatchError
+from ..exceptions import StorageControlPlaneError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -313,6 +313,13 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 )  # 32MB, well below the 64MB gRPC ceiling
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+
+class MilvusCollectionLoadError(StorageControlPlaneError):
+    """An existing collection could not be loaded (refused, or still loading
+    when MILVUS_LOAD_TIMEOUT expired).
+    """
+
 
 # Read-path response-size ceiling. Unlike the write path above,
 # a query() response that crosses the gRPC message ceiling isn't rejected by
@@ -2249,9 +2256,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise ValueError(f"Collection {self.final_namespace} does not exist")
 
             # Load the collection if it's not already loaded
-            # In Milvus, collections need to be loaded before they can be searched
-            self._client.load_collection(self.final_namespace)
-            # logger.debug(f"[{self.workspace}] Collection {self.namespace} loaded successfully")
+            # In Milvus, collections need to be loaded before they can be searched.
+            # Without a timeout pymilvus waits until the load reaches 100%, so a
+            # load stuck server-side blocks forever; MILVUS_LOAD_TIMEOUT bounds it.
+            load_kwargs = (
+                {} if self._load_timeout is None else {"timeout": self._load_timeout}
+            )
+            try:
+                self._client.load_collection(self.final_namespace, **load_kwargs)
+            except Exception as load_error:
+                # Typed (a RuntimeError) so _create_collection_if_not_exist
+                # re-raises it as-is instead of routing it to the force-create
+                # fallback, whose generic refusal would hide the cause.
+                raise MilvusCollectionLoadError(
+                    f"Failed to load Milvus collection '{self.final_namespace}': "
+                    f"{load_error}"
+                ) from load_error
 
         except Exception as e:
             logger.error(
@@ -2550,6 +2570,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"MILVUS_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
             )
+
+        # Collection-load wait limit in seconds; unset or <= 0 means no limit,
+        # i.e. load_collection() without a timeout. Malformed values fail fast.
+        load_timeout = float(os.getenv("MILVUS_LOAD_TIMEOUT", "0.0"))
+        self._load_timeout: float | None = load_timeout if load_timeout > 0 else None
 
         # Schema-migration retry knobs (see DEFAULT_MILVUS_MIGRATION_*
         # constants). MILVUS_MIGRATION_MAX_RETRIES=0 restores fail-fast.
@@ -3594,7 +3619,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             if self._client.has_collection(self.final_namespace):
                 self._client.drop_collection(self.final_namespace)
             self._create_collection_with_schema(self.final_namespace)
-            self._ensure_collection_loaded()
+            # The drop is durable from here on, and every later call loads the
+            # collection on demand: a failed load must not report the drop
+            # itself as failed.
+            try:
+                self._ensure_collection_loaded()
+            except MilvusCollectionLoadError as e:
+                logger.warning(
+                    f"[{self.workspace}] Collection {self.namespace} recreated empty; "
+                    f"initial load deferred to the next call: {e}"
+                )
 
         try:
             async with self._flush_lock:
