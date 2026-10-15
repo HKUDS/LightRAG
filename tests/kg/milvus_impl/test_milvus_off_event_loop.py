@@ -20,11 +20,15 @@ import time
 
 import numpy as np
 import pytest
+from pymilvus import MilvusException
 from unittest.mock import MagicMock, patch
 
 from lightrag.constants import MILVUS_SUBMIT_LIMIT
 from lightrag.kg import milvus_impl
-from lightrag.kg.milvus_impl import MilvusVectorDBStorage
+from lightrag.kg.milvus_impl import (
+    MilvusCollectionLoadError,
+    MilvusVectorDBStorage,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -989,3 +993,105 @@ async def test_concurrent_searches_are_capped_by_the_submit_limit():
 
     assert s._client.search.call_count == MILVUS_SUBMIT_LIMIT + 4
     assert state["peak"] <= MILVUS_SUBMIT_LIMIT
+
+
+# --- Collection-load wait limit (MILVUS_LOAD_TIMEOUT) ----------------------
+#
+# pymilvus' load_collection() without a timeout waits until the load reaches
+# 100%, so a load stuck server-side holds a pool thread forever. The limit is
+# opt-in: unset, the call is exactly what it was.
+
+
+@pytest.mark.asyncio
+async def test_load_collection_has_no_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("MILVUS_LOAD_TIMEOUT", raising=False)
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.search = MagicMock(return_value=[[]])
+
+    await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+
+    s._client.load_collection.assert_called_once_with(s.final_namespace)
+
+
+@pytest.mark.asyncio
+async def test_load_collection_receives_configured_timeout(monkeypatch):
+    monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", "12.5")
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.search = MagicMock(return_value=[[]])
+
+    await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+
+    s._client.load_collection.assert_called_once_with(s.final_namespace, timeout=12.5)
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_non_positive_load_timeout_means_no_limit(monkeypatch, value):
+    monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", value)
+    s = _make_storage(MockEmbeddingFunc())
+
+    assert s._load_timeout is None
+
+
+@pytest.mark.parametrize("value", ["", "  ", "5m"])
+def test_invalid_load_timeout_fails_fast(monkeypatch, value):
+    monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", value)
+
+    with pytest.raises(ValueError, match="could not convert string to float"):
+        _make_storage(MockEmbeddingFunc())
+
+
+@pytest.mark.asyncio
+async def test_load_failure_fails_query_typed_without_searching():
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.load_collection = MagicMock(
+        side_effect=MilvusException(message="wait for loading collection timeout")
+    )
+    s._client.search = MagicMock(return_value=[[]])
+
+    with pytest.raises(MilvusCollectionLoadError, match="loading collection timeout"):
+        await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+
+    s._client.search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_failure_fails_flush_and_releases_flush_lock():
+    """On a failed load the flush raises without writing and releases
+    _flush_lock. The storage keeps its buffer (index_done_callback's
+    contract); the pipeline then wraps the error as IndexFlushError, aborts
+    the batch -- which discards that buffer through drop_pending_index_ops --
+    and marks its documents FAILED for a manual retry."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.load_collection = MagicMock(
+        side_effect=MilvusException(message="wait for loading collection timeout")
+    )
+    s._client.upsert = MagicMock(return_value={"upsert_count": 1})
+
+    await s.upsert({"v1": {"content": "hello"}})
+
+    with pytest.raises(MilvusCollectionLoadError):
+        await s.index_done_callback()
+
+    s._client.upsert.assert_not_called()
+    assert "v1" in s._pending_vector_docs
+    assert not s._flush_lock.locked()
+
+    # Would hang instead of returning if the lock were still held.
+    await asyncio.wait_for(s.drop_pending_index_ops(), timeout=5)
+    assert s._pending_vector_docs == {}
+
+
+@pytest.mark.asyncio
+async def test_drop_succeeds_when_only_the_reload_of_the_new_collection_fails():
+    """Once the drop and the recreate have run, the drop is durable; a failed
+    load of the new, empty collection must not report it as failed."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.load_collection = MagicMock(
+        side_effect=MilvusException(message="wait for loading collection timeout")
+    )
+
+    result = await s.drop()
+
+    assert result["status"] == "success"
+    s._client.drop_collection.assert_called_once()
+    s._client.create_collection.assert_called_once()
