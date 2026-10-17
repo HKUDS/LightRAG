@@ -65,14 +65,19 @@ def extract_text_from_run_table(
         tag = child.tag.split("}")[-1]  # Remove namespace
         if tag == "t" and child.text:
             text += child.text
-        elif tag == "tab":
+        elif tag in ("tab", "ptab"):
+            # w:ptab is an absolute position tab; same as the body walker.
             text += "\t"
-        elif tag == "br":
-            # Handle line breaks - textWrapping or no type = soft line break
+        elif tag in ("br", "cr"):
+            # Handle line breaks - textWrapping or no type = soft line break.
+            # A w:cr (carriage return) has no type and breaks the line too.
             br_type = child.get(qn_func("w:type"))
             if br_type in (None, "textWrapping"):
                 text += "\n"
             # Skip page and column breaks (layout elements)
+        elif tag == "noBreakHyphen":
+            # Non-breaking hyphen, written as a plain hyphen like the body walker.
+            text += "-"
         elif tag == "drawing":
             text += extract_drawing_placeholder_from_element(
                 child,
