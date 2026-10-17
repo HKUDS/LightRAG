@@ -81,6 +81,35 @@ def test_paragraph_drops_comment_markers_but_keeps_surrounding_text() -> None:
     assert extract_paragraph_content(para, PARAGRAPH_NS) == "visible"
 
 
+# Run elements that stand for a character: a carriage return, an absolute
+# position tab and a non-breaking hyphen. Each one used to vanish and join the
+# text around it ("line oneline two", "ReportPage 1", "COVID19").
+_CHARACTER_RUN_ELEMENTS = [
+    pytest.param(
+        "<w:t>line one</w:t><w:cr/><w:t>line two</w:t>", "line one\nline two", id="cr"
+    ),
+    pytest.param(
+        '<w:t>Report</w:t><w:ptab w:relativeTo="margin" w:alignment="right"'
+        ' w:leader="none"/><w:t>Page 1</w:t>',
+        "Report\tPage 1",
+        id="ptab",
+    ),
+    pytest.param(
+        "<w:t>COVID</w:t><w:noBreakHyphen/><w:t>19</w:t>",
+        "COVID-19",
+        id="noBreakHyphen",
+    ),
+]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(("run_xml", "expected"), _CHARACTER_RUN_ELEMENTS)
+def test_paragraph_keeps_character_run_elements(run_xml: str, expected: str) -> None:
+    para = _p(f"<w:r>{run_xml}</w:r>")
+
+    assert extract_paragraph_content(para, PARAGRAPH_NS) == expected
+
+
 # --- table-cell walker (table_extractor.extract_paragraph_content_table) ---
 
 
@@ -96,6 +125,14 @@ def test_table_cell_drops_w_del_content() -> None:
     para = _p("<w:del><w:r><w:t>removed</w:t></w:r></w:del>")
 
     assert extract_paragraph_content_table(para, qn) == ""
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(("run_xml", "expected"), _CHARACTER_RUN_ELEMENTS)
+def test_table_cell_keeps_character_run_elements(run_xml: str, expected: str) -> None:
+    para = _p(f"<w:r>{run_xml}</w:r>")
+
+    assert extract_paragraph_content_table(para, qn) == expected
 
 
 @pytest.mark.offline
