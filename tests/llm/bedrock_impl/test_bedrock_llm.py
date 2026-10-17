@@ -521,10 +521,15 @@ async def test_bedrock_complete_inherits_default_llm_timeout(monkeypatch):
     ):
         await bedrock_complete(prompt="hello", hashing_kv=hashing_kv)
         await bedrock_complete(prompt="hello", hashing_kv=hashing_kv, timeout=30)
+        hashing_kv.global_config["default_llm_timeout"] = 0
+        await bedrock_complete(prompt="hello", hashing_kv=hashing_kv)
 
     assert client_kwargs_calls[0]["config"].read_timeout == 240
     # A caller-passed timeout (llm_model_kwargs) still wins.
     assert client_kwargs_calls[1]["config"].read_timeout == 30
+    # LLM_TIMEOUT=0 stays 0, which aiohttp treats as no timeout; None would
+    # fall back to botocore's 60s.
+    assert client_kwargs_calls[2]["config"].read_timeout == 0
 
 
 @pytest.mark.offline
