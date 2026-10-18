@@ -243,6 +243,24 @@ def _extract_bulk_failed_ids(
     return retryable, non_retryable
 
 
+def _raise_bulk_delete_failures(failed: list[Any], *, context: str) -> None:
+    """Reject incomplete deletes while treating already-absent rows as success."""
+    errors = [
+        payload
+        for entry in failed
+        for op, payload in entry.items()
+        if not 200 <= payload["status"] < 300
+        and not (op == "delete" and payload["status"] == 404)
+    ]
+    if errors:
+        sample = ", ".join(
+            f"{item['_id']}/status={item['status']}/"
+            f"{_summarize_bulk_error(item.get('error'))}"
+            for item in errors[:5]
+        )
+        raise OpenSearchException(f"{context}: bulk deletion failed: {sample}")
+
+
 # Flush-time bulk batching limits. opensearch-py's helpers.async_bulk already
 # splits a request by payload-byte budget (primary) and record count
 # (secondary) via _ActionChunker -- semantically identical to MongoDB's
@@ -3632,7 +3650,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await _run_chunked_async_bulk(
+            _, failed = await _run_chunked_async_bulk(
                 self.client,
                 actions,
                 max_payload_bytes=self._max_upsert_payload_bytes,
@@ -3642,11 +3660,13 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 raise_on_error=False,
                 refresh="wait_for",
             )
+            _raise_bulk_delete_failures(failed, context="doc-status delete")
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
             logger.error(f"[{self.workspace}] Error deleting doc statuses: {e}")
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Delete the entire doc status index."""
@@ -5029,7 +5049,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await _run_chunked_async_bulk(
+            _, failed = await _run_chunked_async_bulk(
                 self.client,
                 actions,
                 max_payload_bytes=self._max_upsert_payload_bytes,
@@ -5037,6 +5057,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
                 what="node delete",
                 raise_on_error=False,
+            )
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] node delete"
             )
             self._nodes_dirty = True
             self._edges_dirty = True
@@ -5083,7 +5106,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     f"{len(operations)} ops split into bulk chunks (chunk={chunk})"
                 )
             for i in range(0, len(operations), chunk):
-                await self.client.bulk(body=operations[i : i + chunk])
+                response = await self.client.bulk(body=operations[i : i + chunk])
+                _raise_bulk_delete_failures(
+                    response["items"],
+                    context=f"[{self.workspace}] edge delete",
+                )
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
