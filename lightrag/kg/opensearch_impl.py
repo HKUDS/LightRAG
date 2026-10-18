@@ -246,21 +246,17 @@ def _extract_bulk_failed_ids(
 def _raise_bulk_delete_failures(failed: list[Any], *, context: str) -> None:
     """Reject incomplete deletes while treating already-absent rows as success."""
     errors = [
-        {op: payload}
+        payload
         for entry in failed
-        if isinstance(entry, dict)
         for op, payload in entry.items()
-        if isinstance(payload, dict)
-        and (
-            not isinstance(payload.get("status"), int)
-            or not 200 <= payload["status"] < 300
-        )
+        if not 200 <= payload["status"] < 300
+        and not (op == "delete" and payload["status"] == 404)
     ]
-    retryable, permanent = _extract_bulk_failed_ids(errors)
-    if retryable or permanent:
+    if errors:
         sample = ", ".join(
-            sorted(retryable)[:5]
-            + [f"{op.doc_id}/status={op.status}/{op.error}" for op in permanent[:5]]
+            f"{item['_id']}/status={item['status']}/"
+            f"{_summarize_bulk_error(item.get('error'))}"
+            for item in errors[:5]
         )
         raise OpenSearchException(f"{context}: bulk deletion failed: {sample}")
 
@@ -5112,7 +5108,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             for i in range(0, len(operations), chunk):
                 response = await self.client.bulk(body=operations[i : i + chunk])
                 _raise_bulk_delete_failures(
-                    response.get("items", []),
+                    response["items"],
                     context=f"[{self.workspace}] edge delete",
                 )
             self._edges_dirty = True
