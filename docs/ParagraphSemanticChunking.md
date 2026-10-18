@@ -4,7 +4,7 @@
 
 ### 1.1 What the P Strategy Solves
 
-Paragraph Semantic Chunking (hereafter the **P strategy**) targets documents with a clear sectional structure such as DOCX and PDF. Its core goal: **align chunk boundaries with the document's native semantic boundaries** (headings, paragraphs, table rows) as much as possible, rather than deciding split points purely by token-length counting.
+Paragraph Semantic Chunking (hereafter the **P strategy**) targets structured documents with clear sections, such as DOCX and PDF, and also works with Markdown when a parser produces a LightRAG Document sidecar. Its core goal: **align chunk boundaries with the document's native semantic boundaries** (headings, paragraphs, table rows) as much as possible, rather than deciding split points purely by token-length counting.
 
 The P strategy mainly addresses these four problems:
 
@@ -422,7 +422,7 @@ If the file is missing or empty, the P strategy degrades wholesale to R and gain
 
 - No sidecar-producing engine was configured for that format (e.g. `LIGHTRAG_PARSER=docx:native-...` / `pdf:mineru-...` / `*:docling-...`), so it actually took the `legacy` path.
 - Parse failure (check the `pipeline_status` error entries).
-- The format is not supported by the chosen engine (e.g. native supports only docx; switch to mineru / docling to cover more formats).
+- The format is not supported by the chosen engine (e.g. native supports `.docx`, `.md`, and `.textpack`; use MinerU or Docling for other supported formats).
 
 ### 7.2 Check the blocks.jsonl Content
 
@@ -440,7 +440,7 @@ If heading is mostly empty or level is abnormal, the parser did not correctly id
 Inspect the chunk metadata in the `text_chunks` store:
 
 ```bash
-jq '.[] | {heading, level, tokens, parent_headings}' \
+jq '.[] | {heading: .heading.heading, level: .heading.level, tokens, parent_headings: .heading.parent_headings}' \
    rag_storage/kv_store_text_chunks.json | head -30
 ```
 

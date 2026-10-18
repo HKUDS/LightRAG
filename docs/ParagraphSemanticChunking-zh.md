@@ -4,7 +4,7 @@
 
 ### 1.1 P 策略要解决什么问题
 
-Paragraph Semantic Chunking（下文简称 **P 策略**）面向 DOCX、PDF 等具有清晰章节结构的文档。其核心目标是：**让分块边界尽可能对齐文档原生的语义边界**（标题、段落、表格行），而不是仅由 token 长度计数决定切点。
+Paragraph Semantic Chunking（下文简称 **P 策略**）面向 DOCX、PDF 等具有清晰章节结构的文档；Markdown 经解析器产出 LightRAG Document sidecar 后也可使用。其核心目标是：**让分块边界尽可能对齐文档原生的语义边界**（标题、段落、表格行），而不是仅由 token 长度计数决定切点。
 
 P 策略主要解决以下四类问题：
 
@@ -427,7 +427,7 @@ ls -l INPUT/__parsed__/<doc>.<ext>.parsed/<doc>.blocks.jsonl
 
 - 未给该格式配置能产出 sidecar 的引擎（如 `LIGHTRAG_PARSER=docx:native-...` / `pdf:mineru-...` / `*:docling-...`），实际走了 `legacy` 路径。
 - 解析失败（看 `pipeline_status` 错误条目）。
-- 该格式不被所选引擎支持（如 native 仅支持 docx；换用 mineru / docling 覆盖更多格式）。
+- 所选引擎不支持该格式（如 native 支持 `.docx`、`.md` 和 `.textpack`；其他支持的格式可换用 MinerU 或 Docling）。
 
 ### 7.2 检查 blocks.jsonl 内容
 
@@ -445,7 +445,7 @@ jq -c 'select(.type=="content") | {level, heading, parent_headings}' \
 查看 `text_chunks` 存储中的 chunk 元数据：
 
 ```bash
-jq '.[] | {heading, level, tokens, parent_headings}' \
+jq '.[] | {heading: .heading.heading, level: .heading.level, tokens, parent_headings: .heading.parent_headings}' \
    rag_storage/kv_store_text_chunks.json | head -30
 ```
 
