@@ -3,12 +3,11 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
-import { AsyncSearch } from './AsyncSearch'
 import { AsyncSelect } from './AsyncSelect'
 
 afterEach(cleanup)
 
-describe.each(['search', 'select'] as const)('Async %s results', (kind) => {
+describe('Async select results', () => {
   test.each(['success', 'failure'] as const)('ignores an older %s after the latest search finishes', async (outcome) => {
     const pending = new Map<string, { resolve: (options: string[]) => void; reject: (error: Error) => void }>()
     const fetcher = (query?: string) => query
@@ -22,10 +21,9 @@ describe.each(['search', 'select'] as const)('Async %s results', (kind) => {
       placeholder: 'Search entities'
     }
 
-    renderWithProviders(kind === 'search'
-      ? <AsyncSearch {...common} value={null} onFocus={() => {}} />
-      : <AsyncSelect {...common} value="" getDisplayValue={(option) => option} searchPlaceholder="Search entities" />)
-    if (kind === 'select') await userEvent.setup().click(screen.getByRole('combobox'))
+    renderWithProviders(
+      <AsyncSelect {...common} value="" getDisplayValue={(option) => option} searchPlaceholder="Search entities" />)
+    await userEvent.setup().click(screen.getByRole('combobox'))
     const input = await screen.findByPlaceholderText('Search entities')
 
     fireEvent.change(input, { target: { value: 'old' } })

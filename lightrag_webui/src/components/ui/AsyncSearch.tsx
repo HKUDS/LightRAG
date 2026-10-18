@@ -83,9 +83,6 @@ export function AsyncSearch<T>({
   const [searchTerm, setSearchTerm] = useState('')
   const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
   const containerRef = useRef<HTMLDivElement>(null)
-  const requestGeneration = useRef(0)
-
-  useEffect(() => () => { requestGeneration.current += 1 }, [])
 
   // Handle clicks outside of the component
   useEffect(() => {
@@ -106,18 +103,15 @@ export function AsyncSearch<T>({
   }, [open])
 
   const fetchOptions = useCallback(async (query: string) => {
-    const generation = ++requestGeneration.current
     try {
       setLoading(true)
       setError(null)
       const data = await fetcher(query)
-      if (generation === requestGeneration.current) setFetchedOptions(data)
+      setFetchedOptions(data)
     } catch (err) {
-      if (generation === requestGeneration.current) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch options')
-      }
+      setError(err instanceof Error ? err.message : 'Failed to fetch options')
     } finally {
-      if (generation === requestGeneration.current) setLoading(false)
+      setLoading(false)
     }
   }, [fetcher])
 
