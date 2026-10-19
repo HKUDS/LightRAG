@@ -114,22 +114,36 @@ class _KVStorage:
         return None
 
 
+_captured_lock_keys: list[list[str]] = []
+
+
+def _capturing_lock(*args, **kwargs):
+    """Lock stub that records the key set each call site passed to it.
+
+    The race-safety claim is that the keyed lock covers both the caller-
+    requested spelling and the extraction-normalized spelling for each
+    endpoint, so a historical node cannot race its canonical mutation
+    under a different spelling. Recording the keys lets tests assert
+    that membership directly, instead of relying on the resolution path
+    to leak the lock-set composition through observable side effects.
+    """
+    if args:
+        keys = list(args[0])
+    else:
+        keys = list(kwargs.get("keys", []))
+    _captured_lock_keys.append(keys)
+    return _NoopLock()
+
+
 @pytest.fixture(autouse=True)
 def patch_graph_lock(monkeypatch):
+    _captured_lock_keys.clear()
     monkeypatch.setattr(
         utils_graph,
         "get_storage_keyed_lock",
-        lambda *args, **kwargs: _NoopLock(),
+        _capturing_lock,
     )
-
-
-def _seed_edge(graph, normalized_src, normalized_tgt, description="seed"):
-    graph.edges[tuple(sorted([normalized_src, normalized_tgt]))] = {
-        "description": description,
-        "keywords": "",
-        "source_id": "manual_creation",
-        "weight": 1.0,
-    }
+    return _captured_lock_keys
 
 
 # ---------- aedit_relation ----------
@@ -165,6 +179,13 @@ async def test_edit_relation_resolves_normalized_endpoint_spelling():
     assert graph.edges[canonical_key]["description"] == "new"
     assert graph.edges[canonical_key]["keywords"] == "k"
     assert graph.edges[canonical_key]["source_id"] == "chunk-1"
+    # Lock key set must cover both the caller-raw spelling and the
+    # extraction-normalized spelling for each endpoint so a concurrent
+    # rename cannot race the canonical mutation under a different
+    # spelling.
+    assert _captured_lock_keys, "expected get_storage_keyed_lock to be called"
+    lock_keys = set(_captured_lock_keys[0])
+    assert {raw_a, norm_a, norm_b}.issubset(lock_keys)
 
 
 @pytest.mark.asyncio
@@ -222,10 +243,12 @@ async def test_edit_relation_uses_canonical_storage_key_for_vdb():
         {"description": "new", "keywords": "k"},
     )
 
-    # The delete must have targeted the canonical id (it deletes both
-    # permutations to handle relations created before normalization; either
-    # id set hits the canonical row only).
-    assert canonical_rel_id in relationships_vdb.deleted_ids
+    # The delete must have targeted both permutations of the resolved
+    # pair, so legacy ``rel-`` rows created under either orientation are
+    # also swept.
+    canonical_rel_id = compute_mdhash_id(norm_a + norm_b, prefix="rel-")
+    reverse_rel_id = compute_mdhash_id(norm_b + norm_a, prefix="rel-")
+    assert {canonical_rel_id, reverse_rel_id}.issubset(set(relationships_vdb.deleted_ids))
     # And the new VDB record must use the canonical pair, not the raw pair.
     upserted_ids = set(relationships_vdb.records)
     assert compute_mdhash_id(norm_a + norm_b, prefix="rel-") in upserted_ids
@@ -271,6 +294,11 @@ async def test_delete_relation_resolves_normalized_endpoint_spelling():
     assert result.status_code == 200
     assert graph.edges == {}
     assert graph.removed_edges == [tuple(sorted([norm_a, norm_b]))]
+    # Lock key set must cover both the caller-raw spelling and the
+    # extraction-normalized spelling for each endpoint.
+    assert _captured_lock_keys, "expected get_storage_keyed_lock to be called"
+    lock_keys = set(_captured_lock_keys[0])
+    assert {raw_a, norm_a, norm_b}.issubset(lock_keys)
 
 
 @pytest.mark.asyncio
