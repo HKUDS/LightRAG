@@ -2201,6 +2201,192 @@ async def test_analyze_worker_fails_document_with_original_cache_error(
 
 
 @pytest.mark.asyncio
+async def test_generic_cache_failure_among_siblings_records_origin(
+    tmp_path, monkeypatch
+):
+    """A generic cache-read failure, with one sibling already done and one
+    still blocked, must fail the document with the ORIGINATING error.
+
+    Requested in review of #4244. Both existing read-failure tests use a
+    single-item fixture, and the multi-item fail-fast test raises
+    ``MultimodalAnalysisError`` -- a type the ladder re-raises natively -- so
+    the new ``_ItemTaskFailure`` marker had never been exercised alongside a
+    completed result and a blocked sibling, which is the shape #4243 reports.
+
+    Ordering note: ``handle_cache`` receives no item identifier, so the three
+    behaviours are assigned by call order rather than by item id. The
+    assertions below therefore check the *set* of outcomes, never which item
+    got which role.
+    """
+    import asyncio
+    from dataclasses import asdict
+
+    import lightrag.pipeline as pipeline_mod
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    # Three drawings so the fail-fast loop has something to cancel.
+    parsed_dir = tmp_path / "parsed"
+    parsed_dir.mkdir()
+    for letter in ("A", "B", "C"):
+        (parsed_dir / f"im-{letter}.png").write_bytes(PNG_BYTES)
+    blocks_path = parsed_dir / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+        encoding="utf-8",
+    )
+    sidecar_path = parsed_dir / "doc.drawings.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "drawings": {
+                    f"im-{letter}": {
+                        "caption": letter,
+                        "path": str(parsed_dir / f"im-{letter}.png"),
+                    }
+                    for letter in ("A", "B", "C")
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    parsed_data = {"blocks_path": str(blocks_path)}
+
+    call_count = {"n": 0}
+    call_lock = asyncio.Lock()
+    release_blocked = asyncio.Event()
+    blocked_completed = asyncio.Event()
+
+    async def _ordered_cache_read(*_args, **_kwargs):
+        """Call 1 misses and lets its item finish; call 2 fails for a backend
+        reason (the marker path); call 3 blocks until cancellation."""
+        async with call_lock:
+            call_count["n"] += 1
+            seq = call_count["n"]
+        if seq == 1:
+            return None
+        if seq == 2:
+            # Long enough for item A's VLM call to land first, so the document
+            # really does contain a completed sibling alongside the failure.
+            await asyncio.sleep(0.15)
+            raise _FakeCacheBackendError(
+                "Too many connections against the LLM response cache backend"
+            )
+        # Set only on normal completion. A `finally` here would also fire on the
+        # cancellation this test is checking for, inverting the assertion.
+        await release_blocked.wait()
+        blocked_completed.set()
+
+    async def vlm_func(prompt, **kwargs):
+        return json.dumps({"name": "n", "type": "Chart", "description": "ok"})
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-mixed-siblings-1"
+        file_path = "demo.pdf"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path=file_path,
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+        await rag.full_docs.upsert(
+            {doc_id: {"content": "body", "process_options": "i"}}
+        )
+
+        monkeypatch.setattr(pipeline_mod, "handle_cache", _ordered_cache_read)
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, dict(parsed_data)))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        # (1) The blocked sibling was cancelled and drained rather than waited
+        # on: the worker returned at all, and the mock never ran to completion.
+        assert not blocked_completed.is_set(), (
+            "the blocked sibling ran to completion; fail-fast must cancel it "
+            "instead of waiting for it"
+        )
+        assert call_count["n"] == 3, (
+            f"expected all three items to start, saw {call_count['n']} cache reads"
+        )
+
+        # (3) + (4) The document carries the originating error and never reaches
+        # the process stage.
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] == DocStatus.FAILED
+        error_msg = refreshed.get("error_msg") or ""
+        assert "Too many connections" in error_msg, (
+            f"the originating backend error was lost; error_msg={error_msg!r}"
+        )
+        assert "cancelled" not in error_msg.lower(), (
+            "the reported error names a cancelled sibling instead of the "
+            "failure that actually occurred"
+        )
+        assert ctx.q_process.empty()
+
+        # (2) The sibling that finished before the failure keeps its result.
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        results = {
+            item_id: item.get("llm_analyze_result") or {}
+            for item_id, item in sidecar["drawings"].items()
+        }
+        # `_failure_result("cancelled")` also reports status="failure", so the
+        # message is what distinguishes the cancelled sibling from the failing
+        # one. Which item got which role is call-order dependent, so assert on
+        # the set of roles, never on an item id.
+        succeeded = [k for k, v in results.items() if v.get("status") == "success"]
+        cancelled = [k for k, v in results.items() if v.get("message") == "cancelled"]
+        failed = [
+            k
+            for k, v in results.items()
+            if "Too many connections" in str(v.get("message"))
+        ]
+        assert succeeded, f"no sibling kept its successful result: {results}"
+        assert cancelled, f"no sibling was recorded as cancelled: {results}"
+        assert failed, f"no item recorded the originating failure: {results}"
+        assert len(succeeded) + len(cancelled) + len(failed) == len(results), (
+            f"every item must fall into exactly one role: {results}"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_cache_write_failure_keeps_completed_analysis(tmp_path, monkeypatch):
     """The narrow half of the contract: a cache WRITE that fails after a
     successful VLM call must NOT fail the document.

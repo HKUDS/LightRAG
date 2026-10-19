@@ -7429,9 +7429,7 @@ class _PipelineMixin:
                             f"[analyze_multimodal] drawings/{item_id}: "
                             f"failed to cache analysis: {exc}"
                         )
-                        cache_id_to_attach = cache_id
-                    else:
-                        cache_id_to_attach = cache_id
+                    cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit: the entry exists, so attaching its id is
                     # safe (and necessary for document-delete cleanup).
@@ -7722,9 +7720,7 @@ class _PipelineMixin:
                             f"[analyze_multimodal] {kind}/{item_id}: "
                             f"failed to cache analysis: {exc}"
                         )
-                        cache_id_to_attach = cache_id
-                    else:
-                        cache_id_to_attach = cache_id
+                    cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit path (handle_cache already gated by flag):
                     # safe to surface the existing cache_id for cleanup.
