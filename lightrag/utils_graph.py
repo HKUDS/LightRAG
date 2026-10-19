@@ -2089,20 +2089,31 @@ async def aedit_relation(
             new_edge_data["source_id"] = source_id
             new_edge_data["weight"] = weight
 
+            # The VDB row mirrors the relation create endpoint's canonical
+            # sort-by-endpoint convention (`vdb_src = min(src, tgt)`); writing
+            # the row under caller order leaves the row that `create_relation`
+            # wrote intact while this edit writes a different one, and the two
+            # spellings no longer share a single vector record.
+            vdb_src, vdb_tgt = (
+                (target_entity, source_entity)
+                if source_entity > target_entity
+                else (source_entity, target_entity)
+            )
+
             content = _truncate_vdb_content(
-                f"{source_entity}\t{target_entity}\n{keywords}\n{description}",
+                f"{vdb_src}\t{vdb_tgt}\n{keywords}\n{description}",
                 relationships_vdb.global_config,
-                f"relation:{source_entity}-{target_entity}",
+                f"relation:{vdb_src}-{vdb_tgt}",
             )
 
             relation_id = compute_mdhash_id(
-                source_entity + target_entity, prefix="rel-"
+                vdb_src + vdb_tgt, prefix="rel-"
             )
             relation_data = {
                 relation_id: {
                     "content": content,
-                    "src_id": source_entity,
-                    "tgt_id": target_entity,
+                    "src_id": vdb_src,
+                    "tgt_id": vdb_tgt,
                     "source_id": source_id,
                     "description": description,
                     "keywords": keywords,

@@ -231,7 +231,13 @@ async def test_edit_relation_uses_canonical_storage_key_for_vdb():
     raw_a = "Tesla（US）"
     graph = _Graph(edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}})
     relationships_vdb = _VectorStorage()
-    canonical_rel_id = compute_mdhash_id(norm_a + norm_b, prefix="rel-")
+    # `acreate_relation` writes the VDB row under the sorted pair, mirroring
+    # `lightrag/utils_graph.py::acreate_relation`'s `vdb_src = min(src, tgt)`
+    # convention; mirror that here so the test exercises the same shape.
+    canonical_vdb_src, canonical_vdb_tgt = sorted([norm_a, norm_b])
+    canonical_rel_id = compute_mdhash_id(
+        canonical_vdb_src + canonical_vdb_tgt, prefix="rel-"
+    )
     relationships_vdb.records[canonical_rel_id] = {"content": "old"}
 
     await utils_graph.aedit_relation(
@@ -246,13 +252,21 @@ async def test_edit_relation_uses_canonical_storage_key_for_vdb():
     # The delete must have targeted both permutations of the resolved
     # pair, so legacy ``rel-`` rows created under either orientation are
     # also swept.
-    canonical_rel_id = compute_mdhash_id(norm_a + norm_b, prefix="rel-")
-    reverse_rel_id = compute_mdhash_id(norm_b + norm_a, prefix="rel-")
+    canonical_rel_id = compute_mdhash_id(
+        canonical_vdb_src + canonical_vdb_tgt, prefix="rel-"
+    )
+    reverse_rel_id = compute_mdhash_id(
+        canonical_vdb_tgt + canonical_vdb_src, prefix="rel-"
+    )
     assert {canonical_rel_id, reverse_rel_id}.issubset(set(relationships_vdb.deleted_ids))
-    # And the new VDB record must use the canonical pair, not the raw pair.
+    # And the new VDB record must use the canonical pair, not the raw pair
+    # nor the caller order.
     upserted_ids = set(relationships_vdb.records)
-    assert compute_mdhash_id(norm_a + norm_b, prefix="rel-") in upserted_ids
+    assert compute_mdhash_id(
+        canonical_vdb_src + canonical_vdb_tgt, prefix="rel-"
+    ) in upserted_ids
     assert compute_mdhash_id(raw_a + norm_b, prefix="rel-") not in upserted_ids
+    assert compute_mdhash_id(norm_a + norm_b, prefix="rel-") not in upserted_ids
 
 
 @pytest.mark.asyncio
