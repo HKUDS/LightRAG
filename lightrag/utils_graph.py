@@ -2504,6 +2504,12 @@ async def acreate_relation(
     Manual creation does not protect the relation or its description from deletion:
     once documents mention it, purging its last real source may delete it entirely.
 
+    Both endpoints are resolved the way ``aedit_entity`` and ``amerge_entities``
+    resolve them: an exact legacy key wins, otherwise the extraction-normalized
+    identifier ``acreate_entity`` stores. A relation to an entity the manual
+    create endpoint accepted therefore succeeds with the spelling that call
+    accepted, and a node written before normalization existed stays reachable.
+
     Args:
         chunk_entity_relation_graph: Graph storage instance
         entities_vdb: Vector database storage for entities
@@ -2536,8 +2542,9 @@ async def acreate_relation(
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
     )
-    # The graph edge below is written with these exact strings, so comparing
-    # them raw is precisely the condition that would produce a self-loop.
+    # The graph edge below is written with the resolved strings, so a pair that
+    # arrives identical is the same condition spelled out; two different
+    # spellings of one node are caught by the second refusal, after resolution.
     _reject_self_loop_relation(source_entity, target_entity, operation="create")
 
     # Same reasoning as `acreate_entity`: values of the recognised fields are
@@ -2549,14 +2556,59 @@ async def acreate_relation(
         reject_unknown=False,
     )
 
+    # `acreate_entity` stores the extraction-normalized identifier, so the
+    # existence check below has to ask under that name -- asking for the
+    # caller's raw spelling is why a relation to an entity the manual API had
+    # just created failed with "Target entity ... does not exist". Resolve the
+    # way `aedit_entity` and `amerge_entities` do, an exact legacy key first,
+    # and lock both spellings so a historical node cannot race its canonical
+    # create.
+    requested_source_entity = source_entity
+    requested_target_entity = target_entity
+    normalized_source_entity = _normalize_manual_entity_name(requested_source_entity)
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
+
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-    sorted_edge_key = sorted([source_entity, target_entity])
+    edge_lock_keys = {requested_source_entity, requested_target_entity}
+    edge_lock_keys.update(
+        name for name in (normalized_source_entity, normalized_target_entity) if name
+    )
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        sorted(edge_lock_keys), namespace=namespace, enable_logging=False
     ):
         try:
+            # Prefer an exact legacy key when it exists. Otherwise resolve the
+            # caller's spelling to the extraction-normalized identifier.
+            if (
+                requested_source_entity != normalized_source_entity
+                and await chunk_entity_relation_graph.has_node(requested_source_entity)
+            ):
+                source_entity = requested_source_entity
+            elif normalized_source_entity:
+                source_entity = normalized_source_entity
+            else:
+                raise ValueError(
+                    "Source entity name cannot be empty after normalization"
+                )
+
+            if (
+                requested_target_entity != normalized_target_entity
+                and await chunk_entity_relation_graph.has_node(requested_target_entity)
+            ):
+                target_entity = requested_target_entity
+            elif normalized_target_entity:
+                target_entity = normalized_target_entity
+            else:
+                raise ValueError(
+                    "Target entity name cannot be empty after normalization"
+                )
+
+            # Both spellings can resolve to one identifier, which the edge
+            # write below would turn into a self-loop.
+            _reject_self_loop_relation(source_entity, target_entity, operation="create")
+
             # Check if both entities exist
             source_exists = await chunk_entity_relation_graph.has_node(source_entity)
             target_exists = await chunk_entity_relation_graph.has_node(target_entity)
