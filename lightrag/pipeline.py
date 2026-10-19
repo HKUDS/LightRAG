@@ -6994,6 +6994,7 @@ class _PipelineMixin:
                 table_content_format_label,
             )
             from lightrag.constants import (
+                DEFAULT_MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
                 DEFAULT_MM_ANALYSIS_PRIORITY,
                 DEFAULT_SUMMARY_LANGUAGE,
             )
@@ -7727,6 +7728,11 @@ class _PipelineMixin:
                     logger.debug(f"Analyzing  {kind}/{item_id}: skipped")
                 return result
 
+            async def _run_item_bounded(slots: asyncio.Semaphore, item_factory):
+                """Run one item's analysis while holding a sidecar concurrency slot."""
+                async with slots:
+                    return await item_factory()
+
             base_name = str(block_file)
             if base_name.endswith(".blocks.jsonl"):
                 base_name = base_name[: -len(".blocks.jsonl")]
@@ -7788,18 +7794,33 @@ class _PipelineMixin:
                         pipeline_status, pipeline_status_lock
                     )
 
+                item_slots = asyncio.Semaphore(
+                    max(
+                        1,
+                        self._get_effective_role_llm_max_async(
+                            "vlm" if kind == "drawing" else "extract"
+                        )
+                        * DEFAULT_MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
+                    )
+                )
                 task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
                 for item_id, item in items.items():
                     if not isinstance(item, dict):
                         continue
                     if kind == "drawing":
-                        inner_coro = _analyze_drawing(
-                            item_id, item, sidecar_path.parent
+                        item_factory = partial(
+                            _analyze_drawing, item_id, item, sidecar_path.parent
                         )
                     else:
-                        inner_coro = _analyze_text_modality(kind, item_id, item)
+                        item_factory = partial(
+                            _analyze_text_modality, kind, item_id, item
+                        )
                     task = asyncio.create_task(
-                        _run_with_progress_log(inner_coro, kind, item_id)
+                        _run_with_progress_log(
+                            _run_item_bounded(item_slots, item_factory),
+                            kind,
+                            item_id,
+                        )
                     )
                     task_meta[task] = (item_id, item)
 
@@ -7823,6 +7844,7 @@ class _PipelineMixin:
                 # preventing FIRST_EXCEPTION from ever returning.
                 pending: set[asyncio.Task] = set(task_meta.keys())
                 fail_fast_exc: BaseException | None = None
+                fail_fast_item_id: str | None = None
                 POLL_INTERVAL_SECONDS = 0.5
                 while pending:
                     if (
@@ -7852,6 +7874,7 @@ class _PipelineMixin:
                             # PipelineCancelledException from
                             # MultimodalAnalysisError.
                             fail_fast_exc = texc
+                            fail_fast_item_id = task_meta[t][0]
                             break
                     if fail_fast_exc is not None:
                         break
@@ -7862,11 +7885,22 @@ class _PipelineMixin:
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
 
+                if fail_fast_item_id is not None and not isinstance(
+                    fail_fast_exc, PipelineCancelledException
+                ):
+                    sibling_cancel_message = (
+                        f"cancelled (sibling {root_key}/{fail_fast_item_id} failed)"
+                    )
+                else:
+                    sibling_cancel_message = "cancelled"
+
                 # Collect results — preserve completed successes so reprocess
                 # can hit the LLM cache instead of re-running the VLM.
                 for t, (item_id, item) in task_meta.items():
                     if t.cancelled():
-                        item["llm_analyze_result"] = _failure_result("cancelled")
+                        item["llm_analyze_result"] = _failure_result(
+                            sibling_cancel_message
+                        )
                         continue
                     texc = t.exception()
                     if texc is None:
@@ -7903,6 +7937,14 @@ class _PipelineMixin:
                         stage_label="multimodal analyze fail-fast",
                         doc_id=doc_id,
                     )
+                    if not isinstance(
+                        fail_fast_exc,
+                        (PipelineCancelledException, MultimodalAnalysisError),
+                    ):
+                        raise MultimodalAnalysisError(
+                            f"{root_key}/{fail_fast_item_id}: unexpected error: "
+                            f"{type(fail_fast_exc).__name__}: {fail_fast_exc}"
+                        ) from fail_fast_exc
                     raise fail_fast_exc
 
             # Successful multimodal cache rows used to wait until the much
