@@ -2042,3 +2042,280 @@ async def test_analyze_worker_stamps_truncation_on_the_failed_row(tmp_path, rais
         assert ctx.q_process.empty()
     finally:
         await rag.finalize_storages()
+
+
+class _FakeCacheBackendError(RuntimeError):
+    """Stand-in for a storage-backend failure raised by a multimodal cache
+    read — e.g. redis-py ``MaxConnectionsError`` surfacing through a retry
+    wrapper. Deliberately NOT a :class:`MultimodalAnalysisError`, so it
+    exercises the generic handler in ``analyze_multimodal`` rather than the
+    existing hard-failure contract for model-contract violations."""
+
+
+async def _explode_on_cache_read(*_args, **_kwargs):
+    raise _FakeCacheBackendError(
+        "Too many connections against the LLM response cache backend"
+    )
+
+
+async def _explode_on_cache_write(*_args, **_kwargs):
+    raise _FakeCacheBackendError("Too many connections on the cache write path")
+
+
+@pytest.mark.asyncio
+async def test_cache_read_failure_propagates_out_of_analyze(tmp_path, monkeypatch):
+    """A multimodal cache read that fails for a backend reason must reach the
+    caller instead of being swallowed.
+
+    The fail-fast poll loop already re-raises the first item task's original
+    exception; when that exception is neither a cancellation nor a
+    ``MultimodalAnalysisError`` it used to land on the generic
+    ``except Exception`` handler, which logged it and returned ``parsed_data``
+    as if analysis had been attempted-and-skipped. The document then advanced
+    to extraction and failed there on a *sibling* item marked ``cancelled``,
+    so the reported error named a cancellation the user never requested and
+    buried the real storage failure.
+    """
+    import lightrag.pipeline as pipeline_mod
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        monkeypatch.setattr(pipeline_mod, "handle_cache", _explode_on_cache_read)
+
+        with pytest.raises(pipeline_mod._ItemTaskFailure) as excinfo:
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="i",
+            )
+
+        # The marker carries the original message verbatim, and the original
+        # exception is chained as __cause__.
+        assert "Too many connections" in str(excinfo.value)
+        assert isinstance(excinfo.value.__cause__, _FakeCacheBackendError)
+        # The cache read failed before any VLM call was attempted.
+        assert call_log == []
+        # The sidecar still records the per-item outcome the fail-fast
+        # collection pass wrote, so a restart is not left with a stale item.
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = sidecar["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "failure"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_analyze_worker_fails_document_with_original_cache_error(
+    tmp_path, monkeypatch
+):
+    """End-to-end worker view of the same defect: the document must be failed
+    with the *original* backend error and must not be handed to the process
+    stage, rather than advancing to extraction and reporting a cancelled
+    sibling."""
+    import asyncio
+    from dataclasses import asdict
+
+    import lightrag.pipeline as pipeline_mod
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-cache-fail-1"
+        _, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+        file_path = "demo.pdf"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path=file_path,
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+        # analyze_multimodal reads the per-document modality opt-ins from
+        # full_docs when the caller passes no explicit process_options — the
+        # parse worker is what normally writes this record.
+        await rag.full_docs.upsert(
+            {doc_id: {"content": "body", "process_options": "i"}}
+        )
+
+        monkeypatch.setattr(pipeline_mod, "handle_cache", _explode_on_cache_read)
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, dict(parsed_data)))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] == DocStatus.FAILED
+        error_msg = refreshed.get("error_msg") or ""
+        assert "Too many connections" in error_msg, (
+            f"the analyze-stage FAILED transition lost the original backend "
+            f"error; error_msg={error_msg!r}"
+        )
+        assert "cancelled" not in error_msg.lower(), (
+            "the reported error still names a cancelled sibling instead of "
+            "the backend failure that actually occurred"
+        )
+        assert ctx.q_process.empty()
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_cache_write_failure_keeps_completed_analysis(tmp_path, monkeypatch):
+    """The narrow half of the contract: a cache WRITE that fails after a
+    successful VLM call must NOT fail the document.
+
+    The analysis has already been paid for and computed at that point, and the
+    LLM response cache is a cost optimisation — losing the cache row costs a
+    repeat call later, whereas failing the document discards the result and
+    re-bills the VLM. This pins that the widened exception path stays limited
+    to item-task failures.
+    """
+    import lightrag.pipeline as pipeline_mod
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        monkeypatch.setattr(pipeline_mod, "save_to_cache", _explode_on_cache_write)
+
+        result = await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+
+        # The VLM ran and its analysis completed despite the cache failure.
+        assert len(call_log) == 1
+        assert result.get("multimodal_processed") is True
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        item = sidecar["drawings"]["im-001"]
+        assert item["llm_analyze_result"]["status"] == "success"
+        # The completed analysis is preserved, not overwritten with a failure.
+        assert item["llm_analyze_result"].get("description")
+        # The cache id is still referenced, so a row that landed before the
+        # failure is reachable by document-delete cleanup instead of leaking.
+        assert item.get("llm_cache_list")
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_truncated_blocks_file_does_not_fail_document(tmp_path):
+    """A blocks file left half-written by a killed parse run is tolerated the
+    same way an empty one already is: analysis is skipped, the document is not
+    failed. Pins that the re-raise does not turn a recoverable blocks-file
+    problem into a document failure."""
+    import asyncio
+    from dataclasses import asdict
+
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    _doc_id, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+    blocks_path = parsed_data["blocks_path"]
+    Path(blocks_path).write_text('{"type": "meta", "doc_id"', encoding="utf-8")
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-truncated-blocks-1"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path="demo.pdf",
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+        await rag.full_docs.upsert(
+            {doc_id: {"content": "body", "process_options": "i"}}
+        )
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, dict(parsed_data)))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] != DocStatus.FAILED, (
+            "a truncated blocks file must not fail the document; "
+            f"error_msg={refreshed.get('error_msg')!r}"
+        )
+    finally:
+        await rag.finalize_storages()

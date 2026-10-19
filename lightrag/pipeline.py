@@ -387,6 +387,25 @@ def _vlm_image_budget_limits() -> tuple[int, int]:
     return max_image_bytes, min_image_pixel
 
 
+class _ItemTaskFailure(Exception):
+    """Marker for "a multimodal item task failed and the fail-fast pass
+    re-raised its original exception".
+
+    ``analyze_multimodal`` tolerates several failures of its own (a cache
+    write after a completed VLM call, a truncated blocks file), so its
+    method-level ``except Exception`` cannot simply re-raise everything. This
+    type separates the item-task path — whose original exception must reach
+    the caller so the document is failed with the real cause — from those
+    deliberately-absorbed cases.
+
+    ``str(self)`` is the wrapped exception's message, so the worker's
+    ``error_msg=str(e)`` reports the underlying failure verbatim.
+    """
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(str(cause))
+
+
 class _SidecarPathOutcome(str, Enum):
     """Why :func:`_resolve_sidecar_image_path` did or did not return a file."""
 
@@ -7380,18 +7399,39 @@ class _PipelineMixin:
                         if audit_blob
                         else ""
                     )
-                    await save_to_cache(
-                        self.llm_response_cache,
-                        CacheData(
-                            args_hash=args_hash,
-                            content=str(result_text),
-                            prompt=original_prompt,
-                            mode="default",
-                            cache_type="analysis",
-                            chunk_id=None,
-                        ),
-                    )
-                    cache_id_to_attach = cache_id
+                    try:
+                        await save_to_cache(
+                            self.llm_response_cache,
+                            CacheData(
+                                args_hash=args_hash,
+                                content=str(result_text),
+                                prompt=original_prompt,
+                                mode="default",
+                                cache_type="analysis",
+                                chunk_id=None,
+                            ),
+                        )
+                    except Exception as exc:
+                        # The analysis is already computed and paid for by
+                        # this point, and the response cache only saves a
+                        # repeat call later. Losing the row costs a re-run;
+                        # propagating here would discard a completed result
+                        # and re-bill the VLM, so the write is best-effort.
+                        #
+                        # Attach the cache id even so. A backend can fail
+                        # *after* the upsert landed (the reply is lost), and
+                        # an unreferenced row is never reachable by
+                        # document-delete cleanup — a permanent leak, one
+                        # per affected item. An over-complete reference list
+                        # is harmless by comparison: cleanup misses a key that
+                        # was never written.
+                        logger.warning(
+                            f"[analyze_multimodal] drawings/{item_id}: "
+                            f"failed to cache analysis: {exc}"
+                        )
+                        cache_id_to_attach = cache_id
+                    else:
+                        cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit: the entry exists, so attaching its id is
                     # safe (and necessary for document-delete cleanup).
@@ -7660,18 +7700,31 @@ class _PipelineMixin:
                     fresh, result_text, f"{kind}/{item_id}"
                 )
                 if fresh and analysis_cache_enabled and not response_truncated:
-                    await save_to_cache(
-                        self.llm_response_cache,
-                        CacheData(
-                            args_hash=args_hash,
-                            content=str(result_text),
-                            prompt=prompt,
-                            mode="default",
-                            cache_type="analysis",
-                            chunk_id=None,
-                        ),
-                    )
-                    cache_id_to_attach = cache_id
+                    try:
+                        await save_to_cache(
+                            self.llm_response_cache,
+                            CacheData(
+                                args_hash=args_hash,
+                                content=str(result_text),
+                                prompt=prompt,
+                                mode="default",
+                                cache_type="analysis",
+                                chunk_id=None,
+                            ),
+                        )
+                    except Exception as exc:
+                        # Best-effort, as in the drawings path: the analysis
+                        # result is already in hand and must not be discarded
+                        # because an optimisation row could not be written.
+                        # The id is still attached so a row that landed before
+                        # the failure stays reachable by delete cleanup.
+                        logger.warning(
+                            f"[analyze_multimodal] {kind}/{item_id}: "
+                            f"failed to cache analysis: {exc}"
+                        )
+                        cache_id_to_attach = cache_id
+                    else:
+                        cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit path (handle_cache already gated by flag):
                     # safe to surface the existing cache_id for cleanup.
@@ -7903,7 +7956,20 @@ class _PipelineMixin:
                         stage_label="multimodal analyze fail-fast",
                         doc_id=doc_id,
                     )
-                    raise fail_fast_exc
+                    # ``fail_fast_exc`` is the ORIGINAL exception from the
+                    # item task, not an error of this method's own doing.
+                    # Wrap it in a marker type so the ladder below can
+                    # re-raise exactly this case while still tolerating
+                    # unrelated failures raised elsewhere in the method
+                    # body (see the ``except _ItemTaskFailure`` arm).
+                    # Cancellation and the model-contract error keep their
+                    # own types — the worker dispatches on both.
+                    if isinstance(
+                        fail_fast_exc,
+                        (PipelineCancelledException, MultimodalAnalysisError),
+                    ):
+                        raise fail_fast_exc
+                    raise _ItemTaskFailure(fail_fast_exc) from fail_fast_exc
 
             # Successful multimodal cache rows used to wait until the much
             # later PROCESS-stage _insert_done. Commit after the analysis
@@ -7933,6 +7999,35 @@ class _PipelineMixin:
             # and would advance to PROCESS instead of being marked FAILED.
             raise
         except MultimodalAnalysisError:
+            raise
+        except _ItemTaskFailure as e:
+            # A multimodal item task failed and the fail-fast pass re-raised
+            # it here. Re-raise so the worker's generic handler records the
+            # document as FAILED with the ORIGINAL message in ``error_msg``.
+            # Swallowing it returned parsed_data as if analysis had merely
+            # been skipped, so the document advanced to extraction and failed
+            # there on a sibling item the fail-fast pass had marked
+            # "cancelled" — the reported error named a cancellation nobody
+            # requested and buried the real cause.
+            #
+            # Still log here: the arm below owns this line, and the worker's
+            # own handler logs the message without ``doc_id``, so dropping it
+            # would make the one line that identifies the failing document
+            # disappear exactly when it is needed.
+            logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
+            #
+            # This arm is deliberately narrow. The generic handler below still
+            # absorbs a cache WRITE failure after a successful VLM call, which
+            # is guarded at its own call site precisely so a completed
+            # analysis is never discarded over an optimisation row. Failures
+            # from elsewhere in this method's body (a malformed blocks file,
+            # an unexpected shape in the sidecar) keep their existing
+            # tolerated behaviour.
+            #
+            # What DOES propagate is any failure of the item work itself —
+            # a cache read, the VLM/extract call, the chunking executor —
+            # because there the analysis genuinely did not happen and
+            # continuing would report a secondary error instead.
             raise
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
