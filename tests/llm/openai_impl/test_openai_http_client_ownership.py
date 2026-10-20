@@ -12,6 +12,8 @@ client. Stream cleanup stays independent of that flag, because openai 2.x
 ``AsyncStream`` exposes async ``close()`` rather than ``aclose()``.
 """
 
+import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -240,3 +242,87 @@ async def test_stream_early_stop_closes_stream_not_injected_client():
         assert http_client.is_closed is False
     finally:
         await http_client.aclose()
+
+
+class _TrackingAsyncByteStream(httpx.AsyncByteStream):
+    """Yield SSE events lazily so early response closure is observable."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.chunks_yielded = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self.chunks:
+            self.chunks_yielded += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_stream_early_stop_closes_response_and_reuses_client():
+    """Closing LightRAG's generator must release a real SDK stream response."""
+    events = [
+        {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "m",
+            "choices": [
+                {"index": 0, "delta": {"content": content}, "finish_reason": None}
+            ],
+        }
+        for content in ("hello", " world")
+    ]
+    body = _TrackingAsyncByteStream(
+        [f"data: {json.dumps(event)}\n\n".encode() for event in events]
+        + [b"data: [DONE]\n\n"]
+    )
+    response = httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, stream=body
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            assert json.loads(request.content)["stream"] is True
+            return response
+        assert json.loads(request.content).get("stream", False) is False
+        return httpx.Response(200, json=_chat_success_body())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        configs = {"http_client": client, "max_retries": 0}
+        gen = await openai_complete_if_cache(
+            model="gpt-4o-mini",
+            prompt="hi",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            stream=True,
+            openai_client_configs=configs,
+        )
+        try:
+            assert await gen.__anext__() == "hello"
+            assert body.chunks_yielded == 1
+            assert body.closed is False
+            assert response.is_closed is False
+        finally:
+            await gen.aclose()
+
+        assert body.closed is True
+        assert response.is_closed is True
+        assert body.chunks_yielded == 1
+        assert client.is_closed is False
+
+        result = await openai_complete_if_cache(
+            model="gpt-4o-mini",
+            prompt="hi again",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            openai_client_configs=configs,
+        )
+        assert result == "OK"
+        assert len(requests) == 2
+        assert client.is_closed is False
