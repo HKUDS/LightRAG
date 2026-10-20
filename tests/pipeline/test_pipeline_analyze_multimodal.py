@@ -2255,7 +2255,14 @@ async def test_generic_cache_failure_among_siblings_records_origin(
 
     call_count = {"n": 0}
     call_lock = asyncio.Lock()
+    # How long the failing read waits for the two preconditions before giving
+    # up. Generous on purpose: this is a deadlock guard, not a synchronisation
+    # mechanism -- the ordering itself is enforced by the events, not by time.
+    precondition_timeout = 5.0
     release_blocked = asyncio.Event()
+    successful_done = asyncio.Event()
+    blocked_entered = asyncio.Event()
+    blocked_exited = asyncio.Event()
     blocked_completed = asyncio.Event()
 
     async def _ordered_cache_read(*_args, **_kwargs):
@@ -2267,24 +2274,46 @@ async def test_generic_cache_failure_among_siblings_records_origin(
         if seq == 1:
             return None
         if seq == 2:
-            # Long enough for item A's VLM call to land first, so the document
-            # really does contain a completed sibling alongside the failure.
-            await asyncio.sleep(0.15)
+            # Wait for both preconditions rather than sleeping: the document
+            # must contain a completed sibling AND a still-blocked one when the
+            # failure lands. Ordering is enforced here, not by a clock, so the
+            # test cannot flake on a slow machine nor pass on a fast one.
+            await asyncio.wait_for(blocked_entered.wait(), timeout=precondition_timeout)
+            await asyncio.wait_for(successful_done.wait(), timeout=precondition_timeout)
             raise _FakeCacheBackendError(
                 "Too many connections against the LLM response cache backend"
             )
-        # Set only on normal completion. A `finally` here would also fire on the
-        # cancellation this test is checking for, inverting the assertion.
-        await release_blocked.wait()
-        blocked_completed.set()
-
-    async def vlm_func(prompt, **kwargs):
-        return json.dumps({"name": "n", "type": "Chart", "description": "ok"})
+        # blocked_entered: the sibling is now inside its read and cannot finish.
+        # blocked_exited: it left this frame, whether by completion or by the
+        # cancellation under test -- which is what makes teardown observable.
+        # blocked_completed: normal completion only, and the test asserts it is
+        # NOT set, so a `finally` here would invert the assertion.
+        blocked_entered.set()
+        try:
+            await release_blocked.wait()
+            blocked_completed.set()
+        finally:
+            blocked_exited.set()
 
     call_log: list[dict] = []
     rag = _build_rag(
         tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
     )
+
+    # The successful item's task is finished once its cache write returns --
+    # that is the last awaited storage call before it hands back its result.
+    # Signalling from the VLM call instead would fire while the item was still
+    # working, and fail-fast would cancel it before it recorded a success.
+    _real_save_to_cache = pipeline_mod.save_to_cache
+    write_count = {"n": 0}
+
+    async def _save_tracking_completion(*args, **kwargs):
+        result = await _real_save_to_cache(*args, **kwargs)
+        write_count["n"] += 1
+        if write_count["n"] == 1:
+            successful_done.set()
+        return result
+
     await rag.initialize_storages()
     try:
         doc_id = "doc-mixed-siblings-1"
@@ -2305,6 +2334,7 @@ async def test_generic_cache_failure_among_siblings_records_origin(
         )
 
         monkeypatch.setattr(pipeline_mod, "handle_cache", _ordered_cache_read)
+        monkeypatch.setattr(pipeline_mod, "save_to_cache", _save_tracking_completion)
 
         ctx = _BatchRunContext(
             pipeline_status={
@@ -2338,6 +2368,12 @@ async def test_generic_cache_failure_among_siblings_records_origin(
         assert not blocked_completed.is_set(), (
             "the blocked sibling ran to completion; fail-fast must cancel it "
             "instead of waiting for it"
+        )
+        # Teardown is directly observable: the blocked read left its frame by the
+        # time join returned, rather than the worker merely moving on.
+        assert blocked_exited.is_set(), (
+            "the blocked cache read never exited; fail-fast must cancel and "
+            "drain the pending sibling"
         )
         assert call_count["n"] == 3, (
             f"expected all three items to start, saw {call_count['n']} cache reads"
