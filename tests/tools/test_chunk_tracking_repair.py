@@ -22,6 +22,7 @@ boundary required by rename, merge, and explicit creation:
 import argparse
 import configparser
 import json
+import os
 import sys
 from types import SimpleNamespace
 
@@ -1282,3 +1283,56 @@ async def test_namespace_scope_does_not_let_relation_block_entity_repair():
 
     assert repairer.entity_chunks.drops == 1
     assert repairer.relation_chunks.drops == 0
+
+
+def test_plan_sync_hands_os_fsync_a_descriptor_opened_for_writing(
+    tmp_path, monkeypatch
+):
+    """``os.fsync`` is only valid on a descriptor the process may write through.
+
+    Windows raises ``OSError(EBADF)`` for a read-only handle, so ``sync()`` —
+    the durability step every durable plan and every apply passes through —
+    aborted there before a single tracking write: the plan is sealed, so the
+    whole tool failed on the platform. What is asserted is the access mode the
+    plan requests for the descriptor it syncs, because a probe that writes
+    through the descriptor cannot tell the two apart on Windows (``_write``
+    returns 0 for a zero-byte buffer without touching the handle). The POSIX
+    directory sync is deliberately excluded: that descriptor is opened
+    read-only on purpose and cannot exist on Windows at all.
+    """
+    plan_path = tmp_path / "sync-plan.sqlite3"
+    plan = chunk_tracking_repair._DiskPlan(plan_path)
+    plan.add_chunks(["chunk-1"])
+    # The plan resolves its own path, so compare the resolved forms rather than
+    # the raw strings: ``tmp_path`` can sit behind a symlink.
+    expected_path = os.path.realpath(plan_path)
+
+    file_flags: list[int] = []
+    synced: list[int] = []
+    real_open, real_fsync = os.open, os.fsync
+
+    def recording_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if os.path.realpath(path) == expected_path:
+            file_flags.append(flags)
+        return fd
+
+    def recording_fsync(fd):
+        synced.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    opened_before_sync = len(file_flags)
+    plan.sync()
+    plan.close(remove=False)
+
+    assert synced, "sync() must fsync the plan file"
+    sync_flags = file_flags[opened_before_sync:]
+    assert len(sync_flags) == 1, "sync() must reopen the plan file it fsyncs"
+    # ``os.O_WRONLY | os.O_RDWR`` is the access-mode mask on every platform
+    # (``os.O_ACCMODE`` is POSIX-only); read-only is the absence of both bits.
+    assert sync_flags[0] & (os.O_WRONLY | os.O_RDWR), (
+        "os.fsync on a read-only descriptor raises EBADF on Windows"
+    )

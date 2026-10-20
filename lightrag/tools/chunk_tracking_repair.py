@@ -171,7 +171,15 @@ class _DiskPlan:
     def sync(self) -> None:
         """Commit the plan and force its file and directory entry to disk."""
         self.connection.commit()
-        file_fd = os.open(self.path, os.O_RDONLY)
+        # Open for WRITING: ``os.fsync`` is only valid on a descriptor the
+        # process may write through, and a read-only one makes it raise
+        # ``OSError(EBADF)`` on Windows -- where it aborted every apply (and
+        # every durable plan) before a single tracking write. Write access
+        # cannot be the first thing to fail here: the live SQLite connection on
+        # this same file already requires it, and a plan this tool created is
+        # 0o600. The directory fsync below stays POSIX-only for the other half
+        # of the same Windows limitation: it cannot ``os.open`` a directory.
+        file_fd = os.open(self.path, os.O_RDWR)
         try:
             os.fsync(file_fd)
         finally:
