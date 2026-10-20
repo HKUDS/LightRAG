@@ -97,3 +97,11 @@ def test_request_at_the_text_budget_still_validates():
     assert len(request.query) + len(request.user_prompt) == MAX_REQUEST_TEXT_CHARS
     param = request.to_query_params(is_stream=False)
     assert param.disable_user_prompt_prefix is False
+
+
+@pytest.mark.parametrize("value", [None, False, True])
+@pytest.mark.parametrize("is_stream", [False, True])
+def test_cache_friendly_prompt_is_opt_in_for_all_query_routes(value, is_stream):
+    param = _build(cache_friendly_prompt=value).to_query_params(is_stream=is_stream)
+    assert param.cache_friendly_prompt is (value is True)
+    assert param.stream is is_stream

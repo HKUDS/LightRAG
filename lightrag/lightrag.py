@@ -5034,6 +5034,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             conversation_history=param.conversation_history,
             user_prompt=param.user_prompt,
             disable_user_prompt_prefix=param.disable_user_prompt_prefix,
+            cache_friendly_prompt=param.cache_friendly_prompt,
             enable_rerank=param.enable_rerank,
         )
 

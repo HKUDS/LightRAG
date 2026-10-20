@@ -136,6 +136,15 @@ class QueryRequest(BaseModel):
         ),
     )
 
+    cache_friendly_prompt: Optional[bool] = Field(
+        default=None,
+        description=(
+            "If True, put retrieval context in the final user message after history. "
+            "Default False preserves the current layout. With only_need_prompt, "
+            "returns the message list as JSON. Does not apply to bypass mode."
+        ),
+    )
+
     enable_rerank: Optional[bool] = Field(
         default=None,
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
