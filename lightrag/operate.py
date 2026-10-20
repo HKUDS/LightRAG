@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from string import Formatter
 
 import asyncio
 import inspect
@@ -4690,6 +4691,32 @@ def _answer_cache_kv(
     return hashing_kv
 
 
+def format_query_prompts(
+    query: str,
+    query_param: QueryParam,
+    template: str,
+    **values: str,
+) -> tuple[str, str]:
+    """Render system and user text without changing the default message layout.
+
+    Cache-friendly custom templates must contain their context placeholder.
+    Retrieval stays reference data, while instructions retain the system role.
+    """
+    if not query_param.cache_friendly_prompt:
+        return template.format(**values), query
+
+    context_key = "context_data" if "context_data" in values else "content_data"
+    if not any(field == context_key for _, field, _, _ in Formatter().parse(template)):
+        raise ValueError(
+            f"cache_friendly_prompt requires a {{{context_key}}} context placeholder"
+        )
+    context = values[context_key]
+    values[context_key] = PROMPTS["query_context_reference"]
+    return template.format(**values), PROMPTS["cache_friendly_query"].format(
+        context_data=context, query=query
+    )
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -4808,16 +4835,27 @@ async def kg_query(
 
     # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
-    sys_prompt = sys_prompt_temp.format(
+    sys_prompt, user_query = format_query_prompts(
+        query,
+        query_param,
+        sys_prompt_temp,
         response_type=response_type,
         user_prompt=effective_user_prompt.slot,
         context_data=context_result.context,
     )
 
-    user_query = query
-
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
+        if query_param.cache_friendly_prompt:
+            prompt_content = json.dumps(
+                [
+                    {"role": "system", "content": sys_prompt},
+                    *query_param.conversation_history,
+                    {"role": "user", "content": user_query},
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
         return QueryResult(
             content=prompt_content,
             raw_data=context_result.raw_data,
@@ -4887,6 +4925,11 @@ async def kg_query(
         related_chunk_number,
         kg_chunk_pick_method,
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        *(
+            ("\n<cache_friendly_prompt>\nv1",)
+            if query_param.cache_friendly_prompt
+            else ()
+        ),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -4929,6 +4972,7 @@ async def kg_query(
                 "hl_keywords": hl_keywords_str,
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
+                "cache_friendly_prompt": query_param.cache_friendly_prompt,
                 "enable_rerank": query_param.enable_rerank,
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
@@ -4951,7 +4995,7 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
+        if not query_param.cache_friendly_prompt and len(response) > len(sys_prompt):
             response = (
                 response.replace(sys_prompt, "")
                 .replace("user", "")
@@ -5961,7 +6005,10 @@ async def _build_context_str(
     # request. Skipping the charge here would make them report more chunks than
     # a real query retrieves, so an operator would size their context against a
     # number the live path never delivers.
-    pre_sys_prompt = sys_prompt_template.format(
+    pre_sys_prompt, budget_query = format_query_prompts(
+        query,
+        query_param,
+        sys_prompt_template,
         context_data="",  # Empty for overhead calculation
         response_type=response_type,
         user_prompt=effective_user_prompt.text,
@@ -5969,7 +6016,7 @@ async def _build_context_str(
     sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
 
     # Calculate available tokens for text chunks
-    query_tokens = await acount_tokens(tokenizer, query)
+    query_tokens = await acount_tokens(tokenizer, budget_query)
     buffer_tokens = 200  # reserved for reference list and safety buffer
     available_chunk_tokens = max_total_tokens - (
         sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
@@ -6936,7 +6983,10 @@ async def naive_query(
     # As in _build_context_str, the user prompt is charged even when
     # only_need_context will return before this prompt is sent: those switches
     # preview the real request, so their chunk count must match it.
-    pre_sys_prompt = sys_prompt_template.format(
+    pre_sys_prompt, budget_query = format_query_prompts(
+        query,
+        query_param,
+        sys_prompt_template,
         response_type=response_type,
         user_prompt=effective_user_prompt.slot,
         content_data="",  # Empty for overhead calculation
@@ -6944,7 +6994,7 @@ async def naive_query(
 
     # Calculate available tokens for chunks
     sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
-    query_tokens = await acount_tokens(tokenizer, query)
+    query_tokens = await acount_tokens(tokenizer, budget_query)
     buffer_tokens = 200  # reserved for reference list and safety buffer
     available_chunk_tokens = max_total_tokens - (
         sys_prompt_tokens + query_tokens + buffer_tokens
@@ -7012,16 +7062,27 @@ async def naive_query(
             content=context_content, raw_data=raw_data, llm_generated=False
         )
 
-    sys_prompt = sys_prompt_template.format(
+    sys_prompt, user_query = format_query_prompts(
+        query,
+        query_param,
+        sys_prompt_template,
         response_type=query_param.response_type,
         user_prompt=effective_user_prompt.slot,
         content_data=context_content,
     )
 
-    user_query = query
-
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
+        if query_param.cache_friendly_prompt:
+            prompt_content = json.dumps(
+                [
+                    {"role": "system", "content": sys_prompt},
+                    *query_param.conversation_history,
+                    {"role": "user", "content": user_query},
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
         return QueryResult(
             content=prompt_content, raw_data=raw_data, llm_generated=False
         )
@@ -7050,6 +7111,11 @@ async def naive_query(
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        *(
+            ("\n<cache_friendly_prompt>\nv1",)
+            if query_param.cache_friendly_prompt
+            else ()
+        ),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -7086,6 +7152,7 @@ async def naive_query(
                 "max_relation_tokens": query_param.max_relation_tokens,
                 "max_total_tokens": query_param.max_total_tokens,
                 "user_prompt": query_param.user_prompt or "",
+                "cache_friendly_prompt": query_param.cache_friendly_prompt,
                 "enable_rerank": query_param.enable_rerank,
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
@@ -7106,7 +7173,7 @@ async def naive_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
+        if not query_param.cache_friendly_prompt and len(response) > len(sys_prompt):
             response = (
                 response[len(sys_prompt) :]
                 .replace(sys_prompt, "")

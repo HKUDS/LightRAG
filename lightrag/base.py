@@ -188,6 +188,14 @@ class QueryParam:
     instructions. Set this to True to take full control of the final text.
     """
 
+    cache_friendly_prompt: bool = False
+    """Keep retrieval context in the final user message, after conversation history.
+
+    Applies to RAG modes, not bypass. Custom system templates must include the
+    context placeholder. With ``only_need_prompt``, returns the message list as
+    JSON. Default False preserves the existing prompt and answer-cache keys.
+    """
+
 
 @dataclass
 class StorageNameSpace(ABC):
