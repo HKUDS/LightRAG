@@ -753,8 +753,23 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     @staticmethod
     def _decode_cursor(opaque: str) -> tuple[str, str]:
+        """Decode an opaque scheduling cursor into its ``(created_at, id)`` key.
+
+        The cursor is this backend's own ``[created_at, id]`` list, so the
+        payload must BE a two-element list: unpacking alone is not a test of
+        shape, since a two-entry JSON object (a cursor minted by another
+        backend) or a two-character JSON string also unpacks to two strings.
+        Accepting one of those reads foreign data as a keyset position and
+        mis-positions the sweep — key ``('pending', 'failed')`` sorts after
+        every real row, so a strict page would end the sweep and report it
+        complete instead of failing. The sibling OpenSearch and Redis decoders
+        refuse any other container for the same reason; a malformed cursor
+        raises :class:`~lightrag.exceptions.StorageControlPlaneError`.
+        """
         try:
             decoded = json.loads(opaque)
+            if not isinstance(decoded, list) or len(decoded) != 2:
+                raise ValueError("cursor must be a two-element list")
             created, doc_id = decoded
             if not isinstance(created, str) or not isinstance(doc_id, str):
                 raise ValueError("cursor fields must be strings")

@@ -357,6 +357,38 @@ async def test_page_malformed_cursor_raises_control_plane_error():
         )
 
 
+async def test_page_cursor_payload_must_be_a_two_element_list():
+    """Only this backend's own ``[created_at | null, id]`` list is a cursor.
+
+    Unpacking is not a test of shape: a two-entry JSON object (what a cursor
+    minted by another backend looks like) or a two-character JSON string also
+    unpacks to two strings. Read as a keyset position, ``('pending', 'failed')``
+    sorts after every real row, so a strict page would report the sweep
+    complete — silently skipping the documents the sweep exists to find —
+    instead of raising the control-plane error the caller fails closed on.
+    """
+    storage = _storage()
+
+    for payload in (
+        json.dumps({"pending": "doc-a", "failed": "doc-b"}),
+        json.dumps("ab"),
+    ):
+        with pytest.raises(StorageControlPlaneError):
+            await storage.get_docs_by_statuses_page(
+                [DocStatus.FAILED], limit=2, position=CursorAfter(payload)
+            )
+
+    # Both genuine shapes are still accepted: a real key and the NULL
+    # created_at bucket the backend itself mints for legacy rows.
+    assert MongoDocStatusStorage._decode_cursor(
+        json.dumps(["2026-01-01T00:00:00+00:00", "doc-1"])
+    ) == ("2026-01-01T00:00:00+00:00", "doc-1")
+    assert MongoDocStatusStorage._decode_cursor(json.dumps([None, "doc-1"])) == (
+        None,
+        "doc-1",
+    )
+
+
 async def test_page_transport_error_propagates():
     data = _FakeCollection(find_error=PyMongoError("boom"))
     storage = _storage(data=data)
