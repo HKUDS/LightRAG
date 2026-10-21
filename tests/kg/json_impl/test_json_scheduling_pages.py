@@ -456,6 +456,44 @@ async def test_malformed_cursor_raises_control_plane_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cursor_payload_must_be_a_two_element_list(tmp_path):
+    """Only this backend's own ``[created_at, id]`` list is a cursor.
+
+    Unpacking is not a test of shape: a two-entry JSON object (what a cursor
+    minted by another backend looks like) or a two-character JSON string also
+    unpacks to two strings. Read as a keyset position, ``('pending', 'failed')``
+    sorts after every real row, so a strict page would report the sweep
+    complete — silently skipping the documents the sweep exists to find —
+    instead of raising the control-plane error the caller fails closed on.
+    """
+    storage = await _storage(
+        tmp_path,
+        {
+            "doc-1": _doc("pending", created_at="2026-01-01T00:00:00+00:00"),
+            "doc-2": _doc("pending", created_at="2026-02-01T00:00:00+00:00"),
+        },
+    )
+    for payload in (
+        json.dumps({"pending": "doc-a", "failed": "doc-b"}),
+        json.dumps("ab"),
+    ):
+        with pytest.raises(StorageControlPlaneError):
+            await storage.get_docs_by_statuses_page(
+                [DocStatus.PENDING],
+                limit=1,
+                position=CursorAfter(payload),
+            )
+    # The genuine two-element list is still accepted and still resumes after
+    # the consumed key: nothing valid may be rejected by the shape check.
+    page = await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING],
+        limit=1,
+        position=CursorAfter(json.dumps(["2026-01-01T00:00:00+00:00", "doc-1"])),
+    )
+    assert list(page.docs) == ["doc-2"]
+
+
+@pytest.mark.asyncio
 async def test_content_hash_lookup_returns_the_earliest_holder(tmp_path):
     """Dict insertion order is not creation order once rows are reloaded or
     rewritten, so returning the first match made the original_doc_id recorded on
