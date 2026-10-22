@@ -2,7 +2,7 @@
 
 ## Overview
 
-This tool migrates LightRAG's LLM response cache between different KV storage implementations. It specifically migrates caches generated during file extraction (mode `default`), including entity extraction, summary, and multimodal analysis caches.
+This tool migrates LightRAG's LLM response cache between different KV storage implementations. It specifically migrates every cache generated in mode `default`, including entity extraction, summary, multimodal analysis, and smart-heading judgment caches.
 
 ## Supported Storage Types
 
@@ -18,6 +18,7 @@ The tool migrates the following cache types:
 - `default:extract:*` - Entity and relationship extraction caches
 - `default:summary:*` - Entity and relationship summary caches
 - `default:analysis:*` - Multimodal image, table, and equation analysis caches
+- `default:smartheading:*` - Smart-heading judgment caches written by the parse stage
 
 **Note**: Query caches (modes like `mix`,`local`, `global`, etc.) are NOT migrated.
 
