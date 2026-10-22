@@ -108,3 +108,42 @@ async def test_embed_does_not_close_caller_http_client():
     finally:
         if not client.is_closed:
             await client.aclose()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stream_exception_propagates_with_caller_http_client():
+    """An exception during stream iteration must reach the consumer even when
+    the http_client is caller-owned (and therefore must not be closed).
+    """
+    calls = {"http": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["http"] += 1
+        # Simulate a streaming response that yields one chunk then fails
+        async def gen():
+            yield b'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n'
+            raise httpx.ReadError("mid-stream failure", request=request)
+        return httpx.Response(200, content=gen())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        stream = await openai_complete_if_cache(
+            "gpt-4o-mini",
+            "hi",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            openai_client_configs={"http_client": client, "max_retries": 0},
+            stream=True,
+        )
+        chunks = []
+        with pytest.raises(Exception, match="Connection error|ReadError|mid-stream"):
+            async for chunk in stream:
+                chunks.append(chunk)
+        assert client.is_closed is False
+        assert calls["http"] >= 1
+        # At least the first chunk should have been received
+        assert any("Hello" in str(c) for c in chunks)
+    finally:
+        if not client.is_closed:
+            await client.aclose()

@@ -738,7 +738,7 @@ async def openai_complete_if_cache(
                         logger.warning(
                             f"Failed to close stream response: {close_error}"
                         )
-                # Ensure client is closed in case of exception
+                # Ensure client is closed in case of exception (only if we own it)
                 if close_client:
                     try:
                         await openai_async_client.close()
@@ -746,7 +746,8 @@ async def openai_complete_if_cache(
                         logger.warning(
                             f"Failed to close OpenAI client after stream error: {client_close_error}"
                         )
-                    raise
+                # Always re-raise so the consumer sees the failure, independent of client ownership
+                raise
             finally:
                 # Final safety check for unclosed COT tags, skipped while
                 # closing via GeneratorExit (see the except clause above).
