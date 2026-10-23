@@ -28,6 +28,9 @@ class HTMLTableInfo:
 class _HTMLTableInfoParser(HTMLParser):
     """Count ``<tr>`` rows and their (colspan-aware) column widths.
 
+    Cell and row end tags may be omitted; nested table rows do not contribute
+    to the containing table's dimensions.
+
     Used only to recover ``num_rows`` / ``num_cols`` when the engine did not
     supply them; the ``<thead>`` header itself is preserved verbatim by
     :func:`extract_thead_html`, not reconstructed here.
@@ -37,38 +40,49 @@ class _HTMLTableInfoParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         # ``col_count`` (sum of colspans) for each completed top-level ``<tr>``.
         self.row_col_counts: list[int] = []
-        self._tr_depth = 0
-        self._cell_depth = 0
+        self._table_depth = 0
+        self._row_table_depth: int | None = None
         self._row_col_count = 0
-        self._cell_colspan = 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
-        if tag == "tr":
-            if self._tr_depth == 0:
-                self._row_col_count = 0
-            self._tr_depth += 1
+        if tag == "table":
+            self._table_depth += 1
             return
-        if tag in {"td", "th"} and self._tr_depth > 0:
-            if self._cell_depth == 0:
-                self._cell_colspan = _cell_span(attrs, "colspan")
-            self._cell_depth += 1
+        if tag == "tr":
+            if (
+                self._row_table_depth is not None
+                and self._row_table_depth != self._table_depth
+            ):
+                return
+            self._finish_row()
+            self._row_table_depth = self._table_depth
+            return
+        if tag in {"td", "th"} and self._row_table_depth == self._table_depth:
+            # HTML permits cell end tags to be omitted before the next cell.
+            self._row_col_count += _cell_span(attrs, "colspan")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in {"td", "th"} and self._cell_depth > 0:
-            self._cell_depth -= 1
-            if self._cell_depth == 0:
-                self._row_col_count += self._cell_colspan
-                self._cell_colspan = 1
-            return
-        if tag == "tr" and self._tr_depth > 0:
-            self._tr_depth -= 1
-            # ``col_count > 0`` ⇔ the row held at least one cell (colspan ≥ 1),
-            # so an empty ``<tr></tr>`` is skipped exactly as before.
-            if self._tr_depth == 0 and self._row_col_count > 0:
-                self.row_col_counts.append(self._row_col_count)
-                self._row_col_count = 0
+        if tag == "table":
+            if self._row_table_depth == self._table_depth:
+                self._finish_row()
+            self._table_depth = max(0, self._table_depth - 1)
+        elif (
+            tag in {"tr", "thead", "tbody", "tfoot"}
+            and self._row_table_depth == self._table_depth
+        ):
+            self._finish_row()
+
+    def close(self) -> None:
+        super().close()
+        self._finish_row()
+
+    def _finish_row(self) -> None:
+        if self._row_col_count > 0:
+            self.row_col_counts.append(self._row_col_count)
+        self._row_col_count = 0
+        self._row_table_depth = None
 
 
 def _cell_span(attrs: list[tuple[str, str | None]], name: str) -> int:
