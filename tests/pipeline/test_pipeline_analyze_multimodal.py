@@ -2042,3 +2042,36 @@ async def test_analyze_worker_stamps_truncation_on_the_failed_row(tmp_path, rais
         assert ctx.q_process.empty()
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_analyze_rewrite_keeps_lf_line_endings(tmp_path):
+    """Rewriting a modality sidecar must not use the platform line ending.
+
+    ``analyze_multimodal`` re-serializes the sidecar with ``indent=2`` after
+    every run, so each interior line break is a byte it can translate:
+    ``Path.write_text`` writes CRLF on Windows unless ``newline`` is passed.
+    The sidecar format's canonical bytes are LF (the golden fixtures under
+    ``tests/parser/docx/golden/`` are compared byte-for-byte), so a rewrite
+    that used the platform ending would make the artifact platform-dependent
+    again right after the writer had produced it correctly.
+    """
+    call_log: list[dict] = []
+    rag = _build_rag(tmp_path, vlm_func=_make_vlm_mock(call_log))
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert call_log, "the rewrite only follows a real analysis"
+
+        raw = sidecar_path.read_bytes()
+        assert b"llm_analyze_result" in raw  # the rewrite really happened
+        assert b"\n" in raw
+        assert b"\r\n" not in raw, "analyze rewrote the sidecar with CRLF"
+    finally:
+        await rag.finalize_storages()

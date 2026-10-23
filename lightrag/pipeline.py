@@ -7886,6 +7886,10 @@ class _PipelineMixin:
                     sidecar_path.write_text(
                         json.dumps(payload, ensure_ascii=False, indent=2),
                         encoding="utf-8",
+                        # LF on every platform: the sidecar is a byte-level
+                        # interchange format, so the rewrite must not introduce
+                        # the host's line ending into an indented payload.
+                        newline="\n",
                     )
                 except OSError as exc:
                     logger.warning(

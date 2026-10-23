@@ -931,6 +931,66 @@ def test_writer_blockid_unchanged_when_no_control_chars(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_writer_artifacts_use_lf_line_endings(tmp_path: Path) -> None:
+    """Every artifact keeps LF on every platform.
+
+    The canonical bytes of this format are the ones under
+    ``tests/parser/docx/golden/``, compared byte-for-byte by
+    ``test_native_docx_golden``. ``Path.write_text`` translates ``\\n`` to
+    ``os.linesep`` unless ``newline`` is passed, so a Windows parse would
+    otherwise emit CRLF for the record separators of ``blocks.jsonl`` and for
+    every interior line of the indented per-modality JSONs — the same
+    document would then not round-trip byte-identically across platforms.
+    """
+    parsed = tmp_path / "lf.parsed"
+    ir = IRDoc(
+        document_name="lf.docx",
+        document_format="docx",
+        doc_title="lf",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{TBL:t1}} {{IMG:i1}} {{EQ:e1}}",
+                tables=[
+                    IRTable(
+                        placeholder_key="t1",
+                        rows=[["a", "b"], ["1", "2"]],
+                        num_rows=2,
+                        num_cols=2,
+                        caption="cap",
+                    )
+                ],
+                drawings=[
+                    IRDrawing(
+                        placeholder_key="i1",
+                        asset_ref="r1",
+                        fmt="png",
+                        caption="figure 1",
+                    )
+                ],
+                equations=[
+                    IREquation(placeholder_key="e1", latex="E = mc^2", is_block=True)
+                ],
+            )
+        ],
+        assets=[AssetSpec(ref="r1", suggested_name="p.png", source=b"\x89PNG")],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-lf", engine="native")
+
+    artifacts = sorted(p.name for p in parsed.iterdir() if p.is_file())
+    assert artifacts == [
+        "lf.blocks.jsonl",
+        "lf.drawings.json",
+        "lf.equations.json",
+        "lf.tables.json",
+    ]
+    for name in artifacts:
+        raw = (parsed / name).read_bytes()
+        assert b"\n" in raw, f"{name} should be a multi-line text artifact"
+        assert b"\r\n" not in raw, f"{name} was written with CRLF line endings"
+
+
+@pytest.mark.offline
 def test_writer_drops_block_that_is_only_control_chars(tmp_path: Path) -> None:
     """A block whose entire body is control chars + whitespace collapses to
     empty after cleaning and is dropped (not emitted as a blank row)."""

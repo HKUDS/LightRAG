@@ -891,3 +891,52 @@ def test_env_var_invalid_value_falls_back_to_default(monkeypatch):
     leading, trailing = _resolve_surrounding_budget(None, None)
     assert leading == DEFAULT_SURROUNDING_MAX_TOKENS
     assert trailing == DEFAULT_SURROUNDING_MAX_TOKENS
+
+
+@pytest.mark.offline
+def test_enrich_rewrite_keeps_lf_line_endings(tmp_path):
+    """The surrounding rewrite must not use the platform line ending.
+
+    ``enrich_sidecars_with_surrounding`` re-serializes the whole modality
+    sidecar with ``indent=2``, so every interior line break is a byte it can
+    translate: on Windows ``Path.write_text`` turns each ``\\n`` into CRLF and
+    the artifact stops matching the LF bytes the sidecar format's golden
+    fixtures define.
+    """
+    base = "doc"
+    blockid = "b1"
+    content = 'prefix. <drawing id="im-1" caption="Fig 1" /> suffix.'
+    _write_blocks(
+        tmp_path,
+        base,
+        [
+            {
+                "type": "content",
+                "blockid": blockid,
+                "format": "plain_text",
+                "content": content,
+                "heading": "h",
+                "parent_headings": [],
+                "level": 1,
+            }
+        ],
+    )
+    drawings_path = tmp_path / f"{base}.drawings.json"
+    _write_sidecar(
+        drawings_path,
+        "drawings",
+        {"im-1": {"id": "im-1", "blockid": blockid, "heading": "h"}},
+    )
+
+    enrich_sidecars_with_surrounding(
+        blocks_path=str(tmp_path / f"{base}.blocks.jsonl"),
+        enabled_modalities={"drawings"},
+        tokenizer=_tokenizer(),
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
+    )
+
+    raw = drawings_path.read_bytes()
+    assert b"surrounding" in raw  # the rewrite really happened
+    assert b"\n" in raw
+    assert b"\r\n" not in raw, "the surrounding rewrite wrote CRLF line endings"
