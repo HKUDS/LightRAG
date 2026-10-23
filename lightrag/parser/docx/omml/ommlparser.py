@@ -436,28 +436,35 @@ class OMMLParser:
         subscript = ""
         superscript = ""
         text = ""
-        func_name = "sin"
+        func_name = ""
         for child in root:
             if child.tag == qn("m:fName"):
                 for child2 in child:
-                    if child2.tag in [qn("m:sSup"), qn("m:sSub"), qn("m:r")]:
+                    if child2.tag in [
+                        qn("m:sSup"),
+                        qn("m:sSub"),
+                        qn("m:sSubSup"),
+                        qn("m:r"),
+                    ]:
                         for child3 in child2:
                             if child3.tag == qn("m:sub"):
                                 subscript = self.parse(child3)
                             if child3.tag == qn("m:sup"):
                                 superscript = self.parse(child3)
                             if child3.tag == qn("m:t") or child3.tag == qn("m:e"):
-                                func_name = self.parse(child3)
+                                func_name += self.parse(child3)
                     elif child2.tag == qn("m:limLow"):
                         for child3 in child2:
                             if child3.tag == qn("m:lim"):
                                 for child4 in child3:
                                     subscript += self.parse(child4)
                             if child3.tag == qn("m:e"):
-                                func_name = self.parse(child3)
+                                func_name += self.parse(child3)
 
             if child.tag == qn("m:e"):
                 text += self.parse(child)
+        if not func_name:
+            func_name = "sin"
         if func_name in ["lim", "max", "min"]:
             return f"\\{func_name}\\limits_{{{subscript}}}^{{{superscript}}}{{{text}}}"
         if func_name not in self.FUNCTION_MAP:
