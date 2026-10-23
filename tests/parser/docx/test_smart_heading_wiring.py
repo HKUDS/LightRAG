@@ -471,3 +471,44 @@ def test_smart_audit_json_is_byte_stable_across_reparse(tmp_path, monkeypatch) -
         return audit.read_bytes()
 
     assert _audit_bytes("a") == _audit_bytes("b")
+
+
+def test_smart_audit_json_uses_lf_line_endings(tmp_path, monkeypatch) -> None:
+    """The audit artifact sits in the ``*.parsed/`` directory next to the
+    sidecars, so it carries the same floor: LF on every platform.
+
+    ``Path.write_text`` translates ``\\n`` to ``os.linesep`` unless
+    ``newline`` is passed, and both the indented payload and the trailing
+    newline are newlines — on Windows the file would otherwise be CRLF while
+    the sidecars it is filed beside stay LF.
+    """
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+    source_path.write_bytes(b"fake-docx")
+    rag = build_debug_rag()
+    with mock.patch(
+        "lightrag.parser.docx.parse_document.extract_docx_blocks",
+        _make_stub(warnings={"smart_cb1_tripped": 1}),
+    ):
+        asyncio.run(
+            get_parser("native").parse(
+                ParseContext(
+                    rag,
+                    "doc-lf",
+                    str(source_path),
+                    {
+                        "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                        "content": "",
+                        "parse_engine": "native",
+                    },
+                )
+            )
+        )
+
+    (audit,) = input_dir.glob("**/*.smart_audit.json")
+    raw = audit.read_bytes()
+    assert b"parse_warnings" in raw  # the audit really was written
+    assert b"\n" in raw
+    assert b"\r\n" not in raw, "smart_audit.json was written with CRLF"
