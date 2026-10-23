@@ -64,6 +64,26 @@ def test_html_table_becomes_html_irtable_with_thead_and_dims():
     assert (table.num_rows, table.num_cols) == (2, 2)
 
 
+@pytest.mark.offline
+def test_html_table_optional_end_tags_keep_dimensions_in_ir():
+    html = "<table><thead><tr><th>K<th>V</thead><tbody><tr><td>a<td>1</tbody></table>"
+    blocks = [
+        {
+            "heading": "H",
+            "level": 1,
+            "parent_headings": [],
+            "content": table_marker("t1"),
+        }
+    ]
+
+    ir = _normalize(blocks, {"md_tables": {"t1": {"kind": "html", "html": html}}})
+    (table,) = ir.blocks[0].tables
+
+    assert table.html == html
+    assert table.table_header == "<thead><tr><th>K<th>V</thead>"
+    assert (table.num_rows, table.num_cols) == (2, 2)
+
+
 def test_equation_is_block_level():
     blocks = [
         {
