@@ -131,8 +131,23 @@ def test_safe_extract_zip_extracts_flat_bundle(tmp_path: Path) -> None:
     )
 
 
-def test_safe_extract_zip_rejects_path_traversal(tmp_path: Path) -> None:
-    payload = _make_zip({"../evil.txt": b"oops"})
+@pytest.mark.parametrize(
+    "name",
+    ["..notes.md", "..assets/figure.png"],
+)
+def test_safe_extract_zip_accepts_dot_prefixed_paths(tmp_path: Path, name: str) -> None:
+    payload = _make_zip({name: b"valid bundle member"})
+    dest = tmp_path / "raw"
+
+    names = safe_extract_zip(payload, dest)
+
+    assert names == [name]
+    assert (dest / name).read_bytes() == b"valid bundle member"
+
+
+@pytest.mark.parametrize("name", ["..", "../evil.txt"])
+def test_safe_extract_zip_rejects_path_traversal(tmp_path: Path, name: str) -> None:
+    payload = _make_zip({name: b"oops"})
     with pytest.raises(RuntimeError, match="unsafe path"):
         safe_extract_zip(payload, tmp_path / "raw")
 
