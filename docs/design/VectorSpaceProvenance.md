@@ -444,3 +444,31 @@ Each row lands with its own change; a row is only true once that change is in.
 | PR 4 / 5 | FAISS, Nano | marker in a `.space.json` sidecar / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
 | PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant and PostgreSQL assign `_flush_lock` *after* their init block, the same shape as the OpenSearch bug) — see *The named-container backends' refusal* |
 | gate | — | the empty-container gate and the adoption probe in `LightRAG.initialize_storages()` |
+
+## Workspace clear and sibling model containers
+
+`drop()` empties only the container of the model the instance is configured
+for, which `lightrag-rebuild-vdb` and a reversible model switch rely on.
+`/documents/clear` instead calls `BaseVectorStorage.drop_all_models()`, which
+runs `drop()` and then `drop_sibling_models()`, so no model's vectors survive a
+clear to resurface when the operator switches back. Siblings are cleared only
+after the active container, and a sibling failure is returned as an error.
+
+Siblings are found by evidence of ownership, never by name pattern alone:
+
+| backend | sibling | evidence | removal |
+| --- | --- | --- | --- |
+| Qdrant | `lightrag_vdb_{ns}_*_{dim}d` | indexes `workspace_id` | this workspace's points |
+| PostgreSQL | `{base}_*_{dim}d` | has `workspace` and `content_vector` columns | this workspace's rows |
+| Milvus | `{workspace}_{ns}_*_{dim}d` | schema description carries `[lightrag:workspace=..;namespace=..]` | whole collection |
+
+Qdrant and PostgreSQL containers are shared across workspaces, so the removal
+is workspace-scoped and cannot touch another workspace's data. Milvus
+collections are per workspace but their names are a plain prefix, so one
+workspace's prefix can match another's; the marker is what tells them apart.
+
+**Accepted residue:** Milvus collections created before the marker existed
+carry none. They are left in place and named in the error `drop_all_models()`
+returns, so the operator can drop them; deleting them on a name match could
+remove another workspace's data. Collections the marker names as another
+workspace's are skipped silently.
