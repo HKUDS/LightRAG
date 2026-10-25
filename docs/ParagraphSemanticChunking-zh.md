@@ -4,7 +4,7 @@
 
 ### 1.1 P 策略要解决什么问题
 
-Paragraph Semantic Chunking（下文简称 **P 策略**）面向 DOCX、PDF 等具有清晰章节结构的文档；Markdown 经解析器产出 LightRAG Document sidecar 后也可使用。其核心目标是：**让分块边界尽可能对齐文档原生的语义边界**（标题、段落、表格行），而不是仅由 token 长度计数决定切点。
+Paragraph Semantic Chunking（下文简称 **P 策略**）面向 DOCX、PDF 等具有清晰章节结构的文档。其核心目标是：**让分块边界尽可能对齐文档原生的语义边界**（标题、段落、表格行），而不是仅由 token 长度计数决定切点。
 
 P 策略主要解决以下四类问题：
 

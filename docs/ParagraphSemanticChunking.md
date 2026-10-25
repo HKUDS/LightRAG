@@ -4,7 +4,7 @@
 
 ### 1.1 What the P Strategy Solves
 
-Paragraph Semantic Chunking (hereafter the **P strategy**) targets structured documents with clear sections, such as DOCX and PDF, and also works with Markdown when a parser produces a LightRAG Document sidecar. Its core goal: **align chunk boundaries with the document's native semantic boundaries** (headings, paragraphs, table rows) as much as possible, rather than deciding split points purely by token-length counting.
+Paragraph Semantic Chunking (hereafter the **P strategy**) targets documents with a clear sectional structure such as DOCX and PDF. Its core goal: **align chunk boundaries with the document's native semantic boundaries** (headings, paragraphs, table rows) as much as possible, rather than deciding split points purely by token-length counting.
 
 The P strategy mainly addresses these four problems:
 
