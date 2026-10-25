@@ -381,6 +381,42 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
         return f"{safe_model_name}_{embedding_dim}d"
 
+    async def drop_sibling_models(self) -> dict[str, str]:
+        """Clear this workspace's data from every OTHER embedding model's container.
+
+        ``drop()`` empties only the container of the model this instance is
+        configured for, which keeps a model switch reversible. A workspace
+        clear must not leave the other models' vectors behind, or switching
+        back to one of them resurrects chunks the operator deleted. Backends
+        whose containers are named per model override this; the default has no
+        siblings. Containers are selected by evidence of ownership (see each
+        override), never by name pattern alone.
+
+        MUST only be called under the same precondition as ``drop()``.
+
+        Returns:
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
+        """
+        return {"status": "success", "message": "no sibling model containers"}
+
+    async def drop_all_models(self) -> dict[str, str]:
+        """``drop()`` plus ``drop_sibling_models()``: the workspace-clear contract.
+
+        Siblings are only touched once the active container is cleared, so a
+        failed ``drop()`` is reported as is. Both results are surfaced when the
+        sibling step fails, since the active model's data is already gone then.
+        """
+        result = await self.drop()
+        if result.get("status") != "success":
+            return result
+        sibling_result = await self.drop_sibling_models()
+        if sibling_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"active model cleared; {sibling_result.get('message')}",
+            }
+        return result
+
     @abstractmethod
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None

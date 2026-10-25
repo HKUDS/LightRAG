@@ -5595,6 +5595,65 @@ class PGVectorStorage(BaseVectorStorage):
             )
             return {"status": "error", "message": str(e)}
 
+    async def drop_sibling_models(self) -> dict[str, str]:
+        """Delete this workspace's rows from every other model's table.
+
+        A sibling is a table named ``{base}_{model}_{dim}d`` in the current
+        schema, other than ``table_name``, that has both a ``workspace`` and a
+        ``content_vector`` column -- the shape ``_pg_create_table`` gives it --
+        so an unrelated table that happens to share the prefix is left alone.
+        Rows are removed with the same workspace-scoped DELETE as ``drop()``;
+        the tables stay, because they are shared with other workspaces. Same
+        preconditions as ``drop()``.
+        """
+        try:
+            rows = await self.db.query(
+                """
+                SELECT t.table_name
+                FROM information_schema.tables t
+                WHERE t.table_schema = current_schema()
+                  AND t.table_name LIKE $1
+                  AND t.table_name <> $2
+                  AND EXISTS (
+                      SELECT 1 FROM information_schema.columns c
+                      WHERE c.table_schema = t.table_schema
+                        AND c.table_name = t.table_name
+                        AND c.column_name = 'workspace')
+                  AND EXISTS (
+                      SELECT 1 FROM information_schema.columns c
+                      WHERE c.table_schema = t.table_schema
+                        AND c.table_name = t.table_name
+                        AND c.column_name = 'content_vector')
+                """,
+                [self.legacy_table_name.lower() + "\\_%", self.table_name.lower()],
+                multirows=True,
+            )
+            cleared = []
+            async with self._flush_lock:
+                for row in rows or []:
+                    name = row["table_name"]
+                    if not name.startswith(
+                        self.legacy_table_name.lower() + "_"
+                    ) or not re.search(r"_\d+d$", name):
+                        continue
+                    sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                        table_name=name
+                    )
+                    await self.db.execute(sql, {"workspace": self.workspace})
+                    cleared.append(name)
+            if cleared:
+                logger.info(
+                    f"[{self.workspace}] Cleared workspace rows from sibling "
+                    f"model tables: {cleared}"
+                )
+            return {"status": "success", "message": "sibling models dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error clearing sibling model tables "
+                f"for {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+
 
 def _parse_doc_status_datetime(
     dt_str: Any,
