@@ -351,7 +351,7 @@ VLM_LLM_TIMEOUT=240
 
 If VLM uses the same provider and key, `VLM_LLM_BINDING_HOST` and `VLM_LLM_BINDING_API_KEY` can be omitted.
 
-`VLM_PROCESS_ENABLE` is the master switch for multimodal analysis. When `false`, the pipeline emits a warning and skips every multimodal item without invoking the VLM. When `true`, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. The following providers are vision-capable: `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
+`VLM_PROCESS_ENABLE` gates image/drawing analysis only; tables and equations use the `EXTRACT` role independently. When image processing is enabled and an otherwise eligible image is present, an unavailable VLM role fails that document rather than silently skipping the image. When enabled, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. Vision-capable providers include `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
 
 ### 6. Bedrock Role-Level SigV4 Credentials
 

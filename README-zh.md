@@ -79,7 +79,7 @@
 ## 🎉 新闻
 - [2026.07]🎯[新功能]: 添加 Word 文档 **智能章节标题** 识别功能。
 - [2026.05]🎯[新功能]：**将 RagAnything 合并至 LightRAG**🎉。支持通过 **MinerU / Docling** 服务进行多模态内容解析与提取。
-- [2026.05]🎯[新功能]：引入四种可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）和 `Paragraph`（段落语义）。
+- [2026.05]🎯[新功能]：引入可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）、`Paragraph`（段落语义）以及自定义 `C`。
 - [2026.05]🎯[新功能]：**支持按角色配置 LLM**，提供四个独立角色：EXTRACT、QUERY、KEYWORDS 和 VLM，每个角色拥有独立的 LLM 设置。
 - [2026.03]🎯[新功能]: 集成了 **OpenSearch** 作为统一存储后端，为 LightRAG 的全部四种存储类型提供全面支持。
 - [2026.03]🎯[新功能]: 推出交互式安装向导，支持通过 Docker 在本地部署 Embedding、Reranking 及存储后端服务。
@@ -312,7 +312,7 @@ LightRAG 的默认查询模式为 mix。使用 mix 模式通常可以获得最�
 
 在选择 Embedding 模型的时候需要注意其对多语言的支持能力。LightRAG 的检索质量对 Embedding 模型的依赖有限，因此建议尽量选择低维度和速度快的模型。选择主流最新的 Embedding 模型即可；本地部署首选 `BAAI/bge-m3`。建议尽量本地部署 Embedding 模型，以获得最好的性能。
 
-**重要提示**：在文档索引前必须确定使用的 Embedding 模型，且在文档查询阶段必须沿用与索引阶段相同的模型。嵌入模型一旦选定通常就不能修改。如果修改的话，需要对所有文本块、实体和关系进行重新嵌入。LightRAG 目前没有提供重新嵌入的工具。有些存储（例如 PostgreSQL）在首次建立数据表的时候需要确定向量维度，因此更换 Embedding 模型后需要删除向量相关库表，以便让 LightRAG 重建新的库表。
+**重要提示**：请在文档索引前确定 Embedding 模型，并在查询阶段沿用同一模型。更换模型需要重新嵌入文本块、实体和关系；请使用 `lightrag-rebuild-vdb`，从知识图谱和文本块重建向量，详见[切换 Embedding 模型](./docs/ProgramingWithCore.md#switching-embedding-models)。不要通过删除向量表或工作目录来替代该工具。
 
 ### 开启 Rerank 选项
 
