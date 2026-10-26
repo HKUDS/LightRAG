@@ -67,6 +67,50 @@ def test_sidecar_uri_round_trip_unicode_and_spaces(tmp_path):
 
 
 @pytest.mark.offline
+def test_sidecar_uri_has_empty_authority(tmp_path):
+    sidecar_dir = tmp_path / "demo.parsed"
+    sidecar_dir.mkdir()
+    uri = sidecar_uri_for(sidecar_dir)
+    from urllib.parse import urlsplit
+
+    assert urlsplit(uri).netloc == ""
+    assert urlsplit(uri).path.startswith("/")
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_recovers_windows_drive_letter():
+    uri = "file:///C:/Users/qhx/data/__parsed__/demo.pdf.parsed/"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved is not None
+    # Normalizing separators makes the assertion hold on both POSIX
+    # (where the drive path stays a relative string) and Windows.
+    assert str(resolved).replace("\\", "/") == (
+        "C:/Users/qhx/data/__parsed__/demo.pdf.parsed"
+    )
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_recovers_legacy_writer_uri():
+    # The previous writer stored the whole Windows drive path in the
+    # authority, so the path component was just "/".
+    uri = "file://C%3A%5CUsers%5Cqhx%5Cdata%5C__parsed__%5Cdemo.pdf.parsed/"
+    assert str(resolve_sidecar_uri(uri)) == (
+        r"C:\Users\qhx\data\__parsed__\demo.pdf.parsed"
+    )
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_preserves_literal_escape_like_names():
+    uri = "file:///C:/data/report%2520.parsed/"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved is not None
+    # Decoded exactly once: "%2520" becomes the literal text "%20",
+    # never a space.
+    assert "%20" in str(resolved)
+    assert "report .parsed" not in str(resolved)
+
+
+@pytest.mark.offline
 def test_resolve_sidecar_uri_tolerates_missing_trailing_slash(tmp_path):
     sidecar_dir = tmp_path / "demo.parsed"
     sidecar_dir.mkdir()
