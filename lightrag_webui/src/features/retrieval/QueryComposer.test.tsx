@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { cleanup, screen, within } from '@testing-library/react'
+import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
@@ -45,6 +45,26 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+})
+
+describe('query composer multiline editing', () => {
+  test('Shift+Enter keeps typing after the inserted newline when switching to a textarea', async () => {
+    const user = userEvent.setup()
+    renderComposer()
+
+    await user.type(input(), 'alpha beta')
+    await user.keyboard('{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}')
+    await user.keyboard('{Shift>}{Enter}{/Shift}')
+
+    await waitFor(() => {
+      expect(input().tagName).toBe('TEXTAREA')
+      expect((input() as HTMLTextAreaElement).selectionStart).toBe(6)
+    })
+    await user.keyboard('NEW')
+
+    expect((input() as HTMLTextAreaElement).value).toBe('alpha\nNEW beta')
+    expect(sent).toEqual([])
+  })
 })
 
 describe('query composer validation notice', () => {

@@ -90,8 +90,8 @@ export default function QueryComposer({
 
         // Set cursor position after the newline and adjust height if needed
         setTimeout(() => {
-          if (target.setSelectionRange) {
-            target.setSelectionRange(start + 1, start + 1)
+          if (inputRef.current?.setSelectionRange) {
+            inputRef.current.setSelectionRange(start + 1, start + 1)
           }
 
           // Manually trigger height adjustment for textarea after component switch
@@ -146,12 +146,12 @@ export default function QueryComposer({
     if (inputRef.current) {
       // When component type changes, restore focus and cursor position
       const currentElement = inputRef.current
-      const cursorPosition = currentElement.selectionStart || inputValue.length
 
       // Use requestAnimationFrame to ensure DOM update is complete
       requestAnimationFrame(() => {
         currentElement.focus()
         if (currentElement.setSelectionRange) {
+          const cursorPosition = currentElement.selectionStart ?? inputValue.length
           currentElement.setSelectionRange(cursorPosition, cursorPosition)
         }
       })
