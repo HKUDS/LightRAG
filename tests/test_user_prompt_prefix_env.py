@@ -12,6 +12,8 @@ Every failure mode degrades to "no prefix" plus a log line.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from lightrag.base import QueryParam
@@ -67,6 +69,11 @@ def test_inline_special_characters_are_preserved(monkeypatch):
     assert load_user_prompt_prefix_source() == value
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows caps a single environment variable at 32,767 characters, so "
+    "this value cannot be set",
+)
 def test_long_inline_value_is_not_truncated(monkeypatch):
     """No length bound: this is operator config, not client input."""
     value = "policy. " * 5000

@@ -133,7 +133,11 @@ def test_sigkilled_holder_never_deadlocks_other_processes():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(shared_storage.psutil is None, reason="needs psutil")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shared_storage.psutil is None,
+    reason="needs psutil and a POSIX zombie (a SIGKILLed child is reaped, not "
+    "left as a zombie, on Windows)",
+)
 def test_zombie_holder_is_confirmed_dead():
     """A SIGKILLed-but-not-reaped child (its wedged parent has not called
     wait()) is a zombie: it executes no code and cannot be using the lock, so
@@ -516,6 +520,12 @@ def test_my_start_id_recomputed_after_real_fork():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the os.kill(pid, 0) fallback cannot prove a pid is gone on Windows "
+    "(OpenProcess failure is not ProcessLookupError), so the probe errs on the "
+    "side of alive by design",
+)
 def test_pid_alive_fallback_without_psutil(monkeypatch):
     monkeypatch.setattr(shared_storage, "psutil", None)
     assert shared_storage._pid_alive(os.getpid()) is True
@@ -527,7 +537,9 @@ def test_pid_alive_fallback_without_psutil(monkeypatch):
 
 
 @pytest.mark.skipif(
-    shared_storage.psutil is None, reason="needs psutil to observe the zombie"
+    sys.platform == "win32" or shared_storage.psutil is None,
+    reason="needs a POSIX zombie (SIGKILL leaves none on Windows) and psutil to "
+    "observe it",
 )
 def test_pid_alive_fallback_keeps_zombies_alive(monkeypatch):
     """Without psutil the historical os.kill(pid, 0) behavior is preserved:

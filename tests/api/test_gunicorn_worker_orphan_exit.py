@@ -11,9 +11,18 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 from types import SimpleNamespace
 
 import pytest
+
+if sys.platform == "win32":  # pragma: no cover - import-time guard
+    pytest.skip(
+        "uvicorn_worker imports fcntl, so this module cannot even be collected "
+        "on Windows; the orphan-exit regression it covers is POSIX-only",
+        allow_module_level=True,
+    )
+
 from uvicorn_worker import UvicornWorker
 
 from lightrag.api.gunicorn_worker import LightRAGUvicornWorker

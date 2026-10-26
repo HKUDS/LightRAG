@@ -108,7 +108,10 @@ async def _scan(tmp_path, monkeypatch, *, filenames) -> tuple[_ScanRag, list[str
     await _init_pipeline_status(rag.workspace)
     doc_manager = DocumentManager(str(tmp_path))
     for name in filenames:
-        (doc_manager.input_dir / name).write_text("body", encoding="utf-8")
+        try:
+            (doc_manager.input_dir / name).write_text("body", encoding="utf-8")
+        except (OSError, UnicodeEncodeError) as exc:
+            pytest.skip(f"filesystem rejects the test file name: {exc}")
 
     enqueued: list[str] = []
 
@@ -263,7 +266,10 @@ def test_pipeline_enqueue_file_refuses_an_unsafe_basename_without_a_doc_row(tmp_
 
     async def _run():
         unsafe_file = tmp_path / UNSAFE_NAME
-        unsafe_file.write_text("body", encoding="utf-8")
+        try:
+            unsafe_file.write_text("body", encoding="utf-8")
+        except (OSError, UnicodeEncodeError) as exc:
+            pytest.skip(f"filesystem rejects the unsafe test file name: {exc}")
 
         success, track_id = await pipeline_enqueue_file(
             _EnqueueRag(), unsafe_file, "track-backstop"
