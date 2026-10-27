@@ -75,9 +75,33 @@ class QueryResult:
         return 0.0
 
 
+# CJK text (kana, the BMP ideograph blocks, Hangul syllables) has no word
+# boundaries the ASCII pattern could split on without a dictionary: Chinese and
+# Japanese use no spaces, and Korean attaches particles to its words. A run of
+# it is therefore indexed as overlapping character bigrams, as Lucene's CJK
+# analyzer does.
+_TOKEN_PATTERN = re.compile(
+    r"[a-z0-9]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]+"
+)
+
+
 def tokenize(text: str) -> list[str]:
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    return [token for token in tokens if token not in STOPWORDS and len(token) > 1]
+    """Split text into ranking terms.
+
+    ASCII words are kept unless they are stopwords or a single character. A run
+    of CJK characters becomes its overlapping bigrams; a lone CJK character is
+    kept as is, since one ideograph is often a whole word.
+    """
+    tokens: list[str] = []
+    for run in _TOKEN_PATTERN.findall(text.lower()):
+        if run.isascii():
+            if run not in STOPWORDS and len(run) > 1:
+                tokens.append(run)
+        elif len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
+    return tokens
 
 
 def load_cases(dataset_path: Path) -> list[dict[str, Any]]:
