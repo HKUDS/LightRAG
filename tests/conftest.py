@@ -146,8 +146,36 @@ def _reset_r_separator_caches():
 _SPACY_DOWNLOAD_HINT = "lightrag-download-cache --spacy-install"
 
 
+def _refuse_package_installs(config) -> None:
+    """Make ``pipmaster.install`` report failure without running pip.
+
+    Provider modules install a missing SDK when they are imported
+    (``if not pm.is_installed(...): pm.install(...)``), and collection imports
+    them: two test modules import ``lightrag.llm.lmdeploy`` at module level.
+    CI's ``uv sync`` venv has no pip, so there the install fails on its own.
+    An environment that ships pip (the README's ``pip install -e``, conda,
+    ``python -m venv``) really installs, and ``lmdeploy[all]`` brings torch.
+
+    Refusing the call gives every environment CI's outcome: the guard returns
+    False and the module imports without the SDK, which the tests expect. The
+    suite must never change the environment it runs in.
+    """
+    import pipmaster
+
+    real_install = pipmaster.install
+
+    def _refuse(package, *args, **kwargs):
+        return False
+
+    pipmaster.install = _refuse
+    config.add_cleanup(lambda: setattr(pipmaster, "install", real_install))
+
+
 def pytest_configure(config):
     """Register custom markers and capture the spaCy model / opt-in state."""
+    # First: collection and the imports below both run provider install guards.
+    _refuse_package_installs(config)
+
     config.addinivalue_line(
         "markers", "offline: marks tests as offline (no external dependencies)"
     )
