@@ -4539,14 +4539,15 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     await hashing_kv.upsert({flattened_key: cache_entry})
 
 
-def safe_unicode_decode(content):
-    # Regular expression to find all Unicode escape sequences of the form \uXXXX
-    unicode_escape_pattern = re.compile(r"\\u([0-9a-fA-F]{4})")
+def safe_unicode_decode(content: bytes) -> str:
+    r"""Decode complete \uXXXX runs, combining valid UTF-16 surrogate pairs.
 
-    # Function to replace the Unicode escape with the actual character
-    def replace_unicode_escape(match):
-        # Convert the matched hexadecimal value into the actual Unicode character
-        return chr(int(match.group(1), 16))
+    Other escape sequences and already-decoded UTF-8 text are preserved.
+    """
+    unicode_escape_pattern = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
+
+    def replace_unicode_escape(match: re.Match[str]) -> str:
+        return json.loads(f'"{match.group(0)}"')
 
     # Perform the substitution
     decoded_content = unicode_escape_pattern.sub(
