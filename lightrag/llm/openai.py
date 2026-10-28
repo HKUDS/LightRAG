@@ -788,8 +788,11 @@ async def openai_complete_if_cache(
                 }
                 token_tracker.add_usage(token_counts)
 
+            # Compatible gateways can return non-JSON bodies that the SDK
+            # exposes as strings rather than completion objects.
             if (
                 not response
+                or not hasattr(response, "choices")
                 or not response.choices
                 or not hasattr(response.choices[0], "message")
             ):
