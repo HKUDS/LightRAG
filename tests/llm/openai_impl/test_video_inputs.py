@@ -107,6 +107,7 @@ async def test_invalid_video_urls_fail_before_request(client, video):
             model="video-capable-model", prompt="Describe", video_inputs=[video]
         )
     client.chat.completions.create.assert_not_called()
+    client.close.assert_awaited_once_with()
 
 
 async def test_invalid_video_type_fails_before_request(client):
@@ -115,3 +116,4 @@ async def test_invalid_video_type_fails_before_request(client):
             model="video-capable-model", prompt="Describe", video_inputs=[123]
         )
     client.chat.completions.create.assert_not_called()
+    client.close.assert_awaited_once_with()
