@@ -57,6 +57,11 @@
 ---
 
 ## 🎉 News
+
+> **Fork feature demo:** [Resolve clause versions by effective date](examples/evidence_policy/README.md),
+> with installation and local run instructions. The recorded two-document `naive` demo completed
+> 5/5 real questions and 45 related regression tests; see its [validation scope](examples/evidence_policy/VALIDATION.md).
+
 - [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
 - [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.

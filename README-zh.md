@@ -55,6 +55,10 @@
 
 ---
 
+> **本 fork 功能演示：** [按生效日期选择条款版本](examples/evidence_policy/README.md)，
+> 包含依赖安装与本地运行说明。两篇虚构文档、`naive` 路径的已有真实问答 5/5，
+> 相关回归 45 passed；详见[验证范围](examples/evidence_policy/VALIDATION.md)。
+
 <div align="center">
   <table>
     <tr>

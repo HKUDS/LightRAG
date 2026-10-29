@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 
@@ -77,6 +77,13 @@ from lightrag.chunk_schema import (
     strip_internal_multimodal_markup_for_extraction,
 )
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
+from lightrag.evidence_policy import (
+    CatalogError,
+    RequestError,
+    build_policy_config,
+    failure_content,
+    run_evidence_policy,
+)
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -4690,6 +4697,192 @@ def _answer_cache_kv(
     return hashing_kv
 
 
+# ---------------------------------------------------------------------------
+# Opt-in authority/effective-time evidence policy
+# ---------------------------------------------------------------------------
+#
+# Both retrieval entry points (``kg_query`` via ``_build_query_context`` and
+# ``naive_query``) route through these helpers so they cannot disagree about
+# which version applies. When ``QueryParam.evidence_policy`` is unset every
+# helper here returns None and the caller takes its original path unchanged.
+
+
+def _policy_metadata(raw_data: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The ``metadata.evidence_policy`` block, or None when the policy is off."""
+    if not isinstance(raw_data, dict):
+        return None
+    metadata = raw_data.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    block = metadata.get("evidence_policy")
+    return block if isinstance(block, dict) else None
+
+
+def _policy_cache_args(raw_data: dict[str, Any] | None) -> tuple[Any, ...]:
+    """Cache-key components for a policy answer; ``()`` when the policy is off.
+
+    Empty when off is deliberate: an existing entry must keep hitting, so a
+    deployment that never enables the policy sees byte-identical keys. When on,
+    the date, the catalog revision and fingerprint, the decision status and a
+    digest of the rendered context all participate, so a catalog edit or a date
+    crossing cannot reuse an answer decided on different evidence.
+    """
+    block = _policy_metadata(raw_data)
+    if block is None:
+        return ()
+    return (
+        "\n<evidence_policy>\n",
+        block.get("policy_version"),
+        block.get("resolved_as_of"),
+        block.get("catalog_revision"),
+        block.get("catalog_fingerprint"),
+        block.get("status"),
+        block.get("context_sha256"),
+    )
+
+
+def _policy_seed_chunk_ids(search_result: dict[str, Any]) -> list[str]:
+    """Chunk IDs the retriever actually returned, before any truncation.
+
+    Vector hits and the ``source_id`` chains of the retrieved entities and
+    relations are both included: a revision that the vector leg missed may
+    still be named by a graph record, and dropping that would make scope
+    identification depend on which leg won.
+    """
+    seeds: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: Any) -> None:
+        if not candidate:
+            return
+        chunk_id = str(candidate)
+        if chunk_id not in seen:
+            seen.add(chunk_id)
+            seeds.append(chunk_id)
+
+    for chunk in search_result.get("vector_chunks") or []:
+        _add(chunk.get("chunk_id") or chunk.get("id"))
+    for record in (search_result.get("final_entities") or []) + (
+        search_result.get("final_relations") or []
+    ):
+        for chunk_id in str(record.get("source_id") or "").split(GRAPH_FIELD_SEP):
+            _add(chunk_id.strip())
+    return seeds
+
+
+async def _policy_available_tokens(
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, Any],
+    *,
+    system_prompt: str | None,
+    template_slot: str,
+    default_template: str,
+) -> int | None:
+    """Chunk budget the evidence groups may use, measured the same way as the
+    ordinary path: total budget minus the prompt that will actually wrap them.
+    """
+    tokenizer = global_config.get("tokenizer")
+    if not tokenizer:
+        return None
+    max_total_tokens = getattr(
+        query_param,
+        "max_total_tokens",
+        global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
+    )
+    effective_user_prompt = resolve_user_prompt(
+        query_param.user_prompt,
+        global_config.get("user_prompt_prefix", ""),
+        query_param.disable_user_prompt_prefix,
+    )
+    template = system_prompt or default_template
+    overhead = template.format(
+        response_type=query_param.response_type or "Multiple Paragraphs",
+        user_prompt=effective_user_prompt.text,
+        **{template_slot: ""},
+    )
+    overhead_tokens = await acount_tokens(tokenizer, overhead)
+    query_tokens = await acount_tokens(tokenizer, query)
+    return max_total_tokens - (overhead_tokens + query_tokens + 200)
+
+
+async def _evidence_policy_context(
+    *,
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, Any],
+    text_chunks_db: BaseKVStorage | None,
+    seed_chunk_ids: list[str],
+    system_prompt: str | None,
+    template_slot: str,
+    default_template: str,
+    keywords: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Run the policy and project its outcome. ``None`` means "policy off".
+
+    A refusal is *not* an exception here: the caller receives a context/raw-data
+    pair whose ``metadata.evidence_policy.status`` is the reason, so a query
+    path can return it verbatim instead of inventing an empty result.
+    """
+    catalog = global_config.get("evidence_catalog")
+    try:
+        config = build_policy_config(
+            query_param,
+            catalog=catalog,
+            timezone=global_config.get("evidence_policy_timezone", "UTC"),
+        )
+        if config is None:
+            return None
+        available = await _policy_available_tokens(
+            query,
+            query_param,
+            global_config,
+            system_prompt=system_prompt,
+            template_slot=template_slot,
+            default_template=default_template,
+        )
+        config = replace(config, available_tokens=available)
+        outcome = await run_evidence_policy(
+            config,
+            catalog,
+            seed_chunk_ids=seed_chunk_ids,
+            reader=text_chunks_db,
+            instructions=PROMPTS.get("evidence_policy_instructions", ""),
+            count_tokens=(
+                (lambda text: len(global_config["tokenizer"].encode(text)))
+                if global_config.get("tokenizer")
+                else None
+            ),
+        )
+    except (RequestError, CatalogError) as exc:
+        status = getattr(exc, "code", "invalid_request")
+        logger.warning(f"[evidence_policy] refused: {status}: {exc}")
+        raw_data = {
+            "status": "failure",
+            "message": str(exc),
+            "data": {"entities": [], "relationships": [], "chunks": [], "references": []},
+            "metadata": {
+                "query_mode": query_param.mode,
+                "keywords": keywords or {"high_level": [], "low_level": []},
+                "evidence_policy": {
+                    "status": status,
+                    "detail": str(exc),
+                    "policy_version": getattr(query_param, "evidence_policy", None),
+                    "resolved_as_of": getattr(query_param, "as_of", None),
+                },
+            },
+        }
+        return "", raw_data
+
+    raw_data = outcome.raw_data(mode=query_param.mode, keywords=keywords)
+    logger.info(
+        f"[evidence_policy] status={outcome.status} "
+        f"as_of={config.as_of.isoformat()} "
+        f"selected={outcome.diagnostics.get('selected_versions', [])}"
+    )
+    return outcome.context_text, raw_data
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -4781,11 +4974,27 @@ async def kg_query(
         # The token budget must be computed against the template this function
         # will actually render below, not the default one.
         system_prompt=system_prompt,
+        # Read fresh rather than from the storage snapshot: the catalog is
+        # injected on the LightRAG instance and may be replaced between calls,
+        # while a storage captured its config once at construction.
+        global_config=global_config,
     )
 
     if context_result is None:
         logger.info("[kg_query] No query context could be built; returning no-result.")
         return None
+
+    policy_status = (_policy_metadata(context_result.raw_data) or {}).get("status")
+    if policy_status is not None and policy_status != "resolved":
+        # A refusal is an answer: it names the status and keeps the candidate
+        # evidence, and it never falls back to ordinary retrieval, which is the
+        # behaviour this policy exists to replace.
+        detail = (_policy_metadata(context_result.raw_data) or {}).get("detail", "")
+        return QueryResult(
+            content=failure_content(policy_status, detail),
+            raw_data=context_result.raw_data,
+            llm_generated=False,
+        )
 
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
@@ -4889,6 +5098,8 @@ async def kg_query(
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
+        # Empty when the policy is off, so pre-existing keys keep hitting.
+        *_policy_cache_args(context_result.raw_data),
     )
 
     cached_result = await handle_cache(
@@ -4936,6 +5147,14 @@ async def kg_query(
                 "related_chunk_number": related_chunk_number,
                 "kg_chunk_pick_method": kg_chunk_pick_method,
             }
+            policy_block = _policy_metadata(context_result.raw_data)
+            if policy_block:
+                queryparam_dict["evidence_policy"] = {
+                    "policy_version": policy_block.get("policy_version"),
+                    "resolved_as_of": policy_block.get("resolved_as_of"),
+                    "catalog_revision": policy_block.get("catalog_revision"),
+                    "status": policy_block.get("status"),
+                }
             await save_to_cache(
                 answer_cache_kv,
                 CacheData(
@@ -6084,6 +6303,7 @@ async def _build_query_context(
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    global_config: dict[str, Any] | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -6109,6 +6329,42 @@ async def _build_query_context(
         chunks_vdb,
         progress_callback=progress_callback,
     )
+
+    # Opt-in evidence policy. It runs BEFORE the empty-result returns for a
+    # reason: an explicitly named clause scope must be answerable even when the
+    # retriever returned nothing (the amendment may simply not have been
+    # recalled), and an ordinary "no results" return would hide that case.
+    policy_result = await _evidence_policy_context(
+        query=query,
+        query_param=query_param,
+        global_config=global_config or text_chunks_db.global_config,
+        text_chunks_db=text_chunks_db,
+        seed_chunk_ids=_policy_seed_chunk_ids(search_result),
+        system_prompt=system_prompt,
+        template_slot="context_data",
+        default_template=PROMPTS["rag_response"],
+        keywords={
+            "high_level": hl_keywords.split(", ") if hl_keywords else [],
+            "low_level": ll_keywords.split(", ") if ll_keywords else [],
+        },
+    )
+    if policy_result is not None:
+        context, raw_data = policy_result
+        # The KG description is deliberately NOT forwarded: it merges what
+        # every version said and cannot prove which version a sentence came
+        # from, so it would reintroduce the stale rule the policy just removed.
+        raw_data.setdefault("metadata", {}).setdefault(
+            "processing_info",
+            {
+                "total_entities_found": len(search_result.get("final_entities", [])),
+                "total_relations_found": len(search_result.get("final_relations", [])),
+                "merged_chunks_count": 0,
+                "final_chunks_count": len(
+                    raw_data.get("data", {}).get("chunks", [])
+                ),
+            },
+        )
+        return QueryContextResult(context=context, raw_data=raw_data)
 
     if not search_result["final_entities"] and not search_result["final_relations"]:
         if query_param.mode != "mix":
@@ -6898,22 +7154,30 @@ async def naive_query(
         await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
-    if chunks is None or len(chunks) == 0:
+    # Opt-in evidence policy. It runs BEFORE the empty-result return: a clause
+    # scope named by the caller must be answerable even when the retriever
+    # returned nothing, and returning None here would hide that case behind a
+    # generic "no results".
+    policy_result = await _evidence_policy_context(
+        query=query,
+        query_param=query_param,
+        global_config=global_config,
+        text_chunks_db=text_chunks_db,
+        seed_chunk_ids=[
+            str(chunk.get("chunk_id") or chunk.get("id"))
+            for chunk in (chunks or [])
+            if chunk.get("chunk_id") or chunk.get("id")
+        ],
+        system_prompt=system_prompt,
+        template_slot="content_data",
+        default_template=PROMPTS["naive_rag_response"],
+    )
+
+    if policy_result is None and (chunks is None or len(chunks) == 0):
         logger.info(
             "[naive_query] No relevant document chunks found; returning no-result."
         )
         return None
-
-    # Backfill heading path before token truncation so it counts toward the budget
-    if global_config.get("enable_content_headings", False):
-        await _attach_content_headings(chunks, text_chunks_db)
-
-    # Calculate dynamic token limit for chunks
-    max_total_tokens = getattr(
-        query_param,
-        "max_total_tokens",
-        global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
-    )
 
     # Calculate system prompt template tokens (excluding content_data)
     effective_user_prompt = resolve_user_prompt(
@@ -6932,80 +7196,107 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Create a preliminary system prompt with empty content_data to calculate overhead.
-    # As in _build_context_str, the user prompt is charged even when
-    # only_need_context will return before this prompt is sent: those switches
-    # preview the real request, so their chunk count must match it.
-    pre_sys_prompt = sys_prompt_template.format(
-        response_type=response_type,
-        user_prompt=effective_user_prompt.slot,
-        content_data="",  # Empty for overhead calculation
-    )
+    if policy_result is not None:
+        # The policy already decided and rendered the evidence; the ordinary
+        # chunk pipeline is bypassed entirely, including rerank and truncation,
+        # because a group must never be split to fit.
+        context_content, raw_data = policy_result
+        policy_block = _policy_metadata(raw_data) or {}
+        if policy_block.get("status") != "resolved":
+            return QueryResult(
+                content=failure_content(
+                    policy_block.get("status", "invalid_request"),
+                    policy_block.get("detail", ""),
+                ),
+                raw_data=raw_data,
+                llm_generated=False,
+            )
+    else:
+        # Backfill heading path before token truncation so it counts toward the budget
+        if global_config.get("enable_content_headings", False):
+            await _attach_content_headings(chunks, text_chunks_db)
 
-    # Calculate available tokens for chunks
-    sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
-    query_tokens = await acount_tokens(tokenizer, query)
-    buffer_tokens = 200  # reserved for reference list and safety buffer
-    available_chunk_tokens = max_total_tokens - (
-        sys_prompt_tokens + query_tokens + buffer_tokens
-    )
+        # Calculate dynamic token limit for chunks
+        max_total_tokens = getattr(
+            query_param,
+            "max_total_tokens",
+            global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
+        )
 
-    logger.debug(
-        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
-    )
+        # Create a preliminary system prompt with empty content_data to calculate overhead.
+        # As in _build_context_str, the user prompt is charged even when
+        # only_need_context will return before this prompt is sent: those switches
+        # preview the real request, so their chunk count must match it.
+        pre_sys_prompt = sys_prompt_template.format(
+            response_type=response_type,
+            user_prompt=effective_user_prompt.slot,
+            content_data="",  # Empty for overhead calculation
+        )
 
-    # Process chunks using unified processing with dynamic token limit
-    processed_chunks = await process_chunks_unified(
-        query=query,
-        unique_chunks=chunks,
-        query_param=query_param,
-        global_config=global_config,
-        source_type="vector",
-        chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
-        progress_callback=progress_callback,
-    )
+        # Calculate available tokens for chunks
+        sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
+        query_tokens = await acount_tokens(tokenizer, query)
+        buffer_tokens = 200  # reserved for reference list and safety buffer
+        available_chunk_tokens = max_total_tokens - (
+            sys_prompt_tokens + query_tokens + buffer_tokens
+        )
 
-    # Generate reference list from processed chunks using the new common function
-    reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
-        processed_chunks
-    )
+        logger.debug(
+            f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        )
 
-    logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
+        # Process chunks using unified processing with dynamic token limit
+        processed_chunks = await process_chunks_unified(
+            query=query,
+            unique_chunks=chunks,
+            query_param=query_param,
+            global_config=global_config,
+            source_type="vector",
+            chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
+            progress_callback=progress_callback,
+        )
 
-    # Build raw data structure for naive mode using processed chunks with reference IDs
-    raw_data = convert_to_user_format(
-        [],  # naive mode has no entities
-        [],  # naive mode has no relationships
-        processed_chunks_with_ref_ids,
-        reference_list,
-        "naive",
-    )
+        # Generate reference list from processed chunks using the new common function
+        reference_list, processed_chunks_with_ref_ids = (
+            generate_reference_list_from_chunks(processed_chunks)
+        )
 
-    # Add complete metadata for naive mode
-    if "metadata" not in raw_data:
-        raw_data["metadata"] = {}
-    raw_data["metadata"]["keywords"] = {
-        "high_level": [],  # naive mode has no keyword extraction
-        "low_level": [],  # naive mode has no keyword extraction
-    }
-    raw_data["metadata"]["processing_info"] = {
-        "total_chunks_found": len(chunks),
-        "final_chunks_count": len(processed_chunks_with_ref_ids),
-    }
+        logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
-    # Build chunks_context from processed chunks with reference IDs
-    text_units_str = render_chunks_context_text(processed_chunks_with_ref_ids)
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+        # Build raw data structure for naive mode using processed chunks with reference IDs
+        raw_data = convert_to_user_format(
+            [],  # naive mode has no entities
+            [],  # naive mode has no relationships
+            processed_chunks_with_ref_ids,
+            reference_list,
+            "naive",
+        )
 
-    naive_context_template = PROMPTS["naive_query_context"]
-    context_content = naive_context_template.format(
-        text_chunks_str=text_units_str,
-        reference_list_str=reference_list_str,
-    )
+        # Add complete metadata for naive mode
+        if "metadata" not in raw_data:
+            raw_data["metadata"] = {}
+        raw_data["metadata"]["keywords"] = {
+            "high_level": [],  # naive mode has no keyword extraction
+            "low_level": [],  # naive mode has no keyword extraction
+        }
+        raw_data["metadata"]["processing_info"] = {
+            "total_chunks_found": len(chunks),
+            "final_chunks_count": len(processed_chunks_with_ref_ids),
+        }
+
+        # Build chunks_context from processed chunks with reference IDs
+        text_units_str = render_chunks_context_text(processed_chunks_with_ref_ids)
+        reference_list_str = "\n".join(
+            f"[{ref['reference_id']}] {ref['file_path']}"
+            for ref in reference_list
+            if ref["reference_id"]
+        )
+
+        naive_context_template = PROMPTS["naive_query_context"]
+        context_content = naive_context_template.format(
+            text_chunks_str=text_units_str,
+            reference_list_str=reference_list_str,
+        )
 
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(
@@ -7052,6 +7343,8 @@ async def naive_query(
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
+        # Empty when the policy is off, so pre-existing keys keep hitting.
+        *_policy_cache_args(raw_data),
     )
     cached_result = await handle_cache(
         answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
@@ -7091,6 +7384,14 @@ async def naive_query(
                     "enable_content_headings", False
                 ),
             }
+            policy_block = _policy_metadata(raw_data)
+            if policy_block:
+                queryparam_dict["evidence_policy"] = {
+                    "policy_version": policy_block.get("policy_version"),
+                    "resolved_as_of": policy_block.get("resolved_as_of"),
+                    "catalog_revision": policy_block.get("catalog_revision"),
+                    "status": policy_block.get("status"),
+                }
             await save_to_cache(
                 answer_cache_kv,
                 CacheData(

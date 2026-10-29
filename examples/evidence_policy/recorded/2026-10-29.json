@@ -1,0 +1,914 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/HKUDS/LightRAG/issues/3037",
+  "recorded_at": "2026-10-29T17:39:23.810922+08:00",
+  "plan": "examples/evidence_policy/README.md",
+  "provider": {
+    "llm_base_url": "https://api.deepseek.com",
+    "llm_model": "deepseek-flash",
+    "embed_backend": "fastembed",
+    "embed_base_url": null,
+    "embed_model": "BAAI/bge-small-zh-v1.5",
+    "embed_dim": null
+  },
+  "preflight": {
+    "chat_reply": null,
+    "chat_calls": 0,
+    "embed_dim": 512
+  },
+  "corpus": {
+    "documents": [
+      {
+        "doc_id": "doc-3037-old",
+        "file_path": "3037/demo/rule-R-art8-2025.txt",
+        "published_at": "2025-01-01",
+        "content": "虚构规则 R 第 8 条\n\n标准成员办理申请的期限为 180 天。\n本条自 2025-01-01 起施行。"
+      },
+      {
+        "doc_id": "doc-3037-new",
+        "file_path": "3037/demo/rule-R-art8-amendment-2026.txt",
+        "published_at": "2026-05-20",
+        "content": "虚构修订 R-1（2026-05-20 公布）\n\n自 2026-07-01 起，将虚构规则 R 第 8 条规定的标准成员办理申请期限由 180 天调整为 270 天。\n本修订自 2026-07-01 生效，生效前原 180 天继续适用。"
+      }
+    ],
+    "version_specs": [
+      {
+        "version_id": "V-old",
+        "document_id": "doc-3037-old",
+        "kind": "rule",
+        "source_id": "demo-regulator",
+        "authority_class": "official",
+        "value": 180,
+        "valid_from": "2025-01-01",
+        "valid_to": null,
+        "supersedes": [],
+        "requires_evidence": [],
+        "source_locator": "rule-R-art8-2025.txt: 第 8 条"
+      },
+      {
+        "version_id": "V-new",
+        "document_id": "doc-3037-new",
+        "kind": "amendment",
+        "source_id": "demo-regulator",
+        "authority_class": "official",
+        "value": null,
+        "valid_from": "2026-07-01",
+        "valid_to": null,
+        "supersedes": [
+          "V-old"
+        ],
+        "requires_evidence": [
+          "V-old"
+        ],
+        "source_locator": "rule-R-art8-amendment-2026.txt: 全文"
+      }
+    ],
+    "scope": {
+      "jurisdiction": "DEMO-A",
+      "instrument_id": "DEMO-RULE-R",
+      "article_id": "8",
+      "subject_scope": "standard_members"
+    }
+  },
+  "controlled_demo": {
+    "corpus": "two fictional documents; not a real legal family",
+    "F02": "the revision's chunk vector entry is removed after ingestion so retrieval cannot recall it; its text_chunks row and its catalog entry stay in place, which is what the resolver fetches by ID"
+  },
+  "workspaces": {
+    "main": {
+      "dir": "<local-workdir>/main",
+      "catalog_revision": "demo-main-v1",
+      "catalog_fingerprint": "94b14624f841788686146fe0be193b2053c59cc500b4b762d91d0faedca8f4de",
+      "chunks": {
+        "V-old": {
+          "doc_id": "doc-3037-old",
+          "chunk_ids": [
+            "doc-3037-old-chunk-000"
+          ],
+          "file_path": "3037/demo/rule-R-art8-2025.txt",
+          "span_sha256": [
+            "8e5bed8a97028135e787aaa685b952ccf1201c27f68c898ddb340974ae081605"
+          ]
+        },
+        "V-new": {
+          "doc_id": "doc-3037-new",
+          "chunk_ids": [
+            "doc-3037-new-chunk-000"
+          ],
+          "file_path": "3037/demo/rule-R-art8-amendment-2026.txt",
+          "span_sha256": [
+            "3864fd4f8e974b2e69f5cd371281413e6e02550b045ebfac540f4f773154e8a9"
+          ]
+        }
+      },
+      "ingestion_reused_from": null,
+      "ingestion_reused_from_previous_run": true,
+      "successful_chat_calls": 4
+    },
+    "unrecalled": {
+      "dir": "<local-workdir>/unrecalled",
+      "catalog_revision": "demo-unrecalled-v1",
+      "catalog_fingerprint": "d4d9aa6511e3bc8d81d48a483befb571299a58529a3768af4589a9bcc46b068c",
+      "chunks": {
+        "V-old": {
+          "doc_id": "doc-3037-old",
+          "chunk_ids": [
+            "doc-3037-old-chunk-000"
+          ],
+          "file_path": "3037/demo/rule-R-art8-2025.txt",
+          "span_sha256": [
+            "8e5bed8a97028135e787aaa685b952ccf1201c27f68c898ddb340974ae081605"
+          ]
+        },
+        "V-new": {
+          "doc_id": "doc-3037-new",
+          "chunk_ids": [
+            "doc-3037-new-chunk-000"
+          ],
+          "file_path": "3037/demo/rule-R-art8-amendment-2026.txt",
+          "span_sha256": [
+            "3864fd4f8e974b2e69f5cd371281413e6e02550b045ebfac540f4f773154e8a9"
+          ]
+        }
+      },
+      "ingestion_reused_from": "main",
+      "ingestion_reused_from_previous_run": true,
+      "vectors_removed_for_demo": [
+        "doc-3037-new-chunk-000"
+      ],
+      "successful_chat_calls": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "F01",
+      "scenario": "原文与已生效修订同时存在",
+      "query": "标准成员办理申请的期限是多少天？",
+      "mode": "naive",
+      "as_of": "2026-08-01",
+      "workspace": "main",
+      "elapsed_seconds": 2.32,
+      "policy_status": "resolved",
+      "selected_versions": [
+        "V-new"
+      ],
+      "seed_chunk_ids": [
+        "doc-3037-new-chunk-000",
+        "doc-3037-old-chunk-000"
+      ],
+      "seed_versions": [
+        "V-new",
+        "V-old"
+      ],
+      "expanded_chunk_ids": [],
+      "expanded_versions": [],
+      "required_evidence": [
+        "V-new",
+        "V-old"
+      ],
+      "citation_keys": [
+        "doc-3037-new-chunk-000#0-118",
+        "doc-3037-old-chunk-000#0-53"
+      ],
+      "model_calls": 1,
+      "actual_model_context": "---Role---\n\nYou are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.\n\n---Goal---\n\nGenerate a comprehensive, well-structured answer to the user query.\nThe answer must integrate relevant facts from the Document Chunks found in the **Context**.\nConsider the conversation history if provided to maintain conversational flow and avoid repeating information.\n\n---Instructions---\n\n1. Step-by-Step Instruction:\n  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.\n  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.\n  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.\n  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.\n  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.\n  - Do not generate anything after the reference section.\n\n2. Content & Grounding:\n  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.\n  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.\n\n3. Formatting & Language:\n  - The response MUST be in the same language as the user query.\n  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).\n  - The response should be presented in Multiple Paragraphs.\n\n4. References Section Format:\n  - The References section should be under heading: `### References`\n  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).\n  - The Document Title in the citation must retain its original language.\n  - Output each citation on an individual line\n  - Provide maximum of 5 most relevant citations.\n  - Do not generate footnotes section or any comment, summary, or explanation after the references.\n\n5. Reference Section Example:\n```\n### References\n\n- [1] Document Title One\n- [2] Document Title Two\n- [3] Document Title Three\n```\n\n6. Additional Instructions: n/a\n\n\n---Context---\n\nrequested_as_of: 2026-08-01\nAnswer which rule applies on this requested date. Distinguish it from a source's publication or effective date.\n\nThe following evidence groups are the only source for the answer.\nEach group states the rule that applies at the requested date first, then the replaced wording it modified.\nSpans labelled superseded_for_current_answer are historical: never present them as the current rule.\nCite every claim with the citation key in parentheses.\n\n---How to read this evidence---\nEach group below is one clause, decided at the requested date. Read the labels\nliterally:\n\n- `applies_at_as_of` is the version in force at that date. It is the answer.\n- `superseded_for_current_answer` is the wording that version replaced. It is\n  history: it explains what changed, and it must never be presented as the\n  current rule, even when it states a different number.\n- `selected_version` names the version that governs the group. A group may also\n  carry earlier versions it depends on; those exist to interpret the selected\n  one, not to compete with it.\n- A version identifier identifies a *source text*, not a retrieval score. Do\n  not prefer a statement because it appears in more documents, in a later\n  document, or in a longer passage.\n\nIf the groups disagree about the same clause and neither is marked as replaced,\nthe request is a conflict: say so and present both, rather than choosing one.\nIf a group says the applicable version is unknown, say that the effective rule\ncannot be determined; do not answer from a version whose date is unknown.\n\nCite the citation key of the span that supports each claim, in parentheses,\nexactly as written. A claim with no citation key is not supported by this\ncontext.\n\n### Evidence group G::V-new\nscope: {\"article_id\": \"8\", \"instrument_id\": \"DEMO-RULE-R\", \"jurisdiction\": \"DEMO-A\", \"subject_scope\": \"standard_members\"}\nselected_version: V-new\n[V-new]\n  (applies_at_as_of) doc-3037-new-chunk-000#0-118: 虚构修订 R-1（2026-05-20 公布）\n\n自 2026-07-01 起，将虚构规则 R 第 8 条规定的标准成员办理申请期限由 180 天调整为 270 天。\n本修订自 2026-07-01 生效，生效前原 180 天继续适用。\n[V-old]\n  (superseded_for_current_answer) doc-3037-old-chunk-000#0-53: 虚构规则 R 第 8 条\n\n标准成员办理申请的期限为 180 天。\n本条自 2025-01-01 起施行。\n",
+      "context_sha256": "e965f133e839511c25b580b19b98db8effd097d2e1f10d9c744e55d110b6e495",
+      "final_model_answer": "根据截至 **2026-08-01** 适用的规则，标准成员办理申请的期限为 **270 天**。\n\n**适用规则与生效时间**\n\n虚构修订 R-1（2026-05-20 公布）规定，自 **2026-07-01** 起，将虚构规则 R 第 8 条规定的标准成员办理申请期限由 180 天调整为 270 天。该修订自 2026-07-01 生效（doc-3037-new-chunk-000#0-118）。\n\n需要注意区分**公布日**（2026-05-20）与**生效日**（2026-07-01）：在生效之前，原 180 天的期限继续适用（doc-3037-new-chunk-000#0-118）。因此在 2026-08-01 这一请求日期，270 天为现行有效规则。\n\n**被取代的历史规定**\n\n此前的规定为：标准成员办理申请的期限为 180 天，自 2025-01-01 起施行（doc-3037-old-chunk-000#0-53）。该 180 天的表述已被上述修订取代，仅作历史参考，不再适用于 2026-08-01。\n\n### References\n\n- [1] doc-3037-new-chunk-000\n- [2] doc-3037-old-chunk-000",
+      "llm_generated": true,
+      "expected_contains": "270",
+      "checks": {
+        "status_resolved": true,
+        "selected_versions_ok": true,
+        "answer_contains_expected": true,
+        "model_was_called": true,
+        "context_was_rendered": true,
+        "seed_has_required": true
+      },
+      "passed": true,
+      "diagnostics": {
+        "status": "resolved",
+        "policy_version": "authority-v1",
+        "resolved_as_of": "2026-08-01",
+        "as_of_source": "explicit",
+        "catalog_revision": "demo-main-v1",
+        "catalog_fingerprint": "94b14624f841788686146fe0be193b2053c59cc500b4b762d91d0faedca8f4de",
+        "requested_scopes": [],
+        "seed_chunk_ids": [
+          "doc-3037-new-chunk-000",
+          "doc-3037-old-chunk-000"
+        ],
+        "seed_version_ids": [
+          "V-new",
+          "V-old"
+        ],
+        "resolved_scopes": [
+          {
+            "jurisdiction": "DEMO-A",
+            "instrument_id": "DEMO-RULE-R",
+            "article_id": "8",
+            "subject_scope": "standard_members"
+          }
+        ],
+        "resolution": {
+          "as_of": "2026-08-01",
+          "status": "resolved",
+          "detail": "",
+          "scopes": [
+            {
+              "scope_key": {
+                "jurisdiction": "DEMO-A",
+                "instrument_id": "DEMO-RULE-R",
+                "article_id": "8",
+                "subject_scope": "standard_members"
+              },
+              "status": "resolved",
+              "selected": [
+                "V-new"
+              ],
+              "required_evidence": [
+                "V-new",
+                "V-old"
+              ],
+              "conflict_versions": [],
+              "verdicts": [
+                {
+                  "version_id": "V-new",
+                  "reason": "active"
+                },
+                {
+                  "version_id": "V-old",
+                  "reason": "superseded",
+                  "detail": "superseded by V-new from 2026-07-01"
+                }
+              ],
+              "detail": "",
+              "candidates": [
+                "V-new",
+                "V-old"
+              ]
+            }
+          ],
+          "selected_versions": [
+            "V-new"
+          ],
+          "required_evidence": [
+            "V-new",
+            "V-old"
+          ],
+          "diagnostics": {
+            "seed_versions": [
+              "V-new",
+              "V-old"
+            ],
+            "seed_versions_outside_requested_scopes": []
+          }
+        },
+        "expanded_chunk_ids": [],
+        "groups": [
+          "G::V-new"
+        ],
+        "budget": {
+          "included": [
+            "G::V-new"
+          ],
+          "excluded": [],
+          "tokens": {
+            "G::V-new": 215
+          },
+          "available_tokens": 29239,
+          "status": "fits",
+          "detail": ""
+        },
+        "selected_versions": [
+          "V-new"
+        ],
+        "required_evidence": [
+          "V-new",
+          "V-old"
+        ],
+        "citation_keys": [
+          "doc-3037-new-chunk-000#0-118",
+          "doc-3037-old-chunk-000#0-53"
+        ],
+        "context_tokens": 590,
+        "context_sha256": "96907990c5f04d60939d2edd55b66c6d5703e4bd77942ae3da102f59df0fea4d"
+      }
+    },
+    {
+      "id": "F03",
+      "scenario": "查询修订前的历史日期",
+      "query": "标准成员办理申请的期限是多少天？",
+      "mode": "naive",
+      "as_of": "2026-03-01",
+      "workspace": "main",
+      "elapsed_seconds": 1.13,
+      "policy_status": "resolved",
+      "selected_versions": [
+        "V-old"
+      ],
+      "seed_chunk_ids": [
+        "doc-3037-new-chunk-000",
+        "doc-3037-old-chunk-000"
+      ],
+      "seed_versions": [
+        "V-new",
+        "V-old"
+      ],
+      "expanded_chunk_ids": [],
+      "expanded_versions": [],
+      "required_evidence": [
+        "V-old"
+      ],
+      "citation_keys": [
+        "doc-3037-old-chunk-000#0-53"
+      ],
+      "model_calls": 1,
+      "actual_model_context": "---Role---\n\nYou are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.\n\n---Goal---\n\nGenerate a comprehensive, well-structured answer to the user query.\nThe answer must integrate relevant facts from the Document Chunks found in the **Context**.\nConsider the conversation history if provided to maintain conversational flow and avoid repeating information.\n\n---Instructions---\n\n1. Step-by-Step Instruction:\n  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.\n  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.\n  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.\n  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.\n  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.\n  - Do not generate anything after the reference section.\n\n2. Content & Grounding:\n  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.\n  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.\n\n3. Formatting & Language:\n  - The response MUST be in the same language as the user query.\n  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).\n  - The response should be presented in Multiple Paragraphs.\n\n4. References Section Format:\n  - The References section should be under heading: `### References`\n  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).\n  - The Document Title in the citation must retain its original language.\n  - Output each citation on an individual line\n  - Provide maximum of 5 most relevant citations.\n  - Do not generate footnotes section or any comment, summary, or explanation after the references.\n\n5. Reference Section Example:\n```\n### References\n\n- [1] Document Title One\n- [2] Document Title Two\n- [3] Document Title Three\n```\n\n6. Additional Instructions: n/a\n\n\n---Context---\n\nrequested_as_of: 2026-03-01\nAnswer which rule applies on this requested date. Distinguish it from a source's publication or effective date.\n\nThe following evidence groups are the only source for the answer.\nEach group states the rule that applies at the requested date first, then the replaced wording it modified.\nSpans labelled superseded_for_current_answer are historical: never present them as the current rule.\nCite every claim with the citation key in parentheses.\n\n---How to read this evidence---\nEach group below is one clause, decided at the requested date. Read the labels\nliterally:\n\n- `applies_at_as_of` is the version in force at that date. It is the answer.\n- `superseded_for_current_answer` is the wording that version replaced. It is\n  history: it explains what changed, and it must never be presented as the\n  current rule, even when it states a different number.\n- `selected_version` names the version that governs the group. A group may also\n  carry earlier versions it depends on; those exist to interpret the selected\n  one, not to compete with it.\n- A version identifier identifies a *source text*, not a retrieval score. Do\n  not prefer a statement because it appears in more documents, in a later\n  document, or in a longer passage.\n\nIf the groups disagree about the same clause and neither is marked as replaced,\nthe request is a conflict: say so and present both, rather than choosing one.\nIf a group says the applicable version is unknown, say that the effective rule\ncannot be determined; do not answer from a version whose date is unknown.\n\nCite the citation key of the span that supports each claim, in parentheses,\nexactly as written. A claim with no citation key is not supported by this\ncontext.\n\n### Evidence group G::V-old\nscope: {\"article_id\": \"8\", \"instrument_id\": \"DEMO-RULE-R\", \"jurisdiction\": \"DEMO-A\", \"subject_scope\": \"standard_members\"}\nselected_version: V-old\n[V-old]\n  (applies_at_as_of) doc-3037-old-chunk-000#0-53: 虚构规则 R 第 8 条\n\n标准成员办理申请的期限为 180 天。\n本条自 2025-01-01 起施行。\n",
+      "context_sha256": "eeb451839224c6a7dd8ff7e00941eef7f5bf17d5f042152c2a1c31d26522bd9f",
+      "final_model_answer": "根据请求日期（2026-03-01）适用的规则，标准成员办理申请的期限为 **180 天**（doc-3037-old-chunk-000#0-53）。\n\n需要说明的是，该条款的施行日期为 2025-01-01，这与来源的发布日期或检索日期不是同一概念；在本证据组所选定的版本（V-old）下，该 180 天的规定即为适用规则（doc-3037-old-chunk-000#0-53）。\n\n### References\n\n- [1] 虚构规则 R 第 8 条",
+      "llm_generated": true,
+      "expected_contains": "180",
+      "checks": {
+        "status_resolved": true,
+        "selected_versions_ok": true,
+        "answer_contains_expected": true,
+        "model_was_called": true,
+        "context_was_rendered": true
+      },
+      "passed": true,
+      "diagnostics": {
+        "status": "resolved",
+        "policy_version": "authority-v1",
+        "resolved_as_of": "2026-03-01",
+        "as_of_source": "explicit",
+        "catalog_revision": "demo-main-v1",
+        "catalog_fingerprint": "94b14624f841788686146fe0be193b2053c59cc500b4b762d91d0faedca8f4de",
+        "requested_scopes": [],
+        "seed_chunk_ids": [
+          "doc-3037-new-chunk-000",
+          "doc-3037-old-chunk-000"
+        ],
+        "seed_version_ids": [
+          "V-new",
+          "V-old"
+        ],
+        "resolved_scopes": [
+          {
+            "jurisdiction": "DEMO-A",
+            "instrument_id": "DEMO-RULE-R",
+            "article_id": "8",
+            "subject_scope": "standard_members"
+          }
+        ],
+        "resolution": {
+          "as_of": "2026-03-01",
+          "status": "resolved",
+          "detail": "",
+          "scopes": [
+            {
+              "scope_key": {
+                "jurisdiction": "DEMO-A",
+                "instrument_id": "DEMO-RULE-R",
+                "article_id": "8",
+                "subject_scope": "standard_members"
+              },
+              "status": "resolved",
+              "selected": [
+                "V-old"
+              ],
+              "required_evidence": [
+                "V-old"
+              ],
+              "conflict_versions": [],
+              "verdicts": [
+                {
+                  "version_id": "V-new",
+                  "reason": "not_yet_effective"
+                },
+                {
+                  "version_id": "V-old",
+                  "reason": "active"
+                }
+              ],
+              "detail": "",
+              "candidates": [
+                "V-new",
+                "V-old"
+              ]
+            }
+          ],
+          "selected_versions": [
+            "V-old"
+          ],
+          "required_evidence": [
+            "V-old"
+          ],
+          "diagnostics": {
+            "seed_versions": [
+              "V-new",
+              "V-old"
+            ],
+            "seed_versions_outside_requested_scopes": []
+          }
+        },
+        "expanded_chunk_ids": [],
+        "groups": [
+          "G::V-old"
+        ],
+        "budget": {
+          "included": [
+            "G::V-old"
+          ],
+          "excluded": [],
+          "tokens": {
+            "G::V-old": 111
+          },
+          "available_tokens": 29239,
+          "status": "fits",
+          "detail": ""
+        },
+        "selected_versions": [
+          "V-old"
+        ],
+        "required_evidence": [
+          "V-old"
+        ],
+        "citation_keys": [
+          "doc-3037-old-chunk-000#0-53"
+        ],
+        "context_tokens": 486,
+        "context_sha256": "a74d00564e425245392e8e499dc125ed6b93aa9e88ceadf47929c6b50982ecde"
+      }
+    },
+    {
+      "id": "F04-pre",
+      "scenario": "修订已公布（2026-05-20）但尚未生效",
+      "query": "标准成员办理申请的期限是多少天？",
+      "mode": "naive",
+      "as_of": "2026-06-15",
+      "workspace": "main",
+      "elapsed_seconds": 1.36,
+      "policy_status": "resolved",
+      "selected_versions": [
+        "V-old"
+      ],
+      "seed_chunk_ids": [
+        "doc-3037-new-chunk-000",
+        "doc-3037-old-chunk-000"
+      ],
+      "seed_versions": [
+        "V-new",
+        "V-old"
+      ],
+      "expanded_chunk_ids": [],
+      "expanded_versions": [],
+      "required_evidence": [
+        "V-old"
+      ],
+      "citation_keys": [
+        "doc-3037-old-chunk-000#0-53"
+      ],
+      "model_calls": 1,
+      "actual_model_context": "---Role---\n\nYou are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.\n\n---Goal---\n\nGenerate a comprehensive, well-structured answer to the user query.\nThe answer must integrate relevant facts from the Document Chunks found in the **Context**.\nConsider the conversation history if provided to maintain conversational flow and avoid repeating information.\n\n---Instructions---\n\n1. Step-by-Step Instruction:\n  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.\n  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.\n  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.\n  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.\n  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.\n  - Do not generate anything after the reference section.\n\n2. Content & Grounding:\n  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.\n  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.\n\n3. Formatting & Language:\n  - The response MUST be in the same language as the user query.\n  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).\n  - The response should be presented in Multiple Paragraphs.\n\n4. References Section Format:\n  - The References section should be under heading: `### References`\n  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).\n  - The Document Title in the citation must retain its original language.\n  - Output each citation on an individual line\n  - Provide maximum of 5 most relevant citations.\n  - Do not generate footnotes section or any comment, summary, or explanation after the references.\n\n5. Reference Section Example:\n```\n### References\n\n- [1] Document Title One\n- [2] Document Title Two\n- [3] Document Title Three\n```\n\n6. Additional Instructions: n/a\n\n\n---Context---\n\nrequested_as_of: 2026-06-15\nAnswer which rule applies on this requested date. Distinguish it from a source's publication or effective date.\n\nThe following evidence groups are the only source for the answer.\nEach group states the rule that applies at the requested date first, then the replaced wording it modified.\nSpans labelled superseded_for_current_answer are historical: never present them as the current rule.\nCite every claim with the citation key in parentheses.\n\n---How to read this evidence---\nEach group below is one clause, decided at the requested date. Read the labels\nliterally:\n\n- `applies_at_as_of` is the version in force at that date. It is the answer.\n- `superseded_for_current_answer` is the wording that version replaced. It is\n  history: it explains what changed, and it must never be presented as the\n  current rule, even when it states a different number.\n- `selected_version` names the version that governs the group. A group may also\n  carry earlier versions it depends on; those exist to interpret the selected\n  one, not to compete with it.\n- A version identifier identifies a *source text*, not a retrieval score. Do\n  not prefer a statement because it appears in more documents, in a later\n  document, or in a longer passage.\n\nIf the groups disagree about the same clause and neither is marked as replaced,\nthe request is a conflict: say so and present both, rather than choosing one.\nIf a group says the applicable version is unknown, say that the effective rule\ncannot be determined; do not answer from a version whose date is unknown.\n\nCite the citation key of the span that supports each claim, in parentheses,\nexactly as written. A claim with no citation key is not supported by this\ncontext.\n\n### Evidence group G::V-old\nscope: {\"article_id\": \"8\", \"instrument_id\": \"DEMO-RULE-R\", \"jurisdiction\": \"DEMO-A\", \"subject_scope\": \"standard_members\"}\nselected_version: V-old\n[V-old]\n  (applies_at_as_of) doc-3037-old-chunk-000#0-53: 虚构规则 R 第 8 条\n\n标准成员办理申请的期限为 180 天。\n本条自 2025-01-01 起施行。\n",
+      "context_sha256": "f2e6fe99176cece82cdfbfc5093e34e185ff41ea64c2596d856bcb19678e2c43",
+      "final_model_answer": "根据截至 **2026-06-15** 适用的规则，标准成员办理申请的期限为 **180 天**。\n\n该条自 2025-01-01 起施行。需要注意的是，这里的 2025-01-01 是该条款的施行日期，而不是本次查询的基准日期；本次判断依据的是在查询日期当日有效的版本（V-old）。\n\n### References\n\n- [1] doc-3037-old-chunk-000",
+      "llm_generated": true,
+      "expected_contains": "180",
+      "checks": {
+        "status_resolved": true,
+        "selected_versions_ok": true,
+        "answer_contains_expected": true,
+        "model_was_called": true,
+        "context_was_rendered": true
+      },
+      "passed": true,
+      "diagnostics": {
+        "status": "resolved",
+        "policy_version": "authority-v1",
+        "resolved_as_of": "2026-06-15",
+        "as_of_source": "explicit",
+        "catalog_revision": "demo-main-v1",
+        "catalog_fingerprint": "94b14624f841788686146fe0be193b2053c59cc500b4b762d91d0faedca8f4de",
+        "requested_scopes": [],
+        "seed_chunk_ids": [
+          "doc-3037-new-chunk-000",
+          "doc-3037-old-chunk-000"
+        ],
+        "seed_version_ids": [
+          "V-new",
+          "V-old"
+        ],
+        "resolved_scopes": [
+          {
+            "jurisdiction": "DEMO-A",
+            "instrument_id": "DEMO-RULE-R",
+            "article_id": "8",
+            "subject_scope": "standard_members"
+          }
+        ],
+        "resolution": {
+          "as_of": "2026-06-15",
+          "status": "resolved",
+          "detail": "",
+          "scopes": [
+            {
+              "scope_key": {
+                "jurisdiction": "DEMO-A",
+                "instrument_id": "DEMO-RULE-R",
+                "article_id": "8",
+                "subject_scope": "standard_members"
+              },
+              "status": "resolved",
+              "selected": [
+                "V-old"
+              ],
+              "required_evidence": [
+                "V-old"
+              ],
+              "conflict_versions": [],
+              "verdicts": [
+                {
+                  "version_id": "V-new",
+                  "reason": "not_yet_effective"
+                },
+                {
+                  "version_id": "V-old",
+                  "reason": "active"
+                }
+              ],
+              "detail": "",
+              "candidates": [
+                "V-new",
+                "V-old"
+              ]
+            }
+          ],
+          "selected_versions": [
+            "V-old"
+          ],
+          "required_evidence": [
+            "V-old"
+          ],
+          "diagnostics": {
+            "seed_versions": [
+              "V-new",
+              "V-old"
+            ],
+            "seed_versions_outside_requested_scopes": []
+          }
+        },
+        "expanded_chunk_ids": [],
+        "groups": [
+          "G::V-old"
+        ],
+        "budget": {
+          "included": [
+            "G::V-old"
+          ],
+          "excluded": [],
+          "tokens": {
+            "G::V-old": 111
+          },
+          "available_tokens": 29239,
+          "status": "fits",
+          "detail": ""
+        },
+        "selected_versions": [
+          "V-old"
+        ],
+        "required_evidence": [
+          "V-old"
+        ],
+        "citation_keys": [
+          "doc-3037-old-chunk-000#0-53"
+        ],
+        "context_tokens": 486,
+        "context_sha256": "3d60fc05745ebfb75bc947ccf13a14f8c3b60d2289d918a6c4469b98fc3af076"
+      }
+    },
+    {
+      "id": "F04-post",
+      "scenario": "同一修订生效之后",
+      "query": "标准成员办理申请的期限是多少天？",
+      "mode": "naive",
+      "as_of": "2026-08-01",
+      "workspace": "main",
+      "elapsed_seconds": 2.04,
+      "policy_status": "resolved",
+      "selected_versions": [
+        "V-new"
+      ],
+      "seed_chunk_ids": [
+        "doc-3037-new-chunk-000",
+        "doc-3037-old-chunk-000"
+      ],
+      "seed_versions": [
+        "V-new",
+        "V-old"
+      ],
+      "expanded_chunk_ids": [],
+      "expanded_versions": [],
+      "required_evidence": [
+        "V-new",
+        "V-old"
+      ],
+      "citation_keys": [
+        "doc-3037-new-chunk-000#0-118",
+        "doc-3037-old-chunk-000#0-53"
+      ],
+      "model_calls": 1,
+      "actual_model_context": "---Role---\n\nYou are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.\n\n---Goal---\n\nGenerate a comprehensive, well-structured answer to the user query.\nThe answer must integrate relevant facts from the Document Chunks found in the **Context**.\nConsider the conversation history if provided to maintain conversational flow and avoid repeating information.\n\n---Instructions---\n\n1. Step-by-Step Instruction:\n  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.\n  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.\n  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.\n  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.\n  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.\n  - Do not generate anything after the reference section.\n\n2. Content & Grounding:\n  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.\n  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.\n\n3. Formatting & Language:\n  - The response MUST be in the same language as the user query.\n  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).\n  - The response should be presented in Multiple Paragraphs.\n\n4. References Section Format:\n  - The References section should be under heading: `### References`\n  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).\n  - The Document Title in the citation must retain its original language.\n  - Output each citation on an individual line\n  - Provide maximum of 5 most relevant citations.\n  - Do not generate footnotes section or any comment, summary, or explanation after the references.\n\n5. Reference Section Example:\n```\n### References\n\n- [1] Document Title One\n- [2] Document Title Two\n- [3] Document Title Three\n```\n\n6. Additional Instructions: n/a\n\n\n---Context---\n\nrequested_as_of: 2026-08-01\nAnswer which rule applies on this requested date. Distinguish it from a source's publication or effective date.\n\nThe following evidence groups are the only source for the answer.\nEach group states the rule that applies at the requested date first, then the replaced wording it modified.\nSpans labelled superseded_for_current_answer are historical: never present them as the current rule.\nCite every claim with the citation key in parentheses.\n\n---How to read this evidence---\nEach group below is one clause, decided at the requested date. Read the labels\nliterally:\n\n- `applies_at_as_of` is the version in force at that date. It is the answer.\n- `superseded_for_current_answer` is the wording that version replaced. It is\n  history: it explains what changed, and it must never be presented as the\n  current rule, even when it states a different number.\n- `selected_version` names the version that governs the group. A group may also\n  carry earlier versions it depends on; those exist to interpret the selected\n  one, not to compete with it.\n- A version identifier identifies a *source text*, not a retrieval score. Do\n  not prefer a statement because it appears in more documents, in a later\n  document, or in a longer passage.\n\nIf the groups disagree about the same clause and neither is marked as replaced,\nthe request is a conflict: say so and present both, rather than choosing one.\nIf a group says the applicable version is unknown, say that the effective rule\ncannot be determined; do not answer from a version whose date is unknown.\n\nCite the citation key of the span that supports each claim, in parentheses,\nexactly as written. A claim with no citation key is not supported by this\ncontext.\n\n### Evidence group G::V-new\nscope: {\"article_id\": \"8\", \"instrument_id\": \"DEMO-RULE-R\", \"jurisdiction\": \"DEMO-A\", \"subject_scope\": \"standard_members\"}\nselected_version: V-new\n[V-new]\n  (applies_at_as_of) doc-3037-new-chunk-000#0-118: 虚构修订 R-1（2026-05-20 公布）\n\n自 2026-07-01 起，将虚构规则 R 第 8 条规定的标准成员办理申请期限由 180 天调整为 270 天。\n本修订自 2026-07-01 生效，生效前原 180 天继续适用。\n[V-old]\n  (superseded_for_current_answer) doc-3037-old-chunk-000#0-53: 虚构规则 R 第 8 条\n\n标准成员办理申请的期限为 180 天。\n本条自 2025-01-01 起施行。\n",
+      "context_sha256": "e965f133e839511c25b580b19b98db8effd097d2e1f10d9c744e55d110b6e495",
+      "final_model_answer": "根据在 **2026-08-01** 适用的规则，虚构规则 R 第 8 条规定的标准成员办理申请期限为 **270 天**。\n\n需要区分说明的是：这一 270 天期限来自虚构修订 R-1，该修订于 **2026-05-20 公布**，并规定自 **2026-07-01 生效**；在生效之前，原 180 天继续适用。因此，公布日期与生效日期并不相同，而 2026-08-01 已处于生效之后（doc-3037-new-chunk-000#0-118）。\n\n此前版本规定的 **180 天**期限（自 2025-01-01 起施行）已被本次修订取代，属于历史规定，不再适用于 2026-08-01（doc-3037-old-chunk-000#0-53）。\n\n### References\n\n- [1] doc-3037-new-chunk-000\n- [2] doc-3037-old-chunk-000",
+      "llm_generated": true,
+      "expected_contains": "270",
+      "checks": {
+        "status_resolved": true,
+        "selected_versions_ok": true,
+        "answer_contains_expected": true,
+        "model_was_called": true,
+        "context_was_rendered": true
+      },
+      "passed": true,
+      "diagnostics": {
+        "status": "resolved",
+        "policy_version": "authority-v1",
+        "resolved_as_of": "2026-08-01",
+        "as_of_source": "explicit",
+        "catalog_revision": "demo-main-v1",
+        "catalog_fingerprint": "94b14624f841788686146fe0be193b2053c59cc500b4b762d91d0faedca8f4de",
+        "requested_scopes": [],
+        "seed_chunk_ids": [
+          "doc-3037-new-chunk-000",
+          "doc-3037-old-chunk-000"
+        ],
+        "seed_version_ids": [
+          "V-new",
+          "V-old"
+        ],
+        "resolved_scopes": [
+          {
+            "jurisdiction": "DEMO-A",
+            "instrument_id": "DEMO-RULE-R",
+            "article_id": "8",
+            "subject_scope": "standard_members"
+          }
+        ],
+        "resolution": {
+          "as_of": "2026-08-01",
+          "status": "resolved",
+          "detail": "",
+          "scopes": [
+            {
+              "scope_key": {
+                "jurisdiction": "DEMO-A",
+                "instrument_id": "DEMO-RULE-R",
+                "article_id": "8",
+                "subject_scope": "standard_members"
+              },
+              "status": "resolved",
+              "selected": [
+                "V-new"
+              ],
+              "required_evidence": [
+                "V-new",
+                "V-old"
+              ],
+              "conflict_versions": [],
+              "verdicts": [
+                {
+                  "version_id": "V-new",
+                  "reason": "active"
+                },
+                {
+                  "version_id": "V-old",
+                  "reason": "superseded",
+                  "detail": "superseded by V-new from 2026-07-01"
+                }
+              ],
+              "detail": "",
+              "candidates": [
+                "V-new",
+                "V-old"
+              ]
+            }
+          ],
+          "selected_versions": [
+            "V-new"
+          ],
+          "required_evidence": [
+            "V-new",
+            "V-old"
+          ],
+          "diagnostics": {
+            "seed_versions": [
+              "V-new",
+              "V-old"
+            ],
+            "seed_versions_outside_requested_scopes": []
+          }
+        },
+        "expanded_chunk_ids": [],
+        "groups": [
+          "G::V-new"
+        ],
+        "budget": {
+          "included": [
+            "G::V-new"
+          ],
+          "excluded": [],
+          "tokens": {
+            "G::V-new": 215
+          },
+          "available_tokens": 29239,
+          "status": "fits",
+          "detail": ""
+        },
+        "selected_versions": [
+          "V-new"
+        ],
+        "required_evidence": [
+          "V-new",
+          "V-old"
+        ],
+        "citation_keys": [
+          "doc-3037-new-chunk-000#0-118",
+          "doc-3037-old-chunk-000#0-53"
+        ],
+        "context_tokens": 590,
+        "context_sha256": "96907990c5f04d60939d2edd55b66c6d5703e4bd77942ae3da102f59df0fea4d"
+      }
+    },
+    {
+      "id": "F02",
+      "scenario": "初始seed只含旧文，修订已入库且目录已登记",
+      "query": "标准成员办理申请的期限是多少天？",
+      "mode": "naive",
+      "as_of": "2026-08-01",
+      "workspace": "unrecalled",
+      "elapsed_seconds": 1.82,
+      "policy_status": "resolved",
+      "selected_versions": [
+        "V-new"
+      ],
+      "seed_chunk_ids": [
+        "doc-3037-old-chunk-000"
+      ],
+      "seed_versions": [
+        "V-old"
+      ],
+      "expanded_chunk_ids": [
+        "doc-3037-new-chunk-000"
+      ],
+      "expanded_versions": [
+        "V-new"
+      ],
+      "required_evidence": [
+        "V-new",
+        "V-old"
+      ],
+      "citation_keys": [
+        "doc-3037-new-chunk-000#0-118",
+        "doc-3037-old-chunk-000#0-53"
+      ],
+      "model_calls": 1,
+      "actual_model_context": "---Role---\n\nYou are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.\n\n---Goal---\n\nGenerate a comprehensive, well-structured answer to the user query.\nThe answer must integrate relevant facts from the Document Chunks found in the **Context**.\nConsider the conversation history if provided to maintain conversational flow and avoid repeating information.\n\n---Instructions---\n\n1. Step-by-Step Instruction:\n  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.\n  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.\n  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.\n  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.\n  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.\n  - Do not generate anything after the reference section.\n\n2. Content & Grounding:\n  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.\n  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.\n\n3. Formatting & Language:\n  - The response MUST be in the same language as the user query.\n  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).\n  - The response should be presented in Multiple Paragraphs.\n\n4. References Section Format:\n  - The References section should be under heading: `### References`\n  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).\n  - The Document Title in the citation must retain its original language.\n  - Output each citation on an individual line\n  - Provide maximum of 5 most relevant citations.\n  - Do not generate footnotes section or any comment, summary, or explanation after the references.\n\n5. Reference Section Example:\n```\n### References\n\n- [1] Document Title One\n- [2] Document Title Two\n- [3] Document Title Three\n```\n\n6. Additional Instructions: n/a\n\n\n---Context---\n\nrequested_as_of: 2026-08-01\nAnswer which rule applies on this requested date. Distinguish it from a source's publication or effective date.\n\nThe following evidence groups are the only source for the answer.\nEach group states the rule that applies at the requested date first, then the replaced wording it modified.\nSpans labelled superseded_for_current_answer are historical: never present them as the current rule.\nCite every claim with the citation key in parentheses.\n\n---How to read this evidence---\nEach group below is one clause, decided at the requested date. Read the labels\nliterally:\n\n- `applies_at_as_of` is the version in force at that date. It is the answer.\n- `superseded_for_current_answer` is the wording that version replaced. It is\n  history: it explains what changed, and it must never be presented as the\n  current rule, even when it states a different number.\n- `selected_version` names the version that governs the group. A group may also\n  carry earlier versions it depends on; those exist to interpret the selected\n  one, not to compete with it.\n- A version identifier identifies a *source text*, not a retrieval score. Do\n  not prefer a statement because it appears in more documents, in a later\n  document, or in a longer passage.\n\nIf the groups disagree about the same clause and neither is marked as replaced,\nthe request is a conflict: say so and present both, rather than choosing one.\nIf a group says the applicable version is unknown, say that the effective rule\ncannot be determined; do not answer from a version whose date is unknown.\n\nCite the citation key of the span that supports each claim, in parentheses,\nexactly as written. A claim with no citation key is not supported by this\ncontext.\n\n### Evidence group G::V-new\nscope: {\"article_id\": \"8\", \"instrument_id\": \"DEMO-RULE-R\", \"jurisdiction\": \"DEMO-A\", \"subject_scope\": \"standard_members\"}\nselected_version: V-new\n[V-new]\n  (applies_at_as_of) doc-3037-new-chunk-000#0-118: 虚构修订 R-1（2026-05-20 公布）\n\n自 2026-07-01 起，将虚构规则 R 第 8 条规定的标准成员办理申请期限由 180 天调整为 270 天。\n本修订自 2026-07-01 生效，生效前原 180 天继续适用。\n[V-old]\n  (superseded_for_current_answer) doc-3037-old-chunk-000#0-53: 虚构规则 R 第 8 条\n\n标准成员办理申请的期限为 180 天。\n本条自 2025-01-01 起施行。\n",
+      "context_sha256": "e965f133e839511c25b580b19b98db8effd097d2e1f10d9c744e55d110b6e495",
+      "final_model_answer": "根据截至 2026-08-01 适用的规则，标准成员办理申请的期限为 **270 天**。\n\n**适用规则与时间**\n\n- 虚构修订 R-1（2026-05-20 公布）规定，自 2026-07-01 起，将虚构规则 R 第 8 条规定的标准成员办理申请期限由 180 天调整为 270 天。(doc-3037-new-chunk-000#0-118)\n- 该修订自 2026-07-01 生效，生效前原 180 天继续适用。(doc-3037-new-chunk-000#0-118)\n\n**被取代的历史表述**\n\n- 此前版本规定标准成员办理申请的期限为 180 天，并自 2025-01-01 起施行；这一 180 天的表述已被上述修订取代，不再是 2026-08-01 适用的现行规则。(doc-3037-old-chunk-000#0-53)\n\n### References\n\n- [1] doc-3037-new-chunk-000\n- [2] doc-3037-old-chunk-000",
+      "llm_generated": true,
+      "expected_contains": "270",
+      "checks": {
+        "status_resolved": true,
+        "selected_versions_ok": true,
+        "answer_contains_expected": true,
+        "model_was_called": true,
+        "context_was_rendered": true,
+        "seed_has_required": true,
+        "seed_excludes_forbidden": true,
+        "expanded_has_required": true
+      },
+      "passed": true,
+      "diagnostics": {
+        "status": "resolved",
+        "policy_version": "authority-v1",
+        "resolved_as_of": "2026-08-01",
+        "as_of_source": "explicit",
+        "catalog_revision": "demo-unrecalled-v1",
+        "catalog_fingerprint": "d4d9aa6511e3bc8d81d48a483befb571299a58529a3768af4589a9bcc46b068c",
+        "requested_scopes": [],
+        "seed_chunk_ids": [
+          "doc-3037-old-chunk-000"
+        ],
+        "seed_version_ids": [
+          "V-old"
+        ],
+        "resolved_scopes": [
+          {
+            "jurisdiction": "DEMO-A",
+            "instrument_id": "DEMO-RULE-R",
+            "article_id": "8",
+            "subject_scope": "standard_members"
+          }
+        ],
+        "resolution": {
+          "as_of": "2026-08-01",
+          "status": "resolved",
+          "detail": "",
+          "scopes": [
+            {
+              "scope_key": {
+                "jurisdiction": "DEMO-A",
+                "instrument_id": "DEMO-RULE-R",
+                "article_id": "8",
+                "subject_scope": "standard_members"
+              },
+              "status": "resolved",
+              "selected": [
+                "V-new"
+              ],
+              "required_evidence": [
+                "V-new",
+                "V-old"
+              ],
+              "conflict_versions": [],
+              "verdicts": [
+                {
+                  "version_id": "V-new",
+                  "reason": "active"
+                },
+                {
+                  "version_id": "V-old",
+                  "reason": "superseded",
+                  "detail": "superseded by V-new from 2026-07-01"
+                }
+              ],
+              "detail": "",
+              "candidates": [
+                "V-new",
+                "V-old"
+              ]
+            }
+          ],
+          "selected_versions": [
+            "V-new"
+          ],
+          "required_evidence": [
+            "V-new",
+            "V-old"
+          ],
+          "diagnostics": {
+            "seed_versions": [
+              "V-old"
+            ],
+            "seed_versions_outside_requested_scopes": []
+          }
+        },
+        "expanded_chunk_ids": [
+          "doc-3037-new-chunk-000"
+        ],
+        "groups": [
+          "G::V-new"
+        ],
+        "budget": {
+          "included": [
+            "G::V-new"
+          ],
+          "excluded": [],
+          "tokens": {
+            "G::V-new": 215
+          },
+          "available_tokens": 29239,
+          "status": "fits",
+          "detail": ""
+        },
+        "selected_versions": [
+          "V-new"
+        ],
+        "required_evidence": [
+          "V-new",
+          "V-old"
+        ],
+        "citation_keys": [
+          "doc-3037-new-chunk-000#0-118",
+          "doc-3037-old-chunk-000#0-53"
+        ],
+        "context_tokens": 590,
+        "context_sha256": "96907990c5f04d60939d2edd55b66c6d5703e4bd77942ae3da102f59df0fea4d"
+      }
+    }
+  ],
+  "summary": {
+    "cases": 5,
+    "passed": 5,
+    "failed": [],
+    "successful_chat_calls_including_preflight": 5
+  },
+  "publication_note": {
+    "source_record_sha256": "aae065c83738a1b07b67adeea43095d01849c80a170ea0bf63cdc66e37a022b1",
+    "changes": [
+      "Workstation-specific workspace directories replaced with <local-workdir>.",
+      "The plan pointer now names the published demo README."
+    ],
+    "preserved": "Case contexts, answers, diagnostics, checks and summary are unchanged from the recorded run."
+  }
+}

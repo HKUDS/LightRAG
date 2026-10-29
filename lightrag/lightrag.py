@@ -9,7 +9,7 @@ import time
 import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
+from copy import copy as shallow_copy, deepcopy
 
 try:
     import httpx
@@ -44,6 +44,7 @@ from lightrag.prompt import (
     resolve_entity_extraction_prompt_profile,
     validate_entity_extraction_prompt_profile_for_mode,
 )
+from lightrag.evidence_policy import Catalog
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
     DEFAULT_MAX_GLEANING,
@@ -1360,6 +1361,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     shifted 43 of them. See ``tests/test_dataclass_positional_compatibility.py``.
     """
 
+    evidence_catalog: Catalog | None = field(default=None)
+    """Read-only clause catalog that ``QueryParam.evidence_policy`` resolves against.
+
+    ``None`` (the default) means the policy cannot be enabled: a request that
+    asks for it fails with ``invalid_request`` instead of quietly running the
+    old semantics. Load a snapshot with ``lightrag.evidence_policy.load_catalog``
+    and treat its nested mappings as read-only. It is injected here rather than
+    accepted per request so a caller cannot point a query at a catalog it chose.
+
+    Only a catalog whose ``chunk_refs`` resolve to real ``text_chunks`` rows in
+    this workspace can answer. Re-ingesting or deleting a document invalidates
+    those spans; the policy then fails loud with ``missing_evidence`` rather
+    than answering from a stale mapping.
+    """
+
+    evidence_policy_timezone: str = "UTC"
+    """Timezone used to resolve ``as_of`` when a policy request omits it.
+
+    The date is resolved once, at request start, so every stage of one request
+    agrees on "today". An unknown zone name is refused at query time. A caller
+    that cares which calendar day "current" means must set this: UTC is the
+    default precisely because it is not a guess about the workspace.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1577,7 +1602,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     def _build_global_config(self) -> dict[str, Any]:
         self._ensure_addon_params_cache()
-        global_config = asdict(self)
+        if self.evidence_catalog is None:
+            global_config = asdict(self)
+        else:
+            # ``asdict`` walks every field, and ``Catalog.by_scope`` is keyed by
+            # ``ScopeKey`` dataclasses: rebuilding that mapping would key a dict
+            # by dicts and raise TypeError. The catalog is handed over verbatim
+            # a few lines below, so the traversal runs on a shallow copy that
+            # carries None in its place -- every other field is deep-copied
+            # exactly as before, and the live instance is never mutated (a
+            # temporary ``self.evidence_catalog = None`` would let a concurrent
+            # query read a missing catalog).
+            snapshot = shallow_copy(self)
+            snapshot.evidence_catalog = None
+            global_config = asdict(snapshot)
         # Restore the tokenizer object itself, the same way __post_init__ restores
         # embedding_func. This is about IDENTITY, not cost: asdict has already
         # deep-copied every non-dataclass field by the time we get here, so the
@@ -1599,6 +1637,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # state would be lost silently. A plain function is deep-copied
         # atomically and was never affected, which is why this is easy to miss.
         global_config["kg_extraction_validator"] = self.kg_extraction_validator
+        # Hand over the original catalog snapshot; it was excluded
+        # from the dataclass traversal above so its scope keys stay intact.
+        global_config["evidence_catalog"] = self.evidence_catalog
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
         global_config.pop("_cached_entity_extraction_use_json", None)
@@ -5035,6 +5076,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             user_prompt=param.user_prompt,
             disable_user_prompt_prefix=param.disable_user_prompt_prefix,
             enable_rerank=param.enable_rerank,
+            # The policy fields must travel with the copy: aquery_data reuses
+            # kg_query/naive_query, which read them from this object. Dropping
+            # them here would make the data API silently answer without the
+            # policy the caller asked for.
+            evidence_policy=param.evidence_policy,
+            as_of=param.as_of,
+            scope_keys=list(param.scope_keys),
         )
 
         query_result = None

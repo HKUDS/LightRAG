@@ -1,0 +1,5 @@
+# Provider and local embedding versions used by the recorded Python 3.11 demo.
+# Install from the repository root together with: python -m pip install -e .
+openai==2.54.0
+fastembed==0.9.1
+onnxruntime==1.31.1
