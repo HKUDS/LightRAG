@@ -512,11 +512,17 @@ def test_budget_accepts_bytes_and_path_equivalently(tmp_path):
 def test_validate_source_does_not_open_the_archive(tmp_path, monkeypatch):
     src = _benign(tmp_path / "ok.docx")
 
+    opened: list[tuple] = []
+
     def _explode(*args, **kwargs):  # pragma: no cover - only on regression
-        raise AssertionError("validate_source opened the zip on the event loop")
+        opened.append(args)
+        raise RuntimeError("validate_source opened the zip on the event loop")
 
     monkeypatch.setattr(zipfile, "ZipFile", _explode)
     NativeDocxParser().validate_source(src, "ok.docx")
+    # Recorded as well as raised, so a broad except in validate_source cannot
+    # swallow the regression.
+    assert opened == []
 
 
 def test_budget_runs_in_the_executor_before_artifact_cleanup():
