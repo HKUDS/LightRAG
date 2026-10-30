@@ -3696,15 +3696,18 @@ def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path, fi
     assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_rejects_colon(tmp_path):
-    for filename in (
+@pytest.mark.parametrize(
+    "filename",
+    [
         "safe.pdf:payload.pdf",  # NTFS alternate-data-stream reference
         "C:report.pdf",  # drive-relative, not a literal basename
-    ):
-        with pytest.raises(_document_routes.HTTPException) as exc:
-            _document_routes.sanitize_filename(filename, tmp_path)
+    ],
+)
+def test_sanitize_filename_rejects_colon(tmp_path, filename):
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        _document_routes.sanitize_filename(filename, tmp_path)
 
-        assert exc.value.status_code == 400
+    assert exc.value.status_code == 400
 
 
 def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path):
