@@ -97,16 +97,16 @@ def test_absolute_path_to_a_non_image_is_refused(sidecar_dir, tmp_path):
     assert outcome is _SidecarPathOutcome.REFUSED
 
 
-def test_non_string_path_value_is_refused_not_raised(sidecar_dir):
+@pytest.mark.parametrize("bad", [123, ["x"], {"a": 1}, 3.5, True])
+def test_non_string_path_value_is_refused_not_raised(sidecar_dir, bad):
     """A sidecar carrying ``"path": 123`` (or a list) must be refused, not
     raise. The caller's ``item.get("path") or ...`` chain passes any truthy
     JSON type through; ``sidecar_dir / 123`` raises TypeError, which — before
     the guard — escaped the resolver, hit the fail-fast wait loop, and marked
     the whole document FAILED instead of skipping one image."""
-    for bad in (123, ["x"], {"a": 1}, 3.5, True):
-        path, outcome = _resolve_sidecar_image_path(bad, sidecar_dir)
-        assert path is None
-        assert outcome is _SidecarPathOutcome.REFUSED
+    path, outcome = _resolve_sidecar_image_path(bad, sidecar_dir)
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
 
 
 # --- the legitimate case still works ---------------------------------------
