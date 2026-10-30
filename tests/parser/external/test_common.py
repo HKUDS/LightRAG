@@ -154,10 +154,10 @@ def test_env_bool_truthy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     assert env_bool("X", False) is True
 
 
-def test_env_bool_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
-    for raw in ("0", "false", "no", "off"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", True) is False
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_env_bool_falsy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", True) is False
 
 
 def test_env_bool_falls_back_on_unrecognized(monkeypatch: pytest.MonkeyPatch) -> None:
