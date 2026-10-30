@@ -183,7 +183,9 @@ def test_a_failing_extend_is_swallowed():
         def extend(self, _iterable):
             raise ConnectionRefusedError("manager is gone")
 
-    append_pipeline_history({"history_messages": _DeadProxy()}, "message")
+    history = _DeadProxy()
+    append_pipeline_history({"history_messages": history}, "message")
+    assert history == []
 
 
 def test_a_failing_len_does_not_fail_the_append():
