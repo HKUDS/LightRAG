@@ -57,6 +57,7 @@
 ---
 
 ## 🎉 News
+
 - [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
 - [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.
@@ -425,6 +426,11 @@ python examples/lightrag_openai_demo.py
 ```
 
 For a streaming response implementation example, please see `examples/lightrag_openai_compatible_demo.py`. Prior to execution, ensure you modify the sample code's LLM and embedding configurations accordingly.
+
+For an experimental, opt-in example of selecting clause versions by effective date,
+see the [evidence-policy demo](examples/evidence_policy/README.md). It includes a
+two-document `naive` example, recorded answers, and the
+[validation scope and known limitations](examples/evidence_policy/VALIDATION.md).
 
 **Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. Vectors written by one model are unusable by another, so switching models requires rebuilding them. For the **demo** data specifically, the simplest route is to delete the demo directory (`./dickens`) and re-run — the corpus is small and disposable; keep `kv_store_llm_response_cache.json` if you want the LLM cache. For a **real deployment, do not delete the working directory**: it holds the knowledge graph and the text chunks, and deleting it turns a re-embedding job into a full re-ingestion of every document. Run `lightrag-rebuild-vdb` instead — see [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models).
 
