@@ -74,7 +74,9 @@ def test_clear_dir_contents_keeps_dir_and_removes_children(tmp_path: Path) -> No
 
 
 def test_clear_dir_contents_noop_when_missing(tmp_path: Path) -> None:
-    clear_dir_contents(tmp_path / "does-not-exist")
+    missing = tmp_path / "does-not-exist"
+    clear_dir_contents(missing)
+    assert not missing.exists()
 
 
 # ---------------------------------------------------------------------------
