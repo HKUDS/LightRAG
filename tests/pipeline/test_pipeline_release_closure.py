@@ -1063,13 +1063,9 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
 
             rag._purge_doc_chunks_and_kg = _spy  # type: ignore[method-assign]
 
-            try:
-                await rag.apipeline_process_enqueue_documents()
-            except Exception:
-                # Whether the pipeline reaches our spy or fails downstream
-                # doesn't matter for this test; we only care that the spy
-                # was NOT called for an empty chunks_list.
-                pass
+            # The pipeline records per-document failures in doc_status instead
+            # of raising, so a downstream failure cannot mask the spy check.
+            await rag.apipeline_process_enqueue_documents()
 
             assert calls == [], (
                 "purge helper should not be called when chunks_list is empty"
