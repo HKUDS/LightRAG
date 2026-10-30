@@ -3710,19 +3710,22 @@ def test_sanitize_filename_rejects_colon(tmp_path, filename):
     assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path):
-    """Unlike ':', these don't let the name be reinterpreted as a different
-    path (no shell-out or unescaped glob() call site uses upload filenames in
-    this codebase), so they're accepted rather than pre-emptively rejected."""
-    for filename in (
+@pytest.mark.parametrize(
+    "filename",
+    [
         'quoted"name.pdf',
         "piped|name.pdf",
         "glob?name.pdf",
         "glob*name.pdf",
         "less<than.pdf",
         "greater>than.pdf",
-    ):
-        assert _document_routes.sanitize_filename(filename, tmp_path) == filename
+    ],
+)
+def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path, filename):
+    """Unlike ':', these don't let the name be reinterpreted as a different
+    path (no shell-out or unescaped glob() call site uses upload filenames in
+    this codebase), so they're accepted rather than pre-emptively rejected."""
+    assert _document_routes.sanitize_filename(filename, tmp_path) == filename
 
 
 def test_sanitize_filename_allows_non_traversal_dot_sequences(tmp_path):
