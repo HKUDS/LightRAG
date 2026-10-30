@@ -4860,7 +4860,12 @@ async def _evidence_policy_context(
         raw_data = {
             "status": "failure",
             "message": str(exc),
-            "data": {"entities": [], "relationships": [], "chunks": [], "references": []},
+            "data": {
+                "entities": [],
+                "relationships": [],
+                "chunks": [],
+                "references": [],
+            },
             "metadata": {
                 "query_mode": query_param.mode,
                 "keywords": keywords or {"high_level": [], "low_level": []},
@@ -6359,9 +6364,7 @@ async def _build_query_context(
                 "total_entities_found": len(search_result.get("final_entities", [])),
                 "total_relations_found": len(search_result.get("final_relations", [])),
                 "merged_chunks_count": 0,
-                "final_chunks_count": len(
-                    raw_data.get("data", {}).get("chunks", [])
-                ),
+                "final_chunks_count": len(raw_data.get("data", {}).get("chunks", [])),
             },
         )
         return QueryContextResult(context=context, raw_data=raw_data)

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import hashlib
 import json
 import shutil
 import sys
@@ -131,7 +130,9 @@ async def main() -> int:
             # query leg sees an empty index.
             await rag.chunks_vdb.index_done_callback()
 
-            catalog, detail = await run_live.build_catalog(rag, revision=f"smoke-{name}")
+            catalog, detail = await run_live.build_catalog(
+                rag, revision=f"smoke-{name}"
+            )
             rag.evidence_catalog = catalog
             if detail["V-new"]["doc_id"] != corpus.DOC_NEW:
                 failures.append(f"{name}: catalog doc id mismatch")

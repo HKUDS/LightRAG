@@ -449,9 +449,16 @@ def _chain_roots(
         for previous in successor.supersedes:
             previous_version = catalog.versions[previous]
             previous_end = previous_version.valid_to
-            when = previous_end if previous_end is not None and previous_end < successor.valid_from else successor.valid_from
+            when = (
+                previous_end
+                if previous_end is not None and previous_end < successor.valid_from
+                else successor.valid_from
+            )
             current = cut.get(previous)
-            if current is None or (when, successor.version_id) < (current[0], current[1].version_id):
+            if current is None or (when, successor.version_id) < (
+                current[0],
+                current[1].version_id,
+            ):
                 cut[previous] = (when, successor)
 
     roots: list[CatalogVersion] = []
@@ -472,7 +479,9 @@ def _chain_roots(
     return roots
 
 
-def _repeal_for(catalog: Catalog, member: CatalogVersion, as_of: dt.date) -> CatalogVersion | None:
+def _repeal_for(
+    catalog: Catalog, member: CatalogVersion, as_of: dt.date
+) -> CatalogVersion | None:
     """The earliest repeal of ``member`` that has taken effect at ``as_of``."""
     candidates: list[CatalogVersion] = []
     for successor_id in catalog.superseding_versions(member.version_id):
@@ -506,10 +515,16 @@ def _apply_authority(
         for second in roots[i + 1 :]:
             first_rank = catalog.policy.rank(first.authority_class)
             second_rank = catalog.policy.rank(second.authority_class)
-            if first_rank is not None and second_rank is not None and first_rank != second_rank:
+            if (
+                first_rank is not None
+                and second_rank is not None
+                and first_rank != second_rank
+            ):
                 # A higher authority class is not a contradiction: the lower
                 # one simply does not establish this scope.
-                loser, winner = (second, first) if first_rank < second_rank else (first, second)
+                loser, winner = (
+                    (second, first) if first_rank < second_rank else (first, second)
+                )
                 if verdicts[loser.version_id].reason == "active":
                     verdicts[loser.version_id] = VersionVerdict(
                         loser.version_id,
@@ -531,7 +546,9 @@ def _apply_authority(
     return list(dict.fromkeys(conflicts))
 
 
-def _contradicts(catalog: Catalog, first: CatalogVersion, second: CatalogVersion) -> bool:
+def _contradicts(
+    catalog: Catalog, first: CatalogVersion, second: CatalogVersion
+) -> bool:
     if first.source_id == second.source_id:
         return False
     if first.value is None or second.value is None:

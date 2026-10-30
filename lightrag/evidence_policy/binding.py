@@ -25,8 +25,9 @@ from .contracts import Catalog, CatalogError, CatalogVersion, ChunkRef
 class ChunkReader(Protocol):
     """The slice of ``BaseKVStorage`` (``text_chunks``) the binder needs."""
 
-    async def get_by_ids(self, ids: list[str], fields: list[str] | None = None) -> list[dict[str, Any]]:
-        ...
+    async def get_by_ids(
+        self, ids: list[str], fields: list[str] | None = None
+    ) -> list[dict[str, Any]]: ...
 
 
 class StorageBackendError(RuntimeError):
@@ -64,7 +65,11 @@ class BindingProblem:
     detail: str
 
     def as_dict(self) -> dict[str, Any]:
-        return {"version_id": self.version_id, "reason": self.reason, "detail": self.detail}
+        return {
+            "version_id": self.version_id,
+            "reason": self.reason,
+            "detail": self.detail,
+        }
 
 
 @dataclass(frozen=True)
@@ -96,7 +101,9 @@ async def bind_versions(
         BindingProblem(vid, "missing_evidence", "version is not in the catalog")
         for vid in unknown
     ]
-    chunk_ids = sorted({ref.chunk_id for vid in wanted for ref in catalog.versions[vid].chunk_refs})
+    chunk_ids = sorted(
+        {ref.chunk_id for vid in wanted for ref in catalog.versions[vid].chunk_refs}
+    )
 
     rows: dict[str, dict[str, Any] | None] = {}
     if chunk_ids:
@@ -134,11 +141,15 @@ async def bind_versions(
         version = catalog.versions[version_id]
         if not version.chunk_refs:
             problems.append(
-                BindingProblem(version_id, "missing_evidence", "catalog version has no chunk_refs")
+                BindingProblem(
+                    version_id, "missing_evidence", "catalog version has no chunk_refs"
+                )
             )
             continue
         for ref in version.chunk_refs:
-            problem = _check_row(version, ref, rows.get(ref.chunk_id), require_doc_match)
+            problem = _check_row(
+                version, ref, rows.get(ref.chunk_id), require_doc_match
+            )
             if problem is not None:
                 problems.append(problem)
                 continue
@@ -254,4 +265,6 @@ def _doc_ids_of(value: Any) -> list[str]:
 
 def problem_to_catalog_error(problems: tuple[BindingProblem, ...]) -> CatalogError:
     first = problems[0]
-    return CatalogError(first.reason, first.detail, problems=[p.as_dict() for p in problems])
+    return CatalogError(
+        first.reason, first.detail, problems=[p.as_dict() for p in problems]
+    )

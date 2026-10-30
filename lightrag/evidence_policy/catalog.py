@@ -40,7 +40,9 @@ def load_catalog(path: str | Path) -> Catalog:
     except FileNotFoundError as exc:
         raise CatalogError("missing_metadata", f"catalog not found: {path}") from exc
     except json.JSONDecodeError as exc:
-        raise CatalogError("missing_metadata", f"catalog is not JSON: {path}: {exc}") from exc
+        raise CatalogError(
+            "missing_metadata", f"catalog is not JSON: {path}: {exc}"
+        ) from exc
     return catalog_from_mapping(raw, source_path=str(path))
 
 
@@ -56,7 +58,9 @@ def catalog_from_mapping(raw: Any, *, source_path: str = "") -> Catalog:
         )
     revision = raw.get("catalog_revision")
     if not isinstance(revision, str) or not revision.strip():
-        raise CatalogError("missing_metadata", "catalog_revision must be a non-empty string")
+        raise CatalogError(
+            "missing_metadata", "catalog_revision must be a non-empty string"
+        )
     policy = _load_policy(raw.get("policy"))
 
     documents: dict[str, CatalogDocument] = {}
@@ -145,7 +149,9 @@ def _load_policy(raw: Any) -> AuthorityPolicy:
     version = raw.get("version")
     ranking = raw.get("authority_ranking")
     if not isinstance(version, str) or not version.strip():
-        raise CatalogError("missing_metadata", "catalog.policy.version must be a string")
+        raise CatalogError(
+            "missing_metadata", "catalog.policy.version must be a string"
+        )
     if (
         not isinstance(ranking, list)
         or not ranking
@@ -190,7 +196,9 @@ def _load_version(entry: Any, documents: dict[str, CatalogDocument]) -> CatalogV
         raise CatalogError("missing_metadata", "versions entries must be objects")
     version_id = entry.get("version_id")
     if not isinstance(version_id, str) or not version_id:
-        raise CatalogError("missing_metadata", "versions entry needs a string version_id")
+        raise CatalogError(
+            "missing_metadata", "versions entry needs a string version_id"
+        )
     document_id = entry.get("document_id")
     if document_id not in documents:
         raise CatalogError(
@@ -221,7 +229,9 @@ def _load_version(entry: Any, documents: dict[str, CatalogDocument]) -> CatalogV
         )
     source_id = validate_source_id(entry.get("source_id"))
 
-    valid_from = _required_precision_date(entry.get("valid_from"), version_id, "valid_from")
+    valid_from = _required_precision_date(
+        entry.get("valid_from"), version_id, "valid_from"
+    )
     valid_to = _required_precision_date(entry.get("valid_to"), version_id, "valid_to")
     if valid_from is not None and valid_to is not None and valid_from >= valid_to:
         raise CatalogError(
@@ -232,7 +242,9 @@ def _load_version(entry: Any, documents: dict[str, CatalogDocument]) -> CatalogV
         )
 
     supersedes = _id_tuple(entry.get("supersedes", []), version_id, "supersedes")
-    requires = _id_tuple(entry.get("requires_evidence", []), version_id, "requires_evidence")
+    requires = _id_tuple(
+        entry.get("requires_evidence", []), version_id, "requires_evidence"
+    )
     for name, ids in (("supersedes", supersedes), ("requires_evidence", requires)):
         if version_id in ids:
             raise CatalogError(
@@ -263,11 +275,14 @@ def _load_version(entry: Any, documents: dict[str, CatalogDocument]) -> CatalogV
     locator = entry.get("source_locator")
     if locator is not None and not isinstance(locator, str):
         raise CatalogError(
-            "missing_metadata", f"versions[{version_id}].source_locator must be a string"
+            "missing_metadata",
+            f"versions[{version_id}].source_locator must be a string",
         )
     label = entry.get("label") or ""
     if not isinstance(label, str):
-        raise CatalogError("missing_metadata", f"versions[{version_id}].label must be a string")
+        raise CatalogError(
+            "missing_metadata", f"versions[{version_id}].label must be a string"
+        )
 
     document = documents[document_id]
     try:
@@ -282,7 +297,9 @@ def _load_version(entry: Any, documents: dict[str, CatalogDocument]) -> CatalogV
     return CatalogVersion(
         version_id=version_id,
         document_id=document_id,
-        scope_key=ScopeKey.from_mapping(entry.get("scope_key"), field_name=f"versions[{version_id}].scope_key"),
+        scope_key=ScopeKey.from_mapping(
+            entry.get("scope_key"), field_name=f"versions[{version_id}].scope_key"
+        ),
         kind=kind,
         source_id=source_id,
         authority_class=authority_class,
@@ -314,7 +331,9 @@ def _required_precision_date(value: Any, version_id: str, field_name: str):
 
 
 def _id_tuple(raw: Any, version_id: str, field_name: str) -> tuple[str, ...]:
-    if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
+    if not isinstance(raw, list) or not all(
+        isinstance(item, str) and item for item in raw
+    ):
         raise CatalogError(
             "missing_metadata",
             f"versions[{version_id}].{field_name} must be a list of version ids",
@@ -381,7 +400,10 @@ def _validate_acyclic(catalog: Catalog) -> None:
 def _normalized(catalog: Catalog) -> dict:
     return {
         "catalog_revision": catalog.revision,
-        "policy": {"version": catalog.policy.version, "authority_ranking": list(catalog.policy.ranking)},
+        "policy": {
+            "version": catalog.policy.version,
+            "authority_ranking": list(catalog.policy.ranking),
+        },
         "documents": {
             doc_id: {"published_at": _iso(doc.published_at), "content": doc.content}
             for doc_id, doc in sorted(catalog.documents.items())

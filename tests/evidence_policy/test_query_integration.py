@@ -12,7 +12,12 @@ import pytest
 
 from lightrag.base import QueryContextResult, QueryParam
 from lightrag.evidence_policy import catalog_from_mapping
-from lightrag.operate import _build_query_context, _policy_cache_args, kg_query, naive_query
+from lightrag.operate import (
+    _build_query_context,
+    _policy_cache_args,
+    kg_query,
+    naive_query,
+)
 from lightrag.utils import Tokenizer
 from tests.evidence_policy import corpus
 
@@ -207,7 +212,10 @@ async def test_naive_refuses_without_falling_back_or_calling_the_model():
     assert result.llm_generated is False
     assert model.calls == 0
     assert "unresolved_conflict" in result.content
-    assert result.raw_data["metadata"]["evidence_policy"]["status"] == "unresolved_conflict"
+    assert (
+        result.raw_data["metadata"]["evidence_policy"]["status"]
+        == "unresolved_conflict"
+    )
 
 
 async def test_naive_without_the_policy_is_unchanged():
@@ -250,7 +258,11 @@ async def test_mix_context_excludes_the_merged_kg_description(monkeypatch):
             ],
             "final_relations": [],
             "vector_chunks": [
-                {"chunk_id": "c-old", "content": corpus.TEXT_OLD, "file_path": "d-old.txt"}
+                {
+                    "chunk_id": "c-old",
+                    "content": corpus.TEXT_OLD,
+                    "file_path": "d-old.txt",
+                }
             ],
             "chunk_tracking": {"c-old": {"source": "C", "frequency": 1, "order": 1}},
             "query_embedding": [0.1],
@@ -335,7 +347,12 @@ async def test_kg_query_publishes_the_refusal_instead_of_an_answer(monkeypatch):
         raw_data = {
             "status": "failure",
             "message": "conflict",
-            "data": {"entities": [], "relationships": [], "chunks": [], "references": []},
+            "data": {
+                "entities": [],
+                "relationships": [],
+                "chunks": [],
+                "references": [],
+            },
             "metadata": {
                 "query_mode": "mix",
                 "keywords": {"high_level": [], "low_level": []},

@@ -337,7 +337,9 @@ def test_missing_as_of_is_resolved_once_in_the_configured_timezone():
 
 def test_unknown_timezone_is_refused():
     with pytest.raises(RequestError):
-        build_policy_config(param(as_of=None), catalog=catalog(), timezone="Mars/Olympus")
+        build_policy_config(
+            param(as_of=None), catalog=catalog(), timezone="Mars/Olympus"
+        )
 
 
 def test_scope_keys_need_all_four_components():

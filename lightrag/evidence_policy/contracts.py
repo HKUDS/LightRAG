@@ -136,10 +136,9 @@ _FULL_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 def parse_full_date(value: Any, *, field_name: str) -> dt.date | None:
     """Parse an ISO full date, or ``None`` for an explicit "unknown".
 
-    An empty string and ``None`` both mean unknown. Anything that is not a
-   ``YYYY-MM-DD`` calendar date is rejected -- including decade-, year- or
-    month-precision values, which keep their own precision by being rejected
-    into the unknown bucket rather than being padded to the first of January.
+    An empty string and ``None`` mean unknown. Any other value must be a real
+    ``YYYY-MM-DD`` calendar date. Coarse dates and malformed values raise
+    ``CatalogError`` instead of being padded to the first of January.
     """
     if value is None or value == "":
         return None
@@ -264,9 +263,13 @@ class ChunkRef:
         span = mapping.get("span")
         digest = mapping.get("content_sha256")
         if not isinstance(chunk_id, str) or not chunk_id:
-            raise CatalogError("missing_metadata", f"{where} needs chunk_id", version_id=version_id)
+            raise CatalogError(
+                "missing_metadata", f"{where} needs chunk_id", version_id=version_id
+            )
         if not isinstance(doc_id, str) or not doc_id:
-            raise CatalogError("missing_metadata", f"{where} needs doc_id", version_id=version_id)
+            raise CatalogError(
+                "missing_metadata", f"{where} needs doc_id", version_id=version_id
+            )
         if (
             not isinstance(span, (list, tuple))
             or len(span) != 2
@@ -288,7 +291,9 @@ class ChunkRef:
             )
         file_path = mapping.get("file_path") or ""
         if not isinstance(file_path, str):
-            raise CatalogError("missing_metadata", f"{where} file_path must be a string")
+            raise CatalogError(
+                "missing_metadata", f"{where} file_path must be a string"
+            )
         return cls(
             chunk_id=chunk_id,
             doc_id=doc_id,
@@ -427,11 +432,17 @@ class Catalog:
 
 
 def canonical_json(payload: Any) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def scope_sort_key(scope_map: dict[str, str] | ScopeKey) -> tuple[str, ...]:
-    key = scope_map if isinstance(scope_map, ScopeKey) else ScopeKey.from_mapping(scope_map)
+    key = (
+        scope_map
+        if isinstance(scope_map, ScopeKey)
+        else ScopeKey.from_mapping(scope_map)
+    )
     return tuple(getattr(key, name) for name in SCOPE_FIELDS)
 
 

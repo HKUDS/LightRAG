@@ -55,10 +55,6 @@
 
 ---
 
-> **本 fork 功能演示：** [按生效日期选择条款版本](examples/evidence_policy/README.md)，
-> 包含依赖安装与本地运行说明。两篇虚构文档、`naive` 路径的已有真实问答 5/5，
-> 相关回归 45 passed；详见[验证范围](examples/evidence_policy/VALIDATION.md)。
-
 <div align="center">
   <table>
     <tr>
@@ -449,6 +445,10 @@ python examples/lightrag_openai_demo.py
 ```
 
 如需流式响应示例的实现代码，请参阅 `examples/lightrag_openai_compatible_demo.py`。运行前，请确保根据需求修改示例代码中的LLM及嵌入模型配置。
+
+如需实验性的、按生效日期选择条款版本的可选策略示例，请参阅
+[证据策略演示](examples/evidence_policy/README-zh.md)。其中包含两篇虚构文档的
+`naive` 示例、已记录答案及[验证范围与已知限制](examples/evidence_policy/VALIDATION.md)。
 
 **注意1**：在运行 demo 程序的时候需要注意，不同的测试程序可能使用的是不同的 embedding 模型。一个模型写入的向量对另一个模型不可用，所以更换 embedding 模型后必须重建向量。对 **demo 数据**而言，最简单的做法是直接删除 demo 目录（`./dickens`）后重跑——语料很小且可丢弃；想保留 LLM 缓存可以保留 `kv_store_llm_response_cache.json` 文件。但**生产部署请不要删除工作目录**：它保存着知识图谱和文本块，删掉会把重新嵌入变成全量重新摄取。正确做法是运行 `lightrag-rebuild-vdb`，参见 [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models)。
 

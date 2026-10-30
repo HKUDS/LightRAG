@@ -1,33 +1,37 @@
-# 按生效日期选择条款版本：功能演示
+# Select clause versions by effective date: experimental demo
 
-本分支演示：同一条款同时存在原文与修订时，先确定查询日期适用的版本，再补取
-解释该版本所需的原文，交给模型回答。核心入口是
-`QueryParam(evidence_policy="authority-v1", as_of="YYYY-MM-DD")`。
+English | [简体中文](README-zh.md)
 
-2026-10-29 已完成真实问答 **5/5**，相关回归 **45 passed**。
-见[验证记录与边界](VALIDATION.md)和[已记录的完整上下文及答案](recorded/2026-10-29.json)。
-这是本 fork 的限定范围演示；代码通过 Python SDK 在本地运行。
+When an original clause and its amendment coexist, this demo selects the version
+in force at the requested date, fetches the source spans needed to interpret it,
+and passes those spans to the answer model. The SDK switch is
+`QueryParam(evidence_policy="authority-v1", as_of="YYYY-MM-DD")`.
 
-## 安装
+The recorded run on 2026-10-29 completed **5/5 real questions** on two fictional
+documents. See the [validation record](VALIDATION.md),
+[complete recorded contexts and answers](recorded/2026-10-29.json), and
+[core contract, including known limitations](../../docs/design/EvidencePolicyContract.md).
+This is an experimental SDK feature with a deliberately limited demonstration.
 
-推荐使用本次运行所用的 Python 3.11（记录环境为 3.11.9）。在终端执行：
+## Install
+
+Run from a source checkout containing this change. Python 3.11 matches the
+recorded environment (3.11.9):
 
 ```bash
-git clone --branch codex/evidence-policy-demo https://github.com/P0tenti4L-220/LightRAG.git
-cd LightRAG
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e . -r examples/evidence_policy/requirements.txt
 ```
 
-项目自身的依赖由根目录 `pyproject.toml` 安装；此目录的 `requirements.txt` 补充
-OpenAI 兼容客户端和本地嵌入依赖，并固定本次演示使用的版本。
-Windows 激活命令为 `.venv\Scripts\activate`。
+On Windows, activate with `.venv\Scripts\activate`. The root `pyproject.toml`
+provides the project dependencies; this example's `requirements.txt` pins the
+OpenAI-compatible client and local embedding dependencies used in the recording.
 
-## 运行五个场景
+## Run the five scenarios
 
-只需一个 DeepSeek API key，在当前终端设置：
+Set a DeepSeek API key in the current terminal:
 
 ```bash
 export LIGHTRAG_LLM_API_KEY="<your-api-key>"
@@ -36,33 +40,38 @@ python examples/evidence_policy/run_live.py \
   --out temp/evidence-policy-demo/record.json
 ```
 
-默认生成模型为 `deepseek-flash`，端点为 `https://api.deepseek.com`；本地嵌入采用
-`BAAI/bge-small-zh-v1.5`，通过 fastembed / ONNX 输出 512 维向量。
-首次运行会下载嵌入模型。预检、文档抽取和答案生成会调用模型 API。
+The defaults use `deepseek-flash` at `https://api.deepseek.com` and local
+`BAAI/bge-small-zh-v1.5` embeddings (512 dimensions through fastembed/ONNX).
+The first embedding call downloads the model. Preflight, extraction, and answer
+generation call the model API.
 
-完整运行请指定一个新的 `--workdir`：脚本会重建其中的 `main` 子目录，并创建
-`unrecalled` 副本。运行存储与新生成的 `record.json` 保留在已忽略的 `temp/` 下。
-密钥仅通过环境变量提供，不要将实际值写进源码或提交文件。
+Use a fresh, disposable `--workdir` for a full run: the script recreates its
+`main` subdirectory and creates an `unrecalled` copy. Generated stores and
+`record.json` remain under the ignored `temp/` directory. Supply keys through
+environment variables.
 
-脚本依次入库两篇虚构短文，从真实 `text_chunks` 行生成包含 chunk ID、文档 ID、
-字符 span 和 SHA-256 的版本目录，再注入 `LightRAG.evidence_catalog`。
-五次问答都走 `aquery_llm(mode="naive")`，答案缓存和 thinking 关闭。
-控制台输出每个场景的结果；完整上下文、答案、初始召回和补取 ID 写入 `--out`。
+The script ingests two fictional Chinese documents, reads their real
+`text_chunks` rows to build a catalog with chunk IDs, document IDs, character
+spans and SHA-256 hashes, then injects it as `LightRAG.evidence_catalog`.
+All five questions use `aquery_llm(mode="naive")`; answer caching and thinking
+are disabled. The output records model context, answers, seed IDs and expansion IDs.
 
-| 场景 | 查询日期 | 预期 |
+| Scenario | Requested date | Expected result |
 | --- | --- | --- |
-| F01：原文与修订均被召回 | 2026-08-01 | 270 天，旧 180 天作为历史 |
-| F02：初始只召回旧文 | 2026-08-01 | 从目录补取修订，回答 270 天 |
-| F03：历史日期 | 2026-03-01 | 180 天 |
-| F04-pre：修订已公布但未生效 | 2026-06-15 | 180 天 |
-| F04-post：修订已生效 | 2026-08-01 | 270 天 |
+| F01: both versions retrieved | 2026-08-01 | 270 days; 180 days is historical |
+| F02: only the old version initially retrieved | 2026-08-01 | Fetch the amendment from the catalog; 270 days |
+| F03: historical question | 2026-03-01 | 180 days |
+| F04-pre: amendment published but not effective | 2026-06-15 | 180 days |
+| F04-post: amendment effective | 2026-08-01 | 270 days |
 
-修订于 2026-05-20 公布、2026-07-01 生效。F02 人为删除副本中修订的向量条目，
-正文和目录仍保留，用于复现漏召回后的补取；它没有测量自然检索的漏召回率。
+The amendment was published on 2026-05-20 and became effective on 2026-07-01.
+F02 deliberately removes its vector entry in the copy while retaining its text
+and catalog entry. This exercises recovery from a controlled retrieval miss;
+it does not measure natural retrieval miss rates.
 
-## 复用入库数据和配置
+## Reuse ingestion and configure providers
 
-已有完整入库数据时，可以只重复五次问答，使用新的输出文件名：
+After a complete ingestion, repeat only the five questions with a new output path:
 
 ```bash
 python examples/evidence_policy/run_live.py \
@@ -71,34 +80,37 @@ python examples/evidence_policy/run_live.py \
   --out temp/evidence-policy-demo/record-next.json
 ```
 
-`--preflight-only` 检查模型端点与嵌入维度，不入库；默认仍会发起一次 chat 请求。
+`--preflight-only` checks the model endpoint and embedding dimension without
+ingestion; by default it still sends one chat request.
 
-| 环境变量 | 默认值或用途 |
+| Environment variable | Default or purpose |
 | --- | --- |
-| `LIGHTRAG_LLM_API_KEY` | 必填，生成模型密钥 |
+| `LIGHTRAG_LLM_API_KEY` | Required generation key |
 | `LIGHTRAG_LLM_BASE_URL` | `https://api.deepseek.com` |
 | `LIGHTRAG_LLM_MODEL` | `deepseek-flash` |
-| `LIGHTRAG_EMBED_BACKEND` | `fastembed`；也支持 `openai` |
-| `LIGHTRAG_EMBED_MODEL` | 本地默认 `BAAI/bge-small-zh-v1.5`；托管嵌入时必填 |
-| `LIGHTRAG_EMBED_BASE_URL` | 托管嵌入端点，未设置时沿用生成端点 |
-| `LIGHTRAG_EMBED_API_KEY` | 托管嵌入密钥，未设置时沿用生成密钥 |
-| `LIGHTRAG_EMBED_DIM` | 可选；设置后与预检返回的维度核对 |
+| `LIGHTRAG_EMBED_BACKEND` | `fastembed`; also accepts `openai` |
+| `LIGHTRAG_EMBED_MODEL` | Local default `BAAI/bge-small-zh-v1.5`; required for hosted embeddings |
+| `LIGHTRAG_EMBED_BASE_URL` | Hosted embedding endpoint; defaults to the generation endpoint |
+| `LIGHTRAG_EMBED_API_KEY` | Hosted embedding key; defaults to the generation key |
+| `LIGHTRAG_EMBED_DIM` | Optional dimension checked against preflight output |
 
-脚本的 chat 请求带有 DeepSeek 的 `thinking: {"type": "disabled"}` 参数。
-更换兼容端点时需确认其支持该参数；本次真实运行仅覆盖上述 DeepSeek 配置。
+Chat requests include DeepSeek's `thinking: {"type": "disabled"}` parameter.
+Check support before changing endpoints; the recorded live run covers only
+the DeepSeek configuration above.
 
-## 文件与适用边界
+## Files and supported scope
 
-| 文件 | 用途 |
+| File | Purpose |
 | --- | --- |
-| `run_live.py` | 入库、生成目录、执行五次真实问答、保存记录 |
-| `corpus_3037.py` | 两篇虚构文档及显式版本关系 |
-| `smoke_plumbing.py` | 使用本地模型与嵌入桩的接线辅助脚本 |
-| `requirements.txt` | 演示附加依赖 |
-| `VALIDATION.md` | 现有验证结果与限定范围 |
-| `recorded/2026-10-29.json` | 已完成运行的发布副本 |
+| `run_live.py` | Ingest, build the catalog, run five real questions, save the record |
+| `corpus_3037.py` | Two fictional documents and explicit version relationships |
+| `smoke_plumbing.py` | Offline wiring check with deterministic model and embedding stubs |
+| `requirements.txt` | Additional demo dependencies |
+| `VALIDATION.md` | Observed results and their limits |
+| `recorded/2026-10-29.json` | Published copy of the completed live run |
 
-实现包含 `naive` 与 `mix` 分支，本次真实演示覆盖 `naive`。
-版本关系由运营者显式给定；自动发现修订、REST 参数暴露、生产目录管理和全模式接入
-均超出本次范围。`resolved` 表示证据处理结果，不能当作模型答案已通过自动语义或引用校验。
-其他已知限制见[核心契约](../../docs/design/EvidencePolicyContract.md)。
+The implementation has `naive` and `mix` branches; only `naive` has been exercised
+in the recorded live demo. Operators supply version relationships explicitly.
+Automatic amendment discovery, REST parameters, production catalog management,
+and all-mode integration are outside this demonstration. `resolved` describes
+evidence processing; it does not certify the generated answer's meaning or citations.

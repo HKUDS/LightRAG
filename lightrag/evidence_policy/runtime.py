@@ -99,7 +99,9 @@ class EvidenceOutcome:
     def resolved(self) -> bool:
         return self.status == "resolved"
 
-    def raw_data(self, *, mode: str, keywords: dict[str, Any] | None = None) -> dict[str, Any]:
+    def raw_data(
+        self, *, mode: str, keywords: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Project the outcome into the public ``data``/``metadata`` shape.
 
         ``entities`` and ``relationships`` are empty on purpose: under this
@@ -115,7 +117,10 @@ class EvidenceOutcome:
                 if file_path not in reference_ids:
                     reference_ids[file_path] = str(len(reference_ids) + 1)
                     references.append(
-                        {"reference_id": reference_ids[file_path], "file_path": file_path}
+                        {
+                            "reference_id": reference_ids[file_path],
+                            "file_path": file_path,
+                        }
                     )
                 chunks.append(
                     {
@@ -243,9 +248,7 @@ def _current_date(timezone: str, now: dt.datetime | None) -> tuple[dt.date, str]
     return moment.astimezone(zone).date(), "resolved_once_at_request_start"
 
 
-def scopes_from_seeds(
-    catalog: Catalog, seed_chunk_ids: Any
-) -> tuple[ScopeKey, ...]:
+def scopes_from_seeds(catalog: Catalog, seed_chunk_ids: Any) -> tuple[ScopeKey, ...]:
     """Clause identities the retrieved chunks belong to, in retrieval order.
 
     A chunk may carry spans of several versions of the *same* clause (an
@@ -329,7 +332,9 @@ async def run_evidence_policy(
                 f"max_versions_per_scope={config.max_versions_per_scope}",
             )
 
-    resolution = resolve(catalog, scopes, config.as_of, seed_version_ids=seeded_versions)
+    resolution = resolve(
+        catalog, scopes, config.as_of, seed_version_ids=seeded_versions
+    )
     outcome.resolution = resolution
     diagnostics["resolution"] = resolution.as_dict()
     if not resolution.resolved:

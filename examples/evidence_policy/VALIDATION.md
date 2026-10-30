@@ -1,37 +1,45 @@
-# 已完成的验证
+# Validation record and scope
 
-记录日期：2026-10-29（Asia/Shanghai）。本次整理上传复用这些结果，没有重新运行模型或测试。
+The live-model results below were recorded on **2026-10-29 (Asia/Shanghai)**.
+The upstream preparation on 2026-10-30 does not repeat paid model calls.
 
-## 真实问答：5/5
+## Recorded live questions: 5/5
 
-环境：Python 3.11.9、OpenAI 客户端 2.54.0、fastembed 0.9.1、onnxruntime 1.31.1。
-生成模型为 DeepSeek `deepseek-flash`，本地嵌入为 `BAAI/bge-small-zh-v1.5`（512 维）。
-文档经 `ainsert` 入库，目录从真实 chunk 行生成，问答经 `aquery_llm(mode="naive")` 执行。
+Environment: Python 3.11.9, OpenAI client 2.54.0, fastembed 0.9.1, and
+onnxruntime 1.31.1. Generation used DeepSeek `deepseek-flash`; embeddings used
+local `BAAI/bge-small-zh-v1.5` vectors (512 dimensions).
 
-| 场景 | 日期 | 初始版本 | 选中版本 | 已记录答案 |
+Both documents went through `ainsert`. The catalog was built from their real
+chunk rows, and questions used `aquery_llm(mode="naive")`.
+
+| Scenario | Requested date | Initial versions | Selected version | Recorded answer |
 | --- | --- | --- | --- | --- |
-| F01 | 2026-08-01 | V-old、V-new | V-new | 270 天；180 天标为历史 |
-| F02 | 2026-08-01 | V-old | 补取 V-new，选 V-new | 270 天 |
-| F03 | 2026-03-01 | V-old、V-new | V-old | 180 天 |
-| F04-pre | 2026-06-15 | V-old、V-new | V-old | 180 天 |
-| F04-post | 2026-08-01 | V-old、V-new | V-new | 270 天 |
+| F01 | 2026-08-01 | V-old, V-new | V-new | 270 days; 180 days labelled historical |
+| F02 | 2026-08-01 | V-old | Fetch V-new, select V-new | 270 days |
+| F03 | 2026-03-01 | V-old, V-new | V-old | 180 days |
+| F04-pre | 2026-06-15 | V-old, V-new | V-old | 180 days |
+| F04-post | 2026-08-01 | V-old, V-new | V-new | 270 days |
 
-[完整记录](recorded/2026-10-29.json)包含初始 chunk、补取 chunk、模型实际上下文、答案、
-检查项和诊断。发布副本仅将工作机绝对目录替换为 `<local-workdir>`，并更新演示文档指针；
-五个场景内容及汇总保持原样，源记录 SHA-256 保存在 `publication_note`。
+The [complete record](recorded/2026-10-29.json) includes initial and fetched
+chunks, actual model context, answers, checks and diagnostics. Its published
+copy replaces workstation-specific directories with `<local-workdir>` and
+updates the demo-document pointer. Case contents and summary are unchanged;
+`publication_note` retains the source record's SHA-256.
 
-最终轮复用已有入库，成功完成五次 chat，进程退出码 0。自动检查包含版本选择、
-预期数值、模型调用和 F02 补取关系；完整答案另经人工阅读核对。
-这些检查不构成通用答案语义校验或独立法律审核。
+The final recorded run reused existing ingestion, completed five chat calls,
+and exited with code 0. Automated checks cover version selection, the expected
+number, model calls, and F02 expansion. They do not establish general answer
+semantics, citation correctness, or independent legal review.
 
-首次运行发现目录注入导致 `asdict` 将 dataclass scope 键展开为 dict，以及模型上下文
-缺少查询日期。现有代码已修复这两项：在浅副本上生成配置并保留同一目录对象，
-向上下文加入 `requested_as_of`。表中结果来自修复后的最终轮。
+The first run exposed catalog injection through `asdict` and a missing requested
+date in model context. The implementation now excludes the catalog from the
+dataclass traversal on a shallow copy, preserves catalog identity, and renders
+`requested_as_of`. The table reports the subsequent successful run.
 
-## 相关回归：45 passed
+## Recorded related regressions: 45 passed
 
-既有命令针对 `tests/evidence_policy/`，包含构造与目录注入、查询接入、上下文日期、
-缓存区分和策略运行时检查：
+The original test selection covered catalog injection, query integration,
+context dates, cache identity, and policy runtime checks:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 ./scripts/test.sh tests/evidence_policy \
@@ -39,14 +47,87 @@ PYTHONDONTWRITEBYTECODE=1 ./scripts/test.sh tests/evidence_policy \
   --basetemp=/private/tmp/3037-live-date-regression-20261029
 ```
 
-结果为 **45 passed**。需要在新环境运行这些测试时，先安装项目 `pytest` extra：
-`python -m pip install -e ".[pytest]"`。
+It completed with **45 passed**. In a fresh environment, install the project's
+`pytest` extra before running tests:
 
-## 结论的适用范围
+```bash
+python -m pip install -e ".[pytest]"
+```
 
-这轮结果支持：两篇虚构文档、一个明确版本链、`naive` 检索路径中，能够按生效日期
-选择原文或修订，并在初始只召回旧文时补取修订。
+## Upstream preparation checks: 2026-10-30
 
-F02 的漏召回通过删除向量条目构造；真实正文仍在 KV 中。没有据此声称自然漏召回率、
-大规模法规质量、其他模型或存储后端的效果、`mix` 真实运行结果，或上游合并状态。
-现有 `authority-v1` 的其他已知缺口保留在[核心契约](../../docs/design/EvidencePolicyContract.md)中。
+These checks use the existing Python 3.11 environment. No live model request,
+new ingestion against a paid service, or deployment was performed.
+
+The feature, positional-compatibility, and docstring-contract selection passed:
+
+```bash
+PYTHON="$PWD/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 \
+  PYTHON_DOTENV_DISABLED=1 ./scripts/test.sh \
+  tests/evidence_policy tests/test_dataclass_positional_compatibility.py \
+  tests/test_docstring_budget.py -q -p no:cacheprovider --capture=sys
+```
+
+Result: **68 passed**, including the same **45 evidence-policy tests**.
+
+The separate offline wiring check also exited with code 0 and `wiring ok`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 \
+  .venv/bin/python examples/evidence_policy/smoke_plumbing.py
+```
+
+All five scenarios reached the expected selected version, including F02's
+catalog expansion. Its embeddings and answer model are deterministic stubs;
+these are structural checks rather than new live-answer results.
+
+Because the proposal touches `base.py`, the offline suite was also run on both
+the untouched upstream `main` snapshot (`aaebfe1bb`) and the feature snapshot,
+using the same interpreter, disabled dotenv loading, and process permissions:
+
+```bash
+PYTHON="$PWD/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 \
+  PYTHON_DOTENV_DISABLED=1 ./scripts/test.sh tests -m offline \
+  -n auto --dist worksteal --ignore=tests/evaluation/authority_aware \
+  -q -p no:cacheprovider
+```
+
+The untracked local `authority_aware` prototype is outside the proposal and was
+excluded from collection. The baseline used the same pytest selection and the
+feature checkout's interpreter against an exported upstream source snapshot.
+
+| Snapshot | Passed | Failed | Errors | Skipped |
+| --- | ---: | ---: | ---: | ---: |
+| Upstream baseline | 5806 | 55 | 101 | 93 |
+| Feature snapshot | 5851 | 55 | 101 | 93 |
+
+The failure/error test identities and outcome types match exactly; the feature
+adds 45 passing tests. Both suite runs exited nonzero. Missing optional modules
+include `asyncpg`, `ollama`, `neo4j`, `redis`, and other provider/storage SDKs.
+These results establish the comparison in this environment, not a fully passing
+offline suite. An earlier sandboxed run also had multiprocessing failures;
+the table uses the subsequent runs with local process communication permitted.
+
+All five configured commit-stage hooks passed over all tracked files:
+trailing whitespace, final newlines, requirements sorting, Ruff formatting, and
+Ruff lint (`v0.15.17`). The first invocation could not fetch the separately
+configured manual-only `check-manifest` repository because GitHub was unreachable.
+The successful invocation used a temporary copy of the configuration containing
+the five unchanged commit-stage hooks. The manual `check-manifest` hook was not run.
+
+## What these results support
+
+For two fictional documents and one explicit version chain on the `naive`
+path, the demo selects an original clause or its amendment by effective date,
+and fetches the amendment when only the original is initially retrieved.
+
+F02 constructs the retrieval miss by removing a vector entry while retaining
+the real text in KV storage. These results do not measure natural retrieval
+miss rates or establish large-scale regulatory quality, other models or
+storage backends, live `mix` behavior, or upstream acceptance.
+
+The `authority-v1` [core contract](../../docs/design/EvidencePolicyContract.md#known-limitations)
+lists unresolved supersession/authority cases, seed-dependent unknown-date
+handling, dependency labels, final prompt budgeting, mutable catalog mappings,
+entry-point coverage, and answer-publication checks. Those limitations remain
+part of this experimental proposal.

@@ -54,7 +54,13 @@ from .groups import (
     render_prompt,
     verify_citations,
 )
-from .resolver import Resolution, ScopeResolution, VersionVerdict, resolve, resolve_scope
+from .resolver import (
+    Resolution,
+    ScopeResolution,
+    VersionVerdict,
+    resolve,
+    resolve_scope,
+)
 from .runtime import (
     MAX_EXTRA_CHUNKS,
     MAX_SCOPES,

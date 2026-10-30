@@ -393,8 +393,10 @@ async def build_catalog(rag: LightRAG, revision: str):
         for index, item in enumerate(fetched or []):
             if not isinstance(item, dict):
                 continue
-            key = item.get("_id") or item.get("id") or (
-                chunk_ids[index] if index < len(chunk_ids) else None
+            key = (
+                item.get("_id")
+                or item.get("id")
+                or (chunk_ids[index] if index < len(chunk_ids) else None)
             )
             if key:
                 by_id[str(key)] = item
@@ -659,9 +661,8 @@ async def main_async(args: argparse.Namespace) -> int:
         "cases": len(record["cases"]),
         "passed": sum(1 for case in record["cases"] if case["passed"]),
         "failed": [case["id"] for case in record["cases"] if not case["passed"]],
-        "successful_chat_calls_including_preflight": preflight_result["chat_calls"] + sum(
-            ws["successful_chat_calls"] for ws in record["workspaces"].values()
-        ),
+        "successful_chat_calls_including_preflight": preflight_result["chat_calls"]
+        + sum(ws["successful_chat_calls"] for ws in record["workspaces"].values()),
     }
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)

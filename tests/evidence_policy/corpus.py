@@ -28,20 +28,24 @@ DOC_COMMENT = "d-comment"
 DOC_CONFLICT = "d-conflict"
 DOC_UNDATED = "d-undated"
 
-TEXT_OLD = "虚构规则 R，第 8 条：标准成员办理申请的期限为 180 天，自 2025-01-01 起生效。"
-TEXT_NEW = (
-    "虚构修订 R-1：自 2026-07-01 起，将虚构规则 R 第 8 条的办理期限从 180 天调整为 270 天。"
+TEXT_OLD = (
+    "虚构规则 R，第 8 条：标准成员办理申请的期限为 180 天，自 2025-01-01 起生效。"
 )
+TEXT_NEW = "虚构修订 R-1：自 2026-07-01 起，将虚构规则 R 第 8 条的办理期限从 180 天调整为 270 天。"
 TEXT_THIRD = (
     "虚构修订 R-2：自 2026-10-01 起，将 R-1 所规定的 270 天调整为 300 天；"
     "本修订的有效期截至 2026-11-01，不恢复此前已被取代的条款。"
 )
-TEXT_COMMENT = "非官方评论：我认为标准成员办理申请只需 90 天。这是评论意见，不是规则修订。"
+TEXT_COMMENT = (
+    "非官方评论：我认为标准成员办理申请只需 90 天。这是评论意见，不是规则修订。"
+)
 TEXT_CONFLICT = (
     "同级来源的另一份虚构规则声明：SYNTH-A 标准成员办理期限为 240 天，"
     "自 2026-08-01 起适用；本文件未指明替代任何现有版本。"
 )
-TEXT_UNDATED = "一份日期不详的虚构通知称：标准成员办理期限调整为 300 天，未说明适用时间。"
+TEXT_UNDATED = (
+    "一份日期不详的虚构通知称：标准成员办理期限调整为 300 天，未说明适用时间。"
+)
 
 DOCUMENTS = {
     DOC_OLD: TEXT_OLD,
@@ -195,7 +199,10 @@ def catalog_mapping(
     return {
         "schema_version": 1,
         "catalog_revision": "test-2026-10-26",
-        "policy": {"version": "test-authority-v1", "authority_ranking": ["statutory", "official"]},
+        "policy": {
+            "version": "test-authority-v1",
+            "authority_ranking": ["statutory", "official"],
+        },
         "documents": documents,
         "versions": versions,
     }

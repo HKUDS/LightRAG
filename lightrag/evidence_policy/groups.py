@@ -88,12 +88,12 @@ class EvidenceGroup:
             f"selected_version: {self.selected}",
         ]
         for version_id in self.versions:
-            version_spans = [span for span in self.spans if span.version_id == version_id]
+            version_spans = [
+                span for span in self.spans if span.version_id == version_id
+            ]
             lines.append(f"[{version_id}]")
             for span in version_spans:
-                lines.append(
-                    f"  ({span.role}) {span.citation_key}: {span.text}"
-                )
+                lines.append(f"  ({span.role}) {span.citation_key}: {span.text}")
         return "\n".join(lines)
 
     def as_dict(self) -> dict[str, Any]:
@@ -146,7 +146,9 @@ def build_groups(
     return tuple(groups)
 
 
-def _build_group(catalog: Catalog, scope: ScopeResolution, binding: Binding) -> EvidenceGroup:
+def _build_group(
+    catalog: Catalog, scope: ScopeResolution, binding: Binding
+) -> EvidenceGroup:
     selected = scope.selected[0]
     problems = binding.problems_for(scope.required_evidence)
     if problems:
@@ -275,9 +277,7 @@ class PromptBundle:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
-def render_prompt(
-    groups: tuple[EvidenceGroup, ...], *, instructions: str = ""
-) -> str:
+def render_prompt(groups: tuple[EvidenceGroup, ...], *, instructions: str = "") -> str:
     """Render the evidence block exactly as the model will receive it.
 
     Entities and relationships are deliberately absent: a KG description
@@ -331,4 +331,8 @@ def verify_citations(
     """
     known = {span.citation_key for group in groups for span in group.spans}
     missing = [key for key in cited if key not in known]
-    return {"supported": not missing and bool(cited), "unknown_citations": missing, "cited": cited}
+    return {
+        "supported": not missing and bool(cited),
+        "unknown_citations": missing,
+        "cited": cited,
+    }
