@@ -148,10 +148,13 @@ def test_safe_extract_zip_rejects_absolute_path(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_env_bool_truthy_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
-    for raw in ("1", "true", "yes", "ON"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", False) is True
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "ON"])
+def test_env_bool_truthy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", False) is True
+
+
+def test_env_bool_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
     for raw in ("0", "false", "no", "off"):
         monkeypatch.setenv("X", raw)
         assert env_bool("X", True) is False
