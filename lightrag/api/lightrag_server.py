@@ -894,6 +894,7 @@ def create_optimized_embedding_function(
                 # Pass model only if provided, let function use its default otherwise
                 kwargs = {
                     "texts": texts,
+                    "embedding_dim": embedding_dim,
                     "aws_region": getattr(args, "aws_region", None),
                     "aws_access_key_id": getattr(args, "aws_access_key_id", None),
                     "aws_secret_access_key": getattr(
