@@ -203,7 +203,7 @@ def test_gemini_rejects_typed_response_format(monkeypatch, request):
     gemini_module = _load_gemini_module(monkeypatch, request)
 
     class FakeSchemaModel:
-        pass
+        """A class object where Gemini expects a dict schema (typed/Pydantic)."""
 
     with pytest.raises(TypeError, match="typed/Pydantic"):
         gemini_module._validate_gemini_response_format(FakeSchemaModel)
