@@ -371,9 +371,11 @@ def test_limits_are_read_live_and_can_be_disabled(tmp_path, monkeypatch):
 
 def test_ordinary_docx_passes_untouched(tmp_path):
     src = _benign(tmp_path / "ok.docx")
+    original = src.read_bytes()
     parser = NativeDocxParser()
     parser.validate_source(src, "ok.docx")
     parser.validate_source_blocking(src, "ok.docx")
+    assert src.read_bytes() == original
 
 
 def test_non_zip_named_docx_is_passed_through_not_rejected_here(tmp_path):
