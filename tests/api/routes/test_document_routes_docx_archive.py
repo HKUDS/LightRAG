@@ -3686,12 +3686,14 @@ def test_sanitize_filename_rejects_traversal_instead_of_rewriting(tmp_path):
     assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path):
-    for filename in ("nested/report.pdf", "nested\\report.pdf", "report.pdf\x00"):
-        with pytest.raises(_document_routes.HTTPException) as exc:
-            _document_routes.sanitize_filename(filename, tmp_path)
+@pytest.mark.parametrize(
+    "filename", ["nested/report.pdf", "nested\\report.pdf", "report.pdf\x00"]
+)
+def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path, filename):
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        _document_routes.sanitize_filename(filename, tmp_path)
 
-        assert exc.value.status_code == 400
+    assert exc.value.status_code == 400
 
 
 def test_sanitize_filename_rejects_colon(tmp_path):
