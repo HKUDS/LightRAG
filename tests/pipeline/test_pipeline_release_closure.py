@@ -986,7 +986,7 @@ def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
             original = rag._purge_doc_chunks_and_kg
 
             class _ResumePurged(Exception):
-                pass
+                """Raised after the real purge ran, ending the pipeline there."""
 
             async def _wrapped(doc_id_arg, chunk_ids_arg, **kwargs):
                 calls.append((doc_id_arg, set(chunk_ids_arg)))
