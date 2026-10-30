@@ -19,6 +19,7 @@ real if every write goes through the funnel, so a re-introduced raw
 
 from __future__ import annotations
 
+import copy
 import re
 from pathlib import Path
 
@@ -172,7 +173,9 @@ def test_no_raw_history_append_survives_in_the_package():
     ids=["none-status", "missing-key", "late-initialized-key"],
 )
 def test_a_missing_history_is_skipped_not_raised(status):
+    before = copy.deepcopy(status)
     append_pipeline_history(status, "message")
+    assert status == before  # skipped: nothing created or written
 
 
 def test_a_failing_extend_is_swallowed():
