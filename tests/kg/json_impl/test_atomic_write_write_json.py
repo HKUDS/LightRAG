@@ -10,6 +10,7 @@ The two storages that ride on this function (``JsonDocStatusStorage``,
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -48,23 +49,15 @@ def test_write_json_concurrent_writers_land_intact(tmp_path):
     """Multiple threads racing on the same destination must each rename
     cleanly. The final file must be valid JSON (one writer's payload)."""
     target = str(tmp_path / "kv.json")
-    errors: list[BaseException] = []
     barrier = threading.Barrier(5)
 
     def writer(tid: int) -> None:
-        try:
-            barrier.wait()
-            write_json({"writer": tid}, target)
-        except BaseException as exc:
-            errors.append(exc)
+        barrier.wait()
+        write_json({"writer": tid}, target)
 
-    threads = [threading.Thread(target=writer, args=(i,)) for i in range(5)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert errors == [], f"Concurrent writers raised: {errors}"
+    # Executor.map re-raises the first exception any writer raised.
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        list(pool.map(writer, range(5)))
 
     payload = json.load(open(target))
     assert payload.keys() == {"writer"}
