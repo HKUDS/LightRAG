@@ -5,7 +5,8 @@ element may be:
 
 - a raw base64 string (the MIME type is inferred via ``imghdr`` / magic bytes,
   defaulting to ``image/png``);
-- a data URL of the form ``data:<mime>;base64,<payload>``;
+- a data URL of the form ``data:<mime>;base64,<payload>`` (the scheme and
+  base64 marker are ASCII case-insensitive);
 - a dict with keys ``base64`` (required) and optional ``mime_type``,
   ``source_id``, ``source_file``, ``modality``, ``doc_id``.
 
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 DATA_URL_RE = re.compile(
-    r"^data:(?P<mime>[\w./+-]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)$"
+    r"^(?ai:data):(?P<mime>[\w./+-]+);(?ai:base64),(?P<data>[A-Za-z0-9+/=\s]+)$"
 )
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
