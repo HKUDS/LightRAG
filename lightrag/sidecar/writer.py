@@ -480,8 +480,17 @@ def _allocate_unique_name(suggested: str, used: set[str]) -> str:
 def _safe_asset_filename(suggested: str) -> str:
     """Collapse parser-suggested asset names to a safe filename."""
     name = Path(str(suggested).replace("\\", "/")).name
-    name = "".join(c for c in name.strip() if ord(c) >= 32 and c != "\x7f").strip(".")
-    return name or "asset"
+    name = "".join(c for c in name.strip() if ord(c) >= 32 and c != "\x7f")
+    # Windows ignores trailing dots and spaces when resolving a filename, so
+    # strip them here rather than recording a name the OS will not reproduce.
+    # Leading dots are NOT stripped: ``.foo.part`` is a legitimate basename
+    # produced by the native DOCX extractor, and removing the dot makes the
+    # in-place ``source=None`` lookup miss. A name made entirely of dots still
+    # collapses to the ``asset`` fallback.
+    name = name.rstrip(" .")
+    if name in {"", ".", ".."}:
+        return "asset"
+    return name
 
 
 def _render_block_content(
