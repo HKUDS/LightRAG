@@ -50,6 +50,26 @@ def test_normalize_accepts_data_url_and_uses_declared_mime():
     assert result[0].mime_type == "image/jpeg"
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    ["data:image/png;BASE64,", "DATA:image/png;base64,", "DaTa:image/png;BaSe64,"],
+)
+def test_data_url_syntax_is_ascii_case_insensitive(prefix):
+    data_url = f"{prefix}{_b64(PNG_BYTES)}"
+    [image] = normalize_image_inputs([data_url])
+    [canonical] = normalize_image_inputs([f"data:image/png;base64,{_b64(PNG_BYTES)}"])
+    assert image.raw_bytes == PNG_BYTES
+    assert image.base64_str == _b64(PNG_BYTES)
+    assert image.mime_type == "image/png"
+    assert image_cache_metadata([image]) == image_cache_metadata([canonical])
+
+
+@pytest.mark.parametrize("marker", ["base65", "baſe64"])
+def test_data_url_rejects_invalid_or_non_ascii_markers(marker):
+    with pytest.raises(ValueError):
+        normalize_image_inputs([f"data:image/png;{marker},{_b64(PNG_BYTES)}"])
+
+
 def test_normalize_accepts_dict_with_metadata():
     dict_item: dict[str, Any] = {
         "base64": _b64(PNG_BYTES),

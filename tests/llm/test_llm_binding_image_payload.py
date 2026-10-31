@@ -25,8 +25,17 @@ PNG_BYTES = (
 PNG_B64 = base64.b64encode(PNG_BYTES).decode("ascii")
 
 
+@pytest.mark.parametrize(
+    "image_input",
+    [
+        PNG_B64,
+        f"data:image/png;BASE64,{PNG_B64}",
+        f"DATA:image/png;base64,{PNG_B64}",
+        f"DaTa:image/png;BaSe64,{PNG_B64}",
+    ],
+)
 @pytest.mark.asyncio
-async def test_openai_binding_inserts_image_url_content_block():
+async def test_openai_binding_inserts_image_url_content_block(image_input):
     from lightrag.llm import openai as openai_mod
 
     fake_choice = MagicMock()
@@ -48,7 +57,7 @@ async def test_openai_binding_inserts_image_url_content_block():
             model="gpt-4o-mini",
             prompt="describe",
             api_key="dummy",
-            image_inputs=[PNG_B64],
+            image_inputs=[image_input],
         )
 
     _, kwargs = fake_client.chat.completions.create.call_args
@@ -58,7 +67,7 @@ async def test_openai_binding_inserts_image_url_content_block():
     assert isinstance(user_content, list)
     assert user_content[0] == {"type": "text", "text": "describe"}
     assert user_content[1]["type"] == "image_url"
-    assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert user_content[1]["image_url"]["url"] == f"data:image/png;base64,{PNG_B64}"
 
 
 @pytest.mark.asyncio
