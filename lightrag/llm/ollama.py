@@ -249,8 +249,10 @@ async def _ollama_model_if_cache(
             kwargs["options"] = options.model_copy(update={"num_predict": max_tokens})
     # Deprecation shims: map legacy boolean flags to response_format only when
     # an explicit response_format was not supplied by the caller.
+    keyword_extraction = kwargs.pop("keyword_extraction", False)
+    entity_extraction = kwargs.pop("entity_extraction", False)
     if kwargs.get("response_format") is None:
-        if kwargs.pop("entity_extraction", False):
+        if entity_extraction:
             warnings.warn(
                 "_ollama_model_if_cache(entity_extraction=True) is deprecated; "
                 "pass response_format={'type': 'json_object'} instead.",
@@ -258,7 +260,7 @@ async def _ollama_model_if_cache(
                 stacklevel=2,
             )
             kwargs["response_format"] = {"type": "json_object"}
-        elif kwargs.pop("keyword_extraction", False):
+        elif keyword_extraction:
             warnings.warn(
                 "_ollama_model_if_cache(keyword_extraction=True) is deprecated; "
                 "pass response_format={'type': 'json_object'} instead.",
@@ -266,10 +268,6 @@ async def _ollama_model_if_cache(
                 stacklevel=2,
             )
             kwargs["response_format"] = {"type": "json_object"}
-    else:
-        # response_format was supplied explicitly; drop legacy flags silently.
-        kwargs.pop("entity_extraction", None)
-        kwargs.pop("keyword_extraction", None)
 
     _normalize_ollama_response_format(kwargs)
 
