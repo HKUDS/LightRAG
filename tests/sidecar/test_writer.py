@@ -154,6 +154,46 @@ def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_writer_preserves_dot_prefixed_in_place_asset(tmp_path: Path) -> None:
+    """A dot-prefixed asset already on disk must survive ``source=None``.
+
+    The native DOCX adapter pre-extracts images into the assets directory and
+    passes ``AssetSpec(source=None)``. ``_safe_asset_filename`` used to strip
+    every leading dot, so the writer looked for ``foo.part`` while the file was
+    ``.foo.part``: the asset was skipped and the drawing path became empty.
+    """
+    parsed = tmp_path / "d.parsed"
+    assets_dir = parsed / "d.blocks.assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / ".foo.part").write_bytes(b"IMAGEDATA")
+
+    ir = IRDoc(
+        document_name="d.docx",
+        document_format="docx",
+        doc_title="d",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{IMG:i1}}",
+                drawings=[IRDrawing(placeholder_key="i1", asset_ref=".foo.part")],
+            )
+        ],
+        assets=[AssetSpec(ref=".foo.part", suggested_name=".foo.part", source=None)],
+    )
+    write_sidecar(
+        ir,
+        parsed_dir=parsed,
+        doc_id="doc-cafebabe",
+        engine="native",
+        clean_parsed_dir=False,
+    )
+
+    _, rows = _load_jsonl(parsed / "d.blocks.jsonl")
+    assert 'path="d.blocks.assets/.foo.part"' in rows[0]["content"]
+    assert (assets_dir / ".foo.part").read_bytes() == b"IMAGEDATA"
+
+
+@pytest.mark.offline
 def test_writer_equation_strips_dollar_wrappers_for_equations_json(
     tmp_path: Path,
 ) -> None:
@@ -688,6 +728,22 @@ def test_safe_asset_filename_drops_control_chars() -> None:
     """C0 control chars and DEL are stripped out of the basename so they can't
     smuggle separators or break the on-disk name."""
     assert _safe_asset_filename("ev\x00i\x7fl\x1f.png") == "evil.png"
+
+
+@pytest.mark.offline
+def test_safe_asset_filename_preserves_leading_dots() -> None:
+    """A leading dot is part of a legitimate basename, not a traversal payload.
+
+    The native DOCX extractor really produces dot-prefixed assets such as
+    ``.foo.part``; stripping every dot turned that into ``foo.part`` and made
+    the in-place asset lookup miss. Only names made entirely of dots are
+    unsafe. Trailing dots/spaces are still removed because Windows ignores
+    them when resolving a filename.
+    """
+    assert _safe_asset_filename(".foo.part") == ".foo.part"
+    assert _safe_asset_filename(".hidden.png") == ".hidden.png"
+    assert _safe_asset_filename(".foo.") == ".foo"
+    assert _safe_asset_filename(".foo ") == ".foo"
 
 
 @pytest.mark.offline
