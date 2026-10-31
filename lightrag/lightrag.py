@@ -193,7 +193,8 @@ from lightrag.utils import (
     get_extract_cache_fence,
     convert_to_user_format,
     logger,
-    make_relation_vdb_ids,
+    make_relation_vdb_id,
+    filter_deletable_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_entity_name,
@@ -4723,8 +4724,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     data_for_rels_vdb: dict[str, Any] = {}
                     if all_relationships_data:
                         data_for_rels_vdb = {
-                            compute_mdhash_id(
-                                dp["src_id"] + dp["tgt_id"], prefix="rel-"
+                            make_relation_vdb_id(
+                                dp["src_id"], dp["tgt_id"]
                             ): {
                                 "src_id": dp["src_id"],
                                 "tgt_id": dp["tgt_id"],
@@ -4754,24 +4755,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             edge_list
                         )
 
-                    legacy_rel_ids_to_delete = sorted(
-                        {
-                            rel_id
-                            for dp in all_relationships_data
-                            for rel_id in make_relation_vdb_ids(
-                                dp["src_id"], dp["tgt_id"]
-                            )[1:]
-                        }
-                    )
-
+                    # Legacy aliases are deliberately left in place here:
+                    # one alias can belong to two distinct edges, so
+                    # deleting it on a write could drop the other edge's
+                    # only vector record. The graph-authoritative rebuild
+                    # is the path that drops and rewrites the whole store.
                     # Parallel VDB upserts (was serial in original)
                     await asyncio.gather(
                         self.entities_vdb.upsert(data_for_entities_vdb),
                         self.relationships_vdb.upsert(data_for_rels_vdb),
                     )
-
-                    if legacy_rel_ids_to_delete:
-                        await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
 
                 if lock_key_set:
                     if entity_nodes or deduped_relationships:
@@ -6572,14 +6565,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # ---- 3. Delete relationships with no remaining sources ----
         if relationships_to_delete:
             try:
-                rel_ids_to_delete = []
-                for src, tgt in relationships_to_delete:
-                    rel_ids_to_delete.extend(
-                        [
-                            compute_mdhash_id(src + tgt, prefix="rel-"),
-                            compute_mdhash_id(tgt + src, prefix="rel-"),
-                        ]
-                    )
+                rel_ids_to_delete = await filter_deletable_relation_vdb_ids(
+                    self.relationships_vdb, list(relationships_to_delete)
+                )
                 await self.relationships_vdb.delete(rel_ids_to_delete)
                 await self.chunk_entity_relation_graph.remove_edges(
                     list(relationships_to_delete)
@@ -6623,14 +6611,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             edges_to_delete.add(tuple(sorted((src, tgt))))
 
                 if edges_to_delete:
-                    rel_ids_to_delete = []
-                    for src, tgt in edges_to_delete:
-                        rel_ids_to_delete.extend(
-                            [
-                                compute_mdhash_id(src + tgt, prefix="rel-"),
-                                compute_mdhash_id(tgt + src, prefix="rel-"),
-                            ]
-                        )
+                    rel_ids_to_delete = await filter_deletable_relation_vdb_ids(
+                        self.relationships_vdb, sorted(edges_to_delete)
+                    )
                     await self.relationships_vdb.delete(rel_ids_to_delete)
                     if self.relation_chunks:
                         relation_storage_keys = [

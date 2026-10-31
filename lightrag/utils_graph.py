@@ -15,8 +15,10 @@ from .utils import (
     _wait_deferring_cancellation,
     compute_mdhash_id,
     graph_attribute_value_rejection,
+    filter_deletable_relation_vdb_ids,
     log_without_raising,
     logger,
+    make_relation_vdb_id,
     make_relation_vdb_ids,
     normalize_entity_name,
     safe_vdb_operation_with_exception,
@@ -847,11 +849,12 @@ async def adelete_by_relation(
                     status_code=404,
                 )
 
-            # Delete relation from vector database
-            rel_ids_to_delete = [
-                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-            ]
+            # Delete relation from vector database. A legacy alias is
+            # deleted only when its record names this edge; a shared alias
+            # naming another edge is retained for that edge.
+            rel_ids_to_delete = await filter_deletable_relation_vdb_ids(
+                relationships_vdb, [(source_entity, target_entity)]
+            )
 
             await relationships_vdb.delete(rel_ids_to_delete)
 
@@ -1035,6 +1038,7 @@ async def _edit_entity_impl(
 
         relations_to_update = []
         relations_to_delete = []
+        old_edges = []
         edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
         if edges:
             for source, target in edges:
@@ -1046,12 +1050,7 @@ async def _edit_entity_impl(
                     edge_data["weight"] = apply_relation_weight_floor(
                         edge_data.get("weight", 1.0), edge_source_id
                     )
-                    relations_to_delete.append(
-                        compute_mdhash_id(source + target, prefix="rel-")
-                    )
-                    relations_to_delete.append(
-                        compute_mdhash_id(target + source, prefix="rel-")
-                    )
+                    old_edges.append((source, target))
                     # Rename every matching endpoint. A self-loop has the old
                     # entity on both sides, so changing only the first match
                     # would create (new, old), which is then removed together
@@ -1079,6 +1078,12 @@ async def _edit_entity_impl(
         old_entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         await entities_vdb.delete([old_entity_id])
 
+        # Old edges are genuinely removed, but a legacy alias shared with
+        # a surviving edge is retained for that edge.
+        relations_to_delete = await filter_deletable_relation_vdb_ids(
+            relationships_vdb, old_edges
+        )
+
         await relationships_vdb.delete(relations_to_delete)
 
         for src, tgt, edge_data in relations_to_update:
@@ -1089,8 +1094,8 @@ async def _edit_entity_impl(
             source_id = edge_data.get("source_id", "")
             weight = float(edge_data.get("weight", 1.0))
 
-            relation_id = compute_mdhash_id(
-                normalized_src + normalized_tgt, prefix="rel-"
+            relation_id = make_relation_vdb_id(
+                normalized_src, normalized_tgt
             )
 
             # The graph rename cascade above already mutated this edge; a
@@ -1964,8 +1969,8 @@ async def aedit_relation(
                 f"relation:{source_entity}-{target_entity}",
             )
 
-            relation_id = compute_mdhash_id(
-                source_entity + target_entity, prefix="rel-"
+            relation_id = make_relation_vdb_id(
+                source_entity, target_entity
             )
             relation_data = {
                 relation_id: {
@@ -2244,16 +2249,12 @@ async def aedit_relation(
             #    one: vector records a re-issued edit rewrites and
             #    `lightrag-rebuild-vdb` restores.
             try:
-                # Delete the old relation record from the vector database.
-                # Delete both permutations to handle relationships created
-                # before normalization.
-                rel_ids_to_delete = [
-                    compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                    compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-                ]
-                await relationships_vdb.delete(rel_ids_to_delete)
+                # Write the versioned record only. The legacy aliases are
+                # left for the graph-authoritative rebuild: one alias can
+                # belong to two distinct edges, so deleting it here could
+                # drop the other edge's only vector record.
                 logger.debug(
-                    f"Relation Edit: delete vdb for `{source_entity}`~`{target_entity}`"
+                    f"Relation Edit: upsert vdb for `{source_entity}`~`{target_entity}`"
                 )
                 await relationships_vdb.upsert(relation_data)
             except Exception as e:
@@ -2621,7 +2622,7 @@ async def acreate_relation(
             )
 
             # Calculate relation ID
-            relation_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
+            relation_id = make_relation_vdb_id(vdb_src, vdb_tgt)
 
             # Prepare data for vector database update
             relation_data_for_vdb = {
@@ -2822,14 +2823,14 @@ async def _merge_entities_impl(
     # Also collect chunk tracking information in the same loop
     relation_updates = {}  # Track relationships that need to be merged
     relations_to_delete = []
+    old_edges = []
 
     # Initialize chunk tracking variables
     relation_chunk_tracking = {}  # key: storage_key, value: list of chunk_ids
     old_relation_keys_to_delete = []
 
     for src, tgt, edge_data in all_relations:
-        relations_to_delete.append(compute_mdhash_id(src + tgt, prefix="rel-"))
-        relations_to_delete.append(compute_mdhash_id(tgt + src, prefix="rel-"))
+        old_edges.append((src, tgt))
 
         # Collect old chunk tracking key for deletion
         if relation_chunks_storage is not None:
@@ -2971,7 +2972,12 @@ async def _merge_entities_impl(
             if key not in relation_chunk_tracking
         ]
 
-    # 7. Update relationship vector representations
+    # 7. Update relationship vector representations. Old edges are
+    # genuinely removed, but a legacy alias shared with a surviving edge
+    # is retained for that edge.
+    relations_to_delete = await filter_deletable_relation_vdb_ids(
+        relationships_vdb, old_edges
+    )
     logger.debug(
         f"Entity Merge: deleting {len(relations_to_delete)} relations from vdb"
     )
@@ -3004,7 +3010,7 @@ async def _merge_entities_impl(
         keywords = edge_data.get("keywords", "")
         source_id = edge_data.get("source_id", "")
         weight = float(edge_data.get("weight", 1.0))
-        relation_id = compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")
+        relation_id = make_relation_vdb_id(normalized_src, normalized_tgt)
 
         # The graph was already updated above (step 6); a truncation failure
         # here is the same class of "graph updated, VDB payload could not be

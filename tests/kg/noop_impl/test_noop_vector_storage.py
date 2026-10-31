@@ -13,7 +13,11 @@ from lightrag.tools.rebuild_vdb import (
     rebuild_entities_vdb,
     rebuild_relationships_vdb,
 )
-from lightrag.utils import EmbeddingFunc, compute_mdhash_id
+from lightrag.utils import (
+    EmbeddingFunc,
+    compute_mdhash_id,
+    make_relation_vdb_id,
+)
 
 
 EXTRACTION_RESULT = "\n".join(
@@ -228,7 +232,7 @@ async def test_graph_only_normal_ingestion_rebuilds_into_nano_vector_storage(
         compute_mdhash_id("Alice", prefix="ent-"),
         compute_mdhash_id("Bob", prefix="ent-"),
     ]
-    relationship_id = compute_mdhash_id("AliceBob", prefix="rel-")
+    relationship_id = make_relation_vdb_id("Alice", "Bob")
     reopened_docs = await indexed_rag.doc_status.get_docs_by_statuses(
         [DocStatus.PROCESSED]
     )
