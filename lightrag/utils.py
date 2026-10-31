@@ -1070,20 +1070,43 @@ async def move_file_to_parsed_dir(
     return target_path
 
 
+def make_relation_vdb_id(src_entity: str, tgt_entity: str) -> str:
+    """Return the versioned VDB ID for an undirected edge.
+
+    The canonical endpoint pair is sorted, then encoded with a length
+    prefix on the first endpoint, so distinct pairs that concatenate
+    identically still hash differently. The length counts UTF-8 bytes,
+    which keeps the boundary unambiguous for non-ASCII names too.
+    """
+    normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
+    src_bytes = normalized_src.encode("utf-8")
+    material = (
+        str(len(src_bytes)).encode("ascii")
+        + b":"
+        + src_bytes
+        + b":"
+        + normalized_tgt.encode("utf-8")
+    )
+    return "rel-v2-" + md5(material).hexdigest()
+
+
 def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
     """Return candidate relation VDB IDs for an undirected edge.
 
-    The normalized ID is returned first for all new writes. The reverse-order ID is
-    kept as a compatibility fallback for historical custom-KG imports that hashed
-    the relation using the original endpoint order.
+    The versioned ID is returned first for all new writes. The legacy
+    IDs follow as read fallbacks for records written before versioning,
+    so unmigrated stores stay readable until the graph-authoritative
+    rebuild rewrites them. Callers must never delete a legacy alias on
+    a write path: one alias can belong to two distinct edges.
     """
+    relation_ids = [make_relation_vdb_id(src_entity, tgt_entity)]
     normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
-    relation_ids = [compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")]
-    reverse_relation_id = compute_mdhash_id(
-        normalized_tgt + normalized_src, prefix="rel-"
-    )
-    if reverse_relation_id not in relation_ids:
-        relation_ids.append(reverse_relation_id)
+    for legacy_id in (
+        compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-"),
+        compute_mdhash_id(normalized_tgt + normalized_src, prefix="rel-"),
+    ):
+        if legacy_id not in relation_ids:
+            relation_ids.append(legacy_id)
     return relation_ids
 
 

@@ -6,7 +6,11 @@ import networkx as nx
 import pytest
 
 from lightrag import utils_graph
-from lightrag.utils import compute_mdhash_id, make_relation_chunk_key
+from lightrag.utils import (
+    compute_mdhash_id,
+    make_relation_chunk_key,
+    make_relation_vdb_id,
+)
 
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
@@ -158,8 +162,8 @@ async def test_entity_rename_preserves_self_loop_across_all_storages(monkeypatch
     assert graph.graph.get_edge_data("B", "B") == self_loop
     assert graph.graph.get_edge_data("B", "C") == neighbour
 
-    new_self_id = compute_mdhash_id("BB", prefix="rel-")
-    new_neighbour_id = compute_mdhash_id("BC", prefix="rel-")
+    new_self_id = make_relation_vdb_id("B", "B")
+    new_neighbour_id = make_relation_vdb_id("B", "C")
     assert set(relationships_vdb.records) == {new_self_id, new_neighbour_id}
     assert relationships_vdb.records[new_self_id]["src_id"] == "B"
     assert relationships_vdb.records[new_self_id]["tgt_id"] == "B"

@@ -19,6 +19,7 @@ from lightrag.exceptions import (
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
+    make_relation_vdb_id,
     Tokenizer,
     TokenBudgetError,
     normalize_entity_name,
@@ -2310,8 +2311,7 @@ async def _rebuild_single_relationship(
     # first) — kept separate from the src/tgt used for the graph edge write
     # below, which must use the caller's original direction.
     vdb_src, vdb_tgt = (tgt, src) if src > tgt else (src, tgt)
-    rel_vdb_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
-    rel_vdb_id_reverse = compute_mdhash_id(vdb_tgt + vdb_src, prefix="rel-")
+    rel_vdb_id = make_relation_vdb_id(vdb_src, vdb_tgt)
 
     # Construct and verify the VDB payload BEFORE the first graph mutation
     # below: if truncation fails, nothing has been written yet. The actual
@@ -2338,16 +2338,9 @@ async def _rebuild_single_relationship(
 
     # Update relationship in vector database
     try:
-        # Delete old vector records first (both directions to be safe)
-        try:
-            await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
-        except Exception as e:
-            if structural_fallback:
-                raise
-            logger.debug(
-                f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
-            )
-
+        # Write the versioned record only. Legacy aliases are left for the
+        # graph-authoritative rebuild: one alias can belong to two distinct
+        # edges, so deleting it here could drop the other edge's record.
         # Use safe operation wrapper - VDB failure must throw exception
         await safe_vdb_operation_with_exception(
             operation=lambda: relationships_vdb.upsert(vdb_data),
@@ -3386,10 +3379,7 @@ async def _merge_edges_then_upsert(
         # below.
         vdb_data = None
         if relationships_vdb is not None:
-            rel_vdb_id = compute_mdhash_id(vdb_src_id + vdb_tgt_id, prefix="rel-")
-            rel_vdb_id_reverse = compute_mdhash_id(
-                vdb_tgt_id + vdb_src_id, prefix="rel-"
-            )
+            rel_vdb_id = make_relation_vdb_id(vdb_src_id, vdb_tgt_id)
             rel_content = _truncate_vdb_content(
                 f"{keywords}\t{vdb_src_id}\n{vdb_tgt_id}\n{description}",
                 global_config,
@@ -3443,12 +3433,6 @@ async def _merge_edges_then_upsert(
         )
 
         if relationships_vdb is not None:
-            try:
-                await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
-            except Exception as e:
-                logger.debug(
-                    f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
-                )
             relation_status_message = f"Upserting relation VDB: `{relation_key}`"
             logger.info(relation_status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:

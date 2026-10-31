@@ -23,7 +23,11 @@ import lightrag.operate as operate_module
 from lightrag import LightRAG
 from lightrag.constants import GRAPH_FIELD_SEP, KG_PURGE_METADATA_KEY
 from lightrag.exceptions import StorageRecordNotFoundError
-from lightrag.utils import compute_mdhash_id, make_relation_chunk_key
+from lightrag.utils import (
+    compute_mdhash_id,
+    make_relation_chunk_key,
+    make_relation_vdb_id,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -647,7 +651,7 @@ async def test_rollback_repairs_relation_when_cache_omits_target_object():
     assert report.missing_cache_chunk_ids == set()
     assert report.degraded_relationships == {("ALICE", "BOB"): ["c2"]}
     assert graph.edges[("ALICE", "BOB")]["source_id"] == "c2"
-    rel_vdb_id = compute_mdhash_id("ALICEBOB", prefix="rel-")
+    rel_vdb_id = make_relation_vdb_id("ALICE", "BOB")
     assert rag.relationships_vdb.data[rel_vdb_id]["source_id"] == "c2"
     tracking_key = make_relation_chunk_key("ALICE", "BOB")
     assert rag.relation_chunks.data[tracking_key]["chunk_ids"] == ["c2"]
@@ -655,10 +659,12 @@ async def test_rollback_repairs_relation_when_cache_omits_target_object():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_rollback_relation_vdb_delete_failure_retries_to_convergence(
+async def test_rollback_relation_vdb_upsert_failure_retries_to_convergence(
     monkeypatch,
 ):
-    """Even the VDB cleanup preceding an upsert is strict in rollback mode."""
+    """Even the VDB write for a rebuilt relation is strict in rollback mode.
+    The rebuild writes the versioned record directly and never deletes
+    legacy aliases, so the failure point under test is the upsert."""
     graph = _Graph(
         nodes={
             "ALICE": _node("ALICE", ["c1", "c2"]),
@@ -673,12 +679,12 @@ async def test_rollback_relation_vdb_delete_failure_retries_to_convergence(
         ),
         text_chunks=_KV({"c2": {"content": "base", "llm_cache_list": []}}),
     )
-    original_delete = rag.relationships_vdb.delete
+    original_upsert = rag.relationships_vdb.upsert
 
-    async def delete_boom(ids):
-        raise RuntimeError("relation vdb delete boom")
+    async def upsert_boom(_payload):
+        raise RuntimeError("relation vdb upsert boom")
 
-    monkeypatch.setattr(rag.relationships_vdb, "delete", delete_boom)
+    monkeypatch.setattr(rag.relationships_vdb, "upsert", upsert_boom)
     status, lock = _status()
     with pytest.raises(Exception, match="Failed to rebuild knowledge graph"):
         await rag._purge_kg_contributions(
@@ -693,7 +699,7 @@ async def test_rollback_relation_vdb_delete_failure_retries_to_convergence(
         )
 
     assert rag.chunks_vdb.deleted == []
-    monkeypatch.setattr(rag.relationships_vdb, "delete", original_delete)
+    monkeypatch.setattr(rag.relationships_vdb, "upsert", original_upsert)
     report = await rag._purge_kg_contributions(
         "d1",
         ["c1"],
@@ -706,7 +712,7 @@ async def test_rollback_relation_vdb_delete_failure_retries_to_convergence(
     )
 
     assert report.degraded_relationships == {("ALICE", "BOB"): ["c2"]}
-    rel_vdb_id = compute_mdhash_id("ALICEBOB", prefix="rel-")
+    rel_vdb_id = make_relation_vdb_id("ALICE", "BOB")
     assert rag.relationships_vdb.data[rel_vdb_id]["source_id"] == "c2"
     assert rag.chunks_vdb.deleted == ["c1"]
 

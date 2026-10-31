@@ -906,9 +906,9 @@ class TestAinsertCustomKgBatchPath:
             assert only_rel["src_id"] == "EntityA"
             assert only_rel["tgt_id"] == "EntityB"
             assert only_rel["description"] == "latest relation"
-            assert rag.relationships_vdb.delete.await_args.args[0] == [
-                make_relation_vdb_ids("EntityA", "EntityB")[1]
-            ]
+            # Custom-KG writes leave legacy aliases in place: one alias can
+            # belong to two distinct edges, so no legacy delete runs here.
+            rag.relationships_vdb.delete.assert_not_awaited()
 
             await rag.finalize_storages()
 
@@ -1033,9 +1033,8 @@ class TestAinsertCustomKgBatchPath:
 
             await rag.ainsert_custom_kg(custom_kg)
 
-            normalized_rel_id, legacy_rel_id = make_relation_vdb_ids(
-                "EntityA", "EntityB"
-            )
+            candidate_ids = make_relation_vdb_ids("EntityA", "EntityB")
+            versioned_rel_id, normalized_rel_id, legacy_rel_id = candidate_ids
             rag.relationships_vdb.get_by_id = AsyncMock(
                 side_effect=lambda rid: {"ok": True} if rid == legacy_rel_id else None
             )
@@ -1052,8 +1051,10 @@ class TestAinsertCustomKgBatchPath:
             assert [
                 call.args[0] for call in rag.relationships_vdb.get_by_id.await_args_list
             ] == [
+                versioned_rel_id,
                 normalized_rel_id,
                 legacy_rel_id,
+                versioned_rel_id,
                 normalized_rel_id,
                 legacy_rel_id,
             ]
