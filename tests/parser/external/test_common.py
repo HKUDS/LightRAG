@@ -74,7 +74,9 @@ def test_clear_dir_contents_keeps_dir_and_removes_children(tmp_path: Path) -> No
 
 
 def test_clear_dir_contents_noop_when_missing(tmp_path: Path) -> None:
-    clear_dir_contents(tmp_path / "does-not-exist")
+    missing = tmp_path / "does-not-exist"
+    clear_dir_contents(missing)
+    assert not missing.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -148,13 +150,16 @@ def test_safe_extract_zip_rejects_absolute_path(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_env_bool_truthy_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
-    for raw in ("1", "true", "yes", "ON"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", False) is True
-    for raw in ("0", "false", "no", "off"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", True) is False
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "ON"])
+def test_env_bool_truthy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", False) is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_env_bool_falsy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", True) is False
 
 
 def test_env_bool_falls_back_on_unrecognized(monkeypatch: pytest.MonkeyPatch) -> None:
