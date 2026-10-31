@@ -112,6 +112,12 @@ class _VectorStorage:
     async def delete(self, ids):
         self._check()
 
+    async def get_by_ids(self, ids):
+        # The fake stores no records, so every lookup reports absence.
+        # Reads stay infallible: failure phases in these tests are driven
+        # by the delete path, exactly as before.
+        return [None for _ in ids]
+
     async def upsert(self, data):
         # Creation paths write through the vector store before the commit; the
         # deletion cases never reach this, so it stays a bare success stub.

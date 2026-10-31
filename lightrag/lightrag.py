@@ -194,7 +194,7 @@ from lightrag.utils import (
     convert_to_user_format,
     logger,
     make_relation_vdb_id,
-    make_relation_vdb_ids,
+    filter_deletable_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_entity_name,
@@ -6565,11 +6565,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # ---- 3. Delete relationships with no remaining sources ----
         if relationships_to_delete:
             try:
-                rel_ids_to_delete = []
-                for src, tgt in relationships_to_delete:
-                    rel_ids_to_delete.extend(
-                        make_relation_vdb_ids(src, tgt)
-                    )
+                rel_ids_to_delete = await filter_deletable_relation_vdb_ids(
+                    self.relationships_vdb, list(relationships_to_delete)
+                )
                 await self.relationships_vdb.delete(rel_ids_to_delete)
                 await self.chunk_entity_relation_graph.remove_edges(
                     list(relationships_to_delete)
@@ -6613,11 +6611,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             edges_to_delete.add(tuple(sorted((src, tgt))))
 
                 if edges_to_delete:
-                    rel_ids_to_delete = []
-                    for src, tgt in edges_to_delete:
-                        rel_ids_to_delete.extend(
-                            make_relation_vdb_ids(src, tgt)
-                        )
+                    rel_ids_to_delete = await filter_deletable_relation_vdb_ids(
+                        self.relationships_vdb, sorted(edges_to_delete)
+                    )
                     await self.relationships_vdb.delete(rel_ids_to_delete)
                     if self.relation_chunks:
                         relation_storage_keys = [

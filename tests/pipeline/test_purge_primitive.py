@@ -93,6 +93,9 @@ class _Vdb:
         for key in ids:
             self.data.pop(key, None)
 
+    async def get_by_ids(self, ids):
+        return [self.data.get(i) for i in ids]
+
     async def upsert(self, data):
         self.data.update(data)
 
