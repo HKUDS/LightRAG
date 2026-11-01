@@ -442,7 +442,7 @@ python examples/lightrag_openai_demo.py
 
 Untuk contoh implementasi streaming response, lihat `examples/lightrag_openai_compatible_demo.py`. Sebelum menjalankannya, pastikan Anda menyesuaikan konfigurasi LLM dan embedding pada contoh kode tersebut.
 
-**Catatan 1**: Saat menjalankan program demo, perhatikan bahwa script pengujian yang berbeda dapat menggunakan model embedding yang berbeda. Jika Anda mengganti model embedding, Anda harus menghapus data directory (`./dickens`); jika tidak, program dapat mengalami error. Jika ingin mempertahankan LLM cache, Anda dapat menyimpan file `kv_store_llm_response_cache.json` saat membersihkan data directory.
+**Catatan 1**: Saat menjalankan program demo, perhatikan bahwa script pengujian yang berbeda dapat menggunakan model embedding yang berbeda. Vektor yang ditulis oleh satu model tidak dapat dipakai oleh model lain, jadi mengganti model mengharuskan vektornya dibangun ulang. Khusus untuk data **demo**, cara termudah adalah menghapus direktori demo (`./dickens`) lalu menjalankannya kembali — korpusnya kecil dan sekali pakai; simpan `kv_store_llm_response_cache.json` bila ingin mempertahankan LLM cache. Untuk **deployment nyata, jangan hapus working directory**: di dalamnya tersimpan knowledge graph dan text chunks, dan menghapusnya mengubah pekerjaan re-embedding menjadi ingest ulang seluruh dokumen. Jalankan `lightrag-rebuild-vdb` — lihat [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models).
 
 **Catatan 2**: Hanya `lightrag_openai_demo.py` dan `lightrag_openai_compatible_demo.py` yang merupakan contoh kode yang didukung secara resmi. File contoh lainnya merupakan kontribusi komunitas yang belum melalui pengujian dan optimasi penuh.
 

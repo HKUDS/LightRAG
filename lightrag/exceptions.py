@@ -283,22 +283,32 @@ class GraphMutationsDiscardedError(RuntimeError):
 class PipelineRecoveryRequiredError(RuntimeError):
     """The pipeline fenced its own workspace with ``recovery_required``.
 
-    Raised when a manual retry's DRAIN_TO_IDLE cannot make forward progress:
-    the same active ``doc_status`` rows blocked the drain for several
-    consecutive rounds without any of them changing state, so re-sweeping can
-    only spin (LR2 §7.2 "DRAIN_TO_IDLE 的前进性" / §13.2 case 16). The workspace
-    is fenced instead, every mutation is refused with 503, and
-    ``blocked_doc_ids`` carries the BOUNDED sample an operator needs to find the
-    offending rows — never the whole set.
+    Raised when a manual retry's DRAIN_TO_IDLE cannot make forward progress: it
+    waited on something that re-checking can only find unchanged (LR2 §7.2
+    "DRAIN_TO_IDLE 的前进性" / §13.2 case 16). The workspace is fenced instead,
+    mutations are refused with 503, and ``blocked_doc_ids`` carries the BOUNDED
+    sample an operator needs to find the offending rows — never the whole set,
+    and empty when the blocker is not a document.
 
-    Two causes reach this, distinguished by the fence record's ``kind``:
-    ``manual_drain_stalled`` (rows that look routable but never change state) and
+    One carve-out, for ``manual_drain_enqueue_stalled`` only: an enqueue whose
+    reservation this fence was raised ABOUT is still allowed to finish, so the
+    bound cannot destroy the payload of a producer that was merely slow (see
+    ``_stall_fence_exempts_reserved_token``). Its rows land as PENDING and stay
+    unprocessable until the fence is cleared.
+
+    Three causes reach this, distinguished by the fence record's ``kind``:
+    ``manual_drain_stalled`` (rows that look routable but never change state),
     ``manual_drain_blocked`` (rows the drain can never advance at all — an
-    unfinished custom-chunk operation). Both are cleared the same way:
+    unfinished custom-chunk operation) and ``manual_drain_enqueue_stalled`` (the
+    in-flight enqueue reservations the drain waits on, none of which finished
+    for the whole bounded window). All are cleared by
     ``POST /documents/recovery/force_reset``, which also cancels the queued manual
     intents, since a sticky request is itself what makes ``/documents/scan``
     refuse (``refuse_when_manual_pending``) and ``/scan`` is the remedy for the
-    blocked case.
+    blocked case. For ``manual_drain_enqueue_stalled`` it additionally drops the
+    in-flight enqueue reservations the drain was waiting on — there the fence
+    alone is not the blocker, and clearing only the fence would leave the
+    workspace just as stuck.
     """
 
     def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:
@@ -514,6 +524,70 @@ class IndexFlushError(Exception):
         super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
 
 
+class ReferencesIntactFlushError(Exception):
+    """A failed storage commit that PROVABLY lost no durable reference.
+
+    Answers the ONE question a caller of ``index_done_callback`` has to answer
+    when the commit raises: *could this raise have lost a durable reference?*
+    Raising this type is the backend saying **no** -- nothing buffered was
+    discarded, and nothing already durable was unwritten. Every other
+    exception means **yes, assume one may be gone**, which is what a backend
+    that says nothing keeps.
+
+    Two situations qualify, and a backend must be able to prove one of them
+    for the WHOLE flush rather than for one operation:
+
+    * every buffered operation is still buffered and replays on the next
+      flush (a transport error from the bulk call) -- the caller defers;
+    * the commit itself landed and only a step after it failed (a refresh) --
+      the references are already durable.
+
+    A flush that mixes permanent and retryable per-item failures qualifies as
+    NEITHER: it dropped something, so the honest answer stays "yes".
+
+    Read it through ``flush_may_have_lost_reference``, not with a bare
+    ``isinstance``: that predicate also unwraps the ``IndexFlushError`` every
+    flush failure reaches ``_flush_storages``' callers wearing.
+
+    Why the distinction earns a type: an ``extract`` LLM-cache row is
+    reachable only through its chunk's ``llm_cache_list``, so a caller that
+    cannot tell these apart must quarantine every buffered extract row in the
+    process to stay safe -- discarding completed LLM calls that nothing could
+    have orphaned. See *LLM extraction cache reachability* in
+    ``docs/design/PurgeRecoveryContract.md``.
+    """
+
+
+def flush_may_have_lost_reference(error: BaseException | None) -> bool:
+    """Could this failed commit have lost a durable reference?
+
+    ``True`` is the safe default and the answer for anything unrecognized:
+    only a backend that raised ``ReferencesIntactFlushError`` has proven
+    otherwise, so a backend that implements nothing keeps the fail-safe
+    quarantine it has today. ``None`` means there was no failure to judge.
+
+    ``IndexFlushError`` is unwrapped into its ``__cause__``, since it is the
+    transport wrapper ``LightRAG._flush_storages`` puts around whatever the
+    backend raised; one carrying no cause answers ``True``. **Nothing else is
+    unwrapped.** An exception re-raised ``from`` an intact one has made a new
+    claim of its own, and ``OpenSearchKVStorage.finalize`` is exactly that
+    case: it chains a "these writes have been lost" ``RuntimeError`` onto a
+    flush whose buffers were intact, because it then releases the client and
+    nothing will ever replay them.
+    """
+    if error is None:
+        return False
+    # Bounded rather than recursive: __cause__ is attacker-free here, but a
+    # self-referential chain must not turn a diagnostic into a hang.
+    for _ in range(8):
+        if not isinstance(error, IndexFlushError):
+            break
+        if error.__cause__ is None:
+            return True
+        error = error.__cause__
+    return not isinstance(error, ReferencesIntactFlushError)
+
+
 class CommitBookkeepingError(RuntimeError):
     """The offloaded write LANDED; the bookkeeping that had to follow it did not.
 
@@ -623,3 +697,77 @@ class MultimodalAnalysisError(RuntimeError):
     an unusable analyze result. Callers persist a ``status="failure"``
     sidecar entry alongside the raise so a re-run sees the failure.
     """
+
+
+class VectorSpaceMismatchError(RuntimeError):
+    """The persisted vectors were written in a different embedding space.
+
+    Raised by a vector storage while it attaches to an existing container
+    (index / collection / table / file) whose recorded embedding model or
+    dimension does not match the one this process is configured with. It is a
+    *refusal to serve*, not a migration failure: nothing has been read, written
+    or deleted when it is raised.
+
+    Why it is a distinct type and not ``DataMigrationError`` or a bare
+    ``ValueError``: ``lightrag-rebuild-vdb`` is the sanctioned way out of this
+    condition, and it can only tolerate the refusal (drop the container and
+    rebuild it from the graph) if the refusal is distinguishable from a cluster
+    outage, a bad credential or a corrupt file. A tool that caught ``Exception``
+    here would drop data on a false positive. Never raise this for anything a
+    rebuild would not fix.
+
+    Rules for raisers:
+
+    * Absent evidence never refuses. A container that records no model, or no
+      dimension, predates the provenance marker; silence is not a mismatch.
+      The same applies to the *declared* side -- an ``embedding_func`` with no
+      ``model_name`` cannot contradict anything.
+    * Raise before the first storage mutation, and leave the instance able to
+      serve ``drop()``. The tool's recovery is ``drop()`` then ``initialize()``
+      again, so a refusal that leaves the object half-constructed (no client,
+      no lock) turns a recoverable condition into a wedge.
+
+    Args:
+        backend: Storage class name, e.g. ``"OpenSearchVectorDBStorage"``.
+        container: The physical container that refused, e.g. an index name.
+        expected_model / expected_dim: what this process is configured with.
+        stored_model / stored_dim: what the container records. ``None`` means
+            "not recorded" and is never by itself a reason to raise.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: str,
+        container: str,
+        expected_model: str | None = None,
+        expected_dim: int | None = None,
+        stored_model: str | None = None,
+        stored_dim: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        changed: list[str] = []
+        if stored_dim is not None and expected_dim is not None:
+            if stored_dim != expected_dim:
+                changed.append(f"dimension {stored_dim} -> {expected_dim}")
+        if stored_model is not None and expected_model is not None:
+            if stored_model != expected_model:
+                changed.append(f"model '{stored_model}' -> '{expected_model}'")
+        change_note = "; ".join(changed) if changed else "the embedding space changed"
+        message = (
+            f"{backend} refuses to serve '{container}': it holds vectors from a "
+            f"different embedding space ({change_note}). Querying it would return "
+            f"nothing, or confidently wrong neighbours. Rebuild the vector "
+            f"storages from the knowledge graph with `lightrag-rebuild-vdb` "
+            f"(run it with this embedding configuration), or point this instance "
+            f"back at the previous embedding configuration."
+        )
+        if detail:
+            message = f"{message} {detail}"
+        super().__init__(message)
+        self.backend = backend
+        self.container = container
+        self.expected_model = expected_model
+        self.expected_dim = expected_dim
+        self.stored_model = stored_model
+        self.stored_dim = stored_dim

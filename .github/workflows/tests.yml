@@ -46,6 +46,11 @@ jobs:
       # Run only tests marked as 'offline' (no external dependencies);
       # integration tests requiring databases/APIs are skipped by default.
       # --no-sync: the environment was already synced above.
+      # Serial on purpose: pytest-xdist was measured on these 4-vCPU hosted
+      # runners at 2 and 4 workers and never beat the serial run (per-worker
+      # collection alone costs ~50 s). Use -n auto locally instead.
+      # tests/setup is skipped by norecursedirs (pyproject.toml) and runs in
+      # setup-tests.yml, only when a wizard input changes.
       run: uv run --no-sync pytest tests/ -m offline -v --tb=short
 
     - name: Upload test results

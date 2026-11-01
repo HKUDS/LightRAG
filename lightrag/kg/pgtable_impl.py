@@ -946,8 +946,11 @@ class PGTableGraphStorage(BaseGraphStorage):
         # Rank ALL nodes by degree, including isolated (degree 0) nodes, to
         # match NetworkXStorage.get_popular_labels (dict(graph.degree()) covers
         # every node). Counting from the edge table alone would silently drop
-        # isolated entities. Self-loops count twice (no src_id <> tgt_id guard),
-        # consistent with node_degree.
+        # isolated entities. No self-loop guard (no src_id <> tgt_id): a
+        # self-loop's degree is not contracted -- the graph is not allowed to
+        # hold one (BaseGraphStorage.node_degree) -- and adding the predicate
+        # was measured and rejected across all backends. Same query shape as
+        # node_degree, so the two cannot drift.
         rows = await self._fetch(
             """
             SELECT n.id AS id, COALESCE(d.degree, 0) AS degree
@@ -1227,10 +1230,11 @@ class PGTableGraphStorage(BaseGraphStorage):
                         SELECT 1 FROM visited v WHERE v.vid = nb.nid
                     )
                 ),
-                -- Same UNION ALL + GROUP BY shape as node_degrees_batch, so
-                -- self-loops count twice here exactly as they do there and in
-                -- node_degree. Each arm is index-served: src_id via the PK
-                -- prefix, tgt_id via idx_..._namespace_tgt.
+                -- Same UNION ALL + GROUP BY shape as node_degrees_batch,
+                -- so this ranking and the degree methods answer identically.
+                -- No self-loop guard, for the reason given on
+                -- get_popular_labels. Each arm is index-served: src_id via the
+                -- PK prefix, tgt_id via idx_..._namespace_tgt.
                 candidate_degrees AS (
                     SELECT id, COUNT(*) AS degree
                     FROM (

@@ -24,7 +24,9 @@ from opensearchpy.exceptions import (  # type: ignore
     ConflictError,
 )
 import lightrag.kg.opensearch_impl
+from lightrag.exceptions import VectorSpaceMismatchError, flush_may_have_lost_reference
 from lightrag.kg.opensearch_impl import (
+    OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
     OpenSearchDocStatusStorage,
     OpenSearchGraphStorage,
@@ -34,6 +36,8 @@ from lightrag.kg.opensearch_impl import (
     _resolve_workspace,
     _sanitize_index_name,
     _verify_mirrored_id_mapping,
+    _workspace_index_meta,
+    WorkspaceIndexCollisionError,
     _resolve_bulk_batch_limits,
     _run_chunked_async_bulk,
     _canonical_edge_id,
@@ -61,6 +65,55 @@ async def _mock_lock():
 
 def _mock_lock_factory():
     return _mock_lock()
+
+
+def _gone_probe() -> AsyncMock:
+    """indices.get_mapping for an index that is still absent."""
+    return AsyncMock(side_effect=_missing_index_error())
+
+
+def _owned_probe(storage) -> AsyncMock:
+    """indices.get_mapping for an index that is back and marked as ours."""
+    return AsyncMock(
+        return_value={
+            storage._index_name: {
+                "mappings": {
+                    "_meta": _workspace_index_meta(
+                        storage.workspace, storage.final_namespace
+                    )
+                }
+            }
+        }
+    )
+
+
+def _owned_probe_with_dim(storage, dimension) -> AsyncMock:
+    """indices.get_mapping for our index, declaring a knn_vector dimension."""
+    return AsyncMock(
+        return_value={
+            storage._index_name: {
+                "mappings": {
+                    "_meta": _workspace_index_meta(
+                        storage.workspace, storage.final_namespace
+                    ),
+                    "properties": {
+                        "vector": {"type": "knn_vector", "dimension": dimension}
+                    },
+                }
+            }
+        }
+    )
+
+
+def _foreign_probe(storage) -> AsyncMock:
+    """indices.get_mapping for an index a DIFFERENT workspace has claimed."""
+    return AsyncMock(
+        return_value={
+            storage._index_name: {
+                "mappings": {"_meta": _workspace_index_meta("other_ws", "other_ns")}
+            }
+        }
+    )
 
 
 def _missing_index_error() -> NotFoundError:
@@ -1879,6 +1932,227 @@ class TestKVRefreshGating:
             async for _ in s._iter_raw_docs(batch_size=10):
                 pass
             assert order[:2] == ["refresh", "create_pit"]
+
+
+# ---------------------------------------------------------------------------
+# Reference-loss typing of a failed commit
+# ---------------------------------------------------------------------------
+
+
+class TestFlushReferenceLossTyping:
+    """A failed commit must say whether it could have lost a reference (#3924).
+
+    An ``extract`` LLM-cache row is reachable only through its chunk's
+    ``llm_cache_list``, so a caller that cannot tell a dropped operation from
+    a retained one has to quarantine every buffered extract row in the process
+    to stay safe. Inspecting the buffer afterwards does not separate them: a
+    permanent bulk failure empties it exactly as a successful flush does. So
+    the backend answers in the type it raises -- see *What a failed commit
+    says about references* in ``docs/design/PurgeRecoveryContract.md``.
+    """
+
+    def _kv(self, global_config, embed_func, workspace="test"):
+        return OpenSearchKVStorage(
+            namespace="text_chunks",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    def _vector(self, global_config, embed_func, workspace="test"):
+        return OpenSearchVectorDBStorage(
+            namespace="entities",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+            meta_fields={"content"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bulk_transport_failure_says_it_lost_nothing(
+        self, global_config, embed_func, mock_client
+    ):
+        """The buffer edits come after the bulk, so every op replays."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert "k1" in s._pending_upserts, (
+                    "the raise claimed nothing was lost while the operation was "
+                    "gone from the buffer"
+                )
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_failure_says_it_lost_nothing(
+        self, global_config, embed_func, mock_client
+    ):
+        """The flush returned before the refresh ran, so the writes are durable."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=OpenSearchException("transient refresh failure")
+                )
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert len(s._pending_upserts) == 0
+                assert mock_bulk.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_permanent_failure_makes_no_such_claim(
+        self, global_config, embed_func, mock_client
+    ):
+        """A permanent 4xx op is removed from the buffer before the raise."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {
+                            "index": {
+                                "_id": "k1",
+                                "status": 400,
+                                "error": {"type": "mapper_parsing_exception"},
+                            }
+                        }
+                    ],
+                )
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.index_done_callback()
+
+                assert not isinstance(excinfo.value, OpenSearchReferencesIntactError), (
+                    "a dropped operation was reported as a reference-safe raise"
+                )
+                assert flush_may_have_lost_reference(excinfo.value) is True
+
+    @pytest.mark.asyncio
+    async def test_a_mixed_flush_makes_no_such_claim(
+        self, global_config, embed_func, mock_client
+    ):
+        """One flush can carry both kinds; the honest answer stays "yes".
+
+        The retained operation is real -- ``k2`` is still in the buffer and
+        will replay -- so a type describing the retention rather than the
+        flush would report safety over the reference ``k1`` just lost.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {"index": {"_id": "k1", "status": 400, "error": "permanent"}},
+                        {"index": {"_id": "k2", "status": 503, "error": "down"}},
+                    ],
+                )
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}, "k2": {"content": "v2"}})
+
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.index_done_callback()
+
+                assert "k2" in s._pending_upserts
+                assert flush_may_have_lost_reference(excinfo.value) is True
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_still_an_opensearch_exception(
+        self, global_config, embed_func, mock_client
+    ):
+        """Callers catching the driver's own exception must keep catching it.
+
+        The type is additive: it answers a question the caller did not used to
+        ask, and must not silently stop an ``except OpenSearchException``
+        inside this module or out of it from firing.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(OpenSearchException):
+                    await s.index_done_callback()
+
+    @pytest.mark.asyncio
+    async def test_a_missing_index_on_refresh_still_makes_no_claim(
+        self, global_config, embed_func, mock_client
+    ):
+        """The missing-index branch returns; it must not start raising."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=NotFoundError(404, "index_not_found_exception", {})
+                )
+                await s.upsert({"k1": {"content": "v1"}})
+
+                await s.index_done_callback()
+
+                assert s._index_ready is False
+
+    @pytest.mark.asyncio
+    async def test_the_vector_storage_answers_the_same_way(
+        self, global_config, embed_func, mock_client
+    ):
+        """Same flush/refresh shape, same two answers.
+
+        No caller branches on a vector commit's answer today -- the reference
+        carrier is a KV namespace -- but the contract belongs to the storage
+        layer rather than to one namespace.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._vector(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "x"}})
+
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert "v1" in s._pending_vector_docs
+
+                mock_bulk.side_effect = None
+                mock_bulk.return_value = (1, [])
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=OpenSearchException("transient refresh failure")
+                )
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert len(s._pending_vector_docs) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -4439,7 +4713,9 @@ class TestVectorStorage:
     async def test_query_cosine_score_conversion(
         self, global_config, embed_func, mock_client
     ):
-        """Test that scores are used directly and threshold filtering works."""
+        """lucene/cosinesimil hits score as (1 + cosine_similarity) / 2, so an
+        engine score of 0.85 must convert back to a raw cosine similarity of
+        0.7, not be used directly."""
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -4462,16 +4738,18 @@ class TestVectorStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            results = await s.query("test", top_k=5)
+            with patch("lightrag.kg.opensearch_impl.logger.info") as mock_log:
+                results = await s.query("test", top_k=5)
             assert len(results) == 1
-            assert results[0]["distance"] == 0.85
+            assert results[0]["distance"] == pytest.approx(0.7)
+            assert "cosine_range=[0.7000, 0.7000]" in mock_log.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_query_filters_below_threshold(
         self, global_config, embed_func, mock_client
     ):
         """Low scores should be filtered out."""
-        # score 0.15 < threshold 0.2
+        # engine score 0.15 -> cosine similarity 2*0.15-1 = -0.7 < threshold 0.2
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -4480,6 +4758,40 @@ class TestVectorStorage:
                             "_id": "v1",
                             "_score": 0.15,
                             "_source": {"content": "weak match"},
+                        },
+                    ],
+                    "total": {"value": 1},
+                },
+                "aggregations": {
+                    "status_counts": {"buckets": []},
+                    "src": {"buckets": []},
+                    "tgt": {"buckets": []},
+                },
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            results = await s.query("test", top_k=5)
+            assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_query_rejects_unconverted_score_that_would_have_passed(
+        self, global_config, embed_func, mock_client
+    ):
+        """Regression: comparing the raw engine score against the threshold
+        (instead of converting to cosine similarity first) let a weakly- or
+        negatively-correlated match through. Engine score 0.3 satisfies the
+        default 0.2 threshold directly, but its true cosine similarity is
+        2*0.3-1 = -0.4, which must be filtered out."""
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "v1",
+                            "_score": 0.3,
+                            "_source": {"content": "unrelated"},
                         },
                     ],
                     "total": {"value": 1},
@@ -4699,10 +5011,16 @@ class TestVectorStorage:
     async def test_reads_short_circuit_when_index_not_ready(
         self, global_config, embed_func, mock_client
     ):
+        """Reads short-circuit only on a CONFIRMED missing index.
+
+        The presence probe answers index_not_found, so the re-check confirms
+        the index really is gone and the mark is honoured.
+        """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             s._index_ready = False
+            mock_client.indices.get_mapping = _gone_probe()
 
             assert await s.query("test", top_k=5) == []
             assert await s.get_by_id("v1") is None
@@ -4715,15 +5033,393 @@ class TestVectorStorage:
     async def test_read_missing_index_demotes_readiness(
         self, global_config, embed_func, mock_client
     ):
+        """A live index_not_found leaves the instance marked.
+
+        The second query re-checks presence (the probe answers
+        index_not_found), finds the index still gone and honours the mark
+        without a second search.
+        """
         mock_client.search = AsyncMock(side_effect=_missing_index_error())
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
+            mock_client.indices.get_mapping = _gone_probe()
 
             assert await s.query("test", top_k=5) == []
-            assert await s.query("test", top_k=5) == []
             assert s._index_ready is False
+            assert await s.query("test", top_k=5) == []
             assert mock_client.search.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reads_recover_once_the_index_is_back(
+        self, global_config, embed_func, mock_client
+    ):
+        """A peer that marked itself during drop()'s window heals on its next read.
+
+        ``_index_ready`` is per-instance, so the worker that recreated the
+        index cannot clear a peer's mark. Without the presence re-check the
+        peer short-circuits forever: vector reads have no write to heal them,
+        and /documents/clear re-initializes doc_status only.
+        """
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [{"_id": "v1", "_score": 0.9, "_source": {"content": "c"}}]
+                }
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            # initialize() provisions the index; only what the READ does counts.
+            mock_client.indices.create.reset_mock()
+            s._index_ready = False
+
+            # The index is back on the server (another worker recreated it),
+            # carrying this workspace's marker.
+            mock_client.indices.get_mapping = _owned_probe(s)
+
+            results = await s.query("test", top_k=5)
+
+            assert s._index_ready is True
+            assert [r["id"] for r in results] == ["v1"]
+            mock_client.indices.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_never_creates_the_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Reads verify, they do not provision.
+
+        A read that created an empty index would manufacture the very
+        confirmation it is supposed to be checking for.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            # initialize() both probes and provisions; count only the reads.
+            mock_client.indices.create.reset_mock()
+            mock_client.indices.get_mapping = _gone_probe()
+            s._index_ready = False
+
+            assert await s.query("test", top_k=5) == []
+            assert await s.get_by_id("v1") is None
+            assert await s.get_by_ids(["v1"]) == [None]
+            assert await s.get_vectors_by_ids(["v1"]) == {}
+
+            assert s._index_ready is False
+            # Every read probed; none of them provisioned.
+            assert mock_client.indices.get_mapping.await_count == 4
+            mock_client.indices.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_is_free_while_the_index_is_ready(
+        self, global_config, embed_func, mock_client
+    ):
+        """The healthy path costs no extra round trip.
+
+        Without this the re-check would be a probe on every read, which is
+        the kind of cost a fallback hides -- assert the call count, not just
+        the result.
+        """
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "v1", "found": False}]}
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.get_mapping.reset_mock()
+
+            await s.query("test", top_k=5)
+            await s.get_by_id("v1")
+            await s.get_vectors_by_ids(["v1"])
+
+            mock_client.indices.get_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_runs_outside_the_flush_lock(
+        self, global_config, embed_func, mock_client
+    ):
+        """The probe is a round trip; holding _flush_lock across it would
+        stall every concurrent upsert flush for its duration."""
+        observed: list[bool] = []
+
+        async def _probe(**_kwargs):
+            observed.append(s._flush_lock.locked())
+            raise _missing_index_error()
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.get_mapping = AsyncMock(side_effect=_probe)
+            s._index_ready = False
+
+            assert await s.get_by_id("v1") is None
+            assert await s.get_vectors_by_ids(["v1"]) == {}
+
+            assert observed == [False, False]
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_failure_keeps_the_mark(
+        self, global_config, embed_func, mock_client
+    ):
+        """A probe that cannot answer must not let the stale mark answer for it.
+
+        "It was missing when I last looked and I cannot reach the cluster now"
+        is not a confirmation, so query() raises rather than returning [].
+        The point reads keep their own leniency and still report a miss.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.get_mapping = AsyncMock(
+                side_effect=OpenSearchException("transport down")
+            )
+            s._index_ready = False
+
+            with pytest.raises(OpenSearchException):
+                await s.query("test", top_k=5)
+            assert await s.get_by_id("v1") is None
+            assert await s.get_vectors_by_ids(["v1"]) == {}
+            assert s._index_ready is False
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_refuses_a_foreign_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Existence alone must not restore readiness.
+
+        ``_sanitize_index_name`` is lossy, so the name that came back can
+        belong to another deployment. Lifting the mark on existence alone
+        would serve that deployment's vectors as ours -- the collision the
+        startup guard exists to catch, reached by a different door.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = _foreign_probe(s)
+
+            # A ValueError, not an OpenSearchException: the point reads'
+            # leniency must not swallow a misconfiguration this serious.
+            for read in (
+                lambda: s.query("test", top_k=5),
+                lambda: s.get_by_id("v1"),
+                lambda: s.get_by_ids(["v1"]),
+                lambda: s.get_vectors_by_ids(["v1"]),
+            ):
+                with pytest.raises(WorkspaceIndexCollisionError):
+                    await read()
+
+            assert s._index_ready is False
+            mock_client.search.assert_not_awaited()
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_adopts_an_unmarked_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """An index predating the ownership marker stays readable.
+
+        Deliberate: it is unprotected exactly as it was before the marker
+        existed, and refusing it would wedge a read-only worker against an
+        index written by an older LightRAG release.
+        """
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(
+                return_value={s._index_name: {"mappings": {}}}
+            )
+
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is True
+
+    @pytest.mark.asyncio
+    async def test_probe_in_flight_does_not_outrank_a_later_missing_mark(
+        self, global_config, embed_func, mock_client
+    ):
+        """A stale probe answer must not restore readiness over a newer mark.
+
+        The probe runs outside _flush_lock, so a drop() can delete the index
+        and fail to recreate it while the mapping request is in flight. If the
+        probe then wrote its pre-delete observation back, _index_ready would be
+        True with no index behind it, and the next upsert would skip
+        _ensure_index_ready and flush against nothing.
+        """
+        drop_ran = asyncio.Event()
+
+        async def _probe_then_drop(**_kwargs):
+            # The mapping request has been issued; let drop() run to completion
+            # before this answer comes back.
+            mock_client.indices.delete = AsyncMock()
+            mock_client.indices.create = AsyncMock(
+                side_effect=OpenSearchException("recreate failed")
+            )
+            await storage.drop()
+            drop_ran.set()
+            return {
+                storage._index_name: {
+                    "mappings": {
+                        "_meta": _workspace_index_meta(
+                            storage.workspace, storage.final_namespace
+                        )
+                    }
+                }
+            }
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            storage = self._make(global_config, embed_func)
+            await storage.initialize()
+            storage._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(side_effect=_probe_then_drop)
+
+            assert await storage.query("test", top_k=5) == []
+
+            assert drop_ran.is_set()
+            # drop()'s failed recreate marked the index missing AFTER the probe
+            # was issued; the probe's answer must not undo that.
+            assert storage._index_ready is False
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_concurrent_404_probe_outranks_one_that_saw_the_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """A probe answered 404 read the server later than one that saw the index.
+
+        Both are in flight against the same marked instance. If the 404 simply
+        returned without recording what it learned, the older probe would
+        resume and restore readiness for an index that is now absent, and the
+        next upsert would skip _ensure_index_ready and flush against nothing.
+
+        Only this order needs the guarantee. If the stale probe writes True
+        first, the other read short-circuits on the flag and its own search
+        raises index_not_found, which re-marks the instance -- the next server
+        contact is the correction.
+        """
+        started = asyncio.Event()
+        released = asyncio.Event()
+        seen: list[str] = []
+
+        async def _probe(**_kwargs):
+            if not seen:
+                # Probe A: reached the server while the index was still there.
+                seen.append("stale")
+                started.set()
+                await released.wait()
+                return {
+                    storage._index_name: {
+                        "mappings": {
+                            "_meta": _workspace_index_meta(
+                                storage.workspace, storage.final_namespace
+                            )
+                        }
+                    }
+                }
+            # Probe B: reached the server after the delete.
+            seen.append("fresh")
+            raise _missing_index_error()
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            storage = self._make(global_config, embed_func)
+            await storage.initialize()
+            storage._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(side_effect=_probe)
+
+            stale = asyncio.create_task(storage.query("a", top_k=5))
+            await started.wait()
+
+            # B lands, and records the absence, while A is still suspended.
+            assert await storage.query("b", top_k=5) == []
+            assert storage._index_ready is False
+
+            released.set()
+            assert await stale == []
+
+            assert seen == ["stale", "fresh"]
+            # A's answer predates B's; it must not put readiness back.
+            assert storage._index_ready is False
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_refuses_a_foreign_dimension(
+        self, global_config, embed_func, mock_client
+    ):
+        """Ownership is only half of what makes an index usable by this instance.
+
+        The index name carries no model suffix on this backend, so an index
+        rebuilt under a different embedding model keeps this workspace's
+        marker and differs only in the vector dimension. Restoring readiness
+        on the marker alone would let upsert skip _ensure_index_ready, which
+        is the path that raises something an operator can act on.
+
+        The refusal is typed: lightrag-rebuild-vdb responds to it by DROPPING
+        the index, so it must be distinguishable from a cluster outage or a bad
+        credential. A bare ValueError here would force that tool to catch
+        Exception and destroy data on a false positive.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            wrong = s.embedding_func.embedding_dim + 1
+            mock_client.indices.get_mapping = _owned_probe_with_dim(s, wrong)
+
+            for read in (
+                lambda: s.query("test", top_k=5),
+                lambda: s.get_by_id("v1"),
+                lambda: s.get_by_ids(["v1"]),
+                lambda: s.get_vectors_by_ids(["v1"]),
+            ):
+                with pytest.raises(VectorSpaceMismatchError, match="dimension"):
+                    await read()
+
+            assert s._index_ready is False
+            mock_client.search.assert_not_awaited()
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_accepts_a_matching_dimension(
+        self, global_config, embed_func, mock_client
+    ):
+        """The same index, rebuilt under the same model, is usable."""
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = _owned_probe_with_dim(
+                s, s.embedding_func.embedding_dim
+            )
+
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is True
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_tolerates_an_unreadable_dimension(
+        self, global_config, embed_func, mock_client
+    ):
+        """A mapping this code cannot parse is not evidence of a mismatch.
+
+        Mirrors _create_knn_index_if_not_exists, which logs and skips the
+        dimension check rather than refusing the index.
+        """
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(
+                return_value={s._index_name: {"mappings": {"properties": {}}}}
+            )
+
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is True
 
 
 # ---------------------------------------------------------------------------

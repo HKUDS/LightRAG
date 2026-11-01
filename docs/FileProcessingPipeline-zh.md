@@ -249,6 +249,10 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 文本 API 以 `chunking.strategy="custom"` 暴露同一路径；`params` 使用完整的 fixed-token/legacy 参数契约（`chunk_token_size`、`chunk_overlap_token_size`、`split_by_character`、`split_by_character_only`）。如果没有替换 `LightRAG.chunking_func`，`/documents/text` 与 `/documents/texts` 会返回 422。
 
+Server 部署可以通过 `CUSTOM_CHUNKER=<注册名>`（或 `--custom-chunker`）在启动时选择已安装的 `lightrag.chunkers` 插件，见 [ThirdPartyChunker-zh.md](./ThirdPartyChunker-zh.md)。注入作用于**整个实例**：不带分块 selector 的插入也调用它，不限于 `C`，因此这些文档记录 `chunk_method=legacy_chunking_func`，并与构造期传入回调一样失去 source-span sidecar 回填资格。显式 F/R/V/P 仍调用内置策略。未配置时保持现有准入和回退行为；配置错误则启动失败，不会悄悄换回默认回调。
+
+`doc_status.metadata.custom_chunker` 独立记录最近一次尝试的注册名/版本及 `authoritative: false`，不改变 `chunk_method` 与 `chunk_opts`。该观察值跨重试/重置保留，仅供诊断，不是执行指令；只有真正调用回调的尝试才写它，显式 F/R/V/P 的尝试保留原观察值而不清空。持久化文档在配置身份变化或移除后重处理，每次尝试告警一次并按**当前配置**继续；无 selector 文档与 `C` 文档同样适用，因为两者都调用回调。已有的逐次 fallback 告警独立保留；作者提供的版本号无法检测同名同版本背后的实现变化。
+
 > `drop_references` 检测调参 `CHUNK_P_REFERENCES_TAIL_N`（默认 `0`：扫描全部内容块；正数表示只扫描文末最后 N 块）/ `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔，默认 `References\|Bibliography\|参考文献`）仅经环境变量、运行时实时读取。drop_references可以通过环境变量 `CHUNK_P_DROP_REFERENCES` 设置为全局默认值.
 
 ### 2.7 校验、优先级与回退
@@ -1025,7 +1029,7 @@ WebUI 入口是文档管理页「流水线状态」对话框里的**「中断」
 有些故障会让 workspace 处于"继续下去只能靠猜"的状态。管线不做这种猜测，而是升起 `recovery_required` 栅栏：此后**所有**写操作（upload / text / scan / 手动重试 / delete / clear）一律返回 **HTTP 503**，直到运维显式解除。三种情况会升起它——其中 1 和 3 依赖跨进程的死进程检测，只在 **Linux + Gunicorn 多 worker** 部署下才会发生（单进程 uvicorn 的协调状态随进程一起消失）：
 
 1. **worker 在 `custom_chunks` / `delete` / `clear` 执行途中死亡。** 这些操作可能已经半提交，不能简单重跑。（`processing` / `scan` 的执行者死亡是可重跑的，会被静默回收，不设栅栏。）
-2. **手动重试的排空无法到达空闲。** 有两种卡法：同一批文档反复回来且状态毫无变化（再重扫只会自旋），以及排空根本无法推进的文档——持有**未完成 custom-chunk 操作**的行，只有 `/documents/scan` 的回滚能处理它们。两种情况下重置都不执行，重试请求保持未确认（那一次机会仍然欠着），栅栏消息里带阻塞文档 ID 的有界样本。`recovery_kind` 区分二者：`manual_drain_stalled` 和 `manual_drain_blocked`。
+2. **手动重试的排空无法到达空闲。** 有三种卡法：同一批文档反复回来且状态毫无变化（再重扫只会自旋）；排空根本无法推进的文档——持有**未完成 custom-chunk 操作**的行，只有 `/documents/scan` 的回滚能处理它们；以及迟迟不结束的在途入队预约——排空正在等上传/插入把文档落盘，而整整 10 分钟没有任何一个完成。三种情况下重置都不执行，重试请求保持未确认（那一次机会仍然欠着），栅栏消息里带阻塞源的有界样本。`recovery_kind` 区分三者：`manual_drain_stalled`、`manual_drain_blocked` 和 `manual_drain_enqueue_stalled`。
 3. **无法判定某个执行者是否已经死亡。** 回收一个执行权必须先证明其所属进程确已死亡；不带进程身份的记录永远无法证明，管线不靠猜回收，改由栅栏提供出口。
 
 `GET /documents/pipeline_status` 会返回 `recovery_required`（布尔）、`recovery_kind`（粗粒度原因）和 `recovery_message`（与 503 相同的文案，某些原因还带阻塞文档的有界样本）。
@@ -1044,6 +1048,7 @@ POST /documents/recovery/force_reset
 |---|---|
 | `manual_drain_blocked` | `POST /documents/recovery/force_reset`，然后 `POST /documents/scan` —— scan 会回滚未完成的操作**并且**自己执行 `FAILED` 重置，无需再单独调重试。 |
 | `manual_drain_stalled` | `POST /documents/recovery/force_reset`，然后排查 `recovery_message` 中列出的文档——它们卡住的原因这个栅栏无法给出。处理完后重新调 `POST /documents/reprocess_failed`。 |
+| `manual_drain_enqueue_stalled` | `POST /documents/recovery/force_reset`，然后重新调 `POST /documents/reprocess_failed`。这一种栅栏下 `force_reset` 会**连同卡住的预约一起清掉**——它们本身就是阻塞源，只清栅栏的话 `/documents/scan` 与 `/documents/clear` 仍被拒，重发的重试也会再次触发栅栏。响应里的 `dropped_enqueue_reservations` 给出清掉的数量，`retained_enqueue_reservations` 给出有意保留的数量——source-conflict 修复的守卫永远不清，该值非零意味着工作区仍对 scan/clear 关闭，直到持有者结束或其进程被重启；`recovery_message` 给出按种类分的阻塞源数量与对应的处置办法，**不含**任何预约 token 与属主进程号（它们不出进程；要重启真正卡死的 worker，进程号在**服务端日志**里）。若阻塞源里有修复守卫，消息会点明并要求先等它结束或重启其属主，而不是立刻重发重试——那只会让排空再卡一轮。若持有者其实活着只是慢，栅栏本身不会作废它——已准入的入队仍允许落盘；但在这次重置**之后**才返回的持有者预约已被清掉，可能在客户端已收到 200 之后被拒：`/upload` 会被下一次 `/documents/scan` 捞回，`/documents/text` 与 `/documents/texts` 必须重发。因此晚一点再 force_reset 不吃亏，还可能保住一份内容。 |
 | worker 死于 `custom_chunks` / `delete` / `clear` 途中 | 不要直接 `force_reset`——按下面「半提交存储怎么修」处理。 |
 
 **能不能直接重启服务了事？** 判断标准只有一条——**堵塞源在内存里还是在存储里**。重启清掉的只有运行时协调状态（`pipeline_status` 里的栅栏与 owner 记录、ingress 里排队的手动重试请求，都不持久化），写进 `doc_status` / `full_docs` / 存储的东西一样都清不掉。
@@ -1052,6 +1057,7 @@ POST /documents/recovery/force_reset
 | --- | :-: | --- |
 | owner 生死无法判定 | ✅ 能 | 卡住的 reservation 记录本身就活在跨进程共享状态里，进程组一起重启就没了，且没有任何存储被动过——这是最干净的办法 |
 | `manual_drain_stalled` | ⚠️ 多半能 | 栅栏与排队请求随重启消失；那些"反复回来又不变状态"的活跃行若是死进程遗留的 `PROCESSING` / `PARSING` / `ANALYZING` 孤儿，重启后会被自动重置为 `PENDING` 并在下次触发时重跑，堵塞源自然消失。但重启不诊断根因：若它们是因别的原因每轮都停在同一状态，下一次 `/documents/reprocess_failed` 会再次 stall |
+| `manual_drain_enqueue_stalled` | ✅ 能 | 卡住的预约只存在于 `pipeline_status` 这份运行时状态里，重启会连同栅栏一起清掉。真正在途的那次上传，其文档要么已经是 `PENDING`（下次触发会重跑），要么根本没写入，不存在半提交。这一种情况下重启其实比 `force_reset` *更干净*：生产者随预约一起被终止，不会有谁在客户端已收到 200 之后才被拒 |
 | `manual_drain_blocked` | ❌ 不能 | 阻塞源是 `doc_status.metadata` 里未完成的 custom-chunk 操作日志，它**是持久化的**，重启原样还在。重启只清掉栅栏和排队请求（这一步仍是必要的，否则排队请求会让 `/scan` 拒绝自己的 reservation），真正的回滚必须由 `POST /documents/scan` 执行 |
 | worker 死于 `custom_chunks` / `delete` / `clear` | ❌ 不能 | 半提交的是存储本身，见下 |
 
@@ -1118,7 +1124,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 4. **task 上限与请求上限不同**：`MAX_ASYNC_LLM` 设置 N5 单文档 chunk 抽取的 task 上限，以及其两倍的合并 task 上限。实际抽取和合并摘要请求使用 Extract 角色的上限：设置了 `EXTRACT_MAX_ASYNC_LLM` 时使用它，否则使用 `MAX_ASYNC_LLM`。缓存、图的 keyed lock 和角色上限都会让观测到的实际请求并发低于 task 并发。
 5. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
 6. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
-7. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 仍在事件循环上执行（它的契约允许触碰运行中的事件循环），CPU 密集的实现应自行 `asyncio.to_thread`。
+7. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 默认仍在事件循环上执行（它的契约允许触碰运行中的事件循环）。CPU 密集的实现应自行 offload，或由同步注册插件声明 `executor_safe=True` 复用有界分块线程池；异步插件不能启用此选项。
 
 **典型调优场景：**
 

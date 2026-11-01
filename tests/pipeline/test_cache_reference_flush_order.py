@@ -32,7 +32,7 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from lightrag.exceptions import IndexFlushError
+from lightrag.exceptions import IndexFlushError, ReferencesIntactFlushError
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.pipeline import _BatchRunContext
@@ -488,5 +488,41 @@ async def test_the_query_path_still_defers_on_its_own_failure(tmp_path):
 
         assert "llm_response_cache" not in order, order
         assert rag._chunk_reference_commit_failed is True
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_query_path_defers_without_quarantining_a_safe_failure(tmp_path):
+    """A query must not discard this process's extract rows over a blip.
+
+    The quarantine takes EVERY buffered extract row in the process, not the
+    query's own -- it holds none. When the backend proves its raise dropped
+    nothing there is nothing to orphan, so the commit is simply skipped and
+    the pipeline's buffered rows keep their place.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        cache_original = rag.llm_response_cache.index_done_callback
+
+        async def _chunks():
+            order.append("text_chunks")
+            raise ReferencesIntactFlushError("bulk died mid-stream")
+
+        async def _cache():
+            order.append("llm_response_cache")
+            return await cache_original()
+
+        rag.text_chunks.index_done_callback = _chunks
+        rag.llm_response_cache.index_done_callback = _cache
+
+        await rag._query_done()
+
+        assert order == ["text_chunks"], order
+        assert rag._chunk_reference_commit_failed is False, (
+            "one transient query-path blip recorded a failure that defers "
+            "every later cache commit and quarantines rows it never touched"
+        )
     finally:
         await rag.finalize_storages()

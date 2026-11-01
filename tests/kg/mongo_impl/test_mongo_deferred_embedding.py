@@ -541,7 +541,10 @@ async def test_concurrent_upsert_and_flush_serialize_on_lock():
 async def test_drop_clears_pending_buffers():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
-    with patch.object(s, "create_vector_index_if_not_exists", new=AsyncMock()):
+    # _reprovision_vector_space is the server-touching half of drop() (index
+    # dimension probe, marker write, index rebuild); this test is about the
+    # buffer half.
+    with patch.object(s, "_reprovision_vector_space", new=AsyncMock()):
         await s.upsert({"v1": {"content": "hello"}})
         await s.delete(["v2"])
         assert s._pending_vector_docs and s._pending_vector_deletes

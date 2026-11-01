@@ -49,6 +49,10 @@ def _isolate_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    # Part of the minimal viable server config since create_app began
+    # refusing to start without a named embedding model. The ollama
+    # binding's own default, so no EMBEDDING_DIM is implied.
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
 
 
 @pytest.fixture
@@ -770,11 +774,13 @@ class TestWhitelistUnderApiPrefix:
     the routers' own auth dependency all come together.
     """
 
-    @pytest.fixture
-    def _default_whitelist(self, monkeypatch):
-        """Pin the shipped default so a developer-local WHITELIST_PATHS in .env
-        (already baked into the module-level patterns at import time) cannot
-        change what these tests assert."""
+    @pytest.fixture(params=[False, True], ids=["api-key-only", "password-and-api-key"])
+    def _default_whitelist(self, monkeypatch, request):
+        """Pin the shipped whitelist and both auth modes, independent of .env.
+
+        Auth state is cached at import time; patch the cached value as well.
+        Return the missing-credentials status for the selected auth mode.
+        """
         original_argv = sys.argv.copy()
         try:
             # config resolves its args on first attribute access; importing under
@@ -787,6 +793,8 @@ class TestWhitelistUnderApiPrefix:
         monkeypatch.setattr(
             utils_api, "whitelist_patterns", [("/health", False), ("/api", True)]
         )
+        monkeypatch.setattr(utils_api, "auth_configured", request.param)
+        return 401 if request.param else 403
 
     @staticmethod
     def _args_with_prefix(prefix: str):
@@ -831,7 +839,9 @@ class TestWhitelistUnderApiPrefix:
             client = TestClient(create_app(_colliding_prefix_args))
             prefix = "" if mode == "strip" else "/api/v1"
 
-            assert client.delete(f"{prefix}/documents").status_code == 401
+            assert (
+                client.delete(f"{prefix}/documents").status_code == _default_whitelist
+            )
 
     @pytest.mark.parametrize("mode", ["verbatim", "strip"])
     def test_whitelisted_routes_stay_open_under_a_prefix(
@@ -841,7 +851,7 @@ class TestWhitelistUnderApiPrefix:
         Ollama-compatible routes must keep their documented exemption.
 
         Both answered 401 under this prefix before the fix. The assertion is
-        "not 401" rather than 200 because these handlers reach further into a
+        "neither 401 nor 403" rather than 200 because these handlers reach into a
         LightRAG that is only a MagicMock here: /health reads shared storage that
         no test initializes, and /api/tags feeds mock attributes to a Pydantic
         response model. Both therefore fail *after* the auth gate, which is why
@@ -858,7 +868,7 @@ class TestWhitelistUnderApiPrefix:
             )
             prefix = "" if mode == "strip" else "/site01"
 
-            assert client.get(f"{prefix}/health").status_code != 401
+            assert client.get(f"{prefix}/health").status_code not in (401, 403)
             # GET, matching the real registration; GET /api/chat would be a 405
             # from the router without the dependency ever running.
-            assert client.get(f"{prefix}/api/tags").status_code != 401
+            assert client.get(f"{prefix}/api/tags").status_code not in (401, 403)

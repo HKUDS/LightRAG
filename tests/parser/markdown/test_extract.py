@@ -17,7 +17,9 @@ import pytest
 from lightrag.parser.markdown.extract import (
     PREFACE_HEADING,
     ResolvedImage,
+    _has_unescaped_pipe,
     _replace_inline_images,
+    _split_pipe_row,
     extract_markdown,
 )
 
@@ -133,6 +135,86 @@ def test_pipe_table_column_count_must_match_header():
     md = "| a | b | c |\n| --- | --- |\n| 1 | 2 | 3 |\n"
     ex = _extract(md)
     assert not ex.tables
+
+
+def test_pipe_table_escaped_pipe_is_cell_text():
+    # ``\|`` is content, not a column separator, so the row keeps the header's
+    # column count instead of silently shifting values under the wrong header.
+    md = "| h1 | h2 |\n| --- | --- |\n| a \\| b | c |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["header"] == [["h1", "h2"]]
+    assert table["rows"] == [["a | b", "c"]]
+
+
+def test_pipe_table_escaped_pipe_in_header_keeps_table():
+    # An escaped pipe in the header must not inflate its column count, or the
+    # delimiter row stops matching and the table is not recognised at all.
+    md = "| a \\| b | h2 |\n| --- | --- |\n| 1 | 2 |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["header"] == [["a | b", "h2"]]
+    assert table["rows"] == [["1", "2"]]
+
+
+def test_pipe_table_escaped_backslash_still_splits():
+    # ``\\`` is a literal backslash, so the ``|`` after it is a real separator.
+    md = "| h1 | h2 |\n| --- | --- |\n| a \\\\| b |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a \\", "b"]]
+
+
+def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
+    # With no unescaped ``|`` the line has no column separator at all, so it is
+    # a paragraph, even though its single cell matches the one-cell ``---``.
+    md = "foo \\| bar\n---\nnext paragraph\n"
+    ex = _extract(md)
+    assert not ex.tables
+    assert "foo \\| bar" in ex.blocks[0]["content"]
+
+
+def test_escaped_pipe_only_line_stays_in_the_table_body():
+    # Escaping is content-level. Once the delimiter row has established the
+    # table, a line whose only pipe is escaped is still a body row -- GFM keeps
+    # it, as one cell padded to the header width. Requiring an unescaped ``|``
+    # here would move table data out into a paragraph; only the header gate,
+    # where no table is established yet, may demand structural evidence.
+    md = "| h1 | h2 |\n| --- | --- |\n| a | b |\ntail \\| text\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a", "b"], ["tail | text"]]
+    assert "tail \\| text" not in ex.blocks[0]["content"]
+
+
+def test_escaped_backslash_body_row_splits_into_two_cells():
+    # ``\\|`` is an escaped backslash followed by a real separator, so the row
+    # carries two cells and the backslash stays in the first one.
+    md = "| h1 | h2 |\n| --- | --- |\n| a | b |\nc \\\\| d\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a", "b"], ["c \\", "d"]]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("foo", False),
+        ("a | b", True),
+        ("| foo |", True),  # a one-column table still carries separators
+        ("a \\| b", False),  # escaped pipe: cell content, no separator
+        ("a \\\\| b", True),  # escaped backslash, then a real separator
+        ("a \\\\\\| b", False),  # escaped backslash, then an escaped pipe
+        ("a \\\\\\\\| b", True),  # two escaped backslashes, then a separator
+    ],
+)
+def test_has_unescaped_pipe_agrees_with_the_row_splitter(line, expected):
+    # The table gate and the row splitter read one scan, so they cannot
+    # disagree about what an escape is; this pins the rule both of them see.
+    # The prepended ``|`` absorbs the splitter's opening-pipe strip, leaving a
+    # cell count that reflects exactly the separators in ``line``.
+    assert _has_unescaped_pipe(line) is expected
+    assert (len(_split_pipe_row("|" + line)) > 1) is expected
 
 
 def test_html_table_captured_verbatim_spanning_lines():

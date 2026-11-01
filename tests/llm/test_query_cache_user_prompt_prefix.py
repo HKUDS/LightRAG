@@ -114,6 +114,15 @@ def _preprefix_answer_cache_key(
     still served when no prefix is configured. Do NOT refresh this when new key
     fields are added -- if a later change makes this miss, that change costs
     every deployment its warm answer cache and must be a deliberate decision.
+
+    Refreshed ONCE, deliberately, in PR #3877: the KG chunk-selection settings
+    (``related_chunk_number`` / ``kg_chunk_pick_method``) joined the key because
+    changing either changes the retrieved context, and serving an answer cached
+    under the previous setting is a wrong answer. That retires every KG answer
+    entry written before it; a stale answer is worse than a cold cache. The
+    naive branch is untouched -- it does not carry these components. The
+    defaults below are written as literals on purpose: if ``DEFAULT_*`` ever
+    moves, this snapshot must go red again rather than follow it silently.
     """
     args = [
         "query-answer-cache-v2",
@@ -133,6 +142,18 @@ def _preprefix_answer_cache_key(
             param.user_prompt or "",
             param.enable_rerank,
             cfg.get("enable_content_headings", False),
+        ]
+    )
+    if keywords is not None:
+        args.extend(
+            [
+                "\n<kg_chunk_selection>\n",
+                cfg.get("related_chunk_number", 5),
+                cfg.get("kg_chunk_pick_method", "VECTOR"),
+            ]
+        )
+    args.extend(
+        [
             "\n<llm_identity>\n",
             serialize_llm_cache_identity(get_llm_cache_identity(cfg, "query")),
         ]

@@ -53,6 +53,7 @@ from ..exceptions import (
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
+    VectorSpaceMismatchError,
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import (
@@ -323,6 +324,42 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
     return upsert_payload_bytes, upsert_records, delete_records
 
 
+# Transaction-local statement that lets a filtered ANN scan continue past
+# rejected candidates, per vector index type (pgvector >= 0.8). Must stay LOCAL;
+# see docs/design/PgVectorFilteredSearch.md.
+_ITERATIVE_SCAN_SQL: dict[str, str] = {
+    "HNSW": "SET LOCAL hnsw.iterative_scan = strict_order",
+    "HNSW_HALFVEC": "SET LOCAL hnsw.iterative_scan = strict_order",
+    "IVFFLAT": "SET LOCAL ivfflat.iterative_scan = relaxed_order",
+}
+
+_DISTANCE_COLUMN = "_distance"
+
+
+def _with_distance_resort(sql: str, vector_cast: str) -> str:
+    """Wrap an IVFFLAT vector query so its rows come back in distance order.
+
+    Required for ``ivfflat.iterative_scan = relaxed_order``, whose rows are not
+    ordered. The wrapper adds a ``_DISTANCE_COLUMN`` that the caller must remove
+    from every row. Why this form: docs/design/PgVectorFilteredSearch.md.
+    """
+    with_distance, replaced = re.subn(
+        r"\n(\s*)FROM ",
+        lambda m: (
+            f",\n{m.group(1)}content_vector <=> $4::{vector_cast} "
+            f"AS {_DISTANCE_COLUMN}\n{m.group(1)}FROM "
+        ),
+        sql.strip().rstrip(";"),
+        count=1,
+    )
+    if replaced != 1:
+        raise RuntimeError("vector query template has no top-level FROM line")
+    return (
+        f"WITH relaxed AS MATERIALIZED ({with_distance}) "
+        f"SELECT * FROM relaxed ORDER BY {_DISTANCE_COLUMN} + 0"
+    )
+
+
 # All known vector index suffixes, used to drop conflicting indexes when switching types
 _VECTOR_INDEX_SUFFIXES = [
     "hnsw_cosine",
@@ -443,6 +480,10 @@ class PostgreSQLDB:
             else str(_ev).lower() in ("true", "1", "yes", "on")
         )  # True for backward compatibility, can be set to False to disable vector features
         self.vector_index_type = config.get("vector_index_type")
+        # None = not probed yet; False = pgvector < 0.8 (no iterative scan GUC).
+        # Probed once by configure_vector_extension, read per connection.
+        self.iterative_scan_supported: bool | None = None
+        self._iterative_scan_warned = False
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
@@ -926,6 +967,39 @@ class PostgreSQLDB:
                     "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
                 )
 
+        await self._probe_iterative_scan_support(connection)
+
+    async def _probe_iterative_scan_support(
+        self, connection: asyncpg.Connection
+    ) -> None:
+        """Record whether pgvector has iterative index scans (>= 0.8.0).
+
+        Never fatal. An unreadable version leaves the flag ``None``, and the
+        ``SET LOCAL`` is then still attempted. Why the version, not a failed
+        ``SET``, decides: docs/design/PgVectorFilteredSearch.md.
+        """
+        if getattr(self, "vector_index_type", None) not in _ITERATIVE_SCAN_SQL:
+            return
+        try:
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            match = re.match(r"(\d+)\.(\d+)", str(row["extversion"])) if row else None
+        except Exception as exc:  # noqa: BLE001 - never fatal, see docstring
+            logger.debug(f"PostgreSQL, pgvector version probe skipped: {exc}")
+            return
+        if match is None:
+            return
+        supported = (int(match.group(1)), int(match.group(2))) >= (0, 8)
+        self.iterative_scan_supported = supported
+        if not supported:
+            logger.warning(
+                f"PostgreSQL, pgvector {row['extversion']} has no "
+                "iterative index scan (needs >= 0.8.0): a workspace holding a "
+                "minority of the rows in a shared vector table can get no "
+                "dense-search results. Upgrade pgvector."
+            )
+
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
         """Refuse AGE versions known to break PGGraphStorage, then create the extension.
@@ -1313,6 +1387,58 @@ class PostgreSQLDB:
                     )
 
             self._ensured_age_graphs.add(graph_name)
+
+    def iterative_scan_statement(self) -> str | None:
+        """Return the ``SET LOCAL`` that lets a filtered ANN scan keep going.
+
+        ``None`` means nothing to apply: an index type this does not cover
+        (VCHORDRQ), or pgvector < 0.8.
+
+        Rules:
+
+        * Apply it only through ``_fetch_with_iterative_scan``, in the query's
+          own transaction. Never as a session ``SET`` and never after a
+          ``LOAD 'vector'``.
+        * IVFFLAT yields ``relaxed_order`` rows: its query must go through
+          ``_with_distance_resort``.
+        * This is a mitigation, not a guarantee; the scan stays bounded.
+
+        Mechanism, measurements and residual cases:
+        docs/design/PgVectorFilteredSearch.md.
+        """
+        if getattr(self, "iterative_scan_supported", None) is False:
+            return None  # reported once at startup by the version probe
+        return _ITERATIVE_SCAN_SQL.get(getattr(self, "vector_index_type", None))
+
+    async def _fetch_with_iterative_scan(
+        self, connection: asyncpg.Connection, sql: str, params: tuple
+    ) -> list:
+        """Fetch ``sql`` in a transaction that first applies the scan setting.
+
+        Best-effort: a failing ``SET LOCAL`` (aborting only its own
+        transaction) is logged once and the query runs without it, as it did
+        before. A failure of the query itself is re-raised: this helper adds
+        no fallback and no retry of its own, so only the caller's normal
+        transient-error retry (``_run_with_retry``) can run it again.
+        """
+        statement = self.iterative_scan_statement()
+        if statement is not None:
+            applied = False
+            try:
+                async with connection.transaction():
+                    await connection.execute(statement)
+                    applied = True
+                    return await connection.fetch(sql, *params)
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                if applied:
+                    raise
+                if not getattr(self, "_iterative_scan_warned", False):
+                    self._iterative_scan_warned = True
+                    logger.warning(
+                        f"PostgreSQL, iterative scan not applied ({exc}); "
+                        "filtered vector search may return fewer rows than exist"
+                    )
+        return await connection.fetch(sql, *params)
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
         """Configure VCHORDRQ extension for vector similarity search.
@@ -2722,11 +2848,16 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
         timing_label: str | None = None,
+        iterative_scan: bool = False,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
             fetch_start = time.perf_counter()
-            if prepared_params:
+            if iterative_scan:
+                rows = await self._fetch_with_iterative_scan(
+                    connection, sql, prepared_params
+                )
+            elif prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
             else:
                 rows = await connection.fetch(sql)
@@ -4137,6 +4268,24 @@ class PGVectorStorage(BaseVectorStorage):
         if not workspace:
             raise ValueError("workspace must be provided")
 
+        if embedding_dim is None:
+            # A dimension nobody declared is not an embedding-space change.
+            # `legacy_dim != None` in the compatibility check below would
+            # otherwise raise the typed refusal, and `lightrag-rebuild-vdb`
+            # answers that by DROPPING the container: this workspace's legacy
+            # rows would be deleted over a fact nobody reported, and the
+            # follow-up initialize() would then die on `VECTOR(None)` DDL, so
+            # the rebuild never happens either. Raised here rather than at the
+            # comparison because that check sits inside a `try` whose
+            # `except Exception` reframes everything it catches as
+            # DataMigrationError; out here it stays a plain, non-droppable
+            # schema error on every path through this function. See "Absent
+            # evidence never refuses" in docs/design/VectorSpaceProvenance.md.
+            raise ValueError(
+                f"embedding_dim must be provided to create or migrate "
+                f"'{table_name}': the configured embedding function declares none."
+            )
+
         new_table_exists = await db.check_table_exists(table_name)
         legacy_exists = legacy_table_name and await db.check_table_exists(
             legacy_table_name
@@ -4206,19 +4355,40 @@ class PGVectorStorage(BaseVectorStorage):
                                 vector_list = json.loads(vector_data)
                                 legacy_dim = len(vector_list)
 
+                        # Only the STORED side needs a presence check here:
+                        # `embedding_dim` is non-None by the guard at the top of
+                        # this function, so an undeclared dimension can never
+                        # reach the typed refusal below.
                         if legacy_dim and legacy_dim != embedding_dim:
                             logger.error(
                                 f"PostgreSQL: Dimension mismatch detected! "
                                 f"Legacy table '{legacy_table_name}' has {legacy_dim}d vectors, "
                                 f"but new embedding model expects {embedding_dim}d."
                             )
-                            raise DataMigrationError(
-                                f"Dimension mismatch between legacy table '{legacy_table_name}' "
-                                f"and new embedding model. Expected {embedding_dim}d but got {legacy_dim}d."
+                            # Typed refusal, not DataMigrationError: nothing is
+                            # being migrated, and `lightrag-rebuild-vdb` recovers
+                            # from exactly this condition by dropping the
+                            # container and rebuilding it from the graph. It can
+                            # only do that if the refusal is distinguishable from
+                            # a database outage. See
+                            # docs/design/VectorSpaceProvenance.md.
+                            raise VectorSpaceMismatchError(
+                                backend="PGVectorStorage",
+                                container=legacy_table_name,
+                                expected_dim=embedding_dim,
+                                stored_dim=legacy_dim,
+                                detail=(
+                                    f"Its {legacy_count} row(s) for workspace "
+                                    f"'{workspace}' would otherwise be migrated "
+                                    f"into '{table_name}'."
+                                ),
                             )
 
-                    except DataMigrationError:
-                        # Re-raise DataMigrationError as-is to preserve specific error messages
+                    except (DataMigrationError, VectorSpaceMismatchError):
+                        # Re-raise as-is to preserve specific error messages --
+                        # and, for the refusal, its type: reframing it as a
+                        # migration failure below would hide it from the only
+                        # tool that can clear it.
                         raise
                     except Exception as e:
                         raise DataMigrationError(
@@ -4380,6 +4550,19 @@ class PGVectorStorage(BaseVectorStorage):
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
 
+            # Taken here, before anything that can refuse. setup_table() raises
+            # VectorSpaceMismatchError when the legacy table holds another
+            # embedding space, and a refused storage MUST still be able to serve
+            # drop(), which is how `lightrag-rebuild-vdb` clears that refusal.
+            # Assigning the lock after setup_table left it at None on the
+            # refusal path, so drop() then died on `async with None`. The
+            # workspace is final by this point, which is why this cannot move
+            # any earlier. See docs/design/VectorSpaceProvenance.md.
+            if self._flush_lock is None:
+                self._flush_lock = get_namespace_lock(
+                    self.namespace, workspace=self.workspace
+                )
+
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
                 self.db,
@@ -4388,11 +4571,6 @@ class PGVectorStorage(BaseVectorStorage):
                 embedding_dim=self.embedding_func.embedding_dim,
                 legacy_table_name=self.legacy_table_name,
                 base_table=self.legacy_table_name,  # base_table for DDL template lookup
-            )
-
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                self.namespace, workspace=self.workspace
             )
 
     async def finalize(self):
@@ -4888,13 +5066,28 @@ class PGVectorStorage(BaseVectorStorage):
         sql = SQL_TEMPLATES[self.namespace].format(
             table_name=self.table_name, vector_cast=vector_cast
         )
+        # IVFFLAT iterative scan is relaxed_order only: restore distance order.
+        resort = (
+            getattr(self.db, "vector_index_type", None) == "IVFFLAT"
+            and getattr(self.db, "iterative_scan_supported", None) is not False
+        )
+        if resort:
+            sql = _with_distance_resort(sql, vector_cast)
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
             "embedding": embedding,
         }
-        results = await self.db.query(sql, params=list(params.values()), multirows=True)
+        results = await self.db.query(
+            sql,
+            params=list(params.values()),
+            multirows=True,
+            iterative_scan=True,
+        )
+        if resort and results:
+            for row in results:
+                row.pop(_DISTANCE_COLUMN, None)
         return results
 
     async def index_done_callback(self) -> None:
@@ -5336,6 +5529,11 @@ class PGVectorStorage(BaseVectorStorage):
         workspaces' legacy data and their pending one-time migration stay
         intact.
 
+        Callable on an instance whose ``initialize()`` refused with
+        ``VectorSpaceMismatchError``: that is the recovery
+        `lightrag-rebuild-vdb` performs, and it converges because the
+        legacy cleanup above removes the very rows the refusal was about.
+
         Concurrency contract:
             ``_flush_lock`` guards same-process flush / upsert / delete
             races only. Cross-worker buffered writes are NOT covered —
@@ -5362,10 +5560,17 @@ class PGVectorStorage(BaseVectorStorage):
             async with self._flush_lock:
                 self._pending_vector_docs.clear()
                 self._pending_vector_deletes.clear()
-                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                    table_name=self.table_name
-                )
-                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                # The suffixed table may legitimately not exist: an
+                # initialize() that refused with VectorSpaceMismatchError raised
+                # BEFORE creating it, and that refusal is exactly what
+                # `lightrag-rebuild-vdb` calls this method to clear. Nothing to
+                # delete there is success, not an error -- the legacy cleanup
+                # below is the part that actually clears the refusal.
+                if await self.db.check_table_exists(self.table_name):
+                    drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                        table_name=self.table_name
+                    )
+                    await self.db.execute(drop_sql, {"workspace": self.workspace})
 
                 # Also clear this workspace's rows from the kept legacy table so
                 # the next startup does not re-migrate the just-cleared data
@@ -8754,6 +8959,13 @@ class PGGraphStorage(BaseGraphStorage):
 
             for result in incoming_results:
                 if result["node_id"] and result["connected_id"]:
+                    # A self-loop satisfies BOTH directed matches above, so the
+                    # outbound pass already listed it; appending here would
+                    # report one edge as two. Same guard pgtable_impl,
+                    # mongo_impl and opensearch_impl carry, and the rule stated
+                    # on BaseGraphStorage.get_node_edges.
+                    if result["connected_id"] == result["node_id"]:
+                        continue
                     edges_norm[result["node_id"]].append(
                         (result["connected_id"], result["node_id"])
                     )

@@ -275,7 +275,14 @@ async def test_node_degree(store):
 
 
 @pytest.mark.asyncio
-async def test_self_loop_degree_matches_networkx(store):
+async def test_self_loop_degree_is_whatever_the_natural_query_answers(store):
+    """Recorded, not contracted.
+
+    ``BaseGraphStorage.node_degree`` says the store must not hold a self-loop,
+    so this value is not a promise to callers -- it is what the unfiltered
+    degree SQL happens to answer, pinned only so a change to the query shape is
+    noticed. Do not read it as "a self-loop is degree 2".
+    """
     await store.upsert_edge("Loop", "Loop", _edge())
 
     assert await store.node_degree("Loop") == 2
@@ -875,7 +882,11 @@ async def test_bfs_matches_degree_ordered_reference_traversal(store):
     # A second, lower-degree cluster reachable only at depth 2.
     edges |= {(min(nodes[80], n), max(nodes[80], n)) for n in nodes[81:100]}
     edges.add((min(hub, nodes[80]), max(hub, nodes[80])))
-    edges.add((nodes[5], nodes[5]))  # self-loop: counts twice, like node_degree
+    # A self-loop, kept so the reference walk and the SQL are compared on one:
+    # its degree is not contracted (BaseGraphStorage.node_degree), so the
+    # reference below mirrors whatever the unfiltered query does rather than
+    # asserting a rule.
+    edges.add((nodes[5], nodes[5]))
 
     await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
     await store.upsert_edges_batch([(s, t, _edge()) for s, t in sorted(edges)])

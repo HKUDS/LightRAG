@@ -581,7 +581,7 @@ async def custom_embed(texts: list[str]) -> np.ndarray:
 
 `max_token_size` declares the model's real input limit. It is what keeps an over-long text from reaching a service that would split it internally and return one vector per segment — which the return contract below rejects as a vector count mismatch.
 
-> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for the LLM cache). Existing vectors will not match the new model's space.
+> **Pitfall — switching embedding models**: existing vectors do not match the new model's space, and nothing re-embeds them. Run `lightrag-rebuild-vdb` with the new embedding configuration; it drops each vector storage and rebuilds it from the knowledge graph and `text_chunks`, which are the authoritative sources. Do NOT clear the data directory — that destroys the graph the rebuild reads from. See [Switching embedding models](#switching-embedding-models).
 
 ### Embedding Function Return Contract
 
@@ -602,7 +602,7 @@ The array rank and the dimension are always checked. The row count is checked ag
 The two mismatches that look alike are distinguished deliberately, because their fixes differ:
 
 - **Vector count mismatch** (more rows than inputs) usually means the embedding service split an over-long input internally and returned one vector per segment. Declare the model's real token limit so texts are truncated before the call — `EMBEDDING_TOKEN_LIMIT` on the API server, or `max_token_size` on `@wrap_embedding_func_with_attrs` for a custom function. A provider that legitimately emits several vectors per input needs a dedicated adapter that normalizes its output to one vector per input, with an explicit mapping, before it reaches `EmbeddingFunc`.
-- **Embedding dimension mismatch** (wrong number of columns) means the declared `embedding_dim` does not match the model actually being called, or the endpoint ignored the requested output dimension. Reconcile `EMBEDDING_DIM` / `embedding_dim` with the model. Vectors already stored under the previously declared dimension do not match the corrected one, so clear the data directory as well unless nothing has been indexed yet.
+- **Embedding dimension mismatch** (wrong number of columns) means the declared `embedding_dim` does not match the model actually being called, or the endpoint ignored the requested output dimension. Reconcile `EMBEDDING_DIM` / `embedding_dim` with the model. Vectors already stored under the previously declared dimension do not match the corrected one; rebuild them with `lightrag-rebuild-vdb` (see [Switching embedding models](#switching-embedding-models)) unless nothing has been indexed yet.
 
 Each `ValueError` is accompanied by a `logger.error` carrying the likely cause and the remedy, so the diagnosis stays in the server log even when only the short exception message surfaces.
 
@@ -1425,7 +1425,11 @@ the complete post-edit shape, so `source_id` and `weight` can be changed
 together. Existing legacy relations are repaired upward when extraction adds
 evidence, an entity rename rewrites their endpoints, an unrelated relation edit
 rewrites the row, or a relation is rebuilt from surviving chunks (document
-purge, resume, and custom-chunk rollback). `lightrag-rebuild-vdb` is not such a
+purge, resume, and custom-chunk rollback). The one-time canonical-edge
+migrations on the MongoDB and OpenSearch backends repair the rows they rewrite
+too: folding duplicate edge documents into one lifts the merged weight to the
+merged evidence count. A fold that finds neither a usable weight nor a real
+source ID leaves the stored weight alone. `lightrag-rebuild-vdb` is not such a
 repair point: it mirrors each graph edge into the vector storage field for
 field, copying the stored weight verbatim without touching the graph.
 
@@ -2057,6 +2061,30 @@ When merging entities:
    await rag.initialize_storages()
    ```
 
-### Model Switching Issues
+### Switching embedding models
 
-When switching between different embedding models, you must clear the data directory to avoid errors. The only file you may want to preserve is `kv_store_llm_response_cache.json` if you wish to retain the LLM cache.
+Changing `EMBEDDING_MODEL` or `EMBEDDING_DIM` leaves every stored vector in the
+*previous* model's space. Nothing re-embeds them, so the vectors are unusable
+until they are rebuilt.
+
+**The supported path is `lightrag-rebuild-vdb`**, run with the new embedding
+configuration and with the server stopped. It drops each vector storage and
+rebuilds it from the knowledge graph (`entities_vdb`, `relationships_vdb`) and
+the `text_chunks` KV store (`chunks_vdb`) — the authoritative sources, which the
+embedding change does not affect.
+
+**Do not clear the data directory.** That destroys the graph and the chunks the
+rebuild reads from, turning a re-embedding job into a full re-ingestion of every
+document. (Earlier versions of this document said to clear it; that advice
+predates the rebuild tool.)
+
+What happens if you just restart the server depends on the backend, and the
+direction this is moving in is *fail closed*: a backend that can tell its stored
+vectors came from a different embedding model refuses to serve and names
+`lightrag-rebuild-vdb` in the error, rather than silently returning nothing or
+confidently wrong neighbours. Backends whose collection or table name already
+encodes the model (Milvus, Qdrant, PostgreSQL) land the change on a separate
+container, so the previous model's vectors stay where they are. See
+[`docs/design/VectorSpaceProvenance.md`](design/VectorSpaceProvenance.md) for
+which backend does what, and `lightrag/tools/README_REBUILD_VDB.md` for the
+tool.

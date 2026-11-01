@@ -18,6 +18,23 @@ dimension. Run it with the updated embedding configuration and rebuild all
 vector storages so stored vectors match the embedding space the server will
 query.
 
+That second use is the reason this tool tolerates one specific startup
+failure. A vector storage whose container was written in a different embedding
+space REFUSES to attach (``VectorSpaceMismatchError``) -- that refusal is what
+stops the server serving an empty or foreign index, and it is the condition
+this tool exists to clear. So the three vector targets are initialized
+individually and a typed refusal is *recorded* rather than aborting the run;
+the rebuild then opens with ``drop()`` on the refused container, which
+re-provisions it in the current embedding space, and re-initializes it. Only
+the typed refusal is tolerated: a cluster outage, a bad credential or a
+corrupt file still aborts, because dropping a vector storage on a false
+positive destroys data the graph may not be able to rebuild.
+
+The authoritative SOURCES (graph storage and the ``text_chunks`` KV store) keep
+the server-identical init path and still abort the run on any failure -- they
+are what the rebuild reads from, and rebuilding vectors out of a half-migrated
+source is worse than not rebuilding at all.
+
 A diagnostic consistency check mode is also provided so users can decide
 whether a (potentially expensive, full re-embedding) rebuild is needed. The
 check itself only issues read queries and does not run a rebuild (no drop +
@@ -61,7 +78,7 @@ from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
 )
-from lightrag.exceptions import StorageCapabilityError
+from lightrag.exceptions import StorageCapabilityError, VectorSpaceMismatchError
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.namespace import NameSpace
 from lightrag.utils import (
@@ -130,6 +147,39 @@ async def _drop_vdb(vdb, label: str) -> None:
     if not isinstance(drop_result, dict) or drop_result.get("status") != "success":
         raise RuntimeError(f"Failed to drop {label} vector storage: {drop_result}")
     logger.info(f"Dropped {label} vector storage")
+
+
+async def clear_vector_space_refusal(vdb, label: str) -> None:
+    """Make a vector storage that refused to attach usable again.
+
+    A storage raises ``VectorSpaceMismatchError`` from ``initialize()`` when
+    its container holds vectors from another embedding space. The way out is
+    the one this tool is built around, and it is two steps, in this order:
+
+    1. ``drop()`` -- destroys the foreign vectors and re-provisions the
+       container in the CURRENT embedding space, recording this process's
+       provenance marker. Every backend must be able to serve ``drop()`` while
+       refused; a backend that raises its refusal before it has a client or a
+       lock is wedged, not fail-closed.
+    2. ``initialize()`` again -- the container now matches, so this is the
+       ordinary init path and leaves a fully live instance. Doing the rebuild
+       against the half-initialized object instead would depend on which step
+       of ``initialize()`` happened to run before the refusal.
+
+    Destructive by construction: it exists to delete a container the operator
+    has already been told is unusable. Call it only for a target whose
+    ``initialize()`` raised ``VectorSpaceMismatchError`` -- never to paper over
+    another failure.
+    """
+    logger.warning(
+        f"Rebuild {label}: dropping the incompatible vector container before "
+        f"the rebuild (its vectors were written in a different embedding space)"
+    )
+    await _drop_vdb(vdb, label)
+    await vdb.initialize()
+    logger.info(
+        f"Rebuild {label}: vector storage re-provisioned in the current embedding space"
+    )
 
 
 async def _flush(vdb, stats: Dict[str, Any]) -> None:
@@ -471,6 +521,7 @@ async def check_vdb_consistency(
     relationships_vdb,
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    incompatible: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Read-only diagnosis: find graph records with no vector counterpart.
 
@@ -479,7 +530,18 @@ async def check_vdb_consistency(
     eliminated by a full rebuild. Relations are probed with both candidate
     ids from make_relation_vdb_ids so legacy reverse-order ids are not
     misreported as missing.
+
+    ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
+    storage refused to attach because its container holds another embedding
+    space's vectors, mapped to the refusal message. Such a target is NOT
+    probed: its storage cannot answer, and probing it anyway would report
+    every graph record as missing -- a true statement about that container
+    that reads as a routine drift report and buries the one fact that matters,
+    which is that the container is unusable and a rebuild is mandatory rather
+    than optional. The report carries the refusal under ``"incompatible"``
+    instead, and ``consistent`` is False.
     """
+    incompatible = dict(incompatible or {})
     report: Dict[str, Any] = {
         "graph_entities": 0,
         "graph_relations": 0,
@@ -489,6 +551,7 @@ async def check_vdb_consistency(
         "missing_relation_pairs": [],
         "skipped_nodes": 0,
         "skipped_edges": 0,
+        "incompatible": incompatible,
     }
 
     # Entities: one candidate id per graph node
@@ -508,6 +571,8 @@ async def check_vdb_consistency(
         entity_items.append((entity_vdb_id, entity_name))
 
     report["graph_entities"] = len(entity_items)
+    if "entities" in incompatible:
+        entity_items = []
     for start in range(0, len(entity_items), batch_size):
         batch = entity_items[start : start + batch_size]
         results = await entities_vdb.get_by_ids([vdb_id for vdb_id, _ in batch])
@@ -534,6 +599,8 @@ async def check_vdb_consistency(
         relation_items.append((candidate_ids, f"{src} ~ {tgt}"))
 
     report["graph_relations"] = len(relation_items)
+    if "relationships" in incompatible:
+        relation_items = []
     for start in range(0, len(relation_items), batch_size):
         batch = relation_items[start : start + batch_size]
         flat_ids: List[str] = []
@@ -551,7 +618,9 @@ async def check_vdb_consistency(
                     report["missing_relation_pairs"].append(pair_label)
 
     report["consistent"] = (
-        report["missing_entities"] == 0 and report["missing_relations"] == 0
+        not incompatible
+        and report["missing_entities"] == 0
+        and report["missing_relations"] == 0
     )
     return report
 
@@ -571,6 +640,11 @@ class RebuildTool:
         self.workspace = ""
         self.batch_size = DEFAULT_BATCH_SIZE
         self.storage_names: Dict[str, str] = {}
+        # Vector targets whose initialize() refused with
+        # VectorSpaceMismatchError, label -> refusal message. Cleared per
+        # target by clear_vector_space_refusal() once its container has been
+        # dropped and re-provisioned in the current embedding space.
+        self.incompatible_vdbs: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Configuration / setup
@@ -730,8 +804,23 @@ class RebuildTool:
 
         print("\nInitializing storages...")
         try:
-            for storage in self.all_storages():
+            # Authoritative sources first, on the server-identical path: any
+            # failure here aborts, migrations included. Rebuilding vectors out
+            # of a half-migrated graph or chunk store is worse than not
+            # rebuilding.
+            for storage in (self.graph, self.text_chunks):
                 await storage.initialize()
+            # Vector targets, one at a time, tolerating ONLY the typed
+            # embedding-space refusal. This is the condition the tool exists to
+            # clear, so aborting on it would leave the operator with no
+            # sanctioned way out; every other failure still aborts, because
+            # dropping a vector storage on a false positive destroys data.
+            for label, vdb in self.vector_targets().items():
+                try:
+                    await vdb.initialize()
+                except VectorSpaceMismatchError as e:
+                    self.incompatible_vdbs[label] = str(e)
+                    print(f"⚠️  {label} vector storage refused to attach: {e}")
         except Exception as e:
             print(f"✗ Storage initialization failed: {e}")
             for storage_name in set(self.storage_names.values()):
@@ -746,7 +835,44 @@ class RebuildTool:
         print(f"- Workspace:      {self.workspace if self.workspace else '(default)'}")
         print(f"- Working Dir:    {self.global_config['working_dir']}")
         print("- Connection Status: ✓ Success")
+        if self.incompatible_vdbs:
+            print(
+                f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) hold "
+                f"vectors from a different embedding space:{RESET}"
+            )
+            for label in self.incompatible_vdbs:
+                print(f"    - {label}")
+            print(
+                "  They are unusable until rebuilt. A rebuild (menu options 2-4)\n"
+                "  drops the incompatible container and re-embeds from the\n"
+                "  authoritative sources; nothing else can repair them."
+            )
         return True
+
+    def vector_targets(self) -> Dict[str, Any]:
+        """The three rebuild targets, keyed by the label used in reports."""
+        return {
+            "entities": self.entities_vdb,
+            "relationships": self.relationships_vdb,
+            "chunks": self.chunks_vdb,
+        }
+
+    async def recover_incompatible(self, labels: List[str]) -> None:
+        """Drop + re-initialize each named target that refused to attach.
+
+        Runs immediately before the rebuild of those targets, so a refused
+        container is destroyed only once the operator has confirmed the
+        rebuild. The rebuild helpers drop again straight after; ``drop()`` is
+        idempotent, and paying it twice is cheaper than threading the refusal
+        state through the library API.
+        """
+        targets = self.vector_targets()
+        for label in labels:
+            if label not in self.incompatible_vdbs:
+                continue
+            await clear_vector_space_refusal(targets[label], label)
+            del self.incompatible_vdbs[label]
+            print(f"  ✓ {label}: incompatible container dropped and re-provisioned")
 
     def all_storages(self):
         return [
@@ -829,13 +955,29 @@ class RebuildTool:
                 print(f"      ... and {len(stats['errors']) - 5} more")
 
     def print_check_report(self, report: Dict[str, Any]):
+        incompatible = report.get("incompatible") or {}
         print("\n" + "=" * 60)
         print("📊 Consistency Report (graph -> vector storage)")
         print("=" * 60)
+        if incompatible:
+            print(
+                f"\n{BOLD_RED}✗ Embedding space mismatch — these vector storages were "
+                f"not probed:{RESET}"
+            )
+            for label, message in incompatible.items():
+                print(f"    - {label}: {message}")
+            print(
+                "\n  Their stored vectors belong to a different embedding model or\n"
+                "  dimension, so 'missing' counts for them would say nothing about\n"
+                "  drift — every record is unreachable by construction. A rebuild\n"
+                "  (menu options 2-4) is required, not optional."
+            )
         print(f"  Graph entities:    {report['graph_entities']:,}")
         print(f"  Graph relations:   {report['graph_relations']:,}")
-        print(f"  Missing entities:  {report['missing_entities']:,}")
-        print(f"  Missing relations: {report['missing_relations']:,}")
+        if "entities" not in incompatible:
+            print(f"  Missing entities:  {report['missing_entities']:,}")
+        if "relationships" not in incompatible:
+            print(f"  Missing relations: {report['missing_relations']:,}")
         if report["missing_entity_names"]:
             print("\n  Missing entities (first few):")
             for name in report["missing_entity_names"]:
@@ -850,6 +992,9 @@ class RebuildTool:
             print(
                 "  VDB-only records (reverse orphans) require a full rebuild to clear."
             )
+        elif incompatible:
+            print(f"\n{BOLD_RED}✗ Vector storage unusable (see above).{RESET}")
+            print("  Run a rebuild (menu options 2-4) to restore service.")
         else:
             print(f"\n{BOLD_RED}✗ Inconsistencies detected.{RESET}")
             print("  Run a rebuild (menu options 2-4) to restore consistency.")
@@ -889,6 +1034,7 @@ class RebuildTool:
             self.entities_vdb,
             self.relationships_vdb,
             batch_size=self.batch_size,
+            incompatible=self.incompatible_vdbs,
         )
         self.print_check_report(report)
         print(f"\n(check took {time.time() - start:.1f}s)")
@@ -1011,6 +1157,10 @@ class RebuildTool:
                     continue
 
                 start = time.time()
+                selected = (["entities", "relationships"] if include_graph else []) + (
+                    ["chunks"] if include_chunks else []
+                )
+                await self.recover_incompatible(selected)
                 all_stats: List[Dict[str, Any]] = []
                 if include_graph:
                     all_stats.extend(await self.run_rebuild_entities_relations())

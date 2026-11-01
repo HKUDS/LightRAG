@@ -311,6 +311,10 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
     """Parse query prefix to determine search mode
     Returns tuple of (cleaned_query, search_mode, only_need_context, user_prompt)
 
+    A mode key matches only at a word boundary: what follows it must be
+    whitespace or the end of the query, so "/context" does not prefix-match
+    "/contextualize".
+
     Examples:
     - "/local[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.local, False, "use mermaid format for diagrams")
     - "/[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.mix, False, "use mermaid format for diagrams")
@@ -359,8 +363,16 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
 
     for prefix, (mode, only_need_context) in mode_map.items():
         if query.startswith(prefix):
+            rest = query[len(prefix) :]
+            # Unsuffixed context keys carry no trailing space, so they must
+            # stop at a word boundary: end of the query or whitespace.
+            # Without the check "/context" also prefixes "/contextualize",
+            # cutting the word out of the query and forcing context-only
+            # retrieval.
+            if not prefix.endswith(" ") and rest and not rest[0].isspace():
+                continue
             # After removing prefix and leading spaces
-            cleaned_query = query[len(prefix) :].lstrip()
+            cleaned_query = rest.lstrip()
             return cleaned_query, mode, only_need_context, user_prompt
 
     return query, SearchMode.mix, False, user_prompt

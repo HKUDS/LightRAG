@@ -48,29 +48,21 @@ def _minimal_backend():
     return _MinimalDocStatus.__new__(_MinimalDocStatus)
 
 
-def test_a_first_party_backend_warns_about_nothing(caplog):
-    with caplog.at_level(logging.WARNING, logger="lightrag"):
-        capabilities = enforce_strict_storage_capabilities(
-            JsonDocStatusStorage.__new__(JsonDocStatusStorage)
-        )
+def test_a_first_party_backend_warns_about_nothing(lightrag_log_records):
+    capabilities = enforce_strict_storage_capabilities(
+        JsonDocStatusStorage.__new__(JsonDocStatusStorage)
+    )
 
     assert all(capabilities.values())
-    assert caplog.records == []
+    assert [r for r in lightrag_log_records if r.levelno >= logging.WARNING] == []
 
 
-def test_gaps_are_warned_with_their_operator_facing_consequence(caplog):
-    # lightrag's logger does not propagate, so caplog needs it turned on.
-    logger = logging.getLogger("lightrag")
-    previous = logger.propagate
-    logger.propagate = True
-    try:
-        with caplog.at_level(logging.WARNING, logger="lightrag"):
-            enforce_strict_storage_capabilities(_minimal_backend())
-    finally:
-        logger.propagate = previous
+def test_gaps_are_warned_with_their_operator_facing_consequence(lightrag_log_records):
+    enforce_strict_storage_capabilities(_minimal_backend())
 
-    assert len(caplog.records) == 1
-    message = caplog.records[0].getMessage()
+    warnings = [r for r in lightrag_log_records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
     # Every genuinely-missable capability is named...
     for capability in (
         "strict_active_count",

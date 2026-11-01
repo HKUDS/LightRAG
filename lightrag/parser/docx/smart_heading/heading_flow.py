@@ -456,7 +456,9 @@ def gate_candidates(
         if _record_weight(records[i]) <= 0:
             numbering[i] = None
             continue
-        cls = classify_numbering(records[i].text)
+        cls = classify_numbering(
+            records[i].text, numbering_format=records[i].numbering_format
+        )
         if cls is not None:
             veto = numbering_veto(cls, records[i].text)
             if veto is not None:

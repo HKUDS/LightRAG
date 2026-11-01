@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lightrag.parser.markdown.extract import (
     drawing_marker,
     equation_marker,
@@ -19,6 +21,7 @@ def _normalize(blocks, meta, *, document_name="doc.md"):
     )
 
 
+@pytest.mark.offline
 def test_pipe_table_becomes_json_irtable_with_header_grid():
     blocks = [
         {
@@ -36,10 +39,10 @@ def test_pipe_table_becomes_json_irtable_with_header_grid():
     ir = _normalize(blocks, meta)
     (table,) = ir.blocks[0].tables
     assert "{{TBL:" in ir.blocks[0].content_template
-    assert table.rows == [["a", "b"]]
+    assert table.rows == [["H1", "H2"], ["a", "b"]]
     assert table.html is None
     assert table.table_header == [["H1", "H2"]]
-    assert (table.num_rows, table.num_cols) == (1, 2)
+    assert (table.num_rows, table.num_cols) == (2, 2)
 
 
 def test_html_table_becomes_html_irtable_with_thead_and_dims():

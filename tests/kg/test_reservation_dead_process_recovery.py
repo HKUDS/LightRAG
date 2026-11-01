@@ -159,6 +159,35 @@ def test_reconcile_drops_dead_enqueue_tokens(recovery_enabled):
     assert status["pending_enqueues"] == 1
 
 
+def test_reconcile_preserves_the_surviving_tokens_kind(recovery_enabled):
+    """The reaper FILTERS the token set, it does not rebuild the records.
+
+    Load-bearing, because the reaper is what runs immediately before the
+    enqueue-stall fence (``_fence_stalled_enqueue_drain``): every metadata
+    ``force_reset`` later reads has been through here. A reaper that dropped
+    ``kind`` would silently demote a source-conflict repair's guard to an
+    ordinary enqueue and make force_reset drop it.
+    """
+    status = {
+        "pending_enqueues": 2,
+        "pending_enqueue_tokens": {
+            "repair": {
+                "pid": os.getpid(),
+                "process_start_id": None,
+                "weight": 0,
+                "kind": shared_storage.SOURCE_REPAIR_RESERVATION_KIND,
+            },
+            "dead": {"pid": _dead_pid(), "process_start_id": "gone"},
+        },
+    }
+    reconcile_dead_pipeline_reservations(status)
+    surviving = status["pending_enqueue_tokens"]["repair"]
+    assert (
+        shared_storage.reservation_kind(surviving)
+        == shared_storage.SOURCE_REPAIR_RESERVATION_KIND
+    )
+
+
 def test_reconcile_recalibrates_enqueue_count(recovery_enabled):
     # count drifted (e.g. crash between "dropped token" and "updated count").
     status = {

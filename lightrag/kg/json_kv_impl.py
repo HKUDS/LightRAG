@@ -172,7 +172,7 @@ class JsonKVStorage(BaseKVStorage):
                 data_count = len(data_dict)
 
                 logger.debug(
-                    f"[{self.workspace}] Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
+                    f"[{self.workspace}] Process {os.getpid()} KV writing {data_count} records to {self.namespace}"
                 )
 
                 # Off the event loop: this rewrites the whole file, which on a

@@ -5,7 +5,7 @@ This module isolates the document parse/enqueue/extraction pipeline so that
 The mixin is wired into :class:`lightrag.LightRAG` via multiple inheritance
 and relies on attributes/methods that the main class provides
 (``self.full_docs``, ``self.doc_status``, ``self.tokenizer``,
-``self.parse_native``-related fields, ``self._insert_done``,
+parser-registry-related fields, ``self._insert_done``,
 ``self._process_extract_entities``, etc.).
 """
 
@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache, partial
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from lightrag.base import (
@@ -56,8 +57,11 @@ from lightrag.exceptions import (
     PipelineRecoveryRequiredError,
     PipelineReservationConflictError,
     IndexFlushError,
+    flush_may_have_lost_reference,
 )
 from lightrag.kg.shared_storage import (
+    ENQUEUE_RESERVATION_KIND,
+    MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
     MANUAL_PHASE_DRAIN_TO_IDLE,
     MANUAL_PHASE_EXCLUSIVE_RESET,
     MANUAL_PHASE_IDLE,
@@ -72,10 +76,16 @@ from lightrag.kg.shared_storage import (
     get_pipeline_ingress,
     make_manual_owner_record,
     reap_dead_reservations_locked,
+    reservation_kind,
     run_to_completion,
     with_reservation_lock,
 )
 from lightrag import pipeline_metrics
+from lightrag.chunker.registry import (
+    ChunkingContext,
+    chunker_identity,
+    invoke_chunker,
+)
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -184,12 +194,13 @@ _FEEDER_DRAIN_LIMIT = 256
 # Manual DRAIN_TO_IDLE poll: how long to sleep between re-checks while waiting
 # for pre-freeze in-flight enqueue reservations (pending_enqueues > 0) to
 # finish (LR2 §7.2 step 5). Bounded by the background enqueue's own duration —
-# the freeze admits no NEW reservations, so the count only decreases.
+# the freeze admits no NEW reservations, so the count only decreases — and, when
+# it does not decrease at all, by _MANUAL_DRAIN_ENQUEUE_STALL_SECONDS below.
 _MANUAL_DRAIN_POLL_SECONDS = 0.2
 
 # How many ``_MANUAL_DRAIN_POLL_SECONDS`` re-checks a SCAN-driven reset gives the
-# in-flight enqueue count before abandoning the reset (LR2 §8.1). Unlike the
-# manual endpoint's unbounded drain wait, a scan was only granted its
+# in-flight enqueue count before abandoning the reset (LR2 §8.1). Far shorter
+# than the manual endpoint's own drain wait, because a scan was only granted its
 # reservation while ``pending_enqueues == 0``, so a non-zero count here means a
 # reservation slipped into the window before the freeze went up: wait it out
 # briefly, then leave the request to the standard drain path rather than blocking
@@ -218,6 +229,46 @@ _MANUAL_DRAIN_STALL_SAMPLE = 8
 # either report can be widened without silently widening the other.
 _MANUAL_DRAIN_BLOCKER_SAMPLE = 8
 
+# How long DRAIN_TO_IDLE may wait on an in-flight enqueue set that never changes
+# before the workspace is fenced (``_fence_stalled_enqueue_drain``).
+#
+# Unlike the AUTO stall above, "the set did not change" cannot on its own prove a
+# wedge: a reservation is held from admission until the enqueue's last write, and
+# a large upload over a slow link legitimately keeps its token for minutes with
+# nothing to report in between. There is no progress signal inside that span, so
+# this bound is wall-clock and deliberately generous — it fires only when NOT ONE
+# of the in-flight enqueues finished for the whole window, which a healthy
+# producer does not reach even on a slow link.
+#
+# It replaces an UNBOUNDED wait, and that is the whole trade: a false positive
+# fences the workspace (503 on every mutation) but names its own remedy and is
+# cleared by ONE ``POST /documents/recovery/force_reset``, whereas the previous
+# unbounded wait left ``busy`` latched with no fence for ``force_reset`` to clear
+# and no way out short of restarting the process. Loud and recoverable beats
+# silent and permanent; the bound is sized so that reaching it means something is
+# genuinely stuck.
+#
+# What a false positive costs the slow-but-healthy producer depends on who moves
+# first. The fence itself costs it nothing: a registered token is exempt from
+# THIS fence kind (``_stall_fence_exempts_reserved_token``), so a producer that
+# comes back still lands its rows as PENDING — unprocessable until an operator
+# clears the fence, but not lost. The loss window is the operator's remedy:
+# ``force_reset`` DROPS the in-flight reservation set for this kind (it is the
+# blocker — clearing the fence alone changes nothing), and a producer that
+# returns after that has no reservation left, so with admission enabled its
+# re-weight is treated as a new reservation and may be refused after the client
+# already got 200. An ``/upload`` is recovered by the next ``/documents/scan``; a
+# ``/documents/text``/``/texts`` must be re-sent. That is the cost of a
+# wall-clock bound sized for a producer that is stuck, applied to one that was
+# only slow.
+_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS = 600.0
+_MANUAL_DRAIN_ENQUEUE_STALL_ROUNDS = max(
+    1, int(_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS / _MANUAL_DRAIN_POLL_SECONDS)
+)
+
+# Upper bound on the reservation tokens named in the enqueue-stall fence report.
+_MANUAL_DRAIN_ENQUEUE_STALL_SAMPLE = 8
+
 
 class _ManualDrainProgress:
     """Forward-progress tracker for one run's DRAIN_TO_IDLE (LR2 §7.2).
@@ -227,11 +278,13 @@ class _ManualDrainProgress:
     re-drains from scratch.
     """
 
-    __slots__ = ("_blocking_ids", "_repeats")
+    __slots__ = ("_blocking_ids", "_repeats", "_enqueue_tokens", "_enqueue_repeats")
 
     def __init__(self) -> None:
         self._blocking_ids: frozenset[str] | None = None
         self._repeats = 0
+        self._enqueue_tokens: frozenset[str] | None = None
+        self._enqueue_repeats = 0
 
     def observe(self, doc_ids) -> bool:
         """Record one "the drain is not idle yet" observation.
@@ -247,6 +300,28 @@ class _ManualDrainProgress:
             return True
         self._repeats += 1
         return self._repeats < _MANUAL_DRAIN_STALL_ROUNDS
+
+    def observe_enqueue(self, tokens) -> bool:
+        """Record one CONTINUE_DRAIN_WAIT poll over the in-flight token set.
+
+        Returns False once the SAME set has blocked the drain for
+        :data:`_MANUAL_DRAIN_ENQUEUE_STALL_ROUNDS` consecutive polls — the caller
+        must then fence rather than wait again. Any change resets the count: the
+        freeze admits no new reservation, so the set can only shrink, and a
+        shrink is a live producer finishing.
+
+        Tracked independently of :meth:`observe`: the two waits interleave within
+        one drain (a doc published by a finishing enqueue puts the run back into
+        sweeping), and folding them into one counter would let either reset the
+        other's evidence.
+        """
+        live = frozenset(tokens)
+        if live != self._enqueue_tokens:
+            self._enqueue_tokens = live
+            self._enqueue_repeats = 1
+            return True
+        self._enqueue_repeats += 1
+        return self._enqueue_repeats < _MANUAL_DRAIN_ENQUEUE_STALL_ROUNDS
 
 
 class PipelineNextStep(Enum):
@@ -826,6 +901,10 @@ class _PipelineMixin:
             # it (LR2 §9.2). Refusing here would drop the work of a request whose
             # client was already told it was accepted — and for /text there is no
             # input file to rediscover, so the content would simply be lost.
+            # That reasoning covers the enqueue-stall RECOVERY fence too, which
+            # is raised by the drain that gave up waiting for these very
+            # reservations; the exemption is applied there inside
+            # ``check_pipeline_status_mutation``.
             exempt_if_reserved=admission_token,
         )
         if not mutation_result.acquired:
@@ -3816,7 +3895,9 @@ class _PipelineMixin:
                     # CONTINUE_DRAIN_WAIT refetch reaps confirmed-dead tokens
                     # before it waits, so a worker SIGKILLed mid-reserve (Linux
                     # multi-worker) cannot leave a phantom count that wedges this
-                    # drain (the freeze blocks the uploads that would reap it).
+                    # drain (the freeze blocks the uploads that would reap it),
+                    # and it fences a set that never changes so a LIVE holder
+                    # that never releases cannot wedge it either.
                     return PipelineNextDecision(PipelineNextStep.CONTINUE_DRAIN_WAIT)
                 return PipelineNextDecision(PipelineNextStep.BEGIN_EXCLUSIVE_RESET)
             manual_msg = ingress.peek_next_manual_retry()
@@ -3871,7 +3952,9 @@ class _PipelineMixin:
           drain processes the AUTO backlog; FAILED is reset only in the exclusive
           phase). The manual request stays sticky — ACKed after the reset.
         * **CONTINUE_DRAIN_WAIT** — bounded async sleep waiting for pre-freeze
-          in-flight enqueues to finish, then re-decide (empty batch).
+          in-flight enqueues to finish, then re-decide (empty batch). An
+          in-flight set that never changes fences the workspace rather than
+          waiting forever — :meth:`_fence_stalled_enqueue_drain`.
         * **BEGIN_EXCLUSIVE_RESET** — the drain reached strict idle. Do a FINAL
           strict AUTO confirmation sweep (a doc a since-finished in-flight
           enqueue added after the previous sweep passed); if non-empty, process
@@ -3921,6 +4004,14 @@ class _PipelineMixin:
         # re-checks pending_enqueues.
         if step is PipelineNextStep.CONTINUE_DRAIN_WAIT:
             await reap_dead_reservations_locked(pipeline_status, pipeline_status_lock)
+            # Forward-progress checkpoint for THIS wait, read after the reap so a
+            # reaped phantom counts as progress rather than as a stalled holder.
+            async with pipeline_status_lock:
+                live_tokens = dict(pipeline_status.get("pending_enqueue_tokens") or {})
+            if live_tokens and not drain_progress.observe_enqueue(live_tokens):
+                await self._fence_stalled_enqueue_drain(
+                    live_tokens, pipeline_status, pipeline_status_lock
+                )
             await asyncio.sleep(_MANUAL_DRAIN_POLL_SECONDS)
             return {}, sweep_statuses, sweep_cursor
 
@@ -4150,6 +4241,150 @@ class _PipelineMixin:
             pipeline_status["latest_message"] = detail
             append_pipeline_history(pipeline_status, detail)
         raise PipelineRecoveryRequiredError(detail, blocked_doc_ids=tuple(blocked))
+
+    async def _fence_stalled_enqueue_drain(
+        self,
+        live_tokens: dict[str, Any],
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Fence a DRAIN_TO_IDLE whose in-flight enqueue set never drains.
+
+        The same ``pending_enqueue_tokens`` have held the drain for
+        :data:`_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS` without one of them
+        finishing. The freeze admits no new reservation, so the set can only
+        shrink; a set that has not shrunk for that long is not a producer being
+        slow, it is a producer that will never release.
+
+        The canonical way in was a bg task that kept its own reservation while
+        driving ``apipeline_process_enqueue_documents``: the run then waited on a
+        token only it could release, and only by returning — which it could not
+        do until the wait ended. That specific self-deadlock is closed at the
+        source (``_release_admission_after_enqueue`` in the API layer releases
+        between enqueue and processing); this fence is the backstop for every
+        other way a holder can stop existing without releasing, and for any
+        future caller that reintroduces the same shape.
+
+        Fencing loses information — a live-but-slow producer is refused with 503
+        from here on — and that cost is accepted deliberately: the alternative
+        this replaces is an unbounded wait with ``busy`` latched, NO fence for
+        ``POST /documents/recovery/force_reset`` to clear, and a process restart
+        as the only remedy. See :data:`_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS`.
+
+        Raises :class:`PipelineRecoveryRequiredError`, which unwinds the run
+        through its ``finally``: freeze and ``busy`` are released (owner-checked)
+        so the latch is gone even though the fence survives to refuse mutations.
+        The manual request stays sticky and un-ACKed, so no FAILED document is
+        consumed by an attempt that never ran.
+
+        Fencing does not void the holders it names: a registered token is exempt
+        from this fence kind alone, so a producer that comes back still lands
+        its documents (see ``_stall_fence_exempts_reserved_token``). The fence
+        stops the workspace, not the work already admitted into it.
+
+        It does NOT raise — and does not fence — when the in-flight set changed
+        between the poll that observed the stall and the write that would fence
+        it: ``live_tokens`` was read under an EARLIER lock hold, and a producer
+        that releases in that gap has just proved the drain can still advance.
+        The caller simply waits again; the next poll sees a different set, which
+        resets :meth:`_ManualDrainProgress.observe_enqueue`'s counter. Fencing
+        from the stale snapshot would refuse every mutation on a workspace that
+        had already recovered, and only a manual ``force_reset`` undoes that.
+        """
+        sample = sorted(live_tokens)[:_MANUAL_DRAIN_ENQUEUE_STALL_SAMPLE]
+        owners = sorted(
+            {
+                str(meta.get("pid"))
+                for meta in live_tokens.values()
+                if isinstance(meta, Mapping) and meta.get("pid") is not None
+            }
+        )
+        # Retained guards decide the remedy, so they are counted BEFORE the
+        # message is written: ``force_reset`` drops the ordinary enqueues out of
+        # this set but keeps a source-conflict repair's guard, and telling an
+        # operator to re-issue the retry straight away while one is held would
+        # only buy them another whole window and another fence.
+        guards = sum(
+            1
+            for meta in live_tokens.values()
+            if reservation_kind(meta) != ENQUEUE_RESERVATION_KIND
+        )
+        enqueues = len(live_tokens) - guards
+        if guards:
+            remedy = (
+                f"POST /documents/recovery/force_reset clears this fence, cancels "
+                f"the queued retry and drops the {enqueues} upload/insert "
+                f"reservation(s), but it does NOT drop the {guards} "
+                "source-conflict repair guard(s) — dropping one could corrupt "
+                "source ownership while its commit resumes. Wait for that repair "
+                "to finish, or restart the process holding it, BEFORE re-issuing "
+                "POST /documents/reprocess_failed: re-issuing while a guard is "
+                "held only stalls the drain again."
+            )
+        else:
+            remedy = (
+                "Clear this with POST /documents/recovery/force_reset, which "
+                "cancels the queued retry AND drops these reservations (an "
+                "upload that was merely slow is recovered by POST "
+                "/documents/scan; a /documents/text(s) must be re-sent), then "
+                "re-issue POST /documents/reprocess_failed."
+            )
+        # API-VISIBLE, and therefore free of reservation tokens and owner pids:
+        # this text reaches ``recovery_message`` (``describe_recovery_fence``),
+        # ``latest_message`` and ``history_messages``, none of which is filtered
+        # further. Those three are the sanitized window the /documents/
+        # pipeline_status projection exists to keep clean — it drops the whole
+        # internal fence record precisely so tokens and pids do not leave the
+        # process. The identities go to the server log below instead.
+        detail = (
+            f"manual retry drain stalled: {len(live_tokens)} in-flight enqueue "
+            f"reservation(s) ({enqueues} upload/insert, {guards} source-conflict "
+            "repair guard(s)) have blocked DRAIN_TO_IDLE for "
+            f"{_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS:.0f}s without one of them "
+            "finishing, and the freeze admits no new ones, so waiting again "
+            f"cannot change the count. {remedy} The holders' process identities "
+            "are in the server log."
+        )
+        observed = set(live_tokens)
+
+        def _set_unchanged(snapshot: Mapping[str, Any]) -> bool:
+            # Any difference counts, in either direction: a set that is not the
+            # one observed is not the evidence this stall verdict was reached
+            # on. Under the freeze it can only shrink, but a future reservation
+            # kind the freeze does not refuse must not be able to grow it into
+            # a fence either.
+            return set(snapshot.get("pending_enqueue_tokens") or {}) == observed
+
+        # Nothing is logged at error level before this returns: a refused
+        # precondition is a drain that recovered, not a fault.
+        if not await fence_workspace_for_recovery(
+            pipeline_status,
+            pipeline_status_lock,
+            kind=MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
+            message=detail,
+            operation_record={"scope": ", ".join(sample)},
+            precondition=_set_unchanged,
+        ):
+            logger.warning(
+                "[pipeline] manual retry drain looked stalled on "
+                f"{len(observed)} in-flight enqueue reservation(s), but the set "
+                "changed before the fence was written (a producer finished, or a "
+                "dead holder was reaped), so the drain keeps waiting instead of "
+                "fencing the workspace."
+            )
+            return
+
+        # The log is the one surface that may carry the credentials: it is
+        # server-side, and an operator restarting a wedged holder needs its pid.
+        logger.error(
+            f"{detail} (reservation token sample: "
+            f"{', '.join(sample) or 'unavailable'}; owner pid(s): "
+            f"{', '.join(owners) or 'unavailable'})"
+        )
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = detail
+            append_pipeline_history(pipeline_status, detail)
+        raise PipelineRecoveryRequiredError(detail)
 
     @staticmethod
     def _format_job_name(
@@ -4871,6 +5106,15 @@ class _PipelineMixin:
                 doc_process_opts = parse_process_options(
                     (content_data or {}).get("process_options", "")
                 )
+                chunking_context = ChunkingContext(
+                    doc_id=doc_id,
+                    file_path=str(file_path),
+                    sidecar_location=(content_data or {}).get("sidecar_location"),
+                    parse_format=(content_data or {}).get("parse_format")
+                    or FULL_DOCS_FORMAT_RAW,
+                    parse_engine=(content_data or {}).get("parse_engine"),
+                    process_options=(content_data or {}).get("process_options") or "",
+                )
 
                 # Resume guard: if content was already extracted under
                 # earlier process_options, purge stale chunks + KG before
@@ -4936,6 +5180,57 @@ class _PipelineMixin:
                 from lightrag.chunker import chunking_by_token_size
 
                 is_builtin_chunker = self.chunking_func is chunking_by_token_size
+                # Diagnostic only: never resolve, reject or select a callback
+                # using a previous document's author-supplied identity.
+                uses_custom_callback = (
+                    not doc_process_opts.chunking_explicit
+                    or doc_process_opts.chunking == "C"
+                )
+                previous_identity = (
+                    status_doc.metadata.get("custom_chunker")
+                    if isinstance(status_doc.metadata, dict)
+                    else None
+                )
+                # An explicit F/R/V/P attempt never consults ``chunking_func``,
+                # so it has nothing to observe and MUST NOT overwrite the
+                # record: writing a null observation here made the next C
+                # attempt compare against that null and report a drift the
+                # deployment never had (C -> F -> C warned "None -> acme").
+                # Leaving the key alone lets carry-over preserve the last
+                # attempt that actually routed through the callback, which is
+                # the only baseline a drift comparison can be made against.
+                if uses_custom_callback:
+                    current_identity = chunker_identity(self.chunking_func)
+                    observation = current_identity or {
+                        "name": None,
+                        "version": None,
+                        "authoritative": False,
+                    }
+                    # Both paths that reach here consulted the callback, so
+                    # both compare. The selector is not what makes a drift
+                    # worth reporting, and gating on it left the quieter path
+                    # silent: on the no-selector path ``chunk_method`` is
+                    # ``legacy_chunking_func`` whether the built-in or a plugin
+                    # ran, and no fallback warning exists there either, so this
+                    # line is the ONLY signal that a document's chunking
+                    # changed between attempts.
+                    if isinstance(previous_identity, dict):
+                        if any(
+                            previous_identity.get(key) != observation[key]
+                            for key in ("name", "version")
+                        ):
+                            logger.warning(
+                                "Custom chunker identity changed for doc_id %s: %r@%r -> %r@%r; proceeding under current configuration (identity is non-authoritative)",
+                                doc_id,
+                                previous_identity.get("name"),
+                                previous_identity.get("version"),
+                                observation["name"],
+                                observation["version"],
+                            )
+                    if current_identity is not None or previous_identity is not None:
+                        # Set before invocation so a failed callback still names
+                        # the attempted configuration in the FAILED record.
+                        extraction_meta["custom_chunker"] = observation
                 if (
                     doc_process_opts.chunking_explicit
                     and doc_process_opts.chunking != "C"
@@ -4961,8 +5256,9 @@ class _PipelineMixin:
                     strategy = doc_process_opts.chunking
                     if strategy == "C":
                         # C makes the legacy extension point explicit while
-                        # preserving its six positional arguments verbatim.
-                        # Its snapshot is intentionally the fixed-token one.
+                        # preserving its six positional arguments. An opted-in
+                        # callback additionally receives the keyword-only
+                        # ChunkingContext; its snapshot is fixed-token.
                         c_opts = dict(chunk_opts.get("fixed_token") or {})
                         c_chunk_size = int(
                             c_opts.get("chunk_token_size", resolved_chunk_size)
@@ -5019,7 +5315,11 @@ class _PipelineMixin:
                                 # the running loop, while async callbacks are
                                 # awaited immediately. CPU-bound callbacks own
                                 # any desired thread offload.
-                                chunking_result = self.chunking_func(*c_args)
+                                chunking_result = invoke_chunker(
+                                    self.chunking_func,
+                                    *c_args,
+                                    context=chunking_context,
+                                )
                                 if inspect.isawaitable(chunking_result):
                                     chunking_result = await chunking_result
                             except Exception as exc:
@@ -5237,8 +5537,10 @@ class _PipelineMixin:
                         # calling convention, and a CPU-bound custom chunker is
                         # responsible for its own ``to_thread``; see the
                         # ``chunking_func`` docstring.
-                        chunking_result = self.chunking_func(
-                            *legacy_args, **legacy_kwargs
+                        chunking_result = invoke_chunker(
+                            self.chunking_func,
+                            *legacy_args,
+                            context=chunking_context,
                         )
                     chunk_method = "legacy_chunking_func"
                     sidecar_backfill_eligible = is_builtin_chunker
@@ -5267,24 +5569,26 @@ class _PipelineMixin:
                     if isinstance(content_data, dict)
                     else None
                 )
-                extraction_meta = {
-                    "parse_format": persisted_format,
-                    # Shared resolver with the parse stage (_parse_worker), so a
-                    # field already stamped at PARSING re-writes to the same
-                    # value here — no value jump across the transition.
-                    "parse_engine": resolve_doc_status_parse_engine(
-                        persisted_format, persisted_engine
-                    ),
-                    # Set by the actual branch taken, not merely the persisted
-                    # selector. This distinguishes C custom success from its
-                    # fixed-token fallback after callback removal.
-                    "chunk_method": chunk_method,
-                    # Mirrors the chunking start log line (params portion only,
-                    # without the strategy prefix or file path) so admins can
-                    # see the actual chunker params used.  Carried across
-                    # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
-                    "chunk_opts": chunk_opts_str,
-                }
+                extraction_meta.update(
+                    {
+                        "parse_format": persisted_format,
+                        # Shared resolver with the parse stage (_parse_worker), so a
+                        # field already stamped at PARSING re-writes to the same
+                        # value here — no value jump across the transition.
+                        "parse_engine": resolve_doc_status_parse_engine(
+                            persisted_format, persisted_engine
+                        ),
+                        # Set by the actual branch taken, not merely the persisted
+                        # selector. This distinguishes C custom success from its
+                        # fixed-token fallback after callback removal.
+                        "chunk_method": chunk_method,
+                        # Mirrors the chunking start log line (params portion only,
+                        # without the strategy prefix or file path) so admins can
+                        # see the actual chunker params used.  Carried across
+                        # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
+                        "chunk_opts": chunk_opts_str,
+                    }
+                )
 
                 blocks_path = str(parsed_data.get("blocks_path") or "").strip()
                 if blocks_path:
@@ -5938,7 +6242,14 @@ class _PipelineMixin:
             self.text_chunks, "namespace", ""
         )  # the same spelling _flush_storages puts into IndexFlushError
         if self._chunk_reference_commit_failed or (
-            isinstance(error, IndexFlushError) and error.namespace == chunk_namespace
+            isinstance(error, IndexFlushError)
+            and error.namespace == chunk_namespace
+            # ...unless the backend proved that raise dropped nothing. The
+            # reason to distrust the retry is a buffer the backend drained
+            # behind our back; where that did not happen the retry below is a
+            # truthful witness, and believing the exception instead would
+            # withhold the partial cache this epilogue exists to save.
+            and flush_may_have_lost_reference(error)
         ):
             logger.error(
                 "Chunk cache references did not land after %s for d-id %s: "
@@ -5957,9 +6268,14 @@ class _PipelineMixin:
                 doc_id,
                 persist_error,
             )
-            await self._record_chunk_reference_commit_failure(
-                f"{stage_label} epilogue flush failed"
-            )
+            if flush_may_have_lost_reference(persist_error):
+                await self._record_chunk_reference_commit_failure(
+                    f"{stage_label} epilogue flush failed"
+                )
+            # A raise that dropped nothing still means this commit did not
+            # happen, so the cache half stays withheld -- but the rows keep
+            # their place in the buffer for the next ordered pair instead of
+            # being quarantined.
             return False
         # An explicit False is a DECLINED commit: the mutation was discarded,
         # so the references are not on disk either.

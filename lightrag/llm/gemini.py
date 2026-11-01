@@ -20,6 +20,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 
@@ -44,6 +45,7 @@ if not pm.is_installed("google-api-core"):
 
 from google import genai  # type: ignore
 from google.genai import types  # type: ignore
+from google.genai import errors as google_genai_errors  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
 
@@ -51,6 +53,26 @@ class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
 
     pass
+
+
+def _is_retryable_gemini_client_error(exc: BaseException) -> bool:
+    """True for a rate-limit response, the one 4xx worth a fresh attempt.
+
+    ``google-genai`` (the client this module actually calls through
+    ``client.aio.models.*``) raises its own ``google.genai.errors``
+    hierarchy, not ``google.api_core.exceptions`` -- that module belongs to
+    the older Vertex AI client libraries and is never raised on this
+    request path. Its 5xx failures surface as ``ServerError``, matched
+    directly in the retry predicate below. A 429 rate-limit response,
+    however, surfaces as the generic 4xx ``ClientError`` rather than a
+    distinct "resource exhausted" type, so it must be matched by status
+    code; every other ``ClientError`` (bad request, bad auth, not found)
+    stays non-retryable.
+    """
+    return (
+        isinstance(exc, google_genai_errors.ClientError)
+        and getattr(exc, "code", None) == 429
+    )
 
 
 _DEFAULT_GEMINI_BASE_URLS = {
@@ -282,6 +304,8 @@ def _extract_response_text(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
 )
@@ -699,6 +723,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
     ),
 )
 async def gemini_embed(

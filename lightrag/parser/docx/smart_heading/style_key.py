@@ -92,9 +92,21 @@ _P_CN_NUM = re.compile(rf"^\s*([{_CN_ORD}]+)[.、\s]")
 _P_CN_PARENT = re.compile(rf"^\s*([（(][{_CN_ORD}]+[）)]|[{_CN_ORD}]+[）)])")
 _P_ROMAN = re.compile(r"^\s*([IVX]{2,}|[ivx]{2,}|[Ⅰ-Ⅻⅰ-ⅻ])[.、]")
 _P_EN_NUM = re.compile(r"^\s*(\d+)(?:\s|[.、]|(?=[一-龥]))")
-_P_EN_ALPHA = re.compile(r"^\s*([A-Za-z])[.、]")
-_P_EN_DOUBLE_PAREN = re.compile(r"^\s*([（(](?:\d+|[a-zA-Z])[）)])")
-_P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|[a-zA-Z]))[）)]")
+# Bounded repeated-letter group: Word list labels repeat the SAME letter
+# (a, z, aa, zz, aaa). Mixed runs like "CV" or "MD" are abbreviations and
+# must not classify as EnAlpha.
+_P_EN_ALPHA = re.compile(r"^\s*(([A-Za-z])\2{0,2})[.、]")
+_P_EN_DOUBLE_PAREN = re.compile(r"^\s*([（(](?:\d+|([A-Za-z])\2{0,2})[）)])")
+_P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|([A-Za-z])\2{0,2}))[）)]")
+# Provenance-gated: mixed IVX runs (iv, vii, ix) are valid Roman list labels.
+# The alphabetic backref above deliberately rejects those as non-Word alpha
+# (CV. / MD. abbreviations); only lowerRoman/upperRoman numFmt may use these.
+# Case-homogeneous like _P_ROMAN — a real label renders in one case. The \d+
+# branch is kept: a Roman numFmt still renders decimal when the resolver's
+# _to_roman is out of domain (count <= 0 or >= 4000), and that label carries
+# the Roman provenance, so dropping the branch would unclassify it.
+_P_EN_DOUBLE_PAREN_ROMAN = re.compile(r"^\s*([（(](?:\d+|[IVX]+|[ivx]+|[Ⅰ-Ⅻⅰ-ⅻ])[）)])")
+_P_EN_SINGLE_PAREN_ROMAN = re.compile(r"^\s*((?:\d+|[IVX]+|[ivx]+|[Ⅰ-Ⅻⅰ-ⅻ]))[）)]")
 
 #: Try order: MultiLevelNum first, then the table order top-down.
 _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
@@ -110,6 +122,19 @@ _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
     (EN_ALPHA, _P_EN_ALPHA),
     (EN_DOUBLE_PAREN, _P_EN_DOUBLE_PAREN),
     (EN_SINGLE_PAREN, _P_EN_SINGLE_PAREN),
+)
+
+#: Paren-slot overrides applied when ``numbering_format`` is lowerRoman /
+#: upperRoman. Derived from ``_MATCH_ORDER`` so a pattern added there also
+#: reaches the Roman path.
+_ROMAN_PAREN_OVERRIDES: dict[str, re.Pattern] = {
+    EN_DOUBLE_PAREN: _P_EN_DOUBLE_PAREN_ROMAN,
+    EN_SINGLE_PAREN: _P_EN_SINGLE_PAREN_ROMAN,
+}
+
+_MATCH_ORDER_ROMAN_PAREN: tuple[tuple[str, re.Pattern], ...] = tuple(
+    (style_key, _ROMAN_PAREN_OVERRIDES.get(style_key, pattern))
+    for style_key, pattern in _MATCH_ORDER
 )
 
 
@@ -202,10 +227,23 @@ def _to_roman(num: int) -> str | None:
 
 
 def parse_alpha_ordinal(text: str) -> int | None:
+    """Parse a homogeneous ASCII-letter run like ``a``, ``z``, ``aa``, ``zz``.
+
+    Word repeated-letter labels run the letter through the alphabet and count
+    the run length as the round: ``a``/``z`` are 1/26, ``aa``/``zz`` are
+    27/52, ``aaa`` is 53. Mixed runs (``ab``) and runs longer than 3 letters
+    are not list labels and return None.
+    """
     text = text.strip()
-    if len(text) == 1 and text.isalpha() and text.isascii():
-        return ord(text.lower()) - ord("a") + 1
-    return None
+    if not (text.isalpha() and text.isascii()):
+        return None
+    if not 1 <= len(text) <= 3:
+        return None
+    lowered = text.lower()
+    if len(set(lowered)) != 1:
+        return None
+    letter_index = ord(lowered[0]) - ord("a") + 1
+    return letter_index + 26 * (len(lowered) - 1)
 
 
 #: Normalized unit ranks (smaller = shallower). Spec: 篇/部/编/卷 > 章 > 节;
@@ -248,6 +286,7 @@ class NumberingClassification:
     ordinal: int | None = None  # parsed ordinal value, when parseable
     raw_level: int | None = None  # MultiLevelNum: dot count + 1
     top_ordinal: int | None = None  # MultiLevelNum: leading component value
+    automatic_alpha: bool = False  # explicit DOCX numFmt wins over Roman heuristics
 
     @property
     def priority(self) -> int:
@@ -267,7 +306,7 @@ class NumberingClassification:
 
 
 def _extract_unit_and_ordinal(
-    style_key: str, label: str
+    style_key: str, label: str, *, numbering_format: str | None = None
 ) -> tuple[str | None, int | None]:
     if style_key in (CN_CHAPTER, CN_CLAUSE):
         m = re.match(rf"^第\s*([{_CN_ORD}\d]+)\s*(.)$", label.strip())
@@ -279,17 +318,19 @@ def _extract_unit_and_ordinal(
         if not m:
             return None, None
         unit = m.group(1).lower()
-        return unit, _parse_latin_ordinal(m.group(2))
+        return unit, _parse_latin_ordinal(m.group(2), numbering_format=numbering_format)
     if style_key == EN_CLAUSE:
         stripped = label.strip()
         sym = re.match(r"^([§¶]+)\s*(.+)$", stripped)
         if sym:
-            return sym.group(1)[0], _parse_latin_ordinal(sym.group(2))
+            return sym.group(1)[0], _parse_latin_ordinal(
+                sym.group(2), numbering_format=numbering_format
+            )
         m = re.match(r"^([A-Za-z]+)\.?\s*(.+)$", stripped)
         if not m:
             return None, None
         unit = _EN_CLAUSE_CANONICAL.get(m.group(1).lower(), m.group(1).lower())
-        return unit, _parse_latin_ordinal(m.group(2))
+        return unit, _parse_latin_ordinal(m.group(2), numbering_format=numbering_format)
     if style_key == CN_NUM:
         return None, parse_cn_ordinal(label)
     if style_key == CN_PARENT_NUM:
@@ -304,21 +345,53 @@ def _extract_unit_and_ordinal(
         inner = re.sub(r"[（()）]", "", label).strip()
         if inner.isdigit():
             return None, int(inner)
-        return None, parse_alpha_ordinal(inner)
+        return None, _parse_marker_ordinal(inner, numbering_format=numbering_format)
     return None, None
 
 
-def _parse_latin_ordinal(text: str) -> int | None:
+def _parse_marker_ordinal(
+    text: str, *, numbering_format: str | None = None
+) -> int | None:
+    """Parse a bare list marker (no unit word), honoring DOCX provenance.
+
+    The parenthesized patterns accept repeated-letter runs, so an automatic
+    lowerRoman/upperRoman list with lvlText "(%1)" hands "(ii)" here; read as
+    alphabetic that is 35, not 2. _P_ROMAN cannot claim those labels (it only
+    matches a "." or "、" terminator), so the carried numFmt is the only
+    evidence available. When that provenance is Roman but ``parse_roman``
+    declines (a malformed run such as "vv" / "iiii"), return None — do not
+    fall back to the alphabetic reading, which would invent a wrong ordinal
+    ("vv" is not 48). Out-of-domain L/C/D/M labels no longer reach here at
+    all: the Roman paren patterns do not accept those letters.
+
+    Without that provenance the alphabetic reading stands, which keeps
+    hand-typed markers on their existing behavior: "(i)" stays 9, disambiguated
+    downstream by reclassify_single_char_romans rather than guessed here.
+    """
+    if numbering_format in ("lowerRoman", "upperRoman"):
+        return parse_roman(text)
+    return parse_alpha_ordinal(text)
+
+
+def _parse_latin_ordinal(
+    text: str, *, numbering_format: str | None = None
+) -> int | None:
     text = text.strip()
     if text.isdigit():
         return int(text)
+    if numbering_format in ("lowerLetter", "upperLetter"):
+        alpha = parse_alpha_ordinal(text)
+        if alpha is not None:
+            return alpha
     roman = parse_roman(text)
     if roman is not None:
         return roman
     return parse_alpha_ordinal(text)
 
 
-def classify_numbering(text: str) -> NumberingClassification | None:
+def classify_numbering(
+    text: str, *, numbering_format: str | None = None
+) -> NumberingClassification | None:
     """Classify the leading numbering of a paragraph (first hit wins).
 
     Returns None when no pattern matches OR when the matched styleKey does
@@ -327,8 +400,13 @@ def classify_numbering(text: str) -> NumberingClassification | None:
     """
     if not text:
         return None
+    automatic_alpha = numbering_format in ("lowerLetter", "upperLetter")
+    automatic_roman = numbering_format in ("lowerRoman", "upperRoman")
+    match_order = _MATCH_ORDER_ROMAN_PAREN if automatic_roman else _MATCH_ORDER
     multi_level_shape = _P_MULTI_LEVEL_SHAPE.match(text) is not None
-    for style_key, pattern in _MATCH_ORDER:
+    for style_key, pattern in match_order:
+        if automatic_alpha and style_key == ROMAN_NUM:
+            continue
         if multi_level_shape and style_key != MULTI_LEVEL_NUM:
             # A multi-level opener is claimed by MultiLevelNum exclusively;
             # if its full rule rejected the text, the paragraph is body.
@@ -340,7 +418,9 @@ def classify_numbering(text: str) -> NumberingClassification | None:
         title = text[m.end() :].strip()
         if not title and style_key not in ALLOW_EMPTY_TITLE:
             return None
-        unit, ordinal = _extract_unit_and_ordinal(style_key, label)
+        unit, ordinal = _extract_unit_and_ordinal(
+            style_key, label, numbering_format=numbering_format
+        )
         raw_level = None
         top_ordinal = None
         if style_key == MULTI_LEVEL_NUM:
@@ -359,6 +439,7 @@ def classify_numbering(text: str) -> NumberingClassification | None:
             ordinal=ordinal,
             raw_level=raw_level,
             top_ordinal=top_ordinal,
+            automatic_alpha=automatic_alpha,
         )
     return None
 
@@ -383,6 +464,7 @@ def reclassify_single_char_romans(
             item is not None
             and item.style_key == EN_ALPHA
             and item.label_text in _SINGLE_ROMAN_CHARS
+            and not item.automatic_alpha
         ):
             out.append(
                 replace(

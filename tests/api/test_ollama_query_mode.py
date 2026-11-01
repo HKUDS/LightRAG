@@ -92,3 +92,40 @@ def test_bracket_prompt_without_query_keeps_mode(mode_prefix):
     assert mode.value == mode_prefix
     assert only_need_context is False
     assert user_prompt == "be brief"
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        # An English word starting with "context" must pass through as an
+        # unknown mode, exactly like "/nosuchmode": the unsuffixed "/context"
+        # key swallowed it, truncating the retrieval text and silently
+        # flipping the query to context-only retrieval.
+        (
+            "/contextualize the following passage",
+            ("/contextualize the following passage", SearchMode.mix, False, None),
+        ),
+        (
+            "/contexts in which k8s is used",
+            ("/contexts in which k8s is used", SearchMode.mix, False, None),
+        ),
+        # The legitimate unsuffixed forms keep matching: trailing space ...
+        (
+            "/context how does docker networking work",
+            ("how does docker networking work", SearchMode.mix, True, None),
+        ),
+        # ... the bare key with nothing after it ...
+        ("/context", ("", SearchMode.mix, True, None)),
+        # ... and sibling whole-word keys.
+        ("/localcontext foo", ("foo", SearchMode.local, True, None)),
+    ],
+)
+def test_unsuffixed_context_keys_end_at_a_word_boundary(query, expected):
+    """An unsuffixed mode key must not prefix-match a longer word.
+
+    Without a boundary check, "/context" also prefixes "/contextualize" and
+    "/contexts": the matched fragment is cut out of the retrieval query text
+    and the query is forced into context-only retrieval (no LLM answer) that
+    the user never asked for.
+    """
+    assert parse_query_mode(query) == expected

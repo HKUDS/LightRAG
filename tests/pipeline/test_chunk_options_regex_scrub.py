@@ -15,7 +15,6 @@ real ``"V"`` dispatch — the trust-boundary property it exists to guarantee.
 
 import asyncio
 import logging
-from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +22,7 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
-from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface, logger
+from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 from lightrag.utils_pipeline import apply_trusted_sentence_split_regex
 
 pytestmark = pytest.mark.offline
@@ -38,18 +37,6 @@ def _addon(regex: str | None) -> dict:
     if regex is not None:
         sv["sentence_split_regex"] = regex
     return {"chunker": {"semantic_vector": sv}}
-
-
-@contextmanager
-def _capturable_lightrag_logger():
-    # The lightrag logger sets propagate=False, so caplog's root handler never
-    # sees its records. Re-enable it for the duration of the assertion.
-    previous = logger.propagate
-    logger.propagate = True
-    try:
-        yield
-    finally:
-        logger.propagate = previous
 
 
 def test_poisoned_snapshot_regex_is_discarded():
@@ -95,50 +82,49 @@ def test_empty_addon_params_falls_back_to_env_default():
         assert out.get("sentence_split_regex") == DEFAULT_SENTENCE_SPLIT_REGEX
 
 
-def test_discarding_a_snapshot_value_leaves_an_audit_line(caplog):
+def test_discarding_a_snapshot_value_leaves_an_audit_line(lightrag_log_records):
     # Dropping a persisted value is a decision with consequences — either an
     # attack was disarmed or an SDK caller's pattern was silently overridden.
     # Neither is discoverable from the "Chunking V: ..." line, which prints the
     # value AFTER replacement.
-    with _capturable_lightrag_logger(), caplog.at_level(logging.WARNING, "lightrag"):
-        apply_trusted_sentence_split_regex(
-            {"sentence_split_regex": REDOS},
-            _addon(r"(?<=[.?!])\s+"),
-            doc_id="doc-poisoned",
-        )
-    messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    apply_trusted_sentence_split_regex(
+        {"sentence_split_regex": REDOS},
+        _addon(r"(?<=[.?!])\s+"),
+        doc_id="doc-poisoned",
+    )
+    messages = [
+        r.getMessage() for r in lightrag_log_records if r.levelno >= logging.WARNING
+    ]
     assert any("doc-poisoned" in m and REDOS in m for m in messages), (
         f"expected an audit line naming the doc and the discarded pattern; got {messages!r}"
     )
 
 
-def test_no_audit_noise_when_the_snapshot_already_matches(caplog):
+def test_no_audit_noise_when_the_snapshot_already_matches(lightrag_log_records):
     # The common case (snapshot written by this build == live config) must stay
     # silent, or the warning is worthless as an attack signal.
-    with _capturable_lightrag_logger(), caplog.at_level(logging.WARNING, "lightrag"):
-        apply_trusted_sentence_split_regex(
-            {"sentence_split_regex": r"(?<=[.?!])\s+"},
-            _addon(r"(?<=[.?!])\s+"),
-            doc_id="doc-clean",
-        )
-        # Absent from the snapshot is equally unremarkable.
-        apply_trusted_sentence_split_regex({"buffer_size": 1}, _addon(r"(?<=[.?!])\s+"))
+    apply_trusted_sentence_split_regex(
+        {"sentence_split_regex": r"(?<=[.?!])\s+"},
+        _addon(r"(?<=[.?!])\s+"),
+        doc_id="doc-clean",
+    )
+    # Absent from the snapshot is equally unremarkable.
+    apply_trusted_sentence_split_regex({"buffer_size": 1}, _addon(r"(?<=[.?!])\s+"))
     assert [
-        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        r.getMessage() for r in lightrag_log_records if r.levelno >= logging.WARNING
     ] == []
 
 
-def test_audit_line_bounds_the_untrusted_pattern(caplog):
+def test_audit_line_bounds_the_untrusted_pattern(lightrag_log_records):
     # The discarded pattern is attacker-controlled text going into an operator's
     # log; it must be quoted (repr) and length-bounded.
-    with _capturable_lightrag_logger(), caplog.at_level(logging.WARNING, "lightrag"):
-        apply_trusted_sentence_split_regex(
-            {"sentence_split_regex": "z" * 5000},
-            _addon(r"(?<=[.?!])\s+"),
-            doc_id="doc-long",
-        )
+    apply_trusted_sentence_split_regex(
+        {"sentence_split_regex": "z" * 5000},
+        _addon(r"(?<=[.?!])\s+"),
+        doc_id="doc-long",
+    )
     (message,) = [
-        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        r.getMessage() for r in lightrag_log_records if r.levelno >= logging.WARNING
     ]
     assert "z" * 5000 not in message
     assert len(message) < 600

@@ -760,7 +760,8 @@ async def test_latex_escape_damage_repaired_before_sidecar_write(tmp_path):
         # double-escaped — mirrors the mixed escaping observed in the wild.
         return (
             '{"name": "cost-formula", "type": "Chart", '
-            '"description": "calls $\\frac{610 \\\\times 1000}{C}$ shown"}'
+            '"description": "calls $\\frac{610 \\\\times 1000}{C}$ '
+            'on $\\tau^2$ shown"}'
         )
 
     rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
@@ -776,8 +777,11 @@ async def test_latex_escape_damage_repaired_before_sidecar_write(tmp_path):
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         result = payload["drawings"]["im-001"]["llm_analyze_result"]
         assert result["status"] == "success"
-        assert result["description"] == "calls $\\frac{610 \\times 1000}{C}$ shown"
+        assert result["description"] == (
+            "calls $\\frac{610 \\times 1000}{C}$ on $\\tau^2$ shown"
+        )
         assert "\x0c" not in result["description"]
+        assert "\t" not in result["description"]
     finally:
         await rag.finalize_storages()
 
