@@ -28,8 +28,8 @@ from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.exceptions import ChunkTokenLimitExceededError
 from lightrag.utils import (
-    EmbeddingFunc,
     LLM_TRUNCATION_METADATA_KEY,
+    EmbeddingFunc,
     Tokenizer,
     TruncatedResponse,
 )
