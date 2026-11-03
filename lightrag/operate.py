@@ -4812,6 +4812,9 @@ async def kg_query(
         response_type=response_type,
         user_prompt=effective_user_prompt.slot,
         context_data=context_result.context,
+        # Accept the naive-mode spelling too, so a caller template written
+        # against either built-in prompt renders in every mode.
+        content_data=context_result.context,
     )
 
     user_query = query
@@ -5963,6 +5966,7 @@ async def _build_context_str(
     # number the live path never delivers.
     pre_sys_prompt = sys_prompt_template.format(
         context_data="",  # Empty for overhead calculation
+        content_data="",  # Accept the naive-mode spelling too
         response_type=response_type,
         user_prompt=effective_user_prompt.text,
     )
@@ -6940,6 +6944,7 @@ async def naive_query(
         response_type=response_type,
         user_prompt=effective_user_prompt.slot,
         content_data="",  # Empty for overhead calculation
+        context_data="",  # Accept the KG-mode spelling too
     )
 
     # Calculate available tokens for chunks
@@ -7016,6 +7021,9 @@ async def naive_query(
         response_type=query_param.response_type,
         user_prompt=effective_user_prompt.slot,
         content_data=context_content,
+        # Accept the KG-mode spelling too, so a caller template written
+        # against either built-in prompt renders in every mode.
+        context_data=context_content,
     )
 
     user_query = query
