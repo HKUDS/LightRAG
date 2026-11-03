@@ -137,7 +137,7 @@ api = [
     # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, breaking
     # `uv sync --frozen` on Python 3.14; 3.8.16 restored both. Cap below
     # 3.8.17 to stay on 3.8.x until spacy 4.x graduates from dev.
-    "spacy>=3.8,<3.8.17",
+    "spacy>=3.8,<3.8.19",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
