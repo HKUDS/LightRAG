@@ -20,5 +20,5 @@ en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_
 # spaCy runtime (matches the spacy pin in pyproject.toml's api extra)
 spacy>=3.8,<4
 # zh_core_web_sm's tokenizer backend, pinned for the same determinism promise
-spacy-pkuseg==1.0.1
+spacy-pkuseg==1.0.2
 zh_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl
