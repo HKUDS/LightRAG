@@ -403,14 +403,28 @@ def classify_numbering(
     automatic_alpha = numbering_format in ("lowerLetter", "upperLetter")
     automatic_roman = numbering_format in ("lowerRoman", "upperRoman")
     match_order = _MATCH_ORDER_ROMAN_PAREN if automatic_roman else _MATCH_ORDER
-    multi_level_shape = _P_MULTI_LEVEL_SHAPE.match(text) is not None
+    # Every pattern opens with ``^\s*`` and then needs a digit, an ASCII
+    # letter, or one of these marker characters ("ſ" case-folds to "s" for
+    # the IGNORECASE Section/Sec keywords); anything else is body text.
+    head = text.lstrip()[:1]
+    if not (
+        head.isdecimal()
+        or (head.isascii() and head.isalpha())
+        or (head and (head in "§¶第（(ſ" or head in _CN_ORD))
+        or "\u2160" <= head <= "\u216b"
+        or "\u2170" <= head <= "\u217b"
+    ):
+        return None
+    if (head == "§" or head.isdecimal()) and _P_MULTI_LEVEL_SHAPE.match(text):
+        # A multi-level opener is claimed by MultiLevelNum exclusively; if
+        # its full rule rejects the text, the paragraph is body.
+        match_order = match_order[:1]
+    else:
+        # Without that opener MultiLevelNum cannot match.
+        match_order = match_order[1:]
     for style_key, pattern in match_order:
         if automatic_alpha and style_key == ROMAN_NUM:
             continue
-        if multi_level_shape and style_key != MULTI_LEVEL_NUM:
-            # A multi-level opener is claimed by MultiLevelNum exclusively;
-            # if its full rule rejected the text, the paragraph is body.
-            return None
         m = pattern.match(text)
         if m is None:
             continue
