@@ -185,6 +185,18 @@ class _RoleLLMMixin:
         timeout: int,
         model_kwargs: dict[str, Any],
     ) -> Callable[..., object]:
+        # Every role queue funnels through here, so this is the one place
+        # that can reject a per-role limit (from role_llm_configs, the
+        # {ROLE}_MAX_ASYNC_LLM env seed, or a runtime config update) that
+        # the base-field check in __post_init__ cannot see: a non-positive
+        # limit dispatches no workers and calls through the role would
+        # never execute.
+        if max_async < 1:
+            raise ValueError(
+                f"max_async for LLM role {role_name!r} must be >= 1 (a "
+                "non-positive limit dispatches no workers, so calls "
+                f"through this role would never run); got {max_async}"
+            )
         spec = ROLES_BY_NAME[role_name]
         return priority_limit_async_func_call(
             max_async,
