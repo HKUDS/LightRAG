@@ -963,14 +963,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     embedding_batch_num: int = field(
         default=get_env_value("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int)
     )
-    """Batch size for embedding computations."""
+    """Batch size for embedding computations.
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__``.
+    """
 
     embedding_func_max_async: int = field(
         default=get_env_value(
             "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
         )
     )
-    """Maximum number of concurrent embedding function calls."""
+    """Maximum number of concurrent embedding function calls.
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__`` (a non-positive limit would dispatch no workers).
+    """
 
     embedding_cache_config: dict[str, Any] = field(
         default_factory=lambda: {
@@ -1033,7 +1041,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             int,
         )
     )
-    """Maximum number of concurrent LLM calls."""
+    """Maximum number of concurrent LLM calls.
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__`` (a non-positive limit would dispatch no workers).
+    """
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
@@ -1070,7 +1082,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     )
     """Maximum number of concurrent rerank calls.
     Falls back to MAX_ASYNC_LLM when MAX_ASYNC_RERANK is unset
-    (MAX_ASYNC is still accepted as a deprecated alias)."""
+    (MAX_ASYNC is still accepted as a deprecated alias).
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__`` (a non-positive limit would dispatch no workers)."""
 
     default_rerank_timeout: int = field(
         default=get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
@@ -1684,6 +1699,42 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE must be >= 0 (0 disables "
                 f"the embedding hard fallback's overlap); got "
                 f"{self.embedding_chunk_overlap_token_size}"
+            )
+
+        # Embedding batch size is the stride of the vector-store flush
+        # loop: 0 makes range() raise there and a negative value embeds
+        # nothing, both surfacing only at the first insert with an error
+        # that never names this setting. Fail fast instead.
+        if self.embedding_batch_num < 1:
+            raise ValueError(
+                "EMBEDDING_BATCH_NUM must be >= 1 (it is the batch size "
+                f"used when flushing embeddings to the vector store); got "
+                f"{self.embedding_batch_num}"
+            )
+
+        # Concurrency limits feed priority_limit_async_func_call, which
+        # dispatches exactly that many workers: 0 or negative dispatches
+        # none, so the wrapped call would never execute and the pipeline
+        # would hang without an error. Fail fast for every queue built
+        # from these fields (per-role limits are checked where the role
+        # wrapper is built, in _wrap_llm_role_func).
+        if self.embedding_func_max_async < 1:
+            raise ValueError(
+                "EMBEDDING_FUNC_MAX_ASYNC must be >= 1 (a non-positive "
+                "limit dispatches no workers, so embedding calls would "
+                f"never run); got {self.embedding_func_max_async}"
+            )
+        if self.llm_model_max_async < 1:
+            raise ValueError(
+                "MAX_ASYNC_LLM must be >= 1 (a non-positive limit "
+                "dispatches no workers, so LLM calls would never run); "
+                f"got {self.llm_model_max_async}"
+            )
+        if self.rerank_model_max_async < 1:
+            raise ValueError(
+                "MAX_ASYNC_RERANK must be >= 1 (a non-positive limit "
+                "dispatches no workers, so rerank calls would never "
+                f"run); got {self.rerank_model_max_async}"
             )
 
         # Handle deprecated parameters
