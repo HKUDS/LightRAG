@@ -22,8 +22,8 @@ the source files:
 - `EMBEDDING_ASYMMETRIC`
 - `EMBEDDING_QUERY_PREFIX`
 - `EMBEDDING_DOCUMENT_PREFIX`
-- Provider task behavior such as Jina `task`, Gemini `task_type`, or VoyageAI
-  `input_type`
+- Provider task behavior such as Jina `task`, Gemini `task_type`, VoyageAI
+  `input_type`, or NVIDIA `input_type`
 
 Do not reuse an existing vector store across asymmetric embedding configuration
 changes. Mixing vectors generated with different query/document behavior can
@@ -35,7 +35,7 @@ LightRAG distinguishes two asymmetric embedding styles:
 
 | Style | Bindings | How asymmetric behavior is applied |
 | --- | --- | --- |
-| Provider task parameters | `jina`, `gemini`, `voyageai` | LightRAG passes query/document context to the provider-specific `task`, `task_type`, or `input_type` parameter. |
+| Provider task parameters | `jina`, `gemini`, `voyageai`, `nvidia` | LightRAG passes query/document context to the provider-specific `task`, `task_type`, or `input_type` parameter. |
 | Text task prefixes | `openai`, `azure_openai`, `ollama` | LightRAG prepends configured text prefixes before calling the embedding API. Use this only when the model card explicitly requires separate query/document prefixes. |
 
 Other server embedding bindings do not currently support
@@ -112,6 +112,16 @@ EMBEDDING_ASYMMETRIC=true
 EMBEDDING_MODEL=voyage-3
 ```
 
+NVIDIA example (`input_type` is `query` for queries and `passage` for
+documents):
+
+```env
+EMBEDDING_BINDING=nvidia
+EMBEDDING_ASYMMETRIC=true
+EMBEDDING_MODEL=nvidia/nemotron-3.5-embed-1b
+EMBEDDING_DIM=2048
+```
+
 If `EMBEDDING_QUERY_PREFIX` or `EMBEDDING_DOCUMENT_PREFIX` is also configured
 for these bindings, LightRAG logs a warning and ignores the prefixes.
 
@@ -169,7 +179,7 @@ missing configuration.
 | `EMBEDDING_ASYMMETRIC` unset | Symmetric mode; prefixes ignored with a warning. |
 | `EMBEDDING_ASYMMETRIC=false` | Symmetric mode; prefixes ignored with a warning. |
 | Instruction-free model such as `BAAI/bge-m3`, `text-embedding-3-small`, `mistral-embed`, base GTE, or Jina v2 | Keep symmetric mode; do not configure prefixes or provider tasks unless the model card says to. |
-| `EMBEDDING_ASYMMETRIC=true` with `jina`/`gemini`/`voyageai` | Provider task mode; prefixes ignored with a warning. |
+| `EMBEDDING_ASYMMETRIC=true` with `jina`/`gemini`/`voyageai`/`nvidia` | Provider task mode; prefixes ignored with a warning. |
 | `EMBEDDING_ASYMMETRIC=true` with `openai`/`azure_openai`/`ollama` and both prefix variables configured | Prefix mode. |
 | Prefix mode with a missing prefix variable | Startup error; use a real prefix or `NO_PREFIX`. |
 | Prefix mode with both sides `NO_PREFIX` | Startup error; no asymmetric behavior would occur. |

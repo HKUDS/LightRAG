@@ -24,6 +24,7 @@ import pytest
 
 from lightrag.api import config as api_config
 
+pytestmark = pytest.mark.offline
 
 # ---------------------------------------------------------------------------
 # wrap_embedding_func_with_attrs auto-detection
@@ -162,7 +163,7 @@ def test_asymmetric_opt_in_explicit_false_disables_even_with_prefixes():
     )
 
 
-@pytest.mark.parametrize("binding", ["jina", "gemini", "voyageai"])
+@pytest.mark.parametrize("binding", ["jina", "gemini", "voyageai", "nvidia"])
 def test_asymmetric_opt_in_explicit_true_allows_provider_level_bindings(binding):
     assert (
         api_config.resolve_asymmetric_embedding_opt_in(

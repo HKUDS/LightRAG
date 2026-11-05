@@ -131,6 +131,7 @@ LightRAG 支持以下 embedding 后端：
 * jina
 * gemini
 * voyageai
+* nvidia
 
 建议使用环境变量来配置 LightRAG 服务器。项目根目录中有一个名为 `env.example` 的示例环境变量文件。请将此文件复制到启动目录并重命名为 `.env`。之后，您可以在 `.env` 文件中修改与 LLM 和嵌入模型相关的参数。需要注意的是，LightRAG 服务器每次启动时都会将 `.env` 中的环境变量加载到系统环境变量中。**LightRAG 服务器会优先使用系统环境变量中的设置**。
 
@@ -180,7 +181,7 @@ EMBEDDING_DIM=1024
 
 LightRAG 默认使用对称嵌入。只有显式设置 `EMBEDDING_ASYMMETRIC=true` 时，才会开启 query/document 非对称嵌入。
 
-- `jina`、`gemini`、`voyageai` 等 provider task 型绑定通过 provider 参数（`task` / `task_type` / `input_type`）区分 query/document，不应配置 query/document 前缀。
+- `jina`、`gemini`、`voyageai`、`nvidia` 等 provider task 型绑定通过 provider 参数（`task` / `task_type` / `input_type`）区分 query/document，不应配置 query/document 前缀。
 - `openai`、`azure_openai`、`ollama` 等前缀型绑定必须同时配置 `EMBEDDING_QUERY_PREFIX` 和 `EMBEDDING_DOCUMENT_PREFIX`。如果某一侧明确不需要前缀，请使用 `NO_PREFIX`。
 - 任何非对称嵌入配置的有效变更，都需要清空已有数据并重新索引文件。
 
@@ -770,6 +771,7 @@ LightRAG 支持绑定到各种嵌入后端：
 * jina
 * gemini
 * voyageai
+* nvidia
 
 使用环境变量 `LLM_BINDING` 或 CLI 参数 `--llm-binding` 选择 LLM 后端类型。使用环境变量 `EMBEDDING_BINDING` 或 CLI 参数 `--embedding-binding` 选择嵌入后端类型。
 
@@ -989,7 +991,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--api-prefix` | `""` | 反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置 |
 | `--workers` | `1` | Gunicorn worker 数量 |
 | `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`azure_openai`、`bedrock`、`gemini`） |
-| `--embedding-binding` | `ollama` | Embedding 绑定类型（`lollms`、`ollama`、`openai`、`azure_openai`、`bedrock`、`jina`、`gemini`、`voyageai`） |
+| `--embedding-binding` | `ollama` | Embedding 绑定类型（`lollms`、`ollama`、`openai`、`azure_openai`、`bedrock`、`jina`、`gemini`、`voyageai`、`nvidia`） |
 | `--rerank-binding` | `null` | Rerank 绑定类型（`null`、`cohere`、`jina`、`aliyun`） |
 
 ### Reranking 配置

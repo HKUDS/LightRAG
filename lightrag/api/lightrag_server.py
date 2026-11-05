@@ -719,6 +719,10 @@ def create_optimized_embedding_function(
             from lightrag.llm.voyageai import voyageai_embed
 
             provider_func = voyageai_embed
+        elif binding == "nvidia":
+            from lightrag.llm.nvidia_openai import nvidia_openai_embed
+
+            provider_func = nvidia_openai_embed
         # Extract attributes if provider is an EmbeddingFunc
         if provider_func and isinstance(provider_func, EmbeddingFunc):
             provider_max_token_size = provider_func.max_token_size
@@ -740,7 +744,7 @@ def create_optimized_embedding_function(
     # See: https://github.com/HKUDS/LightRAG/issues/3644
     # Note: lollms is excluded because it ignores the model parameter entirely.
     _BINDINGS_WITH_DIM_GUARD = frozenset(
-        ["ollama", "openai", "jina", "gemini", "bedrock", "voyageai"]
+        ["ollama", "openai", "jina", "gemini", "bedrock", "voyageai", "nvidia"]
     )
     # `not args.embedding_dim` (rather than `is None`) keeps the guard aligned
     # with the truthiness-based dimension resolution below: a 0 would otherwise
@@ -970,6 +974,25 @@ def create_optimized_embedding_function(
                     "texts": texts,
                     "api_key": api_key,
                     "embedding_dim": embedding_dim,
+                }
+                if model:
+                    kwargs["model"] = model
+                if provider_supports_asymmetric and asymmetric_opt_in:
+                    kwargs["context"] = context
+                return await actual_func(**kwargs)
+            elif binding == "nvidia":
+                from lightrag.llm.nvidia_openai import nvidia_openai_embed
+
+                actual_func = (
+                    nvidia_openai_embed.func
+                    if isinstance(nvidia_openai_embed, EmbeddingFunc)
+                    else nvidia_openai_embed
+                )
+                # Pass model only if provided, let function use its default
+                kwargs = {
+                    "texts": texts,
+                    "base_url": host,
+                    "api_key": api_key,
                 }
                 if model:
                     kwargs["model"] = model
@@ -1610,6 +1633,7 @@ def create_app(args):
         "jina",
         "gemini",
         "voyageai",
+        "nvidia",
     ]:
         raise Exception(f"embedding binding '{args.embedding_binding}' not supported")
 
