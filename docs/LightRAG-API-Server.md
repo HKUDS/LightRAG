@@ -131,6 +131,7 @@ LightRAG supports these embedding backends:
 * jina
 * gemini
 * voyageai
+* nvidia
 
 It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. **LightRAG Server will prioritize the settings in the system environment variables to .env file**.
 
@@ -180,7 +181,7 @@ EMBEDDING_DIM=1024
 
 LightRAG uses symmetric embeddings by default. Query/document asymmetric embeddings are enabled only when `EMBEDDING_ASYMMETRIC=true` is explicitly set.
 
-- Provider task bindings such as `jina`, `gemini`, and `voyageai` use provider parameters (`task` / `task_type` / `input_type`) and should not use query/document prefixes.
+- Provider task bindings such as `jina`, `gemini`, `voyageai`, and `nvidia` use provider parameters (`task` / `task_type` / `input_type`) and should not use query/document prefixes.
 - Prefix-based bindings such as `openai`, `azure_openai`, and `ollama` require both `EMBEDDING_QUERY_PREFIX` and `EMBEDDING_DOCUMENT_PREFIX`. Use `NO_PREFIX` for a side that should intentionally have no prefix.
 - Any valid change to asymmetric embedding settings requires clearing existing data and re-indexing files.
 
@@ -770,6 +771,7 @@ LightRAG supports binding to various Embedding backends:
 * jina
 * gemini
 * voyageai
+* nvidia
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
 
@@ -989,7 +991,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--api-prefix` | `""` | Reverse-proxy path prefix, also configurable with `LIGHTRAG_API_PREFIX` |
 | `--workers` | `1` | Gunicorn worker count |
 | `--llm-binding` | `ollama` | LLM binding type (`lollms`, `ollama`, `openai`, `openai-ollama`, `azure_openai`, `bedrock`, `gemini`) |
-| `--embedding-binding` | `ollama` | Embedding binding type (`lollms`, `ollama`, `openai`, `azure_openai`, `bedrock`, `jina`, `gemini`, `voyageai`) |
+| `--embedding-binding` | `ollama` | Embedding binding type (`lollms`, `ollama`, `openai`, `azure_openai`, `bedrock`, `jina`, `gemini`, `voyageai`, `nvidia`) |
 | `--rerank-binding` | `null` | Rerank binding type (`null`, `cohere`, `jina`, `aliyun`) |
 
 ### Reranking Configuration

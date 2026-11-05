@@ -64,7 +64,7 @@ load_dotenv(dotenv_path=".env", override=False)
 ollama_server_infos = OllamaServerInfos()
 DEFAULT_TOKEN_SECRET = "lightrag-jwt-default-secret-key!"
 NO_PREFIX_SENTINEL = "NO_PREFIX"
-PROVIDER_ASYMMETRIC_EMBEDDING_BINDINGS = {"gemini", "jina", "voyageai"}
+PROVIDER_ASYMMETRIC_EMBEDDING_BINDINGS = {"gemini", "jina", "voyageai", "nvidia"}
 PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS = {"azure_openai", "ollama", "openai"}
 
 
@@ -87,6 +87,9 @@ def get_default_host(binding_type: str) -> str:
         # Let google-genai pick the correct default endpoint/version unless the
         # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
         "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
+        # NVIDIA API Catalog (embedding-only binding, so LLM_BINDING_HOST is
+        # not consulted); EMBEDDING_BINDING_HOST overrides it for self-hosted NIM.
+        "nvidia": "https://integrate.api.nvidia.com/v1",
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
@@ -546,6 +549,7 @@ def parse_args() -> argparse.Namespace:
             "jina",
             "gemini",
             "voyageai",
+            "nvidia",
         ],
         help="Embedding binding type (default: from env or ollama)",
     )
