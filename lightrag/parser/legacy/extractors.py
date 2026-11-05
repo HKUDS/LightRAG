@@ -109,14 +109,21 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     carries one, falling back to the formula text when it does not. openpyxl
     fixes ``data_only`` at load time, so the workbook is deliberately loaded
     twice -- ``data_only=True`` for values, ``data_only=False`` for formulas.
-    This doubles peak memory/parse cost but is required to have both views;
-    ``read_only=True`` is not a safe optimization here because it can report
-    ``max_row``/``max_column`` as ``None`` and collapse the iteration range.
+
+    Both workbooks are opened ``read_only`` and closed in ``finally``: the
+    normal mode materializes one Python object per cell (a ~100MB xlsx with
+    16M cells pinned >2GB of live objects in the long-lived server process
+    and, with the cell<->sheet reference cycles, escaped GC for the life of
+    the run). read_only streams rows from the zip part, and the unbounded
+    ``iter_rows(values_only=True)`` sidesteps the read_only quirk that
+    ``max_row``/``max_column`` can report ``None`` (which is what makes the
+    bounded form unsafe, not streaming itself). Rows are padded to their
+    per-row width because read_only may emit ragged rows for sparse tails.
     """
     from openpyxl import load_workbook  # type: ignore
 
-    wb_values = load_workbook(BytesIO(file_bytes), data_only=True)
-    wb_formulas = load_workbook(BytesIO(file_bytes), data_only=False)
+    wb_values = load_workbook(BytesIO(file_bytes), data_only=True, read_only=True)
+    wb_formulas = load_workbook(BytesIO(file_bytes), data_only=False, read_only=True)
 
     def escape_cell(cell_value: str | int | float | None) -> str:
         if cell_value is None:
@@ -135,37 +142,41 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
     content_parts: list[str] = []
     sheet_separator = "=" * 20
-
-    for idx, sheet in enumerate(wb_values):
-        if idx > 0:
-            content_parts.append("")
-        safe_title = escape_sheet_title(sheet.title)
-        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
-        formula_sheet = wb_formulas[sheet.title]
-        max_rows = max(sheet.max_row or 0, formula_sheet.max_row or 0)
-        max_columns = max(sheet.max_column or 0, formula_sheet.max_column or 0)
-        value_rows = sheet.iter_rows(
-            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
-        )
-        formula_rows = formula_sheet.iter_rows(
-            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
-        )
-        for value_row, formula_row in zip(value_rows, formula_rows):
-            row_parts = []
-            row_has_content = False
-            for cell_value, formula_value in zip(value_row, formula_row):
-                if cell_value is None:
-                    cell_value = formula_value
-                cell_text = escape_cell(cell_value)
-                row_parts.append(cell_text)
-                if cell_text:
-                    row_has_content = True
-            if not row_has_content:
+    try:
+        for idx, sheet in enumerate(wb_values):
+            if idx > 0:
                 content_parts.append("")
-            else:
-                content_parts.append("\t".join(row_parts))
-    content_parts.append(sheet_separator)
-    return "\n".join(content_parts)
+            safe_title = escape_sheet_title(sheet.title)
+            content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
+            formula_sheet = wb_formulas[sheet.title]
+            value_rows = sheet.iter_rows(values_only=True)
+            formula_rows = formula_sheet.iter_rows(values_only=True)
+            for value_row, formula_row in zip(value_rows, formula_rows):
+                value_row = tuple(value_row)
+                formula_row = tuple(formula_row)
+                width = max(len(value_row), len(formula_row))
+                if len(value_row) < width:
+                    value_row += (None,) * (width - len(value_row))
+                if len(formula_row) < width:
+                    formula_row += (None,) * (width - len(formula_row))
+                row_parts = []
+                row_has_content = False
+                for cell_value, formula_value in zip(value_row, formula_row):
+                    if cell_value is None:
+                        cell_value = formula_value
+                    cell_text = escape_cell(cell_value)
+                    row_parts.append(cell_text)
+                    if cell_text:
+                        row_has_content = True
+                if not row_has_content:
+                    content_parts.append("")
+                else:
+                    content_parts.append("\t".join(row_parts))
+        content_parts.append(sheet_separator)
+        return "\n".join(content_parts)
+    finally:
+        wb_values.close()
+        wb_formulas.close()
 
 
 # Suffixes (without dot) routed to dedicated binary extractors.
