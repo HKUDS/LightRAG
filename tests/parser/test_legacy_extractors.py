@@ -155,6 +155,43 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     assert '=A1&"bar"' not in text
 
 
+def _make_ragged_rows_xlsx_bytes() -> bytes:
+    """Rows of unequal width plus a formula view wider than its value view.
+
+    read_only mode may emit ragged rows for sparse tails; the extractor must
+    pad both views to the per-row width instead of dropping the trailing
+    cells (or misaligning the value/formula pairing).
+    """
+    bio = BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Ragged"
+    ws["A1"] = "header-a"
+    ws["C1"] = "header-c"          # B1 empty -> ragged row 1
+    ws["A2"] = "x"
+    ws["B2"] = "y"
+    ws["C2"] = "z"
+    ws["D2"] = "w"                 # wider than row 1
+    ws["A3"] = "short"             # narrow row again
+    wb.save(bio)
+    return bio.getvalue()
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_pads_ragged_rows():
+    file_bytes = _make_ragged_rows_xlsx_bytes()
+
+    text = extract_text(file_bytes, "xlsx")
+
+    lines = [l for l in text.splitlines() if l and not set(l) <= {"=", " "}]
+    # Row 1: A and C survive with the empty B padded, in column order.
+    assert any("header-a" in l and "header-c" in l for l in lines)
+    # Row 2: all four cells land on one line, order preserved.
+    assert any(l.strip().split("\t")[:4] == ["x", "y", "z", "w"] for l in lines)
+    # Row 3 stays intact and is not misaligned by the wider row 2.
+    assert any(l.strip().startswith("short") for l in lines)
+
+
 @pytest.mark.offline
 @pytest.mark.parametrize("group_depth", [0, 1, 2])
 def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
