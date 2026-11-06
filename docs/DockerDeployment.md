@@ -58,7 +58,7 @@ validation rules and provider-specific behavior.
 **RAG Configuration**
 
 - `MAX_ASYNC_LLM`: Base maximum LLM concurrency (deprecated alias: `MAX_ASYNC`). It also sets the per-document chunk-extraction task limit, while each entity/relation merge phase uses twice that task limit; see [File Processing Pipeline Specification](./FileProcessingPipeline.md) for the full pipeline and role-override rules.
-- `MAX_TOKENS`: Maximum token size
+- `MAX_TOTAL_TOKENS`: Maximum total token budget for query context (entities, relations, and text chunks).
 - `EMBEDDING_DIM`: Embedding dimensions
 
 ## 🐳 Docker Deployment
