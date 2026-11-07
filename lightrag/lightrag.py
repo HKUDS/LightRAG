@@ -2552,6 +2552,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     return raw.value if isinstance(raw, DocStatus) else str(raw or "")
 
                 resume = False
+                if _row_status_text(existing_row) == DocStatus.DELETING.value:
+                    raise RuntimeError(
+                        f"Document {doc_key} is partially deleted; re-run deletion first."
+                    )
                 if existing_journal is not None:
                     if existing_journal.get("operation_id") != operation_id:
                         raise RuntimeError(
@@ -5930,6 +5934,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         *,
         operation_id: str,
         chunk_count: int,
+        stamp_deleting: bool = False,
     ) -> None:
         """Persist (and flush) the purge journal's phase for ``doc_id``.
 
@@ -5965,7 +5970,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         }
         # missing_ok=False: the row vanishing between the read above and this
         # write is the same unjournaled-purge hazard, not a tolerable race.
-        await self.doc_status.update_doc_status_fields(doc_id, {"metadata": metadata})
+        fields = {"metadata": metadata}
+        if stamp_deleting:
+            fields["status"] = DocStatus.DELETING
+        await self.doc_status.update_doc_status_fields(doc_id, fields)
         await self._flush_storages([self.doc_status])
 
     async def _clear_kg_purge_journal(
@@ -6020,6 +6028,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         candidate_entities: list[str] | None = None,
         candidate_relations: list[tuple[str, str]] | None = None,
         patch_only: bool = False,
+        stamp_deleting: bool = False,
         rebuild_policy: Literal["best_effort", "rollback"] = "best_effort",
         pipeline_status: dict,
         pipeline_status_lock: Any,
@@ -6032,6 +6041,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         no-op; ownership is verified per candidate from the union of
         chunk-tracking entries and graph ``source_id`` lists before anything
         is deleted or rebuilt.
+
+        Only document deletion sets ``stamp_deleting``. Ingestion recovery
+        keeps its ingestion status; deletion stamps the status with the durable
+        journal before mutating contributions and never restores the old status.
 
         What this method does:
             1. Resolves the candidate entity/relation set: the explicit
@@ -6100,6 +6113,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         proof: _PurgeRecoveryProof | None = None
         if journaled:
             proof = await self._resolve_purge_recovery_proof(doc_id, chunk_ids)
+            if stamp_deleting and proof.journal_phase is not None:
+                await self._write_kg_purge_phase(
+                    doc_id,
+                    proof.journal_phase,
+                    operation_id=proof.operation_id,
+                    chunk_count=len(chunk_ids),
+                    stamp_deleting=True,
+                )
             if proof.phase_at_least(KG_PURGE_PHASE_COMPLETED):
                 logger.info(
                     f"[purge] {doc_id}: journal reports this purge already "
@@ -6149,6 +6170,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     KG_PURGE_PHASE_PREPARED,
                     operation_id=proof.operation_id,
                     chunk_count=len(chunk_ids),
+                    stamp_deleting=stamp_deleting,
                 )
         elif not chunk_ids:
             return KGRebuildReport()
@@ -6178,6 +6200,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     KG_PURGE_PHASE_DERIVED_COMMITTED,
                     operation_id=proof.operation_id,
                     chunk_count=len(chunk_ids),
+                    stamp_deleting=stamp_deleting,
                 )
         else:
             logger.info(
@@ -6981,6 +7004,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     await self._purge_kg_contributions(
                         doc_id,
                         chunk_ids,
+                        stamp_deleting=True,
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                     )
@@ -7162,6 +7186,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 await self._purge_kg_contributions(
                     doc_id,
                     chunk_ids,
+                    stamp_deleting=True,
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
                 )

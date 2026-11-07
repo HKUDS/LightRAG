@@ -148,6 +148,7 @@
         "select": "Chọn"
       },
       "filters": {
+          "deleting": "Đang xóa",
         "all": "Tất cả",
         "completed": "Hoàn tất",
         "parse": "Cú pháp",
@@ -156,6 +157,7 @@
         "failed": "Thất bại"
       },
       "status": {
+          "deleting": "Đang xóa",
         "all": "Tất cả",
         "completed": "Hoàn tất",
         "preprocessed": "Đã tiền xử lý",

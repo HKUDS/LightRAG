@@ -148,6 +148,7 @@
         "select": "اختيار"
       },
       "filters": {
+          "deleting": "جارٍ الحذف",
         "all": "الكل",
         "completed": "مكتمل",
         "parse": "تحليل ملف",
@@ -156,6 +157,7 @@
         "failed": "فشل"
       },
       "status": {
+          "deleting": "جارٍ الحذف",
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",

@@ -148,6 +148,7 @@
         "select": "Вибрати"
       },
       "filters": {
+          "deleting": "Видалення",
         "all": "Всі",
         "completed": "Завершено",
         "parse": "Розбір",
@@ -156,6 +157,7 @@
         "failed": "Невдало"
       },
       "status": {
+          "deleting": "Видалення",
         "all": "Всі",
         "completed": "Завершено",
         "preprocessed": "Попередньо оброблено",

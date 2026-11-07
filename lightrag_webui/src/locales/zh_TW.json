@@ -148,6 +148,7 @@
         "select": "選擇"
       },
       "filters": {
+          "deleting": "刪除中",
         "all": "全部",
         "completed": "已完成",
         "parse": "文件解析",
@@ -156,6 +157,7 @@
         "failed": "失敗"
       },
       "status": {
+          "deleting": "刪除中",
         "all": "全部",
         "completed": "已完成",
         "preprocessed": "預處理",

@@ -148,6 +148,7 @@
         "select": "選択"
       },
       "filters": {
+          "deleting": "削除中",
         "all": "すべて",
         "completed": "完了",
         "parse": "解析中",
@@ -156,6 +157,7 @@
         "failed": "失敗"
       },
       "status": {
+          "deleting": "削除中",
         "all": "すべて",
         "completed": "完了",
         "preprocessed": "前処理済み",

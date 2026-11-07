@@ -148,6 +148,7 @@
         "select": "Select"
       },
       "filters": {
+          "deleting": "Deleting",
         "all": "All",
         "completed": "Completed",
         "parse": "Parsing",
@@ -156,6 +157,7 @@
         "failed": "Failed"
       },
       "status": {
+          "deleting": "Deleting",
         "all": "All",
         "completed": "Completed",
         "preprocessed": "Preprocessed",

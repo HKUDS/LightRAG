@@ -3078,6 +3078,7 @@ class _ScanFileClass(str, Enum):
     SOURCE_CONFLICT = "source_conflict"
     PROCESSED = "processed"
     STALE_STUB = "stale_stub"
+    DELETING = "deleting"
     SOURCE_IDENTITY_UNKNOWN = "source_identity_unknown"
     RESUME_SAME_PHYSICAL_SOURCE = "resume_same_physical_source"
     ALIAS_DUPLICATE = "alias_duplicate"
@@ -3159,11 +3160,12 @@ async def classify_scan_file(
 
     1. ``SourceAbsent`` → CLAIMED_NEW
     2. ``SourceConflict`` → SOURCE_CONFLICT (never enqueue/delete/archive)
-    3. PROCESSED → PROCESSED (archive the input file)
-    4. FAILED with CONFIRMED-absent content → STALE_STUB (delete, retry as new)
-    5. no ``metadata.source_file`` → SOURCE_IDENTITY_UNKNOWN (keep, warn)
-    6. physical basename == ``source_file`` → RESUME_SAME_PHYSICAL_SOURCE
-    7. otherwise → ALIAS_DUPLICATE (archive the alias, keep the row)
+    3. DELETING → DELETING (keep the input file, warn to retry deletion)
+    4. PROCESSED → PROCESSED (archive the input file)
+    5. FAILED with CONFIRMED-absent content → STALE_STUB (delete, retry as new)
+    6. no ``metadata.source_file`` → SOURCE_IDENTITY_UNKNOWN (keep, warn)
+    7. physical basename == ``source_file`` → RESUME_SAME_PHYSICAL_SOURCE
+    8. otherwise → ALIAS_DUPLICATE (archive the alias, keep the row)
     """
     if canonical_source_key == UNKNOWN_FILE_SOURCE:
         # No usable canonical identity to resolve against (nothing to collide
@@ -3196,6 +3198,13 @@ async def classify_scan_file(
 
     doc_id = resolution.doc_id
     status_value = get_doc_status_value(resolution.doc)
+
+    if status_value == DocStatus.DELETING.value:
+        return _ScanFileDecision(
+            _ScanFileClass.DELETING,
+            doc_id=doc_id,
+            detail=f"Document {doc_id} is partially deleted; re-run deletion first. Keeping {file_path.name} untouched.",
+        )
 
     if status_value == DocStatus.PROCESSED.value:
         return _ScanFileDecision(_ScanFileClass.PROCESSED, doc_id=doc_id)
@@ -3975,6 +3984,12 @@ async def run_scanning_process(
                         _ScanFileClass.STALE_STUB.value,
                         discovered,
                     )
+                    continue
+
+                if decision.kind is _ScanFileClass.DELETING:
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.DELETING.value)
+                    reporter.sample("warning", decision.detail)
                     continue
 
                 if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:

@@ -148,6 +148,7 @@
         "select": "Auswählen"
       },
       "filters": {
+          "deleting": "Wird gelöscht",
         "all": "Alle",
         "completed": "Fertig",
         "parse": "Parsing",
@@ -156,6 +157,7 @@
         "failed": "Fehler"
       },
       "status": {
+          "deleting": "Wird gelöscht",
         "all": "Alle",
         "completed": "Fertig",
         "preprocessed": "Vorverarbeitet",

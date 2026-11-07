@@ -216,6 +216,24 @@ describe('DocumentManager post-action refreshes', () => {
     __setAxiosAdapterForTests(undefined)
   })
 
+  test('partially deleted documents have a badge, filter and retry selection', async () => {
+    backend.docs = [{ ...makeDoc(DOC_ID), status: 'deleting' }]
+    backend.recordFilters = true
+    const user = userEvent.setup()
+    renderWithProviders(<DocumentManager />)
+    await waitFor(() => {
+      expect(screen.queryAllByText('Deleting').length).toBe(1)
+    })
+    const row = rowFor(DOC_ID)
+    expect(row === null).toBe(false)
+    await user.click(within(row as HTMLElement).getByRole('checkbox'))
+    expect(screen.getByRole('button', { name: /^Delete$/ }).hasAttribute('disabled')).toBe(false)
+    await user.click(screen.getByRole('button', { name: /^Deleting/ }))
+    await waitFor(() => {
+      expect(backend.requestedFilters.includes('deleting')).toBe(true)
+    })
+  })
+
   test(
     'a deletion that commits before the first health check still drops the row',
     async () => {

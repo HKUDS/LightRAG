@@ -1461,6 +1461,11 @@ class _PipelineMixin:
                             f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
                             f"Status: {attempt.get('existing_status', 'unknown')}"
                         )
+                        if attempt.get("existing_status") == DocStatus.DELETING:
+                            error_msg = (
+                                "Document is partially deleted; re-run deletion first. "
+                                + error_msg
+                            )
                         summary = (
                             f"[DUPLICATE:{duplicate_kind}] Original document: "
                             f"{attempt.get('original_doc_id', doc_id)}"

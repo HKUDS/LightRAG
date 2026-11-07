@@ -148,6 +148,7 @@
         "select": "Pilih"
       },
       "filters": {
+          "deleting": "Menghapus",
         "all": "Semua",
         "completed": "Selesai",
         "parse": "Parsing",
@@ -156,6 +157,7 @@
         "failed": "Gagal"
       },
       "status": {
+          "deleting": "Menghapus",
         "all": "Semua",
         "completed": "Selesai",
         "preprocessed": "Pra-proses",
