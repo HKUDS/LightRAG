@@ -34,13 +34,6 @@ class DummyKV:
         return {"file_path": "doc.pdf"}
 
 
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    """``lightrag.utils.logger`` sets ``propagate = False``; restore
-    propagation locally so ``caplog`` can capture records."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
 def _warnings(caplog) -> list[str]:
     return [
         record.getMessage()
@@ -51,7 +44,7 @@ def _warnings(caplog) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_unparseable_json_payload_reports_the_failure_exactly_once(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ) -> None:
     with caplog.at_level(logging.DEBUG, logger="lightrag"):
         nodes, edges = await _rebuild_from_extraction_result(
@@ -75,7 +68,7 @@ async def test_unparseable_json_payload_reports_the_failure_exactly_once(
 
 @pytest.mark.asyncio
 async def test_delimiter_payload_missing_its_terminator_still_warns(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ) -> None:
     """The payload never looked like JSON, so no one else reported anything and
     the delimiter parser's warning is the only signal there is."""
@@ -93,7 +86,7 @@ async def test_delimiter_payload_missing_its_terminator_still_warns(
 
 @pytest.mark.asyncio
 async def test_json_payload_rescued_by_the_delimiter_parser_keeps_its_records(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ) -> None:
     """Demoting the warning must not disturb the rescue itself: an empty JSON
     object with delimiter records appended still yields those records."""
@@ -110,7 +103,7 @@ async def test_json_payload_rescued_by_the_delimiter_parser_keeps_its_records(
 
 @pytest.mark.asyncio
 async def test_wrong_schema_json_payload_never_reaches_the_fallback(
-    monkeypatch, caplog, _propagate_lightrag_logger
+    monkeypatch, caplog, lightrag_caplog
 ) -> None:
     """A payload that parses but carries none of the extraction fields extracts
     nothing, and ``_process_json_extraction_result`` reports nothing about it.
