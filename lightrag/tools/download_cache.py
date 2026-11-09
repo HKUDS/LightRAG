@@ -25,7 +25,7 @@ TIKTOKEN_ENCODING_NAMES = {"cl100k_base", "p50k_base", "r50k_base", "o200k_base"
 SPACY_MODEL_WHEELS = {
     "zh_core_web_sm": "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl",
     "en_core_web_sm": "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
-    "spacy-pkuseg": "spacy-pkuseg==1.0.1",
+    "spacy-pkuseg": "spacy-pkuseg==1.0.2",
 }
 
 
