@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import lightrag.llm
 from lightrag.utils import is_truncated_response
 
 
@@ -32,17 +33,14 @@ def _load_zhipu_module(monkeypatch, client_factory):
         is_installed=lambda name: True,
         install=lambda name: None,
     )
-    fake_openai = SimpleNamespace(
-        APIConnectionError=type("APIConnectionError", (Exception,), {}),
-        RateLimitError=type("RateLimitError", (Exception,), {}),
-        APITimeoutError=type("APITimeoutError", (Exception,), {}),
-    )
-    fake_zhipuai = SimpleNamespace(ZhipuAI=client_factory)
+    sdk = pytest.importorskip("zhipuai")
+    fake_zhipuai = SimpleNamespace(**{**vars(sdk), "ZhipuAI": client_factory})
 
     monkeypatch.setitem(sys.modules, "pipmaster", fake_pm)
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
     monkeypatch.setitem(sys.modules, "zhipuai", fake_zhipuai)
-    sys.modules.pop("lightrag.llm.zhipu", None)
+    monkeypatch.setattr(lightrag.llm, "zhipu", None, raising=False)
+    monkeypatch.setitem(sys.modules, "lightrag.llm.zhipu", None)
+    monkeypatch.delitem(sys.modules, "lightrag.llm.zhipu")
 
     return importlib.import_module("lightrag.llm.zhipu")
 
@@ -55,7 +53,7 @@ async def test_zhipu_embedding_sends_dimensions_when_embedding_dim_provided(
     captured_calls = []
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.embeddings = SimpleNamespace(create=self.create)
 
@@ -88,7 +86,7 @@ async def test_zhipu_embedding_omits_dimensions_when_embedding_dim_not_provided(
     captured_calls = []
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.embeddings = SimpleNamespace(create=self.create)
 
@@ -111,7 +109,7 @@ async def test_zhipu_complete_forwards_official_thinking(monkeypatch):
     captured_calls = []
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -137,7 +135,7 @@ async def test_zhipu_complete_records_token_usage(monkeypatch):
     usage = SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14)
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -168,7 +166,7 @@ async def test_zhipu_complete_records_token_usage(monkeypatch):
 @pytest.mark.asyncio
 async def test_zhipu_length_finish_reason_marks_result_truncated(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -189,7 +187,7 @@ async def test_zhipu_length_finish_reason_marks_result_truncated(monkeypatch):
 @pytest.mark.asyncio
 async def test_zhipu_stop_finish_reason_keeps_plain_response(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -217,7 +215,7 @@ async def test_zhipu_complete_token_tracker_never_reaches_the_raw_client_call(
     captured_calls = []
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -242,7 +240,7 @@ async def test_zhipu_complete_token_tracker_never_reaches_the_raw_client_call(
 @pytest.mark.asyncio
 async def test_zhipu_complete_filters_reasoning_when_cot_disabled(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -267,7 +265,7 @@ async def test_zhipu_complete_filters_reasoning_when_cot_disabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_zhipu_complete_includes_reasoning_when_cot_enabled(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -292,7 +290,7 @@ async def test_zhipu_complete_includes_reasoning_when_cot_enabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_zhipu_keyword_extraction_ignores_reasoning_content(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -321,7 +319,7 @@ async def test_zhipu_if_cache_entity_extraction_maps_to_json_object(monkeypatch)
     captured_calls = []
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -357,7 +355,7 @@ async def test_zhipu_complete_runs_client_call_off_the_event_loop_thread(monkeyp
     main_thread_id = threading.get_ident()
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -382,7 +380,7 @@ async def test_zhipu_embedding_runs_client_call_off_the_event_loop_thread(monkey
     main_thread_id = threading.get_ident()
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.embeddings = SimpleNamespace(create=self.create)
 
@@ -410,7 +408,7 @@ async def test_zhipu_complete_logs_and_repropagates_cancellation(monkeypatch):
     warnings_logged = []
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -446,7 +444,7 @@ async def test_zhipu_complete_logs_and_repropagates_cancellation(monkeypatch):
 @pytest.mark.asyncio
 async def test_zhipu_if_cache_structured_output_disables_cot(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, max_retries=0):
             self.api_key = api_key
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
