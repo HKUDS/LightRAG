@@ -302,6 +302,50 @@ class QueryParam:
 > The default value of `top_k` can be changed by the environment variable `TOP_K`.
 
 
+## Cache-friendly query layout
+
+Set `QueryParam(cache_friendly_prompt=True)` to keep changing retrieval data
+after the conversation history. The default remains `False`.
+
+```python
+answer = await rag.aquery(
+    "How does this relate to the previous answer?",
+    param=QueryParam(
+        mode="mix",
+        conversation_history=history,
+        cache_friendly_prompt=True,
+    ),
+)
+```
+
+The REST `/query`, `/query/stream`, and `/query/data` routes accept the same
+`cache_friendly_prompt` boolean. It applies to graph and naive RAG modes, not
+`bypass`. No server or WebUI default changes.
+
+- System instructions and `user_prompt` stay in the system message. Its context
+  placeholder points to reference data in the final user message.
+- History stays in its original messages, followed by the current retrieval
+  data (including source references) and the current query. History is not
+  modified, and retrieval still uses the original query.
+- Custom system templates must include `{context_data}` for graph modes or
+  `{content_data}` for naive mode. An opt-in request without that placeholder
+  is rejected with a context-placeholder error rather than silently changing
+  the template's contract.
+- `only_need_prompt=True` returns a JSON message list, including history, in
+  this mode. With the option off, its existing text format is unchanged.
+- Token budgeting includes the new context pointer and user-message delimiters.
+  This does not change the existing treatment of conversation-history tokens;
+  callers must still keep their full conversation within the model's window.
+- Answer-cache entries are separate for the two layouts. Existing default-layout
+  entries remain valid. History-bearing requests still bypass the answer cache.
+
+This setting makes more of a stable conversation prefix eligible for provider
+prompt caching. It does not enable caching at the provider, promise cache hits,
+or sanitize retrieved content. A custom LLM wrapper must preserve the system,
+history, and user message order. Provider `messages` overrides can replace it.
+Measure the final SDK request and raw provider cache-usage fields; LightRAG's
+answer-cache hits and total input-token counts do not prove prefix-cache reuse.
+
 ## LLM and Embedding Injection
 
 LightRAG requires LLM and Embedding models for document indexing and querying. During initialization, inject the relevant model functions into LightRAG.

@@ -10,6 +10,8 @@ from lightrag.llm.openai import (
     openai_complete_if_cache,
 )
 from lightrag.utils import is_truncated_response
+from lightrag.base import QueryParam
+from lightrag.operate import format_query_prompts
 
 
 def _make_completion(
@@ -81,6 +83,37 @@ def _make_stream_chunk(content=None, reasoning_content=None):
             )
         ]
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_friendly", [False, True])
+async def test_final_sdk_messages_keep_retrieval_after_history_when_opted_in(
+    cache_friendly,
+):
+    history = [
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+    client = _make_fake_client(_make_completion("Answer with citation [1]."))
+    param = QueryParam(cache_friendly_prompt=cache_friendly)
+    system, query = format_query_prompts(
+        "Current question",
+        param,
+        "Use only the sources.\n{context_data}",
+        context_data="[1] Retrieved source",
+    )
+    with patch("lightrag.llm.openai.create_openai_async_client", return_value=client):
+        await openai_complete_if_cache(
+            "test-model", query, system_prompt=system, history_messages=history
+        )
+    messages = client.chat.completions.create.await_args.kwargs["messages"]
+    assert messages[1:-1] == history
+    assert messages[0]["role"] == "system"
+    assert messages[-1]["role"] == "user"
+    assert ("[1] Retrieved source" in messages[-1]["content"]) is cache_friendly
+    assert ("[1] Retrieved source" in messages[0]["content"]) is not cache_friendly
+    assert messages[-1]["content"].endswith("Current question")
 
 
 @pytest.mark.offline
