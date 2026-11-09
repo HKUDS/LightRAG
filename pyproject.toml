@@ -143,6 +143,15 @@ api = [
     # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, which the
     # CI Python 3.14 leg's `uv sync --locked` catches at lock-update time.
     "spacy>=3.8,<3.9",
+    # zh_core_web_sm's tokenizer backend (the model wheel requires it but does
+    # not bundle it). Declared here so uv.lock and `uv sync` own it instead of
+    # leaving it unmanaged next to the model wheels. Exact pin, like the
+    # models: it does the Chinese word segmentation smart_heading's
+    # determinism promise rests on, and the pip-only offline path
+    # (requirements-offline-smart-heading.txt) does not go through uv.lock.
+    # SPACY_MODEL_WHEELS in lightrag/tools/download_cache.py carries the same
+    # pin; tests/test_requirements_sync.py keeps all copies equal.
+    "spacy-pkuseg==1.0.2",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
