@@ -20,8 +20,14 @@ Rules pinned:
    ``[offline-storage]``.
 
 Packages pyproject.toml does not declare (the direct-URL spaCy model wheels and
-``spacy-pkuseg`` in ``requirements-offline-smart-heading.txt``) are pinned only
-in their requirements file and are not checked here.
+``spacy-pkuseg`` in ``requirements-offline-smart-heading.txt``) are not checked
+against it. They have a second copy instead, ``SPACY_MODEL_WHEELS`` in
+``lightrag/tools/download_cache.py`` (what ``lightrag-download-cache --spacy*``
+and the Docker image install), and rule 4 pins the two together:
+
+4. Every ``SPACY_MODEL_WHEELS`` entry equals the requirement for that package in
+   ``requirements-offline-smart-heading.txt``, and vice versa for the packages
+   pyproject.toml does not declare.
 """
 
 from __future__ import annotations
@@ -136,4 +142,29 @@ def test_layered_file_lists_exactly_its_extra(filename: str, extra: str):
         f"{filename} must list exactly pyproject.toml's [{extra}] extra; "
         f"missing: {sorted(in_extra - in_file)}, "
         f"extra: {sorted(in_file - in_extra)}"
+    )
+
+
+def test_smart_heading_pins_match_download_cache():
+    from lightrag.tools.download_cache import SPACY_MODEL_WHEELS
+
+    declared = _pyproject_requirements()
+    in_file = {
+        canonicalize_name(r.name): r
+        for r in _file_requirements(
+            _REPO_ROOT / "requirements-offline-smart-heading.txt"
+        )
+        if canonicalize_name(r.name) not in declared
+    }
+    in_tool = {}
+    for name, pin in SPACY_MODEL_WHEELS.items():
+        # Model entries are bare wheel URLs; the PyPI entries are requirements.
+        req = Requirement(pin if "==" in pin else f"{name} @ {pin}")
+        in_tool[canonicalize_name(req.name)] = req
+    assert {n: str(r) for n, r in in_tool.items()} == {
+        n: str(r) for n, r in in_file.items()
+    }, (
+        "SPACY_MODEL_WHEELS in lightrag/tools/download_cache.py and "
+        "requirements-offline-smart-heading.txt pin different versions; "
+        "update both together"
     )
