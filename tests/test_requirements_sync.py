@@ -19,15 +19,24 @@ Rules pinned:
    is ``[offline-llm]`` and ``requirements-offline-storage.txt`` is
    ``[offline-storage]``.
 
-Packages pyproject.toml does not declare (the direct-URL spaCy model wheels and
-``spacy-pkuseg`` in ``requirements-offline-smart-heading.txt``) are not checked
-against it. They have a second copy instead, ``SPACY_MODEL_WHEELS`` in
+The direct-URL spaCy model wheels in ``requirements-offline-smart-heading.txt``
+are not declared in pyproject.toml and so are not checked against it. They have
+a second copy instead, ``SPACY_MODEL_WHEELS`` in
 ``lightrag/tools/download_cache.py`` (what ``lightrag-download-cache --spacy*``
 and the Docker image install), and rule 4 pins the two together:
 
 4. Every ``SPACY_MODEL_WHEELS`` entry equals the requirement for that package in
    ``requirements-offline-smart-heading.txt``, and vice versa for the packages
    pyproject.toml does not declare.
+
+``spacy-pkuseg`` is in ``SPACY_MODEL_WHEELS`` (shipped with the model wheels for
+offline installs) but is also declared in pyproject.toml's ``[api]`` extra, so
+uv.lock owns it. Rule 1 already ties its requirements-file line to pyproject.toml;
+rule 5 closes the remaining copy:
+
+5. Every ``SPACY_MODEL_WHEELS`` entry for a package pyproject.toml declares
+   carries exactly pyproject.toml's specifier, and that specifier is an exact
+   ``==`` pin (the determinism promise the models' pins make).
 """
 
 from __future__ import annotations
@@ -146,8 +155,6 @@ def test_layered_file_lists_exactly_its_extra(filename: str, extra: str):
 
 
 def test_smart_heading_pins_match_download_cache():
-    from lightrag.tools.download_cache import SPACY_MODEL_WHEELS
-
     declared = _pyproject_requirements()
     in_file = {
         canonicalize_name(r.name): r
@@ -156,15 +163,50 @@ def test_smart_heading_pins_match_download_cache():
         )
         if canonicalize_name(r.name) not in declared
     }
-    in_tool = {}
-    for name, pin in SPACY_MODEL_WHEELS.items():
-        # Model entries are bare wheel URLs; the PyPI entries are requirements.
-        req = Requirement(pin if "==" in pin else f"{name} @ {pin}")
-        in_tool[canonicalize_name(req.name)] = req
+    in_tool = {
+        name: req
+        for name, req in _download_cache_requirements().items()
+        if name not in declared
+    }
     assert {n: str(r) for n, r in in_tool.items()} == {
         n: str(r) for n, r in in_file.items()
     }, (
         "SPACY_MODEL_WHEELS in lightrag/tools/download_cache.py and "
         "requirements-offline-smart-heading.txt pin different versions; "
         "update both together"
+    )
+
+
+def _download_cache_requirements() -> dict[str, Requirement]:
+    from lightrag.tools.download_cache import SPACY_MODEL_WHEELS
+
+    reqs = {}
+    for name, pin in SPACY_MODEL_WHEELS.items():
+        # Model entries are bare wheel URLs; the PyPI entries are requirements.
+        req = Requirement(pin if "==" in pin else f"{name} @ {pin}")
+        reqs[canonicalize_name(req.name)] = req
+    return reqs
+
+
+def test_download_cache_pins_match_pyproject():
+    declared = _pyproject_requirements()
+    in_tool = {
+        name: req
+        for name, req in _download_cache_requirements().items()
+        if name in declared
+    }
+    # spacy-pkuseg is the one PyPI package SPACY_MODEL_WHEELS ships; if this
+    # set goes empty the rule silently checks nothing.
+    assert canonicalize_name("spacy-pkuseg") in in_tool, sorted(declared)
+    drift = []
+    for name, req in in_tool.items():
+        expected = declared[name][0][1]
+        specs = list(expected.specifier)
+        if len(specs) != 1 or specs[0].operator != "==":
+            drift.append(f"pyproject.toml must pin {name} exactly, got {expected}")
+        elif _constraint(req) != _constraint(expected):
+            drift.append(f"{req}  (pyproject.toml {declared[name][0][0]}: {expected})")
+    assert not drift, (
+        "SPACY_MODEL_WHEELS in lightrag/tools/download_cache.py is out of sync "
+        "with pyproject.toml:\n  " + "\n  ".join(drift)
     )
