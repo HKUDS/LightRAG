@@ -54,6 +54,7 @@ from lightrag.utils import logger as lightrag_logger
 # importable. A plain import here therefore adds no new dependency on this module --
 # it cannot fail unless the import above already did.
 import asyncpg
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -183,20 +184,12 @@ def _allow_unsupported(monkeypatch) -> None:
 
 @contextlib.contextmanager
 def _capture_gate_logs(caplog, level=logging.DEBUG):
-    """Capture records emitted on the ``lightrag`` logger.
-
-    ``lightrag/utils.py`` sets ``propagate = False`` on that logger, so caplog --
-    which attaches to root -- never sees its records. Flip propagation for the
-    duration of the block, then restore it.
-    """
+    """Capture records emitted on the ``lightrag`` logger (see
+    ``tests/_log_capture.py``)."""
     caplog.clear()
-    old_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(level, logger=lightrag_logger.name):
             yield caplog
-    finally:
-        lightrag_logger.propagate = old_propagate
 
 
 class _FakeAcquire:

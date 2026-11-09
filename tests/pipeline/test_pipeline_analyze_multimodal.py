@@ -41,11 +41,6 @@ from lightrag.utils import (
 )
 
 
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
 pytestmark = pytest.mark.offline
 
 
@@ -173,7 +168,7 @@ def _write_sidecar_fixtures(tmp_path: Path) -> tuple[str, dict, Path]:
 
 @pytest.mark.asyncio
 async def test_vlm_process_enable_false_hard_fails_for_images(
-    tmp_path, caplog, _propagate_lightrag_logger
+    tmp_path, caplog, lightrag_caplog
 ):
     """With i opted-in but VLM disabled, analyze_multimodal must hard-fail
     the document rather than silently skipping."""
@@ -875,7 +870,7 @@ def _write_equation_fixture(tmp_path: Path, latex: str) -> tuple[str, dict, Path
 
 @pytest.mark.asyncio
 async def test_equation_omitted_field_falls_back_to_sidecar_latex(
-    tmp_path, caplog, _propagate_lightrag_logger
+    tmp_path, caplog, lightrag_caplog
 ):
     """Regression #3502: when the model omits the `equation` field entirely,
     the analysis must fall back to the sidecar's authoritative LaTeX instead
@@ -936,9 +931,7 @@ async def test_equation_omitted_field_falls_back_to_sidecar_latex(
 
 
 @pytest.mark.asyncio
-async def test_equation_equ_alias_accepted(
-    tmp_path, caplog, _propagate_lightrag_logger
-):
+async def test_equation_equ_alias_accepted(tmp_path, caplog, lightrag_caplog):
     """Regression #3502: when the model returns the equation under a
     semantically equivalent key such as `equ`, it must be accepted (and
     logged — an accepted alias shadows the sidecar's authoritative LaTeX)."""
@@ -1268,7 +1261,7 @@ async def test_oversized_table_content_truncated_to_extract_budget(tmp_path):
 
 @pytest.mark.asyncio
 async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
-    tmp_path, caplog, _propagate_lightrag_logger, monkeypatch
+    tmp_path, caplog, lightrag_caplog, monkeypatch
 ):
     """``MAX_EXTRACT_INPUT_TOKENS`` env var overrides the compile-time
     default, and any truncation emits a WARNING-level log line so
@@ -1506,7 +1499,7 @@ async def test_content_budget_below_floor_fails_item_without_llm_call(
         await rag.finalize_storages()
 
 
-def test_structurally_starved_config_warns_once(caplog, _propagate_lightrag_logger):
+def test_structurally_starved_config_warns_once(caplog, lightrag_caplog):
     """``_warn_content_budget_structurally_starved`` emits a single WARNING
     per unique config, and stays silent for a comfortable config."""
     from lightrag.pipeline import _warn_content_budget_structurally_starved
@@ -1548,7 +1541,7 @@ def test_structurally_starved_config_warns_once(caplog, _propagate_lightrag_logg
 
 @pytest.mark.asyncio
 async def test_cap_disabled_skips_starvation_warning_and_analyzes(
-    tmp_path, caplog, _propagate_lightrag_logger, monkeypatch
+    tmp_path, caplog, lightrag_caplog, monkeypatch
 ):
     """``MAX_EXTRACT_INPUT_TOKENS=0`` opts out of the input cap: enforcement is
     bypassed, so the structural-starvation warning must NOT fire (it would be

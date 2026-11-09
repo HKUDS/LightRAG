@@ -13,22 +13,15 @@ from contextlib import contextmanager
 
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import logger as lightrag_logger, merge_source_ids
+from tests._log_capture import capture_lightrag_logs
 
 
 @contextmanager
 def _captured_logs(caplog, level):
-    """Capture lightrag logger records.
-
-    The lightrag logger sets ``propagate = False``, so caplog cannot see it
-    unless propagation is re-enabled for the duration of the call.
-    """
-    original_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    """Capture lightrag logger records (see ``tests/_log_capture.py``)."""
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(level, logger=lightrag_logger.name):
             yield
-    finally:
-        lightrag_logger.propagate = original_propagate
 
 
 def test_merge_source_ids_splits_graph_field_sep():

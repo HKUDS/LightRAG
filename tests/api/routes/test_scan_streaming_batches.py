@@ -24,6 +24,7 @@ sys.argv = _original_argv
 
 from lightrag.base import SourceAbsent  # noqa: E402
 from lightrag.constants import PARSED_DIR_NAME  # noqa: E402
+from tests._log_capture import capture_lightrag_logs  # noqa: E402
 
 DocumentManager = _document_routes.DocumentManager
 run_scanning_process = _document_routes.run_scanning_process
@@ -254,13 +255,9 @@ def test_an_unusable_spool_directory_fails_the_scan_closed(
         )
 
         lightrag_logger = importlib.import_module("lightrag.utils").logger
-        previous = lightrag_logger.propagate
-        lightrag_logger.propagate = True
-        try:
+        with capture_lightrag_logs(caplog):
             with caplog.at_level("ERROR", logger=lightrag_logger.name):
                 await run_scanning_process(rag, doc_manager, "track-bad-spool")
-        finally:
-            lightrag_logger.propagate = previous
 
         assert batches == []
         assert candidate.exists()
