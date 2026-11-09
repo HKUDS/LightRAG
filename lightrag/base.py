@@ -188,6 +188,41 @@ class QueryParam:
     instructions. Set this to True to take full control of the final text.
     """
 
+    # Appended after every pre-existing field for the same positional reason.
+    # These are opt-in: with the defaults, a query behaves exactly as before.
+    evidence_policy: str | None = None
+    """Name of the authority/effective-time evidence policy, or ``None``.
+
+    ``None`` (the default) leaves retrieval untouched. ``"authority-v1"`` asks
+    the answer to be decided by which clause version is in force at ``as_of``,
+    instead of by which chunk ranked highest. The policy covers ``naive`` and
+    ``mix``; any other mode is refused explicitly rather than answered by the
+    old semantics. Requires ``LightRAG(evidence_catalog=...)``.
+
+    Answers are not streamed under this policy, and a request that cannot be
+    resolved returns its status (for example ``unresolved_conflict``) instead
+    of falling back to ordinary retrieval.
+    """
+
+    as_of: str | None = None
+    """The date the answer must be true at, as a full ``YYYY-MM-DD`` string.
+
+    Only valid together with ``evidence_policy``. ``None`` means "today", frozen
+    once at request start in ``LightRAG.evidence_policy_timezone``. A coarse
+    value such as ``"2026"`` is refused: it is not silently padded to January
+    1st. This is a legal effective date, not a document creation timestamp.
+    """
+
+    scope_keys: list[dict[str, str]] = field(default_factory=list)
+    """Explicit clause identities to answer about.
+
+    Each entry carries exactly ``jurisdiction``, ``instrument_id``,
+    ``article_id`` and ``subject_scope``. A named scope is resolved even when no
+    retrieved chunk mentions it, which is what makes an amendment that the
+    retriever never returned still reachable. Only valid together with
+    ``evidence_policy``; a request cannot name an authority class.
+    """
+
 
 @dataclass
 class StorageNameSpace(ABC):

@@ -439,6 +439,30 @@ Consider the conversation history if provided to maintain conversational flow an
 {content_data}
 """
 
+PROMPTS["evidence_policy_instructions"] = """---How to read this evidence---
+Each group below is one clause, decided at the requested date. Read the labels
+literally:
+
+- `applies_at_as_of` is the version in force at that date. It is the answer.
+- `superseded_for_current_answer` is the wording that version replaced. It is
+  history: it explains what changed, and it must never be presented as the
+  current rule, even when it states a different number.
+- `selected_version` names the version that governs the group. A group may also
+  carry earlier versions it depends on; those exist to interpret the selected
+  one, not to compete with it.
+- A version identifier identifies a *source text*, not a retrieval score. Do
+  not prefer a statement because it appears in more documents, in a later
+  document, or in a longer passage.
+
+If the groups disagree about the same clause and neither is marked as replaced,
+the request is a conflict: say so and present both, rather than choosing one.
+If a group says the applicable version is unknown, say that the effective rule
+cannot be determined; do not answer from a version whose date is unknown.
+
+Cite the citation key of the span that supports each claim, in parentheses,
+exactly as written. A claim with no citation key is not supported by this
+context."""
+
 PROMPTS["kg_query_context"] = """
 Knowledge Graph Data (Entity):
 
