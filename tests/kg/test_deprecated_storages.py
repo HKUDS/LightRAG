@@ -59,11 +59,17 @@ def _deprecation_records(caplog, monkeypatch, tmp_path, **storages) -> list[str]
     from lightrag import LightRAG
 
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    # lightrag's logger does not propagate, so caplog's root handler never
+    # sees its records. Attach the handler to the logger itself, and only if
+    # it is not there yet: pytest >= 9.2 already attaches it to every
+    # non-propagating logger, and flipping `propagate` on top of that delivers
+    # each record twice (once here, once via root), doubling the count below.
     logger = logging.getLogger("lightrag")
-    previous_propagate = logger.propagate
-    logger.propagate = True  # lightrag's logger does not propagate by default
-    try:
-        with caplog.at_level(logging.WARNING, logger="lightrag"):
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        attached = caplog.handler not in logger.handlers
+        if attached:
+            logger.addHandler(caplog.handler)
+        try:
             # __post_init__ only builds the storage objects; nothing connects
             # to Redis until initialize_storages().
             LightRAG(
@@ -72,8 +78,9 @@ def _deprecation_records(caplog, monkeypatch, tmp_path, **storages) -> list[str]
                 embedding_func=_EMBEDDING,
                 **storages,
             )
-    finally:
-        logger.propagate = previous_propagate
+        finally:
+            if attached:
+                logger.removeHandler(caplog.handler)
     return [
         record.getMessage()
         for record in caplog.records
