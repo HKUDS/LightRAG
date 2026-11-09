@@ -1,4 +1,5 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
+import json
 import os
 import logging
 import warnings
@@ -1032,6 +1033,28 @@ async def nvidia_openai_complete(
     return result
 
 
+def _openai_llm_extra_body() -> dict[str, Any] | None:
+    """Return ``OPENAI_LLM_EXTRA_BODY`` for calls that do not receive LLM binding options.
+
+    Chat completions already get this object through ``OpenAILLMOptions.extra_body``.
+    ``openai_embed`` builds its own request and would otherwise drop it. A blank
+    value leaves the request unchanged.
+
+    Raises:
+        ValueError: The variable is set but is not a JSON object.
+    """
+    raw = os.environ.get("OPENAI_LLM_EXTRA_BODY", "").strip()
+    if not raw:
+        return None
+    try:
+        extra_body = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("OPENAI_LLM_EXTRA_BODY must be a JSON object") from error
+    if not isinstance(extra_body, dict):
+        raise ValueError("OPENAI_LLM_EXTRA_BODY must be a JSON object")
+    return extra_body
+
+
 @wrap_embedding_func_with_attrs(
     embedding_dim=1536,
     max_token_size=8192,
@@ -1071,6 +1094,11 @@ async def openai_embed(
 
     This function supports both standard OpenAI and Azure OpenAI services. It automatically
     truncates texts that exceed the model's token limit to prevent API errors.
+
+    When ``OPENAI_LLM_EXTRA_BODY`` is a JSON object, that object is sent as
+    ``extra_body`` on the embedding request. Chat completions already receive the
+    same value through OpenAI LLM binding options. A blank value leaves the
+    embedding request unchanged.
 
     Args:
         texts: List of texts to embed.
@@ -1113,6 +1141,7 @@ async def openai_embed(
         A numpy array of embeddings, one per input text.
 
     Raises:
+        ValueError: If ``OPENAI_LLM_EXTRA_BODY`` is set but is not a JSON object.
         APIConnectionError: If there is a connection error with the OpenAI API.
         RateLimitError: If the OpenAI API rate limit is exceeded. Retried
             with backoff, except for a permanent spend stop (a LiteLLM Proxy
@@ -1191,6 +1220,12 @@ async def openai_embed(
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:
             api_params["dimensions"] = embedding_dim
+
+        # Chat completions already receive this body through OpenAI LLM
+        # binding options. The embedding request does not.
+        extra_body = _openai_llm_extra_body()
+        if extra_body is not None:
+            api_params["extra_body"] = extra_body
 
         # Make API call
         response = await openai_async_client.embeddings.create(**api_params)
