@@ -24,6 +24,7 @@ from lightrag.file_atomic import (
     reap_orphan_tmp_files,
     tmp_path_for,
 )
+from tests._log_capture import capture_lightrag_logs
 
 
 @pytest.mark.offline
@@ -313,10 +314,7 @@ def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog
     src = str(tmp_path / "src.txt")
     dst = str(tmp_path / "dst.txt")
 
-    logger = logging.getLogger("lightrag")
-    previous_propagate = logger.propagate
-    logger.propagate = True  # lightrag's logger does not propagate by default
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.DEBUG, logger="lightrag"):
             with (
                 patch("lightrag.file_atomic.sys.platform", "linux"),
@@ -327,7 +325,5 @@ def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog
             ):
                 with pytest.raises(PermissionError, match="Permission denied"):
                     _replace_file(src, dst)
-    finally:
-        logger.propagate = previous_propagate
 
     assert caplog.records == []
