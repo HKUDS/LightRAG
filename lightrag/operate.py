@@ -4781,6 +4781,7 @@ async def kg_query(
         # The token budget must be computed against the template this function
         # will actually render below, not the default one.
         system_prompt=system_prompt,
+        user_prompt_prefix=global_config.get("user_prompt_prefix", ""),
     )
 
     if context_result is None:
@@ -5502,6 +5503,8 @@ async def _apply_token_truncation(
     search_result: dict[str, Any],
     query_param: QueryParam,
     global_config: dict[str, str],
+    query: str | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
@@ -5648,6 +5651,21 @@ async def _apply_token_truncation(
             tokenizer=tokenizer,
         )
 
+    budget_exhausted = False
+    if query is not None:
+        fitted = await run_in_tokenizer_executor(
+            _fit_kg_context_to_total_budget,
+            entities_context,
+            relations_context,
+            [],
+            query,
+            query_param,
+            global_config,
+            system_prompt,
+        )
+        budget_exhausted = fitted is None
+        entities_context, relations_context = fitted[:2] if fitted else ([], [])
+
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
@@ -5713,7 +5731,119 @@ async def _apply_token_truncation(
         "filtered_relations": filtered_relations,
         "entity_id_to_original": filtered_entity_id_to_original,
         "relation_id_to_original": filtered_relation_id_to_original,
+        "token_budget_exceeded": budget_exhausted,
     }
+
+
+def _fit_kg_context_to_total_budget(
+    entities: list[dict],
+    relations: list[dict],
+    chunks: list[dict],
+    query: str,
+    query_param: QueryParam,
+    global_config: dict,
+    system_prompt: str | None,
+) -> tuple[list[dict], list[dict], list[dict], str, list[dict]] | None:
+    """Keep whole ranked records under the rendered system-prompt/query budget.
+
+    Run in the tokenizer executor. Graph records are interleaved by rank, keeping
+    each source's prefix order; chunks use the remaining capacity. Return None
+    when the empty context and required prompt alone cannot fit. Conversation
+    history and provider message framing are outside this query-context budget.
+    """
+    tokenizer = global_config["tokenizer"]
+    limit = query_param.max_total_tokens
+    template = system_prompt or PROMPTS["rag_response"]
+    user_prompt = resolve_user_prompt(
+        query_param.user_prompt,
+        global_config.get("user_prompt_prefix", ""),
+        query_param.disable_user_prompt_prefix,
+    ).slot
+    query_tokens = len(tokenizer.encode(query))
+
+    def render(entity_records, relation_records, chunk_records):
+        references, rendered_chunks = generate_reference_list_from_chunks(chunk_records)
+        context = PROMPTS["kg_query_context"].format(
+            entities_str="\n".join(
+                json.dumps(record, ensure_ascii=False) for record in entity_records
+            ),
+            relations_str="\n".join(
+                json.dumps(record, ensure_ascii=False) for record in relation_records
+            ),
+            text_chunks_str=render_chunks_context_text(rendered_chunks),
+            reference_list_str="\n".join(
+                f"[{ref['reference_id']}] {ref['file_path']}" for ref in references
+            ),
+        )
+        prompt = template.format(
+            context_data=context,
+            response_type=query_param.response_type or "Multiple Paragraphs",
+            user_prompt=user_prompt,
+        )
+        fits = len(tokenizer.encode(prompt)) + query_tokens <= limit
+        return fits, (
+            entity_records,
+            relation_records,
+            rendered_chunks,
+            context,
+            references,
+        )
+
+    if not render([], [], [])[0]:
+        logger.warning("max_total_tokens cannot fit the required query prompt")
+        return None
+
+    ranked = [
+        (kind, records[index])
+        for index in range(max(len(entities), len(relations)))
+        for kind, records in (("entity", entities), ("relation", relations))
+        if index < len(records)
+    ]
+
+    def graph_prefix(count):
+        records = ranked[:count]
+        return (
+            [record for kind, record in records if kind == "entity"],
+            [record for kind, record in records if kind == "relation"],
+        )
+
+    # Search prefixes, then verify the exact survivor rendering. Tokenization
+    # need not be strictly monotonic at record or template boundaries.
+    def fit_prefix(count, candidate):
+        low, high = 0, count
+        while low < high:
+            mid = (low + high + 1) // 2
+            if candidate(mid)[0]:
+                low = mid
+            else:
+                high = mid - 1
+        fits, result = candidate(low)
+        while not fits and low:
+            low -= 1
+            fits, result = candidate(low)
+        return result
+
+    if not render(entities, relations, [])[0]:
+        all_entities, all_relations = entities, relations
+        entities, relations, _, _, _ = fit_prefix(
+            len(ranked), lambda count: render(*graph_prefix(count), [])
+        )
+        # An oversized row in one source must not block the other source's
+        # smaller records. Extend each remaining source prefix independently.
+        entities, relations, _, _, _ = fit_prefix(
+            len(all_entities),
+            lambda count: render(all_entities[:count], relations, []),
+        )
+        entities, relations, _, _, _ = fit_prefix(
+            len(all_relations),
+            lambda count: render(entities, all_relations[:count], []),
+        )
+    fits, result = render(entities, relations, chunks)
+    if fits:
+        return result
+    return fit_prefix(
+        len(chunks), lambda count: render(entities, relations, chunks[:count])
+    )
 
 
 async def _attach_content_headings(
@@ -5922,11 +6052,38 @@ async def _build_context_str(
         or PROMPTS["rag_response"]
     )
 
+    def budget_failure():
+        raw_data = convert_to_user_format([], [], [], [], query_param.mode)
+        raw_data["status"] = "failure"
+        raw_data["message"] = "max_total_tokens cannot fit the query context."
+        raw_data.setdefault("metadata", {})["token_budget_exceeded"] = True
+        return "", raw_data
+
+    had_graph_context = bool(entities_context or relations_context)
+    fitted = await run_in_tokenizer_executor(
+        _fit_kg_context_to_total_budget,
+        entities_context,
+        relations_context,
+        [],
+        query,
+        query_param,
+        global_config,
+        system_prompt,
+    )
+    if fitted is None:
+        return budget_failure()
+    entities_context, relations_context = fitted[:2]
+    if (
+        had_graph_context
+        and not entities_context
+        and not relations_context
+        and not merged_chunks
+    ):
+        return budget_failure()
+
     kg_context_template = PROMPTS["kg_query_context"]
-    # `.text`, not `.slot`: this only sizes the token budget, and `.text`'s empty
-    # fallback matches what this line used before the prefix existed, so an
-    # unconfigured prefix changes no estimate. A configured one IS counted here,
-    # which is the point -- otherwise a long prefix would overfill the context.
+    # This preliminary estimate retains the legacy empty-prefix behavior;
+    # the final rendered-budget check below accounts for the actual slot.
     effective_user_prompt = resolve_user_prompt(
         query_param.user_prompt,
         global_config.get("user_prompt_prefix", ""),
@@ -5974,6 +6131,13 @@ async def _build_context_str(
     available_chunk_tokens = max_total_tokens - (
         sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
     )
+    if (
+        not entities_context
+        and not relations_context
+        and merged_chunks
+        and available_chunk_tokens <= 0
+    ):
+        return budget_failure()
 
     logger.debug(
         f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
@@ -5990,30 +6154,38 @@ async def _build_context_str(
         progress_callback=progress_callback,
     )
 
-    # Generate reference list from truncated chunks using the new common function
-    reference_list, truncated_chunks = generate_reference_list_from_chunks(
+    # The reference paths and repeated template slots are part of the total
+    # budget too. Re-render after dropping chunks so their IDs stay consistent.
+    fitted = await run_in_tokenizer_executor(
+        _fit_kg_context_to_total_budget,
+        entities_context,
+        relations_context,
+        truncated_chunks,
+        query,
+        query_param,
+        global_config,
+        system_prompt,
+    )
+    if fitted is None:
+        return budget_failure()
+    entities_context, relations_context, retained_chunks, result, reference_list = (
+        fitted
+    )
+    if (
         truncated_chunks
-    )
-
-    # Rebuild chunks_context with truncated chunks
-    # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    text_units_str = render_chunks_context_text(truncated_chunks)
-    chunks_context = [
-        {"reference_id": chunk["reference_id"], "content": chunk["content"]}
-        for chunk in truncated_chunks
-    ]
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+        and not entities_context
+        and not relations_context
+        and not retained_chunks
+    ):
+        return budget_failure()
+    truncated_chunks = retained_chunks
 
     logger.info(
-        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
+        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
     )
 
     # not necessary to use LLM to generate a response
-    if not entities_context and not relations_context and not chunks_context:
+    if not entities_context and not relations_context and not truncated_chunks:
         # Return empty raw data structure when no entities/relations
         empty_raw_data = convert_to_user_format(
             [],
@@ -6043,13 +6215,6 @@ async def _build_context_str(
 
         if chunk_tracking_log:
             logger.info(f"Final chunks S+F/O: {' '.join(chunk_tracking_log)}")
-
-    result = kg_context_template.format(
-        entities_str=entities_str,
-        relations_str=relations_str,
-        text_chunks_str=text_units_str,
-        reference_list_str=reference_list_str,
-    )
 
     # Always return both context and complete data structure (unified approach)
     logger.debug(
@@ -6084,6 +6249,7 @@ async def _build_query_context(
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    user_prompt_prefix: str | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -6117,12 +6283,23 @@ async def _build_query_context(
             if not search_result["chunk_tracking"]:
                 return None
 
+    # Prompt rendering uses the live query config, while chunk selection must
+    # keep the storage snapshot. Override only the prefix for token budgeting.
+    budget_config = text_chunks_db.global_config
+    if user_prompt_prefix is not None:
+        budget_config = {**budget_config, "user_prompt_prefix": user_prompt_prefix}
+
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(
         search_result,
         query_param,
-        text_chunks_db.global_config,
+        budget_config,
+        query=query,
+        system_prompt=system_prompt,
     )
+
+    if truncation_result.get("token_budget_exceeded"):
+        return None
 
     # Stage 3: Merge chunks using filtered entities/relations
     merged_chunks = await _merge_all_chunks(
@@ -6153,13 +6330,16 @@ async def _build_query_context(
         merged_chunks=merged_chunks,
         query=query,
         query_param=query_param,
-        global_config=text_chunks_db.global_config,
+        global_config=budget_config,
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
         progress_callback=progress_callback,
         system_prompt=system_prompt,
     )
+
+    if raw_data.get("metadata", {}).get("token_budget_exceeded"):
+        return None
 
     # Convert keywords strings to lists and add complete metadata to raw_data
     hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
