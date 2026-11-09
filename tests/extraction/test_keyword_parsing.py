@@ -111,6 +111,32 @@ def test_parse_keywords_payload_warns_when_json_repair_is_used():
 
 
 @pytest.mark.offline
+def test_parse_keywords_payload_keeps_first_object_from_fence_prose_second_object():
+    """json_repair returns a list for a fenced object, prose, then a second
+    object; the first genuine object must still be used."""
+    result = (
+        '```json\n{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n```\n\n'
+        "Wait, I need to correct my format - no markdown code fences allowed:\n\n"
+        '{"high_level_keywords":["AI"],"low_level_keywords":["RAG","Graph"]}\n```'
+    )
+
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+def test_parse_keywords_payload_rejects_array_without_objects():
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload('["AI", "RAG"]')
+
+    assert is_valid is False
+    assert hl_keywords == []
+    assert ll_keywords == []
+
+
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_extract_keywords_only_accepts_empty_keyword_cache_without_requery():
     async def should_not_run(*_args, **_kwargs):

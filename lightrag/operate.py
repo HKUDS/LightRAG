@@ -5086,6 +5086,10 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
                     cleaned_result[:500],
                 )
                 return False, [], []
+        if not isinstance(payload, dict):
+            # e.g. a fenced object, prose, then a second object: json_repair
+            # returns a list; keep the first genuine object instead.
+            payload = tolerant_load_json_dict(cleaned_result) or payload
     else:
         logger.error(
             "Unsupported keyword extraction response type: %s",
