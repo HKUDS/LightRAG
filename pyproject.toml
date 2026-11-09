@@ -134,10 +134,15 @@ api = [
     # (sentence/NER heuristics). Language models are separate wheels pinned in
     # requirements-offline-smart-heading.txt and installed via
     # `lightrag-download-cache --spacy-install`.
-    # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, breaking
-    # `uv sync --frozen` on Python 3.14; 3.8.16 restored both. Cap below
-    # 3.8.17 to stay on 3.8.x until spacy 4.x graduates from dev.
-    "spacy>=3.8,<3.8.19",
+    # Capped at the minor version: spaCy models are trained per minor release
+    # and the pinned 3.8.0 models declare spacy_version ">=3.8.0,<3.9.0" in
+    # meta.json only (not in Requires-Dist), so nothing would stop a 3.9
+    # upgrade from silently changing NER / sentence-split decisions. Moving to
+    # 3.9 means swapping the model URLs in requirements-offline-smart-heading.txt
+    # and re-validating smart_heading. Patch releases are vetted by uv.lock:
+    # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, which the
+    # CI Python 3.14 leg's `uv sync --locked` catches at lock-update time.
+    "spacy>=3.8,<3.9",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
