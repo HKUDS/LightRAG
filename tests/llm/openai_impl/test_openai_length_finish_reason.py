@@ -10,6 +10,7 @@ from lightrag.llm.openai import (
     openai_complete_if_cache,
 )
 from lightrag.utils import is_truncated_response
+from tests._log_capture import capture_lightrag_logs
 
 
 def _make_completion(
@@ -336,11 +337,8 @@ async def test_empty_content_reasoning_only_diagnostics(caplog):
     )
     fake_client = _make_fake_client(completion)
 
-    lightrag_logger = logging.getLogger("lightrag")
     caplog.set_level(logging.ERROR, logger="lightrag")
-    original_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with patch(
             "lightrag.llm.openai.create_openai_async_client",
             return_value=fake_client,
@@ -353,8 +351,6 @@ async def test_empty_content_reasoning_only_diagnostics(caplog):
                     prompt="Describe the image",
                     response_format={"type": "json_object"},
                 )
-    finally:
-        lightrag_logger.propagate = original_propagate
 
     message = str(excinfo.value)
     assert "finish_reason=stop" in message
@@ -378,11 +374,8 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
     completion = _make_completion("", finish_reason="length")
     fake_client = _make_fake_client(completion)
 
-    lightrag_logger = logging.getLogger("lightrag")
     caplog.set_level(logging.ERROR, logger="lightrag")
-    original_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with patch(
             "lightrag.llm.openai.create_openai_async_client",
             return_value=fake_client,
@@ -398,8 +391,6 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
                     prompt="Describe the image",
                     response_format={"type": "json_object"},
                 )
-    finally:
-        lightrag_logger.propagate = original_propagate
 
     assert fake_client.chat.completions.create.await_count == 1, (
         "a deterministic token-limit failure must not retry"

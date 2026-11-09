@@ -8,23 +8,32 @@ import logging
 
 import pytest
 
+from tests._log_capture import capture_lightrag_logs
+
+
+@pytest.fixture
+def lightrag_caplog(caplog):
+    """``caplog``, seeing each ``lightrag`` record exactly once.
+
+    Use it for any test that asserts on ``caplog.records`` / ``caplog.text``
+    for records from the ``lightrag`` logger, and never set ``propagate`` on
+    that logger alongside it: why, and how pytest 9.1 changed it, is in
+    ``tests/_log_capture.py``. Inside a helper that receives ``caplog`` rather
+    than a fixture, use ``capture_lightrag_logs`` from that module instead.
+    ``caplog.at_level(..., logger="lightrag")`` still works as usual.
+    """
+    with capture_lightrag_logs(caplog):
+        yield caplog
+
 
 @pytest.fixture
 def lightrag_log_records():
-    """Records the ``lightrag`` logger emits during the test.
+    """Records the ``lightrag`` logger emits during the test, and nothing else.
 
-    ``lightrag.utils`` sets ``propagate = False`` on that logger, so caplog's
-    root handler never sees its records. Tests have worked around that by
-    turning propagation back on for the duration of the assertion, but pytest
-    9.1 attaches its own capture handler to non-propagating loggers: with
-    propagation re-enabled a record then reaches caplog twice — once through
-    the handler pytest attached to ``lightrag``, once through root — and any
-    assertion on an exact count fails. The lockfile pins pytest 9.0.3, so CI
-    does not see it; a contributor who installs pytest from PyPI does.
-
-    Collecting from a handler on the logger itself is independent of both
-    behaviours, so the assertion pins how many records the code emitted rather
-    than how many handlers observed them.
+    A private collector on the logger itself, independent of caplog and of the
+    pytest version (see ``tests/_log_capture.py``). Prefer it when the test
+    only counts or inspects ``lightrag`` records; use ``lightrag_caplog`` when
+    it needs caplog's API (``text``, ``at_level``, ``clear``).
     """
     logger = logging.getLogger("lightrag")
     records: list[logging.LogRecord] = []

@@ -20,6 +20,7 @@ from lightrag.kg.shared_storage import finalize_share_data, initialize_share_dat
 from lightrag.namespace import NameSpace
 
 from .fake_redis import FakeRedis
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -148,12 +149,9 @@ async def test_unreadable_config_warns_but_starts(fake, caplog):
 
     fake.fail_next["config_get"] = ResponseError("unknown command 'CONFIG'")
     storage = _doc_status_storage()
-    logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger=logger.name):
             await storage.initialize()
-    finally:
-        logger.propagate = False
     assert storage._initialized is True
     assert "Could not read the Redis maxmemory policy" in caplog.text
 
@@ -167,12 +165,9 @@ async def test_explicit_override_downgrades_to_a_warning(fake, monkeypatch, capl
     monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", "true")
     fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
     storage = _doc_status_storage()
-    logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger=logger.name):
             await storage.initialize()
-    finally:
-        logger.propagate = False
     assert storage._initialized is True
     assert "configured to EVICT" in caplog.text
 
