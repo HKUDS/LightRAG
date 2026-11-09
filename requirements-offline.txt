@@ -29,4 +29,4 @@ python-pptx>=0.6.21,<2.0.0
 qdrant-client>=1.11.0,<2.0.0
 redis>=5.0.1,<9.0.0
 voyageai>=0.2.0,<1.0.0
-zhipuai>=2.0.0,<3.0.0
+zai-sdk>=0.2.3,<1.0.0

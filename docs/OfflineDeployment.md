@@ -25,7 +25,7 @@ LightRAG uses dynamic package installation (`pipmaster`) for optional features b
 LightRAG dynamically installs packages for:
 
 - **Storage Backends**: `redis`, `neo4j`, `pymilvus`, `pymongo`, `asyncpg`, `qdrant-client`
-- **LLM Providers**: `openai`, `anthropic`, `ollama`, `zhipuai`, `aioboto3`, `voyageai`, `llama-index`, `lmdeploy`, `transformers`, `torch`
+- **LLM Providers**: `openai`, `anthropic`, `ollama`, `zai-sdk`, `aioboto3`, `voyageai`, `llama-index`, `lmdeploy`, `transformers`, `torch`
 - **Tiktoken Models**: BPE encoding models downloaded from OpenAI CDN
 
 **Note**: Document processing dependencies (`pypdf`, `python-docx`, `python-pptx`, `openpyxl`) are now pre-installed with the `api` extras group and no longer require dynamic installation.
