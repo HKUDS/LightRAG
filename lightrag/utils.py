@@ -4434,7 +4434,25 @@ def enforce_chunk_token_limit_before_embedding(
 
 
 def cosine_similarity(v1, v2):
-    """Calculate cosine similarity between two vectors"""
+    """Return real-vector cosine similarity, or zero for zero/non-finite inputs.
+
+    Finite magnitudes and numeric dtypes must not erase vector direction.
+    Input arrays are not mutated.
+    """
+    v1 = np.asarray(v1)
+    v2 = np.asarray(v2)
+    dtype = np.result_type(v1.dtype, v2.dtype, np.float64)
+    v1 = v1.astype(dtype, copy=False)
+    v2 = v2.astype(dtype, copy=False)
+
+    # Scale before products to avoid magnitude-driven overflow and underflow.
+    scale1 = np.max(np.abs(v1), initial=0)
+    scale2 = np.max(np.abs(v2), initial=0)
+    if np.isfinite(scale1) and scale1 > 0:
+        v1 = v1 / scale1
+    if np.isfinite(scale2) and scale2 > 0:
+        v2 = v2 / scale2
+
     dot_product = np.dot(v1, v2)
     norm1 = np.linalg.norm(v1)
     norm2 = np.linalg.norm(v2)
