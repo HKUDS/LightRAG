@@ -80,7 +80,7 @@ const persistedAssistant = (): MessageWithError => {
 
 describe('query error persistence', () => {
   for (const failure of ['stream', 'partial stream', 'non-stream'] as const) {
-    test(`${failure} failures stay classified after reload and are excluded from bypass history`, async () => {
+    test(`${failure} failures stay classified after reload and are dropped from bypass history as a turn`, async () => {
       const isStreaming = failure !== 'non-stream'
       if (isStreaming) {
         streamLines = failure === 'partial stream'
@@ -108,7 +108,9 @@ describe('query error persistence', () => {
       requests.length = 0
       await send()
       expect(requests).toHaveLength(1)
-      expect(requests[0].conversation_history).toEqual([{ role: 'user', content: 'My question' }])
+      // The failed turn is dropped as a pair: neither the diagnostic nor the
+      // question it never answered reaches the model.
+      expect(requests[0].conversation_history).toEqual([])
       expect(screen.queryAllByText(ANSWER)).toHaveLength(1)
     })
   }
