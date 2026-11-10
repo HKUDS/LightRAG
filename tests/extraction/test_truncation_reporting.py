@@ -24,7 +24,6 @@ one that used to drop the marker entirely.
 
 from __future__ import annotations
 
-import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -104,13 +103,6 @@ def _make_chunks(count: int = 1, file_path: str = "reports/annual.md") -> dict:
 @pytest.fixture
 def _high_token_limit(monkeypatch):
     monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "999999")
-
-
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    """``lightrag.utils.logger`` disables propagation; restore it so caplog
-    can see WARNING records emitted from inside ``lightrag.operate``."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 @pytest.fixture
@@ -276,7 +268,7 @@ async def test_status_lines_do_not_grow_with_the_number_of_truncated_chunks(
 
 
 async def test_every_occurrence_still_reaches_the_server_log(
-    _high_token_limit, status_messages, caplog, _propagate_lightrag_logger
+    _high_token_limit, status_messages, caplog, lightrag_caplog
 ):
     """Aggregation trims the status ring, not the log: the per-chunk detail
     an operator needs for diagnosis stays one line per event."""
@@ -596,7 +588,7 @@ class TestParseFailureAttribution:
     """
 
     async def test_text_mode_undelimited_result_names_truncation(
-        self, caplog, _propagate_lightrag_logger
+        self, caplog, lightrag_caplog
     ):
         with caplog.at_level("WARNING", logger="lightrag"):
             await operate._process_extraction_result(
@@ -617,7 +609,7 @@ class TestParseFailureAttribution:
         assert "truncated by the model's output token limit" in messages[0]
 
     async def test_text_mode_stays_silent_about_a_cause_it_cannot_prove(
-        self, caplog, _propagate_lightrag_logger
+        self, caplog, lightrag_caplog
     ):
         with caplog.at_level("WARNING", logger="lightrag"):
             await operate._process_extraction_result(
@@ -638,7 +630,7 @@ class TestParseFailureAttribution:
         assert "truncated" not in messages[0]
 
     async def test_json_mode_unparseable_result_names_truncation(
-        self, caplog, _propagate_lightrag_logger
+        self, caplog, lightrag_caplog
     ):
         # Prose with no recoverable object at all: json_repair salvages a
         # half-written entity list, so a cut-off *preamble* is what actually

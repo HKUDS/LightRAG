@@ -142,7 +142,7 @@ async def lmdeploy_model_if_cache(
     if do_sample is not None and version < (0, 6, 0):
         raise RuntimeError(
             "`do_sample` parameter is not supported by lmdeploy until "
-            f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
+            f"v0.6.0, but currently using lmdeploy {lmdeploy.__version__}"
         )
     else:
         gen_params.update(do_sample=do_sample)

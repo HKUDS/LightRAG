@@ -37,6 +37,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     safe_vdb_operation_with_exception,
 )
+from tests._log_capture import capture_lightrag_logs
 
 
 async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
@@ -1474,11 +1475,7 @@ def test_enqueue_status_upsert_failure_survives_wake_failure(
                 rag, "apipeline_process_enqueue_documents", _failing_process
             )
 
-            # The "lightrag" logger sets propagate=False, so caplog (a root
-            # handler) cannot see its records unless we re-enable propagation
-            # for the duration of the test (monkeypatch auto-reverts it).
-            monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-            with caplog.at_level(logging.WARNING):
+            with capture_lightrag_logs(caplog), caplog.at_level(logging.WARNING):
                 with pytest.raises(RuntimeError, match="partial doc-status"):
                     await rag.apipeline_enqueue_documents(
                         "wake failure",

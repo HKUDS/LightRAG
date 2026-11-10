@@ -7,7 +7,7 @@ from lightrag.kg.postgres_impl import (
     PostgreSQLDB,
     _safe_index_name,
 )
-from lightrag.exceptions import DataMigrationError
+from lightrag.exceptions import VectorSpaceMismatchError
 from lightrag.namespace import NameSpace
 
 
@@ -307,7 +307,7 @@ class _MockHalfVector:
 
 @pytest.mark.asyncio
 async def test_setup_table_detects_halfvector_dimension_mismatch(mock_pg_db):
-    """DataMigrationError is raised when a HalfVector column has a different dimension."""
+    """VectorSpaceMismatchError is raised when a HalfVector column has a different dimension."""
     table_name = "lightrag_vdb_chunks_new"
     legacy_table = "lightrag_vdb_chunks"
 
@@ -329,7 +329,7 @@ async def test_setup_table_detects_halfvector_dimension_mismatch(mock_pg_db):
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
     mock_pg_db.execute = AsyncMock()
 
-    with pytest.raises(DataMigrationError, match="Dimension mismatch"):
+    with pytest.raises(VectorSpaceMismatchError, match="dimension 1024 -> 768"):
         await PGVectorStorage.setup_table(
             db=mock_pg_db,
             table_name=table_name,

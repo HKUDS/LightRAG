@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -165,16 +164,36 @@ async def _run_worker_until_drained(
     worker_coro_factory,
     queue: asyncio.Queue,
     *,
-    timeout: float = 2.0,
+    timeout: float = 15.0,
 ) -> None:
     """Spin up the worker, await q.join(), then cancel the worker — same
-    teardown sequence as ``_run_pipeline_batch``."""
+    teardown sequence as ``_run_pipeline_batch``.
+
+    The join is raced against the worker task: a worker that dies stops
+    calling ``task_done()``, so waiting on the join alone would sit out the
+    whole timeout and then report a bare ``TimeoutError`` instead of the
+    worker's own exception. ``timeout`` is only a hang guard for a worker
+    that stays alive but never drains; a passing run returns as soon as the
+    queue is empty, so its size costs nothing."""
     worker = asyncio.create_task(worker_coro_factory())
+    join_task = asyncio.create_task(queue.join())
     try:
-        await asyncio.wait_for(queue.join(), timeout=timeout)
+        done, _ = await asyncio.wait(
+            {worker, join_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if worker in done:
+            # Re-raises the worker's exception; a clean return is still a bug
+            # because the worker loop is supposed to run until cancelled.
+            worker.result()
+            raise AssertionError("worker exited before draining its queue")
+        if join_task not in done:
+            raise AssertionError(f"queue did not drain within {timeout}s hang guard")
     finally:
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
+        for task in (join_task, worker):
+            task.cancel()
+        await asyncio.gather(join_task, worker, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -182,8 +201,9 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(
     tmp_path, monkeypatch
 ):
     """Cancellation set BEFORE the worker pulls any item: parser must not
-    run, every queued doc is FAILED with a friendly message, q.join()
-    returns quickly."""
+    run, every queued doc is FAILED with a friendly message, and q.join()
+    returns (bounded by the drain helper's hang guard, not a latency
+    assertion)."""
     rag = _build_rag(tmp_path)
     await rag.initialize_storages()
     try:
@@ -216,14 +236,11 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(
 
         pipeline_status["cancellation_requested"] = True
 
-        start = time.monotonic()
         await _run_worker_until_drained(
             lambda: rag._parse_worker("native", ctx.parse_queues["native"], ctx),
             ctx.parse_queues["native"],
         )
-        elapsed = time.monotonic() - start
 
-        assert elapsed < 1.0, f"queue drain should be fast, took {elapsed:.2f}s"
         assert get_parser_spy.call_count == 0
 
         cancel_messages = [
@@ -311,11 +328,27 @@ async def test_pipeline_cancel_interrupts_inflight_native_parser_llm(
                 ingress=await get_pipeline_ingress(rag.workspace),
             )
         )
-        await asyncio.wait_for(submit_started.wait(), timeout=1.0)
+        # Both bounds are hang guards, not latency assertions: a green run
+        # returns as soon as the event fires / the batch finishes. The first
+        # wait races the batch so a batch that fails before reaching the LLM
+        # surfaces its own exception instead of a timeout.
+        started = asyncio.create_task(submit_started.wait())
+        done, _ = await asyncio.wait(
+            {started, batch}, timeout=15.0, return_when=asyncio.FIRST_COMPLETED
+        )
+        if started not in done:
+            started.cancel()
+            await asyncio.gather(started, return_exceptions=True)
+            if batch in done:
+                batch.result()
+                raise AssertionError("batch finished before the parser LLM call")
+            batch.cancel()
+            await asyncio.gather(batch, return_exceptions=True)
+            raise AssertionError("parser LLM call never started within hang guard")
         async with pipeline_status_lock:
             pipeline_status["cancellation_requested"] = True
 
-        await asyncio.wait_for(batch, timeout=2.0)
+        await asyncio.wait_for(batch, timeout=15.0)
         row = await rag.doc_status.get_by_id(doc_id)
         assert row is not None
         assert row["status"] == DocStatus.FAILED.value
@@ -357,14 +390,11 @@ async def test_analyze_worker_drains_queue_when_cancelled_before_start(tmp_path)
 
         pipeline_status["cancellation_requested"] = True
 
-        start = time.monotonic()
         await _run_worker_until_drained(
             lambda: rag._analyze_worker(ctx),
             ctx.q_analyze,
         )
-        elapsed = time.monotonic() - start
 
-        assert elapsed < 1.0, f"queue drain should be fast, took {elapsed:.2f}s"
         assert rag.analyze_multimodal.await_count == 0
 
         cancel_messages = [
@@ -412,54 +442,46 @@ def _write_three_item_sidecar(tmp_path: Path) -> tuple[str, dict, Path]:
 
 
 @pytest.mark.asyncio
-async def test_analyze_multimodal_inflight_cancellation_polls_flag(
-    tmp_path, monkeypatch
-):
+async def test_analyze_multimodal_inflight_cancellation_polls_flag(tmp_path):
     """User sets cancellation_requested while VLM tasks are running.
-    analyze_multimodal should observe the flag at the next poll boundary
-    (≤ 0.5s), cancel pending tasks, write the sidecar with partial
-    results, and raise PipelineCancelledException."""
+    analyze_multimodal must observe the flag through its poll loop while
+    the VLM calls are still blocked -- not after they return -- cancel the
+    item tasks, write the sidecar with the cancelled results, and raise
+    PipelineCancelledException.
+
+    The VLM never returns on its own, so noticing the flag only once a call
+    finished cannot pass. How soon the poll loop reacts
+    (``POLL_INTERVAL_SECONDS``) is deliberately not timed: a latency bound
+    is what made this test flaky on loaded runners."""
 
     # Signals that a VLM call has actually started, i.e. analyze_multimodal
     # is past its pre-schedule cancellation check and the item tasks exist.
     vlm_inflight = asyncio.Event()
+    # The VLM call blocks until the test releases it, after the cancellation
+    # has been raised. vlm_finished records whether any call ever returned.
+    release_vlm = asyncio.Event()
+    vlm_finished = asyncio.Event()
 
-    async def slow_vlm(prompt, **kwargs):
+    async def blocked_vlm(prompt, **kwargs):
         vlm_inflight.set()
-        # 1.2s is short enough that even when the priority-queue worker
-        # finishes the in-flight call after we've already raised (the
-        # role wrapper does not propagate outer-future cancellation to
-        # the worker), the post-analyze cleanup is bounded.
-        await asyncio.sleep(1.2)
+        try:
+            # Hang guard only: a poll loop that misses the flag must fail
+            # the assertions below rather than stall the suite.
+            await asyncio.wait_for(release_vlm.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            pass
+        vlm_finished.set()
         return json.dumps(
             {"name": "x", "type": "Chart", "description": "should not arrive"}
         )
 
-    rag = _build_rag(tmp_path, vlm_func=slow_vlm)
+    rag = _build_rag(tmp_path, vlm_func=blocked_vlm)
     await rag.initialize_storages()
     try:
         doc_id, parsed_data, sidecar_path = _write_three_item_sidecar(tmp_path)
 
-        # Bypass image-bytes validation: _analyze_drawing normally reads
-        # and validates the image file. Replace with a controlled mock so
-        # the only async work is the (slow_vlm) call we manage above.
-        async def fake_analyze_drawing(item_id, item, sidecar_dir):
-            await slow_vlm("dummy")  # honors the cancellation timing
-            return (
-                {
-                    "name": item_id,
-                    "type": "Chart",
-                    "description": "ok",
-                    "status": "success",
-                    "analyze_time": int(time.time()),
-                },
-                f"cache-{item_id}",
-            )
-
-        # analyze_multimodal defines _analyze_drawing as a local closure,
-        # so we can't monkeypatch it directly. Instead patch the helper
-        # it relies on (slow_vlm via the role wrapper); we accept the
-        # closure's image pre-validation and supply a minimal PNG fixture.
+        # The real _analyze_drawing closure runs and validates the image
+        # bytes before calling the VLM, so give each item a minimal PNG.
         from .test_pipeline_analyze_multimodal import PNG_BYTES
 
         for letter in ("A", "B", "C"):
@@ -496,17 +518,17 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
         # that pre-schedule path: no task ever runs and the sidecar is never
         # rewritten, which is a different code path than the in-flight one
         # this test covers. A fixed delay only wins that race on an idle
-        # machine — on a loaded CI runner the startup work outlasts it and
+        # machine -- on a loaded CI runner the startup work outlasts it and
         # the test fails on the missing llm_analyze_result entries. Gating on
         # vlm_inflight makes "flag set while tasks are running" an ordering
         # guarantee instead of a timing bet.
-        flipped_at: list[float] = []
+        cancellation_requested = asyncio.Event()
 
         async def flip_when_inflight():
             await vlm_inflight.wait()
             async with pipeline_status_lock:
                 pipeline_status["cancellation_requested"] = True
-                flipped_at.append(time.monotonic())
+                cancellation_requested.set()
 
         flipper = asyncio.create_task(flip_when_inflight())
 
@@ -522,7 +544,6 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
                 ),
                 timeout=15.0,
             )
-        raised_at = time.monotonic()
         # Never plain-await the flipper: if analyze_multimodal raised without
         # ever reaching the VLM, vlm_inflight stays clear and the wait would
         # hang the suite instead of failing the assertions below.
@@ -530,34 +551,40 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
         await asyncio.gather(flipper, return_exceptions=True)
 
         # A raise with the flag never set means the pre-schedule check (or an
-        # earlier boundary) fired instead — not the in-flight path under test.
-        assert flipped_at, "cancellation was never requested while VLM ran"
-
-        # Measure from the flag flip, not from the call: only the poll loop's
-        # reaction time is under test, and timing the whole call would fold in
-        # storage/parser startup and re-introduce a load-sensitive threshold.
-        detect_latency = raised_at - flipped_at[0]
-        assert detect_latency < 1.0, (
-            f"poll loop took {detect_latency:.2f}s to observe the flag (>1.0s); "
-            f"the interval is 0.5s and the VLM call is 1.2s"
+        # earlier boundary) fired instead -- not the in-flight path under test.
+        assert cancellation_requested.is_set(), (
+            "cancellation was never requested while VLM ran"
+        )
+        # The ordering check: the raise came while every VLM call was still
+        # blocked, so the poll loop -- not a check after the call returned --
+        # is what observed the flag.
+        assert not vlm_finished.is_set(), (
+            "a VLM call returned before cancellation was raised; the flag was "
+            "observed after the call, not by the poll loop"
         )
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        # Sidecar should have been written even though we raised — every
-        # item carries a llm_analyze_result entry (cancelled / failure).
+        # Sidecar should have been written even though we raised, with every
+        # interrupted item recorded as a cancelled failure.
         for letter in ("A", "B", "C"):
             item = payload["drawings"][f"im-{letter}"]
             assert "llm_analyze_result" in item
-            assert item["llm_analyze_result"]["status"] in ("failure", "success")
+            result = item["llm_analyze_result"]
+            assert result["status"] == "failure"
+            assert result["message"] == "cancelled"
     finally:
+        # The role wrapper does not propagate outer-future cancellation to
+        # its priority-queue worker, so the in-flight call is still blocked.
+        # Release it first, or the worker shutdown waits out the hang guard.
+        release_vlm.set()
         await _shutdown_role_workers(rag)
         await rag.finalize_storages()
 
 
 @pytest.mark.asyncio
 async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
-    """One item raises quickly; one already completed; one would have
-    taken longer. analyze_multimodal must not wait for the slow item,
+    """One item raises; one already completed; one waits for release.
+    analyze_multimodal must not wait for the blocked item,
     must preserve the completed item's result in the sidecar, and must
     raise MultimodalAnalysisError (not PipelineCancelledException)."""
     from .test_pipeline_analyze_multimodal import PNG_BYTES
@@ -590,12 +617,14 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
     parsed_data = {"blocks_path": str(blocks_path)}
 
     # Per-call behaviour: call 1 succeeds quickly (~0.05s), call 2 fails
-    # quickly (~0.1s), call 3 would take 5s — we want to prove fail-fast
-    # cancels call 3 rather than wait. Ordering by call_count rather than
+    # quickly (~0.1s), call 3 cannot finish until teardown releases it.
+    # Fail-fast must cancel call 3 rather than wait. Order by call_count rather than
     # by item identifier because the VLM role wrapper does not surface
     # the item filename in its kwargs (only image_inputs bytes).
     call_count = {"n": 0}
     call_lock = asyncio.Lock()
+    release_slow = asyncio.Event()
+    slow_completed = asyncio.Event()
 
     async def vlm_func(prompt, **kwargs):
         async with call_lock:
@@ -607,10 +636,8 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         if seq == 2:
             await asyncio.sleep(0.1)
             raise MultimodalAnalysisError("forced failure")
-        # 1.2s instead of 5s: still proves fail-fast doesn't wait (test
-        # checks elapsed < 0.8s) but keeps post-analyze cleanup bounded
-        # since the worker keeps running this sleep until completion.
-        await asyncio.sleep(1.2)
+        await release_slow.wait()
+        slow_completed.set()
         return json.dumps({"name": "late", "type": "Chart", "description": "late"})
 
     rag = _build_rag(tmp_path, vlm_func=vlm_func)
@@ -624,7 +651,6 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         }
         pipeline_status_lock = asyncio.Lock()
 
-        start = time.monotonic()
         with pytest.raises(MultimodalAnalysisError):
             await asyncio.wait_for(
                 rag.analyze_multimodal(
@@ -637,12 +663,9 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
                 ),
                 timeout=15.0,
             )
-        elapsed = time.monotonic() - start
-
-        # Without fail-fast we'd have waited for the 1.2s sleep on the
-        # third call. 0.8s gives the second-call failure path room
-        # while still catching any regression that waits for call 3.
-        assert elapsed < 0.8, f"fail-fast still waited {elapsed:.2f}s for slow task"
+        # The slow call cannot complete before teardown. A regression that
+        # records cancellation but still waits for it hits the timeout above.
+        assert not slow_completed.is_set(), "fail-fast waited for the slow task"
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         statuses = sorted(
@@ -674,6 +697,9 @@ async def test_analyze_multimodal_fail_fast_preserves_successes(tmp_path):
         ]
         assert len(forced_items) == 1
     finally:
+        # Cancelling the caller can leave the role worker running the VLM.
+        # Release it before shutdown so teardown never waits on slow work.
+        release_slow.set()
         await _shutdown_role_workers(rag)
         await rag.finalize_storages()
 

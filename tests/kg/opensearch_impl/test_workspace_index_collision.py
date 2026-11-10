@@ -39,6 +39,7 @@ from lightrag.kg.opensearch_impl import (  # noqa: E402
     _claim_index_for_workspace,
     _sanitize_index_name,
 )
+from tests._log_capture import capture_lightrag_logs  # noqa: E402
 
 pytestmark = pytest.mark.offline
 
@@ -467,18 +468,12 @@ class TestUnwritableMapping:
             embedding_func=_Embed(),
             workspace="TeamA",
         )
-        # lightrag's logger does not propagate, so caplog sees nothing unless
-        # propagation is enabled for the duration of the assertion.
         from lightrag.utils import logger as lightrag_logger
 
-        previous = lightrag_logger.propagate
-        lightrag_logger.propagate = True
-        try:
+        with capture_lightrag_logs(caplog):
             with caplog.at_level(logging.WARNING, logger=lightrag_logger.name):
                 with patch.object(ClientManager, "get_client", return_value=client):
                     await storage.initialize()
-        finally:
-            lightrag_logger.propagate = previous
 
         assert "teama_text_chunks" in caplog.text
         assert "stays unmarked" in caplog.text
