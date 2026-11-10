@@ -24,6 +24,12 @@ from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 from nano_vectordb import NanoVectorDB
 from . import file_fingerprint
+from .vector_space import (
+    assert_vector_space_matches,
+    declared_model_name,
+    read_vector_space_marker,
+    vector_space_marker,
+)
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -148,11 +154,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._counted_peer_fingerprint = None
         self._missed_notification_reloads = 0
 
-        self._client = NanoVectorDB(
-            self.embedding_func.embedding_dim,
-            storage_file=self._client_file_name,
-        )
-        self._adopt_fingerprint(fingerprint)
+        # The client is NOT built here; see initialize(). ``NanoVectorDB``
+        # asserts on a dimension mismatch inside its own ``__init__``, so
+        # building it at construction made the refusal come from the
+        # CONSTRUCTOR -- lightrag-rebuild-vdb could not even create the object,
+        # let alone call drop() on it, and the operator had to delete the file
+        # by hand. ``_stat_fingerprint`` was sampled above, before the load,
+        # and is adopted in initialize() once the load has happened; see
+        # ``kg.file_fingerprint`` for why the order matters. ``self._client``
+        # is already None from the attribute block at the top.
+        self._construction_fingerprint = fingerprint
+        # Set by _build_client / drop(); see _build_client for the rule.
+        self._vector_space_certified = False
 
         # Minimal pending area for deferred embedding: id -> _PendingNanoDoc.
         # Holds only records not yet embedded+materialized into self._client;
@@ -182,7 +195,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._unsaved_upserts: dict[str, _PendingNanoDoc] = {}
 
     async def initialize(self):
-        """Initialize storage data"""
+        """Build the client and refuse a foreign embedding space.
+
+        The client is built HERE and not in ``__post_init__``. ``NanoVectorDB``
+        asserts on a dimension mismatch inside its own ``__init__``, so
+        building it at construction made the refusal come from the CONSTRUCTOR:
+        ``lightrag-rebuild-vdb`` could not create the object, let alone call
+        ``drop()`` on it, and the operator had to delete the file by hand. The
+        object must survive its own refusal.
+
+        Order matters for the same reason -- the update flag and the storage
+        lock are taken FIRST, so a storage that refuses below is still able to
+        serve ``drop()``. See ``docs/design/VectorSpaceProvenance.md``.
+        """
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(
             self.namespace, workspace=self.workspace
@@ -191,6 +216,91 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
+        self._client = self._build_client()
+        self._adopt_fingerprint(self._construction_fingerprint)
+
+    def _build_client(self) -> NanoVectorDB:
+        """Load the on-disk snapshot, refusing a foreign embedding space.
+
+        Two facts, both taken from the file itself:
+
+        * **Dimension** -- ``NanoVectorDB.__init__`` asserts on it. The assert
+          is caught and re-raised typed, because the tool answers this
+          condition by DROPPING the file and must be able to tell it apart
+          from a corrupt file or an unreadable disk. The stored dimension is
+          re-read from the file only on this failure path, where paying a
+          second parse costs nothing.
+        * **Model** -- from ``additional_data``, which ``NanoVectorDB.save()``
+          round-trips in the same JSON as the rows, so the marker is written by
+          the same atomic rename as the vectors it describes. It is not a row
+          in ``data`` and not a column in ``matrix``, so ``query()`` cannot
+          return it. The file name carries no model, so this marker is the only
+          record of one -- a same-dimension model swap reuses these very
+          vectors otherwise.
+
+        Absent evidence never refuses: a file written before the marker existed
+        records no model and still loads.
+        """
+        try:
+            client = NanoVectorDB(
+                self.embedding_func.embedding_dim,
+                storage_file=self._client_file_name,
+            )
+        except AssertionError as e:
+            assert_vector_space_matches(
+                backend=type(self).__name__,
+                container=self._client_file_name,
+                embedding_func=self.embedding_func,
+                stored_model=None,
+                stored_dim=self._read_stored_dimension(),
+            )
+            # The assert fired but the dimension we could read does not
+            # contradict us -- that is not this gate's condition, so it must
+            # not be reported as one.
+            raise e
+
+        stored_model = read_vector_space_marker(client.get_additional_data())[0]
+        assert_vector_space_matches(
+            backend=type(self).__name__,
+            container=self._client_file_name,
+            embedding_func=self.embedding_func,
+            stored_model=stored_model,
+            stored_dim=None,
+        )
+        # May a later save record THIS process's model over this snapshot?
+        # Only if the snapshot is ours to vouch for: empty (every row from here
+        # on is one we wrote) or already naming a model (which the check above
+        # just confirmed is ours). A NON-EMPTY snapshot with no model recorded
+        # is the pre-marker legacy case, and the absent-evidence rule let it
+        # through without establishing anything about its rows -- stamping it
+        # would record a model over another model's vectors and make the lie
+        # permanent, which is the very thing the attach path refuses to do.
+        # Certification for that case needs the adoption probe, one layer up.
+        # Certification needs BOTH sides named. A process with no configured
+        # model that certified a marked store would, on its next save, replace
+        # the marker with a dimension-only payload -- erasing provenance that
+        # was already established and reopening the same-dimension swap it was
+        # recorded to catch. Attach accepts such a process (absent evidence
+        # never refuses); writing the marker is a different, stronger claim.
+        self._vector_space_certified = len(client) == 0 or (
+            stored_model is not None
+            and declared_model_name(self.embedding_func) is not None
+        )
+        return client
+
+    def _read_stored_dimension(self) -> int | None:
+        """The ``embedding_dim`` recorded in the JSON file, or ``None``.
+
+        Failure path only. ``None`` means "could not say", which the verdict
+        treats as absent evidence rather than as a mismatch.
+        """
+        try:
+            with open(self._client_file_name, encoding="utf-8") as f:
+                stored = json.load(f)
+        except (OSError, ValueError):
+            return None
+        dim = stored.get("embedding_dim") if isinstance(stored, dict) else None
+        return dim if isinstance(dim, int) and not isinstance(dim, bool) else None
 
     def _stat_fingerprint(self) -> file_fingerprint.Fingerprint | object:
         """Sample the JSON file's identity. See ``kg.file_fingerprint``."""
@@ -303,10 +413,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     "its stat failed; this is a retry of a reload that did not "
                     "land, not a second lost notification."
                 )
-        self._client = NanoVectorDB(
-            self.embedding_func.embedding_dim,
-            storage_file=self._client_file_name,
-        )
+        # Through the CHECKED loader, not a bare NanoVectorDB: a peer may have
+        # rebuilt this namespace under a different model of the same dimension,
+        # and adopting that snapshot would serve its vectors with this
+        # process's embedder. Refusing here is a runtime raise rather than a
+        # startup one, which is the intended shape -- a rolling embedding-model
+        # change is not supported, so the honest answer to finding one is to
+        # stop, not to serve. It also re-derives certification, which the
+        # previous snapshot's value must not outlive.
+        self._client = self._build_client()
         self._adopt_fingerprint(fingerprint)
         self.storage_updated.value = False
         return True
@@ -663,6 +778,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         def _save_atomic(tmp: str) -> None:
             original = self._client.storage_file
+            # Stamp the embedding space into the same JSON object as the rows,
+            # so the marker is published by the same atomic rename and cannot
+            # drift from the vectors it describes -- but only over a snapshot
+            # this process can vouch for. See ``_build_client``.
+            if self._vector_space_certified:
+                self._client.store_additional_data(
+                    **vector_space_marker(self.embedding_func)
+                )
             self._client.storage_file = tmp
             try:
                 self._client.save()
@@ -1432,6 +1555,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self._pending_deletes.clear()
             self._unsaved_deletes.clear()
             self._unsaved_upserts.clear()
+
+            # The rows are gone, so every row from here on is one this process
+            # wrote: the next save may record this instance's embedding space.
+            self._vector_space_certified = True
 
             # Reset the in-memory snapshot to the post-drop state. Guarded like
             # every other post-removal step — the file is already gone, so

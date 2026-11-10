@@ -74,7 +74,7 @@ The Dockerfile uses BuildKit cache mounts to significantly improve build perform
 - **Efficient package caching**: UV and Bun package downloads are cached across builds
 - **No manual configuration needed**: Works out of the box in Docker Compose and GitHub Actions
 
-### Start LightRAG  server:
+### Start LightRAG server:
 
 ```bash
 docker compose up -d

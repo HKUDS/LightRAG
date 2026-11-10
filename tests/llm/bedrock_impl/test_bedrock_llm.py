@@ -1,5 +1,4 @@
 import importlib
-import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -724,7 +723,11 @@ def _make_args(tmp_path):
         query_aws_secret_access_key=None,
         query_aws_session_token=None,
         llm_model="us.amazon.nova-lite-v1:0",
-        embedding_model=None,
+        # The server refuses to start without a named embedding model, so these
+        # tests -- which are about the LLM side -- have to name one. It is the
+        # Bedrock binding's OWN default, which carries a known dimension, so
+        # they still say nothing about embedding configuration.
+        embedding_model="amazon.titan-embed-text-v2:0",
         embedding_dim=None,
         embedding_send_dim=False,
         embedding_token_limit=None,
@@ -985,11 +988,10 @@ async def test_create_app_bedrock_server_timeout_overrides_caller_value(
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_create_app_keyword_openai_role_forwards_nested_extra_body(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     _reload_api_modules_if_mocked()
     monkeypatch.setattr(sys, "argv", ["pytest"])
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
     monkeypatch.setenv(
         "KEYWORD_OPENAI_LLM_EXTRA_BODY",
         '{"chat_template_kwargs": {"enable_thinking": false}}',

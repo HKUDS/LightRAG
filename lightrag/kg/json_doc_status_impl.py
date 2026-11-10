@@ -275,7 +275,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 # only reads its argument, so the shallow copy is safe there too.
                 data_dict = self._data.copy()
                 logger.debug(
-                    f"[{self.workspace}] Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
+                    f"[{self.workspace}] Process {os.getpid()} doc status writing {len(data_dict)} records to {self.namespace}"
                 )
 
                 # Off the event loop: this rewrites the whole file, which on a

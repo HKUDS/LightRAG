@@ -19,7 +19,6 @@ touches that attribute.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -28,18 +27,6 @@ import pytest
 from lightrag.utils import aexport_data
 
 pytestmark = pytest.mark.offline
-
-
-@pytest.fixture
-def _propagate_lightrag_logs():
-    """The ``lightrag`` logger sets propagate=False; caplog needs it on."""
-    lg = logging.getLogger("lightrag")
-    old = lg.propagate
-    lg.propagate = True
-    try:
-        yield
-    finally:
-        lg.propagate = old
 
 
 class _FakeGraphStorage:
@@ -210,7 +197,7 @@ async def test_export_includes_relationships_dump_for_sync_client_storage(
 async def test_sync_client_storage_snapshot_warns_that_it_may_be_stale(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
-    _propagate_lightrag_logs: None,
+    lightrag_caplog: None,
 ) -> None:
     """The sync shape is not reload-checking, so its staleness is announced.
 
@@ -233,7 +220,7 @@ async def test_sync_client_storage_snapshot_warns_that_it_may_be_stale(
 async def test_async_client_storage_snapshot_does_not_warn(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
-    _propagate_lightrag_logs: None,
+    lightrag_caplog: None,
 ) -> None:
     """The async shape awaits a reload-if-stale path, so it has nothing to warn about."""
     with caplog.at_level("WARNING", logger="lightrag"):

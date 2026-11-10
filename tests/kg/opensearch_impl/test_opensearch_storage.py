@@ -24,7 +24,7 @@ from opensearchpy.exceptions import (  # type: ignore
     ConflictError,
 )
 import lightrag.kg.opensearch_impl
-from lightrag.exceptions import flush_may_have_lost_reference
+from lightrag.exceptions import VectorSpaceMismatchError, flush_may_have_lost_reference
 from lightrag.kg.opensearch_impl import (
     OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
@@ -4713,7 +4713,9 @@ class TestVectorStorage:
     async def test_query_cosine_score_conversion(
         self, global_config, embed_func, mock_client
     ):
-        """Test that scores are used directly and threshold filtering works."""
+        """lucene/cosinesimil hits score as (1 + cosine_similarity) / 2, so an
+        engine score of 0.85 must convert back to a raw cosine similarity of
+        0.7, not be used directly."""
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -4736,16 +4738,18 @@ class TestVectorStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            results = await s.query("test", top_k=5)
+            with patch("lightrag.kg.opensearch_impl.logger.info") as mock_log:
+                results = await s.query("test", top_k=5)
             assert len(results) == 1
-            assert results[0]["distance"] == 0.85
+            assert results[0]["distance"] == pytest.approx(0.7)
+            assert "cosine_range=[0.7000, 0.7000]" in mock_log.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_query_filters_below_threshold(
         self, global_config, embed_func, mock_client
     ):
         """Low scores should be filtered out."""
-        # score 0.15 < threshold 0.2
+        # engine score 0.15 -> cosine similarity 2*0.15-1 = -0.7 < threshold 0.2
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -4754,6 +4758,40 @@ class TestVectorStorage:
                             "_id": "v1",
                             "_score": 0.15,
                             "_source": {"content": "weak match"},
+                        },
+                    ],
+                    "total": {"value": 1},
+                },
+                "aggregations": {
+                    "status_counts": {"buckets": []},
+                    "src": {"buckets": []},
+                    "tgt": {"buckets": []},
+                },
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            results = await s.query("test", top_k=5)
+            assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_query_rejects_unconverted_score_that_would_have_passed(
+        self, global_config, embed_func, mock_client
+    ):
+        """Regression: comparing the raw engine score against the threshold
+        (instead of converting to cosine similarity first) let a weakly- or
+        negatively-correlated match through. Engine score 0.3 satisfies the
+        default 0.2 threshold directly, but its true cosine similarity is
+        2*0.3-1 = -0.4, which must be filtered out."""
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "v1",
+                            "_score": 0.3,
+                            "_source": {"content": "unrelated"},
                         },
                     ],
                     "total": {"value": 1},
@@ -5319,6 +5357,11 @@ class TestVectorStorage:
         marker and differs only in the vector dimension. Restoring readiness
         on the marker alone would let upsert skip _ensure_index_ready, which
         is the path that raises something an operator can act on.
+
+        The refusal is typed: lightrag-rebuild-vdb responds to it by DROPPING
+        the index, so it must be distinguishable from a cluster outage or a bad
+        credential. A bare ValueError here would force that tool to catch
+        Exception and destroy data on a false positive.
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -5333,7 +5376,7 @@ class TestVectorStorage:
                 lambda: s.get_by_ids(["v1"]),
                 lambda: s.get_vectors_by_ids(["v1"]),
             ):
-                with pytest.raises(ValueError, match="dimension"):
+                with pytest.raises(VectorSpaceMismatchError, match="dimension"):
                     await read()
 
             assert s._index_ready is False

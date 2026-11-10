@@ -12,7 +12,7 @@ import pipmaster as pm
 
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_QUERY_PRIORITY
-from ..exceptions import DataMigrationError
+from ..exceptions import DataMigrationError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..utils import _cooperative_yield, compute_mdhash_id, logger, validate_workspace
 
@@ -267,16 +267,56 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     legacy_dim = legacy_info.config.params.vectors.size
 
                     if vectors_config.size and legacy_dim != vectors_config.size:
-                        logger.error(
-                            f"Qdrant: Dimension mismatch detected! "
-                            f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
-                            f"but new embedding model expects {vectors_config.size}d."
-                        )
+                        # Scope the refusal to what THIS workspace would
+                        # actually migrate. A workspace-tagged legacy collection
+                        # is shared, and its other tenants' points are none of
+                        # this workspace's business: counting them would refuse a
+                        # workspace with nothing to migrate, and -- worse -- with
+                        # a refusal its own drop() cannot clear, since drop()
+                        # only ever removes this workspace's legacy points. The
+                        # untagged case keeps the whole-collection count on
+                        # purpose: the migration below reads ALL of it with no
+                        # workspace filter, so all of it really is this
+                        # workspace's migration source. ``None`` (tagging
+                        # undetermined) keeps the whole count too, matching
+                        # drop()'s own refusal to guess. Probed only here, on the
+                        # mismatch path, so the ordinary migration pays nothing
+                        # for it.
+                        migratable_count = legacy_count
+                        if _legacy_collection_has_workspace_field(
+                            client, legacy_collection
+                        ):
+                            migratable_count = client.count(
+                                collection_name=legacy_collection,
+                                count_filter=workspace_count_filter,
+                                exact=True,
+                            ).count
 
-                        raise DataMigrationError(
-                            f"Dimension mismatch between legacy collection '{legacy_collection}' "
-                            f"and new collection. Expected {vectors_config.size}d but got {legacy_dim}d."
-                        )
+                        if migratable_count > 0:
+                            logger.error(
+                                f"Qdrant: Dimension mismatch detected! "
+                                f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
+                                f"but new embedding model expects {vectors_config.size}d."
+                            )
+
+                            # Typed refusal, not DataMigrationError: nothing is
+                            # being migrated, and `lightrag-rebuild-vdb` recovers
+                            # from exactly this condition by dropping the
+                            # container and rebuilding it from the graph. It can
+                            # only do that if the refusal is distinguishable from
+                            # a cluster outage. See
+                            # docs/design/VectorSpaceProvenance.md.
+                            raise VectorSpaceMismatchError(
+                                backend="QdrantVectorDBStorage",
+                                container=legacy_collection,
+                                expected_dim=vectors_config.size,
+                                stored_dim=legacy_dim,
+                                detail=(
+                                    f"Its {migratable_count} record(s) for "
+                                    f"workspace '{workspace}' would otherwise be "
+                                    f"migrated into '{collection_name}'."
+                                ),
+                            )
 
             client.create_collection(
                 collection_name, vectors_config=vectors_config, hnsw_config=hnsw_config
@@ -560,9 +600,22 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # via the workspace_id payload field, so the lock must include the
         # effective workspace (not just final_namespace) to avoid letting
         # two effectively-different writers race on the same collection.
+        #
+        # Constructed here -- not in initialize() -- because initialize() can
+        # refuse: setup_collection() raises VectorSpaceMismatchError when the
+        # legacy collection holds another embedding space, and a refused
+        # storage MUST still be able to serve drop(), which is how
+        # `lightrag-rebuild-vdb` clears that refusal. Assigning the lock after
+        # the refusal left it at None, so drop() then died on `async with
+        # None` and the operator had to delete the collection through the
+        # Qdrant API by hand. Same shape as the OpenSearch fix; see
+        # docs/design/VectorSpaceProvenance.md.
         self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
         self._pending_vector_deletes: set[str] = set()
-        self._flush_lock = None
+        self._flush_lock = get_namespace_lock(
+            namespace=self.final_namespace,
+            workspace=self.effective_workspace,
+        )
 
     @staticmethod
     def _to_json_serializable(value: Any) -> Any:
@@ -702,12 +755,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"[{self.workspace}] Failed to initialize Qdrant collection '{self.namespace}': {e}"
                 )
                 raise
-
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                namespace=self.final_namespace,
-                workspace=self.effective_workspace,
-            )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Buffer vector docs for embedding and batched flush.
@@ -1374,6 +1421,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         Pipeline concurrency contract in ``docs/design/PipelineConcurrencyContract.md``); the only
         in-tree caller ``clear_documents`` enforces this.
 
+        Callable on an instance whose ``initialize()`` refused with
+        ``VectorSpaceMismatchError``: that is the recovery `lightrag-rebuild-vdb`
+        performs, and it converges because the legacy cleanup below removes the
+        very records the refusal was about.
+
         Pending-write buffers are cleared *before* the server-side delete
         is issued so a concurrent flush on this instance cannot resurrect
         the dropped data. As a consequence, if the server-side delete
@@ -1408,11 +1460,18 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         must=[workspace_filter_condition(self.effective_workspace)]
                     )
                 )
-                self._client.delete(
-                    collection_name=self.final_namespace,
-                    points_selector=workspace_selector,
-                    wait=True,
-                )
+                # The suffixed collection may legitimately not exist: an
+                # initialize() that refused with VectorSpaceMismatchError raised
+                # BEFORE creating it, and that refusal is exactly what
+                # `lightrag-rebuild-vdb` calls this method to clear. Nothing to
+                # delete there is success, not an error -- the legacy cleanup
+                # below is the part that actually clears the refusal.
+                if self._client.collection_exists(self.final_namespace):
+                    self._client.delete(
+                        collection_name=self.final_namespace,
+                        points_selector=workspace_selector,
+                        wait=True,
+                    )
 
                 # Also clear this workspace's data from the kept legacy
                 # collection so the next startup does not re-migrate the
