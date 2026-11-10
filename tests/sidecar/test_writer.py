@@ -757,7 +757,10 @@ def test_writer_traversal_asset_name_stays_in_assets_dir(tmp_path: Path) -> None
 
 @pytest.mark.offline
 def test_materialize_assets_containment_check_skips_escaping_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    lightrag_caplog,
 ) -> None:
     """Defense-in-depth: even if name sanitisation were bypassed and a target
     resolved outside the assets dir, the ``relative_to`` containment guard skips
@@ -770,7 +773,6 @@ def test_materialize_assets_containment_check_skips_escaping_target(
 
     import logging
 
-    monkeypatch.setattr(_writer.logger, "propagate", True)
     with caplog.at_level(logging.WARNING, logger=_writer.logger.name):
         out = _materialize_assets(
             [AssetSpec(ref="r1", suggested_name="ok.png", source=b"\x89PNG")],
