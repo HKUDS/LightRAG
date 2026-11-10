@@ -35,6 +35,7 @@ from lightrag.kg.shared_storage import (  # noqa: E402
     finalize_share_data,
 )
 from lightrag.utils import EmbeddingFunc  # noqa: E402
+from tests._log_capture import capture_lightrag_logs  # noqa: E402
 
 DIM = 8
 
@@ -544,8 +545,6 @@ async def test_reload_warns_on_index_meta_skew(tmp_path, caplog):
     on reload; auto-repair is intentionally not in scope here."""
     import logging
 
-    from lightrag.utils import logger as lightrag_logger
-
     embed = _CountingEmbed()
     writer = _make_storage(tmp_path, embed)
     await writer.initialize()
@@ -562,18 +561,11 @@ async def test_reload_warns_on_index_meta_skew(tmp_path, caplog):
     with open(writer._meta_file, "w", encoding="utf-8") as f:
         json.dump(meta, f)
 
-    # The lightrag logger sets propagate=False (lightrag/utils.py), so caplog —
-    # which attaches to root by default — never sees its records. Flip propagate
-    # for the duration of the reload, then restore.
     caplog.clear()
-    old_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger="lightrag"):
             reader = _make_storage(tmp_path, embed)
             await reader.initialize()
-    finally:
-        lightrag_logger.propagate = old_propagate
 
     # The reader's index still has 2 vectors but only 1 reachable via meta —
     # this is the "known risk, not auto-repaired" state.

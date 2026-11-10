@@ -261,3 +261,11 @@ markers = [
 
 [tool.ruff]
 target-version = "py310"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Newer ruff releases (observed with 0.17.x)
+# ship a much wider built-in default selection, so leaving `select` unset
+# makes the result depend on whichever ruff an editor extension or
+# pre-commit happens to bundle. This list is exactly the default of the
+# ruff version pinned in .pre-commit-config.yaml (0.15.17).
+select = ["E4", "E7", "E9", "F"]

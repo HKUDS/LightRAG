@@ -390,7 +390,7 @@ def test_gate_is_rebound_after_the_owning_loop_closes(tmp_path):
 
 
 async def test_a_failed_notification_is_not_reported_as_a_failed_write(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """A publication failure must not be raised as a save failure.
 
@@ -417,10 +417,6 @@ async def test_a_failed_notification_is_not_reported_as_a_failed_write(
         failing_set_all_update_flags,
     )
 
-    # lightrag's logger does not propagate, so caplog cannot see it otherwise.
-    logger = logging.getLogger("lightrag")
-    monkeypatch.setattr(logger, "propagate", True)
-
     with caplog.at_level(logging.ERROR, logger="lightrag"):
         committed = await storage.index_done_callback()
 
@@ -434,7 +430,7 @@ async def test_a_failed_notification_is_not_reported_as_a_failed_write(
 
 
 async def test_a_failed_writer_flag_reset_is_not_reported_as_a_failed_write(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """The own-flag reset is part of the publication, not part of the write.
 
@@ -459,9 +455,6 @@ async def test_a_failed_writer_flag_reset_is_not_reported_as_a_failed_write(
             raise RuntimeError("manager connection refused")
 
     monkeypatch.setattr(storage, "storage_updated", _FlagOnADeadManager())
-
-    logger = logging.getLogger("lightrag")
-    monkeypatch.setattr(logger, "propagate", True)
 
     with caplog.at_level(logging.ERROR, logger="lightrag"):
         committed = await storage.index_done_callback()
