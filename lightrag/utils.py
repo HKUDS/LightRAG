@@ -1547,6 +1547,26 @@ def priority_limit_async_func_call(
             if publish_stats:
                 await _publish_stats(force=True)
 
+        async def _execute_call(
+            task_state: TaskState, args: tuple, kwargs: dict, ctx: contextvars.Context
+        ):
+            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
+
+            def cancel_execution(future):
+                if future.cancelled():
+                    exec_task.cancel()
+
+            # The caller awaits a separate result future, not the execution task.
+            task_state.future.add_done_callback(cancel_execution)
+            try:
+                if max_execution_timeout is not None:
+                    return await asyncio.wait_for(
+                        exec_task, timeout=max_execution_timeout
+                    )
+                return await exec_task
+            finally:
+                task_state.future.remove_done_callback(cancel_execution)
+
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
@@ -1598,15 +1618,7 @@ def priority_limit_async_func_call(
                             # own context is copied from ctx (works on
                             # Python 3.10, unlike create_task's context=
                             # kwarg which needs 3.11+).
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task, timeout=max_execution_timeout
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1851,16 +1863,7 @@ def priority_limit_async_func_call(
                             # Run under the enqueuer's captured context, not
                             # this long-lived worker's creation-time context
                             # — see the matching comment in worker().
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task,
-                                    timeout=max_execution_timeout,
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -2414,6 +2417,8 @@ def priority_limit_async_func_call(
                     raise
 
             finally:
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 notify_needed = False
                 async with task_states_lock:
@@ -2436,7 +2441,9 @@ def priority_limit_async_func_call(
             **kwargs,
         ):
             """
-            Execute function with enhanced priority-based concurrency control and timeout handling
+            Execute function with enhanced priority-based concurrency control and timeout handling.
+
+            Caller cancellation and _timeout are propagated to the running coroutine.
 
             Args:
                 *args: Positional arguments passed to the function
@@ -2576,6 +2583,8 @@ def priority_limit_async_func_call(
 
             finally:
                 # Ensure cleanup
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 async with task_states_lock:
                     task_states.pop(task_id, None)

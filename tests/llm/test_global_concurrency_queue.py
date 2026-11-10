@@ -966,3 +966,104 @@ async def test_worker_cancel_cancels_inflight_call_global_limit_path():
             2, queue_name="orphan cancel global", concurrency_group=GROUP
         )(fn)
     )
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
+@pytest.mark.parametrize("execution_timeout", [None, 30.0])
+@pytest.mark.parametrize("abandonment", ["cancel", "timeout"])
+async def test_abandoned_running_call_frees_worker(
+    global_limit, execution_timeout, abandonment
+):
+    if global_limit:
+        _init({GROUP: 1})
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
+    release = asyncio.Event()
+
+    async def func(value):
+        if value != "blocked":
+            return value
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            stopped.set()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        max_execution_timeout=execution_timeout,
+        queue_name="caller cancellation",
+        concurrency_group=GROUP if global_limit else None,
+    )(func)
+    call = asyncio.create_task(
+        wrapped("blocked", _timeout=0.05 if abandonment == "timeout" else None)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        if abandonment == "cancel":
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+        else:
+            with pytest.raises(TimeoutError, match="User timeout"):
+                await call
+        assert await asyncio.wait_for(wrapped("next"), timeout=0.5) == "next"
+        assert stopped.is_set()
+        stats = await _wait_drained(wrapped)
+        assert stats["worker_count"] == 1
+        assert stats["cancelled_total"] == 1
+        assert stats["completed_total"] == 1
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        release.set()
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(call, return_exceptions=True)
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
+async def test_cancel_during_stats_publish_stops_running_call(
+    monkeypatch, global_limit
+):
+    _init({GROUP: 1} if global_limit else None)
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
+    release = asyncio.Event()
+    publish_release = asyncio.Event()
+
+    async def publish_stats(queue_name, snapshot):
+        await publish_release.wait()
+
+    monkeypatch.setattr(ss, "publish_queue_stats", publish_stats)
+
+    async def func(value):
+        if value != "blocked":
+            return value
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            stopped.set()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1, queue_name="cancel during publish", concurrency_group=GROUP
+    )(func)
+    call = asyncio.create_task(wrapped("blocked"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        publish_release.set()
+        assert await asyncio.wait_for(wrapped("next"), timeout=0.5) == "next"
+        assert stopped.is_set()
+        await _wait_drained(wrapped)
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        release.set()
+        publish_release.set()
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(call, return_exceptions=True)
