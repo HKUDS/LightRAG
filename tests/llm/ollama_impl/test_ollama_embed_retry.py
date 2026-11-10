@@ -7,8 +7,11 @@ text, e.g. "do embedding request: Post http://127.0.0.1:50830/embedding:
 EOF". ``ollama.AsyncClient`` turns that into
 ``ollama.ResponseError(body, status_code=500)``. Before this fix,
 ``ollama_embed`` carried no ``@retry`` decorator at all, so that one 500
-failed the whole batch immediately with zero retries, unlike the equivalent
-completion path.
+failed the whole batch immediately with zero retries.
+
+Fix-proof tests fail behaviorally (wrong call count / wrong exception) on the
+pre-fix code: the ``no_retry_wait`` fixture tolerates a function without a
+retry controller instead of raising AttributeError on it.
 """
 
 from types import SimpleNamespace
@@ -17,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 import ollama
 import pytest
-from tenacity import RetryError, wait_none
+from tenacity import wait_none
 
 from lightrag.llm.ollama import ollama_embed
 
@@ -26,6 +29,18 @@ pytestmark = pytest.mark.offline
 # Matches ollama.ResponseError.__str__ exactly for the status-500 case
 # reported against a large bge-m3 batch.
 _EOF_ERROR_TEXT = "do embedding request: Post http://127.0.0.1:50830/embedding: EOF"
+
+
+@pytest.fixture
+def no_retry_wait(monkeypatch):
+    """Drop the 4-10s backoff for the duration of one test.
+
+    ``monkeypatch`` restores the decorator's real wait strategy afterwards, so
+    the module-global retry controller does not leak into other tests.
+    """
+    retrying = getattr(ollama_embed.func, "retry", None)
+    if retrying is not None:
+        monkeypatch.setattr(retrying, "wait", wait_none())
 
 
 def _make_flaky_client(*, error: Exception, failures: int):
@@ -46,13 +61,8 @@ def _make_flaky_client(*, error: Exception, failures: int):
 
 
 @pytest.mark.asyncio
-async def test_transient_500_response_error_is_retried():
-    """RED before the fix: ollama_embed had no @retry at all, so this single
-    transient 500 would propagate on the first call. GREEN after: the retry
-    predicate matches ollama.ResponseError with status_code >= 500 and the
-    second attempt succeeds."""
-    ollama_embed.func.retry.wait = wait_none()
-
+async def test_transient_500_response_error_is_retried(no_retry_wait):
+    """Fix-proof: before the fix the single 500 propagated on the first call."""
     error = ollama.ResponseError(_EOF_ERROR_TEXT, 500)
     fake_client, calls = _make_flaky_client(error=error, failures=1)
 
@@ -64,25 +74,28 @@ async def test_transient_500_response_error_is_retried():
 
 
 @pytest.mark.asyncio
-async def test_persistent_500_response_error_gives_up_after_stop_after_attempt():
-    ollama_embed.func.retry.wait = wait_none()
-
+async def test_persistent_500_reraises_original_error_after_three_attempts(
+    no_retry_wait,
+):
+    """Fix-proof: three attempts, then the ORIGINAL ResponseError -- not a
+    tenacity.RetryError, which would hide the runner's message from the
+    document's error_msg."""
     error = ollama.ResponseError(_EOF_ERROR_TEXT, 500)
     fake_client, calls = _make_flaky_client(error=error, failures=10)
 
     with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        with pytest.raises((ollama.ResponseError, RetryError)):
+        with pytest.raises(ollama.ResponseError) as exc_info:
             await ollama_embed.func(["hello"], embed_model="bge-m3:latest")
 
+    assert type(exc_info.value) is ollama.ResponseError
+    assert "EOF (status code: 500)" in str(exc_info.value)
     assert calls["count"] == 3, "a persistent 500 stops at attempt 3"
 
 
 @pytest.mark.asyncio
-async def test_connection_error_is_retried():
-    """ConnectionError is what ollama.AsyncClient re-raises internally from
+async def test_connection_error_is_retried(no_retry_wait):
+    """Fix-proof: ConnectionError is what ollama.AsyncClient re-raises from
     httpx.ConnectError -- a plain connect-time failure, not a 500."""
-    ollama_embed.func.retry.wait = wait_none()
-
     error = ConnectionError(
         "Failed to connect to Ollama. Please check that Ollama is downloaded, "
         "running and accessible. https://ollama.com/download"
@@ -97,11 +110,9 @@ async def test_connection_error_is_retried():
 
 
 @pytest.mark.asyncio
-async def test_genuine_4xx_response_error_is_not_retried():
-    """A 404 (unknown model) is a caller error, not a transient one, and
-    must fail on the first attempt."""
-    ollama_embed.func.retry.wait = wait_none()
-
+async def test_genuine_4xx_response_error_is_not_retried(no_retry_wait):
+    """Stability (passes before and after the fix): a 404 (unknown model) is a
+    caller error, not a transient one, and must fail on the first attempt."""
     error = ollama.ResponseError("model 'bge-m3:latest' not found", 404)
     fake_client, calls = _make_flaky_client(error=error, failures=10)
 

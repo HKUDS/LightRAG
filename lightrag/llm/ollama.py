@@ -509,16 +509,20 @@ def _is_retryable_ollama_server_error(exc: BaseException) -> bool:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    # ConnectionError / httpx.TimeoutException: the same connection-level
-    # types retried on the completion path above -- ollama.AsyncClient
-    # catches httpx.ConnectError internally and re-raises it as the builtin
-    # ConnectionError, and leaves httpx timeouts to propagate unwrapped.
-    # ollama.ResponseError(5xx) is the extra case this path needs: see
-    # _is_retryable_ollama_server_error.
+    # ConnectionError: ollama.AsyncClient catches httpx.ConnectError
+    # internally and re-raises it as the builtin ConnectionError.
+    # httpx.TimeoutException: propagates unwrapped, but only fires when the
+    # caller passes a per-request ``timeout``. The API server passes none, so
+    # there the outer embedding worker's ``wait_for`` is the deadline, and it
+    # cancels this whole retry loop rather than one attempt.
+    # ollama.ResponseError(5xx): see _is_retryable_ollama_server_error.
     retry=(
         retry_if_exception_type((ConnectionError, httpx.TimeoutException))
         | retry_if_exception(_is_retryable_ollama_server_error)
     ),
+    # Surface the last attempt's own error (e.g. "... EOF (status code: 500)")
+    # instead of an opaque tenacity.RetryError in the document's error_msg.
+    reraise=True,
 )
 async def ollama_embed(
     texts: list[str],
