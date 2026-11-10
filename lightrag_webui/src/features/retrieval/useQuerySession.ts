@@ -212,8 +212,9 @@ export function useQuerySession({
   const thinkingProcessed = useRef(false)
   // Abort controller for the in-flight query (streaming or non-streaming)
   const abortControllerRef = useRef<AbortController | null>(null)
-  // Id of the assistant message currently receiving a response
-  const activeAssistantIdRef = useRef<string | null>(null)
+  // The in-flight answer's draft (see `submitQuery`): the single source of
+  // truth for that message until the query finishes or is stopped.
+  const activeDraftRef = useRef<MessageWithError | null>(null)
 
   // Unmount cleanup — abort in-flight work and drop timers.
   useEffect(() => {
@@ -232,7 +233,7 @@ export function useQuerySession({
       serverResponseTimeRef.current = null
       firstTokenRecordedRef.current = false
       isStreamingRef.current = false
-      activeAssistantIdRef.current = null
+      activeDraftRef.current = null
 
       if (thinkingStartTime.current) {
         thinkingStartTime.current = null
@@ -258,6 +259,11 @@ export function useQuerySession({
         role: 'user'
       }
 
+      // The answer's DRAFT. Every field of the in-flight answer is written
+      // here and only here; React state and the saved history receive
+      // copies (`publish`, the history writes). Never put this object itself
+      // into state: state updaters run whenever React gets to them, and a
+      // shared object made the saved history depend on whether they had run.
       const assistantMessage: MessageWithError = {
         id: generateUniqueId(),
         content: '',
@@ -278,12 +284,24 @@ export function useQuerySession({
       const prevMessages = [...messages]
 
       // Create an abort controller so the user can terminate this query via
-      // the Stop button. Track the active assistant message for handleStop.
+      // the Stop button. Track the active draft for handleStop.
       const controller = new AbortController()
       abortControllerRef.current = controller
-      activeAssistantIdRef.current = assistantMessage.id
+      activeDraftRef.current = assistantMessage
 
-      setMessages([...prevMessages, userMessage, assistantMessage])
+      // Copy the draft into state; the updater never mutates `prev`.
+      const publish = () => {
+        const snapshot = { ...assistantMessage }
+        setMessages((prev) => {
+          const index = prev.findIndex((m) => m.id === snapshot.id)
+          if (index < 0) return prev
+          const next = prev.slice()
+          next[index] = snapshot
+          return next
+        })
+      }
+
+      setMessages([...prevMessages, userMessage, { ...assistantMessage }])
       setIsLoading(true)
       // Disable the Stop button for a short cooldown so a fast double-click
       // on Send doesn't immediately abort this query.
@@ -314,23 +332,19 @@ export function useQuerySession({
       isStreamingRef.current = snapshot.stream ?? false
       assistantMessage.responseTime = 0
       assistantMessage.firstTokenTime = null
+      publish()
       if (responseTimerRef.current) clearInterval(responseTimerRef.current)
       responseTimerRef.current = setInterval(() => {
         const elapsed = (Date.now() - (responseStartRef.current ?? Date.now())) / 1000
-        const rounded = parseFloat(elapsed.toFixed(1))
-        assistantMessage.responseTime = rounded
-        setMessages((prev) => {
-          const newMessages = [...prev]
-          const lastMessage = newMessages[newMessages.length - 1]
-          if (lastMessage && lastMessage.id === assistantMessage.id) {
-            lastMessage.responseTime = rounded
-          }
-          return newMessages
-        })
+        assistantMessage.responseTime = parseFloat(elapsed.toFixed(1))
+        publish()
       }, 100)
 
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
+        // Stop finalized the draft and saved it; a late chunk must not make
+        // the visible message diverge from that saved one.
+        if (assistantMessage.isAborted) return
         // Record time-to-first-token on the very first content chunk.
         if (
           !isError &&
@@ -350,6 +364,7 @@ export function useQuerySession({
           assistantMessage.aiGenerated = true
         }
         assistantMessage.content += chunk
+        assistantMessage.isError = isError
 
         // Start thinking timer on first sight of think tag
         if (assistantMessage.content.includes('<think>') && !thinkingStartTime.current) {
@@ -398,28 +413,7 @@ export function useQuerySession({
         // Detect if the assistant message contains complete LaTeX formulas
         assistantMessage.latexRendered = detectLatexCompleteness(assistantMessage.content)
 
-        // Single unified update to avoid race conditions
-        setMessages((prev) => {
-          const newMessages = [...prev]
-          const lastMessage = newMessages[newMessages.length - 1]
-          if (lastMessage && lastMessage.id === assistantMessage.id) {
-            // Update all properties at once to maintain consistency
-            Object.assign(lastMessage, {
-              content: assistantMessage.content,
-              thinkingContent: assistantMessage.thinkingContent,
-              displayContent: assistantMessage.displayContent,
-              isThinking: assistantMessage.isThinking,
-              isError: isError,
-              aiGenerated: assistantMessage.aiGenerated,
-              mermaidRendered: assistantMessage.mermaidRendered,
-              latexRendered: assistantMessage.latexRendered,
-              thinkingTime: assistantMessage.thinkingTime,
-              responseTime: assistantMessage.responseTime,
-              firstTokenTime: assistantMessage.firstTokenTime
-            })
-          }
-          return newMessages
-        })
+        publish()
       }
 
       // Record a non-empty user prompt (page-injected behavior).
@@ -501,6 +495,7 @@ export function useQuerySession({
           setIsLoading(false)
           setQueryProgress(null)
           abortControllerRef.current = null
+          activeDraftRef.current = null
 
           // Stop the live response timer and stamp the final duration.
           if (responseTimerRef.current) {
@@ -529,16 +524,6 @@ export function useQuerySession({
             responseStartRef.current = null
             serverResponseTimeRef.current = null
             firstTokenRecordedRef.current = false
-            // Sync the finalized time into the rendered message
-            setMessages((prev) => {
-              const newMessages = [...prev]
-              const lastMessage = newMessages[newMessages.length - 1]
-              if (lastMessage && lastMessage.id === assistantMessage.id) {
-                lastMessage.responseTime = assistantMessage.responseTime
-              }
-              return newMessages
-            })
-
             // Enhanced cleanup with error handling to prevent memory leaks
             try {
               // Final COT state validation and cleanup
@@ -570,11 +555,13 @@ export function useQuerySession({
               thinkingStartTime.current = null
             }
 
-            // Save history into THIS page's injected storage
+            // The draft is final: show it, then save the same state into
+            // THIS page's injected storage.
+            publish()
             try {
               historyStore
                 .getState()
-                .setHistory([...prevMessages, userMessage, assistantMessage])
+                .setHistory([...prevMessages, userMessage, { ...assistantMessage }])
             } catch (error) {
               console.error('Error saving retrieval history:', error)
             }
@@ -619,33 +606,31 @@ export function useQuerySession({
 
     abortControllerRef.current = null
 
-    // Finalize the terminated assistant message and persist immediately so
-    // the terminated state is the authoritative saved history.
-    const activeId = activeAssistantIdRef.current
-    let stoppedResponseTime: number | null = null
-    if (responseStartRef.current) {
-      stoppedResponseTime = parseFloat(
-        ((Date.now() - responseStartRef.current) / 1000).toFixed(1)
-      )
-    }
-    const finalizedMessages = messages.map((m) => {
-      if (m.id !== activeId) return m
+    // Finalize the terminated answer and persist immediately so the
+    // terminated state is the authoritative saved history. Finalize the
+    // DRAFT, not the rendered message: chunks may have reached the draft
+    // after the last render, and the rendered copy would lose them.
+    const draft = activeDraftRef.current
+    activeDraftRef.current = null
+    if (draft) {
       // Terminated mid-thinking: finalize the COT block so the partial
       // reasoning stays visible instead of vanishing once isThinking clears.
-      let thinkingTime = m.thinkingTime ?? null
-      if (m.isThinking && thinkingTime === null && thinkingStartTime.current) {
-        thinkingTime = parseFloat(
+      if (draft.isThinking && draft.thinkingTime == null && thinkingStartTime.current) {
+        draft.thinkingTime = parseFloat(
           ((Date.now() - thinkingStartTime.current) / 1000).toFixed(2)
         )
       }
-      return {
-        ...m,
-        isThinking: false,
-        isAborted: true,
-        thinkingTime,
-        responseTime: stoppedResponseTime ?? m.responseTime
+      if (responseStartRef.current) {
+        draft.responseTime = parseFloat(
+          ((Date.now() - responseStartRef.current) / 1000).toFixed(1)
+        )
       }
-    })
+      draft.isThinking = false
+      draft.isAborted = true
+    }
+    const finalizedMessages = messages.map((m) =>
+      draft && m.id === draft.id ? { ...draft } : m
+    )
     setMessages(finalizedMessages)
     try {
       historyStore.getState().setHistory(finalizedMessages)
