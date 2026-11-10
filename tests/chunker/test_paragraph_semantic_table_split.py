@@ -33,14 +33,6 @@ def _make_tokenizer() -> Tokenizer:
     return Tokenizer(model_name="char", tokenizer=_CharTokenizer())
 
 
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    # The ``lightrag`` logger sets ``propagate=False`` (see lightrag.utils), so
-    # caplog's root handler captures nothing by default. Flip it on for the
-    # duration of a test that asserts on the degrade warning.
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
 @pytest.mark.offline
 def test_split_rows_by_tokens_few_rows_huge_total_no_empty_slice():
     # Reproduces the bug where target_chunks > len(rows) made target_rows
@@ -1138,7 +1130,7 @@ def test_split_table_text_budgets_header_before_splitting():
 
 @pytest.mark.offline
 def test_split_table_text_degrades_when_header_would_exceed_cap(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ):
     # Cap edge: a single-row slice whose wrapped <table> sits just under
     # target_max yet leaves no room for the header it would need. Rather than
@@ -1180,7 +1172,7 @@ def test_split_table_text_degrades_when_header_would_exceed_cap(
 
 @pytest.mark.offline
 def test_split_table_text_pinned_header_oversized_row_preserves_header(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ):
     # Codex P2 regression: a pinned-header JSON table whose data portion holds a
     # single row larger than target_max. The old code character-split the

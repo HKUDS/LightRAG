@@ -21,16 +21,9 @@ class DummyKV:
         return {"file_path": "doc.pdf"}
 
 
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    """``lightrag.utils.logger`` sets ``propagate = False``; restore
-    propagation locally so ``caplog`` can capture WARNING records."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
 @pytest.mark.asyncio
 async def test_rebuild_accepts_valid_empty_json_without_delimiter_warning(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         nodes, edges = await _rebuild_from_extraction_result(
@@ -58,7 +51,7 @@ async def test_rebuild_still_returns_entities_from_nonempty_json() -> None:
 
 @pytest.mark.asyncio
 async def test_rebuild_still_falls_back_on_unparseable_json_looking_text(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ) -> None:
     """Text that starts with '{' but is not recoverable JSON, and also has no
     completion marker, is the pre-existing garbage-input case: falling

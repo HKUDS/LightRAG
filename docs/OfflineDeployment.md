@@ -174,8 +174,10 @@ The steps below apply to non-Docker pip deployments.
 The two language models are pinned to an exact version (`zh_core_web_sm` /
 `en_core_web_sm` 3.8.0) because smart_heading promises deterministic re-parse
 results; a model version drift would silently change its decisions. The zh
-model's tokenizer backend `spacy-pkuseg` is pinned and shipped with the model
-wheels for the same reason.
+model's tokenizer backend `spacy-pkuseg` is pinned exactly for the same
+reason. Unlike the models it is a PyPI package, so the `api` extra declares it
+and `pip install lightrag-hku[api]` / `uv sync --extra api` install it; it is
+also shipped with the model wheels so the offline model install can resolve it.
 
 ### Prepare in Online Environment
 
