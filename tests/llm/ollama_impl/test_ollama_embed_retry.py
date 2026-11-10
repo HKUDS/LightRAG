@@ -17,6 +17,7 @@ retry controller instead of raising AttributeError on it.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import numpy as np
 import ollama
 import pytest
@@ -121,3 +122,60 @@ async def test_genuine_4xx_response_error_is_not_retried(no_retry_wait):
             await ollama_embed.func(["hello"], embed_model="bge-m3:latest")
 
     assert calls["count"] == 1, "a genuine 404 must not be retried"
+
+
+_REQUEST = httpx.Request("POST", "http://localhost:11434/api/embed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        # The `ollama serve` process dying mid-request: the connection closes
+        # without a complete response. ollama.AsyncClient does not wrap this.
+        httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=_REQUEST
+        ),
+        httpx.ReadError("Connection reset by peer", request=_REQUEST),
+    ],
+    ids=["remote-protocol-error", "read-error"],
+)
+async def test_mid_request_disconnect_is_retried(no_retry_wait, error):
+    """Fix-proof: an established connection dropping mid-request is retried,
+    as the OpenAI binding retries it through APIConnectionError."""
+    fake_client, calls = _make_flaky_client(error=error, failures=1)
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        result = await ollama_embed.func(["hello"], embed_model="bge-m3:latest")
+
+    assert np.array_equal(result, np.array([[0.1, 0.2, 0.3]]))
+    assert calls["count"] == 2, "a mid-request disconnect should be retried"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_429_is_retried(no_retry_wait):
+    """Fix-proof: 429 is Ollama's documented rate-limit status
+    (https://docs.ollama.com/api/errors)."""
+    error = ollama.ResponseError('{"error": "too many requests"}', 429)
+    fake_client, calls = _make_flaky_client(error=error, failures=1)
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        result = await ollama_embed.func(["hello"], embed_model="bge-m3:latest")
+
+    assert np.array_equal(result, np.array([[0.1, 0.2, 0.3]]))
+    assert calls["count"] == 2, "a 429 should be retried"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 408, 409])
+async def test_other_4xx_is_not_retried(no_retry_wait, status):
+    """Stability: only 429 is exempted from fail-fast. 408 / 409 are not
+    documented Ollama statuses, so they fail on the first attempt."""
+    error = ollama.ResponseError("bad request", status)
+    fake_client, calls = _make_flaky_client(error=error, failures=10)
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        with pytest.raises(ollama.ResponseError):
+            await ollama_embed.func(["hello"], embed_model="bge-m3:latest")
+
+    assert calls["count"] == 1, f"a {status} must not be retried"
