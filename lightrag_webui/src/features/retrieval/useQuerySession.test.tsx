@@ -28,6 +28,7 @@ function QuerySession({ historyStore, stream = true }: {
       <button disabled={session.isLoading} onClick={() => void session.submitQuery('My question')}>
         Send
       </button>
+      <button onClick={session.handleStop}>Stop</button>
       {session.messages.map((message) => (
         <div key={message.id} role={message.isError ? 'alert' : undefined}>
           <ChatMessage message={message} />
@@ -80,7 +81,7 @@ const persistedAssistant = (): MessageWithError => {
 
 describe('query error persistence', () => {
   for (const failure of ['stream', 'partial stream', 'non-stream'] as const) {
-    test(`${failure} failures stay classified after reload and are excluded from bypass history`, async () => {
+    test(`${failure} failures stay classified after reload and are dropped from bypass history as a turn`, async () => {
       const isStreaming = failure !== 'non-stream'
       if (isStreaming) {
         streamLines = failure === 'partial stream'
@@ -108,7 +109,9 @@ describe('query error persistence', () => {
       requests.length = 0
       await send()
       expect(requests).toHaveLength(1)
-      expect(requests[0].conversation_history).toEqual([{ role: 'user', content: 'My question' }])
+      // The failed turn is dropped as a pair: neither the diagnostic nor the
+      // question it never answered reaches the model.
+      expect(requests[0].conversation_history).toEqual([])
       expect(screen.queryAllByText(ANSWER)).toHaveLength(1)
     })
   }
@@ -142,4 +145,54 @@ describe('query error persistence', () => {
       ])
     })
   }
+})
+
+describe('stop persistence', () => {
+  test('stop persists every chunk received before it, even ones React has not rendered yet', async () => {
+    let enqueue: (line: Record<string, string>) => void = () => {}
+    fetchSpy.mockImplementation((async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const encoder = new TextEncoder()
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          enqueue = (line) => controller.enqueue(encoder.encode(JSON.stringify(line) + '\n'))
+          init?.signal?.addEventListener('abort', () => {
+            controller.error(new DOMException('Aborted', 'AbortError'))
+          })
+        }
+      })
+      return new Response(body, { headers: { 'Content-Type': 'application/x-ndjson' } })
+    }) as typeof fetch)
+
+    renderWithProviders(<QuerySession historyStore={createRetrievalHistoryStore(HISTORY_KEY)} />)
+    await send()
+    await act(async () => {
+      enqueue({ response: 'First chunk. ' })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+
+    // The second chunk reaches the session but the Stop click lands before
+    // React re-renders, so the rendered message still lacks it.
+    await act(async () => {
+      enqueue({ response: 'Second chunk.' })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    })
+
+    const saved = persistedAssistant()
+    expect(saved.isAborted).toBe(true)
+    expect(saved.content).toBe('First chunk. Second chunk.')
+  })
+})
+
+describe('final render', () => {
+  test('finalization reaches the rendered message, not only the saved one', async () => {
+    // A stream that ends inside a think block: only finalization clears the
+    // thinking state, after the last chunk was rendered.
+    streamLines = [{ response: '<think>unfinished reasoning' }]
+    renderWithProviders(<QuerySession historyStore={createRetrievalHistoryStore(HISTORY_KEY)} />)
+    await send()
+
+    expect(persistedAssistant().isThinking).toBe(false)
+    expect(screen.queryAllByText('Thinking...')).toHaveLength(0)
+  })
 })
