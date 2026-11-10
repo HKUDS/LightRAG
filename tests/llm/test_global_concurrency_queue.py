@@ -966,3 +966,150 @@ async def test_worker_cancel_cancels_inflight_call_global_limit_path():
             2, queue_name="orphan cancel global", concurrency_group=GROUP
         )(fn)
     )
+
+
+@pytest.mark.parametrize("graceful", [False, True])
+@pytest.mark.parametrize("queue_timeout", [None, 10.0])
+async def test_shutdown_rejects_call_waiting_to_enter_bounded_queue(
+    graceful, queue_timeout
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def provider(value):
+        calls.append(value)
+        if value == "running":
+            entered.set()
+            await release.wait()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1, max_queue_size=1, queue_name="bounded admission shutdown"
+    )(provider)
+    running = asyncio.create_task(wrapped("running"))
+    queued = waiting = closing = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        queued = asyncio.create_task(wrapped("queued"))
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["queued"] != 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+        waiting = asyncio.create_task(
+            wrapped("not admitted", _queue_timeout=queue_timeout)
+        )
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["in_flight"] != 3:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+
+        closing = asyncio.create_task(wrapped.shutdown(graceful=graceful, timeout=2.0))
+        with pytest.raises(RuntimeError, match="Queue is shutting down"):
+            await asyncio.wait_for(asyncio.shield(waiting), timeout=0.5)
+        assert calls == ["running"]
+
+        if graceful:
+            release.set()
+            assert await running == "running"
+            assert await queued == "queued"
+        else:
+            for call in (running, queued):
+                with pytest.raises(asyncio.CancelledError):
+                    await call
+        await closing
+        assert calls == (["running", "queued"] if graceful else ["running"])
+        stats = await wrapped.get_queue_stats()
+        assert stats["queued"] == 0
+        assert stats["in_flight"] == 0
+        assert stats["submitted_total"] == 2
+        assert stats["rejected_total"] == 1
+        with pytest.raises(RuntimeError, match="Queue is shutting down"):
+            await wrapped("after shutdown")
+        assert (await wrapped.get_queue_stats())["rejected_total"] == 2
+    finally:
+        release.set()
+        if closing is not None:
+            await closing
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(
+            *(call for call in (running, queued, waiting) if call is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.parametrize("abandonment", [None, "cancel", "timeout"])
+async def test_bounded_admission_resumes_after_capacity_is_available(abandonment):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def provider(value):
+        calls.append(value)
+        if value == "running":
+            entered.set()
+            await release.wait()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1, max_queue_size=1, queue_name="bounded admission capacity"
+    )(provider)
+    running = asyncio.create_task(wrapped("running"))
+    pending = [running]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        queued = asyncio.create_task(wrapped("queued"))
+        pending.append(queued)
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["queued"] != 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+
+        waiting = asyncio.create_task(
+            wrapped(
+                "waiting", _queue_timeout=0.05 if abandonment == "timeout" else None
+            )
+        )
+        pending.append(waiting)
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["in_flight"] != 3:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+        if abandonment == "cancel":
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+        elif abandonment == "timeout":
+            with pytest.raises(lr_utils.QueueFullError):
+                await waiting
+
+        if abandonment is None:
+            another = asyncio.create_task(wrapped("another"))
+            pending.append(another)
+            deadline = asyncio.get_running_loop().time() + 2.0
+            while (await wrapped.get_queue_stats())["in_flight"] != 4:
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0)
+
+        release.set()
+        assert await asyncio.wait_for(running, timeout=2.0) == "running"
+        assert await asyncio.wait_for(queued, timeout=2.0) == "queued"
+        if abandonment is None:
+            assert await asyncio.wait_for(waiting, timeout=2.0) == "waiting"
+            assert await asyncio.wait_for(another, timeout=2.0) == "another"
+        assert await asyncio.wait_for(wrapped("next"), timeout=2.0) == "next"
+        assert calls == (
+            ["running", "queued", "waiting", "another", "next"]
+            if abandonment is None
+            else ["running", "queued", "next"]
+        )
+        stats = await _wait_drained(wrapped)
+        assert stats["completed_total"] == len(calls)
+        assert stats["submitted_total"] == len(calls)
+        assert stats["rejected_total"] == 0
+    finally:
+        release.set()
+        for call in pending:
+            call.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await wrapped.shutdown(graceful=False)

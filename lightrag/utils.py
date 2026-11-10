@@ -1285,6 +1285,7 @@ def priority_limit_async_func_call(
         publish_stats = False
         shared = None  # lazily imported lightrag.kg.shared_storage module
         work_available = asyncio.Event()
+        queue_space_available = asyncio.Event()
         admission_cond = asyncio.Condition()
         # Logical queued count: live tasks waiting in the queue (excludes
         # running tasks and cancelled zombies) — same capacity semantics as
@@ -1564,6 +1565,8 @@ def priority_limit_async_func_call(
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
+
+                        queue_space_available.set()
 
                         # Get task state and mark worker as started
                         async with task_states_lock:
@@ -2166,6 +2169,7 @@ def priority_limit_async_func_call(
                     admission_cond.notify_all()
             else:
                 accepting_new_tasks = False
+                queue_space_available.set()
 
             drain_timed_out = False
             if graceful and queue is not None:
@@ -2451,6 +2455,7 @@ def priority_limit_async_func_call(
             Raises:
                 TimeoutError: If the function call times out at any level
                 QueueFullError: If the queue is full and waiting times out
+                RuntimeError: If shutdown closes admission, including while waiting for queue capacity
                 Any exception raised by the decorated function
             """
             nonlocal submitted_total, completed_total, cancelled_total, failed_total
@@ -2498,32 +2503,37 @@ def priority_limit_async_func_call(
                 # limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
-                # Queue the task with timeout handling
-                try:
+                async def enqueue():
+                    nonlocal rejected_total
+                    # A bounded Queue.put() cannot be woken by shutdown on
+                    # Python 3.10. Wait for capacity or closure, then admit
+                    # without yielding so shutdown cannot race the final check.
+                    while queue.full() and accepting_new_tasks:
+                        queue_space_available.clear()
+                        await queue_space_available.wait()
                     if not accepting_new_tasks:
                         rejected_total += 1
                         raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                    queue.put_nowait(
+                        (_priority, current_count, task_id, args, kwargs, ctx)
+                    )
+
+                # Queue the task with timeout handling
+                try:
                     if _queue_timeout is not None:
-                        await asyncio.wait_for(
-                            queue.put(
-                                (_priority, current_count, task_id, args, kwargs, ctx)
-                            ),
-                            timeout=_queue_timeout,
-                        )
+                        await asyncio.wait_for(enqueue(), timeout=_queue_timeout)
                     else:
-                        await queue.put(
-                            (_priority, current_count, task_id, args, kwargs, ctx)
-                        )
+                        await enqueue()
                     submitted_total += 1
                     await _publish_stats()
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
                     )
-                except Exception as e:
-                    # Clean up on queue error
+                except Exception:
+                    # Admission failed: no worker will consume this future.
                     if not future.done():
-                        future.set_exception(e)
+                        future.cancel()
                     raise
 
                 # Wait for result with timeout handling
