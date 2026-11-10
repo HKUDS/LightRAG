@@ -2184,59 +2184,71 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # them while the response cache and other storages are still usable;
         # otherwise closing an asyncio.run()/manual loop after finalize leaves
         # their queue.get() coroutines pending on the destroyed event loop.
-        await self._shutdown_model_queues()
-        if self._storages_status == StoragesStatus.INITIALIZED:
-            await self._commit_cache_pair_before_finalize()
-            storages = [
-                ("full_docs", self.full_docs),
-                ("text_chunks", self.text_chunks),
-                ("full_entities", self.full_entities),
-                ("full_relations", self.full_relations),
-                ("entity_chunks", self.entity_chunks),
-                ("relation_chunks", self.relation_chunks),
-                ("entities_vdb", self.entities_vdb),
-                ("relationships_vdb", self.relationships_vdb),
-                ("chunks_vdb", self.chunks_vdb),
-                ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
-                ("llm_response_cache", self.llm_response_cache),
-                ("doc_status", self.doc_status),
-            ]
+        embedding_shutdown_started = False
+        try:
+            await self._shutdown_model_queues(include_embedding=False)
+            if self._storages_status == StoragesStatus.INITIALIZED:
+                await self._commit_cache_pair_before_finalize()
+                storages = [
+                    ("full_docs", self.full_docs),
+                    ("text_chunks", self.text_chunks),
+                    ("full_entities", self.full_entities),
+                    ("full_relations", self.full_relations),
+                    ("entity_chunks", self.entity_chunks),
+                    ("relation_chunks", self.relation_chunks),
+                    ("entities_vdb", self.entities_vdb),
+                    ("relationships_vdb", self.relationships_vdb),
+                    ("chunks_vdb", self.chunks_vdb),
+                    ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
+                    ("llm_response_cache", self.llm_response_cache),
+                    ("doc_status", self.doc_status),
+                ]
 
-            # Finalize each storage individually to ensure one failure doesn't prevent others from closing
-            successful_finalizations = []
-            failed_finalizations = []
+                # Finalize each storage individually to ensure one failure doesn't prevent others from closing
+                successful_finalizations = []
+                failed_finalizations = []
 
-            for storage_name, storage in storages:
-                if storage:
-                    try:
-                        if storage is self.llm_response_cache:
-                            await self._quarantine_cache_before_finalize(
-                                chunks_finalize_failed=(
-                                    "text_chunks" in failed_finalizations
+                for storage_name, storage in storages:
+                    if storage_name == "chunk_entity_relation_graph":
+                        # Deferred vector finalizers need embedding; its drain
+                        # must still precede response-cache/client teardown.
+                        embedding_shutdown_started = True
+                        await self._shutdown_embedding_queue()
+                    if storage:
+                        try:
+                            if storage is self.llm_response_cache:
+                                await self._quarantine_cache_before_finalize(
+                                    chunks_finalize_failed=(
+                                        "text_chunks" in failed_finalizations
+                                    )
                                 )
-                            )
-                        await storage.finalize()
-                        successful_finalizations.append(storage_name)
-                        logger.debug(f"Successfully finalized {storage_name}")
-                    except Exception as e:
-                        error_msg = f"Failed to finalize {storage_name}: {e}"
-                        logger.error(error_msg)
-                        failed_finalizations.append(storage_name)
+                            await storage.finalize()
+                            successful_finalizations.append(storage_name)
+                            logger.debug(f"Successfully finalized {storage_name}")
+                        except Exception as e:
+                            error_msg = f"Failed to finalize {storage_name}: {e}"
+                            logger.error(error_msg)
+                            failed_finalizations.append(storage_name)
 
-            # Log summary of finalization results
-            if successful_finalizations:
-                logger.info(
-                    f"Successfully finalized {len(successful_finalizations)} storages"
-                )
+                # Log summary of finalization results
+                if successful_finalizations:
+                    logger.info(
+                        f"Successfully finalized {len(successful_finalizations)} storages"
+                    )
 
-            if failed_finalizations:
-                logger.error(
-                    f"Failed to finalize {len(failed_finalizations)} storages: {', '.join(failed_finalizations)}"
-                )
-            else:
-                logger.debug("All storages finalized successfully")
+                if failed_finalizations:
+                    logger.error(
+                        f"Failed to finalize {len(failed_finalizations)} storages: {', '.join(failed_finalizations)}"
+                    )
+                else:
+                    logger.debug("All storages finalized successfully")
 
-            self._storages_status = StoragesStatus.FINALIZED
+                self._storages_status = StoragesStatus.FINALIZED
+        finally:
+            if not embedding_shutdown_started:
+                # A cancelled vector flush must not strand the queue workers.
+                # Queue shutdown remains interruptible, as before.
+                await self._shutdown_embedding_queue()
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()

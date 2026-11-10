@@ -273,11 +273,12 @@ class _RoleLLMMixin:
             tasks = list(self._retired_llm_queue_cleanup_tasks)
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _shutdown_model_queues(self) -> None:
+    async def _shutdown_model_queues(self, *, include_embedding: bool = True) -> None:
         """Shut down every queue owned by this instance.
 
-        Finalization must call this before tearing down storages: role LLM
-        calls can still use the response cache while their queues drain.
+        Role LLM calls can still use the response cache while their queues
+        drain. Finalization excludes embedding here: vector storages may
+        still need it to materialize deferred writes in their finalizers.
         Queue shutdown is best-effort, matching storage finalization, but one
         broken wrapper must not leave the remaining workers attached to the
         event loop.
@@ -289,12 +290,9 @@ class _RoleLLMMixin:
             for spec in ROLES
         ]
         embedding = getattr(self, "embedding_func", None)
-        wrappers.extend(
-            (
-                ("embedding", getattr(embedding, "func", None)),
-                ("rerank", getattr(self, "rerank_model_func", None)),
-            )
-        )
+        if include_embedding:
+            wrappers.append(("embedding", getattr(embedding, "func", None)))
+        wrappers.append(("rerank", getattr(self, "rerank_model_func", None)))
 
         seen: set[int] = set()
         for label, wrapped in wrappers:
@@ -305,6 +303,16 @@ class _RoleLLMMixin:
                 await self._shutdown_llm_wrapper(wrapped)
             except Exception as e:
                 logger.error(f"Failed to shut down {label} queue: {e}")
+
+    async def _shutdown_embedding_queue(self) -> None:
+        """Stop embedding after vector finalizers, before the response cache."""
+        embedding = getattr(self, "embedding_func", None)
+        wrapped = getattr(embedding, "func", None)
+        if wrapped is not None:
+            try:
+                await self._shutdown_llm_wrapper(wrapped)
+            except Exception as e:
+                logger.error(f"Failed to shut down embedding queue: {e}")
 
     def _apply_llm_role_config_update(
         self,
