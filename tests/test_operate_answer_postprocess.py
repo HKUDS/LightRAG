@@ -57,8 +57,23 @@ LONG_ANSWER = (
 )
 
 
-def _config(answer: str) -> dict:
-    async def query_model(*_args, **_kwargs):
+QUERY = "How is it configured?"
+
+
+class _AnswerCacheKV:
+    """Answer-cache storage that hits on every key with ``answer``."""
+
+    def __init__(self, answer: str):
+        self.global_config = {"enable_llm_cache": True}
+        self._answer = answer
+
+    async def get_by_id(self, _key):
+        return {"return": self._answer, "create_time": 0}
+
+
+def _config(answer: str, seen: dict) -> dict:
+    async def query_model(*_args, system_prompt=None, **_kwargs):
+        seen["sys_prompt"] = system_prompt or ""
         return answer
 
     return {
@@ -72,23 +87,16 @@ def _config(answer: str) -> dict:
     }
 
 
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_naive_query_returns_long_answer_unmodified():
-    result = await naive_query(
-        "How is it configured?",
-        _ChunksVDB(),
-        QueryParam(mode="naive", enable_rerank=False, stream=False),
-        _config(LONG_ANSWER),
-        hashing_kv=None,
-    )
+async def _run_query(kind: str, monkeypatch, config: dict, hashing_kv=None):
+    if kind == "naive":
+        return await naive_query(
+            QUERY,
+            _ChunksVDB(),
+            QueryParam(mode="naive", enable_rerank=False, stream=False),
+            config,
+            hashing_kv=hashing_kv,
+        )
 
-    assert result.content == LONG_ANSWER
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_kg_query_returns_long_answer_unmodified(monkeypatch):
     async def fake_keywords(*_args, **_kwargs):
         return ["configuration"], ["model settings"]
 
@@ -97,17 +105,56 @@ async def test_kg_query_returns_long_answer_unmodified(monkeypatch):
 
     monkeypatch.setattr("lightrag.operate.get_keywords_from_query", fake_keywords)
     monkeypatch.setattr("lightrag.operate._build_query_context", fake_context)
-
-    config = _config(LONG_ANSWER)
-    result = await kg_query(
-        "How is it configured?",
+    return await kg_query(
+        QUERY,
         None,
         None,
         None,
         _TextChunks(config),
         QueryParam(mode="mix", enable_rerank=False, stream=False),
         config,
-        hashing_kv=None,
+        hashing_kv=hashing_kv,
+    )
+
+
+def _assert_old_block_would_fire(seen: dict) -> None:
+    # The removed block only ran when the answer outgrew the rendered system
+    # prompt. If prompt templates ever grow past LONG_ANSWER, this test would
+    # pass even with the block restored, so pin the precondition explicitly.
+    assert seen["sys_prompt"], "stub LLM did not receive a system prompt"
+    assert len(LONG_ANSWER) > len(seen["sys_prompt"]), (
+        "LONG_ANSWER no longer outgrows the system prompt; lengthen it so "
+        "this test still guards the removed clean-up block"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("kind", ["naive", "kg"])
+async def test_query_returns_long_answer_unmodified(kind, monkeypatch):
+    seen: dict = {}
+    result = await _run_query(kind, monkeypatch, _config(LONG_ANSWER, seen))
+
+    _assert_old_block_would_fire(seen)
+    assert result.content == LONG_ANSWER
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("kind", ["naive", "kg"])
+async def test_query_cache_hit_returns_cached_answer_unmodified(kind, monkeypatch):
+    # The cache stores the raw answer and the clean-up block used to run on
+    # every hit as well. Render the prompt once without a cache to prove the
+    # precondition, then serve the same request from the cache.
+    seen: dict = {}
+    await _run_query(kind, monkeypatch, _config(LONG_ANSWER, seen))
+    _assert_old_block_would_fire(seen)
+
+    async def must_not_call(*_args, **_kwargs):
+        raise AssertionError("cache hit must not call the LLM")
+
+    config = _config(LONG_ANSWER, {})
+    config["role_llm_funcs"] = {"query": must_not_call}
+    result = await _run_query(
+        kind, monkeypatch, config, hashing_kv=_AnswerCacheKV(LONG_ANSWER)
     )
 
     assert result.content == LONG_ANSWER
