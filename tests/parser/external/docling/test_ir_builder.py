@@ -250,6 +250,8 @@ def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None
     ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     levels = [b.level for b in ir.blocks]
     assert levels == [2, 2, 2]  # all bumped by +1, no normalization
+    # No title → no IR level 1; same-level siblings are not each other's parents.
+    assert [b.parent_headings for b in ir.blocks] == [[], [], []]
 
 
 # ---------------------------------------------------------------------------
