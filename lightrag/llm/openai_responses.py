@@ -157,13 +157,36 @@ def _has_native_structured_format(text_param: Any) -> bool:
     return not (isinstance(text_format, dict) and text_format.get("type") == "text")
 
 
+def _loggable_kwargs(api_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Request parameters safe for ordinary logs.
+
+    ``instructions`` carries the system prompt, which holds retrieved document
+    context; it is replaced by its length. Full prompts are logged only through
+    ``verbose_debug``.
+    """
+    loggable = dict(api_kwargs)
+    instructions = loggable.get("instructions")
+    if isinstance(instructions, str):
+        loggable["instructions"] = f"<{len(instructions)} chars>"
+    return loggable
+
+
 def _translate_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Translate Chat Completions kwargs into Responses parameters.
 
     Only the spellings that genuinely differ are rewritten; anything else is
     forwarded untouched so provider-specific extras keep working.
+
+    Never mutates ``kwargs`` or any dict nested in it: callers pass shared
+    configuration (``llm_model_kwargs``, role options), so writing a
+    request-specific ``text.format`` or ``reasoning.summary`` into it would
+    leak into every later call.
     """
     translated = dict(kwargs)
+    # Nested dicts this function or its caller writes into are copied first.
+    for nested in ("reasoning", "text"):
+        if isinstance(translated.get(nested), dict):
+            translated[nested] = dict(translated[nested])
 
     # Output budget: first alias present wins, in declared precedence order.
     max_tokens_value = None
@@ -518,7 +541,7 @@ async def openai_responses_complete_if_cache(
 
     logger.debug("===== Entering func of LLM (openai_responses) =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")
-    logger.debug(f"Additional kwargs: {api_kwargs}")
+    logger.debug(f"Additional kwargs: {_loggable_kwargs(api_kwargs)}")
     logger.debug(f"Num of history messages: {len(history_messages)}")
     verbose_debug(f"System prompt: {system_prompt}")
     verbose_debug(f"Query: {prompt}")
@@ -559,7 +582,7 @@ async def openai_responses_complete_if_cache(
         extra = ("\n" + "\n".join(extra_parts)) if extra_parts else ""
         logger.error(
             f"OpenAI Responses API Call Failed,\nModel: {model},\n"
-            f"Params: {api_kwargs}, Got: {e}{extra}"
+            f"Params: {_loggable_kwargs(api_kwargs)}, Got: {e}{extra}"
         )
         await _close_quietly(client)
         raise

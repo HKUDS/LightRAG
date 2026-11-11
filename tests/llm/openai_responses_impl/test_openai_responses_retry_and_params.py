@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
-from openai import APIStatusError, RateLimitError
+from openai import APIStatusError, InternalServerError, RateLimitError
 from tenacity import wait_none
 
 from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
@@ -487,3 +487,78 @@ async def test_reasoning_summary_option_reads_its_own_env(monkeypatch):
     options = OpenAIResponsesLLMOptions.options_dict(parser.parse_args([]))
 
     assert options["reasoning_summary"] == "concise"
+
+
+# --------------------------------------------------------------------------
+# Shared configuration and log hygiene
+# --------------------------------------------------------------------------
+
+
+async def test_shared_text_config_is_not_polluted_by_a_json_call(monkeypatch):
+    """``llm_model_kwargs`` is shared across calls: a keyword-extraction call's
+    ``text.format`` must not leak into the next, plain-text call (where it
+    would force JSON mode and, via the native-format check, disable COT)."""
+    responses, _ = _install(monkeypatch, [_ok("{}")])
+    shared = {"text": {"verbosity": "low"}}
+
+    await openai_responses_complete_if_cache(
+        "gpt-5.6", "kw", response_format={"type": "json_object"}, **shared
+    )
+    await openai_responses_complete_if_cache("gpt-5.6", "answer", **shared)
+
+    assert shared == {"text": {"verbosity": "low"}}
+    assert responses.calls[0]["text"] == {
+        "verbosity": "low",
+        "format": {"type": "json_object"},
+    }
+    assert responses.calls[1]["text"] == {"verbosity": "low"}
+
+
+async def test_shared_reasoning_config_is_not_polluted(monkeypatch):
+    """A COT call's ``reasoning.summary`` must not stick to the shared dict and
+    be sent (and billed) on later non-COT calls."""
+    responses, _ = _install(monkeypatch, [_ok()])
+    shared = {"reasoning": {"effort": "low"}}
+
+    await openai_responses_complete_if_cache(
+        "gpt-5.6", "q", enable_cot=True, reasoning_summary="auto", **shared
+    )
+    await openai_responses_complete_if_cache("gpt-5.6", "kw", **shared)
+
+    assert shared == {"reasoning": {"effort": "low"}}
+    assert responses.calls[0]["reasoning"] == {"effort": "low", "summary": "auto"}
+    assert responses.calls[1]["reasoning"] == {"effort": "low"}
+
+
+async def test_error_log_does_not_contain_the_system_prompt(
+    monkeypatch, lightrag_caplog
+):
+    """The system prompt carries retrieved document context; a provider 5xx
+    must not dump it into ordinary ERROR (or DEBUG) logs."""
+    request = httpx.Request("POST", _URL)
+    error = InternalServerError(
+        "Error code: 500",
+        response=httpx.Response(status_code=500, request=request),
+        body=None,
+    )
+    _install(monkeypatch, [error])
+    secret = "CONFIDENTIAL-DOCUMENT-CONTEXT-1234"
+
+    with lightrag_caplog.at_level("DEBUG", logger="lightrag"):
+        with pytest.raises(InternalServerError):
+            await openai_responses_complete_if_cache(
+                "gpt-5.6", "hi", system_prompt=f"Context:\n{secret}"
+            )
+
+    # `verbose_debug("System prompt: ...")` is the sanctioned prompt channel,
+    # shared with the Chat Completions driver; only parameter dumps are pinned.
+    param_dumps = [
+        record.getMessage()
+        for record in lightrag_caplog.records
+        if "Params:" in record.getMessage()
+        or record.getMessage().startswith("Additional kwargs:")
+    ]
+    assert any("OpenAI Responses API Call Failed" in m for m in param_dumps)
+    assert any(m.startswith("Additional kwargs:") for m in param_dumps)
+    assert all(secret not in m for m in param_dumps)
+    assert all(f"<{len('Context:') + 1 + len(secret)} chars>" in m for m in param_dumps)
