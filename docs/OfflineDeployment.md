@@ -194,9 +194,13 @@ pip download -r requirements-offline-smart-heading.txt -d ./packages
 # touches tiktoken
 lightrag-download-cache --spacy-dir ./spacy_models
 
-# Or install them straight into the current environment
+# Or install them straight into the current environment (uses pip, or
+# `uv pip install` in a uv-created environment that has no pip)
 lightrag-download-cache --spacy-install
 ```
+
+The models are not in `uv.lock`: in a `uv sync` environment, a later plain
+`uv sync` removes them. Use `uv sync --inexact` to keep them.
 
 ### Install in Offline Environment
 
