@@ -117,6 +117,7 @@ LightRAG supports these LLM backends:
 * ollama
 * lollms
 * openai or openai compatible
+* openai_responses (`/v1/responses`; opt-in sibling of `openai`)
 * azure_openai
 * bedrock
 * gemini
@@ -755,6 +756,7 @@ LightRAG supports binding to various LLM backends:
 
 * ollama
 * openai (including openai compatible)
+* openai_responses (`/v1/responses`; opt-in sibling of `openai`)
 * azure_openai
 * lollms
 * bedrock
@@ -856,7 +858,7 @@ The parser can produce sidecars for drawings/images, tables, and equations. Anal
 
 `VLM_PROCESS_ENABLE` gates **images only**. Tables and equations are analyzed by the `EXTRACT` role and run regardless of this switch, so `*:native-teP` works without any VLM configured. With `i` enabled and the VLM unavailable, an image that survives the pre-filters (file present, raster format, both sides at least `VLM_MIN_IMAGE_PIXEL`) **fails the document** rather than being skipped — it lands in `FAILED` with `error_msg` "VLM analysis required but VLM role is not available".
 
-Current vision-capable providers are `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`; `lollms` is rejected for VLM use. Typical configuration:
+Current vision-capable providers are `openai`, `openai_responses`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`; `lollms` is rejected for VLM use. Typical configuration:
 
 ```bash
 VLM_PROCESS_ENABLE=true
@@ -988,7 +990,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--workspace` | `""` | Default workspace for storage isolation |
 | `--api-prefix` | `""` | Reverse-proxy path prefix, also configurable with `LIGHTRAG_API_PREFIX` |
 | `--workers` | `1` | Gunicorn worker count |
-| `--llm-binding` | `ollama` | LLM binding type (`lollms`, `ollama`, `openai`, `openai-ollama`, `azure_openai`, `bedrock`, `gemini`) |
+| `--llm-binding` | `ollama` | LLM binding type (`lollms`, `ollama`, `openai`, `openai-ollama`, `openai_responses`, `azure_openai`, `bedrock`, `gemini`) |
 | `--embedding-binding` | `ollama` | Embedding binding type (`lollms`, `ollama`, `openai`, `azure_openai`, `bedrock`, `jina`, `gemini`, `voyageai`) |
 | `--rerank-binding` | `null` | Rerank binding type (`null`, `cohere`, `jina`, `aliyun`) |
 
@@ -1260,7 +1262,7 @@ Uploads and text inserts can be accepted while the processing loop is busy; the 
 
 ## API Endpoints
 
-All supported backends (`lollms`, `ollama`, `openai` / OpenAI-compatible, `azure_openai`, `bedrock`, and `gemini`) expose the same LightRAG REST API surface. When the API Server is running, visit:
+All supported backends (`lollms`, `ollama`, `openai` / OpenAI-compatible, `openai_responses`, `azure_openai`, `bedrock`, and `gemini`) expose the same LightRAG REST API surface. When the API Server is running, visit:
 
 - Swagger UI: http://localhost:9621/docs
 - ReDoc: http://localhost:9621/redoc
