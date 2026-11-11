@@ -593,6 +593,15 @@ async def _stream_response(
     separate ``error`` event. It raises, so a provider failure never reaches
     the consumer as a short-but-successful answer.
 
+    Missing terminal: a stream that ends without ``response.completed`` /
+    ``response.incomplete`` was cut off in transit (a gateway or proxy closing
+    the SSE response early), so it raises instead of presenting the text
+    yielded so far as a complete answer.
+
+    Cancellation: a cancelled read never yields from cleanup; the closing
+    ``</think>`` is dropped and ``CancelledError`` propagates after the stream
+    and client are closed.
+
     Stopped generations: ``response.incomplete`` also carries reasons other
     than the output budget, ``content_filter`` chief among them. Those are not
     truncation, so they raise rather than ending the iterator on whatever text
@@ -617,8 +626,11 @@ async def _stream_response(
     refusal_parts: list[str] = []
     refusal_seen = False
     final_terminal = None
+    terminal_seen = False
     final_usage = None
-    closing_via_generator_exit = False
+    # Set on GeneratorExit and CancelledError: the finally block must not
+    # yield on either, or cleanup is suspended before stream/client close.
+    closing_without_yield = False
 
     try:
         async for event in response:
@@ -630,6 +642,7 @@ async def _stream_response(
                 # carry the terminal usage; only the latter is a clean finish.
                 terminal = getattr(event, "response", None)
                 final_terminal = terminal
+                terminal_seen = True
                 usage = getattr(terminal, "usage", None)
                 if usage is not None:
                     final_usage = usage
@@ -737,6 +750,19 @@ async def _stream_response(
             logger.error(error_message)
             raise ResponseRefusedError(error_message)
 
+        if not terminal_seen:
+            # The Responses protocol always ends a stream with a terminal event
+            # (or `response.failed` / `error`, both raised above). Ending
+            # without one means the transport was cut short, so text already
+            # yielded is a fragment, not an answer -- and no usage was billed.
+            error_message = (
+                "OpenAI Responses stream ended without a terminal event "
+                "(no response.completed / response.incomplete); the connection "
+                "was likely closed early by a gateway or proxy"
+            )
+            logger.error(error_message)
+            raise InvalidResponseError(error_message)
+
         if incomplete_reason is not None:
             # Text already yielded is the tail of a generation that did not
             # finish, so ending here would present it as a complete answer. The
@@ -798,7 +824,13 @@ async def _stream_response(
     except GeneratorExit:
         # Consumer disconnected: the finally block must not yield, or cleanup
         # aborts with "async generator ignored GeneratorExit".
-        closing_via_generator_exit = True
+        closing_without_yield = True
+        raise
+    except asyncio.CancelledError:
+        # BaseException, so neither handler around it sees it. Yielding the
+        # closing tag here would hand `</think>` to the cancelled read instead
+        # of the cancellation, and leave cleanup suspended at that yield.
+        closing_without_yield = True
         raise
     except Exception as e:
         if cot_active:
@@ -812,14 +844,14 @@ async def _stream_response(
                 # would yield into a closing generator, aclose() would raise
                 # "async generator ignored GeneratorExit", and the frame would
                 # be abandoned before the stream and the client were closed.
-                closing_via_generator_exit = True
+                closing_without_yield = True
                 raise
             except Exception as close_error:  # noqa: BLE001 - cleanup only
                 logger.warning(f"Failed to close COT tag on error: {close_error}")
         logger.error(f"Error in Responses stream: {e}")
         raise
     finally:
-        if cot_active and not closing_via_generator_exit:
+        if cot_active and not closing_without_yield:
             try:
                 yield "</think>"
             except Exception as final_error:  # noqa: BLE001 - cleanup only

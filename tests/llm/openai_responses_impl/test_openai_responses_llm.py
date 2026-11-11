@@ -408,6 +408,14 @@ def _delta(event_type: str, delta: str) -> SimpleNamespace:
     return SimpleNamespace(type=event_type, delta=delta)
 
 
+def _completed() -> SimpleNamespace:
+    """A clean terminal; a stream without one is treated as cut off."""
+    return SimpleNamespace(
+        type="response.completed",
+        response=SimpleNamespace(status="completed", usage=None),
+    )
+
+
 async def _collect(agen) -> str:
     return "".join([chunk async for chunk in agen])
 
@@ -417,6 +425,7 @@ async def test_streaming_yields_output_text_deltas(monkeypatch):
         [
             _delta("response.output_text.delta", "hel"),
             _delta("response.output_text.delta", "lo"),
+            _completed(),
         ]
     )
     client = _patch_client(monkeypatch, stream)
@@ -433,6 +442,7 @@ async def test_streaming_wraps_reasoning_in_think_tags(monkeypatch):
         [
             _delta("response.reasoning_summary_text.delta", "step one"),
             _delta("response.output_text.delta", "answer"),
+            _completed(),
         ]
     )
     _patch_client(monkeypatch, stream)
@@ -447,7 +457,10 @@ async def test_streaming_wraps_reasoning_in_think_tags(monkeypatch):
 
 async def test_streaming_closes_think_tag_when_no_body_text_follows(monkeypatch):
     stream = _FakeStream(
-        [_delta("response.reasoning_summary_text.delta", "only thinking")]
+        [
+            _delta("response.reasoning_summary_text.delta", "only thinking"),
+            _completed(),
+        ]
     )
     _patch_client(monkeypatch, stream)
 
@@ -463,6 +476,7 @@ async def test_streaming_drops_reasoning_when_cot_disabled(monkeypatch):
         [
             _delta("response.reasoning_summary_text.delta", "trace"),
             _delta("response.output_text.delta", "answer"),
+            _completed(),
         ]
     )
     _patch_client(monkeypatch, stream)

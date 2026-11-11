@@ -21,6 +21,7 @@ from tenacity import wait_none
 
 from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
 from lightrag.llm.openai_responses import (
+    InvalidResponseError,
     ResponseRefusedError,
     openai_responses_complete_if_cache,
 )
@@ -184,6 +185,11 @@ async def test_refusal_is_not_retried(monkeypatch):
 # Client lifecycle
 # --------------------------------------------------------------------------
 
+_COMPLETED = SimpleNamespace(
+    type="response.completed",
+    response=SimpleNamespace(status="completed", usage=None),
+)
+
 
 async def test_cancellation_during_create_closes_the_client(monkeypatch):
     """CancelledError is a BaseException and escapes ``except Exception``."""
@@ -235,6 +241,85 @@ async def test_disconnect_while_closing_think_on_error_still_cleans_up(monkeypat
 
     await agen.aclose()
 
+    assert stream.aclosed
+    assert clients[0].closed
+
+
+class _StallingStream:
+    """Yields a reasoning delta, then blocks the next read forever."""
+
+    def __init__(self):
+        self.aclosed = False
+
+    def __aiter__(self):
+        async def gen():
+            yield SimpleNamespace(
+                type="response.reasoning_summary_text.delta", delta="step"
+            )
+            await asyncio.Event().wait()
+
+        return gen()
+
+    async def aclose(self) -> None:
+        self.aclosed = True
+
+
+async def test_cancelled_read_mid_cot_propagates_and_cleans_up(monkeypatch):
+    """A cancelled read must raise CancelledError, not return ``</think>``.
+
+    CancelledError escapes ``except Exception``; without its own handler the
+    finally block yields the closing tag into the cancelled read, swallowing
+    the cancellation and suspending before the stream and client are closed.
+    """
+    stream = _StallingStream()
+    _, clients = _install(monkeypatch, [stream])
+
+    agen = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, enable_cot=True
+    )
+    assert await agen.__anext__() == "<think>"
+    assert await agen.__anext__() == "step"
+
+    pending = asyncio.ensure_future(agen.__anext__())
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert stream.aclosed
+    assert clients[0].closed
+
+
+class _CutOffStream:
+    """Emits body text, then ends cleanly without any terminal event."""
+
+    def __init__(self):
+        self.aclosed = False
+
+    def __aiter__(self):
+        async def gen():
+            yield SimpleNamespace(type="response.output_text.delta", delta="partial")
+
+        return gen()
+
+    async def aclose(self) -> None:
+        self.aclosed = True
+
+
+async def test_stream_without_terminal_event_raises(monkeypatch):
+    """A gateway closing the SSE response before the terminal event leaves a
+    fragment; presenting it as a complete answer would hide the cut-off."""
+    stream = _CutOffStream()
+    _, clients = _install(monkeypatch, [stream])
+
+    agen = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+    chunks: list[str] = []
+    with pytest.raises(InvalidResponseError) as excinfo:
+        async for chunk in agen:
+            chunks.append(chunk)
+
+    assert chunks == ["partial"]
+    assert "terminal event" in str(excinfo.value)
     assert stream.aclosed
     assert clients[0].closed
 
@@ -329,6 +414,7 @@ class _ReasoningThenJsonStream:
                 type="response.reasoning_summary_text.delta", delta="thinking"
             )
             yield SimpleNamespace(type="response.output_text.delta", delta="{}")
+            yield _COMPLETED
 
         return gen()
 
