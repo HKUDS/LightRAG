@@ -12,6 +12,7 @@ from lightrag.llm._vision_utils import (
     image_audit_metadata,
     image_cache_metadata,
     normalize_image_inputs,
+    read_image_dimensions,
 )
 
 
@@ -69,6 +70,48 @@ def test_normalize_accepts_dict_with_metadata():
 def test_normalize_empty_returns_empty_list():
     assert normalize_image_inputs(None) == []
     assert normalize_image_inputs([]) == []
+
+
+@pytest.mark.parametrize("metadata_segments", [0, 1, 2])
+@pytest.mark.parametrize("frame_marker", [b"\xff\xc0", b"\xff\xc2"])
+def test_jpeg_dimensions_after_metadata(tmp_path, metadata_segments, frame_marker):
+    comment = b"\xff\xfe\xff\xff" + b"x" * 65533
+    frame = frame_marker + b"\x00\x0b\x08\x00\x10\x00\x20\x01\x01\x11\x00"
+    raw = b"\xff\xd8" + comment * metadata_segments + frame + b"\xff\xd9"
+    path = tmp_path / "image.jpg"
+    path.write_bytes(raw)
+
+    assert read_image_dimensions(path) == (32, 16)
+    [image] = normalize_image_inputs([_b64(raw)])
+    assert (image.width, image.height) == (32, 16)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"\xff\xd8\xff",
+        b"\xff\xd8\xff\xe1\x00",
+        b"\xff\xd8\xff\xe1\x00\x01",
+        b"\xff\xd8\xff\xe1\x00\x10abc",
+        b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x10\x00\x20",
+    ],
+)
+def test_incomplete_jpeg_dimensions_are_unknown(tmp_path, raw):
+    path = tmp_path / "incomplete.jpg"
+    path.write_bytes(raw)
+    assert read_image_dimensions(path) is None
+
+
+@pytest.mark.parametrize("end_marker", [b"\xff\xd9", b"\xff\xda\x00\x02"])
+def test_jpeg_dimensions_stop_before_image_data(tmp_path, end_marker):
+    frame = b"\xff\xc0\x00\x0b\x08\x00\x10\x00\x20\x01\x01\x11\x00"
+    raw = b"\xff\xd8" + end_marker + frame
+    path = tmp_path / "no-frame.jpg"
+    path.write_bytes(raw)
+    assert read_image_dimensions(path) is None
+    [image] = normalize_image_inputs([_b64(raw)])
+    assert (image.width, image.height) == (None, None)
 
 
 def test_normalize_rejects_invalid_base64():

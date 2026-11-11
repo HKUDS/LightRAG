@@ -24,8 +24,9 @@ import hashlib
 import re
 import struct
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 DATA_URL_RE = re.compile(
     r"^data:(?P<mime>[\w./+-]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)$"
@@ -192,41 +193,43 @@ def _read_gif_dimensions(data: bytes) -> tuple[int, int] | None:
     return width, height
 
 
-def _read_jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+def _read_jpeg_dimensions(data: bytes | BinaryIO) -> tuple[int, int] | None:
     # Scan for a Start-Of-Frame marker (SOF0 / SOF2 / etc.). Skip segments by
     # their length field. We deliberately accept any SOF variant the codec
     # might emit rather than enumerating each one.
-    if len(data) < 4 or not data.startswith(_JPEG_SIGNATURE):
+    stream = BytesIO(data) if isinstance(data, bytes) else data
+    if stream.read(2) != b"\xff\xd8":
         return None
-    i = 2
-    n = len(data)
-    while i < n:
-        if data[i] != 0xFF:
+    while True:
+        if stream.read(1) != b"\xff":
             return None
         # Skip fill bytes.
-        while i < n and data[i] == 0xFF:
-            i += 1
-        if i >= n:
+        marker_byte = stream.read(1)
+        while marker_byte == b"\xff":
+            marker_byte = stream.read(1)
+        if not marker_byte:
             return None
-        marker = data[i]
-        i += 1
+        marker = marker_byte[0]
+        if marker in (0xD9, 0xDA):
+            return None
         # Standalone markers without a length field.
-        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:
             continue
-        if i + 2 > n:
+        length_bytes = stream.read(2)
+        if len(length_bytes) != 2:
             return None
-        segment_len = struct.unpack(">H", data[i : i + 2])[0]
-        if segment_len < 2 or i + segment_len > n:
+        segment_len = struct.unpack(">H", length_bytes)[0]
+        if segment_len < 2:
             return None
         # SOF0..SOF15 except 0xC4 (DHT), 0xC8 (JPG reserved), 0xCC (DAC).
         if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
             # SOF payload: precision(1) + height(2) + width(2) + …
-            if i + 7 > n:
+            frame = stream.read(segment_len - 2)
+            if segment_len < 7 or len(frame) != segment_len - 2:
                 return None
-            height, width = struct.unpack(">HH", data[i + 3 : i + 7])
+            height, width = struct.unpack(">HH", frame[1:5])
             return width, height
-        i += segment_len
-    return None
+        stream.seek(segment_len - 2, 1)
 
 
 def _read_webp_dimensions(data: bytes) -> tuple[int, int] | None:
@@ -271,7 +274,11 @@ def read_image_dimensions(path: Path) -> tuple[int, int] | None:
     """
     try:
         with open(path, "rb") as fh:
-            header = fh.read(64 * 1024)
+            header = fh.read(32)
+            if header.startswith(_JPEG_SIGNATURE):
+                # Frame headers may follow multiple large metadata segments.
+                fh.seek(0)
+                return _read_jpeg_dimensions(fh)
     except OSError:
         return None
     return _dimensions_from_bytes(header)
