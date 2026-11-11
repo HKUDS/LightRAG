@@ -2,13 +2,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from lightrag.evaluation.offline_retrieval_check import (
     audit_samples,
     load_cases,
     load_documents,
     load_oracle,
     summarize,
+    tokenize,
 )
+
+pytestmark = pytest.mark.offline
 
 
 class OfflineRetrievalCheckTests(unittest.TestCase):
@@ -95,6 +100,61 @@ class OfflineRetrievalCheckTests(unittest.TestCase):
         self.assertEqual(summary["queries"], 6)
         self.assertEqual(summary["full_recall_queries"], 6)
         self.assertEqual(summary["no_hit_queries"], 0)
+
+    def test_ascii_words_keep_their_stopword_and_length_rules(self):
+        self.assertEqual(
+            tokenize("What is a RAG system in 2026?"),
+            ["rag", "system", "2026"],
+        )
+
+    def test_cjk_runs_become_overlapping_bigrams(self):
+        self.assertEqual(tokenize("图检索"), ["图检", "检索"])
+        self.assertEqual(
+            tokenize("LightRAG支持图检索"),
+            ["lightrag", "支持", "持图", "图检", "检索"],
+        )
+
+    def test_a_lone_cjk_character_is_kept(self):
+        # One ideograph is often a whole word ("铜" is copper), so the rule
+        # that drops single ASCII characters does not apply to it.
+        self.assertEqual(tokenize("铜，价格"), ["铜", "价格"])
+
+    def test_chinese_question_ranks_the_matching_document_first(self):
+        # Without CJK tokenization a Chinese question has no terms, every
+        # document scores zero, and nothing is ranked at all.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "alpha.md").write_text(
+                "向量检索与过滤：按元数据过滤向量检索的结果。",
+                encoding="utf-8",
+            )
+            (docs_dir / "beta.md").write_text(
+                "部署与监控：服务部署、日志和告警。",
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                '{"test_cases":[{"question":"哪份文档讲向量检索？"}]}',
+                encoding="utf-8",
+            )
+            oracle = root / "oracle.json"
+            oracle.write_text(
+                '{"oracle":[{"question":"哪份文档讲向量检索？",'
+                '"expected_documents":["alpha.md"]}]}',
+                encoding="utf-8",
+            )
+
+            results = audit_samples(
+                load_cases(dataset),
+                load_oracle(oracle),
+                load_documents(docs_dir),
+            )
+            summary = summarize(results, top_k=1)
+
+        self.assertEqual(results[0].ranked, ["alpha.md"])
+        self.assertEqual(summary["average_recall_at_k"], 1.0)
 
 
 if __name__ == "__main__":
