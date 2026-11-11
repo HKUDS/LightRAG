@@ -37,7 +37,8 @@ jobs:
         # between uv releases, and an unpinned "latest" could fail or pass a
         # PR for reasons unrelated to it. 0.13.7 is the uv Dependabot's uv
         # ecosystem currently runs; uv 0.11.0 through 0.13.7 all accept the
-        # current uv.lock. Bump deliberately, and in setup-tests.yml too.
+        # current uv.lock. Bump deliberately, here, in evaluation-tests.yml
+        # and in setup-tests.yml.
         version: "0.13.7"
         enable-cache: true
 
@@ -51,13 +52,11 @@ jobs:
       # mock-target libraries (qdrant-client, pymongo, anthropic, boto3, ...)
       # the offline suite constructs data classes from; the pytest extra brings
       # pytest/pytest-asyncio/httpx2. Without them importorskip silently skips.
-      # evaluation brings ragas/datasets: without it nothing in CI ever imports
-      # them, so a lock bump that breaks `import ragas` stays green
-      # (tests/evaluation asserts the stack imports when installed).
+      # The evaluation extra is deliberately NOT installed here; it has its
+      # own path-filtered workflow, evaluation-tests.yml.
       run: >-
         uv sync --locked --python ${{ matrix.python-version }}
         --extra api --extra offline-storage --extra offline-llm --extra pytest
-        --extra evaluation
 
     - name: Run offline tests
       # Run only tests marked as 'offline' (no external dependencies);
