@@ -611,6 +611,7 @@ class MongoKVStorage(BaseKVStorage):
             logger.error(
                 f"[{self.workspace}] Error deleting documents from {self.namespace}: {e}"
             )
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
