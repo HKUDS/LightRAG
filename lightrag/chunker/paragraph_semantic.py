@@ -333,7 +333,7 @@ def _load_table_headers(blocks_path: str) -> dict[str, str]:
     try:
         with Path(path).open("r", encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     tables = data.get("tables") if isinstance(data, dict) else None
     if not isinstance(tables, dict):

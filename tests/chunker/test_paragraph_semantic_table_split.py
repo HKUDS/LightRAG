@@ -108,6 +108,24 @@ def _write_blocks_jsonl(tmp_path, content: str) -> str:
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("sidecar", [b"{", b"\xff"])
+def test_chunking_ignores_unreadable_table_headers(tmp_path, sidecar):
+    tokenizer = _make_tokenizer()
+    table = _build_oversized_table_text(num_rows=6, row_payload_size=80)
+    blocks_path = _write_blocks_jsonl(tmp_path, table)
+    expected = chunking_by_paragraph_semantic(
+        tokenizer, table, 400, blocks_path=blocks_path
+    )
+    assert len(expected) > 1
+
+    (tmp_path / "doc.tables.json").write_bytes(sidecar)
+    assert (
+        chunking_by_paragraph_semantic(tokenizer, table, 400, blocks_path=blocks_path)
+        == expected
+    )
+
+
+@pytest.mark.offline
 def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     # An oversized table sandwiched between leading and trailing paragraphs
     # produces three slices: "first" (glued with leading paras),
