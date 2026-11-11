@@ -4,6 +4,10 @@ aggregate_chunk_scores must safely ignore chunk_results with None index or None 
 
 from lightrag.rerank import aggregate_chunk_scores
 
+import pytest
+
+pytestmark = pytest.mark.offline
+
 
 def test_aggregate_chunk_scores_handles_none_index_and_score():
     """None-valued rerank results must not corrupt score aggregation."""

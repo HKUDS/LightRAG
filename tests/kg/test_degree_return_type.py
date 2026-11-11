@@ -17,6 +17,8 @@ import pytest
 from lightrag.kg.postgres_impl import PGGraphStorage
 from lightrag.kg.networkx_impl import NetworkXStorage
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # Helpers — build storage instances without triggering __post_init__

@@ -27,6 +27,8 @@ from lightrag.parser.markdown import parser as md_parser
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
+pytestmark = pytest.mark.offline
+
 # How long the redirect handler holds its body open. Long enough that a client
 # which drains it cannot finish inside the assertion window.
 _BODY_HOLD_SECONDS = 10.0

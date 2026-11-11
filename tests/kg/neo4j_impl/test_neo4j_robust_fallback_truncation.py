@@ -14,6 +14,8 @@ import pytest
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
+pytestmark = pytest.mark.offline
+
 
 class _FakeNode(dict):
     """Minimal stand-in for a neo4j Node: dict-like plus a `._properties`."""

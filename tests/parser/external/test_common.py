@@ -35,6 +35,8 @@ from lightrag.parser.external import (
     write_manifest,
 )
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # compute_size_and_hash

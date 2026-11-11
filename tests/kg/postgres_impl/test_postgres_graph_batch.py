@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock
 
 from lightrag.kg.postgres_impl import PGGraphStorage
 
+pytestmark = pytest.mark.offline
+
 
 # ---------------------------------------------------------------------------
 # Capture harness

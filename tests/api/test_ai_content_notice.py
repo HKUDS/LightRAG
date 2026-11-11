@@ -22,6 +22,8 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.offline
+
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",
     "EMBEDDING_BINDING",

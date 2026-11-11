@@ -12,6 +12,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.offline
+
 # document_routes parses argv at import time; guard it like the sibling tests.
 _original_argv = sys.argv[:]
 sys.argv = [sys.argv[0]]

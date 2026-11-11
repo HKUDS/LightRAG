@@ -4,6 +4,8 @@ import pytest
 
 from lightrag.parser import plugins, registry
 
+pytestmark = pytest.mark.offline
+
 
 class _FakeEntryPoint:
     """Stand-in for importlib.metadata.EntryPoint (name/value/load)."""

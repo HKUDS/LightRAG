@@ -16,6 +16,8 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.offline
+
 # Every route the flag governs. The static asset is a Starlette Mount, not an
 # APIRoute — it is listed explicitly so a regression that conditions only the
 # documented routes still fails here.

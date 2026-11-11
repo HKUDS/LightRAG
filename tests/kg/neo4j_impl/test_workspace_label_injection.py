@@ -30,6 +30,8 @@ sys.path.append(
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
+pytestmark = pytest.mark.offline
+
 
 def _make_storage(workspace: str) -> Neo4JStorage:
     """Create a Neo4JStorage with a given workspace (no connection)."""

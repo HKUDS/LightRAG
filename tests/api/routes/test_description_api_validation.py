@@ -11,6 +11,8 @@ from lightrag.operate import (
 from lightrag import utils_graph
 from lightrag.utils import VectorStorageConsistencyError
 
+pytestmark = pytest.mark.offline
+
 
 class DummyGraphStorage:
     def __init__(self, node=None):

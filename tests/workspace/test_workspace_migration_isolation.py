@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 
 from lightrag.kg.postgres_impl import PGVectorStorage
 
+pytestmark = pytest.mark.offline
+
 
 class TestWorkspaceMigrationIsolation:
     """Test suite for workspace-scoped migration in PostgreSQL."""

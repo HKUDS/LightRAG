@@ -17,6 +17,8 @@ from lightrag.parser.markdown.parser import NativeMarkdownParser
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
+pytestmark = pytest.mark.offline
+
 _URL = "http://host/y.png"
 _MD = f"# H\n\n![x]({_URL})\n"
 
@@ -189,12 +191,15 @@ def test_svg_cached_as_png_and_reused_without_rasterizing(tmp_path, monkeypatch)
     _wipe_parsed(parsed)
     _forbid_download(monkeypatch)
 
-    import cairosvg
-
+    # The parser reaches rasterization only through md_parser._rasterize_svg;
+    # patching that entry point (rather than cairosvg.svg2png) keeps the
+    # "must not run on a cache hit" guard hermetic — importing cairosvg here
+    # would raise on any host without the native libcairo library, which the
+    # parser itself treats as an optional dependency.
     def _boom(*a, **k):  # pragma: no cover - must not run on a cache hit
-        raise AssertionError("cairosvg must not run on a cache hit")
+        raise AssertionError("rasterization must not run on a cache hit")
 
-    monkeypatch.setattr(cairosvg, "svg2png", _boom)
+    monkeypatch.setattr(md_parser, "_rasterize_svg", _boom)
     _, warnings, meta = _extract(p, src, parsed)
     assert warnings.get("images_cache_hit") == 1
 
