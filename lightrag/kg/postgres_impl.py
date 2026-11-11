@@ -7342,6 +7342,57 @@ class PGGraphEdgeWriteLostError(PGGraphQueryException):
         self.args = (message,)
 
 
+_AGE_RACE_RELATION_NOT_FOUND = re.compile(
+    r'relation\s+"[^"]*"\s+does not exist', re.IGNORECASE
+)
+
+
+def _is_age_concurrency_race(cause: BaseException | None) -> bool:
+    """True when an Apache AGE concurrency race corrupted a relation-not-found message.
+
+    Under concurrent document ingestion, Apache AGE's internal catalog lookup
+    can race during graph writes (DDL/DML), producing an error like
+    `relation "<graph>.<garbage>" does not exist`.
+
+    Depending on the corrupted bytes in the relation name, asyncpg surfaces
+    this in one of two shapes:
+    1. Invalid UTF-8: Python raises UnicodeDecodeError while decoding the
+       PostgreSQL error packet. The raw bytes object contains `b'relation "'`
+       and `b"does not exist"`.
+    2. Valid UTF-8: asyncpg raises a PostgresError (e.g. UndefinedTableError)
+       quoting the corrupted relation name (`relation "<graph>.<garbage>" does not exist`).
+
+    Both variants are transient catalog races that succeed on replay; retrying
+    them prevents document ingestion from falsely failing.
+    """
+    if cause is None:
+        return False
+
+    # Shape 1: UnicodeDecodeError from corrupted relation name in asyncpg error packet
+    target: BaseException | None = cause
+    while target is not None:
+        if isinstance(target, UnicodeDecodeError):
+            blob = getattr(target, "object", None)
+            if (
+                isinstance(blob, (bytes, bytearray))
+                and b'relation "' in blob
+                and b"does not exist" in blob
+            ):
+                return True
+        target = getattr(target, "__cause__", None)
+
+    # Shape 2: asyncpg.PostgresError quoting the corrupted relation name
+    if isinstance(cause, asyncpg.PostgresError):
+        msg = str(cause)
+        if 'relation "' in msg and (
+            "does not exist" in msg
+            or _AGE_RACE_RELATION_NOT_FOUND.search(msg) is not None
+        ):
+            return True
+
+    return False
+
+
 def _is_transient_graph_write_error(exc: BaseException) -> bool:
     """Return True when a PGGraphQueryException wraps a transient write-time error.
 
@@ -7349,14 +7400,15 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
     (pool reset, TCP failures, etc.).  This predicate covers query-level transient
     errors that survive the connection layer and surface as PGGraphQueryException:
     deadlocks, serialization conflicts, and lock-acquisition timeouts that can
-    occur under concurrent document ingestion.
+    occur under concurrent document ingestion, as well as Apache AGE catalog
+    concurrency races whose relation-not-found message may be corrupted.
     """
     if not isinstance(exc, PGGraphQueryException):
         return False
     cause = exc.__cause__
     if cause is None:
         return False
-    return isinstance(
+    if isinstance(
         cause,
         (
             asyncpg.exceptions.DeadlockDetectedError,
@@ -7364,7 +7416,9 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
             asyncpg.exceptions.LockNotAvailableError,
             asyncpg.exceptions.QueryCanceledError,
         ),
-    )
+    ):
+        return True
+    return _is_age_concurrency_race(cause)
 
 
 # Transaction-scoped advisory lock that serialises concurrent upserts of the
