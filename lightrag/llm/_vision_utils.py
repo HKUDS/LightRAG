@@ -38,6 +38,19 @@ _GIF_SIGNATURES = (b"GIF87a", b"GIF89a")
 _WEBP_RIFF = b"RIFF"
 _WEBP_TAG = b"WEBP"
 
+# Bytes read to identify a file and decode a non-JPEG header. Must cover the
+# furthest offset any fixed-layout reader below touches: WebP needs the first
+# 30 bytes, PNG 24, GIF 10. Raise it with any new reader that reads further.
+# JPEG is scanned segment by segment instead.
+_HEADER_PROBE_BYTES = 32
+
+# Upper bound on marker and fill-byte reads while scanning JPEG segments for
+# the frame header. Segment bodies are skipped with a seek, so legitimate
+# files cost one step per segment; this only stops crafted inputs (runs of
+# fill bytes or minimal segments) from turning a header probe into a
+# file-sized, event-loop-blocking scan. Exhausting it yields "unknown".
+_JPEG_MAX_SCAN_STEPS = 4096
+
 
 @dataclass(frozen=True)
 class NormalizedImage:
@@ -193,19 +206,29 @@ def _read_gif_dimensions(data: bytes) -> tuple[int, int] | None:
     return width, height
 
 
-def _read_jpeg_dimensions(data: bytes | BinaryIO) -> tuple[int, int] | None:
+def _read_jpeg_dimensions(
+    data: bytes | bytearray | memoryview | BinaryIO,
+) -> tuple[int, int] | None:
     # Scan for a Start-Of-Frame marker (SOF0 / SOF2 / etc.). Skip segments by
     # their length field. We deliberately accept any SOF variant the codec
-    # might emit rather than enumerating each one.
-    stream = BytesIO(data) if isinstance(data, bytes) else data
+    # might emit rather than enumerating each one. The scan is bounded by
+    # _JPEG_MAX_SCAN_STEPS, not by the input size.
+    stream = BytesIO(data) if isinstance(data, (bytes, bytearray, memoryview)) else data
     if stream.read(2) != b"\xff\xd8":
         return None
+    steps = 0
     while True:
+        steps += 1
+        if steps > _JPEG_MAX_SCAN_STEPS:
+            return None
         if stream.read(1) != b"\xff":
             return None
         # Skip fill bytes.
         marker_byte = stream.read(1)
         while marker_byte == b"\xff":
+            steps += 1
+            if steps > _JPEG_MAX_SCAN_STEPS:
+                return None
             marker_byte = stream.read(1)
         if not marker_byte:
             return None
@@ -267,14 +290,18 @@ def _read_webp_dimensions(data: bytes) -> tuple[int, int] | None:
 def read_image_dimensions(path: Path) -> tuple[int, int] | None:
     """Return ``(width, height)`` for a raster image, or ``None`` if unknown.
 
-    Reads only the file header — no Pillow dependency. Supports PNG, JPEG,
-    GIF and WebP (VP8 / VP8L / VP8X). Returns ``None`` for unsupported
-    formats and on any I/O or parse error so callers can fall back to a
-    skipped/failure decision without raising.
+    No Pillow dependency. Supports PNG, JPEG, GIF and WebP (VP8 / VP8L /
+    VP8X). PNG, GIF and WebP are decoded from the first
+    ``_HEADER_PROBE_BYTES``; JPEG is scanned segment by segment so a frame
+    header behind large metadata is still found, with the work bounded by
+    ``_JPEG_MAX_SCAN_STEPS`` rather than by the file size. Returns ``None``
+    for unsupported formats, on any I/O or parse error, and when the JPEG
+    scan budget runs out, so callers can fall back to a skipped/failure
+    decision without raising.
     """
     try:
         with open(path, "rb") as fh:
-            header = fh.read(32)
+            header = fh.read(_HEADER_PROBE_BYTES)
             if header.startswith(_JPEG_SIGNATURE):
                 # Frame headers may follow multiple large metadata segments.
                 fh.seek(0)
@@ -284,15 +311,21 @@ def read_image_dimensions(path: Path) -> tuple[int, int] | None:
     return _dimensions_from_bytes(header)
 
 
-def _dimensions_from_bytes(data: bytes) -> tuple[int, int] | None:
+def _dimensions_from_bytes(
+    data: bytes | bytearray | memoryview,
+) -> tuple[int, int] | None:
     """Run the four header readers against a byte buffer.
 
     Shared between the file-path entry point (:func:`read_image_dimensions`)
     and :func:`normalize_image_inputs`, which receives raster payloads
-    decoded from the unified ``image_inputs`` parameter.
+    decoded from the unified ``image_inputs`` parameter. Any bytes-like
+    buffer is accepted; it is converted once because the fixed-layout
+    readers rely on ``bytes`` methods.
     """
     if not data:
         return None
+    if not isinstance(data, bytes):
+        data = bytes(data)
     for reader in (
         _read_png_dimensions,
         _read_gif_dimensions,
