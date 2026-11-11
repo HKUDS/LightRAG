@@ -47,9 +47,13 @@ jobs:
       # mock-target libraries (qdrant-client, pymongo, anthropic, boto3, ...)
       # the offline suite constructs data classes from; the pytest extra brings
       # pytest/pytest-asyncio/httpx2. Without them importorskip silently skips.
+      # evaluation brings ragas/datasets: without it nothing in CI ever imports
+      # them, so a lock bump that breaks `import ragas` stays green
+      # (tests/evaluation asserts the stack imports when installed).
       run: >-
         uv sync --locked --python ${{ matrix.python-version }}
         --extra api --extra offline-storage --extra offline-llm --extra pytest
+        --extra evaluation
 
     - name: Run offline tests
       # Run only tests marked as 'offline' (no external dependencies);

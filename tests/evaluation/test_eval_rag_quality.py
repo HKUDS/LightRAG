@@ -1,5 +1,6 @@
 import asyncio
 import builtins
+import importlib.util
 import json
 
 import pandas as pd
@@ -34,6 +35,39 @@ def test_load_test_dataset_reads_utf8_with_ascii_default(tmp_path, monkeypatch):
     assert evaluator._load_test_dataset() == expected
 
 
+def test_ragas_stack_imports_when_installed():
+    """An installed RAGAS stack must actually import.
+
+    langchain-community 0.4.2 deleted a module ragas imports at import time,
+    and the module-level try/except turned that into RAGAS_AVAILABLE=False,
+    i.e. "not installed". CI installs the `evaluation` extra, so a dependency
+    bump that breaks the stack fails here instead of passing silently.
+    """
+    if importlib.util.find_spec("ragas") is None:
+        pytest.skip("ragas not installed (the `evaluation` extra is absent)")
+
+    assert module.RAGAS_AVAILABLE, (
+        f"ragas is installed but the RAGAS stack failed to import: "
+        f"{module._RAGAS_IMPORT_ERROR!r}"
+    )
+
+
+def test_evaluator_reports_underlying_import_error(monkeypatch):
+    """The ImportError names the real cause, not just an install hint."""
+    cause = ModuleNotFoundError(
+        "No module named 'langchain_community.chat_models.vertexai'"
+    )
+    monkeypatch.setattr(module, "RAGAS_AVAILABLE", False)
+    monkeypatch.setattr(module, "_RAGAS_IMPORT_ERROR", cause)
+
+    with pytest.raises(ImportError) as excinfo:
+        RAGEvaluator()
+
+    assert "langchain_community.chat_models.vertexai" in str(excinfo.value)
+    assert "lightrag-hku[evaluation]" in str(excinfo.value)
+    assert excinfo.value.__cause__ is cause
+
+
 NAN = float("nan")
 _METRIC_COLUMNS = (
     "faithfulness",
@@ -46,8 +80,8 @@ _METRIC_COLUMNS = (
 def _patch_ragas_stack(monkeypatch, fake_evaluate):
     """Patch every name the optional `ragas`/`tqdm` imports leave undefined.
 
-    Without the `evaluation` extra installed (as in offline CI), the
-    module-level try/except only sets Dataset/evaluate/LangchainLLMWrapper
+    Without the `evaluation` extra installed (common locally; offline CI
+    installs it), the module-level try/except only sets Dataset/evaluate/LangchainLLMWrapper
     to None on ImportError — tqdm and the four metric classes stay
     undefined names, so evaluate_single_case raises NameError before ever
     reaching the logic under test. Patching only Dataset/evaluate is not
