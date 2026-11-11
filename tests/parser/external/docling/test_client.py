@@ -457,6 +457,73 @@ def test_docling_cache_signature_only_records_pipeline_when_set(
     assert fixed_constants_for("vlm")["pipeline"] == "vlm"
 
 
+def test_vlm_signature_ignores_ocr_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightrag.parser.external.docling.cache import snapshot_tunable_env
+
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    baseline = snapshot_tunable_env()
+
+    # None of these change the VLM request, so the signature must not move.
+    monkeypatch.setenv("DOCLING_DO_OCR", "false")
+    monkeypatch.setenv("DOCLING_OCR_ENGINE", "tesseract")
+    monkeypatch.setenv("DOCLING_OCR_LANG", "zh")
+    assert snapshot_tunable_env() == baseline
+
+
+async def test_docling_client_vlm_warns_about_force_ocr_override(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+
+    with caplog.at_level("WARNING"):
+        DoclingRawClient(overrides={"force_ocr": True})
+
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "force_ocr" in message
+
+
+async def test_docling_client_warns_when_a_preset_is_set_without_vlm(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+
+    with caplog.at_level("WARNING"):
+        client = DoclingRawClient()
+
+    assert client.pipeline == "standard"
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "DOCLING_VLM_PRESET" in message
+
+
+async def test_docling_client_vlm_500_is_not_blamed_on_the_preset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        submit_status_code=500,
+        submit_text="upstream converter crashed",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="HTTP 500") as excinfo:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+    assert "docling>=2.149" not in str(excinfo.value)
+
+
 async def test_docling_client_partial_success_aborts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

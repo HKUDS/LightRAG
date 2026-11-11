@@ -167,11 +167,14 @@ def snapshot_tunable_env(
     }
     pipeline = resolve_docling_pipeline()
     if pipeline != DEFAULT_DOCLING_PIPELINE:
-        # Added only for non-default pipelines, so every bundle produced by an
-        # existing standard-pipeline deployment keeps its signature and cache
-        # hit after upgrading.
-        values["DOCLING_PIPELINE"] = pipeline
-        values["DOCLING_VLM_PRESET"] = current_vlm_preset()
+        # The VLM pipeline ignores every OCR setting, so including them would
+        # invalidate vlm caches for env changes that cannot alter the output.
+        return {
+            "DOCLING_PIPELINE": pipeline,
+            "DOCLING_VLM_PRESET": current_vlm_preset(),
+        }
+    # Standard pipeline: the dict above is exactly the pre-VLM signature, so
+    # existing bundles keep their cache hits.
     return values
 
 

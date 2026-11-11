@@ -135,9 +135,10 @@ class DoclingIRBuilder:
             # empty document, which LightRAG's parser contract forbids.
             raise ValueError(
                 "Docling JSON has no body children and no key-value/form items, "
-                "so the conversion produced no content (a VLM pipeline that "
-                "returned empty Markdown looks like this); check the "
-                "docling-serve logs for this document"
+                "so the conversion produced no content. For the VLM pipeline "
+                "this usually means the model returned empty Markdown; for the "
+                "standard pipeline check the OCR settings and whether the page "
+                "carries any text. See the docling-serve logs for this document."
             )
         ref_index = _build_ref_index(doc)
         consumed_refs, picture_inner_refs = _precompute_consumed_refs(doc, raw_dir)

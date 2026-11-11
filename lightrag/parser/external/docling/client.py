@@ -155,12 +155,20 @@ class DoclingRawClient:
             configured = [
                 name for name in _STANDARD_ONLY_OCR_ENVS if os.getenv(name, "").strip()
             ]
+            if "force_ocr" in self._overrides:
+                configured.append("force_ocr (per-file override)")
             if configured:
                 logger.warning(
                     "[docling] DOCLING_PIPELINE=vlm ignores the standard-pipeline "
                     "OCR settings: %s",
                     ", ".join(configured),
                 )
+        elif self.vlm_preset:
+            logger.warning(
+                "[docling] DOCLING_VLM_PRESET is set but DOCLING_PIPELINE=%s; "
+                "the preset is ignored",
+                self.pipeline,
+            )
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
         self.force_ocr = (
@@ -308,11 +316,11 @@ class DoclingRawClient:
         try:
             raise_for_status_with_detail(resp, f"Docling upload for {filename!r}")
         except RuntimeError as exc:
-            if self.pipeline == VLM_PIPELINE:
+            if self.pipeline == VLM_PIPELINE and resp.status_code in (400, 422):
                 raise RuntimeError(
-                    f"{exc}. The VLM pipeline needs a docling-serve built with "
-                    "docling>=2.149 (the release that registers the "
-                    f"{self.vlm_preset!r} preset); older releases reject it. "
+                    f"{exc}. If the server rejected the VLM preset: it needs a "
+                    "docling-serve built with docling>=2.149 (the release that "
+                    f"registers {self.vlm_preset!r}); older releases reject it. "
                     "Build the serve image from source or upgrade docling-serve."
                 ) from exc
             raise
