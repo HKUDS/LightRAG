@@ -38,20 +38,20 @@ LightRAG dynamically installs packages for:
 # Online environment: Install all offline dependencies
 pip install lightrag-hku[offline]
 
-# Download tiktoken cache
+# Download tiktoken cache (to ~/.tiktoken_cache by default)
 lightrag-download-cache
 
 # Create offline package
 pip download lightrag-hku[offline] -d ./offline-packages
-tar -czf lightrag-offline.tar.gz ./offline-packages ~/.tiktoken_cache
+tar -czf lightrag-offline.tar.gz ./offline-packages -C ~ .tiktoken_cache
 
 # Transfer to offline server
 scp lightrag-offline.tar.gz user@offline-server:/path/to/
 
-# Offline environment: Install
+# Offline environment: Install (the tiktoken cache lands in ./.tiktoken_cache)
 tar -xzf lightrag-offline.tar.gz
 pip install --no-index --find-links=./offline-packages lightrag-hku[offline]
-export TIKTOKEN_CACHE_DIR=~/.tiktoken_cache
+mkdir -p ~/.tiktoken_cache && cp ./.tiktoken_cache/* ~/.tiktoken_cache/
 ```
 
 ### Option 2: Using Requirements Files
@@ -116,12 +116,26 @@ pip install -r requirements-offline.txt
 
 Tiktoken downloads BPE encoding models on first use. In offline environments, you must pre-download these models.
 
+### Where the Cache Lives
+
+The cache directory is resolved in this order:
+
+1. `TIKTOKEN_CACHE_DIR` (or tiktoken's legacy `DATA_GYM_CACHE_DIR`) when set. An empty `TIKTOKEN_CACHE_DIR` disables caching.
+2. `~/.tiktoken_cache`, **if the directory exists**. LightRAG adopts it automatically; `lightrag-download-cache` creates it when run without `--cache-dir`.
+3. Otherwise tiktoken's own fallback, `<system temp dir>/data-gym-cache` (for example `/tmp/data-gym-cache`).
+
+Do not keep an offline cache under the system temp directory: `/tmp` is often a tmpfs or periodically cleaned (`systemd-tmpfiles`), so the cache disappears on reboot or after a few idle days, and it is writable by every local user. tiktoken verifies each file against a pinned SHA-256, so a tampered file is rejected rather than used — but on an offline host that rejection is an outage.
+
+LightRAG never creates `~/.tiktoken_cache` itself at runtime: with a cache directory configured, tiktoken treats a failed cache write as an error, so a missing or read-only home must not be adopted implicitly. Set `TIKTOKEN_CACHE_DIR` explicitly when the service account's home is not the right place (the Docker image uses `/app/data/tiktoken`).
+
+An adopted `~/.tiktoken_cache` may be read-only: encodings already in it are read from it. If an encoding is missing and cannot be cached there, LightRAG logs a warning and falls back to tiktoken's own default location for the rest of the process (which needs network access to download). A directory you set through `TIKTOKEN_CACHE_DIR` gets no such fallback: a failed cache write there is an error, as in tiktoken itself.
+
 ### Using the CLI Command
 
 After installing LightRAG, use the built-in command:
 
 ```bash
-# Download to default location (see output for exact path)
+# Download to $TIKTOKEN_CACHE_DIR if set, else ~/.tiktoken_cache
 lightrag-download-cache
 
 # Download to specific directory
@@ -144,15 +158,17 @@ lightrag-download-cache --models gpt-4o-mini gpt-4
 ### Setting Cache Location in Offline Environment
 
 ```bash
-# Option 1: Environment variable (temporary)
+# Option 1: Copy to the default location (no environment variable needed
+# for LightRAG; run as the user the service runs as)
+mkdir -p ~/.tiktoken_cache
+cp /path/to/tiktoken_cache/* ~/.tiktoken_cache/
+
+# Option 2: Environment variable (temporary)
 export TIKTOKEN_CACHE_DIR=/path/to/tiktoken_cache
 
-# Option 2: Add to ~/.bashrc or ~/.zshrc (persistent)
-echo 'export TIKTOKEN_CACHE_DIR=~/.tiktoken_cache' >> ~/.bashrc
+# Option 3: Add to ~/.bashrc or ~/.zshrc, or to LightRAG's .env (persistent)
+echo 'export TIKTOKEN_CACHE_DIR=/path/to/tiktoken_cache' >> ~/.bashrc
 source ~/.bashrc
-
-# Option 3: Copy to default location
-cp -r /path/to/tiktoken_cache ~/.tiktoken_cache/
 ```
 
 ## spaCy Models for Native docx smart_heading (Optional)
@@ -256,13 +272,13 @@ pip install --no-index \
     --find-links=/tmp/offline_cache/packages \
     lightrag-hku[offline]
 
-# 3. Set up tiktoken cache
+# 3. Set up tiktoken cache in the default location (LightRAG finds it
+#    without TIKTOKEN_CACHE_DIR; set the variable to use another path)
 mkdir -p ~/.tiktoken_cache
-cp -r /tmp/offline_cache/tiktoken/* ~/.tiktoken_cache/
-export TIKTOKEN_CACHE_DIR=~/.tiktoken_cache
+cp /tmp/offline_cache/tiktoken/* ~/.tiktoken_cache/
 
-# 4. Add to shell profile for persistence
-echo 'export TIKTOKEN_CACHE_DIR=~/.tiktoken_cache' >> ~/.bashrc
+# 4. (Optional) Remove the extracted archive; the cache no longer lives in /tmp
+rm -rf /tmp/offline_cache /tmp/lightrag-offline-complete.tar.gz
 ```
 
 ### Step 4: Verify Installation
@@ -286,11 +302,12 @@ python -c "import redis; print('✓ Redis available')"
 
 **Solution**:
 ```bash
-# Ensure TIKTOKEN_CACHE_DIR is set
+# Check which directory is in use: $TIKTOKEN_CACHE_DIR if set,
+# else ~/.tiktoken_cache if it exists (for the service's user)
 echo $TIKTOKEN_CACHE_DIR
 
 # Verify cache files exist
-ls -la ~/.tiktoken_cache/
+ls -la ${TIKTOKEN_CACHE_DIR:-~/.tiktoken_cache}/
 
 # If empty, you need to download cache in online environment first
 ```
