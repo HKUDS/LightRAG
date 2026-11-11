@@ -24,7 +24,11 @@ dependencies = [
     "aiohttp",
     "configparser",
     "google-api-core>=2.0.0,<3.0.0",
-    "google-genai>=1.0.0,<3.0.0",
+    # The 2.0.0 floor is a resolver guard, not an API requirement: google-genai
+    # 2.x caps tenacity (<9.2.0 as of 2.34), and without the floor a tenacity
+    # bump makes uv silently fall back to google-genai 1.x, which predates its
+    # tenacity dependency. With the floor such a bump fails to resolve instead.
+    "google-genai>=2.0.0,<3.0.0",
     "json_repair>=0.59.9,<1.0.0",
     "nano-vectordb",
     "networkx",
@@ -93,7 +97,7 @@ api = [
     # engine (pandas.compat._optional.VERSIONS).
     "xlsxwriter>=3.2.0",
     "google-api-core>=2.0.0,<3.0.0",
-    "google-genai>=1.0.0,<3.0.0",
+    "google-genai>=2.0.0,<3.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
@@ -179,7 +183,7 @@ offline-llm = [
     "llama-index>=0.14.0,<1.0.0",  # Updated to ensure compatibility with openai 2.x
     "llama-index-llms-openai>=0.6.12",  # Explicitly require version that supports openai 2.x
     "google-api-core>=2.0.0,<3.0.0",
-    "google-genai>=1.0.0,<3.0.0",
+    "google-genai>=2.0.0,<3.0.0",
 ]
 
 offline = [
