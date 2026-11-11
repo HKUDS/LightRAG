@@ -208,7 +208,14 @@ def pytest_runtest_setup(item):
       smart_heading are not forced to download the models.
 
     Either way ``pytest_terminal_summary`` restates the command at the end.
+
+    It also fails every test that ``pytest_collection_modifyitems`` found
+    without a gate marker (see ``GATE_MARKERS``).
     """
+    if item.stash.get(_UNGATED_KEY, False):
+        # Fail before any fixture runs; pytest_runtest_makereport makes the
+        # failure stick even under xfail/skip markers.
+        pytest.fail(_ungated_message(item), pytrace=False)
     if item.get_closest_marker("requires_spacy_models") is None:
         return
     missing = getattr(item.config, "_missing_spacy_models", ())
@@ -273,12 +280,67 @@ def pytest_addoption(parser):
     )
 
 
+#: Every test must carry at least one of these. CI selects with ``-m offline``,
+#: so a test with none of them is neither run in CI nor reported as skipped.
+GATE_MARKERS = frozenset(
+    {"offline", "integration", "requires_db", "requires_api", "pg_smoke"}
+)
+
+
+_UNGATED_KEY = pytest.StashKey[bool]()
+
+
+def _ungated_message(item):
+    return (
+        f"{item.nodeid} carries none of the gate markers "
+        f"{sorted(GATE_MARKERS)}, so CI's `-m offline` would deselect it "
+        "and never run it. Add `pytestmark = pytest.mark.offline` to the "
+        "module, or the matching integration/requires_* marker."
+    )
+
+
+# tryfirst on a wrapper makes it the outermost one, so it sees the setup
+# report after the skipping plugin has rewritten it.
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Report an ungated test's setup as failed, whatever its other markers.
+
+    The ``pytest.fail()`` in ``pytest_runtest_setup`` is not enough on its
+    own: an ``xfail`` marker turns it into XFAIL, and a ``skip``/``skipif``
+    marker skips the test before that hook runs. Both would exit green and
+    leave the test unrun, which is what the gate exists to prevent.
+    """
+    report = yield
+    if call.when == "setup" and item.stash.get(_UNGATED_KEY, False):
+        report.outcome = "failed"
+        report.longrepr = _ungated_message(item)
+        if hasattr(report, "wasxfail"):
+            del report.wasxfail
+    return report
+
+
+# tryfirst: the gate check must see every collected item, before pytest's own
+# ``-m`` handling deselects the ungated ones it is meant to catch.
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
-    """Modify test collection to skip integration tests by default.
+    """Flag ungated tests, then skip integration tests by default.
+
+    A test without a gate marker would be deselected silently by CI's
+    ``-m offline`` and never run. Such a test is marked ``offline`` here, so
+    that ``-m offline`` selects it, and flagged, so that
+    ``pytest_runtest_setup`` and ``pytest_runtest_makereport`` fail it with
+    the fix. This surfaces as an ordinary test failure in serial and xdist
+    runs alike; raising from this hook would be an INTERNALERROR inside an
+    xdist worker.
 
     Integration tests are skipped unless --run-integration flag is provided.
     This allows running offline tests quickly without needing external services.
     """
+    for item in items:
+        if not GATE_MARKERS.intersection(m.name for m in item.iter_markers()):
+            item.add_marker(pytest.mark.offline)
+            item.stash[_UNGATED_KEY] = True
+
     if config.getoption("--run-integration"):
         # If --run-integration is specified, run all tests
         return

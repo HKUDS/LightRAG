@@ -220,6 +220,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
   - `tests/sidecar/`, `tests/setup/`, `tests/workspace/` for the like-named cross-cutting concerns. `tests/setup/` never imports `lightrag`; it runs in its own path-filtered CI job (`.github/workflows/setup-tests.yml`) and `norecursedirs` keeps it out of every recursive run, so a new input the wizard reads must be added to that workflow's `paths`.
   - When adding a new backend or LLM provider, create a new subdirectory plus an empty `__init__.py` rather than dropping the file in the parent directory root.
 - Markers (registered in `[tool.pytest.ini_options]` in `pyproject.toml`): `offline`, `integration`, `requires_db`, `requires_api`, `pg_smoke`. Integration tests are skipped by default via `-m "not integration"`; opt in with `--run-integration`.
+- **Every test must carry one of those five markers**, usually a module-level `pytestmark = pytest.mark.offline`. CI selects with `-m offline`, so an unmarked test is deselected without a trace; `tests/conftest.py` therefore fails any unmarked test at setup with the fix in the message. In a file mixing offline and service-backed cases, mark per test or per `pytest.param` instead of per module.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
 
 #### React component tests

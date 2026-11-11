@@ -34,6 +34,8 @@ from lightrag.parser.external.docling.client import (
 )
 
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # Minimal httpx fake (no MockTransport — avoids the multipart encode path)
 # ---------------------------------------------------------------------------
