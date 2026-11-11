@@ -1752,7 +1752,6 @@ def create_app(args):
         "openapi_url": "/openapi.json" if api_docs_enabled else None,
         "docs_url": None,  # custom endpoint for offline Swagger support
         "redoc_url": "/redoc" if api_docs_enabled else None,
-        "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
 
@@ -1764,6 +1763,13 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
+    # Assigned after construction: FastAPI deprecated the ``root_path``
+    # constructor argument but still applies ``app.root_path`` to every
+    # request scope in ``__call__``, which the prefix routing relies on.
+    # Moving the prefix to the ASGI server is not equivalent here; see
+    # docs/MultiSiteDeployment.md.
+    if api_prefix:
+        app.root_path = api_prefix
 
     # Custom validation error handler, shaped per endpoint (see the
     # module-level function for why it is not a closure).
