@@ -230,6 +230,8 @@ docker compose up
 
 > **请在首次上传文档前确定嵌入模型。** 之后再更换需要重新索引所有文档（参见 [Embedding 模型](#embedding-模型)）。
 
+**下一步：** 服务跑起来之后，可以按 [探索 LightRAG](./docs/ExploreLightRAG-zh.md) 逐步打开其余能力，每一步都附实测结果：PostgreSQL 存储、账号认证、角色 LLM、Rerank、图片分析、Word 智能标题、MinerU 和并发调优。
+
 ### 使用设置向导创建 .env 文件
 
 除了手动编辑 `env.example` 之外，您还可以使用交互式向导生成配置好的 `.env`，并在需要时生成 `docker-compose.final.yml`：
@@ -526,6 +528,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 | 文档 | 内容 |
 |---|---|
+| [ExploreLightRAG-zh.md](./docs/ExploreLightRAG-zh.md) | 从默认配置到生产可用：PostgreSQL、认证、角色 LLM、Rerank、VLM、智能标题、MinerU 与并发调优，逐步操作并附实测结果 |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | `make env-*` 安装向导：生成 `.env` 以及由向导管理的 `docker-compose.final.yml` |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose 部署、镜像版本差异，以及用 Cosign 验证官方 GHCR 镜像 |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | 在 Apple 原生 `container` 运行时上运行 Postgres / Neo4j / Milvus 存储栈（Apple Silicon，无需 Docker Desktop） |

@@ -231,6 +231,8 @@ docker compose up
 
 > **最初のアップロードの前に埋め込みモデルを決めてください。** 後から変更すると、すべてのドキュメントの再インデックスが必要になります（[埋め込みモデル](#埋め込みモデル)を参照）。
 
+**次のステップ：** サーバーが動いたら、[Exploring LightRAG](./docs/ExploreLightRAG.md)（[🇨🇳](./docs/ExploreLightRAG-zh.md)）で残りの機能を 1 つずつ実測結果付きで有効化できます：PostgreSQL ストレージ、認証、ロール別 LLM、リランク、画像解析、Word のスマート見出し、MinerU、並行処理の調整。
+
 ### セットアップツールによる .env ファイルの作成
 
 `env.example` を手作業で編集する代わりに、対話型のセットアップウィザードを使って設定済みの `.env`、必要に応じて `docker-compose.final.yml` を生成できます:
@@ -527,6 +529,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 | ドキュメント | 内容 |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | デフォルト構成から本番運用まで：PostgreSQL、認証、ロール別 LLM、リランク、VLM、スマート見出し、MinerU、並行処理を実測結果付きで段階的に設定 |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | `make env-*` セットアップウィザード：`.env` およびウィザード管理下の `docker-compose.final.yml` の生成 |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose によるデプロイ、イメージの種類、公式 GHCR イメージの Cosign 検証 |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Apple ネイティブの `container` ランタイムで Postgres / Neo4j / Milvus のストレージスタックを動かす方法（Apple Silicon、Docker Desktop 不要） |
