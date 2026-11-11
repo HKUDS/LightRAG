@@ -144,34 +144,40 @@ def download_tiktoken_cache(cache_dir: str = None, models: list = None):
     """Download tiktoken models to local cache
 
     Args:
-        cache_dir: Directory to store the cache files. If None, uses tiktoken's default location.
-        models: List of model names or encoding names to download. If None, downloads common ones.
+        cache_dir: Directory to store the cache files. If None, uses
+            ``$TIKTOKEN_CACHE_DIR`` / ``$DATA_GYM_CACHE_DIR`` when set, else
+            ``~/.tiktoken_cache`` (never tiktoken's own temp-dir fallback,
+            which is cleared on reboot on many hosts).
 
     Returns:
-        Tuple of (success_count, failed_models, actual_cache_dir)
+        Tuple of (success_count, failed_models)
     """
-    # If user specified a cache directory, set it BEFORE importing tiktoken
-    # tiktoken reads TIKTOKEN_CACHE_DIR at import time
-    user_specified_cache = cache_dir is not None
+    from lightrag.tiktoken_cache import (
+        configured_tiktoken_cache_dir,
+        default_tiktoken_cache_dir,
+    )
 
-    if user_specified_cache:
-        cache_dir = os.path.abspath(cache_dir)
-        os.environ["TIKTOKEN_CACHE_DIR"] = cache_dir
-        cache_path = Path(cache_dir)
-        cache_path.mkdir(parents=True, exist_ok=True)
+    # tiktoken resolves its cache directory from the environment on every
+    # cache lookup, so exporting it here steers the downloads below.
+    using_default = False
+    if cache_dir is not None:
+        cache_dir = os.path.abspath(os.path.expanduser(cache_dir))
         print(f"Using specified cache directory: {cache_dir}")
+    elif configured_tiktoken_cache_dir():
+        cache_dir = configured_tiktoken_cache_dir()
+        print(f"Using cache directory from environment: {cache_dir}")
     else:
-        # Check if TIKTOKEN_CACHE_DIR is already set in environment
-        env_cache_dir = os.environ.get("TIKTOKEN_CACHE_DIR")
-        if env_cache_dir:
-            cache_dir = env_cache_dir
-            print(f"Using TIKTOKEN_CACHE_DIR from environment: {cache_dir}")
-        else:
-            # Use tiktoken's default location (tempdir/data-gym-cache)
-            import tempfile
-
-            cache_dir = os.path.join(tempfile.gettempdir(), "data-gym-cache")
-            print(f"Using tiktoken default cache directory: {cache_dir}")
+        cache_dir = default_tiktoken_cache_dir()
+        if cache_dir is None:
+            print(
+                "Error: cannot resolve the home directory for the default "
+                "~/.tiktoken_cache; pass --cache-dir or set TIKTOKEN_CACHE_DIR."
+            )
+            sys.exit(1)
+        using_default = True
+        print(f"Using default cache directory: {cache_dir}")
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    os.environ["TIKTOKEN_CACHE_DIR"] = cache_dir
 
     # Now import tiktoken (it will use the cache directory we determined)
     try:
@@ -228,17 +234,24 @@ def download_tiktoken_cache(cache_dir: str = None, models: list = None):
             print(f"  - {model}: {error}")
 
     print(f"\nCache location: {cache_dir}")
+    if using_default:
+        print(
+            "\nLightRAG reads this directory automatically while TIKTOKEN_CACHE_DIR"
+            "\nis unset. Other tiktoken users need:"
+            f"\n  export TIKTOKEN_CACHE_DIR={cache_dir}"
+        )
     print("\nFor offline deployment:")
     print("  1. Copy directory to offline server:")
-    print(f"     tar -czf tiktoken_cache.tar.gz {cache_dir}")
+    print(f"     tar -czf tiktoken_cache.tar.gz -C {cache_dir} .")
     print("     scp tiktoken_cache.tar.gz user@offline-server:/path/to/")
     print("")
-    print("  2. On offline server, extract and set environment variable:")
-    print("     tar -xzf tiktoken_cache.tar.gz")
-    print("     export TIKTOKEN_CACHE_DIR=/path/to/tiktoken_cache")
+    print("  2. On offline server, extract into the default location")
+    print("     (used by LightRAG automatically):")
+    print("     mkdir -p ~/.tiktoken_cache")
+    print("     tar -xzf tiktoken_cache.tar.gz -C ~/.tiktoken_cache")
     print("")
-    print("  3. Or copy to default location:")
-    print(f"     cp -r {cache_dir} ~/.tiktoken_cache/")
+    print("  3. Or extract anywhere and point TIKTOKEN_CACHE_DIR at it:")
+    print("     export TIKTOKEN_CACHE_DIR=/path/to/tiktoken_cache")
 
     return success_count, failed_models
 
@@ -289,7 +302,8 @@ For more information, visit: https://github.com/HKUDS/LightRAG
     )
     parser.add_argument(
         "--cache-dir",
-        help="Cache directory path (default: ~/.tiktoken_cache). Selects the "
+        help="Cache directory path (default: $TIKTOKEN_CACHE_DIR if set, else "
+        "~/.tiktoken_cache). Selects the "
         "tiktoken download on its own, same as --tiktoken",
         default=None,
     )
