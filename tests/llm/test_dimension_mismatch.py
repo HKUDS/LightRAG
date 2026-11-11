@@ -20,6 +20,8 @@ from lightrag.kg.postgres_impl import PGVectorStorage
 from lightrag.exceptions import VectorSpaceMismatchError
 
 
+pytestmark = pytest.mark.offline
+
 # Note: Tests should use proper table names that have DDL templates
 # Valid base tables: LIGHTRAG_VDB_CHUNKS, LIGHTRAG_VDB_ENTITIES, LIGHTRAG_VDB_RELATIONSHIPS,
 #                    LIGHTRAG_DOC_CHUNKS, LIGHTRAG_DOC_FULL_DOCS, LIGHTRAG_DOC_TEXT_CHUNKS
