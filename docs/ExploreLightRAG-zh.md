@@ -34,72 +34,57 @@
 
 默认的四种存储（`JsonKVStorage`、`NanoVectorDBStorage`、`NetworkXStorage`、`JsonDocStatusStorage`）把所有数据放在内存里，靠整文件重写来落盘，只适合小规模测试。PostgreSQL 可以在一个数据库里承担全部四种存储：键值和文档状态用普通表，向量用 pgvector，知识图谱用 Apache AGE。
 
-### 1.1 运行 PostgreSQL
-
-设置向导可以帮你生成容器配置：运行 `make env-storage`，选择 PostgreSQL 和 Docker 部署方式，它会把连接参数写进 `.env`，把服务写进 `docker-compose.final.yml`（参见 [InteractiveSetup.md](./InteractiveSetup.md)）。
-
-手动运行的话，项目提供的镜像 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 内置了 PostgreSQL 18、pgvector 和 Apache AGE。最小的 `compose.yml`：
-
-```yaml
-services:
-  postgres:
-    image: gzdaniel/postgres-for-rag:pg18-age-pgvector
-    environment:
-      POSTGRES_USER: lightrag
-      POSTGRES_PASSWORD: change-me      # 例如 openssl rand -hex 16
-      POSTGRES_DB: rag
-    ports:
-      - "127.0.0.1:5432:5432"           # 只监听本机
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    restart: unless-stopped
-volumes:
-  postgres_data:
-```
+### 1.1 用设置向导生成 PostgreSQL 服务
 
 ```bash
-docker compose up -d
-docker compose exec postgres psql -U lightrag -d rag -tAc \
+make env-storage
+```
+
+四种存储分别选择 `PGKVStorage`、`PGVectorStorage`、`PGGraphStorage` 和 `PGDocStatusStorage`，选择由向导通过 Docker 在本地运行 PostgreSQL，再填写用户名、密码和数据库名。向导会：
+
+- 先备份原来的 `.env`，再把存储类型和 `POSTGRES_*` 连接参数写进 `.env`；
+- 在 `docker-compose.final.yml` 里加入一个 `postgres` 服务。它使用的镜像 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 内置了 PostgreSQL 18、pgvector 和 Apache AGE。
+
+`.env` 里保持主机上可用的地址（`POSTGRES_HOST=localhost`）；生成的 compose 文件则让其中容器化的 `lightrag` 服务改为连接 `postgres`。向导会问哪些问题，参见 [InteractiveSetup.md](./InteractiveSetup.md)。
+
+启动数据库：
+
+```bash
+# LightRAG Server 直接在主机上运行（源码或 PyPI 安装）：只启动数据库
+docker compose -f docker-compose.final.yml up -d postgres
+
+# LightRAG Server 也在 Docker 中运行：启动整个服务栈
+docker compose -f docker-compose.final.yml up -d
+```
+
+确认两个扩展都可用：
+
+```bash
+docker compose -f docker-compose.final.yml exec postgres psql -U <用户名> -d <数据库名> -tAc \
   "select name, default_version from pg_available_extensions where name in ('vector','age')"
 ```
 
-> [!CAUTION]
-> **在负责转发流量的主机上安装 Docker 时要小心**（路由器、VPN 网关、SD-WAN 节点等，即 `net.ipv4.ip_forward = 1` 的机器）：Docker 守护进程默认会把 iptables `FORWARD` 链的策略改成 `DROP`，并加入自己的 NAT 规则，可能切断这台机器原有的转发。请**在 Docker 服务第一次启动之前**写好 `/etc/docker/daemon.json`。在 Debian / Ubuntu 上，`apt install docker.io` 装完会立刻启动服务：
->
-> ```json
-> {"iptables": false, "ip6tables": false, "ip-forward": false, "ip-masq": false, "bridge": "none"}
-> ```
->
-> 然后容器改用 `network_mode: host`，不要用 `ports:`，并让 PostgreSQL 只监听本机：`command: ["postgres", "-c", "shared_preload_libraries=age", "-c", "listen_addresses=127.0.0.1"]`。安装前后各执行一次 `iptables-save` / `nft list ruleset`，对比确认规则没有变化。
+服务模板会在所有网卡上开放 5432 端口。如果主机能从公网访问，请使用强密码，并用防火墙限制这个端口。
 
-### 1.2 让 LightRAG 使用 PostgreSQL
+### 1.2 检查向量索引类型
+
+向导不会询问 `POSTGRES_VECTOR_INDEX_TYPE`，请在 `.env` 里确认：
 
 ```bash
-LIGHTRAG_KV_STORAGE=PGKVStorage
-LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
-LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
-LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
-
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-POSTGRES_USER=lightrag
-POSTGRES_PASSWORD='change-me'
-POSTGRES_DATABASE=rag
 POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 ```
 
-**根据嵌入维度选择向量索引类型。** pgvector 无法为超过 2000 维的向量建立 `HNSW` 或 `IVFFlat` 索引；`HNSW_HALFVEC` 最多支持 4000 维，需要 pgvector 0.7 或更高版本。默认的 `text-embedding-3-large` 是 3072 维，所以必须用 `HNSW_HALFVEC`。如果用 `HNSW`，索引会建不出来：没有维度检查的版本只打一条 `ERROR` 就继续运行，此时没有向量索引，每次查询都要全表扫描；带维度检查的版本会拒绝启动，并提示修改方法。之后再换索引类型，只会重建索引，已存储的向量不受影响。
+**根据嵌入维度选择向量索引类型。** pgvector 无法为超过 2000 维的向量建立 `HNSW` 或 `IVFFlat` 索引；`HNSW_HALFVEC` 最多支持 4000 维，需要 pgvector 0.7 或更高版本，向导使用的镜像满足这个要求。默认的 `text-embedding-3-large` 是 3072 维，所以必须用 `HNSW_HALFVEC`。如果用 `HNSW`，索引会建不出来：没有维度检查的版本只打一条 `ERROR` 就继续运行，此时没有向量索引，每次查询都要全表扫描；带维度检查的版本会拒绝启动，并提示修改方法。之后再换索引类型，只会重建索引，已存储的向量不受影响。
 
-重启后，启动日志里会列出四个 `PG*` 存储。数据表在第一次启动时创建，向量表的表名里带着嵌入模型和维度，例如 `lightrag_vdb_chunks_text_embedding_3_large_3072d`。
+重启服务后，启动日志里会列出四个 `PG*` 存储。数据表在第一次启动时创建，向量表的表名里带着嵌入模型和维度，例如 `lightrag_vdb_chunks_text_embedding_3_large_3072d`。
 
 ### 1.3 迁移已有文档
 
 切换存储不会搬运数据。把已经导入的内容带过来，最省钱的办法是先迁移抽取缓存，再把文档重新上传一遍：
 
-1. 先加上 `POSTGRES_*` 连接参数，但**暂时保留原来的存储类型**。
-2. 运行 `python -m lightrag.tools.migrate_llm_cache`，源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要和多模态分析的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
-3. 把四个 `LIGHTRAG_*_STORAGE` 改成 PostgreSQL，然后重启。
-4. 重新上传原始文件。实体抽取会命中迁移过来的缓存。
+1. PostgreSQL 启动后（1.1），在重启服务之前运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要和多模态分析的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
+2. 重启服务，切换到 PostgreSQL。
+3. 重新上传原始文件。实体抽取会命中迁移过来的缓存。
 
 在测试部署上，迁移了 139 条缓存记录。重新上传 6 篇文档用了 60 秒，只新增了 17 次 LLM 调用，其余抽取都来自缓存。新存储里的文本块和原来完全一致，都是 56 个。
 
@@ -344,7 +329,7 @@ LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
-POSTGRES_HOST=127.0.0.1
+POSTGRES_HOST=localhost
 POSTGRES_USER=lightrag
 POSTGRES_PASSWORD='...'
 POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
@@ -390,7 +375,6 @@ VLM_MAX_ASYNC_LLM=12
 | 现象 | 原因 | 解决办法 |
 |---|---|---|
 | 切换到 PostgreSQL 后向量索引建不出来，或服务拒绝启动 | 嵌入超过 2000 维却用了 `HNSW` / `IVFFlat` | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
-| 装完 Docker 后主机的路由转发出问题 | Docker 改写了 iptables `FORWARD` 策略 | 首次启动前写好 `daemon.json`，设置 `"iptables": false`（第 1 步） |
 | Markdown 里的图片没有被分析 | 单独上传 `.md` 时本地图片不会一起上传；或路径含空格却没加 `<...>` | 改传 `.textpack`；写成 `![](<含空格的路径>)` |
 | 带图片的文档处理失败（`FAILED`） | 处理选项带 `i`，但 `VLM_PROCESS_ENABLE=false` | 两者一起打开 |
 | `DOCX_SMART_HEADING=true` 没有效果 | 文档正文短于 `DOCX_SMART_MIN_TOKENS` | 查看 `smart_audit.json`；用更长的文档测试 |

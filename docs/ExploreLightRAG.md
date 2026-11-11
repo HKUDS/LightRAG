@@ -34,72 +34,57 @@ Every step below was carried out, in this order, on a real deployment: a 2-vCPU 
 
 The default storages (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`, `JsonDocStatusStorage`) keep everything in memory and rewrite whole files. They are meant for small-scale testing only. PostgreSQL can hold all four storage types in one database: key-value and document status in tables, vectors with pgvector, and the graph with Apache AGE.
 
-### 1.1 Run PostgreSQL
-
-The setup wizard can generate the container for you: run `make env-storage`, choose PostgreSQL with the Docker deployment, and it writes the connection settings into `.env` and the service into `docker-compose.final.yml` (see [InteractiveSetup.md](./InteractiveSetup.md)).
-
-To run it by hand, the project's image `gzdaniel/postgres-for-rag:pg18-age-pgvector` ships PostgreSQL 18 with pgvector and Apache AGE. A minimal `compose.yml`:
-
-```yaml
-services:
-  postgres:
-    image: gzdaniel/postgres-for-rag:pg18-age-pgvector
-    environment:
-      POSTGRES_USER: lightrag
-      POSTGRES_PASSWORD: change-me      # e.g. openssl rand -hex 16
-      POSTGRES_DB: rag
-    ports:
-      - "127.0.0.1:5432:5432"           # loopback only
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    restart: unless-stopped
-volumes:
-  postgres_data:
-```
+### 1.1 Generate the PostgreSQL Service with the Setup Wizard
 
 ```bash
-docker compose up -d
-docker compose exec postgres psql -U lightrag -d rag -tAc \
+make env-storage
+```
+
+Choose `PGKVStorage`, `PGVectorStorage`, `PGGraphStorage` and `PGDocStatusStorage` for the four storage types, let the wizard run PostgreSQL locally via Docker, and enter the user, password and database name. The wizard then:
+
+- writes the storage classes and the `POSTGRES_*` connection settings into `.env`, after backing up the previous file;
+- adds a `postgres` service to `docker-compose.final.yml`. Its image, `gzdaniel/postgres-for-rag:pg18-age-pgvector`, ships PostgreSQL 18 with pgvector and Apache AGE.
+
+`.env` stays usable from the host (`POSTGRES_HOST=localhost`); the generated compose file points its containerized `lightrag` service at `postgres` instead. See [InteractiveSetup.md](./InteractiveSetup.md) for every question the wizard asks.
+
+Start the database:
+
+```bash
+# LightRAG Server runs on the host (source or PyPI install): start only the database
+docker compose -f docker-compose.final.yml up -d postgres
+
+# LightRAG Server runs in Docker as well: start the whole stack
+docker compose -f docker-compose.final.yml up -d
+```
+
+Check that both extensions are available:
+
+```bash
+docker compose -f docker-compose.final.yml exec postgres psql -U <user> -d <database> -tAc \
   "select name, default_version from pg_available_extensions where name in ('vector','age')"
 ```
 
-> [!CAUTION]
-> **Installing Docker on a host that forwards traffic** (a router, VPN gateway or SD-WAN node, i.e. `net.ipv4.ip_forward = 1`): by default the Docker daemon sets the iptables `FORWARD` policy to `DROP` and adds its own NAT rules, which can cut the host's existing forwarding. Write `/etc/docker/daemon.json` **before the Docker service first starts**, because on Debian / Ubuntu `apt install docker.io` starts it immediately:
->
-> ```json
-> {"iptables": false, "ip6tables": false, "ip-forward": false, "ip-masq": false, "bridge": "none"}
-> ```
->
-> Then run the container with `network_mode: host` instead of `ports:`, and bind PostgreSQL to loopback with `command: ["postgres", "-c", "shared_preload_libraries=age", "-c", "listen_addresses=127.0.0.1"]`. Compare `iptables-save` / `nft list ruleset` before and after installing.
+The service template publishes port 5432 on all interfaces. On a host reachable from the internet, use a strong password and restrict the port with your firewall.
 
-### 1.2 Point LightRAG at PostgreSQL
+### 1.2 Check the Vector Index Type
+
+The wizard does not ask for `POSTGRES_VECTOR_INDEX_TYPE`, so check it in `.env`:
 
 ```bash
-LIGHTRAG_KV_STORAGE=PGKVStorage
-LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
-LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
-LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
-
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-POSTGRES_USER=lightrag
-POSTGRES_PASSWORD='change-me'
-POSTGRES_DATABASE=rag
 POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 ```
 
-**Pick the vector index type from your embedding dimension.** pgvector cannot build an `HNSW` or `IVFFlat` index above 2000 dimensions. `HNSW_HALFVEC` goes up to 4000 and needs pgvector 0.7 or later. The default `text-embedding-3-large` has 3072 dimensions, so it needs `HNSW_HALFVEC`. With `HNSW`, index creation fails. Releases without the dimension check log an `ERROR` and carry on with no vector index (every query then scans the table); releases with it refuse to start and name the fix. Changing the index type later only rebuilds the index; stored vectors are kept.
+**Pick the vector index type from your embedding dimension.** pgvector cannot build an `HNSW` or `IVFFlat` index above 2000 dimensions. `HNSW_HALFVEC` goes up to 4000 and needs pgvector 0.7 or later, which the wizard's image has. The default `text-embedding-3-large` has 3072 dimensions, so it needs `HNSW_HALFVEC`. With `HNSW`, index creation fails. Releases without the dimension check log an `ERROR` and carry on with no vector index (every query then scans the table); releases with it refuse to start and name the fix. Changing the index type later only rebuilds the index; stored vectors are kept.
 
-After the restart, the startup log lists the four `PG*` storages. The tables appear on first start, and the vector tables carry the embedding model and dimension in their name, for example `lightrag_vdb_chunks_text_embedding_3_large_3072d`.
+After restarting the server, the startup log lists the four `PG*` storages. The tables appear on first start, and the vector tables carry the embedding model and dimension in their name, for example `lightrag_vdb_chunks_text_embedding_3_large_3072d`.
 
 ### 1.3 Bring Over Existing Documents
 
 Switching storage does not move data. The cheapest way to carry over what you already indexed is to migrate the extraction cache and then upload the documents again:
 
-1. Add the `POSTGRES_*` settings, but **keep the old storage classes** for now.
-2. Run `python -m lightrag.tools.migrate_llm_cache`, choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary and multimodal-analysis caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
-3. Switch the four `LIGHTRAG_*_STORAGE` settings to PostgreSQL and restart.
-4. Upload the original files again. Extraction hits the migrated cache.
+1. With PostgreSQL running (1.1) and before restarting the server, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary and multimodal-analysis caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
+2. Restart the server on PostgreSQL.
+3. Upload the original files again. Extraction hits the migrated cache.
 
 On the test deployment, 139 cache records moved. Re-uploading the six documents took 60 seconds and made 17 new LLM calls; all other extraction came from the cache. The new store held exactly the same 56 chunks as the old one.
 
@@ -344,7 +329,7 @@ LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
-POSTGRES_HOST=127.0.0.1
+POSTGRES_HOST=localhost
 POSTGRES_USER=lightrag
 POSTGRES_PASSWORD='...'
 POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
@@ -390,7 +375,6 @@ VLM_MAX_ASYNC_LLM=12
 | Symptom | Cause | Fix |
 |---|---|---|
 | Vector index creation fails, or the server refuses to start after switching to PostgreSQL | `HNSW` / `IVFFlat` with an embedding above 2000 dimensions | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
-| Docker installation breaks the host's routing | Docker rewrote the iptables `FORWARD` policy | `daemon.json` with `"iptables": false` before first start (Step 1) |
 | Images in a Markdown file are not analysed | Local image files are not uploaded with a plain `.md`; or the path contains spaces without `<...>` | Upload a `.textpack`; write `![](<path with spaces>)` |
 | A document with images ends up `FAILED` | `i` in its options while `VLM_PROCESS_ENABLE=false` | Enable both together |
 | `DOCX_SMART_HEADING=true` changes nothing | The document is below `DOCX_SMART_MIN_TOKENS` | Check `smart_audit.json`; test with a longer document |
