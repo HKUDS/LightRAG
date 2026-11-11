@@ -59,6 +59,28 @@ def test_oversized_dimension_is_refused_with_a_remedy(index_type, dim, suggestio
     assert suggestion in str(exc.value)
 
 
+@pytest.mark.parametrize("index_type", ["HNSW", "IVFFLAT"])
+def test_remedy_follows_the_dimension_not_the_refused_type(index_type):
+    """Above 4000 dimensions HNSW_HALFVEC refuses too, so it must not be the
+    advice for an HNSW / IVFFlat deployment that is that large."""
+    with pytest.raises(ValueError) as exc:
+        _check_vector_index_dimension(index_type, 4096)
+    message = str(exc.value)
+    assert "Set POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC" not in message
+    assert "VCHORDRQ" in message
+
+
+def test_halfvec_remedy_discloses_the_lossy_conversion():
+    """Switching an existing table to HNSW_HALFVEC rewrites stored vectors as
+    float16 (ALTER COLUMN ... TYPE HALFVEC); the advice must not claim that
+    only the index changes."""
+    with pytest.raises(ValueError) as exc:
+        _check_vector_index_dimension("HNSW", 3072)
+    message = str(exc.value)
+    assert "16-bit" in message
+    assert "without touching stored vectors" not in message
+
+
 def _bare_db(index_type: str) -> PostgreSQLDB:
     db = PostgreSQLDB.__new__(PostgreSQLDB)
     db.vector_index_type = index_type

@@ -393,14 +393,23 @@ def _check_vector_index_dimension(index_type: str | None, embedding_dim: int) ->
     limit = _VECTOR_INDEX_MAX_DIMS.get(index_type.upper())
     if limit is None or embedding_dim <= limit:
         return
-    hint = (
-        "Set POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC (up to 4000 dimensions, "
-        "pgvector >= 0.7.0); switching the index type rebuilds the index "
-        "without touching stored vectors."
-        if limit < _VECTOR_INDEX_MAX_DIMS["HNSW_HALFVEC"]
-        else "Use an embedding model with at most 4000 dimensions, or "
-        "POSTGRES_VECTOR_INDEX_TYPE=VCHORDRQ."
-    )
+    # Chosen by the dimension, not by the refused type's limit: HNSW at 4096
+    # dimensions must not be sent to HNSW_HALFVEC, which refuses it too.
+    if embedding_dim <= _VECTOR_INDEX_MAX_DIMS["HNSW_HALFVEC"]:
+        hint = (
+            "Set POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC (up to 4000 "
+            "dimensions, pgvector >= 0.7.0). On a table that already holds "
+            "vectors, the switch converts them in place to 16-bit floats, a "
+            "precision loss that switching back cannot undo; back up first if "
+            "that matters. Otherwise use VCHORDRQ (VectorChord extension) or "
+            "an embedding model with at most 2000 dimensions."
+        )
+    else:
+        hint = (
+            "Use POSTGRES_VECTOR_INDEX_TYPE=VCHORDRQ (VectorChord extension), "
+            "or an embedding model with at most 4000 dimensions together "
+            "with HNSW_HALFVEC."
+        )
     raise ValueError(
         f"POSTGRES_VECTOR_INDEX_TYPE={index_type} supports at most {limit} "
         f"dimensions, but the embedding model produces {embedding_dim}. {hint}"
