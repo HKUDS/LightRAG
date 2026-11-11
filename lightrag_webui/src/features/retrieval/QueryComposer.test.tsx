@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { cleanup, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
@@ -45,6 +45,32 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+})
+
+describe('query composer input method composition', () => {
+  for (const draft of ['中文问题', '第一行\n中文问题']) {
+    for (const keyboardState of [
+      { isComposing: true },
+      { isComposing: false, keyCode: 229 }
+    ]) {
+      test(`candidate confirmation preserves ${JSON.stringify(draft)} with ${JSON.stringify(keyboardState)}`, () => {
+        renderComposer()
+        if (draft.includes('\n')) {
+          fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })
+          expect(input().tagName).toBe('TEXTAREA')
+        }
+        fireEvent.change(input(), { target: { value: draft } })
+        fireEvent.keyDown(input(), { key: 'Enter', code: 'Enter', ...keyboardState })
+
+        expect(sent).toEqual([])
+        expect((input() as HTMLInputElement | HTMLTextAreaElement).value).toBe(draft)
+
+        fireEvent.keyDown(input(), { key: 'Enter', code: 'Enter', isComposing: false })
+        expect(sent).toEqual([draft])
+        expect((input() as HTMLInputElement | HTMLTextAreaElement).value).toBe('')
+      })
+    }
+  }
 })
 
 describe('query composer validation notice', () => {

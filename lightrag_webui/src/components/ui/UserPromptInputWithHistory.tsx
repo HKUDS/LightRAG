@@ -47,6 +47,7 @@ export default function UserPromptInputWithHistory({
 
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
     if (!isOpen) {
       if (e.key === 'ArrowDown' && history.length > 0) {
         e.preventDefault()
