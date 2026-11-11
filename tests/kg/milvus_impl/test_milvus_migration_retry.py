@@ -24,6 +24,8 @@ from pymilvus import MilvusException
 
 from lightrag.kg.milvus_impl import MilvusVectorDBStorage
 
+from tests._sleep_patch import patch_module_sleep
+
 
 class _EmbeddingFunc:
     def __init__(self, dim=128, model_name="text-embedding-3-small"):
@@ -118,7 +120,7 @@ class TestMigrationRetry:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client") as rebuild:
-                with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+                with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                     storage._migrate_collection_schema(
                         source_collection_name=storage.legacy_namespace,
                         target_collection_name=storage.final_namespace,
@@ -142,7 +144,7 @@ class TestMigrationRetry:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client") as rebuild:
-                with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+                with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                     with pytest.raises(
                         RuntimeError, match="Iterator-based migration failed"
                     ):
@@ -167,7 +169,7 @@ class TestMigrationRetry:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client"):
-                with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+                with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                     with pytest.raises(
                         RuntimeError, match="Iterator-based migration failed"
                     ):
@@ -194,7 +196,7 @@ class TestMigrationRetry:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client"):
-                with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+                with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                     with pytest.raises(RuntimeError):
                         storage._migrate_collection_schema(
                             source_collection_name=storage.legacy_namespace,
@@ -691,7 +693,7 @@ class TestInPlaceCommitWindowRecovery:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client") as rebuild:
-                with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+                with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                     storage._migrate_collection_schema()
 
         rebuild.assert_called_once()
@@ -733,7 +735,7 @@ class TestInPlaceCommitWindowRecovery:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client") as rebuild:
-                with patch("lightrag.kg.milvus_impl.time.sleep"):
+                with patch_module_sleep("lightrag.kg.milvus_impl"):
                     storage._migrate_collection_schema()
 
         rebuild.assert_called_once()
