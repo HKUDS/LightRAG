@@ -25,8 +25,31 @@ TIKTOKEN_ENCODING_NAMES = {"cl100k_base", "p50k_base", "r50k_base", "o200k_base"
 SPACY_MODEL_WHEELS = {
     "zh_core_web_sm": "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl",
     "en_core_web_sm": "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
-    "spacy-pkuseg": "spacy-pkuseg==1.0.1",
+    "spacy-pkuseg": "spacy-pkuseg==1.0.2",
 }
+
+
+def _spacy_installer_command(install: bool) -> list[str] | None:
+    """Return the command prefix that installs or downloads one spaCy wheel.
+
+    pip of the running interpreter is preferred. A virtual environment created
+    by ``uv venv`` / ``uv sync`` ships without pip, so for ``install`` the
+    ``uv`` on PATH is used instead, targeted at this interpreter with
+    ``--python`` so the models land in the same environment. ``uv`` has no
+    ``pip download`` equivalent, so downloading still requires pip.
+
+    Returns None when neither tool is usable; the caller must report that.
+    """
+    import importlib.util
+    import shutil
+
+    if importlib.util.find_spec("pip") is not None:
+        return [sys.executable, "-m", "pip", "install" if install else "download"]
+    if install:
+        uv = shutil.which("uv")
+        if uv:
+            return [uv, "pip", "install", "--python", sys.executable]
+    return None
 
 
 def download_spacy_models(spacy_dir: str = None, install: bool = False):
@@ -35,8 +58,10 @@ def download_spacy_models(spacy_dir: str = None, install: bool = False):
     Args:
         spacy_dir: Directory to store the downloaded wheels. Defaults to
             ``./spacy_models``. Ignored when ``install`` is True.
-        install: If True, ``pip install`` the wheels into the current
-            environment instead of downloading them to a directory.
+        install: If True, install the wheels into the current environment
+            instead of downloading them to a directory. Uses pip, or
+            ``uv pip install`` when the environment has no pip (see
+            ``_spacy_installer_command``).
 
     Returns:
         Tuple of (success_count, failed_models)
@@ -45,6 +70,23 @@ def download_spacy_models(spacy_dir: str = None, install: bool = False):
 
     success_count = 0
     failed_models = []
+
+    base_cmd = _spacy_installer_command(install)
+    if base_cmd is None:
+        if install:
+            reason = (
+                "neither pip nor uv is available for this Python environment; "
+                "install one of them, or run: "
+                "uv pip install -r requirements-offline-smart-heading.txt"
+            )
+        else:
+            reason = (
+                "downloading wheels requires pip, which this environment lacks "
+                "(uv-created virtual environments ship without it); add it with "
+                "`uv pip install pip` or `python -m ensurepip`"
+            )
+        print(f"\n✗ Cannot process spaCy models: {reason}")
+        return 0, [(name, reason) for name in sorted(SPACY_MODEL_WHEELS)]
 
     if install:
         print(f"\nInstalling {len(SPACY_MODEL_WHEELS)} spaCy models...")
@@ -57,19 +99,10 @@ def download_spacy_models(spacy_dir: str = None, install: bool = False):
 
     for i, (name, url) in enumerate(sorted(SPACY_MODEL_WHEELS.items()), 1):
         if install:
-            cmd = [sys.executable, "-m", "pip", "install", url]
+            cmd = [*base_cmd, url]
             action = "Installing"
         else:
-            cmd = [
-                sys.executable,
-                "-m",
-                "pip",
-                "download",
-                "--no-deps",
-                "--dest",
-                spacy_dir,
-                url,
-            ]
+            cmd = [*base_cmd, "--no-deps", "--dest", spacy_dir, url]
             action = "Downloading"
         try:
             print(
@@ -282,8 +315,9 @@ For more information, visit: https://github.com/HKUDS/LightRAG
     parser.add_argument(
         "--spacy-install",
         action="store_true",
-        help="pip install the spaCy models into the current environment "
-        "instead of downloading wheels, independently of tiktoken",
+        help="Install the spaCy models into the current environment (with "
+        "pip, or uv when the environment has no pip) instead of downloading "
+        "wheels, independently of tiktoken",
     )
     parser.add_argument(
         "--version", action="version", version="%(prog)s (LightRAG cache downloader)"

@@ -434,6 +434,11 @@ async def test_delete_entity_relation_prunes_pending_and_runs_sql():
 @pytest.mark.asyncio
 async def test_drop_clears_buffers_and_runs_delete():
     storage = _make_storage()
+    # Only the suffixed table exists; drop() skips a table that is not there
+    # (an initialize() refused by VectorSpaceMismatchError never created one).
+    storage.db.check_table_exists = AsyncMock(
+        side_effect=lambda t: t.lower() == storage.table_name.lower()
+    )
     await storage.upsert({"c1": _chunk_data()})
     await storage.delete(["c2"])
     assert storage._pending_vector_docs and storage._pending_vector_deletes

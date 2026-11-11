@@ -1177,3 +1177,77 @@ def test_decode_preserves_content():
         tokens = tokenizer.encode(original)
         decoded = tokenizer.decode(tokens)
         assert decoded == original, f"Failed to decode: {original}"
+
+
+# ============================================================================
+# Tests: the split_by_character path must not encode the whole document
+# (regression guard for the deferred whole-document encode)
+# ============================================================================
+
+
+class CountingTokenizer(DummyTokenizer):
+    """DummyTokenizer that records every string passed to encode()."""
+
+    def __init__(self):
+        self.encoded: list[str] = []
+
+    def encode(self, content: str):
+        self.encoded.append(content)
+        return super().encode(content)
+
+
+def _make_counting_tokenizer() -> tuple[CountingTokenizer, Tokenizer]:
+    inner = CountingTokenizer()
+    return inner, Tokenizer(model_name="counting", tokenizer=inner)
+
+
+@pytest.mark.offline
+def test_split_by_character_does_not_encode_whole_document():
+    """The split_by_character path only encodes each segment, never the
+    whole document (the fixed-window ``else`` branch is the only consumer
+    of the whole-document token list)."""
+    inner, tokenizer = _make_counting_tokenizer()
+    content = "alpha\n\nbeta\n\ngamma"
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character="\n\n",
+        chunk_token_size=10,
+    )
+
+    assert [chunk["content"] for chunk in chunks] == ["alpha", "beta", "gamma"]
+    # Exactly one encode per split segment; in particular no call with the
+    # full document, whose token list the split path never reads.
+    assert inner.encoded == ["alpha", "beta", "gamma"]
+
+
+@pytest.mark.offline
+def test_split_by_character_only_does_not_encode_whole_document():
+    """Same guarantee for split_by_character_only=True."""
+    inner, tokenizer = _make_counting_tokenizer()
+    content = "one\ntwo\nthree"
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character="\n",
+        split_by_character_only=True,
+        chunk_token_size=10,
+    )
+
+    assert [chunk["content"] for chunk in chunks] == ["one", "two", "three"]
+    assert inner.encoded == ["one", "two", "three"]
+
+
+@pytest.mark.offline
+def test_fixed_window_path_still_encodes_whole_document():
+    """Without split_by_character the whole-document encode still happens."""
+    inner, tokenizer = _make_counting_tokenizer()
+    content = "abcdefghij"
+
+    chunking_by_token_size(
+        tokenizer, content, chunk_token_size=4, chunk_overlap_token_size=0
+    )
+
+    assert inner.encoded == [content]

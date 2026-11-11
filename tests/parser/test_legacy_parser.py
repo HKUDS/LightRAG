@@ -67,6 +67,28 @@ async def test_legacy_parse_txt_persists_and_archives(tmp_path, archived):
     assert "parse_stage_skipped" not in result.to_dict()
 
 
+async def test_legacy_parse_pptx_with_only_grouped_text(tmp_path, archived):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = "Grouped evidence"
+    source = tmp_path / "grouped.pptx"
+    presentation.save(source)
+    rag = _FakeRag()
+
+    result = await LegacyParser().parse(_ctx(rag, source))
+
+    assert result.content == "Grouped evidence\n"
+    assert result.parse_format == FULL_DOCS_FORMAT_RAW
+    assert result.parse_engine == "legacy"
+    assert len(rag.persisted) == 1
+    assert rag.persisted[0][1]["content"] == result.content
+    assert archived == [str(source)]
+
+
 async def test_legacy_parse_unsupported_suffix_raises(tmp_path, archived):
     source = tmp_path / "image.xyz"
     source.write_bytes(b"not parseable")

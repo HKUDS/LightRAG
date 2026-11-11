@@ -73,12 +73,26 @@ export default function PipelineStatusDialog({
   useEffect(() => {
     if (!open) return
 
+    // The 2s cadence is shorter than the request timeout, so without these two
+    // guards a stalled backend would pile up one in-flight request and one
+    // error toast per tick.
+    let inFlight = false
+    let failureNotified = false
+
     const fetchStatus = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const data = await getPipelineStatus()
         setStatus(data)
+        failureNotified = false
       } catch (err) {
-        toast.error(t('documentPanel.pipelineStatus.errors.fetchFailed', { error: errorMessage(err) }))
+        if (!failureNotified) {
+          failureNotified = true
+          toast.error(t('documentPanel.pipelineStatus.errors.fetchFailed', { error: errorMessage(err) }))
+        }
+      } finally {
+        inFlight = false
       }
     }
 

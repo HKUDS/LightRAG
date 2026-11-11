@@ -4,6 +4,11 @@ The save path produces two files (``.index`` and ``.meta.json``). Each one
 must land via tmp + rename so a crash during either write preserves the
 prior snapshot. Cross-file consistency between the two renames is
 intentionally out of scope (declared in the PR).
+
+Both writes run in the storage-IO worker pool, so these tests are async and
+exercise the offloaded path end to end: the failure modes below (a raising
+``os.replace``, a raising ``json.dump``) happen in the worker thread, and the
+exception has to cross back to the awaiting caller intact.
 """
 
 import json
@@ -42,6 +47,11 @@ def _make_storage(tmp_path, namespace: str = "vectors") -> FaissVectorDBStorage:
     )
 
 
+async def _noop() -> None:
+    """Post-commit hook stand-in: these tests are about the writes themselves."""
+    return None
+
+
 def _seed(storage: FaissVectorDBStorage, marker: str) -> None:
     """Push a single vector tagged with ``marker`` into the in-memory state."""
     vec = np.ones((1, 4), dtype=np.float32)
@@ -52,10 +62,10 @@ def _seed(storage: FaissVectorDBStorage, marker: str) -> None:
 
 
 @pytest.mark.offline
-def test_save_faiss_index_publishes_both_files_cleanly(tmp_path):
+async def test_save_faiss_index_publishes_both_files_cleanly(tmp_path):
     storage = _make_storage(tmp_path)
     _seed(storage, "v1")
-    storage._save_faiss_index()
+    await storage._save_faiss_index(_noop)
 
     assert os.path.exists(storage._faiss_index_file)
     assert os.path.exists(storage._meta_file)
@@ -66,12 +76,12 @@ def test_save_faiss_index_publishes_both_files_cleanly(tmp_path):
 
 
 @pytest.mark.offline
-def test_save_faiss_index_replace_crash_preserves_prior_index(tmp_path):
+async def test_save_faiss_index_replace_crash_preserves_prior_index(tmp_path):
     """If ``os.replace`` raises while renaming the ``.index`` tmp, the old
     ``.index`` must remain loadable by ``faiss.read_index``."""
     storage = _make_storage(tmp_path)
     _seed(storage, "v1")
-    storage._save_faiss_index()
+    await storage._save_faiss_index(_noop)
     assert os.path.exists(storage._faiss_index_file)
 
     # Bump in-memory state to v2 and then crash the .index rename.
@@ -82,7 +92,7 @@ def test_save_faiss_index_replace_crash_preserves_prior_index(tmp_path):
         side_effect=OSError("simulated crash"),
     ):
         with pytest.raises(OSError, match="simulated crash"):
-            storage._save_faiss_index()
+            await storage._save_faiss_index(_noop)
 
     # Reload the destination — must still be the v1 single-vector index.
     reloaded = faiss.read_index(storage._faiss_index_file)
@@ -92,12 +102,12 @@ def test_save_faiss_index_replace_crash_preserves_prior_index(tmp_path):
 
 
 @pytest.mark.offline
-def test_save_faiss_meta_write_failure_preserves_prior_meta(tmp_path):
+async def test_save_faiss_meta_write_failure_preserves_prior_meta(tmp_path):
     """A failure inside the meta ``write_fn`` (after the index has been
     written) must leave the previous ``.meta.json`` intact."""
     storage = _make_storage(tmp_path)
     _seed(storage, "v1")
-    storage._save_faiss_index()
+    await storage._save_faiss_index(_noop)
     assert json.load(open(storage._meta_file))
 
     real_dump = json.dump
@@ -114,7 +124,7 @@ def test_save_faiss_meta_write_failure_preserves_prior_meta(tmp_path):
     _seed(storage, "v2")
     with patch("lightrag.kg.faiss_impl.json.dump", side_effect=explode_on_second_dump):
         with pytest.raises(RuntimeError, match="simulated meta failure"):
-            storage._save_faiss_index()
+            await storage._save_faiss_index(_noop)
     assert seen, "patched json.dump must have been invoked"
 
     # .meta.json must still parse and still reflect v1.

@@ -30,7 +30,12 @@ dependencies = [
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "packaging",
-    "pandas>=2.0.0,<2.4.0",
+    # pandas 3.0 requires Python >= 3.11 while this project still supports
+    # 3.10, so the ceiling is widened instead of the floor being raised:
+    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
+    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # which are unchanged in 3.x.
+    "pandas>=2.0.0,<4.0.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -42,7 +47,9 @@ dependencies = [
     # oldest release whose encode_batch/decode_batch fan encode()/decode() of
     # one Encoding across threads — the thread safety Tokenizer relies on.
     "tiktoken>=0.7.0",
-    "xlsxwriter>=3.1.0",
+    # 3.2.0 is the minimum pandas 3.x declares for its xlsxwriter Excel
+    # engine (pandas.compat._optional.VERSIONS).
+    "xlsxwriter>=3.2.0",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +57,7 @@ dependencies = [
 pytest = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pytest-xdist>=3.6.0",  # local `-n auto` full-suite runs; see AGENTS.md
     "pre-commit",
     "ruff",
     "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
@@ -64,7 +72,12 @@ api = [
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "openai>=2.0.0,<4.0.0",
-    "pandas>=2.0.0,<2.4.0",
+    # pandas 3.0 requires Python >= 3.11 while this project still supports
+    # 3.10, so the ceiling is widened instead of the floor being raised:
+    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
+    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # which are unchanged in 3.x.
+    "pandas>=2.0.0,<4.0.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -76,7 +89,9 @@ api = [
     # oldest release whose encode_batch/decode_batch fan encode()/decode() of
     # one Encoding across threads — the thread safety Tokenizer relies on.
     "tiktoken>=0.7.0",
-    "xlsxwriter>=3.1.0",
+    # 3.2.0 is the minimum pandas 3.x declares for its xlsxwriter Excel
+    # engine (pandas.compat._optional.VERSIONS).
+    "xlsxwriter>=3.2.0",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<3.0.0",
     # API-specific dependencies
@@ -97,6 +112,7 @@ api = [
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
+    # Also pypdf's AES backend for encrypted PDFs (pypdf prefers it over pycryptodome).
     "cryptography>=48.0.1",        # security floor: GHSA-537c-gmf6-5ccf (via python-jose[cryptography])
     "python-multipart>=0.0.30",    # security floor: CVE-2026-53539
     "starlette>=1.3.1,<2",         # security floor: CVE-2026-54283 / CVE-2026-48818 (transitive via fastapi)
@@ -106,7 +122,6 @@ api = [
     "gunicorn",
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
-    "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
@@ -119,11 +134,24 @@ api = [
     # (sentence/NER heuristics). Language models are separate wheels pinned in
     # requirements-offline-smart-heading.txt and installed via
     # `lightrag-download-cache --spacy-install`.
-    # Cap below 3.8.14: that release (the latest 3.8.x) shipped neither a cp314
-    # wheel nor an sdist, breaking `uv sync --frozen` on Python 3.14. 3.8.13 is
-    # the last release with full wheel + sdist coverage. Revisit when adopting
-    # spacy 4.x (still in dev as of this pin).
-    "spacy>=3.8,<3.8.14",
+    # Capped at the minor version: spaCy models are trained per minor release
+    # and the pinned 3.8.0 models declare spacy_version ">=3.8.0,<3.9.0" in
+    # meta.json only (not in Requires-Dist), so nothing would stop a 3.9
+    # upgrade from silently changing NER / sentence-split decisions. Moving to
+    # 3.9 means swapping the model URLs in requirements-offline-smart-heading.txt
+    # and re-validating smart_heading. Patch releases are vetted by uv.lock:
+    # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, which the
+    # CI Python 3.14 leg's `uv sync --locked` catches at lock-update time.
+    "spacy>=3.8,<3.9",
+    # zh_core_web_sm's tokenizer backend (the model wheel requires it but does
+    # not bundle it). Declared here so uv.lock and `uv sync` own it instead of
+    # leaving it unmanaged next to the model wheels. Exact pin, like the
+    # models: it does the Chinese word segmentation smart_heading's
+    # determinism promise rests on, and the pip-only offline path
+    # (requirements-offline-smart-heading.txt) does not go through uv.lock.
+    # SPACY_MODEL_WHEELS in lightrag/tools/download_cache.py carries the same
+    # pin; tests/test_requirements_sync.py keeps all copies equal.
+    "spacy-pkuseg==1.0.2",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
@@ -143,7 +171,7 @@ offline-storage = [
 offline-llm = [
     # LLM provider dependencies
     "openai>=2.0.0,<4.0.0",
-    "anthropic>=0.18.0,<1.0.0",
+    "anthropic>=0.18.0,<3.0.0",
     "ollama>=0.5.4,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
@@ -163,6 +191,7 @@ test = [
     "lightrag-hku[api]",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pytest-xdist>=3.6.0",  # local `-n auto` full-suite runs; see AGENTS.md
     "pre-commit",
     "ruff",
     "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
@@ -180,6 +209,7 @@ observability = [
 ]
 
 [project.scripts]
+lightrag-repair-chunk-tracking = "lightrag.tools.chunk_tracking_repair:main"
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-hash-password = "lightrag.tools.hash_password:main"
@@ -210,6 +240,14 @@ lightrag = ["api/webui/**/*", "api/static/**/*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# tests/setup drives the setup wizard's shell flows and never imports lightrag,
+# so plain recursive runs (`pytest`, `pytest tests`) skip it. Name it explicitly
+# to run it: `pytest tests/setup`. The first nine entries are pytest's defaults,
+# which setting this option replaces.
+norecursedirs = [
+    "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv",
+    "{arch}", "tests/setup",
+]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -223,3 +261,11 @@ markers = [
 
 [tool.ruff]
 target-version = "py310"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Newer ruff releases (observed with 0.17.x)
+# ship a much wider built-in default selection, so leaving `select` unset
+# makes the result depend on whichever ruff an editor extension or
+# pre-commit happens to bundle. This list is exactly the default of the
+# ruff version pinned in .pre-commit-config.yaml (0.15.17).
+select = ["E4", "E7", "E9", "F"]

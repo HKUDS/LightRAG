@@ -298,12 +298,12 @@ def test_an_aborted_first_parse_still_persists_its_downloads(tmp_path):
     assert retry.get(_URL) == (_PNG_BYTES, "png")
 
 
-def test_an_over_budget_cache_hit_warns_once(tmp_path, monkeypatch, caplog):
+def test_an_over_budget_cache_hit_warns_once(
+    tmp_path, monkeypatch, caplog, lightrag_caplog
+):
     """The cache-hit degrade path used to warn twice for the same image (once
     in _local, once in _budget_degraded) while the mid-read path warned once."""
     import logging
-
-    from lightrag.utils import logger as lightrag_logger
 
     _patch_download(monkeypatch)
     p = NativeMarkdownParser()
@@ -316,7 +316,6 @@ def test_an_over_budget_cache_hit_warns_once(tmp_path, monkeypatch, caplog):
     # (budgets are excluded from the options signature, so the bundle stays
     # valid) and degrades to an external link.
     monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", "1")
-    monkeypatch.setattr(lightrag_logger, "propagate", True)
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         _, warnings, _ = _extract(p, src, parsed)
 

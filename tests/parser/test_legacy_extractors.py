@@ -8,6 +8,9 @@ from xml.etree import ElementTree as ET
 
 import pytest
 from openpyxl import Workbook
+from pptx import Presentation
+from pptx.enum.shapes import MSO_CONNECTOR
+from pptx.util import Inches
 
 from lightrag.parser.legacy.extractors import extract_text
 
@@ -150,3 +153,97 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     # String cached result preferred over the concatenation formula text.
     assert "foobar" in text
     assert '=A1&"bar"' not in text
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("group_depth", [0, 1, 2])
+def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    def add_text(shapes, text):
+        shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = text
+
+    add_text(slide.shapes, "Before")
+    shapes = slide.shapes
+    for _ in range(group_depth):
+        shapes = shapes.add_group_shape().shapes
+    add_text(shapes, "Grouped paragraph\nSecond paragraph\vSoft break")
+    shapes.add_connector(MSO_CONNECTOR.STRAIGHT, 0, 0, Inches(1), Inches(1))
+    shapes.add_group_shape()  # Empty groups must not add spurious newlines.
+    add_text(shapes, "")  # Keep the existing empty-textbox newline behavior.
+    add_text(shapes, "Group sibling")
+    add_text(slide.shapes, "After")
+    next_slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    add_text(next_slide.shapes, "Next slide")
+    file_bytes = BytesIO()
+    presentation.save(file_bytes)
+
+    assert extract_text(file_bytes.getvalue(), "pptx") == (
+        "Before\nGrouped paragraph\nSecond paragraph\vSoft break\n\n"
+        "Group sibling\nAfter\nNext slide\n"
+    )
+
+
+def _make_encrypted_pdf_bytes(text: str, *, password: str, algorithm: str) -> bytes:
+    """Build a one-page PDF showing ``text`` and encrypt it with pypdf."""
+    from pypdf import PdfReader, PdfWriter
+
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+    ]
+    out = BytesIO()
+    out.write(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(b"%d 0 obj\n%s\nendobj\n" % (number, body))
+    xref = out.tell()
+    out.write(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1))
+    for offset in offsets:
+        out.write(b"%010d 00000 n \n" % offset)
+    out.write(
+        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+        % (len(objects) + 1, xref)
+    )
+
+    writer = PdfWriter(clone_from=PdfReader(BytesIO(out.getvalue())))
+    writer.encrypt(user_password=password, algorithm=algorithm)
+    encrypted = BytesIO()
+    writer.write(encrypted)
+    return encrypted.getvalue()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("algorithm", ["AES-128", "AES-256"])
+def test_extract_text_pdf_decrypts_aes_encrypted_pdf(algorithm):
+    # pypdf decrypts AES only through an installed crypto backend
+    # (``cryptography``, else ``pycryptodome``); its pure-Python fallback raises
+    # DependencyError. LightRAG ships ``cryptography`` for this, so this pins
+    # that dropping it breaks encrypted-PDF uploads loudly here, not in prod.
+    file_bytes = _make_encrypted_pdf_bytes(
+        "Encrypted hello", password="secret", algorithm=algorithm
+    )
+
+    assert "Encrypted hello" in extract_text(file_bytes, "pdf", pdf_password="secret")
+
+
+@pytest.mark.offline
+def test_extract_text_pdf_rejects_wrong_password():
+    file_bytes = _make_encrypted_pdf_bytes(
+        "Encrypted hello", password="secret", algorithm="AES-256"
+    )
+
+    with pytest.raises(Exception, match="Incorrect PDF password"):
+        extract_text(file_bytes, "pdf", pdf_password="wrong")
+
+    with pytest.raises(Exception, match="no password provided"):
+        extract_text(file_bytes, "pdf")

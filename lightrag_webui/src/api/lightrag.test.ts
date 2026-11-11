@@ -263,3 +263,106 @@ describe('isUserAbortError', () => {
     expect(apiModule.isUserAbortError(undefined, new Error('network down'))).toBe(false)
   })
 })
+
+describe('response interceptor', () => {
+  test('an HTTP failure carries its status, not just a formatted message', async () => {
+    // The interceptor rewrites every non-401 AxiosError into a plain Error.
+    // Without the status as a property, callers that branch on it (the
+    // document list treats a 4xx as permanent and must not let it trip the
+    // refresh circuit breaker) see only `undefined` and fall back to
+    // "unknown, retry".
+    apiModule.__setAxiosAdapterForTests(async () => {
+      throw {
+        response: {
+          status: 404,
+          statusText: 'Not Found',
+          data: { detail: 'no such workspace' }
+        },
+        config: { url: '/documents/pipeline_status' }
+      }
+    })
+
+    try {
+      const failure = await apiModule
+        .getPipelineStatus()
+        .then(() => null)
+        .catch((error: unknown) => error as Error & { status?: number })
+
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure?.status).toBe(404)
+      expect(failure?.message).toContain('404 Not Found')
+      expect(failure?.message).toContain('no such workspace')
+    } finally {
+      apiModule.__setAxiosAdapterForTests(undefined)
+    }
+  })
+
+  test('toHttpRequestError builds the same shape directly', () => {
+    const error = apiModule.toHttpRequestError(422, 'Unprocessable Entity', { detail: 'bad' }, '/documents/paginated')
+
+    expect(error.status).toBe(422)
+    expect(error.message).toContain('422 Unprocessable Entity')
+    expect(error.message).toContain('/documents/paginated')
+  })
+})
+
+describe('ai content notice flag', () => {
+  const makeResponse = (data: unknown) => async (config: any) => ({
+    data,
+    status: 200,
+    statusText: 'OK',
+    headers: { 'content-type': 'application/json' },
+    config
+  })
+
+  afterEach(() => {
+    apiModule.__setAxiosAdapterForTests(undefined)
+  })
+
+  test('/auth-status carries the deployment flag into the store', async () => {
+    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
+    useAiContentNoticeStore.setState({ enabled: false })
+
+    apiModule.__setAxiosAdapterForTests(
+      makeResponse({
+        auth_configured: false,
+        access_token: 'guest-token',
+        ai_content_notice_enabled: true
+      })
+    )
+
+    await apiModule.getAuthStatus()
+
+    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+
+  test('/login carries the deployment flag into the store', async () => {
+    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
+    useAiContentNoticeStore.setState({ enabled: false })
+
+    apiModule.__setAxiosAdapterForTests(
+      makeResponse({
+        access_token: 'user-token',
+        token_type: 'bearer',
+        ai_content_notice_enabled: true
+      })
+    )
+
+    await apiModule.loginToServer('user', 'password')
+
+    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+
+  test('a server that omits the field does not turn an enabled notice off', async () => {
+    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
+    useAiContentNoticeStore.setState({ enabled: true })
+
+    apiModule.__setAxiosAdapterForTests(
+      makeResponse({ auth_configured: false, access_token: 'guest-token' })
+    )
+
+    await apiModule.getAuthStatus()
+
+    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+})

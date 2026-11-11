@@ -24,16 +24,18 @@ the content string entirely.
 
 Supported subset (NOT full CommonMark/GFM, by design — see the parser plan):
 ATX headings, simple pipe tables (with a header row), block-level ``$$`` math,
-inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Reference-style
-images, escaped pipes, nested tables, setext headings and list/quote-nested
-structures are left as verbatim text rather than misrecognised.
+inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Escaped pipes
+(``\\|``) inside a table cell are unescaped into cell text. Reference-style
+images, nested tables, setext headings and list/quote-nested structures are
+left as verbatim text rather than misrecognised.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Protocol
 
 from lightrag.parser._html_table import starts_with_html_tag
@@ -127,14 +129,62 @@ def _clean_heading(text: str) -> str:
     return _HEADING_TRAILING_HASHES_RE.sub("", text).strip()
 
 
+def _iter_row_cells(s: str) -> Iterator[str]:
+    """Yield ``s`` split on its column separators, unescaping as it goes.
+
+    The one statement of what a column separator is: ``\\|`` is cell content and
+    ``\\\\`` is a literal backslash, so only a bare ``|`` splits. Always yields one
+    cell more than ``s`` has separators, so a caller that only needs to know
+    whether a separator exists may stop after the second."""
+    buf: list[str] = []
+    i = 0
+    while i < len(s):
+        char = s[i]
+        if char == "\\" and i + 1 < len(s) and s[i + 1] in "\\|":
+            buf.append(s[i + 1])
+            i += 2
+            continue
+        if char == "|":
+            yield "".join(buf)
+            buf = []
+            i += 1
+            continue
+        buf.append(char)
+        i += 1
+    yield "".join(buf)
+
+
+def _has_unescaped_pipe(s: str) -> bool:
+    """True iff ``s`` carries at least one column separator.
+
+    Asked by the header gate, where no table exists yet and a raw ``|`` is not
+    evidence of one: ``foo \\| bar`` over ``---`` is a paragraph, not a column.
+    :func:`_consume_pipe_table` must NOT ask it — once the delimiter row has
+    established the table, escaping is cell content and no longer decides
+    structure, so a body row is admitted on a raw ``|``.
+    Shares :func:`_iter_row_cells` with :func:`_split_pipe_row`, so the gate and
+    the split can never disagree about a case such as ``\\\\|``."""
+    if "|" not in s:
+        return False
+    cells = _iter_row_cells(s)
+    next(cells, None)
+    return next(cells, None) is not None
+
+
 def _split_pipe_row(line: str) -> list[str]:
-    """Split a pipe-table row into trimmed cells (no escaped-pipe handling)."""
+    """Split a pipe-table row into trimmed cells, honouring GFM escapes.
+
+    ``\\|`` is cell content, not a column separator, and ``\\\\`` is a literal
+    backslash; both are unescaped here so a cell carries the text the author
+    wrote. A trailing unescaped ``|`` closes the last cell rather than opening
+    an empty one, which keeps ``| a | b |`` and ``a | b`` at two columns."""
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [cell.strip() for cell in s.split("|")]
+    cells = [cell.strip() for cell in _iter_row_cells(s)]
+    if len(cells) > 1 and not cells[-1]:
+        cells.pop()
+    return cells
 
 
 def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
@@ -453,17 +503,51 @@ def extract_markdown(
 
         # --- HTML <table> block --------------------------------------------
         if starts_with_html_tag(stripped.lower(), "table"):
-            consumed, html = _consume_html_table(lines, i)
+            consumed, html, trailing = _consume_html_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")
                 out.tables[ref] = {"kind": "html", "html": html}
                 cur_lines.append(table_marker(ref))
                 has_block_payload = True
-                i += consumed
+                last_idx = i + consumed - 1
+                # A second supported table can immediately follow on the
+                # same line, e.g. "<table>A</table><table>B</table>" -- keep
+                # consuming exactly that construct from the suffix. This
+                # does NOT fall through to the general per-line dispatch:
+                # re-queuing arbitrary suffix text as a "line" would let it
+                # open a fence or start a heading it never was in the
+                # source (e.g. "<table>A</table># literal" must not become
+                # a real heading). `lines` is this function's own local
+                # list; overwriting an already-consumed index is safe.
+                while trailing and starts_with_html_tag(
+                    trailing.strip().lower(), "table"
+                ):
+                    lines[last_idx] = trailing
+                    sub_consumed, sub_html, sub_trailing = _consume_html_table(
+                        lines, last_idx
+                    )
+                    if sub_consumed == 0:
+                        # Not actually closed -- `trailing` keeps its
+                        # pre-attempt value (already written into
+                        # lines[last_idx]) so it falls through to the
+                        # plain-text emit below instead of being lost.
+                        break
+                    sub_ref = _next_ref("t")
+                    out.tables[sub_ref] = {"kind": "html", "html": sub_html}
+                    cur_lines.append(table_marker(sub_ref))
+                    last_idx += sub_consumed - 1
+                    trailing = sub_trailing
+                if trailing:
+                    _emit_inline(trailing)
+                i = last_idx + 1
                 continue
 
         # --- pipe table ----------------------------------------------------
-        if "|" in line and i + 1 < n and _is_pipe_table_delimiter(line, lines[i + 1]):
+        if (
+            _has_unescaped_pipe(line)
+            and i + 1 < n
+            and _is_pipe_table_delimiter(line, lines[i + 1])
+        ):
             consumed, rows, header = _consume_pipe_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")
@@ -511,24 +595,110 @@ def _consume_block_equation(lines: list[str], start: int) -> tuple[int, str]:
     return 0, ""
 
 
-def _consume_html_table(lines: list[str], start: int) -> tuple[int, str]:
-    """Collect a ``<table>…</table>`` block (line-spanning). ``(consumed, html)``
-    or ``(0, "")`` when no closing ``</table>`` is found."""
-    buf: list[str] = []
-    j = start
-    while j < len(lines):
-        buf.append(lines[j])
-        if "</table>" in lines[j].lower():
-            return (j - start + 1), "\n".join(buf).strip()
-        j += 1
-    return 0, ""
+class _HTMLTableBoundaryFinder(HTMLParser):
+    """Tracks ``<table>`` nesting depth to find the matching outer close.
+
+    All actual HTML tokenization -- quoted attributes, comments, CDATA,
+    RCDATA/raw-text elements, tag-name rules -- is delegated to the standard
+    library's tokenizer instead of being re-implemented by hand. This class
+    only watches the ``table`` start/end tag events it already reports
+    correctly.
+    """
+
+    # HTMLParser's version-dependent raw-text compatibility list omits the
+    # RCDATA elements textarea/title. Without adding them, a literal "<!--"
+    # inside either element starts an HTML comment that can hide </table>.
+    CDATA_CONTENT_ELEMENTS = HTMLParser.CDATA_CONTENT_ELEMENTS + (
+        "textarea",
+        "title",
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._depth = 0
+        self.end_pos: tuple[int, int] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.end_pos is None and tag == "table":
+            self._depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # A self-closing "<table/>": open then immediately close, same as a
+        # real browser would for an element that isn't actually void.
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.end_pos is None and tag == "table":
+            self._depth -= 1
+            if self._depth == 0:
+                self.end_pos = self.getpos()
+
+
+def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
+    """Collect a ``<table>…</table>`` block (line-spanning).
+
+    Returns ``(consumed, html, trailing)`` or ``(0, "", "")`` when no closing
+    ``</table>`` is found. Text after the closing tag remains in ``trailing``.
+
+    ``html`` is always a verbatim slice of the source, located via
+    ``HTMLParser.getpos()`` -- never a re-serialization of parsed tokens, so
+    original casing, whitespace and attribute quoting survive untouched. The
+    parser is fed one line at a time and stops as soon as the boundary is
+    found, so a table that closes early in a large document costs only the
+    lines actually consumed rather than the whole remaining text.
+    """
+    finder = _HTMLTableBoundaryFinder()
+    for idx in range(start, len(lines)):
+        if idx > start:
+            finder.feed("\n")
+        finder.feed(lines[idx])
+        if finder.end_pos is not None:
+            break
+    if finder.end_pos is None:
+        return 0, "", ""
+
+    line, col = finder.end_pos  # 1-indexed line relative to what was fed
+    # getpos() lands at the start of the closing tag ("</table" or a
+    # case-varied/whitespace-padded equivalent); find its terminating ">" in
+    # the consumed source rather than reconstructing the tag ourselves. The
+    # parser can report a token's start only after receiving later input, so
+    # search forward through the lines it consumed. Inputs for which
+    # HTMLParser emits no end-tag event remain unsupported and fall back to
+    # plain text.
+    gt_line_idx = start + line - 1
+    search_col = col
+    gt = -1
+    while gt_line_idx < len(lines):
+        gt = lines[gt_line_idx].find(">", search_col)
+        if gt != -1:
+            break
+        gt_line_idx += 1
+        search_col = 0
+    if gt == -1:
+        return 0, "", ""
+    end_col = gt + 1
+
+    target_line = lines[gt_line_idx]
+    html_lines = lines[start:gt_line_idx] + [target_line[:end_col]]
+    html = "\n".join(html_lines).strip()
+    trailing = target_line[end_col:]
+    return (gt_line_idx - start + 1), html, trailing
 
 
 def _consume_pipe_table(
     lines: list[str], start: int
 ) -> tuple[int, list[list[str]], list[list[str]] | None]:
     """Parse a GFM pipe table whose header is ``lines[start]`` and delimiter is
-    ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``."""
+    ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``.
+
+    A body row is any following line that is non-blank and contains a ``|``,
+    escaped or not — deliberately NOT the header gate's unescaped-``|`` test.
+    The table is established by this point, so an escape is cell content and
+    must not push a row out into a paragraph. Requiring a ``|`` at all is this
+    parser's narrowing: GFM ends the table only at a blank line or the start of
+    another block, which needs block-structure detection the subset omits.
+    A row may carry fewer cells than the header; the IR builder pads it."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter

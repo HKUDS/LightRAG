@@ -1,0 +1,107 @@
+import { describe, expect, test } from 'bun:test'
+
+import {
+  producesAiGeneratedOutput,
+  resolveAiGenerated,
+  restoredAiGeneratedFlag,
+  shouldShowAiContentNotice
+} from './aiContentNotice'
+import type { MessageWithError } from '@/types/retrieval'
+
+const assistant = (extra: Partial<MessageWithError> = {}): MessageWithError => ({
+  id: 'm1',
+  role: 'assistant',
+  content: 'answer',
+  ...extra
+})
+
+describe('producesAiGeneratedOutput', () => {
+  test('a normal query produces model-written text', () => {
+    expect(producesAiGeneratedOutput({})).toBe(true)
+    expect(
+      producesAiGeneratedOutput({ only_need_context: false, only_need_prompt: false })
+    ).toBe(true)
+  })
+
+  test('the debug switches short-circuit the answering LLM', () => {
+    // only_need_context returns the retrieved context and only_need_prompt the
+    // constructed prompt, both BEFORE the answering call — labelling either as
+    // AI-generated would be false.
+    expect(producesAiGeneratedOutput({ only_need_context: true })).toBe(false)
+    expect(producesAiGeneratedOutput({ only_need_prompt: true })).toBe(false)
+  })
+
+  test('bypass mode answers are model-written whatever the switches say', () => {
+    // Bypass skips retrieval and asks the LLM directly; the server never reads
+    // the two switches in that mode. A streamed bypass answer carries no
+    // server verdict either, so a false prediction here would silently drop
+    // the notice from a real LLM answer.
+    expect(
+      producesAiGeneratedOutput({ mode: 'bypass', only_need_context: true })
+    ).toBe(true)
+    expect(
+      producesAiGeneratedOutput({ mode: 'bypass', only_need_prompt: true })
+    ).toBe(true)
+    expect(producesAiGeneratedOutput({ mode: 'bypass' })).toBe(true)
+  })
+})
+
+describe('resolveAiGenerated', () => {
+  test('the server overrides the prediction in both directions', () => {
+    // A query that finds no context gets the canned PROMPTS["fail_response"]
+    // back without an LLM call — the client predicted "generated" and only the
+    // server can correct it.
+    expect(resolveAiGenerated(true, false)).toBe(false)
+    expect(resolveAiGenerated(false, true)).toBe(true)
+  })
+
+  test('a server too old to report it leaves the prediction standing', () => {
+    expect(resolveAiGenerated(true, undefined)).toBe(true)
+    expect(resolveAiGenerated(false, undefined)).toBe(false)
+    expect(resolveAiGenerated(true, 'false')).toBe(true)
+  })
+})
+
+describe('restoredAiGeneratedFlag', () => {
+  test('an explicit flag is preserved in both directions', () => {
+    expect(restoredAiGeneratedFlag(assistant({ aiGenerated: true }))).toBe(true)
+    // A context-only answer persisted with false must NOT be relabelled as
+    // generated when the conversation is restored.
+    expect(restoredAiGeneratedFlag(assistant({ aiGenerated: false }))).toBe(false)
+  })
+
+  test('a pre-flag message claims nothing, in either entry', () => {
+    // Origin was never persisted and cannot be read back from the text: both
+    // entries can hold a canned no-context reply, and the admin panel can also
+    // hold only_need_context / only_need_prompt dumps. So no notice on any of
+    // them; labelling resumes with the first answer recorded after the upgrade.
+    expect(restoredAiGeneratedFlag(assistant())).toBe(false)
+    expect(restoredAiGeneratedFlag(assistant({ isError: true }))).toBe(false)
+    expect(restoredAiGeneratedFlag({ id: 'u1', role: 'user', content: 'hi' })).toBe(false)
+  })
+})
+
+describe('shouldShowAiContentNotice', () => {
+  const base = { enabled: true, role: 'assistant' as const, aiGenerated: true, hasContent: true }
+
+  test('shows on an answer that carries model-written text', () => {
+    expect(shouldShowAiContentNotice(base)).toBe(true)
+  })
+
+  test('a partial streamed answer that then failed keeps the notice', () => {
+    // The bubble is an error bubble, but the text in it was written by the
+    // model — that degraded answer is exactly where the label matters.
+    expect(shouldShowAiContentNotice({ ...base, aiGenerated: true })).toBe(true)
+  })
+
+  test('never on the user, on unlabelled output, or before the first token', () => {
+    expect(shouldShowAiContentNotice({ ...base, role: 'user' })).toBe(false)
+    expect(shouldShowAiContentNotice({ ...base, aiGenerated: false })).toBe(false)
+    expect(shouldShowAiContentNotice({ ...base, aiGenerated: undefined })).toBe(false)
+    expect(shouldShowAiContentNotice({ ...base, hasContent: false })).toBe(false)
+  })
+
+  test('the deployment switch gates everything', () => {
+    expect(shouldShowAiContentNotice({ ...base, enabled: false })).toBe(false)
+  })
+})

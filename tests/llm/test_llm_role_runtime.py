@@ -1,7 +1,6 @@
 """Offline tests for role-specific LLM runtime configuration."""
 
 import asyncio
-import logging
 from argparse import Namespace
 
 import numpy as np
@@ -13,12 +12,6 @@ from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_c
 
 
 pytestmark = pytest.mark.offline
-
-
-@pytest.fixture
-def lightrag_logger_propagating(monkeypatch):
-    """Force the lightrag logger to propagate so caplog can capture records."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 class _SimpleTokenizerImpl:
@@ -157,7 +150,7 @@ async def test_priority_queue_stats_track_running_and_queued():
 
 @pytest.mark.asyncio
 async def test_priority_queue_graceful_shutdown_timeout_falls_back_to_force(
-    caplog, lightrag_logger_propagating
+    caplog, lightrag_caplog
 ):
     started = asyncio.Event()
 
@@ -319,7 +312,7 @@ def test_role_llm_configs_rejects_unknown_role_keys(tmp_path):
 
 
 def test_role_llm_config_logs_once_on_init_with_metadata(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     with caplog.at_level("INFO", logger="lightrag"):
         rag = _make_rag(
@@ -487,7 +480,7 @@ async def test_sync_update_tracks_retired_queue_cleanup(tmp_path):
 
 
 def test_sync_update_without_event_loop_skips_cleanup(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     async def query_func(*args, **kwargs):
         return "old"
@@ -632,9 +625,7 @@ async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     assert built_calls[-1]["kwargs"]["provider_options"]["top_k"] == 8
 
 
-def test_update_llm_role_config_logs_after_success(
-    tmp_path, caplog, lightrag_logger_propagating
-):
+def test_update_llm_role_config_logs_after_success(tmp_path, caplog, lightrag_caplog):
     async def built_func(*args, **kwargs):
         return "ok"
 
@@ -680,7 +671,7 @@ def test_update_llm_role_config_logs_after_success(
 
 @pytest.mark.asyncio
 async def test_aupdate_llm_role_config_logs_after_success(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     async def new_query_func(*args, **kwargs):
         return "new-query"
@@ -800,7 +791,7 @@ async def test_aupdate_llm_role_config_rolls_back_and_keeps_old_wrapped(tmp_path
 
 @pytest.mark.asyncio
 async def test_aupdate_llm_role_config_drain_timeout_does_not_propagate(
-    tmp_path, monkeypatch, caplog, lightrag_logger_propagating
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """If the retired queue drain hits its timeout, the underlying
     shutdown falls through to forced cancellation. aupdate must absorb
@@ -888,6 +879,47 @@ async def test_embedding_and_rerank_queue_status_are_observable(tmp_path):
     assert rerank_status["available"] is True
     assert rerank_status["queue_name"] == "Rerank func"
     assert rerank_status["max_async"] == rag.rerank_model_max_async
+
+
+@pytest.mark.asyncio
+async def test_finalize_storages_shuts_down_all_model_queues(tmp_path):
+    """Finalize owns model-queue cleanup even before storage initialization.
+
+    This is the lifecycle used by synchronous wrappers and asyncio.run(): the
+    event loop is destroyed immediately after finalize returns, so no worker
+    or health-check task may remain pending on it.
+    """
+
+    async def rerank_func(*args, **kwargs):
+        return []
+
+    rag = _make_rag(tmp_path, rerank_model_func=rerank_func)
+
+    for wrapped in rag.role_llm_funcs.values():
+        assert await wrapped("warmup") == "base"
+    await rag.embedding_func(["warmup"])
+    assert await rag.rerank_model_func("warmup") == []
+
+    assert all(
+        status["initialized"]
+        for status in (
+            *(await rag.get_llm_queue_status()).values(),
+            await rag.get_embedding_queue_status(),
+            await rag.get_rerank_queue_status(),
+        )
+    )
+
+    await rag.finalize_storages()
+    # Re-entry is supported and must not recreate workers.
+    await rag.finalize_storages()
+
+    statuses = (
+        *(await rag.get_llm_queue_status()).values(),
+        await rag.get_embedding_queue_status(),
+        await rag.get_rerank_queue_status(),
+    )
+    assert all(status["initialized"] is False for status in statuses)
+    assert all(status["worker_count"] == 0 for status in statuses)
 
 
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
@@ -1009,7 +1041,7 @@ async def test_cross_provider_update_does_not_inherit_base_kwargs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_update_llm_role_config_rolls_back_on_failure(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     rag = _make_rag(tmp_path, extract_llm_model_kwargs={"tag": "before"})
     original_raw = rag._role_llm_states["extract"].raw_func

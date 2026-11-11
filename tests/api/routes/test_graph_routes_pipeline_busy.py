@@ -355,3 +355,179 @@ async def test_helper_is_noop_when_pipeline_status_uninitialized():
         await check_pipeline_busy_or_raise(rag)
     finally:
         finalize_share_data()
+
+
+# ---------------------------------------------------------------------------
+# Part C: the core-level admin-write gate (issue #3899) surfaces as 409 / 503
+# ---------------------------------------------------------------------------
+#
+# ``LightRAG._admin_write_gate`` raises ``AdminWriteGateRefusedError`` from
+# INSIDE the ``rag.a*`` method when another admin write holds the workspace
+# admin lock past its acquire timeout, or when the pipeline holds busy /
+# scanning. The routes must map it to 409 (503 when the workspace is fenced for
+# recovery) and pass the gate's own wording through, since the two 409 causes
+# are told apart by the leading phrase of ``detail``.
+
+_GATE_METHOD_FOR_PATH = {
+    "/graph/entity/edit": "aedit_entity",
+    "/graph/relation/edit": "aedit_relation",
+    "/graph/entity/create": "acreate_entity",
+    "/graph/relation/create": "acreate_relation",
+    "/graph/entities/merge": "amerge_entities",
+    "/graph/entity/delete": "adelete_by_entity",
+    "/graph/relation/delete": "adelete_by_relation",
+}
+
+
+@pytest.mark.parametrize("method, path, body", _ENDPOINTS)
+def test_admin_lock_refusal_from_the_core_maps_to_409(method, path, body, monkeypatch):
+    from lightrag.exceptions import (
+        ADMIN_WRITE_LOCK_BUSY_PREFIX,
+        AdminWriteGateRefusedError,
+    )
+
+    rag = _make_mock_rag()
+    getattr(rag, _GATE_METHOD_FOR_PATH[path]).side_effect = AdminWriteGateRefusedError(
+        f"{ADMIN_WRITE_LOCK_BUSY_PREFIX}: `x` waited 30s for the workspace admin lock.",
+        fence="admin_lock",
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)  # the router snapshot let it through
+
+    response = client.request(method, path, json=body, headers=_HEADERS)
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith(ADMIN_WRITE_LOCK_BUSY_PREFIX)
+    assert not detail.startswith("Pipeline is busy")
+
+
+def test_pipeline_busy_refusal_from_the_core_maps_to_409_with_its_own_phrase(
+    monkeypatch,
+):
+    from lightrag.exceptions import (
+        ADMIN_WRITE_LOCK_BUSY_PREFIX,
+        ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
+        AdminWriteGateRefusedError,
+    )
+    from lightrag.kg.shared_storage import PipelineReservationConflict
+
+    rag = _make_mock_rag()
+    rag.acreate_entity.side_effect = AdminWriteGateRefusedError(
+        f"{ADMIN_WRITE_PIPELINE_BUSY_PREFIX}. Wait for the running job to finish.",
+        conflict=PipelineReservationConflict.BUSY,
+        fence="busy",
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entity/create",
+        json={"entity_name": "Alice", "entity_data": {"description": "x"}},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith(ADMIN_WRITE_PIPELINE_BUSY_PREFIX)
+    assert not detail.startswith(ADMIN_WRITE_LOCK_BUSY_PREFIX)
+
+
+def test_recovery_required_refusal_from_the_core_maps_to_503(monkeypatch):
+    from lightrag.exceptions import AdminWriteGateRefusedError
+    from lightrag.kg.shared_storage import PipelineReservationConflict
+
+    rag = _make_mock_rag()
+    rag.acreate_entity.side_effect = AdminWriteGateRefusedError(
+        "Workspace is fenced for recovery.",
+        conflict=PipelineReservationConflict.RECOVERY_REQUIRED,
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entity/create",
+        json={"entity_name": "Alice", "entity_data": {"description": "x"}},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 503, response.text
+
+
+# ---------------------------------------------------------------------------
+# Part D: the hold ceiling's outcome must REACH the client (issue #3899 R2.3)
+# ---------------------------------------------------------------------------
+#
+# ``AdminWriteHoldExceededError`` is a ``TimeoutError``, so it is not a
+# ``PipelineReservationConflictError`` and the endpoints' generic
+# ``except Exception`` would route it through ``internal_server_error``, whose
+# body is a generic message plus a correlation id. That drops the only thing the
+# caller can act on: whether the storage commit was allowed to finish, and that
+# the object must be re-read before the edit is retried. A client does not read
+# server logs, so it would blindly retry a write that already landed -- into
+# "entity already exists", or a re-applied edit. Found by the Codex review of
+# PR #3901 on 81ea11d.
+
+
+def _hold_exceeded(operation: str):
+    """A ceiling expiry shaped like the real one: the mid-commit variant, whose
+    wording is the whole point of surfacing it."""
+    from lightrag.exceptions import AdminWriteHoldExceededError
+
+    return AdminWriteHoldExceededError(
+        f"Admin write `{operation}` exceeded the admin-write hold ceiling of 180s "
+        "(LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS) and was stopped so it stops "
+        "deferring document ingestion. It was inside a region that must not be "
+        "interrupted, so that region ran to completion first: the storage commit "
+        "it had started IS durable and only the work after it was skipped. "
+        "Re-read the entity or relation before retrying. Raise the ceiling if "
+        "the embedding round-trip legitimately takes that long."
+    )
+
+
+@pytest.mark.parametrize("method, path, body", _ENDPOINTS)
+def test_hold_ceiling_expiry_reaches_the_client_with_actionable_detail(
+    method, path, body, monkeypatch
+):
+    rag = _make_mock_rag()
+    gate_method = _GATE_METHOD_FOR_PATH[path]
+    getattr(rag, gate_method).side_effect = _hold_exceeded(gate_method)
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)  # the router snapshot let it through
+
+    response = client.request(method, path, json=body, headers=_HEADERS)
+
+    # 500, not a retry-suggesting status: the write may already be durable.
+    assert response.status_code == 500, response.text
+    detail = response.json()["detail"]
+    # The two things the caller has to act on both survive the API boundary.
+    assert "IS durable" in detail
+    assert "Re-read the entity or relation before retrying" in detail
+    assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in detail
+    # And it is NOT the sanitized generic body.
+    assert "Internal server error" not in detail
+    assert "error_id" not in detail
+
+
+def test_an_ordinary_failure_still_gets_the_sanitized_500(monkeypatch):
+    """The exemption is for the ceiling's self-authored message only. Anything
+    else keeps the CWE-209 sanitized body, so a backend error still cannot leak
+    hosts, paths or query fragments."""
+    rag = _make_mock_rag()
+    rag.acreate_entity.side_effect = RuntimeError(
+        "connection to postgres://user:pw@db.internal:5432 failed"
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entity/create",
+        json={"entity_name": "Alice", "entity_data": {"description": "x"}},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 500, response.text
+    detail = response.json()["detail"]
+    assert "Internal server error" in detail
+    assert "db.internal" not in detail
+    assert "postgres" not in detail

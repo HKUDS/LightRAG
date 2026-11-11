@@ -28,6 +28,7 @@ from lightrag.base import (
 )
 from lightrag.constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH,
     DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -52,6 +53,15 @@ from lightrag.utils import (
     move_file_to_parsed_dir,
 )
 
+
+# Character budget for the error description inside a generated
+# ``[File Extraction]`` summary: the column ceiling minus the prefix and minus
+# the ellipsis ``get_content_summary`` appends when it truncates. Keeps the
+# concatenated summary within PostgreSQL's ``varchar(255)`` for an error
+# message of any length.
+_FILE_EXTRACTION_SUMMARY_ERROR_BUDGET = (
+    DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH - len(FILE_EXTRACTION_SUMMARY_PREFIX) - 3
+)
 
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
 SIDECAR_LOCATION_UNKNOWN = "unknown_source"
@@ -366,6 +376,9 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "source_file",
     "parse_warnings",
     "chunk_opts",
+    # Last attempted registry identity, explicitly non-authoritative. Retained
+    # for drift diagnostics, never for admission or dispatch decisions.
+    "custom_chunker",
     "parse_start_time",
     "parse_end_time",
     "parse_stage_skipped",
@@ -382,8 +395,8 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     # in-flight/failed ainsert_custom_chunks operation. Must survive every
     # status transition until the operation commits or is rolled back.
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
-    # KG write-progress marker and whole-document purge journal (issue #3400
-    # fail-closed purge). Both are load-bearing recovery state, not display
+    # KG write-progress marker and whole-document purge journal, both read by
+    # the fail-closed purge. Both are load-bearing recovery state, not display
     # fields: ``kg_write_state`` is the proof that lets a purge clean up an
     # anchor-less document that never reached the graph, and ``kg_purge`` is
     # what distinguishes "anchors already deleted by a purge that got that far"
@@ -403,7 +416,7 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
 
 
 def make_custom_chunk_id(doc_key: str, chunk_text: str) -> str:
-    """Deterministic, document-scoped custom-chunk id (issue #3400 Phase 3).
+    """Deterministic, document-scoped custom-chunk id.
 
     The components are length-prefixed so the ``(doc, text)`` pair is
     unambiguous: plain concatenation would give ``doc_id="a", chunk="bc"``
@@ -444,7 +457,7 @@ def doc_status_custom_chunk_patch(status_doc: Any) -> dict[str, Any] | None:
 
 
 def make_kg_purge_operation_id(doc_key: str, chunk_ids: list[str]) -> str:
-    """Deterministic operation id for one whole-document purge (issue #3400).
+    """Deterministic operation id for one whole-document purge.
 
     Identifies "the same logical purge" across retries so a resumed run can
     trust the journaled phase. Derived from the document key plus its chunk-id
@@ -463,7 +476,7 @@ def make_kg_purge_operation_id(doc_key: str, chunk_ids: list[str]) -> str:
 def doc_status_kg_write_state(status_doc: Any) -> str | None:
     """Return how far this document's KG write progressed, if recorded.
 
-    ``None`` means UNKNOWN — a pre-#3416 document. The marker is monotonic
+    ``None`` means UNKNOWN — a document predating the marker, which is monotonic
     and never cleared: a PROCESSED document keeps ``graph_mutation_started``
     (its anchors serve as the proof from then on). A fail-closed purge
     treats UNKNOWN as "may have touched the graph".
@@ -510,7 +523,7 @@ async def require_doc_status_record(
     the read path, ``None`` raises ``StorageRecordNotFoundError``: proceeding
     silently is how the marker stays ``pre_graph`` while the graph is written,
     or how a destructive purge runs unjournaled — both of which manufacture
-    exactly the unprovable states issue #3400's fail-closed contract exists to
+    exactly the unprovable states the fail-closed purge contract exists to
     prevent. Callers abort instead: an aborted merge (anchors already durable)
     or an aborted purge (nothing deleted yet) is always the safe direction.
     """
@@ -589,7 +602,7 @@ _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     # Defense in depth: journaled custom-chunk patch rows are excluded from
     # pipeline processing/reset entirely, but if one ever reaches a reset the
     # journal must survive — stripping it would orphan the operation's staged
-    # data with no recovery anchor (issue #3400).
+    # data with no recovery anchor.
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     # A FAILED→PENDING reset is exactly the case that must not strip these: the
     # retry re-runs extraction, and if a previous attempt's purge is half-done
@@ -644,6 +657,16 @@ _DOC_STATUS_METADATA_ATTEMPT_KEYS: frozenset[str] = frozenset(
 )
 
 
+# Per-attempt OBSERVATIONS that must nevertheless survive a reset back to
+# PENDING.  A directive tells the next attempt what to do and is therefore
+# honoured; these only tell it what the previous attempt saw, so nothing may be
+# gated on one -- they exist to be reported (the custom-chunker drift WARNING),
+# never obeyed.  Kept as a named list rather than a special case in
+# ``doc_status_reset_metadata`` so the next field of this kind is one entry
+# here instead of a second bespoke branch there.
+_DOC_STATUS_METADATA_OBSERVATION_KEYS: tuple[str, ...] = ("custom_chunker",)
+
+
 def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
     """Build the ``metadata`` payload for a reset back to PENDING.
 
@@ -670,6 +693,15 @@ def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
         else:
             value = raw_metadata.get(key)
         if value not in (None, ""):
+            payload[key] = value
+    # Observations are neither directives nor per-attempt results: they carry
+    # nothing the next attempt must obey, but the next attempt compares against
+    # them, so they have to survive the reset the result fields are dropped by.
+    for key in _DOC_STATUS_METADATA_OBSERVATION_KEYS:
+        value = raw_metadata.get(key)
+        if isinstance(value, dict):
+            payload[key] = dict(value)
+        elif value not in (None, ""):
             payload[key] = value
     return payload
 
@@ -699,6 +731,13 @@ def doc_status_parse_failure_fields(
     directive whitelists, so the next transition (retry reset, PARSING)
     drops them automatically — mirroring how ``error_msg`` is cleared.
 
+    The generated summary is budgeted so that prefix + description +
+    ellipsis never exceeds ``DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH``.
+    ``get_content_summary``'s own 250-char default would overflow
+    PostgreSQL's ``varchar(255)`` once the prefix is prepended, and the
+    upsert that fails is the FAILED transition itself — the document would
+    silently stay in its previous in-flight status with no error recorded.
+
     ``engine_hint`` (the parse worker's resolved engine key, falling back
     to its queue-group id) is stamped as ``parse_engine`` only when the
     failure happened before the post-parse stamp put one on
@@ -717,8 +756,10 @@ def doc_status_parse_failure_fields(
     if not current_summary or current_summary.startswith(
         FILE_EXTRACTION_SUMMARY_PREFIX
     ):
-        extra_fields["content_summary"] = (
-            FILE_EXTRACTION_SUMMARY_PREFIX + get_content_summary(error_text)
+        extra_fields["content_summary"] = FILE_EXTRACTION_SUMMARY_PREFIX + (
+            get_content_summary(
+                error_text, max_length=_FILE_EXTRACTION_SUMMARY_ERROR_BUDGET
+            )
         )
     metadata_extra: dict[str, Any] = {
         "error_type": "file_extraction_error",

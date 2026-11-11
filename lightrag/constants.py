@@ -371,15 +371,15 @@ PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
-# Reserved doc_status.metadata key holding the custom-chunk patch journal
-# (issue #3400 Phase 3). While present, the document has an in-flight or
+# Reserved doc_status.metadata key holding the custom-chunk patch journal.
+# While present, the document has an in-flight or
 # failed ainsert_custom_chunks operation: the pipeline must NOT process the
 # row as ordinary ingestion, resets must NOT strip it, and deletion must
 # include its staged chunk IDs. Lives here (not utils_pipeline) so that
 # base.py can derive the scheduling projection without an import cycle.
 CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
 # Reserved doc_status.metadata key recording how far this document's KG write
-# has progressed (issue #3400 fail-closed purge). Stamped ``pre_graph`` when the
+# has progressed (fail-closed purge). Stamped ``pre_graph`` when the
 # document enters PROCESSING and promoted to ``graph_mutation_started`` only
 # once the write-ahead recovery anchors are durable — i.e. the value answers
 # "could this document have touched the graph?" without reading the graph.
@@ -387,12 +387,12 @@ CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
 # clean up staged chunks even with no anchor rows, because no graph mutation
 # can have happened yet. MONOTONIC and never cleared: a PROCESSED document
 # keeps ``graph_mutation_started`` (its anchors serve as the proof from then
-# on). Absent means UNKNOWN — a pre-#3416 document, which fails closed.
+# on). Absent means UNKNOWN — a document predating it, which fails closed.
 KG_WRITE_STATE_METADATA_KEY = "kg_write_state"
 KG_WRITE_STATE_PRE_GRAPH = "pre_graph"
 KG_WRITE_STATE_GRAPH_MUTATION_STARTED = "graph_mutation_started"
 # Reserved doc_status.metadata key holding the whole-document purge journal
-# (issue #3400 fail-closed purge). Required BY fail-closed, not merely nice to
+# (fail-closed purge). Required BY fail-closed, not merely nice to
 # have: purge's last step deletes the recovery anchors, so without a journal a
 # failure in any later step (LLM cache, full_docs) would make the retry see
 # "anchors missing" and refuse forever. The journal distinguishes "anchors were
@@ -425,6 +425,14 @@ DUPLICATE_DEMOTION_METADATA_KEYS: tuple[str, ...] = (
 # a stale generated summary while real raw-document summaries are preserved —
 # keep every producer on this constant so the match never drifts.
 FILE_EXTRACTION_SUMMARY_PREFIX = "[File Extraction]"
+# Hard ceiling for a doc_status ``content_summary``. PostgreSQL declares the
+# column as ``varchar(255)``; the other backends are unconstrained, so this is
+# the narrowest storage the value must fit. Producers that BUILD a summary from
+# unbounded text (an error message, a document body) must budget against this
+# rather than against ``get_content_summary``'s own default, or a long enough
+# input makes the whole upsert fail on PostgreSQL — including the FAILED
+# transition itself, which then leaves the document stuck in PARSING.
+DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH = 255
 
 # Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.
 # Centralising them here keeps the sidecar writer, engine cache modules and
@@ -491,12 +499,11 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
 DEFAULT_MAX_PARALLEL_ANALYZE = 5  # Multimodal analysis (VLM) concurrency
 
 # Per-engine parsing concurrency defaults.  mineru / docling are
-# resource-intensive (GPU/CPU + memory), so they default to a modest amount of
-# parallelism (2); lower to 1 when resources are tight, or raise via the
-# MAX_PARALLEL_PARSE_* env vars when you have spare capacity.
+# resource-intensive (GPU/CPU + memory), so they default to a single worker;
+# raise via the MAX_PARALLEL_PARSE_* env vars when you have spare capacity.
 DEFAULT_MAX_PARALLEL_PARSE_NATIVE = 5
-DEFAULT_MAX_PARALLEL_PARSE_MINERU = 2
-DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 2
+DEFAULT_MAX_PARALLEL_PARSE_MINERU = 1
+DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 1
 
 # Staged pipeline queue size defaults.
 DEFAULT_QUEUE_SIZE_PARSE = 20
@@ -607,7 +614,8 @@ MAX_RESPONSE_TYPE_CHARS = 256
 MAX_QUERY_TOP_K = 1000
 MAX_QUERY_TOKEN_BUDGET = 1_000_000
 
-# Submission ceilings for the two single-worker CPU pools (tokenizer, chunking).
+# Submission ceilings for the three single-worker pools (tokenizer, chunking,
+# storage IO).
 # A ``ThreadPoolExecutor`` wait queue is unbounded, and freeing the event loop
 # means more requests can be in flight at once, so submissions need their own
 # limit. Deliberately fixed process-wide constants rather than anything derived
@@ -620,6 +628,20 @@ MAX_QUERY_TOKEN_BUDGET = 1_000_000
 # not refusal.
 TOKENIZER_SUBMIT_LIMIT = 8
 CHUNKING_SUBMIT_LIMIT = 8
+# Storage IO is not CPU-bound like the other two, but it needs the same ceiling
+# for a sharper reason: ``_flush_storages`` gathers ``index_done_callback`` over
+# every storage at once (a dozen for a default deployment), and a purge issues
+# several such flushes per document. Each waiter here holds its namespace lock,
+# so the ceiling also bounds how many namespaces can be locked waiting for one
+# worker.
+STORAGE_IO_SUBMIT_LIMIT = 8
+
+# The Milvus pool is the exception to the single-worker shape above: its work is
+# blocking gRPC I/O, not CPU, so one worker would serialize every search in the
+# process behind one flush. This one constant is BOTH the worker count and the
+# submission ceiling, so a submission over the limit waits on the semaphore
+# instead of growing the executor's unbounded wait queue.
+MILVUS_SUBMIT_LIMIT = 8
 
 # Per-workspace ceiling on manual retry requests that have been published but
 # not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an

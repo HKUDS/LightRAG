@@ -9,7 +9,7 @@ on:
 
 jobs:
   pg-smoke:
-    name: PGTable Smoke Tests (PostgreSQL ${{ matrix.pg }})
+    name: PostgreSQL ${{ matrix.pg }}
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
 

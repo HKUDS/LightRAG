@@ -67,6 +67,7 @@ DEFAULT_RUNTIME_TARGET="host"
 COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
 COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
 COMPOSE_LIGHTRAG_PROMPT_DIR="/app/data/prompts"
+COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR="/app/data/ui_templates"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -1831,7 +1832,7 @@ default_llm_model_for_binding() {
 
   case "$binding" in
     openai|azure_openai)
-      printf 'gpt-5-mini'
+      printf 'gpt-6-luna'
       ;;
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
@@ -1843,7 +1844,7 @@ default_llm_model_for_binding() {
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
-      printf 'gpt-5-mini'
+      printf 'gpt-6-luna'
       ;;
   esac
 }

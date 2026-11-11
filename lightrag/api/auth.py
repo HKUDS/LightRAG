@@ -77,6 +77,9 @@ class AuthHandler:
             for account in auth_accounts.split(","):
                 try:
                     username, password = account.split(":", 1)
+                    # Whitespace around the username is list padding; the
+                    # password is the credential and is kept byte-for-byte.
+                    username = username.strip()
                     if not username or not password:
                         raise ValueError
                 except ValueError:

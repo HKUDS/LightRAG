@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline KG integrity audit / recovery-anchor repair (issue #3400 Phase 5).
+"""Offline KG integrity audit / recovery-anchor repair.
 
 Installations that ingested documents BEFORE the write-ahead recovery anchors
 landed may hold graph data that ``full_entities`` / ``full_relations`` do not
@@ -89,7 +89,7 @@ async def audit_kg_integrity(
 
     **Certifying absence.** A document can legitimately own nothing in the
     graph — ``skip_kg`` (``process_options`` ``'!'``) skips extraction and the
-    merge entirely, so no anchor rows are ever written. Since #3400 a purge
+    merge entirely, so no anchor rows are ever written. A purge now
     needs a positive recovery proof, and for such a document written before
     the ``kg_write_state`` marker existed there is none: it has no anchors, and
     it never appears in the graph scan above, so anchor repair has nothing to

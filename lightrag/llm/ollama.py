@@ -9,12 +9,14 @@ import pipmaster as pm
 if not pm.is_installed("ollama"):
     pm.install("ollama")
 
+import httpx
 import ollama
 
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 from lightrag.exceptions import (
@@ -167,6 +169,38 @@ def _normalize_ollama_response_format(kwargs: dict) -> None:
     kwargs["format"] = response_format
 
 
+def _ollama_usage_counts(payload: Any) -> dict[str, int] | None:
+    """Map Ollama's eval counters onto the TokenTracker's key names, or None.
+
+    Ollama reports ``prompt_eval_count`` / ``eval_count`` and has no combined
+    total, so the total is their sum. ``.get`` works on both the raw dict
+    (ollama<0.4) and the ``SubscriptableBaseModel`` ChatResponse (ollama>=0.4)
+    -- the same accessor the truncation diagnostics below already rely on --
+    and a payload that has no ``.get`` at all degrades to ``None`` rather than
+    raising, for the reason :func:`_response_message_field` gives: a shape this
+    helper cannot read must not take down a response the caller could have used.
+
+    ``None`` means the payload reported no counters *at all*, which is an older
+    or non-conforming server rather than a call that consumed nothing. A
+    payload reporting one of the two is real usage, and the absent half counts
+    as zero.
+    """
+    get = getattr(payload, "get", None)
+    if not callable(get):
+        return None
+    prompt_tokens = get("prompt_eval_count")
+    completion_tokens = get("eval_count")
+    if prompt_tokens is None and completion_tokens is None:
+        return None
+    prompt_tokens = prompt_tokens or 0
+    completion_tokens = completion_tokens or 0
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -181,9 +215,17 @@ async def _ollama_model_if_cache(
     history_messages=[],
     enable_cot: bool = False,
     image_inputs: list[Any] | None = None,
+    token_tracker: Any | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Ollama chat API with OpenAI-style structured-output compatibility.
+
+    ``token_tracker`` matches the OpenAI binding's contract: an object with
+    ``add_usage(dict)``, called once per completed call with the counts Ollama
+    reports. It has to be an explicit parameter rather than a ``kwargs`` key,
+    because everything left in ``kwargs`` is forwarded verbatim to
+    ``AsyncClient.chat()``, which declares no ``**kwargs`` -- an unconsumed
+    ``token_tracker`` is a ``TypeError`` on the wire call, not a no-op.
 
     Structured output note:
     - This adapter accepts OpenAI-style ``response_format`` and translates it
@@ -287,9 +329,30 @@ async def _ollama_model_if_cache(
             """cannot cache stream response and process reasoning"""
 
             async def inner():
+                usage_counts = None
                 try:
                     async for chunk in response:
+                        if token_tracker:
+                            # The terminal chunk (done=true) is the one carrying
+                            # the counters; earlier chunks have none. Keep the
+                            # last set seen rather than assuming which chunk it
+                            # is. Guarded so an untracked stream does not pay
+                            # the lookup once per token.
+                            chunk_usage = _ollama_usage_counts(chunk)
+                            if chunk_usage is not None:
+                                usage_counts = chunk_usage
                         yield chunk["message"]["content"]
+                    # After the loop, inside the try: a consumer that
+                    # disconnects mid-stream (GeneratorExit) is not billed,
+                    # matching the OpenAI binding. The Gemini binding accounts
+                    # in a `finally` and does bill a disconnect; the two
+                    # upstream bindings already disagree, and this follows the
+                    # one whose usage semantics this file otherwise mirrors.
+                    if token_tracker and usage_counts is not None:
+                        token_tracker.add_usage(usage_counts)
+                        logger.debug(f"Streaming token usage: {usage_counts}")
+                    elif token_tracker:
+                        logger.debug("No usage information in Ollama stream response")
                 except Exception as e:
                     logger.error(f"Error in stream response: {str(e)}")
                     raise
@@ -303,6 +366,18 @@ async def _ollama_model_if_cache(
             return inner()
         else:
             model_response = response["message"]["content"]
+
+            # Account before the truncation checks below: the request burned
+            # its budget whether or not the output turned out to be usable, and
+            # the empty-and-cut-off case that raises is exactly the one that
+            # spent it. Matches the OpenAI binding, which counts usage before
+            # its own empty-response validation.
+            if token_tracker:
+                usage_counts = _ollama_usage_counts(response)
+                if usage_counts is not None:
+                    token_tracker.add_usage(usage_counts)
+                else:
+                    logger.debug("No usage information in Ollama response")
 
             """
             If the model also wraps its thoughts in a specific tag,
@@ -320,7 +395,7 @@ async def _ollama_model_if_cache(
                     # Empty AND cut off: nothing was generated at all, which is
                     # structurally broken rather than merely short. Returning ""
                     # here indexed an empty knowledge graph and still reported
-                    # the document PROCESSED (issue #3601 gap 4, seen with
+                    # the document PROCESSED (seen with
                     # thinking models burning the whole num_predict budget on
                     # the reasoning trace). Raise like the OpenAI binding does,
                     # so the document ends FAILED and stays retryable.
@@ -384,6 +459,7 @@ async def ollama_model_complete(
     enable_cot: bool = False,
     keyword_extraction=False,
     entity_extraction=False,
+    token_tracker: Any | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     # Forward legacy extraction flags as kwargs so _ollama_model_if_cache can
@@ -393,14 +469,61 @@ async def ollama_model_complete(
     if entity_extraction:
         kwargs.setdefault("entity_extraction", True)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+    # Declared and forwarded by name rather than left to ride in **kwargs: this
+    # is the entry point the API server binds and the one library users read,
+    # so the parameter has to be visible in its signature. The OpenAI binding's
+    # wrappers do the same.
     return await _ollama_model_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        token_tracker=token_tracker,
         **kwargs,
     )
+
+
+# Statuses worth another attempt besides 5xx: 429 is the documented
+# rate-limit status (https://docs.ollama.com/api/errors), mainly relevant to
+# Ollama Cloud models. 408 / 409 are not documented for Ollama, so they stay
+# fail-fast like every other 4xx.
+_RETRYABLE_OLLAMA_4XX_STATUS_CODES = frozenset({429})
+
+# Transport failures ollama.AsyncClient lets through unwrapped (it converts only
+# httpx.ConnectError, into the builtin ConnectionError). NetworkError covers a
+# read/write failing on an established connection; RemoteProtocolError is the
+# server closing the connection without a complete response -- what the client
+# sees when the `ollama serve` process itself dies mid-request.
+_RETRYABLE_OLLAMA_TRANSPORT_ERRORS = (
+    ConnectionError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
+
+
+def _is_retryable_ollama_response_error(exc: BaseException) -> bool:
+    """True for an ``ollama.ResponseError`` with a 5xx or 429 status.
+
+    The Ollama server itself can fail mid-request -- its llama-server runner
+    subprocess dying under memory pressure from a large embedding batch is
+    the common case -- and reports that as an HTTP 500 whose body is the
+    runner's own error text (e.g. "Post http://127.0.0.1:PORT/embedding:
+    EOF"). ``ollama.AsyncClient`` converts that into
+    ``ollama.ResponseError(body, status_code=500)``, not a raw connection
+    exception, so this has to read the status code rather than rely on
+    exception type alone. Any other 4xx (bad model name, bad request) is a
+    caller error, not a transient one, and must not be retried.
+
+    A 429 is retried without distinguishing a short throttle from an exhausted
+    Ollama Cloud usage allowance: the docs give no field to tell them apart,
+    and the cost of a wrong retry is bounded at the two backoff waits.
+    """
+    if not isinstance(exc, ollama.ResponseError):
+        return False
+    status = exc.status_code
+    return status >= 500 or status in _RETRYABLE_OLLAMA_4XX_STATUS_CODES
 
 
 @wrap_embedding_func_with_attrs(
@@ -408,6 +531,23 @@ async def ollama_model_complete(
     max_token_size=8192,
     model_name="bge-m3:latest",
     supports_asymmetric=True,
+)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    # Transport errors: see _RETRYABLE_OLLAMA_TRANSPORT_ERRORS. Its
+    # httpx.TimeoutException member only fires when the caller passes a
+    # per-request ``timeout``. The API server passes none, so there the outer
+    # embedding worker's ``wait_for`` is the deadline, and it cancels this
+    # whole retry loop rather than one attempt.
+    # ollama.ResponseError(5xx / 429): see _is_retryable_ollama_response_error.
+    retry=(
+        retry_if_exception_type(_RETRYABLE_OLLAMA_TRANSPORT_ERRORS)
+        | retry_if_exception(_is_retryable_ollama_response_error)
+    ),
+    # Surface the last attempt's own error (e.g. "... EOF (status code: 500)")
+    # instead of an opaque tenacity.RetryError in the document's error_msg.
+    reraise=True,
 )
 async def ollama_embed(
     texts: list[str],
@@ -417,6 +557,7 @@ async def ollama_embed(
     query_prefix: str | None = None,
     document_prefix: str | None = None,
     embedding_dim: int | None = None,
+    token_tracker: Any | None = None,
     **kwargs,
 ) -> np.ndarray:
     """Generate embeddings using Ollama's API.
@@ -435,9 +576,13 @@ async def ollama_embed(
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
         embedding_dim: Optional target dimension. When set, forwarded to Ollama's
-            embed API so the model actually returns a vector of that size. Kept as
-            the last named parameter (before **kwargs) so existing positional
-            callers of the pre-existing parameters are unaffected.
+            embed API so the model actually returns a vector of that size. New
+            named parameters are appended after the existing ones rather than
+            inserted among them, so positional callers stay unaffected.
+        token_tracker: Optional token usage tracker, as on the LLM path. Ollama
+            reports ``prompt_eval_count`` for an embed call and no
+            ``eval_count``, so a tracked embedding contributes prompt tokens
+            only.
         **kwargs: Additional arguments passed to the Ollama client.
 
     Returns:
@@ -479,6 +624,10 @@ async def ollama_embed(
         if embedding_dim is not None:
             embed_kwargs["dimensions"] = embedding_dim
         data = await ollama_client.embed(**embed_kwargs)
+        if token_tracker:
+            usage_counts = _ollama_usage_counts(data)
+            if usage_counts is not None:
+                token_tracker.add_usage(usage_counts)
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")

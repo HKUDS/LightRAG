@@ -9,7 +9,6 @@ import rehypeReact from 'rehype-react'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkMath from 'remark-math'
-import mermaid from 'mermaid'
 import { remarkFootnotes } from '@/utils/remarkFootnotes'
 import { chatMarkdownSanitizeSchema } from '@/utils/markdownSanitizeSchema'
 
@@ -19,6 +18,8 @@ import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/pris
 
 import { LoaderIcon, ChevronDownIcon, ClockIcon, ZapIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useAiContentNoticeStore } from '@/stores/aiContentNotice'
+import { shouldShowAiContentNotice } from '@/lib/aiContentNotice'
 
 // KaTeX configuration options interface
 interface KaTeXOptions {
@@ -30,22 +31,27 @@ interface KaTeXOptions {
   errorCallback?: (error: string, latex: string) => void;
 }
 
-export type MessageWithError = Message & {
-  id: string // Unique identifier for stable React keys
-  isError?: boolean
-  isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
-  isAborted?: boolean // Flag to indicate the user terminated this query (response may be incomplete)
-  /**
-   * Indicates if the mermaid diagram in this message has been rendered.
-   * Used to persist the rendering state across updates and prevent flickering.
-   */
-  mermaidRendered?: boolean
-  /**
-   * Indicates if the LaTeX formulas in this message are complete and ready for rendering.
-   * Used to prevent red error text during streaming of incomplete LaTeX formulas.
-   */
-  latexRendered?: boolean
-}
+// MessageWithError moved to the retrieval types module so the UI-free query
+// session controller does not depend on this rendering component; re-exported
+// here for existing importers.
+import type { MessageWithError } from '@/types/retrieval'
+export type { MessageWithError } from '@/types/retrieval'
+
+// Kept out of this file so tests can stub the load without mocking the
+// `mermaid` package process-wide; see `mermaidLoader.ts`.
+import { loadMermaid } from './mermaidLoader'
+
+
+/**
+ * Tables scroll INSIDE their own block. The message list scrolls vertically
+ * only (see MessageList), so a table wider than the conversation column would
+ * otherwise be clipped and unreachable on a narrow screen.
+ */
+const ScrollableTable = ({ children }: { children?: ReactNode }) => (
+  <div className="my-2 max-w-full overflow-x-auto">
+    <table>{children}</table>
+  </div>
+)
 
 // Restore original component definition and export
 export const ChatMessage = ({
@@ -64,6 +70,10 @@ export const ChatMessage = ({
 }) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
+  // Deployment-level switch (ENABLE_AI_CONTENT_NOTICE), read from the server at
+  // boot. Both query entries render answers through this component, so gating
+  // it here is what covers /webui and /workspace alike.
+  const aiContentNoticeEnabled = useAiContentNoticeStore((state) => state.enabled)
   const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
@@ -154,25 +164,47 @@ export const ChatMessage = ({
     h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
     ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
-    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
+    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>,
+    table: ScrollableTable
   }), [message.mermaidRendered, message.role]);
 
   const thinkingMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
+    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />),
+    table: ScrollableTable
   }), [message.mermaidRendered, message.role]);
 
   // Whether the assistant has begun emitting visible answer text. Drives both
   // where the timing row is placed and whether retrieval progress is shown.
   const hasContent = !!finalDisplayContent && finalDisplayContent.trim() !== ''
 
+  // AI-generated content notice (ENABLE_AI_CONTENT_NOTICE): a trailing item on
+  // the meta row below the answer, never a line of its own. What may carry the
+  // label is decided by the query session and travels on the message
+  // (`aiGenerated`) — a context-only debug response is not generated, while a
+  // stream that failed after emitting real answer text still is. It lives
+  // outside the markdown and outside `message.content`, so it never reaches
+  // the copy button, the retrieval history or the API response.
+  const aiContentNotice = shouldShowAiContentNotice({
+    enabled: aiContentNoticeEnabled,
+    role: message.role,
+    aiGenerated: message.aiGenerated,
+    hasContent
+  }) ? (
+      <span className="italic" data-testid="ai-content-notice">
+        {t('retrievePanel.chatMessage.aiContentNotice')}
+      </span>
+    ) : null
+
   // Response time (+ first-token time) row. While no answer text exists yet it
   // sits above the "Thinking..." hint (so the time stays put as the hint
   // appears below it); once content arrives it is relocated to the end of the
   // answer. Retrieval progress trails on the same line, but only before any
-  // answer text is shown.
+  // answer text is shown; the AI-content notice trails it only AFTER content
+  // exists, so the two never share the line. `flex-wrap` keeps the notice from
+  // pushing the row past a phone-width bubble.
   const timingRow =
     message.role === 'assistant' && typeof responseTime === 'number' ? (
-      <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
         <span className="flex items-center gap-1 tabular-nums">
           <ClockIcon className={cn('size-3', isQuerying && 'animate-spin')} />
           {t('retrievePanel.chatMessage.responseTime', { time: responseTime.toFixed(1) })}
@@ -191,9 +223,15 @@ export const ChatMessage = ({
             ({t(`retrievePanel.chatMessage.progress.${activeProgress}`, activeProgress)})
           </span>
         )}
+        {aiContentNotice}
       </div>
     ) : null
 
+  // The bubble shares its flex row with a fixed-width copy button (24px plus
+  // an 8px gap), and its percentage width knows nothing about that. `min-w-0`
+  // is therefore required, not cosmetic: without it the flex item's automatic
+  // minimum size pins the bubble at 95% and the row overflows by ~32px on a
+  // phone-width screen.
   return (
     <div
       className={`${
@@ -202,7 +240,7 @@ export const ChatMessage = ({
           : message.isError
             ? 'w-[95%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
             : 'w-[95%] bg-muted'
-      } rounded-lg px-4 py-2`}
+      } min-w-0 rounded-lg px-4 py-2`}
     >
       {/* Before any answer text: the timing row sits on top and the thinking
           hint appears beneath it, so the time doesn't jump when "Thinking..."
@@ -307,6 +345,14 @@ export const ChatMessage = ({
           {t('retrievePanel.retrieval.userTerminated')}
         </div>
       )}
+      {/* Answers restored from the retrieval history carry no timing, so the
+          notice would have nowhere to sit. It then gets the same row on its
+          own rather than being dropped. */}
+      {!timingRow && aiContentNotice && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          {aiContentNotice}
+        </div>
+      )}
       {/* Loading indicator — only in the active tab, and only as a fallback when
           the timing row isn't already on screen. During a query the timing row
           shows a live stopwatch + retrieval progress, so this bare spinner would
@@ -345,7 +391,9 @@ const MessageMarkdown = memo(function MessageMarkdown({
   return (
     <div className="relative">
       <div className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
-        role === 'user' ? 'text-primary-foreground' : 'text-foreground'
+        role === 'user'
+          ? 'text-primary-foreground prose-inherit-color'
+          : 'text-foreground'
       } ${
         role === 'user'
           ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
@@ -429,11 +477,42 @@ const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = fal
         clearTimeout(debounceTimerRef.current);
       }
 
-      debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = setTimeout(async () => {
         if (!container) return; // Container might have unmounted
 
         // Double check hasRendered state inside timeout, in case it changed rapidly
         if (hasRendered) return;
+
+        // Dynamic import: mermaid stays out of both entries' first-load
+        // closure and is fetched only when a diagram is actually rendered.
+        let mermaid: Awaited<ReturnType<typeof loadMermaid>>;
+        try {
+          mermaid = await loadMermaid();
+        } catch (loadError) {
+          // The renderer itself could not be fetched — a deploy invalidated
+          // the hashed chunk mid-session, an offline tab, a flaky network.
+          //
+          // This MUST write something visible, like the two render-failure
+          // paths below. Nothing has been put in the container yet (the
+          // loading indicator is set only after this await), the effect's
+          // dependencies cannot change again once the message settles, so
+          // nothing retries, and the plain-text fallback branch in the
+          // render body only runs while `renderAsDiagram` is false. A bare
+          // return therefore leaves a permanently blank gap where a diagram
+          // belongs, with the source unreachable too.
+          console.error('Failed to load mermaid:', loadError);
+          if (mermaidRef.current === container) {
+            const errorMessage =
+              loadError instanceof Error ? loadError.message : String(loadError);
+            const fallbackPre = document.createElement('pre');
+            fallbackPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
+            fallbackPre.textContent = `Mermaid renderer failed to load: ${errorMessage}\n\nContent:\n${String(children).replace(/\n$/, '').trim()}`;
+            container.innerHTML = '';
+            container.appendChild(fallbackPre);
+          }
+          return;
+        }
+        if (mermaidRef.current !== container || hasRendered) return;
 
         try {
           // Initialize mermaid config

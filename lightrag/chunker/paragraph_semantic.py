@@ -1938,10 +1938,12 @@ def _merge_small_blocks(
                         ):
                             absorbed_paragraphs = list(cur["paragraphs"])
                             absorbed_content = cur["content"]
+                            absorbed_blockids = list(cur.get("blockids") or [])
                             for j in range(i + 1, end_idx):
                                 nxt = result[j]
                                 absorbed_paragraphs.extend(nxt["paragraphs"])
                                 absorbed_content += "\n\n" + nxt["content"]
+                                absorbed_blockids.extend(nxt.get("blockids") or [])
                             # The cheap predicate above sums per-block
                             # tokens, but absorption joins blocks with
                             # ``"\n\n"`` — those separator tokens are
@@ -1959,6 +1961,13 @@ def _merge_small_blocks(
                                         "content": absorbed_content,
                                         "tokens": absorbed_tokens,
                                         "table_chunk_role": "none",
+                                        # Tail absorption never fires on a
+                                        # pinned block (guarded above), so
+                                        # the result is never pinned either.
+                                        "is_title_block": False,
+                                        "blockids": _dedup_preserving_order(
+                                            absorbed_blockids
+                                        ),
                                     }
                                 )
                                 i = end_idx

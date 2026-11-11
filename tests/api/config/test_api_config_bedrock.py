@@ -18,6 +18,8 @@ def _clear_bedrock_auth_env(monkeypatch):
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
         "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ROLE_ARN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
         "QUERY_AWS_ACCESS_KEY_ID",
         "QUERY_AWS_SECRET_ACCESS_KEY",
     ):
@@ -84,14 +86,40 @@ def test_bedrock_role_api_key_is_rejected(monkeypatch):
         parse_args()
 
 
-def test_bedrock_binding_requires_sigv4_pair_or_bearer_token(monkeypatch):
+def test_bedrock_binding_accepts_default_aws_credential_provider_chain(monkeypatch):
     _clear_bedrock_auth_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("LLM_BINDING", "bedrock")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv(
+        "AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/lightrag-bedrock"
+    )
+    monkeypatch.setenv(
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+    )
 
-    with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
-        parse_args()
+    args = parse_args()
+
+    assert args.llm_binding == "bedrock"
+
+
+def test_bedrock_role_accepts_default_aws_credential_provider_chain(monkeypatch):
+    _clear_bedrock_auth_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("QUERY_LLM_BINDING", "bedrock")
+    monkeypatch.setenv("QUERY_LLM_MODEL", "us.amazon.nova-lite-v1:0")
+    monkeypatch.setenv(
+        "AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/lightrag-bedrock"
+    )
+    monkeypatch.setenv(
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+    )
+
+    args = parse_args()
+
+    assert args.query_llm_binding == "bedrock"
 
 
 def test_bedrock_binding_rejects_partial_sigv4_pair(monkeypatch):
@@ -99,6 +127,18 @@ def test_bedrock_binding_rejects_partial_sigv4_pair(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("LLM_BINDING", "bedrock")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "akid")
+
+    with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
+        parse_args()
+
+
+def test_bedrock_binding_rejects_partial_sigv4_pair_with_bearer_token(monkeypatch):
+    _clear_bedrock_auth_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("LLM_BINDING", "bedrock")
+    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-test")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "akid")
 
     with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
@@ -135,6 +175,18 @@ def test_bedrock_role_requires_complete_role_sigv4_pair(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("QUERY_LLM_BINDING", "bedrock")
     monkeypatch.setenv("QUERY_LLM_MODEL", "us.amazon.nova-lite-v1:0")
+    monkeypatch.setenv("QUERY_AWS_ACCESS_KEY_ID", "akid")
+
+    with pytest.raises(ValueError, match="Bedrock role 'query' requires"):
+        parse_args()
+
+
+def test_bedrock_role_rejects_partial_sigv4_pair_with_bearer_token(monkeypatch):
+    _clear_bedrock_auth_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("QUERY_LLM_BINDING", "bedrock")
+    monkeypatch.setenv("QUERY_LLM_MODEL", "us.amazon.nova-lite-v1:0")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-test")
     monkeypatch.setenv("QUERY_AWS_ACCESS_KEY_ID", "akid")
 
     with pytest.raises(ValueError, match="Bedrock role 'query' requires"):

@@ -1,7 +1,6 @@
 """Cache validation for ``*.docling_raw/`` bundles.
 
-Validation policy (settled in
-``docs/DoclingSidecarRefactorPlan-zh.md`` §4.1):
+Validation policy:
 
 1. ``_manifest.json`` exists, parses, ``engine="docling"`` ∧ schema version
    matches.

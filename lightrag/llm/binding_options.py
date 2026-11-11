@@ -635,7 +635,7 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     # own default) for every role, including extraction/keyword, and the
     # framework never overrides that default itself. A thinking-capable
     # model can exhaust its whole generation budget on hidden reasoning
-    # before extraction ever emits structured output (issue #3597), but
+    # before extraction ever emits structured output, but
     # disabling thinking isn't universally correct either -- it measurably
     # hurts extraction quality on some smaller models. That's a judgment
     # call about a specific model, which the person running it is better

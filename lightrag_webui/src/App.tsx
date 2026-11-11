@@ -3,10 +3,19 @@ import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/status/StatusIndicator'
-import { SiteInfo, webuiPrefix } from '@/lib/constants'
+import { SiteInfo } from '@/lib/constants'
+import { entryHomeHref } from '@/lib/pathPrefix'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
+import {
+  activateLoginIdentityFromToken,
+  useIdentityEpochStore
+} from '@/lib/loginIdentity'
+import {
+  markVersionCheckedFromLogin,
+  wasVersionCheckedThisPageLoad
+} from '@/lib/versionCheckCache'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
@@ -17,6 +26,7 @@ import RetrievalView from '@/features/RetrievalView'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 import ErrorBoundary from '@/components/ErrorBoundary'
+import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 function App() {
   const message = useBackendState.use.message()
@@ -24,8 +34,12 @@ function App() {
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
+  // Bumped by the cross-tab identity watch: remounting the retrieval view
+  // drops the live session state that belonged to the previous identity.
+  const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
+  const pageRestoreGeneration = usePageRestoreGeneration()
 
   const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
     setApiKeyAlertOpen(open)
@@ -37,20 +51,14 @@ function App() {
   // Track component mount status with useRef
   const isMountedRef = useRef(true);
 
-  // Set up mount/unmount status tracking
+  // Set up React mount/unmount status tracking. Do not treat beforeunload as
+  // an unmount: a BFCache navigation fires it without destroying this React
+  // tree, and the restored page would otherwise keep this ref false forever.
   useEffect(() => {
     isMountedRef.current = true;
 
-    // Handle page reload/unload
-    const handleBeforeUnload = () => {
-      isMountedRef.current = false;
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
     return () => {
       isMountedRef.current = false;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
 
@@ -96,7 +104,7 @@ function App() {
     return () => {
       useBackendState.getState().clearHealthCheckTimer();
     };
-  }, [enableHealthCheck, apiKeyAlertOpen]);
+  }, [enableHealthCheck, apiKeyAlertOpen, pageRestoreGeneration]);
 
   // Version check - independent and executed only once
   useEffect(() => {
@@ -105,9 +113,10 @@ function App() {
       if (versionCheckRef.current) return;
       versionCheckRef.current = true;
 
-      // Check if version info was already obtained in login page
-      const versionCheckedFromLogin = sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true';
-      if (versionCheckedFromLogin) {
+      // Skip only the request the login page just made in THIS page load: a
+      // reload must reconcile again, since the server's auth mode can have
+      // changed under a still-valid stored token (see versionCheckCache).
+      if (wasVersionCheckedThisPageLoad()) {
         setInitializing(false); // Skip initialization if already checked
         return;
       }
@@ -119,8 +128,11 @@ function App() {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
         const status = await getAuthStatus();
 
-        // If auth is not configured and a new token is returned, use the new token
+        // If auth is not configured and a new token is returned, use the new token.
+        // A fresh guest activation is an identity transition: clear the previous
+        // identity's histories when it differs (same rule as the login page).
         if (!status.auth_configured && status.access_token) {
+          activateLoginIdentityFromToken(status.access_token)
           useAuthStore.getState().login(
             status.access_token, // Use the new token
             true, // Guest mode
@@ -143,7 +155,7 @@ function App() {
         }
 
         // Set flag to indicate version info has been checked
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        markVersionCheckedFromLogin();
       } catch (error) {
         console.error('Failed to get version info:', error);
       } finally {
@@ -180,7 +192,9 @@ function App() {
             {/* Simplified header during initialization - matches SiteHeader structure */}
             <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
               <div className="min-w-[200px] w-auto flex items-center">
-                <a href={webuiPrefix} className="flex items-center gap-2">
+                {/* Document-relative brand link — resolves to this entry's own
+                    root (see SiteHeader / entryHomeHref). */}
+                <a href={entryHomeHref(window.location.pathname)} className="flex items-center gap-2">
                   <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
                   <span className="font-bold md:inline-block">{SiteInfo.name}</span>
                 </a>
@@ -225,7 +239,7 @@ function App() {
                 </TabsContent>
                 <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <ErrorBoundary>
-                    <RetrievalView />
+                    <RetrievalView key={identityEpoch} />
                   </ErrorBoundary>
                 </TabsContent>
               </div>

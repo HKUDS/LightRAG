@@ -8,7 +8,7 @@
 
 Subclasses implement three engine-private hooks (``is_bundle_valid`` /
 ``download_into`` / ``build_ir``) and set ``raw_dir_suffix`` /
-``force_reparse_env``.  This is the reshaped #3207 contract — now an
+``force_reparse_env``.  This is the reshaped contract — now an
 *internal* template rather than the top-level parser interface — with its two
 gaps fixed: ``clear_dir_contents`` runs inside the template (cache-miss only),
 and the per-engine upload-name divergence is normalised to a single

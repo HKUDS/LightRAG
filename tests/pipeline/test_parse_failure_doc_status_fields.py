@@ -33,7 +33,10 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.base import DocStatus
-from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+from lightrag.constants import (
+    DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
+)
 from lightrag.parser import registry
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 from lightrag.utils_pipeline import doc_status_parse_failure_fields
@@ -126,10 +129,48 @@ def test_long_error_text_is_truncated_in_summary():
     )
     summary = extra["content_summary"]
     assert summary.startswith("[File Extraction]")
-    # get_content_summary caps the description at 250 chars (plus ellipsis).
-    assert len(summary) <= len("[File Extraction]") + 253
+    assert summary.endswith("...")
     # error_msg keeps the full text.
     assert extra["error_msg"] == long_error
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        "x" * 1000,
+        # The real report: a CUDA OOM message from the MinerU parse worker,
+        # comfortably past the truncation threshold.
+        "CUDA out of memory. Tried to allocate 360.00 MiB. GPU 0 has a total "
+        "capacity of 22.03 GiB of which 109.94 MiB is free. Process 853701 has "
+        "3.85 GiB memory in use. Process 854340 has 18.06 GiB memory in use. Of "
+        "the allocated memory 3.08 GiB is allocated by PyTorch, and 344.55 MiB "
+        "is reserved by PyTorch but unallocated. If reserved but unallocated "
+        "memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments"
+        ":True to avoid fragmentation.  See documentation for Memory Management",
+        # Exactly at the boundary from the other side: prefix + description +
+        # ellipsis must land ON 255, never one over.
+        "y" * (DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH - len("[File Extraction]") - 2),
+    ],
+)
+def test_generated_summary_fits_the_doc_status_column(error_text):
+    """The generated summary must fit PostgreSQL's ``varchar(255)``.
+
+    ``get_content_summary``'s 250-char default plus the 17-char prefix and
+    the 3-char ellipsis produced a 270-char summary, so the FAILED upsert
+    itself was rejected by PostgreSQL ("value too long for type character
+    varying(255)"). Because status / error_msg / metadata ride the SAME
+    single-row upsert, nothing was recorded at all and the document stayed
+    in PARSING with no error — the pipeline then auto-resumed it, failed
+    the same way, and looped invisibly.
+    """
+    extra, _meta = doc_status_parse_failure_fields(
+        ValueError(error_text), status_doc={"content_summary": "", "metadata": {}}
+    )
+    summary = extra["content_summary"]
+    assert summary.startswith("[File Extraction]")
+    assert len(summary) <= DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH
+    # The full text still reaches the TEXT-typed error_msg column.
+    assert extra["error_msg"] == error_text
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +441,7 @@ async def test_raw_document_failure_keeps_real_summary(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parse_worker_logs_when_failed_upsert_itself_fails(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """When the FAILED-status upsert raises (e.g. the storage backend is down
     during the same outage that failed the parse), the worker must log instead
@@ -448,9 +489,6 @@ async def test_parse_worker_logs_when_failed_upsert_itself_fails(
 
         monkeypatch.setattr(rag, "_upsert_doc_status_transition", _flaky_upsert)
 
-        # lightrag logger has propagate=False; enable it so caplog captures.
-        lightrag_logger = logging.getLogger("lightrag")
-        monkeypatch.setattr(lightrag_logger, "propagate", True)
         with caplog.at_level(logging.ERROR, logger="lightrag"):
             await rag.apipeline_process_enqueue_documents()
 

@@ -13,6 +13,7 @@ from enum import Enum
 from contextvars import ContextVar
 from typing import (
     Any,
+    Callable,
     Dict,
     Generic,
     List,
@@ -1714,7 +1715,11 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # ``scanning_owner`` covers scanning + scanning_exclusive.
                 # ``pending_enqueue_tokens`` is a {token: metadata} set whose
                 # length is mirrored in ``pending_enqueues`` (concurrent enqueues
-                # are permitted, so it is a set, not a single owner).
+                # are permitted, so it is a set, not a single owner). Metadata is
+                # ``{pid, process_start_id, weight, kind}``: ``weight`` charges
+                # admission, ``kind`` says WHY the reservation is held (see
+                # ``ENQUEUE_RESERVATION_KIND``) and decides which holders a
+                # force_reset may drop.
                 "busy_owner": None,
                 "scanning_owner": None,
                 "pending_enqueue_tokens": {},
@@ -2177,10 +2182,19 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
 )
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
-# reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried).
+# reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried;
+# an admin graph write is a manual operation its caller simply repeats).
 # Every other kind (custom_chunks / delete / clear) may have half-committed and
 # is fenced with ``recovery_required`` instead of being cleared for re-run.
-_RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan"})
+#
+# ``admin`` MUST stay here: an admin write holds ``busy`` for
+# seconds, and a worker killed inside it would otherwise fence the whole
+# workspace with a 503 clearable only through ``/documents/recovery/force_reset``
+# -- worse than the lost-write defect the reservation exists to remove. What a
+# crash mid-edit leaves behind is the residue the graph store's contract
+# already documents: a tracking row without its graph object, harmless to
+# queries and repaired offline with the chunk-tracking rebuild tool.
+_RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan", "admin"})
 
 
 def _reservation_recovery_enabled() -> bool:
@@ -2267,6 +2281,15 @@ def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     * ``processing`` / ``scan`` — re-runnable: in-flight docs sit in doc_status
       and are reset to PENDING / retried, so a dead owner's slot is simply
       cleared (see :data:`_RERUNNABLE_RESERVATION_KINDS`).
+    * ``admin`` — an admin graph write (the admin-write gate,
+      ``LightRAG._admin_write_gate``) holding ``busy`` so a pipeline start is
+      deferred for its duration.
+      Re-runnable: the caller repeats the edit, and a crash mid-edit leaves
+      only the documented crash residue. A dead admin owner is reclaimed
+      through the ``busy_owner`` branch, which also clears the manual-freeze
+      fields -- correct, not incidental: the freeze is only ever set by a
+      processing run that already holds ``busy``, which cannot coexist with an
+      admin holder, so those fields are already false.
     * ``custom_chunks`` / ``delete`` / ``clear`` — destructive and may have
       half-committed, so a dead owner fences the workspace with
       ``recovery_required`` instead of being cleared for re-run.
@@ -2352,7 +2375,7 @@ def _dead_pipeline_reservation_updates(
     reclaimed; a live-but-slow owner is never preempted.
 
     An owner whose liveness can NEVER be adjudicated (no PID / no
-    ``process_start_id`` — see :func:`_owner_identity_undecidable`) is neither
+    ``process_start_id`` — see :func:`_owner_identity_unprobeable`) is neither
     reclaimed nor ignored: LR2 §6.1 requires it to fence the workspace with
     ``recovery_required`` while leaving every flag it holds in place, so the
     freeze is never risked on a guess and the operator gets a 503 plus the
@@ -2473,7 +2496,8 @@ async def fence_workspace_for_recovery(
     kind: str,
     message: str,
     operation_record: Optional[Dict[str, Any]] = None,
-) -> None:
+    precondition: Optional[Callable[[Mapping[str, Any]], bool]] = None,
+) -> bool:
     """Set ``recovery_required`` so every later mutation is refused with 503.
 
     The self-fencing counterpart of the dead-owner reclaim: a running owner that
@@ -2486,20 +2510,40 @@ async def fence_workspace_for_recovery(
 
     Runs to completion under cancellation: a fence that a cancel could skip would
     hand the next run the same spin.
+
+    ``precondition`` re-checks, INSIDE the critical section that writes the
+    fence, that the evidence the caller decided on still holds; the fence is
+    skipped when it does not. Evidence about shared state is gathered under an
+    earlier, separate lock hold — another process can invalidate it in between,
+    and fencing a workspace that just became healthy costs an operator a manual
+    ``force_reset``, which no amount of waiting undoes. Pass a pure predicate
+    over the status snapshot: it runs while the lock is held, so it must not
+    await, mutate or raise.
+
+    Returns True when the workspace is fenced on return (by this call or by an
+    earlier fence that is kept), False only when ``precondition`` refused.
     """
 
-    async def _run() -> None:
+    async def _run() -> bool:
         async with pipeline_status_lock:
-            if pipeline_status.get("recovery_required"):
-                return
+            # One snapshot serves both reads (a DictProxy charges a Manager RPC
+            # per field), and it is the same snapshot the precondition judges —
+            # so its verdict and the already-fenced check cannot disagree about
+            # what the status held.
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if snapshot.get("recovery_required"):
+                return True
+            if precondition is not None and not precondition(snapshot):
+                return False
             pipeline_status["recovery_required"] = {
                 "kind": kind,
                 "owner_key": "busy_owner",
                 "operation_record": operation_record,
                 "message": message,
             }
+            return True
 
-    await run_to_completion(_run)
+    return await run_to_completion(_run)
 
 
 class PipelineReservationConflict(str, Enum):
@@ -2639,6 +2683,26 @@ def _reservation_owner_token(record: Any) -> Any:
     return record
 
 
+def reservation_owner_kind(record: Any) -> Optional[str]:
+    """The ``kind`` of a reservation owner record, or ``None`` when unknown.
+
+    Public because a caller outside this layer has to tell WHICH holder owns a
+    flag, not just that it is set: ``check_pipeline_busy_or_raise`` must let an
+    ``admin`` holder of ``busy`` through (that request queues on the workspace
+    admin lock instead) while still refusing a ``processing`` / ``clear`` /
+    ``delete`` one. The record's shape stays known only here, as with
+    :func:`make_owner_record` and :func:`_reservation_owner_token`.
+
+    ``None`` for a bare token, a legacy record without the field, and a missing
+    owner. Callers MUST treat ``None`` as "not exempt": a flag with no
+    identifiable owner is the case a fence exists for.
+    """
+    if isinstance(record, Mapping):
+        kind = record.get("kind")
+        return str(kind) if kind is not None else None
+    return None
+
+
 async def acquire_reservation(
     pipeline_status: Dict[str, Any],
     pipeline_status_lock,
@@ -2722,6 +2786,73 @@ async def acquire_reservation(
     return PipelineReservationResult(acquired=True, snapshot=snapshot)
 
 
+# Why a pending-enqueue reservation is held. Stamped into the token's metadata so
+# a reader can tell the holders apart WITHOUT parsing token strings: they share
+# one set and one count, but they are not interchangeable. ``force_reset`` drops
+# the stalled ones for a ``manual_drain_enqueue_stalled`` fence, and a
+# source-conflict repair's guard must survive that — dropping it would re-open
+# clear/delete, scan classification and the manual reset against a repair whose
+# candidate re-read/demotion span is still running.
+#
+# Weight is NOT a discriminator: an ordinary enqueue whose documents all dedup
+# away re-weights itself to 0, exactly like the repair's guard.
+ENQUEUE_RESERVATION_KIND = "enqueue"
+SOURCE_REPAIR_RESERVATION_KIND = "source_repair"
+
+# The one ``recovery_required`` kind raised BY the in-flight enqueue set itself:
+# a manual retry's DRAIN_TO_IDLE gave up waiting for these very reservations.
+MANUAL_DRAIN_ENQUEUE_STALL_FENCE = "manual_drain_enqueue_stalled"
+
+
+def _stall_fence_exempts_reserved_token(
+    snapshot: Mapping[str, Any], token: Optional[str]
+) -> bool:
+    """Whether the fence in ``snapshot`` must let ``token``'s enqueue finish.
+
+    The recovery fence is otherwise absolute, and stays so for every other kind:
+    a worker that died mid custom_chunks/delete/clear may have left storage
+    half-committed, and a new write is exactly what must not happen next.
+
+    :data:`MANUAL_DRAIN_ENQUEUE_STALL_FENCE` is different in kind — it was
+    raised BECAUSE these reservations were in flight, and nothing is
+    half-committed. Refusing them would make the fence destroy the very work it
+    was raised about: the holder was admitted before the freeze, the drain was
+    contractually WAITING for it (LR2 §9.2), and for ``/documents/text(s)`` the
+    payload lives only in the request's background task — there is no input file
+    for a later scan to rediscover, so a refusal loses it after the client was
+    already told it was accepted.
+
+    It costs nothing in the case the bound is FOR: a holder that is genuinely
+    wedged never reaches this check. It only spares the false positive, and the
+    rows it writes cannot be processed until the fence is cleared anyway — the
+    processing reservation still refuses.
+
+    Registration is read from the snapshot, never taken on the caller's word.
+    """
+    if token is None:
+        return False
+    fence = snapshot.get("recovery_required")
+    if (
+        not isinstance(fence, dict)
+        or fence.get("kind") != MANUAL_DRAIN_ENQUEUE_STALL_FENCE
+    ):
+        return False
+    return token in (snapshot.get("pending_enqueue_tokens") or {})
+
+
+def reservation_kind(metadata: Any) -> str:
+    """Why the reservation holding this token exists.
+
+    Defaults to :data:`ENQUEUE_RESERVATION_KIND` for metadata that carries no
+    kind, which is also the safe reading: an unlabelled holder is an ordinary
+    enqueue, and every special kind labels itself at acquire time.
+    """
+    if not isinstance(metadata, Mapping):
+        return ENQUEUE_RESERVATION_KIND
+    kind = metadata.get("kind")
+    return kind if isinstance(kind, str) and kind else ENQUEUE_RESERVATION_KIND
+
+
 def _reservation_weight(metadata: Any) -> int:
     """Documents an in-flight reservation intends to write (0 when unweighted)."""
     if not isinstance(metadata, Mapping):
@@ -2739,6 +2870,7 @@ async def acquire_enqueue_reservation(
     weight: int = 0,
     capacity: int = 0,
     active_count: Optional[int] = None,
+    kind: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Take (or re-weight) one of the concurrent pending-enqueue reservations.
 
@@ -2778,12 +2910,22 @@ async def acquire_enqueue_reservation(
       The new/existing decision is read from THIS snapshot rather than taken on
       the caller's word: a caller that merely passes a token string cannot talk
       its way past a fence.
+
+      The recovery fence outranks all of this and refuses every caller — except
+      a registered token under a :data:`MANUAL_DRAIN_ENQUEUE_STALL_FENCE`, the
+      one kind raised BY these reservations (see
+      :func:`_stall_fence_exempts_reserved_token`).
     * no capacity → :class:`~lightrag.exceptions.PipelineBackpressureError`
       (→ 429) carrying the numbers the client needs.
 
     ``capacity > 0`` requires ``active_count``: the caller must have taken a
     strict count under its serialisation lock. Passing ``None`` is a programming
     error, not a licence to assume there is room.
+
+    ``kind`` records WHY the reservation is held (see
+    :data:`ENQUEUE_RESERVATION_KIND`). Pass it whenever the holder is not an
+    ordinary enqueue; a re-weight that omits it KEEPS the stored kind, so a
+    re-weighting caller can never silently relabel someone else's guard.
     """
     if capacity > 0 and active_count is None:
         raise ValueError(
@@ -2794,7 +2936,9 @@ async def acquire_enqueue_reservation(
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
         )
-        if snapshot.get("recovery_required"):
+        if snapshot.get(
+            "recovery_required"
+        ) and not _stall_fence_exempts_reserved_token(snapshot, token):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
         tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
@@ -2834,6 +2978,9 @@ async def acquire_enqueue_reservation(
             "pid": os.getpid(),
             "process_start_id": _my_start_id(),
             "weight": weight,
+            # A re-weight keeps the kind it was admitted with: only the acquire
+            # that MINTS the reservation gets to say what it is.
+            "kind": kind or reservation_kind(tokens.get(token)),
         }
         updates = {
             "pending_enqueue_tokens": tokens,
@@ -2853,8 +3000,9 @@ async def check_pipeline_status_mutation(
 ) -> PipelineReservationResult:
     """Reconcile and evaluate a mutation fence without taking a reservation.
 
-    The recovery fence is mandatory. Optional status conflicts are evaluated
-    from the same local snapshot, and recovery writes use at most one update.
+    The recovery fence is mandatory (with the single carve-out described at the
+    end). Optional status conflicts are evaluated from the same local snapshot,
+    and recovery writes use at most one update.
 
     ``exempt_if_reserved`` is a pending-enqueue token: when this snapshot shows
     it REGISTERED in ``pending_enqueue_tokens``, the optional ``reject_when``
@@ -2865,17 +3013,25 @@ async def check_pipeline_status_mutation(
     work of a request the protocol promised to let finish, and the client has
     usually already been told it was accepted. Registration is verified from the
     snapshot, never taken on the caller's word.
+
+    The recovery fence is mandatory with ONE exception, which is not a weakening
+    of it: a registered token is let through a
+    :data:`MANUAL_DRAIN_ENQUEUE_STALL_FENCE`, the one fence kind raised BY those
+    reservations — see :func:`_stall_fence_exempts_reserved_token`.
     """
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
         )
-        if snapshot.get("recovery_required"):
+        reserved = exempt_if_reserved is not None and exempt_if_reserved in (
+            snapshot.get("pending_enqueue_tokens") or {}
+        )
+        if snapshot.get(
+            "recovery_required"
+        ) and not _stall_fence_exempts_reserved_token(snapshot, exempt_if_reserved):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
-        if exempt_if_reserved is not None and exempt_if_reserved in (
-            snapshot.get("pending_enqueue_tokens") or {}
-        ):
+        if reserved:
             reject_when = ()
         for flag_key, reason in reject_when:
             if snapshot.get(flag_key):
@@ -3525,6 +3681,21 @@ async def drain_reserved_background_tasks(
         observed = await _join_resistant(task)
         pending_cancel = pending_cancel or observed
     return pending_cancel
+
+
+def is_multiprocess_mode() -> bool:
+    """Whether shared state is backed by a ``multiprocessing.Manager``.
+
+    ``False`` in single-process mode (and before :func:`initialize_share_data`
+    has run), where the shared dicts are plain dicts and the update flags are
+    local ``MutableBoolean`` objects.
+
+    Exposed for the storages whose cross-process fences are only meaningful
+    when peer processes exist -- see ``NetworkXStorage``'s *Cross-process sync
+    protocol*, which skips its file-fingerprint check in single-process mode
+    because there is no peer that could have committed.
+    """
+    return bool(_is_multiprocess)
 
 
 async def get_update_flag(namespace: str, workspace: str | None = None):

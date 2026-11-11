@@ -37,6 +37,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     safe_vdb_operation_with_exception,
 )
+from tests._log_capture import capture_lightrag_logs
 
 
 async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
@@ -389,6 +390,8 @@ def test_carry_over_keys_grouped_by_stage():
         "source_file",
         "parse_warnings",
         "chunk_opts",
+        # Non-authoritative registry observation, grouped with chunk options.
+        "custom_chunker",
         "parse_start_time",
         "parse_end_time",
         "parse_stage_skipped",
@@ -1472,11 +1475,7 @@ def test_enqueue_status_upsert_failure_survives_wake_failure(
                 rag, "apipeline_process_enqueue_documents", _failing_process
             )
 
-            # The "lightrag" logger sets propagate=False, so caplog (a root
-            # handler) cannot see its records unless we re-enable propagation
-            # for the duration of the test (monkeypatch auto-reverts it).
-            monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-            with caplog.at_level(logging.WARNING):
+            with capture_lightrag_logs(caplog), caplog.at_level(logging.WARNING):
                 with pytest.raises(RuntimeError, match="partial doc-status"):
                     await rag.apipeline_enqueue_documents(
                         "wake failure",
@@ -2097,7 +2096,7 @@ def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
             third_id = compute_mdhash_id("third.txt", prefix="doc-")
             assert await rag.full_docs.get_by_id(third_id) is None
 
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             kinds = {
                 getattr(doc, "metadata", {}).get("duplicate_kind")
                 for doc in failed_docs.values()
@@ -2137,7 +2136,7 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
             )
             assert (await rag.full_docs.get_by_id(first_id))["content"] == "alpha body"
 
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             # The duplicate record stores the canonical basename — hint is
             # not preserved anywhere in the new schema.
             assert any(
@@ -2201,7 +2200,7 @@ def test_enqueue_without_file_paths_uses_content_ids(tmp_path):
                 assert full_doc.get("content_hash")
                 assert status.get("content_hash") == full_doc.get("content_hash")
 
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             duplicate_failures = [
                 doc
                 for doc in failed_docs.values()
@@ -2364,7 +2363,7 @@ def test_enqueue_rejects_removed_or_unknown_docs_format(tmp_path):
                     lightrag_document_paths="__parsed__/doc.blocks.jsonl",
                 )
             # Nothing was enqueued by the rejected calls.
-            failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             assert failed == {}
         finally:
             await rag.finalize_storages()
@@ -2497,9 +2496,9 @@ def test_state_machine_upsert_preserves_content_hash(tmp_path):
 
             # Simulate the production state-machine upsert pattern: read
             # status_doc, then write a new payload that includes content_hash.
-            status_doc = (await rag.doc_status.get_docs_by_status(DocStatus.PENDING))[
-                doc_id
-            ]
+            status_doc = (
+                await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
+            )[doc_id]
             for next_status in (
                 DocStatus.PARSING,
                 DocStatus.ANALYZING,

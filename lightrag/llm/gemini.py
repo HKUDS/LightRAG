@@ -20,6 +20,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 
@@ -44,6 +45,7 @@ if not pm.is_installed("google-api-core"):
 
 from google import genai  # type: ignore
 from google.genai import types  # type: ignore
+from google.genai import errors as google_genai_errors  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
 
@@ -51,6 +53,26 @@ class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
 
     pass
+
+
+def _is_retryable_gemini_client_error(exc: BaseException) -> bool:
+    """True for a rate-limit response, the one 4xx worth a fresh attempt.
+
+    ``google-genai`` (the client this module actually calls through
+    ``client.aio.models.*``) raises its own ``google.genai.errors``
+    hierarchy, not ``google.api_core.exceptions`` -- that module belongs to
+    the older Vertex AI client libraries and is never raised on this
+    request path. Its 5xx failures surface as ``ServerError``, matched
+    directly in the retry predicate below. A 429 rate-limit response,
+    however, surfaces as the generic 4xx ``ClientError`` rather than a
+    distinct "resource exhausted" type, so it must be matched by status
+    code; every other ``ClientError`` (bad request, bad auth, not found)
+    stays non-retryable.
+    """
+    return (
+        isinstance(exc, google_genai_errors.ClientError)
+        and getattr(exc, "code", None) == 429
+    )
 
 
 _DEFAULT_GEMINI_BASE_URLS = {
@@ -282,6 +304,8 @@ def _extract_response_text(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
 )
@@ -301,6 +325,7 @@ async def gemini_complete_if_cache(
     generation_config: dict[str, Any] | None = None,
     timeout: int | None = None,
     image_inputs: list[Any] | None = None,
+    max_tokens: int | None = None,
     **_: Any,
 ) -> str | AsyncIterator[str]:
     """
@@ -346,6 +371,9 @@ async def gemini_complete_if_cache(
         hashing_kv: Storage interface (for interface parity with other bindings).
         enable_cot: Whether to include Chain of Thought content in the response.
         timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
+        max_tokens: Generic output-length cap (as forwarded via LightRAG's
+            provider-agnostic ``llm_model_kwargs``). Mapped to Gemini's native
+            ``max_output_tokens`` unless ``generation_config`` already sets it.
         **_: Additional keyword arguments (ignored).
 
     Returns:
@@ -390,6 +418,14 @@ async def gemini_complete_if_cache(
         prompt_sections.append(history_block)
     prompt_sections.append(f"[user] {prompt}")
     combined_prompt = "\n".join(prompt_sections)
+
+    if max_tokens is not None and (
+        generation_config is None or generation_config.get("max_output_tokens") is None
+    ):
+        generation_config = {
+            **(generation_config or {}),
+            "max_output_tokens": max_tokens,
+        }
 
     config_obj = _build_generation_config(
         generation_config,
@@ -687,6 +723,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
     ),
 )
 async def gemini_embed(

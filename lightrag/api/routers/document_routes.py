@@ -22,6 +22,8 @@ from lightrag.utils import (
     performance_timing_log,
     safe_log_value,
     validate_workspace,
+    _consume_future_exception,
+    _wait_deferring_cancellation,
 )
 import aiofiles
 import traceback
@@ -58,12 +60,11 @@ from pydantic import (
 )
 
 from lightrag import LightRAG
-from lightrag.api.utils_api import internal_server_error
+from lightrag.api.utils_api import internal_server_error, new_error_id
 from lightrag.base import (
     CURSOR_START,
     CursorAfter,
     CursorPosition,
-    DocProcessingStatus,
     DocStatus,
     SourceAbsent,
     SourceConflict,
@@ -781,12 +782,16 @@ class TextChunkingConfig(BaseModel):
     ``custom`` explicitly invokes ``LightRAG.chunking_func`` and reuses the
     fixed-token parameter contract (split character, split-only flag, overlap,
     and size). It is rejected unless the application injected a non-default
-    callback.
+    callback (Server: ``CUSTOM_CHUNKER`` / ``--custom-chunker`` selects an
+    installed ``lightrag.chunkers`` registration, never an HTTP import path).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    strategy: TextChunkingStrategy = "fixed_token"
+    strategy: TextChunkingStrategy = Field(
+        default="fixed_token",
+        description="custom invokes the constructor callback selected at Server startup by CUSTOM_CHUNKER; it accepts fixed-token parameters, never an implementation name or import path",
+    )
     params: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -1010,38 +1015,35 @@ class ForceResetRecoveryResponse(BaseModel):
             "reset cover them."
         ),
     )
-
-
-class ClearCacheRequest(BaseModel):
-    """Request model for clearing cache
-
-    This model is kept for API compatibility but no longer accepts any parameters.
-    All cache will be cleared regardless of the request content.
-    """
-
-    model_config = ConfigDict(json_schema_extra={"example": {}})
-
-
-class ClearCacheResponse(BaseModel):
-    """Response model for cache clearing operation
-
-    Attributes:
-        status: Status of the clear operation
-        message: Detailed message describing the operation result
-    """
-
-    status: Literal["success", "fail"] = Field(
-        description="Status of the clear operation"
+    dropped_enqueue_reservations: int = Field(
+        default=0,
+        description=(
+            "In-flight enqueue reservations dropped along with the fence. Non-zero "
+            "only for a ``manual_drain_enqueue_stalled`` fence, where the drain "
+            "waited out its whole bounded window on this set and the set IS the "
+            "blocker: leaving it would keep /documents/scan and /documents/clear "
+            "refused and make a re-issued /documents/reprocess_failed fence again. "
+            "The fence alone does not void an admitted enqueue (a registered "
+            "token is exempt from this fence kind, so a producer that comes back "
+            "still lands its documents); dropping its reservation does. A "
+            "producer that was alive and merely slow and returns AFTER this reset "
+            "may have its enqueue refused although the client already got 200 — "
+            "an /upload is recovered by the next /documents/scan, a "
+            "/documents/text or /documents/texts must be re-sent."
+        ),
     )
-    message: str = Field(description="Message describing the operation result")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "status": "success",
-                "message": "Successfully cleared cache for modes: ['default', 'naive']",
-            }
-        }
+    retained_enqueue_reservations: int = Field(
+        default=0,
+        description=(
+            "Reservations in that same set that were deliberately NOT dropped "
+            "because they are not ordinary enqueues — currently a source-conflict "
+            "repair's guard, which excludes clear/delete, scan classification and "
+            "the manual reset for the whole span in which the repair re-reads the "
+            "candidate set and demotes the losers. Dropping it could corrupt "
+            "source ownership, so it outranks re-opening the workspace. Non-zero "
+            "means the workspace is still closed to scan/clear: wait for the "
+            "holder to finish, or restart the process that owns it."
+        ),
     )
 
 
@@ -1148,73 +1150,6 @@ class DocStatusResponse(BaseModel):
                 "error": None,
                 "metadata": {"author": "John Doe", "year": 2025},
                 "file_path": "research_paper.pdf",
-            }
-        }
-    )
-
-
-class DocsStatusesResponse(BaseModel):
-    """Response model for document statuses
-
-    Attributes:
-        statuses: Dictionary mapping document status to lists of document status responses
-    """
-
-    statuses: Dict[DocStatus, List[DocStatusResponse]] = Field(
-        default_factory=dict,
-        description="Dictionary mapping document status to lists of document status responses",
-    )
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "statuses": {
-                    "PENDING": [
-                        {
-                            "id": "doc_123",
-                            "content_summary": "Pending document",
-                            "content_length": 5000,
-                            "status": "pending",
-                            "created_at": "2025-03-31T10:00:00",
-                            "updated_at": "2025-03-31T10:00:00",
-                            "track_id": "upload_20250331_100000_abc123",
-                            "chunks_count": None,
-                            "error": None,
-                            "metadata": None,
-                            "file_path": "pending_doc.pdf",
-                        }
-                    ],
-                    "PREPROCESSED": [
-                        {
-                            "id": "doc_789",
-                            "content_summary": "Document pending final indexing",
-                            "content_length": 7200,
-                            "status": "preprocessed",
-                            "created_at": "2025-03-31T09:30:00",
-                            "updated_at": "2025-03-31T09:35:00",
-                            "track_id": "upload_20250331_093000_xyz789",
-                            "chunks_count": 10,
-                            "error": None,
-                            "metadata": None,
-                            "file_path": "preprocessed_doc.pdf",
-                        }
-                    ],
-                    "PROCESSED": [
-                        {
-                            "id": "doc_456",
-                            "content_summary": "Processed document",
-                            "content_length": 8000,
-                            "status": "processed",
-                            "created_at": "2025-03-31T09:00:00",
-                            "updated_at": "2025-03-31T09:05:00",
-                            "track_id": "insert_20250331_090000_def456",
-                            "chunks_count": 8,
-                            "error": None,
-                            "metadata": {"author": "John Doe"},
-                            "file_path": "processed_doc.pdf",
-                        }
-                    ],
-                }
             }
         }
     )
@@ -1873,17 +1808,42 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     the namespace lock and raises immediately on contention -- it does
     NOT set any flag, so it cannot block the pipeline itself.
 
-    ``busy`` is set by the processing loop and by destructive jobs
-    (``/documents/clear`` / per-doc delete). Both paths concurrently
-    write the same graph storages that these endpoints mutate, so a
-    409 here mirrors the existing UI guard and tells clients to wait.
+    ``busy`` is set by the processing loop, by destructive jobs
+    (``/documents/clear`` / per-doc delete), AND by an admin graph write
+    itself. The first two concurrently write the same graph
+    storages that these endpoints mutate, so a 409 here mirrors the
+    existing UI guard and tells clients to wait.
 
-    A narrow race remains between this check and the underlying graph
-    write: if the pipeline transitions to busy in that window, the
-    per-edge/-node locks inside the storage layer are the last line of
-    defense. That trade-off is deliberate -- holding ``busy`` here
-    would serialise every UI edit against document ingestion, which is
-    a worse user-visible failure mode than tolerating the race.
+    **An ``admin`` holder is exempt, and the exemption is load-bearing.**
+    Refusing on the raw flag would refuse the second concurrent REST admin
+    write before it ever reaches the workspace admin lock, so the bounded
+    QUEUEING that lock provides would exist only for
+    direct SDK callers, and the client would be told to wait for document
+    ingestion when what is actually ahead of it is another UI edit. Letting
+    it through costs nothing: the core gate takes the admin lock, waits for
+    the peer edit, and only then takes the reservation -- and if a pipeline
+    job has claimed ``busy`` by that point, the gate refuses it there with
+    the same 409. ``None`` (a bare token, a legacy record, no owner) is NOT
+    exempt: an unidentifiable holder is what a fence exists for.
+
+    This check is a snapshot taken at request entry, while the graph
+    commit happens at request exit, so on its own it leaves the WHOLE
+    request open -- embedding round-trip included -- for the pipeline to
+    start inside; the per-edge/-node keyed locks do not close that, since
+    the pipeline and an admin write lock different keys. The window is
+    closed in the core instead: ``LightRAG._admin_write_gate``
+    takes the pipeline ``busy`` reservation (``kind="admin"``) for the
+    duration of every admin write, deferring a pipeline start until the
+    write commits, and refuses with its own 409 when the pipeline is
+    already busy or scanning. That gate runs only where the graph storage
+    declares ``requires_single_writer`` (``NetworkXStorage``, the one
+    backend whose reload discards uncommitted mutations); server-backed
+    graph stores never take it, so the cost once cited against holding
+    ``busy`` across a UI edit -- serialising every edit against ingestion --
+    does not apply to them, and on the file backend it amounts to deferring
+    a pipeline start by one short, LLM-free request. This router check is
+    kept as the early refusal that fails before any embedding work is
+    done; it is no longer the only guard.
 
     No-op (returns silently) when ``pipeline_status`` was never
     bootstrapped, matching the behaviour of ``_acquire_destructive_busy``
@@ -1895,6 +1855,7 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
         check_pipeline_status_mutation,
         get_namespace_data,
         get_namespace_lock,
+        reservation_owner_kind,
     )
 
     try:
@@ -1906,16 +1867,13 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
+    # ``reject_when=()``: the recovery fence is still evaluated (and is
+    # mandatory), but the ``busy`` decision needs the flag AND its owner, which
+    # the helper's flag-only form cannot express. Both come from the ONE
+    # snapshot the helper took inside ``pipeline_status_lock``, so this stays a
+    # single critical section rather than a second, racing read.
     result = await check_pipeline_status_mutation(
-        pipeline_status,
-        pipeline_status_lock,
-        reject_when=(
-            (
-                "busy",
-                "Pipeline is busy with another operation. Wait for the running "
-                "job to finish before editing the knowledge graph.",
-            ),
-        ),
+        pipeline_status, pipeline_status_lock, reject_when=()
     )
     if not result.acquired:
         raise HTTPException(
@@ -1925,6 +1883,17 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
                 else 409
             ),
             detail=result.message,
+        )
+    snapshot = result.snapshot or {}
+    if snapshot.get("busy") and (
+        reservation_owner_kind(snapshot.get("busy_owner")) != "admin"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Pipeline is busy with another operation. Wait for the running "
+                "job to finish before editing the knowledge graph."
+            ),
         )
 
 
@@ -2095,10 +2064,14 @@ async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
     Removes ``token`` from ``pending_enqueue_tokens`` and mirrors the count into
     ``pending_enqueues`` in a single atomic update. Idempotent (a no-op if the
     token is absent, so an endpoint and its background task may both release)
-    and cancellation-resistant. The bg task itself drives processing via
-    ``apipeline_process_enqueue_documents`` after enqueue; no cross-task drain
-    coordination is needed. Never raises (except a re-raised cancellation after
-    the release has completed).
+    and cancellation-resistant. Never raises (except a re-raised cancellation
+    after the release has completed).
+
+    Call it as soon as the enqueue is done — see
+    :func:`_release_admission_after_enqueue`, which every bg task that goes on
+    to drive processing must use. Holding the slot across
+    ``apipeline_process_enqueue_documents`` is what self-deadlocks a manual
+    retry drain.
 
     The namespace fetch runs INSIDE ``run_to_completion`` (via
     ``release_token_set_reservation``) so a cancellation delivered during the
@@ -2112,6 +2085,44 @@ async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
         tokens_key="pending_enqueue_tokens",
         token=token,
     )
+
+
+async def _release_admission_after_enqueue(
+    rag: LightRAG, admission_token: str | None
+) -> None:
+    """Hand the pending-enqueue slot back BEFORE driving the processing loop.
+
+    Every bg task that enqueues and then calls
+    ``apipeline_process_enqueue_documents`` MUST call this in between. The
+    reservation exists to serialize the ENQUEUE decision against manual
+    freezes, scans and destructive clears (see :func:`_reserve_enqueue_slot`);
+    once the documents are in ``doc_status`` it has nothing left to protect,
+    and the core enqueue releases its own self-minted token at exactly this
+    point (``_reserve_ingress_slot``'s exit stack).
+
+    Holding it one step longer is a self-deadlock, not a stricter lock: when
+    the pipeline was idle, ``apipeline_process_enqueue_documents`` BECOMES the
+    processing run, so the run owns the token it is about to wait for. A manual
+    retry queued mid-run sets ``DRAIN_TO_IDLE``, which waits for
+    ``pending_enqueues`` to reach 0 — a count only this run can lower, and only
+    by returning, which it cannot do until the count reaches 0.
+
+    Releasing here narrows what ``pending_enqueues`` covers, and that is the
+    point: it counts enqueues that are MID-FLIGHT, not bg tasks that have moved
+    on to processing. Everything the wider count used to gate is still gated —
+    a scan and a destructive clear both also refuse on ``busy``, which the
+    processing run holds. The one window it opens is between this release and
+    the run's ``busy`` reservation, where a scan or clear may now slip in; that
+    window is identical to the SDK's (``ainsert`` releases at the same point)
+    and heals the same way — the documents are already durable PENDING rows,
+    and the refused processing call arms the auto-rescan flag, so the next run
+    picks them up.
+
+    A no-op when the caller holds no reservation. Never raises.
+    """
+    if admission_token is None:
+        return
+    await _release_enqueue_slot(rag, admission_token)
 
 
 def _release_scanning_action(status) -> None:
@@ -2559,12 +2570,21 @@ async def pipeline_index_file(
         track_id: Optional tracking ID
         admission_token: the endpoint's pending-enqueue reservation, forwarded
             so the admission guard re-weights THAT token to the deduped count
-            instead of counting this request twice (LR2 §9.2)
+            instead of counting this request twice (LR2 §9.2). Released here,
+            between enqueue and processing — see
+            :func:`_release_admission_after_enqueue`.
     """
     try:
         success, _ = await pipeline_enqueue_file(
             rag, file_path, track_id, admission_token=admission_token
         )
+        # The enqueue is over (its writes and, on failure, its error-document
+        # writes are all behind us), so the reservation has nothing left to
+        # protect. Release it BEFORE driving the loop below: this call may
+        # become the processing run, and a run holding its own reservation
+        # self-deadlocks a concurrent manual retry drain. The caller's
+        # ``finally`` release is idempotent, so it stays a safe no-op.
+        await _release_admission_after_enqueue(rag, admission_token)
         if success:
             await rag.apipeline_process_enqueue_documents()
 
@@ -2651,8 +2671,13 @@ def _validate_custom_chunking_available(process_options: str, rag: LightRAG) -> 
     from lightrag.chunker import chunking_by_token_size
 
     if getattr(rag, "chunking_func", chunking_by_token_size) is chunking_by_token_size:
+        from lightrag.chunker.registry import selectable_chunker_names
+
         raise ValueError(
-            "custom chunking requires a non-default LightRAG.chunking_func"
+            "custom chunking requires a non-default LightRAG.chunking_func; "
+            "configure CUSTOM_CHUNKER / --custom-chunker with an installed "
+            "lightrag.chunkers registration. Selectable names: "
+            + (", ".join(selectable_chunker_names()) or "(none)")
         )
 
 
@@ -2798,7 +2823,8 @@ async def pipeline_index_texts(
             managed task starts. Direct callers may omit it to resolve here.
         admission_token: the endpoint's pending-enqueue reservation, forwarded so
             the admission guard re-weights that token to the deduped count
-            (LR2 §9.2)
+            (LR2 §9.2). Released here, between enqueue and processing — see
+            :func:`_release_admission_after_enqueue`.
     """
     if not texts:
         return
@@ -2827,6 +2853,11 @@ async def pipeline_index_texts(
         # See pipeline_enqueue_file: only forwarded when a reservation exists.
         enqueue_kwargs["admission_token"] = admission_token
     await rag.apipeline_enqueue_documents(**enqueue_kwargs)
+    # Documents are in doc_status now, so the reservation is spent. Release it
+    # BEFORE driving the loop below: this call may become the processing run,
+    # and a run holding its own reservation self-deadlocks a concurrent manual
+    # retry drain. The caller's ``finally`` release is idempotent.
+    await _release_admission_after_enqueue(rag, admission_token)
     await rag.apipeline_process_enqueue_documents()
 
 
@@ -3745,9 +3776,10 @@ async def run_scanning_process(
             pass
 
         # Roll back failed/stale custom-chunk operations FIRST, while the
-        # classification phase still holds ``scanning_exclusive`` (issue
-        # #3400 Phase 4). Discovery is storage-driven — SDK operations may
-        # have no scan-visible input file — and a failed rollback keeps the
+        # classification phase still holds ``scanning_exclusive`` (see
+        # docs/design/PurgeRecoveryContract.md for the rollback ordering).
+        # Discovery is storage-driven — SDK operations may have no
+        # scan-visible input file — and a failed rollback keeps the
         # journal/FAILED row for the next scan without aborting this one.
         if pipeline_status is not None and pipeline_status_lock is not None:
             try:
@@ -5464,14 +5496,19 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Bg task: enqueue + trigger processing, then release the slot.
-            # ``pipeline_index_file`` does both: it calls
-            # ``pipeline_enqueue_file`` (writes doc_status / full_docs) and
-            # then ``apipeline_process_enqueue_documents``.  The latter is
-            # safe to invoke even when the loop is already busy — its
-            # refused reservation arms the auto-rescan flag and returns,
-            # so concurrent uploads/inserts cooperate via the running
-            # loop's quiescence decision.
+            # Bg task: enqueue -> release the admission slot -> drive
+            # processing, in that order. ``pipeline_index_file`` calls
+            # ``pipeline_enqueue_file`` (writes doc_status / full_docs), then
+            # ``_release_admission_after_enqueue``, and only then
+            # ``apipeline_process_enqueue_documents``. Holding the slot across
+            # that last call self-deadlocks a manual retry's DRAIN_TO_IDLE — the
+            # run would be waiting on a token only it can release, and only by
+            # returning. The ``finally`` below is an idempotent backstop; it does
+            # real work only when the enqueue itself raised before the release.
+            # Driving processing is safe even when the loop is already busy — its
+            # refused reservation arms the auto-rescan flag and returns, so
+            # concurrent uploads/inserts cooperate via the running loop's
+            # quiescence decision.
             async def _indexing_work(started):
                 # started.set() first (no await before it) so the endpoint's
                 # start-barrier confirms takeover before returning; a body-send
@@ -5817,13 +5854,65 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(
+        delete_parsed_files: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also delete the __parsed__ directory contents. Preserved "
+                    "by default so parsed artifacts survive re-adding the "
+                    "same files."
+                )
+            ),
+        ] = False,
+        clear_llm_cache: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also drop the whole LLM response cache. Off by default: "
+                    "the cache survives a clear so re-adding the same "
+                    "documents can reuse the extraction results already paid "
+                    "for. Honored only when every storage drop succeeds; a "
+                    "partial drop preserves the cache, since the surviving "
+                    "documents would otherwise repay every extraction call."
+                )
+            ),
+        ] = False,
+    ):
         """
         Clear all documents from the RAG system.
 
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
-        from the input directory.
+        from the input directory. The __parsed__ directory is preserved unless
+        delete_parsed_files=True is passed, and the LLM response cache is preserved
+        unless clear_llm_cache=True is passed AND every storage drop succeeded
+        (a partial drop preserves it either way -- see below).
+
+        **Clearing the LLM cache is only available here**, folded into this
+        endpoint rather than exposed as its own route, because
+        ``llm_response_cache.drop()`` states a caller contract it cannot enforce
+        itself: the caller must hold the pipeline ``busy`` reservation. A
+        standalone endpoint held nothing, so clearing mid-ingestion wiped the
+        extraction rows the in-flight chunks had already paid for (a later
+        reprocess re-bills every one of those LLM calls) and left those chunks'
+        ``llm_cache_list`` naming rows that no longer exist. Running it here
+        puts it inside the destructive reservation that already refuses while
+        the pipeline is busy, and leaves one destructive path to reason about.
+
+        For the same reason the cache drop is skipped whenever ANY storage
+        drop failed, not only when they all did: a surviving ``text_chunks``
+        row still names its cache rows through ``llm_cache_list`` and its
+        document can still be reprocessed, so clearing the cache beside it
+        inflicts exactly the harm above on whatever survived. The response
+        says the cache was preserved and why; re-run the clear to remove it.
+
+        Top-level input files are always deleted unconditionally: a later
+        /documents/scan would otherwise re-enqueue them. The __parsed__
+        directory is opt-in only, since it holds pre-parsed cache artifacts
+        that let a re-added file skip re-parsing. A partial shutil.rmtree
+        failure (e.g. a locked file) can leave __parsed__ incomplete; re-run
+        with delete_parsed_files=True to retry.
 
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``
@@ -5979,8 +6068,18 @@ def create_document_routes(
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
 
-            # Check for errors and log results
+            # Check for errors and log results.
+            #
+            # Two parallel lists on purpose. ``errors`` carries the raw
+            # exception text and never leaves the server: it goes to the log,
+            # joined to the response by a correlation id. ``error_summaries``
+            # carries one category per failure and is the ONLY thing the
+            # client sees. Raw backend text names database hosts, ports and
+            # absolute filesystem paths -- the CWE-209 disclosure that
+            # ``internal_server_error`` already closes on this function's 500
+            # path. A 200 body is not a licence to reopen it.
             errors = []
+            error_summaries = []
             storage_success_count = 0
             storage_error_count = 0
 
@@ -5989,6 +6088,7 @@ def create_document_routes(
                 if isinstance(result, Exception):
                     error_msg = f"Error dropping {storage_name}: {str(result)}"
                     errors.append(error_msg)
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 elif isinstance(result, dict) and result.get("status") != "success":
@@ -6001,6 +6101,9 @@ def create_document_routes(
                         f"{result.get('message', 'unknown error')}"
                     )
                     errors.append(error_msg)
+                    # Backend-produced text, treated exactly like exception
+                    # text: it is just as free to quote a connection string.
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 else:
@@ -6052,6 +6155,65 @@ def create_document_routes(
                 append_pipeline_history(pipeline_status, error_message)
                 return ClearDocumentsResponse(status="fail", message=error_message)
 
+            # Opt-in LLM cache drop, run here rather than from its own
+            # endpoint so it inherits the destructive reservation that
+            # ``llm_response_cache.drop()`` requires its caller to hold.
+            #
+            # After the storage drops, and only when EVERY one of them
+            # succeeded -- not merely when they did not all fail. A surviving
+            # ``text_chunks`` row still names its cache rows through
+            # ``llm_cache_list``, and its document can still be reprocessed,
+            # so dropping the cache next to it would both break those
+            # references en masse and re-bill every extraction call the
+            # document already paid for. That is the exact harm this endpoint
+            # exists to prevent; a partial drop is not a licence to inflict it
+            # on whatever survived.
+            #
+            # So the cache is preserved whenever any storage drop failed, and
+            # the operator re-runs the clear. That residue is the acceptable
+            # direction under *Consistency without transactions*: retaining
+            # rows that could have been dropped costs only storage and is
+            # disposed of by the next clear, while burning them loses paid-for
+            # work outright. The response says which happened.
+            #
+            # The mirror residue, when every drop DID succeed but the cache
+            # drop itself fails, is likewise harmless: the cache rows are then
+            # unreachable rather than dangling -- no chunk row survives to
+            # name them -- and the next clear, or a re-add of the same content
+            # that re-keys onto them, disposes of them.
+            cache_cleared_message = ""
+            if clear_llm_cache and storage_error_count > 0:
+                cache_cleared_message = (
+                    " LLM cache preserved: a storage drop failed, and the "
+                    "surviving documents would have to repay every extraction "
+                    "call. Re-run the clear to remove it."
+                )
+                append_pipeline_history(
+                    pipeline_status,
+                    "Skipped the LLM cache drop: a storage drop failed",
+                )
+            elif clear_llm_cache:
+                append_pipeline_history(
+                    pipeline_status, "Starting to clear the LLM response cache"
+                )
+                try:
+                    await rag.aclear_cache()
+                    cache_cleared_message = " Cleared the LLM response cache."
+                    append_pipeline_history(
+                        pipeline_status, "Successfully cleared the LLM response cache"
+                    )
+                except Exception as cache_error:
+                    error_msg = f"Error clearing the LLM response cache: {cache_error}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    summary = "the LLM response cache could not be cleared"
+                    error_summaries.append(summary)
+                    # pipeline_status history is served to clients by
+                    # GET /documents/pipeline_status, so it is a response
+                    # channel too: the category goes here, the raw text only
+                    # to the log above.
+                    append_pipeline_history(pipeline_status, f"Error: {summary}")
+
             # Log file deletion start
             append_pipeline_history(
                 pipeline_status, "Starting to delete files in input directory"
@@ -6077,18 +6239,99 @@ def create_document_routes(
                     f"Deleted {deleted_files_count} files with {file_errors_count} errors",
                 )
                 errors.append(f"Failed to delete {file_errors_count} files")
+                error_summaries.append(f"failed to delete {file_errors_count} files")
             else:
                 append_pipeline_history(
                     pipeline_status, f"Successfully deleted {deleted_files_count} files"
                 )
 
+            # __parsed__ is preserved by default so re-adding the same file
+            # does not require re-parsing, and so a deleted document's raw
+            # upload can still be recovered from there. Only remove it when
+            # the caller explicitly opts in.
+            parsed_dir_message = ""
+            parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
+            if delete_parsed_files:
+                if parsed_dir.exists():
+                    # __parsed__ can hold many files; run the recursive
+                    # delete off the event loop thread so a large directory
+                    # doesn't block every other request. A bare cancel (e.g.
+                    # the client disconnecting) would only cancel this
+                    # await -- the rmtree keeps running in the background --
+                    # while the `finally` below releases destructive_busy
+                    # immediately, letting a new request race an in-flight
+                    # delete. Defer the cancellation until rmtree actually
+                    # finishes, same idiom as milvus_impl.py's flush.
+                    rmtree_future = asyncio.ensure_future(
+                        asyncio.to_thread(shutil.rmtree, parsed_dir)
+                    )
+                    rmtree_future.add_done_callback(_consume_future_exception)
+                    pending_cancel = await _wait_deferring_cancellation(
+                        rmtree_future, None
+                    )
+                    if pending_cancel is not None and not rmtree_future.cancelled():
+                        rmtree_exc = rmtree_future.exception()
+                        if rmtree_exc is not None:
+                            logger.error(
+                                f"Error deleting {parsed_dir} while cancelled: "
+                                f"{rmtree_exc}"
+                            )
+                    elif pending_cancel is None:
+                        try:
+                            rmtree_future.result()
+                            parsed_dir_message = " Deleted __parsed__ directory."
+                            append_pipeline_history(
+                                pipeline_status, "Deleted __parsed__ directory"
+                            )
+                        except Exception as e:
+                            logger.error(f"Error deleting {parsed_dir}: {str(e)}")
+                            errors.append(f"Failed to delete __parsed__ directory: {e}")
+                            # ``e`` here is typically an OSError naming the
+                            # absolute path it could not unlink.
+                            error_summaries.append(
+                                "the __parsed__ directory could not be deleted"
+                            )
+                    if pending_cancel is not None:
+                        raise pending_cancel
+            elif parsed_dir.exists():
+                parsed_dir_message = (
+                    " __parsed__ preserved (pass delete_parsed_files=true to "
+                    "remove it)."
+                )
+
             # Prepare final result message
             final_message = ""
             if errors:
-                final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
+                # Name WHICH part failed, not just that something did: a bare
+                # "some errors" tells the operator to retry without saying
+                # what to retry -- whether the LLM cache is still there, which
+                # storage kept its rows, or which input files would not
+                # unlink. The WebUI surfaces this verbatim.
+                #
+                # Categories only. The raw backend text stays server-side and
+                # is joined to this response by ``error_id``, in the same
+                # format ``internal_server_error`` uses on the 500 path so an
+                # operator greps one pattern. The category list is bounded (at
+                # most one entry per storage plus the file-count, __parsed__
+                # and cache lines), so it is reported in full: truncating it
+                # risks hiding the one entry that matters.
+                error_id = new_error_id()
+                logger.error(
+                    f"/documents/clear completed with errors "
+                    f"[error_id={error_id}]: {'; '.join(errors)}"
+                )
+                final_message = (
+                    f"Cleared documents with some errors. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
+                    f" Errors: {'; '.join(error_summaries)}"
+                    f" (error_id: {error_id})"
+                )
                 status = "partial_success"
             else:
-                final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
+                final_message = (
+                    f"All documents cleared successfully. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
+                )
                 status = "success"
 
             # Log final result
@@ -6242,110 +6485,6 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
 
-    # TODO: Deprecated, use /documents/paginated instead
-    @router.get(
-        "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
-    )
-    async def documents() -> DocsStatusesResponse:
-        """
-        Get the status of all documents in the system. This endpoint is deprecated; use /documents/paginated instead.
-        To prevent excessive resource consumption, a maximum of 1,000 records is returned.
-
-        This endpoint retrieves the current status of all documents, grouped by their
-        processing status (PENDING, PROCESSING, PREPROCESSED, PROCESSED, FAILED). The results are
-        limited to 1000 total documents with fair distribution across all statuses.
-
-        Returns:
-            DocsStatusesResponse: A response object containing a dictionary where keys are
-                                DocStatus values and values are lists of DocStatusResponse
-                                objects representing documents in each status category.
-                                Maximum 1000 documents total will be returned.
-
-        Raises:
-            HTTPException: If an error occurs while retrieving document statuses (500).
-        """
-        try:
-            statuses = (
-                DocStatus.PENDING,
-                DocStatus.PARSING,
-                DocStatus.ANALYZING,
-                DocStatus.PROCESSING,
-                DocStatus.PREPROCESSED,
-                DocStatus.PROCESSED,
-                DocStatus.FAILED,
-            )
-
-            tasks = [rag.get_docs_by_status(status) for status in statuses]
-            results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
-
-            response = DocsStatusesResponse()
-            total_documents = 0
-            max_documents = 1000
-
-            # Convert results to lists for easier processing
-            status_documents = []
-            for idx, result in enumerate(results):
-                status = statuses[idx]
-                docs_list = []
-                for doc_id, doc_status in result.items():
-                    docs_list.append((doc_id, doc_status))
-                status_documents.append((status, docs_list))
-
-            # Fair distribution: round-robin across statuses
-            status_indices = [0] * len(
-                status_documents
-            )  # Track current index for each status
-            current_status_idx = 0
-
-            while total_documents < max_documents:
-                # Check if we have any documents left to process
-                has_remaining = False
-                for status_idx, (status, docs_list) in enumerate(status_documents):
-                    if status_indices[status_idx] < len(docs_list):
-                        has_remaining = True
-                        break
-
-                if not has_remaining:
-                    break
-
-                # Try to get a document from the current status
-                status, docs_list = status_documents[current_status_idx]
-                current_index = status_indices[current_status_idx]
-
-                if current_index < len(docs_list):
-                    doc_id, doc_status = docs_list[current_index]
-
-                    if status not in response.statuses:
-                        response.statuses[status] = []
-
-                    response.statuses[status].append(
-                        DocStatusResponse(
-                            id=doc_id,
-                            content_summary=doc_status.content_summary,
-                            content_length=doc_status.content_length,
-                            status=doc_status.status,
-                            created_at=format_datetime(doc_status.created_at),
-                            updated_at=format_datetime(doc_status.updated_at),
-                            track_id=doc_status.track_id,
-                            chunks_count=doc_status.chunks_count,
-                            error_msg=doc_status.error_msg,
-                            metadata=doc_status.metadata,
-                            file_path=normalize_file_path(doc_status.file_path),
-                        )
-                    )
-
-                    status_indices[current_status_idx] += 1
-                    total_documents += 1
-
-                # Move to next status (round-robin)
-                current_status_idx = (current_status_idx + 1) % len(status_documents)
-
-            return response
-        except Exception as e:
-            logger.error(f"Error GET /documents: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise internal_server_error(e)
-
     class DeleteDocByIdResponse(BaseModel):
         """Response model for single document deletion operation."""
 
@@ -6481,40 +6620,6 @@ def create_document_routes(
             # acquired (or the start helper's backstop already released it).
             if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
-
-    @router.post(
-        "/clear_cache",
-        response_model=ClearCacheResponse,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def clear_cache(request: ClearCacheRequest):
-        """
-        Clear all cache data from the LLM response cache storage.
-
-        This endpoint clears all cached LLM responses regardless of mode.
-        The request body is accepted for API compatibility but is ignored.
-
-        Args:
-            request (ClearCacheRequest): The request body (ignored for compatibility).
-
-        Returns:
-            ClearCacheResponse: A response object containing the status and message.
-
-        Raises:
-            HTTPException: If an error occurs during cache clearing (500).
-        """
-        try:
-            # Call the aclear_cache method (no modes parameter)
-            await rag.aclear_cache()
-
-            # Prepare success message
-            message = "Successfully cleared all cache"
-
-            return ClearCacheResponse(status="success", message=message)
-        except Exception as e:
-            logger.error(f"Error clearing cache: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise internal_server_error(e)
 
     @router.get(
         "/track_status/{track_id}",
@@ -6993,10 +7098,22 @@ def create_document_routes(
         clear (Linux multi-worker), which may have left storage partially
         committed, or when a manual retry's drain cannot reach idle — so every
         mutation is refused until the workspace is recovered. This endpoint does
-        NOT repair anything; it only drops the fence (and any lingering
-        reservation flags), re-opening a possibly-inconsistent workspace. Requires
-        ``confirm=true``. A true idempotent replay of the interrupted operation is
-        a separate concern (core atomicity / #3400).
+        NOT repair anything; it only drops the fence (and the reservation state
+        that fence is blocked on), re-opening a possibly-inconsistent workspace.
+        Requires ``confirm=true``. A true idempotent replay of the interrupted
+        operation is a separate concern (core atomicity).
+
+        For a ``manual_drain_enqueue_stalled`` fence it ALSO drops the stalled
+        ORDINARY enqueue reservations, because there that set is the blocker
+        rather than a bystander — clearing the fence alone would leave
+        /documents/scan and /documents/clear refused and make a re-issued
+        /documents/reprocess_failed fence again. Any other fence kind leaves the
+        set untouched, and a non-enqueue holder (a source-conflict repair's
+        guard) is never dropped by any of them. A producer that was alive and
+        merely slow loses its reservation: see ``dropped_enqueue_reservations``
+        for what that costs per entry point, and
+        ``retained_enqueue_reservations`` for when the workspace stays closed
+        anyway.
 
         It ALSO cancels the workspace's queued manual retry requests, and that is
         load-bearing rather than housekeeping: a sticky un-ACKed request makes
@@ -7020,10 +7137,13 @@ def create_document_routes(
         """
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import (
+            ENQUEUE_RESERVATION_KIND,
+            MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
             MANUAL_PHASE_IDLE,
             get_namespace_data,
             get_namespace_lock,
             get_pipeline_ingress,
+            reservation_kind,
         )
 
         if not request.confirm:
@@ -7072,8 +7192,17 @@ def create_document_routes(
             )
 
         cancelled = 0
+        dropped_reservations = 0
+        retained_reservations = 0
         async with pipeline_status_lock:
-            if not pipeline_status.get("recovery_required"):
+            # One snapshot, not a field-at-a-time read: this critical section
+            # needs both ``recovery_required`` and (for one fence kind)
+            # ``pending_enqueue_tokens``, and a DictProxy serves each ``get`` as
+            # its own Manager RPC, while ``copy()`` is a single one (the same
+            # reason every reservation path in shared_storage snapshots first).
+            snapshot = pipeline_status.copy()
+            fence = snapshot.get("recovery_required")
+            if not fence:
                 return ForceResetRecoveryResponse(
                     status="no_recovery_required",
                     message="No recovery_required fence is set.",
@@ -7116,42 +7245,139 @@ def create_document_routes(
                     ),
                 )
 
-            # Drop the fence and any lingering reservation state in one atomic
+            # Drop the fence and the owner-held reservation flags in one atomic
             # update. This is deliberately owner-agnostic — it is a manual
             # override, not a normal owner-checked release. The manual freeze goes
             # with it: it is held BY a run that this reset is abandoning, so
             # leaving it would wedge every upload behind an owner that is gone.
-            pipeline_status.update(
-                {
-                    "recovery_required": None,
-                    "operation_record": None,
-                    "busy": False,
-                    "destructive_busy": False,
-                    "busy_owner": None,
-                    "scanning": False,
-                    "scanning_exclusive": False,
-                    "scanning_owner": None,
-                    "manual_freeze_requested": False,
-                    "manual_freeze_started_at": None,
-                    "manual_resetting": False,
-                    "manual_phase": MANUAL_PHASE_IDLE,
-                    "manual_owner": None,
-                }
-            )
+            updates = {
+                "recovery_required": None,
+                "operation_record": None,
+                "busy": False,
+                "destructive_busy": False,
+                "busy_owner": None,
+                "scanning": False,
+                "scanning_exclusive": False,
+                "scanning_owner": None,
+                "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
+            }
 
+            # The in-flight enqueue set is dropped for ONE fence kind, because for
+            # that one it IS the blocker rather than a bystander: an enqueue-stall
+            # fence says the drain waited out its whole bounded window on a
+            # reservation set that never changed. Leaving the set behind would
+            # clear the fence and change nothing — /documents/scan and
+            # /documents/clear both refuse on ``pending_enqueues``, and a re-issued
+            # /documents/reprocess_failed starts a fresh ``_ManualDrainProgress``
+            # that waits out the window again and fences again. The only exit left
+            # would be a process restart: exactly the dead end the bound exists to
+            # remove (see ``_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS``).
+            #
+            # Every OTHER fence kind keeps the set. It is not owner-held state this
+            # reset is abandoning: a healthy upload/insert may hold a token for
+            # reasons unrelated to the fence being cleared. The rule is that
+            # force_reset clears exactly what the fence message told the operator
+            # it would clear.
+            #
+            # And even for THIS fence kind, only reservations held by an ordinary
+            # enqueue are dropped. A source-conflict repair parks a weighted-0
+            # token in the same set to exclude clear/delete, scan classification
+            # and the manual reset for the whole span in which it re-reads the
+            # candidate set and demotes the losers; dropping that guard would
+            # re-open all three against a repair coroutine that may still resume,
+            # corrupting source ownership. An operational wedge is recoverable,
+            # that is not. Weight cannot make the distinction — an ordinary
+            # enqueue whose documents all dedup away re-weights itself to 0 — so
+            # the reservation is labelled with its ``kind`` at acquire time.
+            #
+            # Cost of the drop, when the holder was in fact alive and merely slow
+            # (the false positive the bounded window accepts). The fence alone
+            # costs it nothing — a registered token is exempt from this fence
+            # kind, so a producer that comes back still lands its documents. This
+            # drop is what takes that away: its token is gone, so with admission
+            # ENABLED the enqueue's re-weight is no longer a re-weight
+            # (``_reserve_ingress_slot`` treats it as a new reservation) and may
+            # be refused after the client already got 200. /upload survives that
+            # (the file is in INPUT/, recovered by the next /documents/scan);
+            # /text and /texts do not (nothing was written, the client must
+            # re-send). With admission disabled the enqueue proceeds untouched and
+            # only loses its mutual exclusion against a concurrent destructive job
+            # — which is the partial-commit risk this endpoint already declares.
+            # Waiting a little longer before force-resetting is therefore not
+            # nothing: a producer that returns first keeps its work.
+            #
+            # The exemption also makes one already-declared residue easier to
+            # reach, and it is worth naming: an exempted producer that is MID-
+            # WRITE when this drop lands has lost the ``pending_enqueues`` count
+            # that keeps a destructive job out, so a /documents/clear issued
+            # immediately after may drop storages under it. Before the exemption
+            # such a producer was refused before writing anything, so the window
+            # did not exist. It stays within what this endpoint already declares
+            # (an unsafe manual override over a possibly partially-committed
+            # workspace) rather than being closed here: distinguishing "resumed
+            # and writing" from "still wedged" would need the holder to report
+            # progress, which is the thing a wedged holder cannot do.
+            if (
+                isinstance(fence, dict)
+                and fence.get("kind") == MANUAL_DRAIN_ENQUEUE_STALL_FENCE
+            ):
+                tokens = dict(snapshot.get("pending_enqueue_tokens") or {})
+                kept = {
+                    token: meta
+                    for token, meta in tokens.items()
+                    if reservation_kind(meta) != ENQUEUE_RESERVATION_KIND
+                }
+                dropped_reservations = len(tokens) - len(kept)
+                retained_reservations = len(kept)
+                updates.update(
+                    {"pending_enqueue_tokens": kept, "pending_enqueues": len(kept)}
+                )
+
+            pipeline_status.update(updates)
+
+        # The enqueue-stall fence named the tokens it was blocked on; this is its
+        # counterpart, so what was actually dropped — and what was deliberately
+        # KEPT — has to be in the log too, or the two records cannot be
+        # reconciled after the fact and a workspace still blocked by a retained
+        # guard looks like the reset simply failed.
         logger.warning(
             "recovery_required fence force-reset (unsafe manual override) for "
             f"workspace {rag.workspace}; cancelled {cancelled} queued manual "
-            "retry request(s)"
+            f"retry request(s), dropped {dropped_reservations} stalled in-flight "
+            f"enqueue reservation(s), kept {retained_reservations} non-enqueue "
+            "reservation(s) (e.g. a source-conflict repair guard)"
         )
         return ForceResetRecoveryResponse(
             status="reset",
             cancelled_manual_retries=cancelled,
+            dropped_enqueue_reservations=dropped_reservations,
+            retained_enqueue_reservations=retained_reservations,
             message=(
                 "recovery_required fence cleared"
                 + (
                     f" and {cancelled} queued manual retry request(s) cancelled"
                     if cancelled
+                    else ""
+                )
+                + (
+                    f"; {dropped_reservations} stalled in-flight enqueue "
+                    "reservation(s) dropped — re-send any /documents/text or "
+                    "/documents/texts request that was in flight (an /upload is "
+                    "recovered by /documents/scan)"
+                    if dropped_reservations
+                    else ""
+                )
+                + (
+                    f"; {retained_reservations} non-enqueue reservation(s) KEPT "
+                    "(a source-conflict repair guard is not safe to drop while "
+                    "its commit may still resume) — the workspace stays closed "
+                    "to scan/clear until the holding process releases it or is "
+                    "restarted"
+                    if retained_reservations
                     else ""
                 )
                 + ". The workspace may still be "

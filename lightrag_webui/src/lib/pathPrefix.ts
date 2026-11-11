@@ -47,3 +47,24 @@ export function normalizeWebuiPrefix(
         : '/' + trimmed
   return candidate.replace(/\/+$/, '') + '/'
 }
+
+
+/**
+ * `href` for "go to THIS entry's own root", given the document's pathname.
+ *
+ * Production serves each entry as a directory index (`/webui/` → index.html,
+ * `/workspace/` → workspace.html), where a plain `./` is exactly right. The
+ * Vite dev server has no such mounts: an entry is a plain file, so the
+ * workspace entry lives at `/workspace.html` and `./` there resolves to `/`
+ * — which serves the ADMIN index.html. Clicking the workspace brand in
+ * development would silently switch products.
+ *
+ * Anchoring on the document's own filename when the URL names one keeps the
+ * link inside the entry under both layouts (and under the explicit
+ * same-entry filenames the production mounts still allow).
+ */
+export function entryHomeHref(pathname: string | undefined | null): string {
+  const path = pathname ?? ''
+  const file = path.slice(path.lastIndexOf('/') + 1)
+  return file.toLowerCase().endsWith('.html') ? file : './'
+}

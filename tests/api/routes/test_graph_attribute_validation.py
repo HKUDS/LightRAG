@@ -291,7 +291,9 @@ class TestRelationWeightEvidenceFloor:
         edge = await rag.graph.get_edge("REL_A", "REL_B")
         assert edge["source_id"] == ""
         assert edge["weight"] == 0.25
-        assert rag.relation_chunks.records == {}
+        assert rag.relation_chunks.records == {
+            make_relation_chunk_key("REL_A", "REL_B"): {"chunk_ids": [], "count": 0}
+        }
 
     @pytest.mark.asyncio
     async def test_create_rejects_negative_source_less_weight(self, rag):

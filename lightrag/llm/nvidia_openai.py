@@ -1,5 +1,4 @@
 import sys
-import os
 
 if sys.version_info < (3, 9):
     pass
@@ -49,16 +48,30 @@ async def nvidia_openai_embed(
     # refer to https://build.nvidia.com/nim?filters=usecase%3Ausecase_text_to_embedding
     base_url: str = "https://integrate.api.nvidia.com/v1",
     api_key: str = None,
-    input_type: str = "passage",  # query for retrieval, passage for embedding
+    input_type: str | None = None,  # "query" or "passage"; None defers to context
     trunc: str = "NONE",  # NONE or START or END
     encode: str = "float",  # float or base64
+    context: str | None = None,
 ) -> np.ndarray:
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+    """Generate embeddings with an NVIDIA NIM embedding model.
 
-    openai_async_client = (
-        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
-    )
+    NVIDIA's embedqa models are asymmetric: a search query and an indexed
+    document embed into different regions of the vector space, distinguished
+    by `input_type`. Without an explicit `input_type`, this maps LightRAG's
+    own `context` ("query" / "document") onto NVIDIA's "query" / "passage"
+    values, so a query embedded via a LightRAG query path actually uses
+    NVIDIA's query mode instead of always defaulting to "passage".
+    """
+    if input_type is None:
+        input_type = "query" if context == "query" else "passage"
+
+    client_kwargs = {}
+    if base_url is not None:
+        client_kwargs["base_url"] = base_url
+    if api_key:
+        client_kwargs["api_key"] = api_key
+
+    openai_async_client = AsyncOpenAI(**client_kwargs)
     # Hold the client in an async-with so its httpx connection pool is
     # released on every exit path (success, error, and each @retry attempt),
     # instead of leaking one pool per call until GC. Mirrors ``openai_embed``.

@@ -81,17 +81,25 @@ def _extract_docx(file_bytes: bytes) -> str:
 
 
 def _extract_pptx(file_bytes: bytes) -> str:
-    """Extract PPTX content (synchronous)."""
+    """Extract PPTX text, including nested groups, in shape order (synchronous)."""
+    from collections.abc import Iterator
+
     from pptx import Presentation  # type: ignore
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.shapes.shapetree import GroupShapes, SlideShapes
 
     pptx_file = BytesIO(file_bytes)
     prs = Presentation(pptx_file)
-    content = ""
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                content += shape.text + "\n"
-    return content
+
+    def iter_text(shapes: SlideShapes | GroupShapes) -> Iterator[str]:
+        for shape in shapes:
+            # Groups have no text of their own; their children can include groups.
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                yield from iter_text(shape.shapes)
+            elif hasattr(shape, "text"):
+                yield shape.text + "\n"
+
+    return "".join(text for slide in prs.slides for text in iter_text(slide.shapes))
 
 
 def _extract_xlsx(file_bytes: bytes) -> str:

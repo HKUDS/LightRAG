@@ -1,0 +1,70 @@
+{{- if eq (include "lightrag.workloadKind" .) "StatefulSet" }}
+{{- $workload := default (dict) .Values.workload }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ include "lightrag.headlessServiceName" . }}
+  # OrderedReady sequences pod CREATION: pod N+1 is not created until pod N is
+  # Ready, and LightRAG reports Ready only after initialize_storages() and
+  # check_and_migrate_data() have completed, so no two instances initialize or
+  # migrate storage concurrently.
+  #
+  # It does NOT quiesce the pods already serving. Pod 0 can ingest while pod 1
+  # initializes (and a rolling upgrade leaves lower-ordinal pods serving), and
+  # the chunk-tracking migration on the starting pod replaces tracking rows
+  # from a graph snapshot -- overwriting a row a concurrent ingestion just
+  # wrote, with no later run to heal it. Stop ingestion before scaling out or
+  # upgrading.
+  #
+  # It also has no say over an UNPLANNED restart: a crashed container is
+  # restarted in place by the kubelet, and a pod lost with its node is
+  # recreated while its serving peers stay up. Those restarts re-run
+  # initialization and migration with no cross-pod coordination -- the
+  # accepted residue of extra replicas, harmless once every migration has
+  # run, recoverable with lightrag-repair-chunk-tracking if one had not.
+  # See K8S-README.md "Replica Count".
+  #
+  # Immutable after creation - changing it requires recreating the StatefulSet.
+  podManagementPolicy: {{ include "lightrag.podManagementPolicy" . }}
+  updateStrategy:
+    {{- toYaml (default (dict "type" "RollingUpdate") $workload.updateStrategy) | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "lightrag.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "lightrag.podTemplate" . | nindent 4 }}
+  {{- if .Values.persistence.enabled }}
+  # One claim per pod, not the shared claims pvc.yaml creates for a
+  # Deployment: a ReadWriteOnce claim cannot be mounted by pods on different
+  # nodes, and file-based storage backends corrupt under concurrent writers.
+  # Consequence: uploaded files under /app/data/inputs live on the pod that
+  # received them, so document ingestion must be routed to a single pod.
+  #
+  # These templates are immutable once the StatefulSet exists: an upgrade that
+  # changes a size, or that enables persistence after it was installed off, is
+  # rejected by the API server. Expand the per-pod PVCs directly instead --
+  # see K8S-README.md "Replica Count".
+  volumeClaimTemplates:
+    - metadata:
+        name: rag-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.persistence.ragStorage.size }}
+    - metadata:
+        name: inputs
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.persistence.inputs.size }}
+  {{- end }}
+{{- end }}

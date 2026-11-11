@@ -11,9 +11,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import lightrag.parser.markdown.parser as md_parser
+from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
 from lightrag.parser.markdown.parser import NativeMarkdownParser
 from lightrag.sidecar import write_sidecar
+from lightrag.table_markup import TABLE_TAG_RE
+from lightrag.utils import Tokenizer, TokenizerInterface
 from lightrag.utils_pipeline import compute_text_content_hash
 
 _MD = """# Doc Title
@@ -95,6 +100,62 @@ def test_sidecar_files_and_payload(tmp_path: Path):
     (drawing,) = drawings.values()
     assert drawing["path"].startswith("doc.blocks.assets/")
     assert drawing["format"] == "png"
+
+
+class _CharTokenizer(TokenizerInterface):
+    """Keep chunk boundaries deterministic without downloading tokenizer data."""
+
+    def encode(self, content: str) -> list[int]:
+        return [ord(c) for c in content]
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "row_count", [0, 2, 40], ids=["header-only", "unsplit", "split"]
+)
+def test_pipe_table_headers_survive_paragraph_chunking(tmp_path: Path, row_count: int):
+    header = ["Component", "Limit"]
+    rows = [[f"Widget_{i:02d}", str(1000 + i)] for i in range(row_count)]
+    markdown = "| Component | Limit |\n| --- | --- |\n" + "".join(
+        f"| {name} | {limit} |\n" for name, limit in rows
+    )
+    parsed_dir = _build_sidecar(tmp_path, markdown)
+    content = "\n\n".join(
+        json.loads(line)["content"] for line in _content_lines(parsed_dir)
+    )
+    tokenizer = Tokenizer(model_name="char", tokenizer=_CharTokenizer())
+    chunk_size = 512
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        content,
+        chunk_size,
+        chunk_overlap_token_size=0,
+        blocks_path=str(parsed_dir / "doc.blocks.jsonl"),
+        doc_id="doc-test",
+    )
+
+    assert len(chunks) > 1 if row_count == 40 else len(chunks) == 1
+    recovered_rows = []
+    for chunk in chunks:
+        assert len(tokenizer.encode(chunk["content"])) <= chunk_size
+        chunk_tables = list(TABLE_TAG_RE.finditer(chunk["content"]))
+        assert chunk_tables, "Each table chunk must retain its table markup"
+        for table in chunk_tables:
+            chunk_rows = json.loads(table.group("body"))
+            assert chunk_rows[0] == header
+            assert chunk_rows.count(header) == 1
+            recovered_rows.extend(chunk_rows[1:])
+    assert recovered_rows == rows
+
+    (table_entry,) = json.loads((parsed_dir / "doc.tables.json").read_text())[
+        "tables"
+    ].values()
+    assert json.loads(table_entry["content"]) == [header, *rows]
+    assert json.loads(table_entry["table_header"]) == [header]
+    assert table_entry["dimension"] == [row_count + 1, 2]
 
 
 def test_reparse_content_is_byte_stable(tmp_path: Path):

@@ -96,11 +96,6 @@ class _MinimalDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:  # pragma: no cover
         return {}
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:  # pragma: no cover - unused
-        return {}
-
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:  # pragma: no cover - unused

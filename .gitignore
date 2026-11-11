@@ -61,6 +61,11 @@ data/
 # User cumstomized prompt directory
 prompts/entity_type/
 
+# User-defined UI template bundle (UI_TEMPLATES_DIR).
+# Source deployments keep it here; Docker deployments use ./data/ui_templates
+# (already covered by the data/ rule above). See docs/UserDefinedUI.md.
+/lightrag_webui/ui_templates/
+
 # Evaluation results
 lightrag/evaluation/results/
 

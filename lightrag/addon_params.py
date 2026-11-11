@@ -14,7 +14,7 @@ module exposes:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from lightrag.constants import DEFAULT_SUMMARY_LANGUAGE
 from lightrag.utils import get_env_value, logger
@@ -157,10 +157,19 @@ class ObservableAddonParams(dict[str, Any]):
     def update(self, *args: Any, **kwargs: Any) -> None:
         if not args and not kwargs:
             return
-        super().update(*args, **kwargs)
+        # Materialize first because dict.update() can apply valid iterable
+        # entries before a later malformed entry raises. Live configuration and
+        # its derived cache must change together or not at all.
+        pending = dict(*args, **kwargs)
+        super().update(pending)
         self._changed()
 
-    def __ior__(self, other: Mapping[str, Any]):
-        super().__ior__(other)
+    def __ior__(self, other: Mapping[str, Any] | Iterable[tuple[str, Any]]):
+        # ``dict.__ior__`` accepts any iterable of key/value pairs (PEP 584),
+        # not just the Mapping this signature advertises, so ``|=`` carries the
+        # same partial-application hazard as ``update``. Materialize first for
+        # the same reason.
+        pending = dict(other)
+        super().__ior__(pending)
         self._changed()
         return self

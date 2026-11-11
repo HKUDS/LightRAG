@@ -43,7 +43,7 @@ STORAGE_IMPLEMENTATIONS = {
             "MongoDocStatusStorage",
             "OpenSearchDocStatusStorage",
         ],
-        "required_methods": ["get_docs_by_status"],
+        "required_methods": ["get_docs_by_statuses"],
     },
 }
 

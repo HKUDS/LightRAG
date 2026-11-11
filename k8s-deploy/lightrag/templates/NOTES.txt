@@ -3,7 +3,11 @@
 ===========================================
 
 View application logs:
+{{- if eq (include "lightrag.workloadKind" .) "StatefulSet" }}
+  kubectl logs -f --namespace {{ .Release.Namespace }} statefulset/{{ include "lightrag.fullname" . }}
+{{- else }}
   kubectl logs -f --namespace {{ .Release.Namespace }} deploy/{{ include "lightrag.fullname" . }}
+{{- end }}
 
 ===========================================
 

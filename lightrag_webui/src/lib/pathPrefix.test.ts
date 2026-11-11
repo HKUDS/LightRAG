@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test'
-import { normalizeApiPrefix, normalizeWebuiPrefix } from './pathPrefix'
+import { entryHomeHref, normalizeApiPrefix, normalizeWebuiPrefix } from './pathPrefix'
 
 describe('normalizeApiPrefix', () => {
   test('empty / undefined / null collapse to ""', () => {
@@ -63,5 +63,42 @@ describe('normalizeWebuiPrefix', () => {
     expect(normalizeWebuiPrefix(undefined, '/custom')).toBe('/custom/')
     expect(normalizeWebuiPrefix('/', '/custom')).toBe('/custom/')
     expect(normalizeWebuiPrefix('', '/custom/')).toBe('/custom/')
+  })
+})
+
+
+/**
+ * The brand link's "go to this entry's root" href.
+ *
+ * The defect it closes: a plain `./` is right only where the entry is served
+ * as a DIRECTORY index, which is a production-mount property. The Vite dev
+ * server serves each entry as a file, so the workspace entry sits at
+ * `/workspace.html`, `./` resolves to `/`, and `/` answers with the ADMIN
+ * index.html — clicking the workspace brand during `bun run dev` silently
+ * switched products.
+ */
+describe('entryHomeHref', () => {
+  test('production mounts (directory index) keep the plain relative root', () => {
+    expect(entryHomeHref('/workspace/')).toBe('./')
+    expect(entryHomeHref('/webui/')).toBe('./')
+    // Under a proxy prefix, and at the dev server's own root.
+    expect(entryHomeHref('/site01/workspace/')).toBe('./')
+    expect(entryHomeHref('/')).toBe('./')
+  })
+
+  test('a file-named entry anchors on its own filename, NOT the directory', () => {
+    // Vite dev: `./` here would resolve to `/` — the admin entry.
+    expect(entryHomeHref('/workspace.html')).toBe('workspace.html')
+    // The explicit same-entry filename the production mounts still allow.
+    expect(entryHomeHref('/workspace/workspace.html')).toBe('workspace.html')
+    expect(entryHomeHref('/index.html')).toBe('index.html')
+    expect(entryHomeHref('/webui/index.html')).toBe('index.html')
+  })
+
+  test('non-HTML paths and missing input fall back to the relative root', () => {
+    expect(entryHomeHref('/workspace/some-path')).toBe('./')
+    expect(entryHomeHref(undefined)).toBe('./')
+    expect(entryHomeHref(null)).toBe('./')
+    expect(entryHomeHref('')).toBe('./')
   })
 })

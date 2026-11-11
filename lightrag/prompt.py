@@ -5,6 +5,8 @@ from typing import Any, Mapping, TypedDict
 
 import yaml
 
+from lightrag.utils import logger
+
 
 PROMPTS: dict[str, Any] = {}
 
@@ -544,36 +546,68 @@ def get_default_entity_extraction_prompt_profile() -> EntityExtractionPromptProf
 _ALLOWED_PROMPT_SUFFIXES = frozenset({".yml", ".yaml"})
 _DEFAULT_PROMPT_DIR = "./prompts"
 _ENTITY_TYPE_SUBDIR = "entity_type"
+_USER_PROMPT_SUBDIR = "user_prompt"
+_ALLOWED_USER_PROMPT_SUFFIXES = frozenset({".md", ".txt"})
+
+
+def _get_prompt_subdir(subdir: str) -> Path:
+    """Resolve ``PROMPT_DIR``/``subdir`` to an absolute directory.
+
+    ``PROMPT_DIR`` defaults to ``./prompts`` relative to the current working
+    directory, mirroring ``INPUT_DIR`` / ``WORKING_DIR``.
+    """
+
+    configured = os.getenv("PROMPT_DIR", "").strip() or _DEFAULT_PROMPT_DIR
+    return (Path(configured).expanduser() / subdir).resolve()
 
 
 def get_entity_type_prompt_dir() -> Path:
     """Return the directory for entity type prompt profiles.
 
-    Resolves ``PROMPT_DIR`` (defaults to ``./prompts`` relative to the current
-    working directory, mirroring ``INPUT_DIR`` / ``WORKING_DIR``) and appends
-    the hard-coded ``entity_type`` subdirectory. Profile files are provided by
-    the user at runtime and are not shipped with the distribution. The
-    file-name sandbox in :func:`resolve_entity_type_prompt_path` ensures
-    user-supplied file names cannot escape the resolved directory.
+    Profile files are provided by the user at runtime and are not shipped with
+    the distribution. The file-name sandbox in
+    :func:`resolve_entity_type_prompt_path` ensures user-supplied file names
+    cannot escape the resolved directory.
     """
 
-    configured = os.getenv("PROMPT_DIR", "").strip() or _DEFAULT_PROMPT_DIR
-    return (Path(configured).expanduser() / _ENTITY_TYPE_SUBDIR).resolve()
+    return _get_prompt_subdir(_ENTITY_TYPE_SUBDIR)
 
 
-def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
-    """Resolve an allowlisted prompt profile file name to an absolute path."""
+def get_user_prompt_prefix_dir() -> Path:
+    """Return the directory for global user-prompt prefix files.
+
+    Sandboxed the same way as :func:`get_entity_type_prompt_dir`; see
+    :func:`resolve_user_prompt_prefix_path`.
+    """
+
+    return _get_prompt_subdir(_USER_PROMPT_SUBDIR)
+
+
+def _resolve_prompt_file(
+    prompt_file_name: str | Path,
+    *,
+    env_key: str,
+    directory: Path,
+    subdir: str,
+    suffixes: frozenset[str],
+    suffix_hint: str,
+    example_name: str,
+) -> Path:
+    """Resolve an allowlisted prompt file name to an absolute path.
+
+    Shared sandbox for every ``PROMPT_DIR``-relative prompt file. The name must
+    be a bare file name with an allowed suffix: absolute paths, directory
+    separators (either flavour), and ``..`` components are all rejected, so a
+    user-supplied value cannot escape ``directory``.
+    """
 
     file_name = str(prompt_file_name).strip()
     if not file_name:
-        raise ValueError(
-            "ENTITY_TYPE_PROMPT_FILE must be a file name such as "
-            "'entity_type_prompt.sample.yml'."
-        )
+        raise ValueError(f"{env_key} must be a file name such as '{example_name}'.")
     if "\\" in file_name:
         raise ValueError(
-            "ENTITY_TYPE_PROMPT_FILE must not contain directory separators. "
-            "Only file names inside PROMPT_DIR/entity_type are allowed."
+            f"{env_key} must not contain directory separators. "
+            f"Only file names inside PROMPT_DIR/{subdir} are allowed."
         )
 
     candidate = Path(file_name)
@@ -583,16 +617,117 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
         or ".." in candidate.parts
     ):
         raise ValueError(
-            "ENTITY_TYPE_PROMPT_FILE must be a file name only. "
-            "Files are loaded from PROMPT_DIR/entity_type "
+            f"{env_key} must be a file name only. "
+            f"Files are loaded from PROMPT_DIR/{subdir} "
             "(PROMPT_DIR defaults to ./prompts)."
         )
-    if candidate.suffix.lower() not in _ALLOWED_PROMPT_SUFFIXES:
-        raise ValueError(
-            "ENTITY_TYPE_PROMPT_FILE must use a '.yml' or '.yaml' extension."
+    if candidate.suffix.lower() not in suffixes:
+        raise ValueError(f"{env_key} must use a {suffix_hint} extension.")
+
+    return directory / candidate.name
+
+
+def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
+    """Resolve an allowlisted prompt profile file name to an absolute path."""
+
+    return _resolve_prompt_file(
+        prompt_file_name,
+        env_key="ENTITY_TYPE_PROMPT_FILE",
+        directory=get_entity_type_prompt_dir(),
+        subdir=_ENTITY_TYPE_SUBDIR,
+        suffixes=_ALLOWED_PROMPT_SUFFIXES,
+        suffix_hint="'.yml' or '.yaml'",
+        example_name="entity_type_prompt.sample.yml",
+    )
+
+
+def resolve_user_prompt_prefix_path(prompt_file_name: str | Path) -> Path:
+    """Resolve an allowlisted user-prompt prefix file name to an absolute path."""
+
+    return _resolve_prompt_file(
+        prompt_file_name,
+        env_key="USER_PROMPT_PREFIX_FILE",
+        directory=get_user_prompt_prefix_dir(),
+        subdir=_USER_PROMPT_SUBDIR,
+        suffixes=_ALLOWED_USER_PROMPT_SUFFIXES,
+        suffix_hint="'.md' or '.txt'",
+        example_name="user_prompt_prefix.md",
+    )
+
+
+def load_user_prompt_prefix_source() -> str:
+    """Resolve the operator's global ``user_prompt`` prefix from the environment.
+
+    ``USER_PROMPT_PREFIX_FILE`` names a ``.md``/``.txt`` file inside
+    ``PROMPT_DIR/user_prompt`` and takes precedence over the inline
+    ``USER_PROMPT_PREFIX``; the file form exists because a ``.env`` value must
+    stay on one physical line and cannot carry a literal ``${...}``.
+
+    The value is returned verbatim — no stripping, no separator appended. The
+    operator owns the formatting and ends it with their own newlines (a file
+    naturally ends with one). See :func:`lightrag.utils.resolve_user_prompt`.
+
+    Never raises: this runs inside ``LightRAG()`` via a dataclass
+    ``default_factory``, where an exception surfaces far from its cause. Any
+    failure is logged and degrades to no prefix.
+    """
+
+    inline = os.getenv("USER_PROMPT_PREFIX", "")
+    file_name = os.getenv("USER_PROMPT_PREFIX_FILE", "").strip()
+    if not file_name:
+        # Startup visibility: operators need the effective source in the log,
+        # since two env vars can supply this value and either may be empty.
+        # Source and length only -- the content is multi-line operator policy.
+        if inline:
+            logger.info(
+                "User prompt prefix loaded from USER_PROMPT_PREFIX (%d chars)",
+                len(inline),
+            )
+        return inline
+
+    if inline:
+        logger.warning(
+            "Both USER_PROMPT_PREFIX_FILE and USER_PROMPT_PREFIX are set; "
+            "using the file '%s' and ignoring the inline value.",
+            file_name,
         )
 
-    return get_entity_type_prompt_dir() / candidate.name
+    try:
+        prefix_path = resolve_user_prompt_prefix_path(file_name)
+    except (ValueError, OSError, RuntimeError) as exc:
+        # ValueError is the sandbox's own rejection. The other two come from
+        # resolving PROMPT_DIR itself: Path.expanduser() raises RuntimeError when
+        # a home directory cannot be determined, and Path.resolve() raises
+        # RuntimeError (<=3.12) or OSError on a symlink loop. Letting either
+        # escape would abort every LightRAG() construction, since this runs as a
+        # dataclass default_factory -- the exact opposite of the degrade-and-log
+        # contract documented above.
+        logger.error(
+            "Cannot resolve USER_PROMPT_PREFIX_FILE '%s': %s. No prefix applied.",
+            file_name,
+            exc,
+        )
+        return ""
+
+    try:
+        prefix = prefix_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.error(
+            "Failed to read USER_PROMPT_PREFIX_FILE '%s': %s. No prefix applied.",
+            prefix_path,
+            exc,
+        )
+        return ""
+
+    # Log the resolved path, not the configured name: it is what an operator
+    # checks to confirm which file actually won. An empty file logs too --
+    # "0 chars" is itself the answer to "why is my prefix not applied?".
+    logger.info(
+        "User prompt prefix loaded from USER_PROMPT_PREFIX_FILE '%s' (%d chars)",
+        prefix_path,
+        len(prefix),
+    )
+    return prefix
 
 
 def _normalize_prompt_examples(

@@ -37,6 +37,18 @@ logger = logging.getLogger("lightrag")
 _INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error"
 
 
+def new_error_id() -> str:
+    """Mint a short correlation id joining a client-visible error to the log.
+
+    Use it whenever a client-facing message must stay free of raw exception
+    text (CWE-209) but an operator still has to find the detail server-side:
+    log the full text with the id, put only the id in the response. Emit it to
+    the client in the same ``(error_id: ...)`` spelling used below so one grep
+    pattern covers every path.
+    """
+    return uuid.uuid4().hex[:12]
+
+
 def internal_server_error(exc: Exception) -> HTTPException:
     """Build a client-safe HTTP 500 that never exposes raw exception text (CWE-209).
 
@@ -54,7 +66,7 @@ def internal_server_error(exc: Exception) -> HTTPException:
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
     """
-    error_id = uuid.uuid4().hex[:12]
+    error_id = new_error_id()
     logger.error(
         f"Returning HTTP 500 to client [error_id={error_id}] ({type(exc).__name__})"
     )
@@ -218,7 +230,12 @@ def check_env_file():
     env_path = ".env"
 
     if not os.path.exists(env_path):
-        warning_msg = "Warning: Startup directory must contain .env file for multi-instance support."
+        warning_msg = (
+            "Warning: No .env file found in the current directory. "
+            "If you are running multiple LightRAG instances, each instance's "
+            "startup directory must have its own .env file so their configurations "
+            "stay isolated."
+        )
         ASCIIColors.yellow(warning_msg)
 
         # Check if running in interactive terminal
@@ -372,13 +389,20 @@ def credentials_accepted(
     return False
 
 
-def get_combined_auth_dependency(api_key: Optional[str] = None):
+def get_combined_auth_dependency(
+    api_key: Optional[str] = None, *, respect_whitelist: bool = True
+):
     """
     Create a combined authentication dependency that implements authentication logic
     based on API key, OAuth2 token, and whitelist paths.
 
     Args:
         api_key (Optional[str]): API key for validation
+        respect_whitelist: When False, ``WHITELIST_PATHS`` is ignored and the
+            credential checks always run. Used by ``/auth/verify``, whose whole
+            purpose is to report credential validity: a deployment whose
+            whitelist happens to cover it (e.g. ``/auth/*``) must not turn it
+            into an unconditional 200 while the protected routes still reject.
 
     Returns:
         Callable: A dependency function that implements the authentication logic
@@ -414,7 +438,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         # mount prefix (see get_route_path), and both the whitelist and the
         # renewal skip list below are written as unprefixed route paths.
         path = get_route_path(request.scope)
-        if path_is_whitelisted(request.scope):
+        if respect_whitelist and path_is_whitelisted(request.scope):
             return  # Whitelist path, allow access
 
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)

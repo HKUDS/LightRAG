@@ -1212,8 +1212,10 @@ async def test_validate_and_fix_consistency_preserves_chunks_on_reset(tmp_path):
             }
         )
 
-        failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-        processing_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSING)
+        failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
+        processing_docs = await rag.doc_status.get_docs_by_statuses(
+            [DocStatus.PROCESSING]
+        )
         to_process_docs = {**failed_docs, **processing_docs}
 
         pipeline_status = {"latest_message": "", "history_messages": []}
@@ -1278,7 +1280,7 @@ async def test_validate_and_fix_consistency_repairs_unknown_file_path_from_full_
             }
         )
 
-        failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+        failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=failed_docs,

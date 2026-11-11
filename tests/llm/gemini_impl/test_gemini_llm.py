@@ -5,6 +5,41 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
+class _FakeGeminiAPIError(Exception):
+    """Stand-in for google.genai.errors.APIError."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f"fake gemini api error {code}")
+
+
+class _FakeGeminiClientError(_FakeGeminiAPIError):
+    """Stand-in for google.genai.errors.ClientError (4xx)."""
+
+
+class _FakeGeminiServerError(_FakeGeminiAPIError):
+    """Stand-in for google.genai.errors.ServerError (5xx)."""
+
+
+class _FakeOutcome:
+    """Stand-in for tenacity's Future outcome: a failed call carrying exc."""
+
+    failed = True
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def exception(self):
+        return self._exc
+
+
+class _FakeRetryState:
+    """Minimal tenacity RetryCallState double: just enough for retry_base."""
+
+    def __init__(self, exc):
+        self.outcome = _FakeOutcome(exc)
+
+
 def _load_gemini_module(monkeypatch, request):
     fake_pm = SimpleNamespace(
         is_installed=lambda name: True,
@@ -27,7 +62,15 @@ def _load_gemini_module(monkeypatch, request):
         # for the real google.genai enum members.
         FinishReason=SimpleNamespace(MAX_TOKENS="MAX_TOKENS", STOP="STOP"),
     )
-    fake_genai = SimpleNamespace(Client=lambda **kwargs: SimpleNamespace(kwargs=kwargs))
+    fake_genai_errors = SimpleNamespace(
+        APIError=_FakeGeminiAPIError,
+        ClientError=_FakeGeminiClientError,
+        ServerError=_FakeGeminiServerError,
+    )
+    fake_genai = SimpleNamespace(
+        Client=lambda **kwargs: SimpleNamespace(kwargs=kwargs),
+        errors=fake_genai_errors,
+    )
     fake_google_module = ModuleType("google")
     fake_google_module.genai = fake_genai
     fake_api_exceptions = SimpleNamespace(
@@ -45,7 +88,11 @@ def _load_gemini_module(monkeypatch, request):
 
     monkeypatch.setitem(sys.modules, "pipmaster", fake_pm)
     monkeypatch.setitem(sys.modules, "google", fake_google_module)
-    monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(types=fake_types))
+    monkeypatch.setitem(
+        sys.modules,
+        "google.genai",
+        SimpleNamespace(types=fake_types, errors=fake_genai_errors),
+    )
     monkeypatch.setitem(sys.modules, "google.api_core", fake_google_api_core)
     monkeypatch.setitem(sys.modules, "google.api_core.exceptions", fake_api_exceptions)
 
@@ -464,3 +511,120 @@ async def test_gemini_counts_usage_before_the_empty_truncated_raise(
         "the exhausted request's tokens vanished from usage accounting "
         "because the raise preceded token_tracker.add_usage"
     )
+
+
+def _make_capturing_client(fake_response):
+    captured: dict = {}
+
+    async def _fake_generate_content(**kwargs):
+        captured.update(kwargs)
+        return fake_response
+
+    client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_fake_generate_content)
+        )
+    )
+    return client, captured
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("generation_kwargs", "expected_max_output_tokens"),
+    [
+        pytest.param({"max_tokens": 37}, 37, id="generic-limit-maps-to-native-field"),
+        pytest.param(
+            {"max_tokens": 37, "generation_config": {"temperature": 0.2}},
+            37,
+            id="generic-limit-preserves-other-generation-config",
+        ),
+        pytest.param(
+            {"generation_config": {"max_output_tokens": 41}},
+            41,
+            id="native-limit-is-preserved",
+        ),
+        pytest.param(
+            {"max_tokens": 37, "generation_config": {"max_output_tokens": 41}},
+            41,
+            id="native-limit-takes-precedence",
+        ),
+    ],
+)
+async def test_gemini_max_tokens_alias_precedence(
+    monkeypatch, request, generation_kwargs, expected_max_output_tokens
+):
+    """LightRAG's generic max_tokens kwarg reaches Gemini's native config field."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    fake_client, captured = _make_capturing_client(
+        _make_fake_gemini_response(regular_text="ok")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    await gemini_module.gemini_complete_if_cache(
+        model="gemini-model", prompt="hi", api_key="test-key", **generation_kwargs
+    )
+
+    assert captured["config"].kwargs.get("max_output_tokens") == (
+        expected_max_output_tokens
+    )
+    if "temperature" in generation_kwargs.get("generation_config", {}):
+        assert captured["config"].kwargs.get("temperature") == generation_kwargs[
+            "generation_config"
+        ].get("temperature")
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_no_max_tokens_builds_no_config(monkeypatch, request):
+    """Absent both the generic and native knobs, no config object is sent at all."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    fake_client, captured = _make_capturing_client(
+        _make_fake_gemini_response(regular_text="ok")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    await gemini_module.gemini_complete_if_cache(
+        model="gemini-model", prompt="hi", api_key="test-key"
+    )
+
+    assert "config" not in captured
+
+
+@pytest.mark.offline
+def test_gemini_complete_retry_predicate_matches_native_genai_errors(
+    monkeypatch, request
+):
+    """google-genai raises its own errors.ServerError/ClientError -- never
+    google.api_core.exceptions, which this SDK's request path never touches.
+    A predicate built only from google.api_core.exceptions types never
+    matches a real transient failure, so a 503 gets zero retries instead of
+    the intended three."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    def _would_retry(exc):
+        return gemini_module.gemini_complete_if_cache.retry.retry(_FakeRetryState(exc))
+
+    # A transient 5xx from the real SDK must be retried.
+    assert _would_retry(_FakeGeminiServerError(503)) is True
+    # 429 rate-limiting surfaces as a ClientError (4xx) in this SDK's
+    # scheme rather than a distinct "resource exhausted" type, but it is
+    # still transient and worth a fresh attempt.
+    assert _would_retry(_FakeGeminiClientError(429)) is True
+    # An ordinary 4xx (bad request, bad auth) must NOT be retried.
+    assert _would_retry(_FakeGeminiClientError(400)) is False
+
+
+@pytest.mark.offline
+def test_gemini_embed_retry_predicate_matches_native_genai_server_error(
+    monkeypatch, request
+):
+    """Same misclassification as the completion path, in gemini_embed's
+    own retry decorator."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    would_retry = gemini_module.gemini_embed.func.retry.retry(
+        _FakeRetryState(_FakeGeminiServerError(503))
+    )
+
+    assert would_retry is True

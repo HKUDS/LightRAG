@@ -18,6 +18,8 @@ from tenacity import (
     retry_if_exception_type,
 )
 
+from lightrag.utils import TruncatedResponse
+
 
 from functools import lru_cache
 
@@ -140,7 +142,7 @@ async def lmdeploy_model_if_cache(
     if do_sample is not None and version < (0, 6, 0):
         raise RuntimeError(
             "`do_sample` parameter is not supported by lmdeploy until "
-            f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
+            f"v0.6.0, but currently using lmdeploy {lmdeploy.__version__}"
         )
     else:
         gen_params.update(do_sample=do_sample)
@@ -168,6 +170,7 @@ async def lmdeploy_model_if_cache(
     )
 
     response = ""
+    finish_reason = None
     async for res in lmdeploy_pipe.generate(
         messages,
         gen_config=gen_config,
@@ -175,5 +178,9 @@ async def lmdeploy_model_if_cache(
         stream_response=False,
         session_id=1,
     ):
-        response += res.response
+        response += getattr(res, "text", getattr(res, "response", ""))
+        if getattr(res, "finish_reason", None) is not None:
+            finish_reason = res.finish_reason
+    if finish_reason == "length":
+        return TruncatedResponse(response)
     return response

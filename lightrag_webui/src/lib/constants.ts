@@ -1,9 +1,8 @@
 import { ButtonVariantType } from '@/components/ui/Button'
-import { normalizeApiPrefix, normalizeWebuiPrefix } from '@/lib/pathPrefix'
-import { getRuntimeApiPrefix, getRuntimeWebuiPrefix } from '@/lib/runtimeConfig'
+import { normalizeApiPrefix } from '@/lib/pathPrefix'
+import { getRuntimeApiPrefix } from '@/lib/runtimeConfig'
 
 export const backendBaseUrl = normalizeApiPrefix(getRuntimeApiPrefix())
-export const webuiPrefix = normalizeWebuiPrefix(getRuntimeWebuiPrefix())
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
@@ -38,8 +37,20 @@ export const minNodeSize = 4
 export const maxNodeSize = 20
 
 export const healthCheckInterval = 15 // seconds
+// Request timeouts for the short polling endpoints. Kept below their own
+// polling interval so a stalled backend fails fast instead of leaving
+// requests hanging forever (the axios instance sets no global timeout —
+// /query and document uploads are legitimately long-running).
+export const healthCheckTimeout = 10 // seconds
+export const pipelineStatusTimeout = 10 // seconds
+// Message carried by the getDocumentsPaginatedWithTimeout timeout error.
+// Lives here so the refresh error classifier can recognise it without
+// importing the API module (which creates the axios instance on load).
+export const documentFetchTimeoutMessage = 'Document fetch timeout'
 
-export const defaultQueryLabel = '*'
+// Re-exported from the pure defaults module (also used by the store-free
+// legacy settings migration chain — see src/lib/queryDefaults.ts).
+export { defaultQueryLabel, suggestedUserPrompts } from '@/lib/queryDefaults'
 
 // reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/MIME_types/Common_types
 export const supportedFileTypes = {
@@ -118,10 +129,3 @@ export const EDGE_PERF_LIMIT = 5000
 // Time budget (ms) a relaxing worker layout runs before it is stopped. Scales
 // with graph size, capped so huge graphs don't run unbounded.
 export const workerBudgetMs = (order: number): number => Math.min(1500 + order / 10, 10000)
-
-// One-time system-suggested user prompts, injected once into userPromptHistory
-// (for both fresh installs and upgrades). See settings store version 20 migration.
-export const suggestedUserPrompts: string[] = [
-  'Ignore the `References Section Format` instruction in the system prompt, and do not include a `References` section in the response.',
-  'For inline citations, use the footnote marker syntax `[^1]`, where the `^` preceding the identifier indicates a footnote reference. When multiple citations are required at a single location, each ID should be enclosed in separate footnote markers (e.g., `[^1][^2][^3]`).'
-]
