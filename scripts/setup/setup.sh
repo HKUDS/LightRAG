@@ -1832,7 +1832,7 @@ default_llm_model_for_binding() {
 
   case "$binding" in
     openai|azure_openai)
-      printf 'gpt-5-mini'
+      printf 'gpt-6-luna'
       ;;
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
@@ -1844,7 +1844,7 @@ default_llm_model_for_binding() {
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
-      printf 'gpt-5-mini'
+      printf 'gpt-6-luna'
       ;;
   esac
 }
