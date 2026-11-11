@@ -45,7 +45,7 @@ LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 
 ### 1.3 开启多模态处理能力
 
-开启多模态处理能力需要依赖 `MinerU` 文件解析服务和 `VLM` 视觉识别模型。使用 `Native` 解释 `docx` 文件，使用 `MinerU` 解析 `pdf`、`office` 和各种图片文件。以上文件都开启图片(i)、表格(t)和公式(e)的模态分析，并并搭配`P`分块策略。其余文档回退到老版本的内容解析器并搭配`R`分块策略。
+外部解析可对支持的 PDF、Office 和图片文件使用 `MinerU` 服务；`Native` 支持 `docx`、Markdown 和 textpack。`P` 分块可使用这些解析器中任何一个产出的结构化 sidecar。存在符合条件的图片时，图片 (i) 分析需要 VLM；表格 (t) 和公式 (e) 分析使用 `EXTRACT` role。其他文档可回退到旧内容抽取器并使用 `R` 分块。
 
 ```bash
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
@@ -124,8 +124,8 @@ LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原�
 | 选项 | 类型 | 默认 | 含义 |
 | --- | --- | --- | --- |
 | `i` | 多模态 | 关闭 | 启用图像分析（VLM） |
-| `t` | 多模态 | 关闭 | 启用表格分析（VLM） |
-| `e` | 多模态 | 关闭 | 启用公式分析（VLM） |
+| `t` | 多模态 | 关闭 | 使用 `EXTRACT` role 分析表格 |
+| `e` | 多模态 | 关闭 | 使用 `EXTRACT` role 分析公式 |
 | `!` | 流水线 | 关闭 | 禁止实体/关系抽取，不构建知识图谱（仅保留 chunks 向量索引，naive / mix 检索仍可用） |
 | `F` | 分块 | 默认 | Fix/固定长度分块：遗留方法, 按固定Token长度或按分隔符机械分割（按分隔符分割时文本块不会出现重叠） |
 | `R` | 分块 | - | Recursive/递归字符分块(RecursiveCharacterTextSplitter@LangChain)：接收一个分隔符列表（默认是 `["\n\n","\n","。","！","？","；","，"," ",""]`，按从语义最强到最弱排列）。优先按段落（双换行符）切分；如果切出的块依然超过 Token 限制，逐级降级使用单换行符 → 中文句末标点（`。！？`）→ 中文句中标点（`；，`）→ 空格 → 逐字符切分。**默认 cascade 包含中文标点**，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 故意排除（字面量匹配会误切 `0.95` / `e.g.`）。 |
@@ -141,7 +141,7 @@ LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原�
 
 | 选项 | 作用阶段 | 说明 |
 | :-: | --- | --- |
-| i/t/e | Analyzing多模态分析 | 决定是否对 sidecar 中的图像 / 表格 / 公式调用 VLM 做摘要分析。**抽取阶段不受影响**：内容提取引擎按文档实际内容输出 `drawings.json` / `tables.json` / `equations.json` sidecar 文件。这样后续仅修改 `i`/`t`/`e` 选项触发"再分析"即可补做 VLM，无须重新解析原始文件。 |
+| i/t/e | Analyzing 多模态分析 | 决定是否对 sidecar 中的图像 / 表格 / 公式运行分析。图片分析使用 VLM；表格和公式使用 `EXTRACT` role。**抽取阶段不受影响**：内容提取引擎按文档实际内容输出 `drawings.json` / `tables.json` / `equations.json` sidecar 文件。修改这些选项可在不重新解析原文件的情况下分析已有 sidecar。 |
 | ! | Extraction实体关系抽取 | 跳过实体/关系抽取与图谱写入；chunks 仍写入向量库以保留 naive / mix 检索能力。 |
 | F/R/V/P/C | Chunking文本分块 | 决定使用哪种分块策略；对解析阶段输出无影响。 |
 
@@ -709,7 +709,7 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 ### 5.4 字段结构
 
-`addon_params["chunker"]`（实例字段）保留全部四种策略的子字典作为运行时基线；`full_docs[doc_id]["chunk_options"]` 是**精简快照**——入队时只保留 `process_options` 选中的那一路策略子字典（缺省 F），其它策略的参数会被丢弃，因为处理阶段不会读它们。重新解析时 `process_options` 与 `chunk_options` 一同改写，避免旧策略的参数残留。
+`addon_params["chunker"]`（实例字段）保留四种内置策略（F/R/V/P）的子字典作为运行时基线；`C` 使用自定义回调和 fixed-token fallback 配置。`full_docs[doc_id]["chunk_options"]` 是**精简快照**——入队时只保留 `process_options` 选中的那一路策略子字典（缺省 F），其它策略的参数会被丢弃，因为处理阶段不会读它们。重新解析时 `process_options` 与 `chunk_options` 一同改写，避免旧策略的参数残留。
 
 **`addon_params["chunker"]` 全量基线**（运行时可由 SDK 修改，影响后续入队）：
 
@@ -792,7 +792,7 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 
 - 原始文件归档：`legacy` 本地抽取成功并入队后，原文件会移动到同级 `__parsed__` 目录；`native` / `mineru` / `docling` 会先保留原文件供 pipeline 解析，解析成功并写入 `full_docs` 后再移动到 `__parsed__`。**归档时保留原始文件名（含 `[hint]`）**，例如 `report.[native-iet].docx` 归档为 `__parsed__/report.[native-iet].docx`，便于追溯用户最初的命名与处理选项。
 - 分析结果目录：结构化解析结果会写入以**规范化文件名**（去掉 `[hint]`）加 `.parsed` 后缀命名的子目录，避免与归档原文件同名冲突，并保证当文件名 hint 或处理选项变化时同一逻辑文档继续指向同一目录。例如 `report.docx`、`report.[native].docx`、`report.[native-iet].docx` 的分析结果都写入 `__parsed__/report.docx.parsed/`。
-- 分析结果文件：LightRAG Document blocks 文件以及 sidecar 都使用规范化文件名的主干命名，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`；同一目录下还可能包含 `report.tables.json`、`report.drawings.json`、`report.equations.json` 和 `report.blocks.assets/` 图片资源目录。**sidecar 是否生成由文档内容决定**：解析器只在文档实际包含表格/图片/公式时写出对应文件。这是模态可用性的唯一信号 —— 引擎不需要在 meta 中声明能力。`i`/`t`/`e` 选项只决定下一阶段是否对已存在的 sidecar 调用 VLM 做摘要分析。
+- 分析结果文件：LightRAG Document blocks 文件以及 sidecar 都使用规范化文件名的主干命名，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`；同一目录下还可能包含 `report.tables.json`、`report.drawings.json`、`report.equations.json` 和 `report.blocks.assets/` 图片资源目录。**sidecar 是否生成由文档内容决定**：解析器只在文档实际包含表格/图片/公式时写出对应文件。这是模态可用性的唯一信号 —— 引擎不需要在 meta 中声明能力。`i`/`t`/`e` 选项决定下一阶段是否分析已存在的 sidecar：图片分析使用 VLM，表格和公式分析使用 `EXTRACT` role。
 - 解析失败时，原文件不会移动，便于修复配置后重新处理。
 - `/documents/scan` 扫描到同名且已 `PROCESSED` 的文件时，该输入文件会被视为已处理并移动到 `__parsed__`，不会作为新文档入队。
 - `/documents/scan` 同一次扫描中发现多个规范化后同名的文件时，**先取得 canonical claim 的文件获胜**（即目录流式遍历时先到达的那个）。可丢弃磁盘 spool 中的 scan-wide UNIQUE claim 会在任何候选落库前把后续变体归档并输出 warning。例如 `abc.docx` 和 `abc.[native].docx` 同时存在时只处理先被遍历到的那一个。hint 只决定引擎，不再提供调度优先级。
@@ -1109,7 +1109,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: native 解析（docx / pdf / txt 等纯本地处理）并发 worker 数 | 纯 CPU、内存占用低，可按 CPU 核数提高 |
 | `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，因此默认只启用一个 worker。本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
 | `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，因此默认只启用一个 worker。本地部署且 CPU/GPU 充足时可设 2-3 |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
+| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片及 `EXTRACT` role 表格/公式分析）并发 worker 数 | 同时考虑相关 provider 的并发限制 |
 | `MAX_ASYNC_LLM` | `4` | 基础 LLM 并发与 N5 的单文档 task 基数 | 对单个文档，文本块实体/关系抽取最多并发运行 `MAX_ASYNC_LLM` 个 task；每个实体合并或关系合并阶段最多运行 `2 × MAX_ASYNC_LLM` 个 task。设置 `EXTRACT_MAX_ASYNC_LLM` 后，它会独立限制实际 Extract 角色 LLM 请求，不改变这些 task 上限 |
 | `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。它控制文档数量，不控制单个文档内的 chunk 或合并 task 上限。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_PARSE` | `20` | parse（native/MinerU/Docling）输入队列长度 | 一般无需调整。队列内仅为轻量 doc_id（大文档体在进入 analyze 前已剥离），仅限制 pipeline 一次预派发给 parse worker 的待处理文档数，调整影响很小 |
@@ -1130,7 +1130,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 
 - 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=1`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=3`（默认即可；确认显存充足后再提高 MINERU）。
 - 大量 PDF + MinerU 云端服务：`MAX_PARALLEL_PARSE_MINERU=3~5`（视云端配额），其它保持默认。
-- 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
+- native 支持的 docx / Markdown / textpack 文件：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
 - Extract 角色 LLM 限流明显：先降 `EXTRACT_MAX_ASYNC_LLM`（未设置覆盖时降 `MAX_ASYNC_LLM`）以限制 provider 请求；如需减少在途文档数或内存，再同时降低 `MAX_PARALLEL_INSERT`。`MAX_PARALLEL_ANALYZE` 控制独立的 VLM 阶段。
 
 ### 8.7 准入与请求限制
@@ -1156,7 +1156,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 
 ## 9. 流水线启动时的续跑规则
 
-每次 `apipeline_process_enqueue_documents` 起步时，会拉取所有处于 `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` 状态的文档继续处理。续跑路径**根据"内容是否已抽取"分流**，保证同一个文档无论之前进度如何，按当前 `process_options` 续跑都有幂等结果。
+每次 `apipeline_process_enqueue_documents` 起步时，会续跑处于 `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` 状态的文档。`FAILED` 文档不会自动续跑，必须显式手动重试。续跑路径**根据"内容是否已抽取"分流**，使可恢复的中断文档按当前 `process_options` 继续处理。
 
 续跑规则只对 `doc_id` 已经存在于 `doc_status` 的文档生效。新文件入队需要 §7 的文件查重逻辑，避免新文件挤掉旧的已经成功提取内容的文件记录。
 

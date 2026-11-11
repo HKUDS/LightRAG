@@ -392,7 +392,7 @@ charspan: 内容从标定段落的m个字符开始到底n个字符结束（可�
 | `status` | 触发场景 | 字段说明 |
 |---|---|---|
 | `success` | 模型成功返回合法 JSON 且必需字段齐全 | 图形：`name / type / description`；表格：`name / description`；公式：`name / description / equation` |
-| `skipped` | 期跳过多模态分析：图片格式不支持、像素 < `VLM_MIN_IMAGE_PIXEL`（默认 32px）、大于 `VLM_MAX_IMAGE_BYTES`（默认 5 MB）、未启用VLM | `message` 写跳过原因 |
+| `skipped` | 图片分析被跳过：图片格式不支持、任一边长 < `VLM_MIN_IMAGE_PIXEL`（默认 64px），或图片大于 `VLM_MAX_IMAGE_BYTES`（默认 5 MB） | `message` 写跳过原因 |
 | `failure` | 必需字段缺失、JSON 修复后仍不合法、VLM/EXTRACT role 未配置而对应模态被启用、模型调用异常 | `message` 写诊断 |
 
 补充：

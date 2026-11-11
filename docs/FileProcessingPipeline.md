@@ -37,7 +37,7 @@ LIGHTRAG_PARSER=*:legacy-F
 
 ### 1.2 Recommended starting file-processing behavior
 
-No reliance on external document parsing services or on `VLM` vision models. Use the new built-in `Native` engine to parse `docx` documents with table (t) and equation (e) modality analysis enabled, paired with the `P` chunking strategy; other documents use the legacy content extractor paired with the more effective `R` chunking strategy.
+No reliance on external document parsing services or on `VLM` vision models. Use the built-in `Native` engine for supported `docx`, Markdown, and textpack files; table (t) and equation (e) analysis use the `EXTRACT` role, and `P` chunking works with any parser that produces structured sidecars. Other documents can use the legacy content extractor with `R` chunking.
 
 ```bash
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
@@ -45,7 +45,7 @@ LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 
 ### 1.3 Enable multimodal processing capability
 
-Enabling multimodal processing requires the `MinerU` file parsing service and a `VLM` vision recognition model. Use `Native` to parse `docx` files; use `MinerU` to parse `pdf`, `office`, and various image files. All of the above files have image (i), table (t), and equation (e) modality analysis enabled and are paired with the `P` chunking strategy. Other documents fall back to the legacy content extractor paired with the `R` chunking strategy.
+External parsing can use the `MinerU` service for supported PDF, Office, and image files; `Native` supports `docx`, Markdown, and textpack. `P` chunking can use structured sidecars from any of these parsers. Image (i) analysis requires VLM when an eligible image is present; table (t) and equation (e) analysis use the `EXTRACT` role. Other documents can fall back to the legacy content extractor with `R` chunking.
 
 ```bash
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
@@ -124,8 +124,8 @@ Processing options control, on a per-file basis, the behavior with respect to mu
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `i` | Multimodal | Off | Enable image analysis (VLM) |
-| `t` | Multimodal | Off | Enable table analysis (VLM) |
-| `e` | Multimodal | Off | Enable equation analysis (VLM) |
+| `t` | Multimodal | Off | Enable table analysis with the `EXTRACT` role |
+| `e` | Multimodal | Off | Enable equation analysis with the `EXTRACT` role |
 | `!` | Pipeline | Off | Disable entity/relation extraction; do not build the knowledge graph (only the chunks vector index is kept; naive / mix retrieval still works) |
 | `F` | Chunking | Default | Fix / fixed-length chunking: legacy method, splits mechanically by fixed token length or by separator (no chunk overlap when splitting by separator) |
 | `R` | Chunking | - | Recursive / recursive character chunking (RecursiveCharacterTextSplitter@LangChain): takes a list of separators (default `["\n\n","\n","。","！","？","；","，"," ",""]`, ordered from strongest to weakest semantic boundary). Splits by paragraph (double newline) first; if a chunk is still over the token limit, falls back stepwise to single newline → Chinese sentence-ending punctuation (`。！？`) → Chinese mid-sentence punctuation (`；，`) → space → per-character split. **The default cascade includes Chinese punctuation**, letting Chinese / mixed Chinese-English documents split at semantic boundaries. English `.?!` is deliberately excluded (literal matching would mis-split `0.95` / `e.g.`). |
@@ -141,7 +141,7 @@ Different characters of processing options take effect at different stages of th
 
 | Option | Stage | Description |
 | :-: | --- | --- |
-| i/t/e | Analyzing (multimodal analysis) | Determines whether VLM summarization analysis is invoked on the images / tables / equations in the sidecar. **The extraction stage is unaffected**: the content extraction engine outputs `drawings.json` / `tables.json` / `equations.json` sidecar files based on what the document actually contains. As a result, simply tweaking the `i`/`t`/`e` options to trigger "re-analysis" can complete VLM later without re-parsing the original file. |
+| i/t/e | Analyzing (multimodal analysis) | Determines whether analysis is invoked on the images / tables / equations in the sidecar. Image analysis uses VLM; tables and equations use the `EXTRACT` role. **The extraction stage is unaffected**: the content extraction engine outputs `drawings.json` / `tables.json` / `equations.json` sidecar files based on what the document actually contains. Changing these options can run analysis on existing sidecars without re-parsing the original file. |
 | ! | Extraction (entity-relation extraction) | Skips entity/relation extraction and graph writing; chunks are still written to the vector store to retain naive / mix retrieval capabilities. |
 | F/R/V/P/C | Chunking (text chunking) | Determines which chunking strategy to use; does not affect the output of the parsing stage. |
 
@@ -709,7 +709,7 @@ Three layers of semantic guarantee:
 
 ### 5.4 Field Structure
 
-`addon_params["chunker"]` (instance field) keeps the sub-dictionaries of all four strategies as the runtime baseline; `full_docs[doc_id]["chunk_options"]` is a **slim snapshot** — at enqueue time, only the strategy sub-dictionary selected by `process_options` is kept (default F), and the parameters of other strategies are discarded, because the processing stage will not read them. When re-parsing, `process_options` and `chunk_options` are rewritten together, avoiding residue of old-strategy parameters.
+`addon_params["chunker"]` (instance field) keeps the sub-dictionaries for the four built-in strategies (F/R/V/P) as the runtime baseline; `C` uses the custom callback and the fixed-token fallback settings. `full_docs[doc_id]["chunk_options"]` is a **slim snapshot** — at enqueue time, only the strategy sub-dictionary selected by `process_options` is kept (default F), and the parameters of other strategies are discarded, because the processing stage will not read them. When re-parsing, `process_options` and `chunk_options` are rewritten together, avoiding residue of old-strategy parameters.
 
 **`addon_params["chunker"]` full baseline** (modifiable at runtime via SDK, affecting subsequent enqueues):
 
@@ -792,7 +792,7 @@ File enqueue and extraction results are written into `full_docs`:
 
 - Original file archival: after `legacy` local extraction succeeds and enqueueing finishes, the original file is moved into the sibling `__parsed__` directory; `native` / `mineru` / `docling` keep the original file first for the pipeline to parse, and only move it to `__parsed__` after successful parsing and writing to `full_docs`. **When archived, the original filename (including `[hint]`) is preserved**, e.g., `report.[native-iet].docx` is archived as `__parsed__/report.[native-iet].docx`, making it easy to trace the user's original name and processing options.
 - Analysis result directory: structured parsing results are written into a subdirectory named with the **canonicalized filename** (with `[hint]` removed) plus the `.parsed` suffix, avoiding name conflicts with the archived original file and ensuring that the same logical document continues to point to the same directory when the filename hint or processing options change. For example, the analysis results of `report.docx`, `report.[native].docx`, and `report.[native-iet].docx` are all written into `__parsed__/report.docx.parsed/`.
-- Analysis result files: the LightRAG Document blocks file and sidecars are named with the canonicalized filename stem, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`; the same directory may also contain `report.tables.json`, `report.drawings.json`, `report.equations.json`, and the `report.blocks.assets/` image asset directory. **Whether a sidecar is generated is determined by the document content**: the parser only writes the corresponding file when the document actually contains tables / images / equations. This is the only signal of modality availability — the engine does not need to declare capabilities in meta. The `i`/`t`/`e` options only determine whether the next stage invokes the VLM for summarization analysis on already-existing sidecars.
+- Analysis result files: the LightRAG Document blocks file and sidecars are named with the canonicalized filename stem, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`; the same directory may also contain `report.tables.json`, `report.drawings.json`, `report.equations.json`, and the `report.blocks.assets/` image asset directory. **Whether a sidecar is generated is determined by the document content**: the parser only writes the corresponding file when the document actually contains tables / images / equations. This is the only signal of modality availability — the engine does not need to declare capabilities in meta. The `i`/`t`/`e` options determine whether the next stage analyzes existing sidecars: image analysis uses VLM, while table and equation analysis use the `EXTRACT` role.
 - When parsing fails, the original file is not moved, making it easy to fix the configuration and re-process.
 - When `/documents/scan` encounters a file with the same name that is already `PROCESSED`, the input file is treated as already processed and moved to `__parsed__`, not enqueued as a new document.
 - When `/documents/scan` finds multiple files that share the same canonicalized name in the same scan, **the file that claims the canonical source key first wins** (i.e. whichever the streaming directory walk reaches first). A scan-wide UNIQUE claim in the disposable disk spool archives every later variant with a warning before any candidate is persisted. For example, if both `abc.docx` and `abc.[native].docx` exist, only the one reached first is processed. A hint selects the engine and no longer grants scheduling priority.
@@ -1109,7 +1109,7 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: concurrent workers for native parsing (docx / pdf / txt, all local) | Pure CPU with a low memory footprint; scale with core count |
 | `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: concurrent workers for MinerU parsing | MinerU is GPU/CPU heavy, so the default uses a single worker. Raise to 2-3 for a local deployment with enough VRAM, or higher against MinerU's official cloud service (subject to its quota) |
 | `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: concurrent workers for Docling parsing | Docling is equally resource-sensitive, so the default uses a single worker. Raise to 2-3 for a local deployment with enough CPU/GPU |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: concurrent workers for multimodal analysis (VLM image / table descriptions) | Consumes VLM quota directly. Keep ≤ the VLM service's concurrency limit |
+| `MAX_PARALLEL_ANALYZE` | `5` | N4: concurrent workers for multimodal analysis (VLM image and `EXTRACT`-role table/equation analysis) | Set with both provider limits in mind |
 | `MAX_ASYNC_LLM` | `4` | Base LLM concurrency and N5's per-document task basis | For one document, chunk entity/relation extraction runs at most `MAX_ASYNC_LLM` tasks concurrently; each entity-merge or relation-merge phase runs at most `2 × MAX_ASYNC_LLM` tasks. `EXTRACT_MAX_ASYNC_LLM`, when set, independently limits actual Extract-role LLM requests and does not change these task limits |
 | `MAX_PARALLEL_INSERT` | `3` | N5: concurrent documents in the entity/relation extraction + ingestion stage | `MAX_ASYNC_LLM / 3` is a good rule of thumb, in the 2~10 range. It controls the number of documents, not the per-document chunk or merge task limits. The same value also backs an `asyncio.Semaphore` as a second constraint (worker count equals the semaphore value) |
 | `QUEUE_SIZE_PARSE` | `20` | Input queue length for parse (native/MinerU/Docling) | Rarely needs tuning. The queue holds only lightweight doc_ids (large document bodies are stripped before analyze), and it just bounds how many documents the pipeline pre-dispatches to parse workers |
@@ -1130,7 +1130,7 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 
 - Many PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=1`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (the defaults; raise MINERU only after verifying available VRAM).
 - Many PDFs + MinerU's cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (per your cloud quota), everything else default.
-- Pure docx / txt (native only): `MAX_PARALLEL_PARSE_NATIVE=10`, with `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
+- Native-supported docx / Markdown / textpack files: `MAX_PARALLEL_PARSE_NATIVE=10`, with `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
 - Visible Extract-role LLM rate limiting: lower `EXTRACT_MAX_ASYNC_LLM` (or `MAX_ASYNC_LLM` when no override is set) to cap provider requests; lower `MAX_PARALLEL_INSERT` as well if fewer in-flight documents or lower memory use is needed. `MAX_PARALLEL_ANALYZE` controls the separate VLM stage.
 
 ### 8.7 Admission and Request Limits
@@ -1156,7 +1156,7 @@ Three more knobs belong to the pipeline itself rather than to request admission:
 
 ## 9. Pipeline Resume Rules at Startup
 
-Each time `apipeline_process_enqueue_documents` starts up, it pulls all documents in `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` to continue processing. The resume path **branches by "whether content has been extracted"**, ensuring that any document, regardless of its previous progress, has an idempotent result when resumed under the current `process_options`.
+Each time `apipeline_process_enqueue_documents` starts up, it resumes documents in `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING`. `FAILED` documents are not resumed automatically; they require an explicit manual retry. The resume path **branches by "whether content has been extracted"**, ensuring that recoverable interrupted documents continue under the current `process_options`.
 
 The resume rule only applies to documents whose `doc_id` already exists in `doc_status`. New files joining the queue require the file dedup logic in §7, to avoid new files squeezing out the records of files whose content has already been successfully extracted.
 
@@ -1200,7 +1200,7 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | Document FAILED with "VLM analysis required but VLM role is not available" | `i` is enabled and an image passed the pre-filters while no VLM is configured (§4.3) | Set `VLM_PROCESS_ENABLE=true` with a vision-capable binding, **or** delete the document and re-upload it with `te` — retrying will not drop `i` |
 | Some images are analyzed, others silently are not | Non-raster format, below `VLM_MIN_IMAGE_PIXEL`, or above `VLM_MAX_IMAGE_BYTES` (§4.3) | Read the item's `llm_analyze_result` message; raise the byte cap if the image is legitimate |
 | Multimodal items fail on a token budget | The surrounding budgets leave too little for the item itself (§4.4) | Raise `MAX_EXTRACT_INPUT_TOKENS`, or lower `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
-| `P` was requested but the chunks look like `R` output | No structured `LightRAG Document` was produced, so `P` degraded (§2.7, §3.2) | Route the file to `native` / `mineru` / `docling` instead of `legacy` |
+| `P` was requested but the chunks look like `R` output | No structured `LightRAG Document` was produced, so `P` degraded (§2.7, §3.2) | Route the file to a parser that produces structured sidecars (`native`, `mineru`, or `docling`) instead of `legacy` |
 | Headings are wrong in a `.docx`, so `P` splits badly | The document's Word outline is unreliable | Try `native(smart_heading=true)` (§3.3) and iterate with the parser CLI |
 | Log notes that paragraphs lack `paraId` | Produced by LibreOffice / WPS / older Word (§3.3) | Informational. Re-save in Word 2013+ only if you need paragraph-level provenance |
 | Document is FAILED as a duplicate | Basename dedup (canonicalized, hint stripped) or content-hash dedup (§7.1, §7.2) | Delete the existing document first, or rename the new file; duplicate records (`dup-*`, or an original row flipped to FAILED after parsing) can only be removed explicitly (§7.3) |
@@ -1211,7 +1211,7 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | Cancel was clicked and a batch of documents turned `FAILED` | Documents already taken into the batch are marked FAILED on cancellation (§8.2) | Retry with `POST /documents/scan` or `POST /documents/reprocess_failed`; finished documents are unaffected |
 | Cancel was clicked but the pipeline is still running | Cancellation is cooperative and never interrupts an LLM call already in flight (§8.2) | Wait for the current stage to end; `cancellation_requested` in `GET /documents/pipeline_status` confirms the request arrived |
 | Documents stuck at `PROCESSING` / `PARSING` after a restart | Interrupted states recover automatically, but starting the server does not itself trigger a run (§8.2) | Call `POST /documents/scan` once, or upload any file to trigger one |
-| Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Automatic resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§8.3, §9.3) | Delete the document (with "also delete file") and upload it again |
+| Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§8.3, §9.3) | Delete the document (with "also delete file") and upload it again |
 | An external engine keeps returning stale output after fixing its service config | The raw-artifact bundle cache was hit (§6.3) | Set the matching `LIGHTRAG_FORCE_REPARSE_*` flag (§3.7), or delete the document with "also delete file" |
 | A scanned PDF fails with "extracted no usable text" | `legacy` cannot read a PDF with no text layer (§3.2) | Route it to `mineru` or `docling` with OCR enabled |
 | MinerU rejects a multi-segment page range | Multi-segment ranges require `official` mode; `local` accepts a single page or one simple range (§3.6) | Use a single range under `local`, or switch modes |

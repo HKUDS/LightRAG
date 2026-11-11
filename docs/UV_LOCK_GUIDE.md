@@ -112,13 +112,13 @@ RUN uv sync --frozen --no-dev --extra api
 
 ## Generating a lock file that includes offline dependencies
 
-If you need `uv.lock` to capture the optional offline stacks, regenerate it with the relevant extras enabled:
+`uv lock` resolves the optional dependency sets into the universal lock file; run it without selecting extras:
 
 ```bash
-uv lock --extra api --extra offline
+uv lock
 ```
 
-This command resolves the base project requirements plus both the `api` and `offline` optional dependency sets, ensuring downstream `uv sync --frozen --extra api --extra offline` installs work without further resolution.
+Select extras at install time, for example `uv sync --frozen --extra api --extra offline`. `uv lock` does not accept `--extra`.
 
 ## Frequently asked questions
 

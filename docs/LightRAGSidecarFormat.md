@@ -392,7 +392,7 @@ Applicable to text-like files; locates content by absolute character position. `
 | `status` | Trigger scenario | Field description |
 |---|---|---|
 | `success` | The model returns valid JSON and all required fields are present | Drawing: `name / type / description`; Table: `name / description`; Equation: `name / description / equation` |
-| `skipped` | Multimodal analysis was deliberately skipped: image format unsupported, pixels < `VLM_MIN_IMAGE_PIXEL` (default 32 px), larger than `VLM_MAX_IMAGE_BYTES` (default 5 MB), or VLM not enabled | `message` records the skip reason |
+| `skipped` | Image analysis was deliberately skipped: unsupported image format, either dimension < `VLM_MIN_IMAGE_PIXEL` (default 64 px), or image larger than `VLM_MAX_IMAGE_BYTES` (default 5 MB) | `message` records the skip reason |
 | `failure` | Required fields missing, JSON still invalid after repair, the VLM/EXTRACT role is not configured while the corresponding modality is enabled, or the model invocation throws an exception | `message` records the diagnostic |
 
 Additional notes:
