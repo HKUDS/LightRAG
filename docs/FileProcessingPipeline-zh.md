@@ -1201,7 +1201,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 部分图片被分析，另一些被静默跳过 | 非栅格格式、小于 `VLM_MIN_IMAGE_PIXEL`、或大于 `VLM_MAX_IMAGE_BYTES`（§4.3） | 看该 item 的 `llm_analyze_result` 消息；图片确实需要就调高字节上限 |
 | 多模态 item 因 token 预算失败 | 上下文预算挤占了 item 自身的空间（§4.4） | 调高 `MAX_EXTRACT_INPUT_TOKENS`，或调低 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
 | 指定了 `P`，分块结果却像 `R` | 没有产出结构化的 `LightRAG Document`，`P` 已退化（§2.7、§3.2） | 把文件路由给 `native` / `mineru` / `docling`，而不是 `legacy` |
-| `.docx` 标题识别不准，导致 `P` 切分很差 | 该文档的 Word 大纲不可靠 | 试试 `native(smart_heading=true)`（§3.3），配合 parser CLI 迭代 |
+| `.docx` 标题识别不准，导致 `P` 切分很差 | 该文档的 Word 大纲不可靠 | 试试 `native(smart_heading=true)`（§3.3）：用 `report.[native(smart_heading)].docx` 这样的文件名提示重新上传，再查看 `.parsed/` 目录下的 `<文件名>.smart_audit.json`。parser CLI 目前还不能运行 smart_heading（无法传入引擎参数，也没有判定标题块所需的 LLM）。正文短于 `DOCX_SMART_MIN_TOKENS`（1800）的文档会被跳过，日志中记为 `[smart_heading] skipped` |
 | 日志提示部分段落缺少 `paraId` | 由 LibreOffice / WPS / 旧版 Word 产生（§3.3） | 仅提示性。只有确实需要段落级溯源时，才用 Word 2013+ 另存一次 |
 | 文档 FAILED 且标记为重复 | 文件名查重（规范化并剥掉 hint 后）或内容 hash 查重（§7.1、§7.2） | 先删除已有文档，或给新文件改名；重复记录（`dup-*`，或解析后就地改为 FAILED 的原记录）只能显式删除（§7.3） |
 | 上传返回 `409` | 输入目录或 doc_status 里已存在同规范名的文档（§7.2） | 用 `POST /documents/delete_document` 删除后再上传 |
