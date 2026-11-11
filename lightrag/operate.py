@@ -4951,17 +4951,6 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
         # Streaming response (AsyncIterator)
@@ -6161,6 +6150,9 @@ async def _build_query_context(
         system_prompt=system_prompt,
     )
 
+    if not context:
+        return None
+
     # Convert keywords strings to lists and add complete metadata to raw_data
     hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
     ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
@@ -6965,6 +6957,12 @@ async def naive_query(
         progress_callback=progress_callback,
     )
 
+    if not processed_chunks:
+        logger.info(
+            "[naive_query] No chunks survived final filtering; returning no-result."
+        )
+        return None
+
     # Generate reference list from processed chunks using the new common function
     reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
         processed_chunks
@@ -7106,18 +7104,6 @@ async def naive_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response[len(sys_prompt) :]
-                .replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=raw_data)
     else:
         # Streaming response (AsyncIterator)
