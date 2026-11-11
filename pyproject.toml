@@ -11,7 +11,7 @@ authors = [
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
@@ -34,10 +34,8 @@ dependencies = [
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "packaging",
-    # pandas 3.0 requires Python >= 3.11 while this project still supports
-    # 3.10, so the ceiling is widened instead of the floor being raised:
-    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
-    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # Both pandas 2.x and 3.x are accepted. Only the Excel branch of
+    # aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
     # which are unchanged in 3.x.
     "pandas>=2.0.0,<4.0.0",
     "pipmaster",
@@ -77,10 +75,8 @@ api = [
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "openai>=2.0.0,<4.0.0",
-    # pandas 3.0 requires Python >= 3.11 while this project still supports
-    # 3.10, so the ceiling is widened instead of the floor being raised:
-    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
-    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # Both pandas 2.x and 3.x are accepted. Only the Excel branch of
+    # aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
     # which are unchanged in 3.x.
     "pandas>=2.0.0,<4.0.0",
     "pipmaster",
@@ -102,12 +98,6 @@ api = [
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
-    # asyncio.timeout() (used directly on 3.11+) is Python 3.11+ only;
-    # requires-python allows 3.10, which needs this backport instead for
-    # the MinerU/Docling result-download wall-clock deadline. Marker keeps
-    # it out of 3.11+ installs entirely, where lightrag/parser/external/
-    # _common.py never imports it.
-    "async-timeout>=4.0.3; python_version < '3.11'",
     "distro",
     "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",
@@ -270,7 +260,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Pin the rule set explicitly. Newer ruff releases (observed with 0.17.x)

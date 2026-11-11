@@ -15,7 +15,11 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ['3.12', '3.14']
+        # Pull requests test 3.12 (the Docker images' runtime) and 3.14 (the
+        # newest interpreter). Pushes to main/dev add 3.11, the
+        # requires-python floor, so a change that only breaks the floor is
+        # caught right after it merges without adding a third job to every PR.
+        python-version: ${{ fromJSON(github.event_name == 'push' && '["3.11", "3.12", "3.14"]' || '["3.12", "3.14"]') }}
 
     steps:
     - uses: actions/checkout@v7
