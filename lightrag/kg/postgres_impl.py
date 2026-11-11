@@ -644,7 +644,7 @@ class PostgreSQLDB:
         logger.warning(f"PostgreSQL, Unknown SSL mode: {ssl_mode}, SSL disabled")
         return None
 
-    async def initdb(self):
+    async def initdb(self, attempts: int | None = None):
         # Prepare connection parameters
         connection_params = {
             "user": self.user,
@@ -811,10 +811,10 @@ class PostgreSQLDB:
 
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.connection_retry_attempts),
+                stop=stop_after_attempt(attempts or self.connection_retry_attempts),
                 retry=retry_if_exception_type(self._transient_exceptions),
                 wait=wait_strategy,
-                before_sleep=self._before_sleep,
+                before_sleep=self._log_transient_failure,
                 reraise=True,
             ):
                 with attempt:
@@ -835,10 +835,12 @@ class PostgreSQLDB:
         if self.pool is None:
             async with self._pool_reconnect_lock:
                 if self.pool is None:
-                    await self.initdb()
+                    await self.initdb(attempts=1)
 
-    async def _reset_pool(self) -> None:
+    async def _reset_pool(self, failed_pool: Pool | None = None) -> None:
         async with self._pool_reconnect_lock:
+            if failed_pool is not None and self.pool is not failed_pool:
+                return
             if self.pool is not None:
                 try:
                     await asyncio.wait_for(
@@ -855,8 +857,7 @@ class PostgreSQLDB:
                     )
             self.pool = None
 
-    async def _before_sleep(self, retry_state: RetryCallState) -> None:
-        """Hook invoked by tenacity before sleeping between retries."""
+    async def _log_transient_failure(self, retry_state: RetryCallState) -> None:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
         logger.warning(
             "PostgreSQL transient connection issue on attempt %s/%s: %r",
@@ -864,7 +865,6 @@ class PostgreSQLDB:
             self.connection_retry_attempts,
             exc,
         )
-        await self._reset_pool()
 
     async def _run_with_retry(
         self,
@@ -897,17 +897,25 @@ class PostgreSQLDB:
             if self.connection_retry_backoff > 0
             else wait_fixed(0)
         )
+        pool: Pool | None = None
+
+        async def _before_sleep(retry_state: RetryCallState) -> None:
+            await self._log_transient_failure(retry_state)
+            if pool is not None:
+                await self._reset_pool(pool)
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self.connection_retry_attempts),
             retry=retry_if_exception_type(self._transient_exceptions),
             wait=wait_strategy,
-            before_sleep=self._before_sleep,
+            before_sleep=_before_sleep,
             reraise=True,
         ):
             with attempt:
+                pool = None
                 await self._ensure_pool()
-                assert self.pool is not None
+                pool = self.pool
+                assert pool is not None
                 if timing_label:
                     pool_snapshot_before = self._get_pool_snapshot()
                     performance_timing_log(
@@ -916,7 +924,7 @@ class PostgreSQLDB:
                         pool_snapshot_before,
                     )
                 acquire_start = time.perf_counter()
-                async with self.pool.acquire() as connection:  # type: ignore[arg-type]
+                async with pool.acquire() as connection:
                     acquire_elapsed = time.perf_counter() - acquire_start
                     if timing_label:
                         pool_snapshot_after = self._get_pool_snapshot()
