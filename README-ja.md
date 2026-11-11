@@ -224,6 +224,8 @@ Native docx パーサーのオプトイン式エンジンパラメータ `smart_
 lightrag-download-cache --spacy-install
 ```
 
+> `uv sync` で作成した環境（pip を含まない）では、このコマンドは代わりに `uv pip install` でインストールします。モデルは `uv.lock` に含まれないため、通常の `uv sync` を実行すると削除されます。インストール後は `uv sync --inexact` を使用して保持してください。
+
 smart_heading はファイル / ルール単位（例：`LIGHTRAG_PARSER=docx:native(smart_heading=true)`）でも、`.env` でグローバルにも有効化できます：
 
 ```bash

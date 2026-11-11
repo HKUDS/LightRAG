@@ -224,6 +224,8 @@ Parameter engine `smart_heading` yang bersifat opt-in pada native docx parser me
 lightrag-download-cache --spacy-install
 ```
 
+> Di environment hasil `uv sync` (yang tidak memiliki pip), perintah ini memasang model melalui `uv pip install`. Model tidak tercantum di `uv.lock`, sehingga `uv sync` biasa akan menghapusnya kembali; gunakan `uv sync --inexact` setelahnya agar model tetap terpasang.
+
 Aktifkan smart_heading per file/rule (misalnya `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), atau secara global di `.env`:
 
 ```bash
