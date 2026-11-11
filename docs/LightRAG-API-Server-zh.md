@@ -117,6 +117,7 @@ LightRAG 支持以下 LLM 后端：
 * ollama
 * lollms
 * openai 或 openai 兼容
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * bedrock
 * gemini
@@ -755,6 +756,7 @@ LightRAG 支持绑定到各种 LLM 后端：
 
 * ollama
 * openai (含openai 兼容)
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * lollms
 * bedrock
@@ -856,7 +858,7 @@ VLM_LLM_MODEL=gpt-5-mini
 
 `VLM_PROCESS_ENABLE` **只闸控图片**。表格和公式由 `EXTRACT` 角色分析，不受该开关影响，因此 `*:native-teP` 无需配置任何 VLM 即可工作。若启用了 `i` 而 VLM 不可用，通过了前置过滤（文件存在、栅格格式、长宽均不小于 `VLM_MIN_IMAGE_PIXEL`）的图片会让**该文档失败**而非被跳过：文档进入 `FAILED`，`error_msg` 为 "VLM analysis required but VLM role is not available"。
 
-当前支持视觉输入的 provider 包括 `openai`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
+当前支持视觉输入的 provider 包括 `openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
 
 ```bash
 VLM_PROCESS_ENABLE=true
@@ -988,7 +990,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--workspace` | `""` | 用于存储隔离的默认 workspace |
 | `--api-prefix` | `""` | 反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置 |
 | `--workers` | `1` | Gunicorn worker 数量 |
-| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`azure_openai`、`bedrock`、`gemini`） |
+| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`openai_responses`、`azure_openai`、`bedrock`、`gemini`） |
 | `--embedding-binding` | `ollama` | Embedding 绑定类型（`lollms`、`ollama`、`openai`、`azure_openai`、`bedrock`、`jina`、`gemini`、`voyageai`） |
 | `--rerank-binding` | `null` | Rerank 绑定类型（`null`、`cohere`、`jina`、`aliyun`） |
 
@@ -1260,7 +1262,7 @@ notes.[-R].md
 
 ## API 端点
 
-所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
+所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`openai_responses`、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
 
 - Swagger UI：http://localhost:9621/docs
 - ReDoc：http://localhost:9621/redoc
