@@ -2559,6 +2559,7 @@ pytest = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-xdist" },
+    { name = "python-dotenv" },
     { name = "ruff" },
 ]
 test = [
@@ -2702,6 +2703,8 @@ requires-dist = [
     { name = "python-docx", marker = "extra == 'api'", specifier = ">=0.8.11,<2.0.0" },
     { name = "python-dotenv" },
     { name = "python-dotenv", marker = "extra == 'api'" },
+    { name = "python-dotenv", marker = "extra == 'pytest'", specifier = ">=1.2.0" },
+    { name = "python-dotenv", marker = "extra == 'test'", specifier = ">=1.2.0" },
     { name = "python-jose", extras = ["cryptography"], marker = "extra == 'api'" },
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.30" },
     { name = "python-pptx", marker = "extra == 'api'", specifier = ">=0.6.21,<2.0.0" },
