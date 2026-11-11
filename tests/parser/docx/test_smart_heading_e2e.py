@@ -704,12 +704,17 @@ def test_short_document_skips_smart_with_zero_llm_calls(monkeypatch) -> None:
     assert _summary(blocks) == _summary(base_blocks)
 
 
-def test_short_document_skip_is_logged(monkeypatch, caplog) -> None:
+def test_short_document_skip_is_logged(monkeypatch, lightrag_caplog) -> None:
     """The gate skip must be visible in the server log, not only in the
     smart_audit.json sidecar: the output is otherwise identical to
-    smart_heading being off, which reads as "the switch does nothing"."""
+    smart_heading being off, which reads as "the switch does nothing".
+
+    ``lightrag_caplog``, not bare ``caplog``: the ``lightrag`` logger does not
+    propagate, and pytest < 9.1 would capture nothing (tests/_log_capture.py).
+    """
     import logging
 
+    caplog = lightrag_caplog
     with caplog.at_level(logging.INFO, logger="lightrag"):
         _extract(
             "redhead",
