@@ -38,7 +38,7 @@ from lightrag.utils import (
 
 from lightrag.api import __api_version__
 from lightrag.exceptions import EmptyTruncatedResponseError
-from lightrag.tiktoken_cache import apply_default_tiktoken_cache_dir
+from lightrag.tiktoken_cache import load_tiktoken_encoding
 from lightrag.llm._error_utils import is_permanent_rate_limit_error
 
 import numpy as np
@@ -167,14 +167,17 @@ def _get_tiktoken_encoding_for_model(model: str) -> Any:
         The tiktoken encoding for the model.
     """
     if model not in _TIKTOKEN_ENCODING_CACHE:
-        apply_default_tiktoken_cache_dir()
         try:
-            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.encoding_for_model(model)
+            _TIKTOKEN_ENCODING_CACHE[model] = load_tiktoken_encoding(
+                lambda: tiktoken.encoding_for_model(model)
+            )
         except KeyError:
             logger.debug(
                 f"Encoding for model '{model}' not found, falling back to cl100k_base"
             )
-            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.get_encoding("cl100k_base")
+            _TIKTOKEN_ENCODING_CACHE[model] = load_tiktoken_encoding(
+                lambda: tiktoken.get_encoding("cl100k_base")
+            )
     return _TIKTOKEN_ENCODING_CACHE[model]
 
 

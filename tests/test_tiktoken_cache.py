@@ -6,6 +6,11 @@ directory is configured, while the offline guide and
 copied there was never read, and a cache left in ``/tmp`` vanished on reboot.
 LightRAG now adopts ``~/.tiktoken_cache`` when it exists and nothing explicit
 is configured — and never creates it at runtime.
+
+Follow-up regression (PR review): an adopted but unwritable directory made a
+missing encoding's cache write raise out of ``TiktokenTokenizer()`` on an
+online host, where the old temp-dir default ignored write failures. The load
+now falls back to tiktoken's default for the rest of the process.
 """
 
 import os
@@ -29,6 +34,8 @@ def home(monkeypatch, tmp_path):
         monkeypatch.delenv(name)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(tiktoken_cache, "_adopted_dir", None)
+    monkeypatch.setattr(tiktoken_cache, "_adoption_disabled", False)
     return tmp_path
 
 
@@ -129,3 +136,97 @@ def test_every_encoding_load_site_applies_the_default(
         _load_via_smart_heading(monkeypatch)
 
     assert seen_cache_dirs == [str(home / ".tiktoken_cache")]
+
+
+def _flaky_loader(calls, exc):
+    """Fail the first call with ``exc``; succeed afterwards, recording the
+    cache directory each call saw."""
+
+    def load():
+        calls.append(os.environ.get("TIKTOKEN_CACHE_DIR"))
+        if len(calls) == 1:
+            raise exc
+        return "encoding"
+
+    return load
+
+
+def _writable(monkeypatch, writable):
+    real_access = os.access
+    monkeypatch.setattr(
+        tiktoken_cache.os,
+        "access",
+        lambda path, mode: (
+            writable if "tiktoken_cache" in str(path) else real_access(path, mode)
+        ),
+    )
+
+
+def test_unwritable_adopted_dir_falls_back_to_tiktoken_default(
+    home, monkeypatch, lightrag_log_records
+):
+    cache = home / ".tiktoken_cache"
+    cache.mkdir()
+    _writable(monkeypatch, False)
+    calls = []
+
+    result = tiktoken_cache.load_tiktoken_encoding(
+        _flaky_loader(calls, PermissionError(13, "Permission denied"))
+    )
+
+    assert result == "encoding"
+    assert calls == [str(cache), None]
+    assert "TIKTOKEN_CACHE_DIR" not in os.environ
+    assert any(
+        r.levelname == "WARNING" and str(cache) in r.getMessage()
+        for r in lightrag_log_records
+    )
+    # The directory is not re-adopted for later loads in this process.
+    assert tiktoken_cache.apply_default_tiktoken_cache_dir() is None
+    assert "TIKTOKEN_CACHE_DIR" not in os.environ
+
+
+def test_unwritable_adopted_dir_still_serves_cached_encodings(home, monkeypatch):
+    cache = home / ".tiktoken_cache"
+    cache.mkdir()
+    _writable(monkeypatch, False)
+    calls = []
+
+    def load():
+        calls.append(os.environ.get("TIKTOKEN_CACHE_DIR"))
+        return "encoding"
+
+    assert tiktoken_cache.load_tiktoken_encoding(load) == "encoding"
+    assert calls == [str(cache)]
+    assert os.environ["TIKTOKEN_CACHE_DIR"] == str(cache)
+
+
+def test_error_from_writable_adopted_dir_is_reraised(home, monkeypatch):
+    """A network failure (requests' errors are OSErrors) must not be masked."""
+    (home / ".tiktoken_cache").mkdir()
+    _writable(monkeypatch, True)
+    calls = []
+
+    with pytest.raises(OSError, match="network down"):
+        tiktoken_cache.load_tiktoken_encoding(
+            _flaky_loader(calls, OSError("network down"))
+        )
+
+    assert len(calls) == 1
+    assert os.environ["TIKTOKEN_CACHE_DIR"] == str(home / ".tiktoken_cache")
+
+
+def test_error_from_user_configured_dir_is_reraised(home, monkeypatch, tmp_path):
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(configured))
+    _writable(monkeypatch, False)
+    calls = []
+
+    with pytest.raises(PermissionError):
+        tiktoken_cache.load_tiktoken_encoding(
+            _flaky_loader(calls, PermissionError(13, "Permission denied"))
+        )
+
+    assert len(calls) == 1
+    assert os.environ["TIKTOKEN_CACHE_DIR"] == str(configured)

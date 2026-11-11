@@ -10,29 +10,45 @@ writes there when no directory is given.
 
 Rules:
 
-- Call :func:`apply_default_tiktoken_cache_dir` immediately before any
-  ``tiktoken.get_encoding`` / ``tiktoken.encoding_for_model`` call in
-  ``lightrag/``. tiktoken reads the environment on every cache lookup, not
-  at import time, so calling it after ``import tiktoken`` is fine.
-- It only ever *adopts* ``~/.tiktoken_cache`` when that directory already
-  exists. It never creates it: once ``TIKTOKEN_CACHE_DIR`` is set, tiktoken
-  raises on a failed cache write instead of ignoring it, so creating a
-  directory under an unwritable or absent home would turn a silent cache
-  miss into a hard failure.
+- Load every encoding in ``lightrag/`` through :func:`load_tiktoken_encoding`
+  rather than calling ``tiktoken.get_encoding`` / ``encoding_for_model``
+  directly; otherwise that site neither reads ``~/.tiktoken_cache`` nor gets
+  the read-only fallback below.
+- ``~/.tiktoken_cache`` is only ever *adopted* when it already exists, never
+  created: once ``TIKTOKEN_CACHE_DIR`` is set, tiktoken raises on a failed
+  cache write instead of ignoring it.
+- An adopted directory that cannot be written still serves the encodings it
+  holds. When a missing encoding then fails to be cached there, the load is
+  retried with tiktoken's own default (best-effort writes), a warning is
+  logged, and the directory is not adopted again in this process. Errors
+  from a writable directory, and from a directory the user configured, are
+  re-raised unchanged.
 - Any explicit setting wins, including ``TIKTOKEN_CACHE_DIR=""`` (tiktoken's
   "disable caching" switch) and ``DATA_GYM_CACHE_DIR``.
+
+See docs/OfflineDeployment.md ("Where the Cache Lives") for the full order.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import threading
+from typing import Callable, TypeVar
 
 DEFAULT_TIKTOKEN_CACHE_DIR = "~/.tiktoken_cache"
 
 _ENV_VARS = ("TIKTOKEN_CACHE_DIR", "DATA_GYM_CACHE_DIR")
 
 logger = logging.getLogger("lightrag")
+
+T = TypeVar("T")
+
+_state_lock = threading.Lock()
+# The directory this module exported into TIKTOKEN_CACHE_DIR, if any.
+_adopted_dir: str | None = None
+# Set once an adopted directory proved unwritable; stops re-adoption.
+_adoption_disabled = False
 
 
 def default_tiktoken_cache_dir() -> str | None:
@@ -59,11 +75,52 @@ def configured_tiktoken_cache_dir() -> str | None:
 def apply_default_tiktoken_cache_dir() -> str | None:
     """Point tiktoken at ``~/.tiktoken_cache`` when it exists and nothing else
     is configured; return the directory adopted, or None if left untouched."""
-    if configured_tiktoken_cache_dir() is not None:
-        return None
-    path = default_tiktoken_cache_dir()
-    if path is None or not os.path.isdir(path):
-        return None
-    os.environ["TIKTOKEN_CACHE_DIR"] = path
+    global _adopted_dir
+    with _state_lock:
+        if _adoption_disabled or configured_tiktoken_cache_dir() is not None:
+            return None
+        path = default_tiktoken_cache_dir()
+        if path is None or not os.path.isdir(path):
+            return None
+        os.environ["TIKTOKEN_CACHE_DIR"] = path
+        _adopted_dir = path
     logger.debug("Using tiktoken cache directory %s", path)
     return path
+
+
+def _drop_unwritable_adoption() -> str | None:
+    """Undo our own adoption if it is still in effect and its directory is
+    not writable; return the dropped directory, else None."""
+    global _adopted_dir, _adoption_disabled
+    with _state_lock:
+        path = _adopted_dir
+        if path is None or os.environ.get("TIKTOKEN_CACHE_DIR") != path:
+            return None
+        if os.access(path, os.W_OK | os.X_OK):
+            return None
+        os.environ.pop("TIKTOKEN_CACHE_DIR", None)
+        _adopted_dir = None
+        _adoption_disabled = True
+    return path
+
+
+def load_tiktoken_encoding(load: Callable[[], T]) -> T:
+    """Run ``load`` (a tiktoken encoding lookup) with the default cache dir
+    applied, falling back to tiktoken's own default if the implicitly adopted
+    directory turns out to be unwritable."""
+    apply_default_tiktoken_cache_dir()
+    try:
+        return load()
+    except OSError as exc:
+        dropped = _drop_unwritable_adoption()
+        if dropped is None:
+            raise
+        logger.warning(
+            "tiktoken cache directory %s is not writable (%s); falling back to "
+            "tiktoken's default cache location for this process. Make it "
+            "writable, complete it with lightrag-download-cache, or set "
+            "TIKTOKEN_CACHE_DIR.",
+            dropped,
+            exc,
+        )
+        return load()

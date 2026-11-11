@@ -128,6 +128,8 @@ Do not keep an offline cache under the system temp directory: `/tmp` is often a 
 
 LightRAG never creates `~/.tiktoken_cache` itself at runtime: with a cache directory configured, tiktoken treats a failed cache write as an error, so a missing or read-only home must not be adopted implicitly. Set `TIKTOKEN_CACHE_DIR` explicitly when the service account's home is not the right place (the Docker image uses `/app/data/tiktoken`).
 
+An adopted `~/.tiktoken_cache` may be read-only: encodings already in it are read from it. If an encoding is missing and cannot be cached there, LightRAG logs a warning and falls back to tiktoken's own default location for the rest of the process (which needs network access to download). A directory you set through `TIKTOKEN_CACHE_DIR` gets no such fallback: a failed cache write there is an error, as in tiktoken itself.
+
 ### Using the CLI Command
 
 After installing LightRAG, use the built-in command:
