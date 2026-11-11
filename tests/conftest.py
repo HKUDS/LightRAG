@@ -6,6 +6,7 @@ This file provides command-line options and fixtures for test configuration.
 
 import logging
 import os
+import sys
 
 import pytest
 
@@ -144,6 +145,45 @@ def _reset_r_separator_caches():
     yield
     _cached_env_r_separators.cache_clear()
     _cached_surrounding_chunk_separators.cache_clear()
+
+
+_API_MODULE_PREFIX = "lightrag.api"
+
+
+@pytest.fixture(autouse=True)
+def _restore_lightrag_api_module_identity():
+    """Restore ``lightrag.api.*`` entries a test replaced or removed.
+
+    ``lightrag.api.config`` / ``auth`` / ``utils_api`` compute module-level
+    state at IMPORT time, and some of their functions re-read siblings through
+    ``sys.modules`` at CALL time (``utils_api`` imports ``global_args`` inside
+    the token-renewal check). A test that pops those modules and re-imports
+    them under an isolated env therefore leaves a different object live than
+    the one later tests imported at collection time: they patch a module
+    nobody consults, and fail depending on which test ran first. This is
+    session-wide rather than under ``tests/api/`` because such re-import
+    helpers also live elsewhere (``tests/llm/``).
+
+    Only REPLACEMENTS and REMOVALS are healed (identity comparison): a module
+    imported for the first time during a test is left in place, so this never
+    creates a fresh duplicate of its own. Parent-package attributes are
+    re-pointed too, because the re-import helpers ``delattr`` them to dodge
+    the shadowing.
+    """
+    saved = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == _API_MODULE_PREFIX or name.startswith(_API_MODULE_PREFIX + ".")
+    }
+    yield
+    for name, module in saved.items():
+        if sys.modules.get(name) is module:
+            continue
+        sys.modules[name] = module
+        parent_name, _, child = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and child and getattr(parent, child, None) is not module:
+            setattr(parent, child, module)
 
 
 #: Populated in ``pytest_configure`` and read by ``requires_spacy_models`` /
