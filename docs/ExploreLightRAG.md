@@ -74,7 +74,7 @@ The wizard does not ask for `POSTGRES_VECTOR_INDEX_TYPE`, so check it in `.env`:
 POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 ```
 
-**Pick the vector index type from your embedding dimension.** pgvector cannot build an `HNSW` or `IVFFlat` index above 2000 dimensions. `HNSW_HALFVEC` goes up to 4000 and needs pgvector 0.7 or later, which the wizard's image has. The default `text-embedding-3-large` has 3072 dimensions, so it needs `HNSW_HALFVEC`. With `HNSW`, index creation fails. Releases without the dimension check log an `ERROR` and carry on with no vector index (every query then scans the table); releases with it refuse to start and name the fix. Changing the index type later only rebuilds the index; stored vectors are kept.
+**Pick the vector index type from your embedding dimension.** pgvector cannot build an `HNSW` or `IVFFlat` index above 2000 dimensions. `HNSW_HALFVEC` goes up to 4000 and needs pgvector 0.7 or later, which the wizard's image has. The default `text-embedding-3-large` has 3072 dimensions, so it needs `HNSW_HALFVEC`. With `HNSW`, index creation fails. Releases without the dimension check log an `ERROR` and carry on with no vector index (every query then scans the table); releases with it refuse to start and name the fix. Choose it before the first upload: switching a table that already holds vectors to `HNSW_HALFVEC` converts them in place to 16-bit floats, which cannot be undone.
 
 After restarting the server, the startup log lists the four `PG*` storages. The tables appear on first start, and the vector tables carry the embedding model and dimension in their name, for example `lightrag_vdb_chunks_text_embedding_3_large_3072d`.
 
