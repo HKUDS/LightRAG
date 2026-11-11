@@ -41,6 +41,7 @@ resolution, default headers or the DashScope workspace header.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, Union
@@ -59,6 +60,7 @@ from openai import (
 )
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -74,16 +76,33 @@ from lightrag.utils import (
     verbose_debug,
 )
 
+# The retry predicates are shared with the Chat Completions driver on purpose:
+# both bindings build their client through ``create_openai_async_client``, which
+# disables the SDK's own retry loop, so the tenacity predicates are the only
+# retry policy either binding has and must not drift apart.
 from .openai import (
     InvalidResponseError,
     TransientBadRequestError,
+    _is_retryable_rate_limit_error,
+    _is_transient_status_error,
     create_openai_async_client,
 )
 
 __all__ = [
+    "ResponseRefusedError",
     "openai_responses_complete_if_cache",
     "openai_responses_complete",
 ]
+
+
+class ResponseRefusedError(RuntimeError):
+    """The model refused the request.
+
+    Deliberately absent from the retry predicate: a refusal is a policy verdict
+    on the prompt, so repeating the same prompt buys the same verdict at full
+    price. A caller that wants another attempt must change the input.
+    """
+
 
 # Chat Completions spellings accepted for convenience, mapped onto their
 # Responses equivalents. Callers configured for the `openai` binding therefore
@@ -125,6 +144,17 @@ def _normalize_text_format(response_format: dict[str, Any]) -> dict[str, Any]:
     }
     flattened.update(json_schema)
     return flattened
+
+
+def _has_native_structured_format(text_param: Any) -> bool:
+    """Whether a native Responses ``text`` parameter requests structured output."""
+    if not isinstance(text_param, dict):
+        return False
+    text_format = text_param.get("format")
+    if text_format is None:
+        return False
+    # `{"type": "text"}` is the plain-text format, not structured output.
+    return not (isinstance(text_format, dict) and text_format.get("type") == "text")
 
 
 def _translate_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -340,13 +370,20 @@ async def _close_quietly(client: Any) -> None:
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=(
-        retry_if_exception_type(RateLimitError)
+        # A permanent spend stop (insufficient_quota / budget_exceeded) fails
+        # fast; an ordinary throttle is retried.
+        retry_if_exception(_is_retryable_rate_limit_error)
+        # 408 / 409 -- the SDK used to retry these, but its loop is disabled.
+        | retry_if_exception(_is_transient_status_error)
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         | retry_if_exception_type(InvalidResponseError)
         | retry_if_exception_type(InternalServerError)
         | retry_if_exception_type(TransientBadRequestError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so callers and the doc-status error_msg see the provider's message.
+    reraise=True,
 )
 async def openai_responses_complete_if_cache(
     model: str,
@@ -398,10 +435,20 @@ async def openai_responses_complete_if_cache(
 
     Raises:
         InvalidResponseError: The response carried no usable text, the
-            generation failed after the request was accepted, the model
-            refused, or the generation was stopped for a reason other than
-            the output budget.
+            generation failed after the request was accepted, or it was
+            stopped for a reason other than the output budget. Retried.
+        ResponseRefusedError: The model refused. Not retried.
         EmptyTruncatedResponseError: Empty output caused by budget exhaustion.
+            Not retried.
+        RateLimitError: Retried, except a permanent spend stop
+            (``insufficient_quota`` / ``budget_exceeded``), which fails fast.
+        Exhausted retries re-raise the last attempt's own exception.
+
+    ``store`` defaults to ``False`` (the API's own default retains every
+    request server-side); pass ``store=True`` to opt in. ``reasoning_summary``
+    (``auto`` / ``concise`` / ``detailed``) requests reasoning summaries when
+    ``enable_cot`` is on; without it the API returns none, so ``<think>``
+    output stays empty. Models without reasoning reject it, hence opt-in.
     """
     if history_messages is None:
         history_messages = []
@@ -428,12 +475,30 @@ async def openai_responses_complete_if_cache(
             "openai_responses binding accepts only dict response_format payloads; "
             f"got {type(response_format).__name__}"
         )
-    if response_format is not None:
+    if response_format is not None or _has_native_structured_format(kwargs.get("text")):
         # Structured output and <think> wrapping are mutually exclusive: the
-        # tags would corrupt the JSON the caller is about to parse.
+        # tags would corrupt the JSON the caller is about to parse. The native
+        # `text.format` spelling is structured output just as much as the
+        # `response_format` alias is.
         enable_cot = False
 
+    reasoning_summary = kwargs.pop("reasoning_summary", None)
     api_kwargs = _translate_kwargs(kwargs)
+
+    if enable_cot and reasoning_summary:
+        # Only requested when the summary will actually be surfaced; an
+        # explicit caller-provided `reasoning.summary` always wins.
+        reasoning = api_kwargs.get("reasoning")
+        if reasoning is None:
+            api_kwargs["reasoning"] = {"summary": reasoning_summary}
+        elif isinstance(reasoning, dict):
+            reasoning.setdefault("summary", reasoning_summary)
+
+    if api_kwargs.get("store") is None:
+        # The Responses API retains every request server-side unless told
+        # otherwise. A RAG pipeline sends document content through here, so
+        # retention is opt-in rather than the silent default.
+        api_kwargs["store"] = False
 
     client = create_openai_async_client(
         api_key=api_key,
@@ -463,6 +528,11 @@ async def openai_responses_complete_if_cache(
         response = await client.responses.create(
             model=model, input=api_input, **api_kwargs
         )
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the generic handler below never
+        # sees it; without this the client would be abandoned unclosed.
+        await _close_quietly(client)
+        raise
     except (APITimeoutError, APIConnectionError, RateLimitError) as e:
         logger.error(f"OpenAI Responses API error: {e}")
         await _close_quietly(client)
@@ -665,12 +735,7 @@ async def _stream_response(
                 f"{refusal or 'no reason given'}"
             )
             logger.error(error_message)
-            # Retryable, like the `error` and `response.failed` terminals: a
-            # refusal is a provider verdict this driver cannot distinguish from
-            # a transient safety-stack failure, and the retry set is the
-            # module's default for everything except budget exhaustion, whose
-            # outcome is fixed by the caller's own max_output_tokens.
-            raise InvalidResponseError(error_message)
+            raise ResponseRefusedError(error_message)
 
         if incomplete_reason is not None:
             # Text already yielded is the tail of a generation that did not
@@ -740,6 +805,15 @@ async def _stream_response(
             try:
                 yield "</think>"
                 cot_active = False
+            except GeneratorExit:
+                # The consumer disconnected while the closing tag was being
+                # delivered. GeneratorExit is a BaseException, so it escapes
+                # the handler below; without recording it the finally block
+                # would yield into a closing generator, aclose() would raise
+                # "async generator ignored GeneratorExit", and the frame would
+                # be abandoned before the stream and the client were closed.
+                closing_via_generator_exit = True
+                raise
             except Exception as close_error:  # noqa: BLE001 - cleanup only
                 logger.warning(f"Failed to close COT tag on error: {close_error}")
         logger.error(f"Error in Responses stream: {e}")
@@ -797,7 +871,7 @@ async def _handle_non_streaming(
         if refusal:
             error_message = f"OpenAI Responses request was refused: {refusal}"
             logger.error(error_message)
-            raise InvalidResponseError(error_message)
+            raise ResponseRefusedError(error_message)
 
         truncated = _is_truncated(response)
 

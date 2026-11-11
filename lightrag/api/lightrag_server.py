@@ -658,6 +658,7 @@ _PROVIDER_LOG_LABELS = {
     "lollms": "Lollms",
     "ollama": "Ollama",
     "openai": "OpenAI",
+    "openai_responses": "OpenAI Responses",
 }
 
 

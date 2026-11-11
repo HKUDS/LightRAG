@@ -772,8 +772,9 @@ class OpenAIResponsesLLMOptions(BindingOptions):
     # Sampling and generation parameters
     max_output_tokens: int = None  # Maximum number of output tokens to generate
     reasoning_effort: str = ""  # Reasoning effort level (minimal, low, medium, high)
+    reasoning_summary: str = ""  # Reasoning summary detail (auto, concise, detailed)
     service_tier: str = ""  # Service tier for API usage
-    store: bool = False  # Whether OpenAI retains the response server-side
+    store: bool = False  # Server-side retention; the driver sends false unless set
     temperature: float = DEFAULT_TEMPERATURE  # Controls randomness (0.0 to 2.0)
     top_p: float = 1.0  # Nucleus sampling parameter (0.0 to 1.0)
     truncation: str = ""  # Context-overflow strategy (auto, disabled)
@@ -783,8 +784,9 @@ class OpenAIResponsesLLMOptions(BindingOptions):
     _help: ClassVar[dict[str, str]] = {
         "max_output_tokens": "Maximum number of output tokens to generate (optional, leave empty for model default)",
         "reasoning_effort": "Reasoning effort for reasoning models (minimal, low, medium, high); sent as reasoning.effort",
+        "reasoning_summary": "Request reasoning summaries (auto, concise, detailed) so enable_cot calls can emit <think> content; sent as reasoning.summary. Leave empty for models without reasoning",
         "service_tier": "Service tier for API usage (optional)",
-        "store": "Whether OpenAI retains the response server-side for later retrieval",
+        "store": "Whether OpenAI retains the response server-side for later retrieval (default false; the API's own default is true)",
         "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
         "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
         "truncation": "Context-overflow strategy (auto, disabled)",

@@ -8,16 +8,27 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tenacity import RetryError
+from tenacity import wait_none
 
 from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.llm.openai_responses import (
     InvalidResponseError,
+    ResponseRefusedError,
     openai_responses_complete_if_cache,
 )
 from lightrag.utils import TruncatedResponse, is_truncated_response
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_wait(monkeypatch):
+    """Strip the exponential backoff so the retrying cases stay fast.
+
+    ``wraps`` stores the ``AsyncRetrying`` instance on ``.retry`` and each call
+    copies it, so patching the attribute here reaches the per-call copy.
+    """
+    monkeypatch.setattr(openai_responses_complete_if_cache.retry, "wait", wait_none())
 
 
 class _FakeResponses:
@@ -615,7 +626,7 @@ async def test_streaming_refusal_deltas_raise_with_the_refusal_text(monkeypatch)
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError) as excinfo:
+    with pytest.raises(ResponseRefusedError) as excinfo:
         await _collect(result)
     assert "I cannot help with that" in str(excinfo.value)
 
@@ -638,7 +649,7 @@ async def test_streaming_refusal_done_event_is_used_when_no_deltas_arrived(
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError) as excinfo:
+    with pytest.raises(ResponseRefusedError) as excinfo:
         await _collect(result)
     assert str(excinfo.value).count("policy: no") == 1
 
@@ -663,7 +674,7 @@ async def test_streaming_empty_refusal_delta_does_not_disarm_the_done_fallback(
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError) as excinfo:
+    with pytest.raises(ResponseRefusedError) as excinfo:
         await _collect(result)
     assert "policy: no" in str(excinfo.value)
 
@@ -684,7 +695,7 @@ async def test_streaming_textless_refusal_still_raises(monkeypatch):
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError):
+    with pytest.raises(ResponseRefusedError):
         await _collect(result)
 
 
@@ -704,7 +715,7 @@ async def test_streaming_refusal_falls_back_to_the_terminal_content_parts(monkey
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError) as excinfo:
+    with pytest.raises(ResponseRefusedError) as excinfo:
         await _collect(result)
     assert "I will not answer that" in str(excinfo.value)
 
@@ -738,7 +749,7 @@ async def test_streaming_refusal_done_does_not_duplicate_the_deltas(monkeypatch)
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError) as excinfo:
+    with pytest.raises(ResponseRefusedError) as excinfo:
         await _collect(result)
     assert str(excinfo.value).count("no can do") == 1
 
@@ -857,15 +868,15 @@ async def test_streaming_failed_terminal_closes_an_open_think_tag(monkeypatch):
 async def _non_streaming_failure(monkeypatch, payload, **kwargs) -> BaseException:
     """Return the exception a non-streaming call ends on.
 
-    `InvalidResponseError` is in the driver's retry set, so the decorator
-    exhausts its attempts and re-raises as `RetryError`; the real error is only
-    reachable through the last attempt.
+    The decorator re-raises the last attempt's own exception (``reraise=True``),
+    so the driver's error type reaches the caller directly, not wrapped in a
+    ``tenacity.RetryError``.
     """
     _patch_client(monkeypatch, payload)
 
-    with pytest.raises(RetryError) as excinfo:
+    with pytest.raises(Exception) as excinfo:
         await openai_responses_complete_if_cache("gpt-5.6", "hi", **kwargs)
-    return excinfo.value.last_attempt.exception()
+    return excinfo.value
 
 
 async def test_failed_status_raises_rather_than_reporting_empty_output(monkeypatch):
@@ -919,7 +930,7 @@ async def test_refusal_content_part_raises_rather_than_reporting_empty_output(
 
     error = await _non_streaming_failure(monkeypatch, payload)
 
-    assert isinstance(error, InvalidResponseError)
+    assert isinstance(error, ResponseRefusedError)
     assert "I will not answer that" in str(error)
 
 
