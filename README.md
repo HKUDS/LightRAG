@@ -211,6 +211,8 @@ Using another provider? Also set `LLM_BINDING_HOST` and `LLM_MODEL` (keep `LLM_B
 
 > **Settle the embedding model before your first upload.** Changing it later means re-indexing every document (see [Embedding Models](#embedding-models)).
 
+**Next step:** once the server runs, [Exploring LightRAG](./docs/ExploreLightRAG.md) ([🇨🇳](./docs/ExploreLightRAG-zh.md)) walks through enabling the rest, one step at a time and with measured results: PostgreSQL storage, authentication, role-specific LLMs, reranking, image analysis, Word smart headings, MinerU and concurrency tuning.
+
 ### Create .env File With Setup Tool
 
 Instead of editing `env.example` by hand, use the interactive setup wizard to generate a configured `.env` and, when needed, `docker-compose.final.yml`:
@@ -507,6 +509,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 | Document | What it covers |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | From the default setup to production: PostgreSQL, auth, role LLMs, rerank, VLM, smart headings, MinerU and concurrency, step by step with measured results |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | The `make env-*` setup wizard: generating `.env` and the wizard-managed `docker-compose.final.yml` |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose deployment, image variants, and Cosign verification of the official GHCR images |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Running the Postgres / Neo4j / Milvus storage stack on Apple's native `container` runtime (Apple Silicon, no Docker Desktop) |

@@ -231,6 +231,8 @@ Menggunakan provider lain? Set juga `LLM_BINDING_HOST` dan `LLM_MODEL` (biarkan 
 
 > **Tentukan model embedding sebelum upload pertama.** Mengubahnya nanti berarti mengindeks ulang semua dokumen (lihat [Model Embedding](#model-embedding)).
 
+**Langkah berikutnya:** setelah server berjalan, [Exploring LightRAG](./docs/ExploreLightRAG.md) ([🇨🇳](./docs/ExploreLightRAG-zh.md)) memandu mengaktifkan fitur lainnya satu per satu, lengkap dengan hasil pengukuran: storage PostgreSQL, autentikasi, LLM per peran, rerank, analisis gambar, smart heading Word, MinerU, dan tuning konkurensi.
+
 ### Membuat File .env dengan Setup Tool
 
 Alih-alih mengedit `env.example` secara manual, gunakan setup wizard interaktif untuk menghasilkan `.env` yang telah dikonfigurasi dan, jika diperlukan, `docker-compose.final.yml`:
@@ -523,6 +525,7 @@ Entri yang ditandai 🇨🇳 juga menyediakan terjemahan bahasa Mandarin sebagai
 
 | Dokumen | Cakupan |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | Dari setup default ke produksi: PostgreSQL, auth, LLM per peran, rerank, VLM, smart heading, MinerU, dan konkurensi, langkah demi langkah dengan hasil pengukuran |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | Setup wizard `make env-*`: menghasilkan `.env` dan `docker-compose.final.yml` yang dikelola wizard |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Deployment Docker / Docker Compose, varian image, dan verifikasi Cosign untuk image GHCR resmi |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Menjalankan stack storage Postgres / Neo4j / Milvus pada runtime `container` native Apple (Apple Silicon, tanpa Docker Desktop) |
