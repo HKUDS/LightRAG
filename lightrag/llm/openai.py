@@ -1,4 +1,5 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
+import asyncio
 import os
 import logging
 import warnings
@@ -117,13 +118,14 @@ def _is_transient_status_error(error: BaseException) -> bool:
 def _is_retryable_rate_limit_error(error: BaseException) -> bool:
     """tenacity predicate: retry 429s, except permanent spend stops.
 
-    Used instead of ``retry_if_exception_type(RateLimitError)`` so the original
-    RateLimitError still propagates to callers unchanged (upstream
-    ``except RateLimitError`` / ``isinstance`` checks keep working, and the
-    doc-status failure summary carries the provider's own message -- the
-    LiteLLM budget figures, or OpenAI's billing pointer -- instead of an opaque
-    RetryError). See :mod:`lightrag.llm._error_utils` for what counts as
-    permanent.
+    Used instead of ``retry_if_exception_type(RateLimitError)`` so a permanent
+    spend stop fails on the first attempt instead of paying the full backoff
+    window. Either way the caller receives the original RateLimitError (the
+    decorators set ``reraise=True``), so upstream ``except RateLimitError`` /
+    ``isinstance`` checks keep working and the doc-status failure summary
+    carries the provider's own message -- the LiteLLM budget figures, or
+    OpenAI's billing pointer. See :mod:`lightrag.llm._error_utils` for what
+    counts as permanent.
     """
     return isinstance(error, RateLimitError) and not is_permanent_rate_limit_error(
         error
@@ -301,6 +303,11 @@ def create_openai_async_client(
         # Retry transient "could not parse JSON body" 400s (see handler below).
         | retry_if_exception_type(TransientBadRequestError)
     ),
+    # Once retries are exhausted, raise the last attempt's own exception
+    # (APIConnectionError, InternalServerError, ...) instead of a
+    # tenacity.RetryError that hides the provider's message from callers and
+    # from the doc-status error_msg.
+    reraise=True,
 )
 async def openai_complete_if_cache(
     model: str,
@@ -505,6 +512,12 @@ async def openai_complete_if_cache(
         response = await openai_async_client.chat.completions.create(
             model=api_model, messages=messages, **kwargs
         )
+    except asyncio.CancelledError:
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
+        raise
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         try:
@@ -850,7 +863,7 @@ async def openai_complete_if_cache(
                 # Validate final content
                 if not final_content or final_content.strip() == "":
                     # Distinguish the empty-content failure modes so the retry
-                    # ERROR lines (and the final RetryError) carry the root
+                    # ERROR lines (and the final re-raised error) carry the root
                     # cause: reasoning models swallowing output vs token-limit
                     # truncation vs a genuinely empty response.
                     finish_reason = getattr(response.choices[0], "finish_reason", None)
@@ -1050,6 +1063,9 @@ async def nvidia_openai_complete(
         # Retry transient HTTP 5xx (OpenAI 500 / proxy upstream errors).
         | retry_if_exception_type(InternalServerError)
     ),
+    # Same as openai_complete_if_cache: surface the last attempt's own error,
+    # not a tenacity.RetryError.
+    reraise=True,
 )
 async def openai_embed(
     texts: list[str],
