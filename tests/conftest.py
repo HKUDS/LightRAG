@@ -164,26 +164,47 @@ def _restore_lightrag_api_module_identity():
     session-wide rather than under ``tests/api/`` because such re-import
     helpers also live elsewhere (``tests/llm/``).
 
-    Only REPLACEMENTS and REMOVALS are healed (identity comparison): a module
-    imported for the first time during a test is left in place, so this never
-    creates a fresh duplicate of its own. Parent-package attributes are
-    re-pointed too, because the re-import helpers ``delattr`` them to dodge
-    the shadowing.
+    REPLACEMENTS and REMOVALS are healed by identity comparison. When any
+    entry had to be healed, the ``lightrag.api.*`` modules first imported
+    during the test are evicted as well: they were bound to the replaced
+    objects (``lightrag_server`` imported inside such a test holds the
+    re-imported ``utils_api``), so keeping them would split one live module
+    graph across two generations. The next import rebuilds them against the
+    restored modules. A test that only imported new modules, without
+    replacing any, is left alone. Parent-package attributes are kept in step
+    in both directions, because ``from lightrag.api import x`` returns an
+    existing attribute without consulting ``sys.modules``.
     """
-    saved = {
-        name: module
-        for name, module in sys.modules.items()
-        if name == _API_MODULE_PREFIX or name.startswith(_API_MODULE_PREFIX + ".")
-    }
+
+    def _api_modules():
+        return {
+            name: module
+            for name, module in sys.modules.items()
+            if name == _API_MODULE_PREFIX or name.startswith(_API_MODULE_PREFIX + ".")
+        }
+
+    saved = _api_modules()
     yield
+    healed = False
     for name, module in saved.items():
         if sys.modules.get(name) is module:
             continue
+        healed = True
         sys.modules[name] = module
         parent_name, _, child = name.rpartition(".")
         parent = sys.modules.get(parent_name)
         if parent is not None and child and getattr(parent, child, None) is not module:
             setattr(parent, child, module)
+    if not healed:
+        return
+    for name, module in _api_modules().items():
+        if name in saved:
+            continue
+        del sys.modules[name]
+        parent_name, _, child = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and getattr(parent, child, None) is module:
+            delattr(parent, child)
 
 
 #: Populated in ``pytest_configure`` and read by ``requires_spacy_models`` /
