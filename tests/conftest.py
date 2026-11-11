@@ -5,6 +5,7 @@ This file provides command-line options and fixtures for test configuration.
 """
 
 import logging
+import os
 
 import pytest
 
@@ -174,11 +175,16 @@ def pytest_configure(config):
         f"(install with `{_SPACY_DOWNLOAD_HINT}`)",
     )
 
-    # Mirror the server's own .env load so DOCX_SMART_HEADING reflects the
-    # developer's real configuration here, before _hermetic_mineru_env pins it.
-    from dotenv import load_dotenv
+    # The suite never loads .env (tests/__init__.py), but a developer's
+    # DOCX_SMART_HEADING opt-in may live only there. Copy that one key, so the
+    # rest of the file stays out of the process; _hermetic_mineru_env still
+    # pins it to "false" inside each test.
+    if "DOCX_SMART_HEADING" not in os.environ:
+        from dotenv import dotenv_values
 
-    load_dotenv(dotenv_path=".env", override=False)
+        opt_in = dotenv_values(".env").get("DOCX_SMART_HEADING")
+        if opt_in is not None:
+            os.environ["DOCX_SMART_HEADING"] = opt_in
 
     from lightrag.parser.docx.smart_heading import nlp
 

@@ -1391,13 +1391,20 @@ def test_an_environment_embedding_timeout_still_reaches_the_ceiling(tmp_path):
     reaches ``default_embedding_timeout``'s field default -- and the ceiling,
     resolved from that field, follows it without reading the environment again.
     Run from a scratch cwd, since ``load_dotenv(dotenv_path=".env")`` resolves
-    relative to it.
+    relative to it. The subprocess drops ``PYTHON_DOTENV_DISABLED``, which the
+    test suite sets for itself (``tests/__init__.py``), because this test is
+    about ``.env`` loading.
     """
     (tmp_path / ".env").write_text("EMBEDDING_TIMEOUT=300\n", encoding="utf-8")
     bare = {
         key: value
         for key, value in os.environ.items()
-        if key not in ("EMBEDDING_TIMEOUT", "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS")
+        if key
+        not in (
+            "EMBEDDING_TIMEOUT",
+            "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS",
+            "PYTHON_DOTENV_DISABLED",
+        )
     }
 
     result = subprocess.run(
