@@ -113,6 +113,7 @@ accept no generation options at all.
 | `lollms` | see note | none | **Base level: no options at all.** `lightrag-server --llm-binding lollms --help` prints no option group, and the base binding is wired with an empty options payload. Role level maps lollms to the Ollama option set, so `{ROLE}_OLLAMA_LLM_*` is read — but the lollms driver only consumes `temperature`, `top_k`, `top_p`, `repeat_penalty`, `repeat_last_n`, and `seed`; every other field is ignored. |
 | `jina` | — (embedding-only binding) | none | |
 | `voyageai` | — (embedding-only binding) | none | |
+| `nvidia` | — (embedding-only binding) | none | Defaults to `https://integrate.api.nvidia.com/v1`; set `EMBEDDING_BINDING_HOST` for a self-hosted NIM. |
 
 ## 3. OpenAI / Azure OpenAI LLM options
 

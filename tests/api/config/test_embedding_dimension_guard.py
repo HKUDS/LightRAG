@@ -183,6 +183,37 @@ class TestVoyageAIEmbeddingDimGuard:
         assert func.embedding_dim == 1024
 
 
+# --- NVIDIA (default: nvidia_openai_embed decorator, dim=2048) ---
+
+
+class TestNvidiaEmbeddingDimGuard:
+    def test_custom_model_requires_explicit_dim(self):
+        with pytest.raises(
+            ValueError, match=r"EMBEDDING_DIM.*nvidia/nemotron-3.5-embed-8b"
+        ):
+            _create_embedding_function(
+                binding="nvidia",
+                model="nvidia/nemotron-3.5-embed-8b",
+                embedding_dim=None,
+            )
+
+    def test_custom_model_accepts_explicit_dim(self):
+        func = _create_embedding_function(
+            binding="nvidia",
+            model="nvidia/nemotron-3.5-embed-8b",
+            embedding_dim=4096,
+        )
+        assert func.embedding_dim == 4096
+
+    def test_default_model_keeps_provider_dimension(self):
+        func = _create_embedding_function(
+            binding="nvidia",
+            model=None,
+            embedding_dim=None,
+        )
+        assert func.embedding_dim == 2048
+
+
 # --- Azure OpenAI (always requires explicit dim) ---
 
 
