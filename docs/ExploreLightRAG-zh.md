@@ -74,7 +74,7 @@ docker compose -f docker-compose.final.yml exec postgres psql -U <用户名> -d 
 POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 ```
 
-**根据嵌入维度选择向量索引类型。** pgvector 无法为超过 2000 维的向量建立 `HNSW` 或 `IVFFlat` 索引；`HNSW_HALFVEC` 最多支持 4000 维，需要 pgvector 0.7 或更高版本，向导使用的镜像满足这个要求。默认的 `text-embedding-3-large` 是 3072 维，所以必须用 `HNSW_HALFVEC`。如果用 `HNSW`，索引会建不出来：没有维度检查的版本只打一条 `ERROR` 就继续运行，此时没有向量索引，每次查询都要全表扫描；带维度检查的版本会拒绝启动，并提示修改方法。之后再换索引类型，只会重建索引，已存储的向量不受影响。
+**根据嵌入维度选择向量索引类型。** pgvector 无法为超过 2000 维的向量建立 `HNSW` 或 `IVFFlat` 索引；`HNSW_HALFVEC` 最多支持 4000 维，需要 pgvector 0.7 或更高版本，向导使用的镜像满足这个要求。默认的 `text-embedding-3-large` 是 3072 维，所以必须用 `HNSW_HALFVEC`。如果用 `HNSW`，索引会建不出来：没有维度检查的版本只打一条 `ERROR` 就继续运行，此时没有向量索引，每次查询都要全表扫描；带维度检查的版本会拒绝启动，并提示修改方法。请在首次上传前定好：已有向量的表切换到 `HNSW_HALFVEC` 时，存储的向量会被原地转成 16 位浮点数，这个精度损失无法恢复。
 
 重启服务后，启动日志里会列出四个 `PG*` 存储。数据表在第一次启动时创建，向量表的表名里带着嵌入模型和维度，例如 `lightrag_vdb_chunks_text_embedding_3_large_3072d`。
 
