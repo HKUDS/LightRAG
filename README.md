@@ -204,6 +204,8 @@ The native docx parser's opt-in `smart_heading` engine parameter uses spaCy for 
 lightrag-download-cache --spacy-install
 ```
 
+> In a `uv sync` environment (which has no pip) the command installs through `uv pip install` instead. The models are not in `uv.lock`, so a plain `uv sync` removes them again; use `uv sync --inexact` afterwards to keep them.
+
 Enable smart_heading per file/rule (e.g. `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), or globally in `.env`:
 
 ```bash

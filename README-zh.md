@@ -224,6 +224,8 @@ Native docx 解析器的可选引擎参数 `smart_heading` 使用 spaCy 做分�
 lightrag-download-cache --spacy-install
 ```
 
+> 在 `uv sync` 创建的环境中（其中没有 pip），该命令会改用 `uv pip install` 安装。这些模型不在 `uv.lock` 中，普通的 `uv sync` 会把它们删掉；安装后请改用 `uv sync --inexact` 以保留它们。
+
 可以按文件/规则启用 smart_heading（如 `LIGHTRAG_PARSER=docx:native(smart_heading=true)`），也可以在 `.env` 中全局启用：
 
 ```bash
