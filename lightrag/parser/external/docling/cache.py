@@ -61,7 +61,31 @@ DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
     "DOCLING_OCR_PRESET",
     "DOCLING_OCR_LANG",
     "DOCLING_DO_FORMULA_ENRICHMENT",
+    "DOCLING_PIPELINE",
+    "DOCLING_VLM_PRESET",
 )
+
+DOCLING_PIPELINES: tuple[str, ...] = ("standard", "vlm")
+DEFAULT_DOCLING_PIPELINE = "standard"
+
+
+def resolve_docling_pipeline(raw: str | None = None) -> str:
+    """Validate ``DOCLING_PIPELINE``; an invalid value fails fast at startup."""
+    value = (
+        raw if raw is not None else os.getenv("DOCLING_PIPELINE", "")
+    ).strip().lower()
+    if not value:
+        return DEFAULT_DOCLING_PIPELINE
+    if value not in DOCLING_PIPELINES:
+        raise ValueError(
+            f"DOCLING_PIPELINE must be one of {DOCLING_PIPELINES}, got {value!r}"
+        )
+    return value
+
+
+def current_vlm_preset() -> str:
+    """The VLM preset named by ``DOCLING_VLM_PRESET`` (empty when unset)."""
+    return os.getenv("DOCLING_VLM_PRESET", "").strip()
 
 
 def current_endpoint_signature() -> str:
@@ -131,7 +155,7 @@ def snapshot_tunable_env(
         if "force_ocr" in overrides
         else env_bool("DOCLING_FORCE_OCR", True)
     )
-    return {
+    values = {
         "DOCLING_DO_OCR": str(env_bool("DOCLING_DO_OCR", True)).lower(),
         "DOCLING_FORCE_OCR": str(force_ocr).lower(),
         "DOCLING_OCR_ENGINE": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
@@ -141,6 +165,14 @@ def snapshot_tunable_env(
             env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
         ).lower(),
     }
+    pipeline = resolve_docling_pipeline()
+    if pipeline != DEFAULT_DOCLING_PIPELINE:
+        # Added only for non-default pipelines, so every bundle produced by an
+        # existing standard-pipeline deployment keeps its signature and cache
+        # hit after upgrading.
+        values["DOCLING_PIPELINE"] = pipeline
+        values["DOCLING_VLM_PRESET"] = current_vlm_preset()
+    return values
 
 
 def is_bundle_valid(
@@ -213,11 +245,11 @@ def is_bundle_valid(
     if overrides and not manifest.options_signature:
         return False
     if manifest.options_signature:
-        from lightrag.parser.external.docling.client import FIXED_CONSTANTS
+        from lightrag.parser.external.docling.client import fixed_constants_for
 
         cur_options = compute_options_signature(
             tunable_env=snapshot_tunable_env(overrides),
-            fixed_constants=FIXED_CONSTANTS,
+            fixed_constants=fixed_constants_for(resolve_docling_pipeline()),
         )
         if cur_options != manifest.options_signature:
             return False

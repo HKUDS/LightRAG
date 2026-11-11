@@ -11,10 +11,14 @@ absolute entries). A success manifest is written atomically at the very
 end; mid-run crashes therefore leave the directory in a state the cache
 layer marks as invalid (no manifest → miss → re-download).
 
-Pipeline constants (``pipeline``, ``target_type``, ``to_formats``,
-``image_export_mode``) are intentionally **not** env-driven — the sidecar
-flow depends on them — and are recorded inside the manifest so a future
-code change automatically invalidates pre-existing caches.
+Pipeline constants (``target_type``, ``to_formats``, ``image_export_mode``) are
+intentionally **not** env-driven — the sidecar flow depends on them — and are
+recorded inside the manifest so a future code change automatically invalidates
+pre-existing caches. The processing ``pipeline`` defaults to ``standard`` and
+can be switched to ``vlm`` with ``DOCLING_PIPELINE``; the VLM preset is then
+named by ``DOCLING_VLM_PRESET`` (for example ``minicpm_ocr``). Under the VLM
+pipeline the OCR-only form fields are omitted, because that pipeline renders
+pages through the vision model instead of an OCR engine.
 
 Some docling-serve deployments return a JSON ``ConvertDocumentResponse``
 envelope from the result endpoint even when the client requests a zip. When
@@ -54,6 +58,8 @@ from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.docling.cache import (
     compute_options_signature,
     current_endpoint_signature,
+    current_vlm_preset,
+    resolve_docling_pipeline,
     snapshot_tunable_env,
 )
 from lightrag.parser.external.docling.manifest import (
@@ -71,10 +77,11 @@ else:
         httpx = None
 
 # ---------------------------------------------------------------------------
-# Fixed pipeline constants (NOT env-driven)
+# Pipeline constants
 # ---------------------------------------------------------------------------
 
 PIPELINE = "standard"
+VLM_PIPELINE = "vlm"
 TARGET_TYPE = "zip"
 TO_FORMATS: tuple[str, ...] = ("json", "md")
 IMAGE_EXPORT_MODE = "referenced"
@@ -85,6 +92,29 @@ FIXED_CONSTANTS: dict[str, object] = {
     "to_formats": list(TO_FORMATS),
     "image_export_mode": IMAGE_EXPORT_MODE,
 }
+
+# Form fields that only the standard pipeline understands. The VLM pipeline
+# renders pages through the model and rejects (or silently ignores) these.
+_STANDARD_ONLY_OCR_ENVS: tuple[str, ...] = (
+    "DOCLING_DO_OCR",
+    "DOCLING_FORCE_OCR",
+    "DOCLING_OCR_ENGINE",
+    "DOCLING_OCR_PRESET",
+    "DOCLING_OCR_LANG",
+    "DOCLING_DO_FORMULA_ENRICHMENT",
+)
+
+
+def fixed_constants_for(pipeline: str) -> dict[str, object]:
+    """The fixed-constant block for ``pipeline``.
+
+    ``standard`` reproduces :data:`FIXED_CONSTANTS` byte-for-byte so existing
+    cache signatures stay valid; any other pipeline records its own value and
+    therefore invalidates those bundles, as intended.
+    """
+    if pipeline == PIPELINE:
+        return FIXED_CONSTANTS
+    return {**FIXED_CONSTANTS, "pipeline": pipeline}
 
 CONVERT_PATH = "/v1/convert/file/async"
 POLL_PATH = "/v1/status/poll/{task_id}"
@@ -113,6 +143,24 @@ class DoclingRawClient:
         if not self.endpoint:
             raise ValueError("DOCLING_ENDPOINT is required")
         self.engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
+
+        self.pipeline = resolve_docling_pipeline()
+        self.vlm_preset = current_vlm_preset()
+        if self.pipeline == VLM_PIPELINE:
+            if not self.vlm_preset:
+                raise ValueError(
+                    "DOCLING_PIPELINE=vlm requires DOCLING_VLM_PRESET "
+                    "(for example minicpm_ocr)"
+                )
+            configured = [
+                name for name in _STANDARD_ONLY_OCR_ENVS if os.getenv(name, "").strip()
+            ]
+            if configured:
+                logger.warning(
+                    "[docling] DOCLING_PIPELINE=vlm ignores the standard-pipeline "
+                    "OCR settings: %s",
+                    ", ".join(configured),
+                )
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
         self.force_ocr = (
@@ -185,7 +233,7 @@ class DoclingRawClient:
 
         options_signature = compute_options_signature(
             tunable_env=snapshot_tunable_env(self._overrides),
-            fixed_constants=FIXED_CONSTANTS,
+            fixed_constants=fixed_constants_for(self.pipeline),
         )
         return build_and_write_docling_manifest(
             raw_dir,
@@ -194,7 +242,7 @@ class DoclingRawClient:
             endpoint_signature=self.endpoint,
             engine_version=self.engine_version,
             options_signature=options_signature,
-            fixed_constants=FIXED_CONSTANTS,
+            fixed_constants=fixed_constants_for(self.pipeline),
             recorded_filename=effective_filename,
         )
 
@@ -214,16 +262,26 @@ class DoclingRawClient:
         when empty so the engine uses its own default.
         """
         data: dict[str, str | list[str]] = {
-            "pipeline": PIPELINE,
+            "pipeline": self.pipeline,
             "target_type": TARGET_TYPE,
             "image_export_mode": IMAGE_EXPORT_MODE,
-            "do_ocr": _bool_form(self.do_ocr),
-            "force_ocr": _bool_form(self.force_ocr),
-            "ocr_engine": self.ocr_engine,
-            "ocr_preset": self.ocr_preset,
-            "do_formula_enrichment": _bool_form(self.do_formula_enrichment),
             "to_formats": list(TO_FORMATS),
         }
+        if self.pipeline == VLM_PIPELINE:
+            # The VLM pipeline takes the page through the model, so the OCR
+            # engine/preset/language fields and formula enrichment do not
+            # apply; sending them makes older servers reject the request.
+            data["vlm_pipeline_preset"] = self.vlm_preset
+            return data
+        data.update(
+            {
+                "do_ocr": _bool_form(self.do_ocr),
+                "force_ocr": _bool_form(self.force_ocr),
+                "ocr_engine": self.ocr_engine,
+                "ocr_preset": self.ocr_preset,
+                "do_formula_enrichment": _bool_form(self.do_formula_enrichment),
+            }
+        )
         if self.ocr_lang_raw:
             langs = _parse_ocr_lang(self.ocr_lang_raw)
             if langs:
@@ -247,7 +305,17 @@ class DoclingRawClient:
             resp = await client.post(
                 url, data=self._build_multipart_data(), files=files
             )
-        raise_for_status_with_detail(resp, f"Docling upload for {filename!r}")
+        try:
+            raise_for_status_with_detail(resp, f"Docling upload for {filename!r}")
+        except RuntimeError as exc:
+            if self.pipeline == VLM_PIPELINE:
+                raise RuntimeError(
+                    f"{exc}. The VLM pipeline needs a docling-serve built with "
+                    "docling>=2.149 (the release that registers the "
+                    f"{self.vlm_preset!r} preset); older releases reject it. "
+                    "Build the serve image from source or upgrade docling-serve."
+                ) from exc
+            raise
         payload = resp.json() if resp.text else {}
         task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
         if not task_id:

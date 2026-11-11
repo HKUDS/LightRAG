@@ -1166,3 +1166,19 @@ def test_docling_adapter_kv_form_items_audit_in_split_option(tmp_path: Path) -> 
     ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     extras = ir.split_option["docling_extras"]
     assert extras == {"key_value_items": 2, "form_items": 1}
+
+
+# ---------------------------------------------------------------------------
+# 13. Empty conversions
+# ---------------------------------------------------------------------------
+
+
+def test_docling_adapter_rejects_a_document_without_body_or_kv_items(
+    tmp_path: Path,
+) -> None:
+    """A VLM pipeline that returns empty Markdown must fail, not index nothing."""
+    raw_dir = _write_doc(
+        tmp_path, {"schema_name": "DoclingDocument", "body": {"children": []}}
+    )
+    with pytest.raises(ValueError, match="produced no content"):
+        DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")

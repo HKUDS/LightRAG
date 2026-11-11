@@ -293,6 +293,8 @@ def docling_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
         "DOCLING_OCR_LANG",
         "DOCLING_DO_FORMULA_ENRICHMENT",
         "DOCLING_ENGINE_VERSION",
+        "DOCLING_PIPELINE",
+        "DOCLING_VLM_PRESET",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -339,6 +341,120 @@ async def test_docling_client_sends_fixed_constants(
     assert manifest.engine == "docling"
     assert manifest.extras["fixed_constants"]["pipeline"] == "standard"
     assert manifest.endpoint_signature == "http://docling.test"
+
+
+async def test_docling_client_vlm_pipeline_sends_preset_and_omits_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    manifest = await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    field_map: dict[str, list[str]] = {}
+    for name, value in _form_pairs(recorder.post_calls[0]["data"]):
+        field_map.setdefault(name, []).append(value)
+
+    assert field_map["pipeline"] == ["vlm"]
+    assert field_map["vlm_pipeline_preset"] == ["minicpm_ocr"]
+    assert sorted(field_map["to_formats"]) == ["json", "md"]
+    for name in (
+        "do_ocr",
+        "force_ocr",
+        "ocr_engine",
+        "ocr_preset",
+        "ocr_lang",
+        "do_formula_enrichment",
+    ):
+        assert name not in field_map
+
+    assert manifest.extras["fixed_constants"]["pipeline"] == "vlm"
+
+
+async def test_docling_client_rejects_unknown_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "fast")
+    with pytest.raises(ValueError, match="DOCLING_PIPELINE"):
+        DoclingRawClient()
+
+
+async def test_docling_client_vlm_requires_a_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    with pytest.raises(ValueError, match="DOCLING_VLM_PRESET"):
+        DoclingRawClient()
+
+
+async def test_docling_client_vlm_warns_about_ocr_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    monkeypatch.setenv("DOCLING_DO_OCR", "true")
+    monkeypatch.setenv("DOCLING_OCR_ENGINE", "easyocr")
+
+    with caplog.at_level("WARNING"):
+        DoclingRawClient()
+
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "DOCLING_DO_OCR" in message
+    assert "DOCLING_OCR_ENGINE" in message
+
+
+async def test_docling_client_vlm_error_names_the_docling_floor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        submit_status_code=422,
+        submit_text='{"detail":"unknown vlm preset: minicpm_ocr"}',
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docling>=2.149"):
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+
+def test_docling_cache_signature_only_records_pipeline_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightrag.parser.external.docling.cache import snapshot_tunable_env
+    from lightrag.parser.external.docling.client import (
+        FIXED_CONSTANTS,
+        fixed_constants_for,
+    )
+
+    standard = snapshot_tunable_env()
+    assert "DOCLING_PIPELINE" not in standard
+    assert "DOCLING_VLM_PRESET" not in standard
+    assert fixed_constants_for("standard") is FIXED_CONSTANTS
+
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    vlm = snapshot_tunable_env()
+    assert vlm["DOCLING_PIPELINE"] == "vlm"
+    assert vlm["DOCLING_VLM_PRESET"] == "minicpm_ocr"
+    assert fixed_constants_for("vlm")["pipeline"] == "vlm"
 
 
 async def test_docling_client_partial_success_aborts(

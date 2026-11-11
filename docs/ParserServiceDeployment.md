@@ -178,3 +178,43 @@ DOCLING_DO_FORMULA_ENRICHMENT=true
 ```
 
 This enables LightRAG to recognize equations in documents via the local docling-serve and output them in LaTeX form.
+
+## Using the VLM pipeline (for example MiniCPM-OCR)
+
+Docling Serve can also read pages with a vision-language model instead of an
+OCR engine. LightRAG exposes that pipeline with two settings:
+
+```bash
+DOCLING_ENDPOINT=http://localhost:5001
+DOCLING_PIPELINE=vlm
+DOCLING_VLM_PRESET=minicpm_ocr
+```
+
+`DOCLING_VLM_PRESET` names a preset registered in the docling version running
+inside docling-serve. `minicpm_ocr` (MiniCPM-OCR 1.0) is available from
+docling 2.149; until the docling-serve image you use ships that release, build
+the image from source:
+
+```bash
+git clone https://github.com/docling-project/docling-serve
+cd docling-serve
+# pyproject requires docling-slim>=2.140,<3; the lockfile must resolve to >=2.149
+uv sync --frozen
+uv run docling-serve run --host 0.0.0.0 --port 5001
+```
+
+With the VLM pipeline, the `DOCLING_DO_OCR*` / `DOCLING_OCR_*` settings are
+ignored and left out of the request (LightRAG logs a warning if any are set).
+The document still comes back as a DoclingDocument, so the sidecar/IR path is
+unchanged, but the structure is shallower: there is no layout-model reading
+order or table-structure recovery, which is the trade-off of letting the model
+read the page.
+
+Which engine runs the preset (local transformers, vLLM, Ollama, ...) is a
+deployment concern on the docling-serve side; see its `vlm_pipeline_*` options
+and preset settings.
+
+> **Note:** a docling-serve release older than the one that bundles docling
+> 2.149 answers HTTP 422 for an unknown preset. LightRAG names that requirement
+> in the error message.
+
