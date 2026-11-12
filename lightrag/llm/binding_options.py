@@ -480,7 +480,7 @@ class BindingOptions:
 
             try:
                 if field_type is bool:
-                    base[field_name] = env_raw.lower() in _BOOL_TRUE_WORDS
+                    base[field_name] = env_raw.strip().lower() in _BOOL_TRUE_WORDS
                 elif field_type in (list, List[str]):
                     base[field_name] = json.loads(env_raw)
                 elif field_type is dict:
