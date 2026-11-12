@@ -217,7 +217,7 @@ from lightrag.llm_roles import (
     ROLES,
     RoleLLMConfig,
     RoleSpec,  # noqa: F401  # re-exported via lightrag/__init__.py
-    _optional_env_int,
+    _role_max_async_seed,
     _RoleLLMMixin,
     _RoleLLMState,
 )
@@ -1716,8 +1716,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # dispatches exactly that many workers: 0 or negative dispatches
         # none, so the wrapped call would never execute and the pipeline
         # would hang without an error. Fail fast for every queue built
-        # from these fields (per-role limits are checked where the role
-        # wrapper is built, in _wrap_llm_role_func).
+        # from these fields and from the per-role seeds below.
         if self.embedding_func_max_async < 1:
             raise ValueError(
                 "EMBEDDING_FUNC_MAX_ASYNC must be >= 1 (a non-positive "
@@ -1736,6 +1735,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "dispatches no workers, so rerank calls would never "
                 f"run); got {self.rerank_model_max_async}"
             )
+        # Per-role seeds are checked here too, so a bad one is reported by
+        # the name of the setting that supplied it and before any storage
+        # object or the working directory is created.
+        for spec in ROLES:
+            role_max_async, source = _role_max_async_seed(spec, self.role_llm_configs)
+            if role_max_async is not None and role_max_async < 1:
+                raise ValueError(
+                    f"{source} must be >= 1 (a non-positive limit "
+                    f"dispatches no workers, so calls through the "
+                    f"{spec.name!r} LLM role would never run); got "
+                    f"{role_max_async}"
+                )
 
         # Handle deprecated parameters
         if self.log_level is not None:
@@ -2008,9 +2019,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     f"a dict, got {type(override).__name__}"
                 )
 
-            max_async = cfg.max_async
-            if max_async is None:
-                max_async = _optional_env_int(f"{spec.env_prefix}_MAX_ASYNC_LLM")
+            max_async, _ = _role_max_async_seed(spec, user_role_configs)
 
             metadata = {}
             if cfg.metadata is not None:
