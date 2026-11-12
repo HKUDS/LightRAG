@@ -8,11 +8,16 @@ from lightrag.kg.postgres_impl import (
 from lightrag.namespace import NameSpace
 
 
+pytestmark = pytest.mark.offline
+
+
 # Mock PostgreSQLDB
 @pytest.fixture
 def mock_pg_db():
     """Mock PostgreSQL database connection"""
     db = AsyncMock()
+    # Real default; an auto-created mock breaks _check_vector_index_dimension.
+    db.vector_index_type = None
     db.workspace = "test_workspace"
 
     # Mock query responses with multirows support

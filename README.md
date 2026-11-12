@@ -24,7 +24,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -131,7 +131,7 @@ lightrag-server
 | Tool | Used for | How to install |
 |---|---|---|
 | git | Cloning the repository | Your system package manager |
-| [uv](https://docs.astral.sh/uv/) | Virtual environment and Python dependencies. Downloads a suitable Python (3.10+) if the system has none | See the uv note above |
+| [uv](https://docs.astral.sh/uv/) | Virtual environment and Python dependencies. Downloads a suitable Python (3.11+) if the system has none | See the uv note above |
 | [bun](https://bun.sh/docs/installation) | Building the WebUI | `curl -fsSL https://bun.sh/install \| bash` (Windows: `powershell -c "irm bun.sh/install.ps1 \| iex"`). The Linux script needs `unzip`, which minimal Debian / Ubuntu images lack: `sudo apt-get install -y unzip` |
 | make | Optional: the `make dev` shortcut and the `make env-*` setup wizard | Your system package manager |
 

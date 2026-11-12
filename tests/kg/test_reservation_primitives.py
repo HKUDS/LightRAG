@@ -31,6 +31,9 @@ from lightrag.kg.shared_storage import (
 )
 
 
+pytestmark = pytest.mark.offline
+
+
 class _CountingStatus(dict):
     """DictProxy-shaped fake that counts remote-style method calls."""
 
