@@ -4178,117 +4178,72 @@ class PGVectorStorage(BaseVectorStorage):
         workspace: str,
         expected_count: int,
         embedding_dim: int,
-    ) -> int:
-        """Migrate workspace data from legacy table to new table using batch insert.
+    ) -> int | None:
+        """Copy one workspace atomically on a single connection.
 
-        This function uses asyncpg's executemany for efficient batch insertion,
-        reducing database round-trips from N to 1 per batch.
-
-        Uses keyset pagination (cursor-based) with ORDER BY id for stable ordering.
-        This ensures every legacy row is migrated exactly once, avoiding the
-        non-deterministic row ordering issues with OFFSET/LIMIT without ORDER BY.
-
-        Args:
-            db: PostgreSQLDB instance
-            legacy_table_name: Name of the legacy table to migrate from
-            new_table_name: Name of the new table to migrate to
-            workspace: Workspace to filter records for migration
-            expected_count: Expected number of records to migrate
-            embedding_dim: Embedding dimension for vector column
-
-        Returns:
-            Number of records migrated
+        Server-side INSERT SELECT avoids materializing vectors in Python and
+        preserves source column names regardless of target column order. Copy
+        and verification share a repeatable-read snapshot and transaction.
+        expected_count and embedding_dim remain compatibility parameters;
+        the source count is re-read inside the transaction. Returns None when
+        a populated target is preserved, not certified complete. Callers must
+        quiesce writers; old partial targets require offline reconciliation.
+        See docs/design/PostgresMigrationAtomicity.md.
         """
-        migrated_count = 0
-        last_id: str | None = None
-        batch_size = 500
 
-        while True:
-            # Use keyset pagination with ORDER BY id for deterministic ordering
-            # This avoids OFFSET/LIMIT without ORDER BY which can skip or duplicate rows
-            if workspace:
-                if last_id is not None:
-                    select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 AND id > $2 ORDER BY id LIMIT $3"
-                    rows = await db.query(
-                        select_query, [workspace, last_id, batch_size], multirows=True
+        if not workspace:
+            raise ValueError("workspace must be provided")
+
+        def _checked_count(value: Any) -> int:
+            if type(value) is not int or value < 0:
+                raise DataMigrationError("PostgreSQL: Invalid migration count result")
+            return value
+
+        async def _copy(connection: asyncpg.Connection) -> int | None:
+            # Every read and write uses this connection. A retry starts a new
+            # transaction and rechecks admission, including ambiguous COMMIT.
+            async with connection.transaction(isolation="repeatable_read"):
+                target_count = await connection.fetchval(
+                    f"SELECT COUNT(*) FROM {new_table_name} WHERE workspace = $1",
+                    workspace,
+                )
+                target_count = _checked_count(target_count)
+                if target_count:
+                    # Preserve existing data, including a previous attempt whose
+                    # COMMIT succeeded but whose response was lost. This is not
+                    # a retrospective certification of an old partial target.
+                    return None
+                source_count = await connection.fetchval(
+                    f"SELECT COUNT(*) FROM {legacy_table_name} WHERE workspace = $1",
+                    workspace,
+                )
+                source_count = _checked_count(source_count)
+                statement = await connection.prepare(
+                    f"SELECT * FROM {legacy_table_name} LIMIT 0"
+                )
+                columns = ", ".join(
+                    '"' + attribute.name.replace('"', '""') + '"'
+                    for attribute in statement.get_attributes()
+                )
+                await connection.execute(
+                    f"INSERT INTO {new_table_name} ({columns}) "
+                    f"SELECT {columns} FROM {legacy_table_name} "
+                    "WHERE workspace = $1 ON CONFLICT (workspace, id) DO NOTHING",
+                    workspace,
+                )
+                copied_count = await connection.fetchval(
+                    f"SELECT COUNT(*) FROM {new_table_name} WHERE workspace = $1",
+                    workspace,
+                )
+                copied_count = _checked_count(copied_count)
+                if copied_count != source_count:
+                    raise DataMigrationError(
+                        "PostgreSQL: Migration verification failed, expected "
+                        f"{source_count} records, got {copied_count}."
                     )
-                else:
-                    select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 ORDER BY id LIMIT $2"
-                    rows = await db.query(
-                        select_query, [workspace, batch_size], multirows=True
-                    )
-            else:
-                if last_id is not None:
-                    select_query = f"SELECT * FROM {legacy_table_name} WHERE id > $1 ORDER BY id LIMIT $2"
-                    rows = await db.query(
-                        select_query, [last_id, batch_size], multirows=True
-                    )
-                else:
-                    select_query = (
-                        f"SELECT * FROM {legacy_table_name} ORDER BY id LIMIT $1"
-                    )
-                    rows = await db.query(select_query, [batch_size], multirows=True)
+                return copied_count
 
-            if not rows:
-                break
-
-            # Track the last ID for keyset pagination cursor
-            last_id = rows[-1]["id"]
-
-            # Batch insert optimization: use executemany instead of individual inserts
-            # Get column names from the first row
-            first_row = dict(rows[0])
-            columns = list(first_row.keys())
-            columns_str = ", ".join(columns)
-            placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])
-
-            insert_query = f"""
-                INSERT INTO {new_table_name} ({columns_str})
-                VALUES ({placeholders})
-                ON CONFLICT (workspace, id) DO NOTHING
-            """
-
-            # Prepare batch data: convert rows to list of tuples
-            batch_values = []
-            for row in rows:
-                row_dict = dict(row)
-
-                # FIX: Parse vector strings from connections without register_vector codec.
-                # When pgvector codec is not registered on the read connection, vector
-                # columns are returned as text strings like "[0.1,0.2,...]" instead of
-                # lists/arrays. We need to convert these to numpy arrays before passing
-                # to executemany, which uses a connection WITH register_vector codec
-                # that expects list/tuple/ndarray types.
-                if "content_vector" in row_dict:
-                    vec = row_dict["content_vector"]
-                    if isinstance(vec, str):
-                        # pgvector text format: "[0.1,0.2,0.3,...]"
-                        vec = vec.strip("[]")
-                        if vec:
-                            row_dict["content_vector"] = np.array(
-                                [float(x) for x in vec.split(",")], dtype=np.float32
-                            )
-                        else:
-                            row_dict["content_vector"] = None
-
-                # Extract values in column order to match placeholders
-                values_tuple = tuple(row_dict[col] for col in columns)
-                batch_values.append(values_tuple)
-
-            # Use executemany for batch execution - significantly reduces DB round-trips
-            # Note: register_vector is already called on pool init, no need to call it again
-            async def _batch_insert(connection: asyncpg.Connection) -> None:
-                await connection.executemany(insert_query, batch_values)
-
-            await db._run_with_retry(_batch_insert)
-
-            migrated_count += len(rows)
-            workspace_info = f" for workspace '{workspace}'" if workspace else ""
-            logger.info(
-                f"PostgreSQL: {migrated_count}/{expected_count} records migrated{workspace_info}"
-            )
-
-        return migrated_count
+        return await db._run_with_retry(_copy)
 
     @staticmethod
     async def setup_table(
@@ -4530,27 +4485,12 @@ class PGVectorStorage(BaseVectorStorage):
                     legacy_count,
                     embedding_dim,
                 )
-                if migrated_count != legacy_count:
+                if migrated_count is None:
                     logger.warning(
-                        "PostgreSQL: Read %s legacy records%s during migration, expected %s.",
-                        migrated_count,
-                        workspace_info,
-                        legacy_count,
+                        "PostgreSQL: Target workspace became populated before "
+                        "migration; preserving existing data without verification."
                     )
-
-                new_count_result = await db.query(new_count_query, [workspace])
-                new_table_count_after = (
-                    new_count_result.get("count", 0) if new_count_result else 0
-                )
-                inserted_count = new_table_count_after - new_table_workspace_count
-
-                if inserted_count != legacy_count:
-                    error_msg = (
-                        "PostgreSQL: Migration verification failed, "
-                        f"expected {legacy_count} inserted records, got {inserted_count}."
-                    )
-                    logger.error(error_msg)
-                    raise DataMigrationError(error_msg)
+                    return
 
             except DataMigrationError:
                 # Re-raise DataMigrationError as-is to preserve specific error messages
