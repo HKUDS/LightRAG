@@ -12,6 +12,7 @@ from lightrag.chunker.paragraph_semantic import (
     _merge_small_blocks,
     chunking_by_paragraph_semantic,
 )
+from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.utils import Tokenizer, TokenizerInterface
 
 
@@ -437,27 +438,118 @@ def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeyp
 
 
 @pytest.mark.offline
-def test_paragraph_semantic_falls_back_when_blocks_jsonl_is_not_utf8(tmp_path):
-    # A blocks.jsonl holding invalid UTF-8 raises UnicodeDecodeError (a
-    # ValueError, not an OSError) while it is being read. It must take the
-    # same P→R fallback as a missing sidecar instead of aborting chunking.
-    tokenizer = _make_tokenizer()
-    content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
-    expected = chunking_by_paragraph_semantic(
-        tokenizer, content, 40, blocks_path=str(tmp_path / "missing.blocks.jsonl")
-    )
-    assert expected
-
-    # A valid first row proves the failure is tolerated mid-file as well.
+def test_paragraph_semantic_fails_when_blocks_jsonl_is_not_utf8(tmp_path):
+    # A sidecar that exists but does not decode is damaged, not absent. It
+    # must fail the document rather than take the missing-sidecar P→R
+    # fallback: that fallback is recorded nowhere, so the document would be
+    # indexed without its structure and nobody would know.
     corrupt = tmp_path / "doc.blocks.jsonl"
+    # A valid first row proves the failure is caught mid-file as well.
     corrupt.write_bytes(
         json.dumps({"type": "content", "content": "ok"}).encode() + b"\n\xff\xfe\n"
     )
 
-    assert (
-        chunking_by_paragraph_semantic(tokenizer, content, 40, blocks_path=str(corrupt))
-        == expected
+    with pytest.raises(BlocksSidecarCorruptError) as excinfo:
+        chunking_by_paragraph_semantic(
+            _make_tokenizer(),
+            "First paragraph.\n\nSecond paragraph.",
+            40,
+            blocks_path=str(corrupt),
+        )
+
+    assert excinfo.value.blocks_path == str(corrupt)
+    assert "invalid UTF-8" in str(excinfo.value)
+    assert "upload it again" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("corrupt_row", [0, 1, 2])
+def test_paragraph_semantic_fails_for_partially_malformed_jsonl(
+    tmp_path, corrupt_row, lightrag_log_records
+):
+    paragraphs = ["Alpha section.", "Beta section.", "Gamma section."]
+    rows = [
+        json.dumps({"type": "content", "blockid": f"blk-{i}", "content": text})
+        for i, text in enumerate(paragraphs)
+    ]
+    # A truncated row must invalidate the whole sidecar, even when other
+    # content rows can be read. Keeping only those rows loses source text.
+    rows[corrupt_row] = rows[corrupt_row][:-1]
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    # A leading meta row and a blank line: the reported line number is the
+    # file's own, not an index into the content rows.
+    blocks_path.write_text(
+        json.dumps({"type": "meta"}) + "\n\n" + "\n".join(rows) + "\n",
+        encoding="utf-8",
     )
+
+    with pytest.raises(BlocksSidecarCorruptError) as excinfo:
+        chunking_by_paragraph_semantic(
+            _make_tokenizer(),
+            "\n\n".join(paragraphs),
+            30,
+            blocks_path=str(blocks_path),
+        )
+
+    assert excinfo.value.line_number == corrupt_row + 3
+    assert f"at line {corrupt_row + 3}" in str(excinfo.value)
+    assert "upload it again" in str(excinfo.value)
+    # No fallback ran: the P→R path always logs a warning.
+    assert not [r for r in lightrag_log_records if "falling back" in r.getMessage()]
+
+
+@pytest.mark.offline
+def test_paragraph_semantic_still_falls_back_when_blocks_jsonl_is_missing(tmp_path):
+    # The fail-fast above is for a damaged sidecar only. A document that never
+    # had one keeps the documented P→R degradation.
+    tokenizer = _make_tokenizer()
+    content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer, content, 40, blocks_path=str(tmp_path / "missing.blocks.jsonl")
+    )
+
+    assert chunks
+    assert chunks == chunking_by_paragraph_semantic(tokenizer, content, 40)
+
+
+@pytest.mark.offline
+def test_valid_jsonl_keeps_structured_chunks_with_blank_and_metadata_rows(tmp_path):
+    content = "# Topic\nStructured paragraph."
+    row = {
+        "type": "content",
+        "blockid": "blk-topic",
+        "heading": "Topic",
+        "level": 2,
+        "parent_headings": ["Parent"],
+        "content": content,
+    }
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_title": "Document"})
+        + "\n\n"
+        + json.dumps(row)
+        + "\n \t\n",
+        encoding="utf-8",
+    )
+
+    chunks = chunking_by_paragraph_semantic(
+        _make_tokenizer(), content, 100, blocks_path=str(blocks_path)
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["content"] == content
+    assert chunks[0]["heading"] == {
+        "heading": "Topic",
+        "level": 2,
+        "parent_headings": ["Parent"],
+    }
+    assert chunks[0]["sidecar"] == {
+        "type": "block",
+        "id": "blk-topic",
+        "refs": [{"type": "block", "id": "blk-topic"}],
+    }
 
 
 # ---------------------------------------------------------------------------
