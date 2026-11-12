@@ -182,6 +182,19 @@ lightrag-server
 
 Open `http://localhost:9621/webui` for the WebUI. The interactive REST API docs are at `http://localhost:9621/docs`. Replace the host and port if you changed `HOST` / `PORT`.
 
+**Updating after `git pull`.** Re-sync with the extras you installed in Step 2, plus `--locked --inexact`. For Option B:
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # Option A: --locked --inexact --extra api
+```
+
+- **Same extras every time.** A package that only an omitted extra needs stops being kept at its locked version, and a sync without `--inexact` uninstalls it.
+- **`--locked`** installs exactly what `uv.lock` pins. If `uv.lock` is out of date with `pyproject.toml`, it stops with an error instead of rewriting `uv.lock`.
+- **`--inexact`** keeps packages that are not in `uv.lock`, such as the spaCy models from `lightrag-download-cache --spacy-install`. A plain `uv sync` removes them.
+
+If the pull changed `lightrag_webui/`, repeat Step 3 as well.
+
 ### Launch with Docker Compose
 
 ```bash

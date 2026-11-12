@@ -7,8 +7,9 @@
 # 🚀 LightRAG: 简单且快速的检索增强生成（RAG）框架
 
 <div align="center">
-    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending"><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending" height="55"></picture></a>&#32;<a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS/LightRAG | Trendshift" height="55"></a>&#32;<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank"><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank" height="55"></picture></a>
 </div>
+
 <p>
 </p>
 <div align="center">
@@ -51,27 +52,6 @@
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
-</div>
-
----
-
-<div align="center">
-  <table>
-    <tr>
-      <td style="vertical-align: middle;">
-        <img src="./assets/LiteWrite.png"
-             width="56"
-             height="56"
-             alt="LiteWrite"
-             style="border-radius: 12px;" />
-      </td>
-      <td style="vertical-align: middle; padding-left: 12px;">
-        <a href="https://litewrite.ai">
-          <img src="https://img.shields.io/badge/🚀%20LiteWrite-AI%20原生%20LaTeX%20编辑器-ff6b6b?style=for-the-badge&logoColor=white&labelColor=1a1a2e">
-        </a>
-      </td>
-    </tr>
-  </table>
 </div>
 
 ---
@@ -170,7 +150,8 @@ uv sync --extra api
 ```
 
 ```bash
-# 方式 B：参与开发，安装测试工具链以及全部存储后端和 LLM 提供商集成
+# 方式 B：参与开发——测试工具链，以及全部存储后端
+# 和 LLM 提供商集成
 uv sync --extra test --extra offline
 ```
 
@@ -200,6 +181,19 @@ lightrag-server
 ```
 
 浏览器打开 `http://localhost:9621/webui` 进入 WebUI；交互式 REST API 文档位于 `http://localhost:9621/docs`。如果修改过 `HOST` / `PORT`，请替换成对应的地址和端口。
+
+**`git pull` 之后更新环境。** 用第 2 步安装时的 extras 重新同步，并加上 `--locked --inexact`。以方式 B 为例：
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # 方式 A：--locked --inexact --extra api
+```
+
+- **每次都用相同的 extras。** 只被某个漏掉的 extra 需要的包，就不会再保持在锁定版本；不带 `--inexact` 同步时还会被卸载。
+- **`--locked`** 严格按 `uv.lock` 锁定的版本安装。如果 `uv.lock` 与 `pyproject.toml` 不一致，它会报错停止，而不是改写 `uv.lock`。
+- **`--inexact`** 保留不在 `uv.lock` 中的包，例如 `lightrag-download-cache --spacy-install` 安装的 spaCy 模型。不加它的 `uv sync` 会把它们删掉。
+
+如果这次 pull 改动了 `lightrag_webui/`，还要重新执行第 3 步。
 
 ### 使用 Docker Compose 启动
 
@@ -296,13 +290,13 @@ brew install cairo
 
 ### 特点与优势
 
-1. **深度上下文理解**：通过图结构索引，LightRAG 能够捕捉实体间复杂的语义依赖关系，克服了传统分块检索方法上下文割裂的缺陷。在需要全局理解或逻辑推理的垂直领域（如法律、金融），其生成质量与上下文感知能力尤为突出。
-2. **卓越的全面性与多样性**：LightRAG的双层检索机制使其能够同时整合详细事实与抽象概念，让其在查询结果全面性（Comprehensiveness）和多样性（Diversity）取得卓越的成绩，有效应对复杂的跨文档查询。
-3. **极高的检索效率与低成本**：LightRAG不需要依赖低效的社区报告和复杂查询时的多跳推理，大幅度减少了索引和查询阶段对LLM的调用，显著减少了响应延迟与LLM计算成本。
-4. **支持增量更新与局部删除**：LightRAG 解决了基于图的知识库难以增量更新和局部删除的问题，保证系统在动态数据环境下的时效性。删除文档时，系统可以利用构建阶段的 LLM 缓存快速重建受影响的实体与关系，大幅提升知识库的更新效率。
-5. **支持多种文档解析引擎**：LightRAG 的文件处理管线支持 MinerU、Docling 和 Native 等文档解析引擎，也支持第三方扩展解析引擎。LightRAG 专属的 Native 引擎可高效解析 Word 和 Markdown 文档中的图片、表格和公式，尤其适合处理多模态内容丰富的文档。Native 引擎还支持自动识别和纠正 Word 文档的章节标题，即使文档大纲不规范，也能改善内容提取效果，为后续按章节进行文本分块打下基础。
-6. **支持多种文本分块策略**：LightRAG 支持 4 种文本分块策略，分别是 `固定长度分块(F)`、`递归字符分块(R)`、`向量语义分块(V)` 和 `段落语义分块(P)`。其中，`段落语义分块(P)` 是 LightRAG 专属的分块策略，可以**让分块边界尽可能对齐文档原生的语义边界**（标题、段落和表格），从而减少标题与内容错配、长表格切分后丢失标题行等问题。
-7. **支持多种存储后端**：LightRAG 默认的 KV、向量和图存储均采用基于本地文件持久化的内存数据库，**仅适合小数据量的测试与效果评估，不适用于生产环境**。LightRAG 还支持多种主流后端存储（推荐 PostgreSQL），可用于大规模数据集的生产部署。
+- **深度上下文理解**：通过图结构索引，LightRAG 能够捕捉实体间复杂的语义依赖关系，克服了传统分块检索方法上下文割裂的缺陷。在需要全局理解或逻辑推理的垂直领域（如法律、金融），其生成质量与上下文感知能力尤为突出。
+- **卓越的全面性与多样性**：LightRAG的双层检索机制使其能够同时整合详细事实与抽象概念，让其在查询结果全面性（Comprehensiveness）和多样性（Diversity）取得卓越的成绩，有效应对复杂的跨文档查询。
+- **极高的检索效率与低成本**：LightRAG不需要依赖低效的社区报告和复杂查询时的多跳推理，大幅度减少了索引和查询阶段对LLM的调用，显著减少了响应延迟与LLM计算成本。
+- **支持增量更新与局部删除**：LightRAG 解决了基于图的知识库难以增量更新和局部删除的问题，保证系统在动态数据环境下的时效性。删除文档时，系统可以利用构建阶段的 LLM 缓存快速重建受影响的实体与关系，大幅提升知识库的更新效率。
+- **支持多种文档解析引擎**：LightRAG 的文件处理管线支持 MinerU、Docling 和 Native 等文档解析引擎，也支持第三方扩展解析引擎。LightRAG 专属的 Native 引擎可高效解析 Word 和 Markdown 文档中的图片、表格和公式，尤其适合处理多模态内容丰富的文档。Native 引擎还支持自动识别和纠正 Word 文档的章节标题，即使文档大纲不规范，也能改善内容提取效果，为后续按章节进行文本分块打下基础。
+- **支持多种文本分块策略**：LightRAG 支持 4 种文本分块策略，分别是 `固定长度分块(F)`、`递归字符分块(R)`、`向量语义分块(V)` 和 `段落语义分块(P)`。其中，`段落语义分块(P)` 是 LightRAG 专属的分块策略，可以**让分块边界尽可能对齐文档原生的语义边界**（标题、段落和表格），从而减少标题与内容错配、长表格切分后丢失标题行等问题。
+- **支持多种存储后端**：LightRAG 默认的 KV、向量和图存储均采用基于本地文件持久化的内存数据库，**仅适合小数据量的测试与效果评估，不适用于生产环境**。LightRAG 还支持多种主流后端存储（推荐 PostgreSQL），可用于大规模数据集的生产部署。
 
 ### 多模态能力的升级
 
@@ -350,7 +344,7 @@ LightRAG 的默认查询模式为 mix。使用 mix 模式通常可以获得最�
 
 ### 开启 Rerank 选项
 
-查询阶段开启 Rerank 选项可以显著提高查询的质量。开启 Rerank 通常会引入 1～2 秒的延时。为了降低延时，建议尽量在本地部署 Rerank 模型。主流最新的 Reranker 皆可，本地部署推荐 `BAAI/bge-reranker-v2-m3`。Rerank 的相关配置方式请参考 `.env.example` 文件。Rerank 模型与 Embedding 模型不同，可以在查询阶段随时更换。
+查询阶段开启 Rerank 选项可以显著提高查询的质量。开启 Rerank 通常会引入 1～2 秒的延时。为了降低延时，建议尽量在本地部署 Rerank 模型。主流最新的 Reranker 皆可，本地部署推荐 `BAAI/bge-reranker-v2-m3`。Rerank 的相关配置方式请参考 `env.example` 文件。Rerank 模型与 Embedding 模型不同，可以在查询阶段随时更换。
 
 ### 文档处理流水线的配置
 
@@ -409,7 +403,7 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 - **ENABLE_CONTENT_HEADINGS**：控制查询阶段是否把文本块所属章节标题信息送给LLM（默认允许，为LLM提供更多的上下文信息）
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**：控制每个`实体/关系`能够最多与多少个文本块保持关联
 - **SOURCE_IDS_LIMIT_METHOD**：控制`实体/关系`关联文本块超过限制后是否继续更新实体关系的描述（默认不再更新，因为此时实体关系的描述已经足够丰富，继续更新的意义不大；放弃更新可以极大地提高知识库的构建速度）
-- **DEFAULT_MAX_FILE_PATHS**：控制`实体/关系`关联的原始文件的最大数量，超过这个数量之后新的文件名不再写入到向量存储。
+- **MAX_FILE_PATHS**：控制`实体/关系`关联的原始文件的最大数量，超过这个数量之后新的文件名不再写入到向量存储。
 
 ### 解决实体关系抽取阶段的 LLM 超时
 
@@ -492,7 +486,7 @@ SDK的使用说明详见 **[docs/ProgramingWithCore.md](./docs/ProgramingWithCor
 
 LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 NaiveRAG、RQ-RAG、HyDE 和 GraphRAG。完整评估方法论、提示词和复现步骤详见 **[docs/Reproduce.md](./docs/Reproduce.md)**（英文）。
 
-### 总体性能表
+**总体性能表**
 
 ||**农业**||**计算机科学**||**法律**||**混合**||
 |----------------------|---------------|------------|------|------------|---------|------------|-------|------------|
@@ -541,6 +535,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 | 文档 | 内容 |
 |---|---|
 | [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md) | 服务器完整指南：启动、配置、认证、REST 接口与 WebUI 使用 |
+| [UserDefinedUI-zh.md](./docs/UserDefinedUI-zh.md) | 按语言替换欢迎页、登录页文字、用户协议、查询空状态、版权行和品牌 Logo（`UI_TEMPLATES_DIR`） |
 
 **文档处理**
 

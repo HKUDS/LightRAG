@@ -110,7 +110,7 @@ def _handler_with_accounts(monkeypatch, auth_accounts: str):
         "global_args",
         SimpleNamespace(
             auth_accounts=auth_accounts,
-            token_secret="test-jwt-secret",
+            token_secret="test-jwt-secret-that-is-at-least-32-bytes",
             jwt_algorithm="HS256",
             token_expire_hours=48,
             guest_token_expire_hours=24,

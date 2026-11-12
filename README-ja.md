@@ -7,8 +7,9 @@
 # 🚀 LightRAG: シンプルかつ高速な検索拡張生成（RAG）
 
 <div align="center">
-    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending"><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending" height="55"></picture></a>&#32;<a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS/LightRAG | Trendshift" height="55"></a>&#32;<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank"><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank" height="55"></picture></a>
 </div>
+
 <p>
 </p>
 <div align="center">
@@ -51,27 +52,6 @@
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
-</div>
-
----
-
-<div align="center">
-  <table>
-    <tr>
-      <td style="vertical-align: middle;">
-        <img src="./assets/LiteWrite.png"
-             width="56"
-             height="56"
-             alt="LiteWrite"
-             style="border-radius: 12px;" />
-      </td>
-      <td style="vertical-align: middle; padding-left: 12px;">
-        <a href="https://litewrite.ai">
-          <img src="https://img.shields.io/badge/🚀%20LiteWrite-AI%20Native%20LaTeX%20Editor-ff6b6b?style=for-the-badge&logoColor=white&labelColor=1a1a2e">
-        </a>
-      </td>
-    </tr>
-  </table>
 </div>
 
 ---
@@ -201,6 +181,19 @@ lightrag-server
 ```
 
 ブラウザで `http://localhost:9621/webui` を開くと WebUI が表示されます。対話式の REST API ドキュメントは `http://localhost:9621/docs` です。`HOST` / `PORT` を変更した場合は、そのアドレスとポートに置き換えてください。
+
+**`git pull` 後の環境更新。** ステップ 2 でインストールしたときと同じ extras に `--locked --inexact` を付けて再同期します。オプション B の場合：
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # オプション A：--locked --inexact --extra api
+```
+
+- **毎回同じ extras を指定します。** 指定し忘れた extra だけが必要とするパッケージは、ロックされたバージョンに保たれなくなります。`--inexact` なしで同期するとアンインストールされます。
+- **`--locked`** は `uv.lock` が固定したバージョンをそのままインストールします。`uv.lock` が `pyproject.toml` と食い違っている場合は、`uv.lock` を書き換えずにエラーで停止します。
+- **`--inexact`** は `uv.lock` にないパッケージを残します。たとえば `lightrag-download-cache --spacy-install` でインストールした spaCy モデルです。付けずに `uv sync` を実行すると削除されます。
+
+pull で `lightrag_webui/` が変更された場合は、ステップ 3 もやり直してください。
 
 ### Docker Compose で起動
 
@@ -351,7 +344,7 @@ LightRAG のデフォルトのクエリモードは `mix` です。`mix` モー�
 
 ### リランキングの有効化
 
-クエリ段階で Rerank オプションを有効にすると、クエリ品質が大幅に向上します。ただし、Rerank を有効にすると通常 1～2 秒の遅延が生じます。レイテンシを最小化するため、Rerank モデルをローカルにデプロイすることを強く推奨します。設定の詳細については `.env.example` ファイルを参照してください。埋め込みモデルとは異なり、Rerank モデルはクエリ段階でいつでも変更できます。
+クエリ段階で Rerank オプションを有効にすると、クエリ品質が大幅に向上します。ただし、Rerank を有効にすると通常 1～2 秒の遅延が生じます。レイテンシを最小化するため、Rerank モデルをローカルにデプロイすることを強く推奨します。設定の詳細については `env.example` ファイルを参照してください。埋め込みモデルとは異なり、Rerank モデルはクエリ段階でいつでも変更できます。
 
 ### ドキュメント処理パイプラインの設定
 
@@ -410,7 +403,7 @@ LightRAG は4種類のバックエンドストレージを必要とします:
 - **ENABLE_CONTENT_HEADINGS**: クエリ段階でテキストチャンクのセクション見出し情報を LLM に送信するかどうかを制御します（デフォルトで有効。LLM により多くのコンテキストを提供します）。
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: 1つの `entity/relation` が関連付けられるテキストチャンクの最大数を制御します。
 - **SOURCE_IDS_LIMIT_METHOD**: ある `entity/relation` が関連テキストチャンク数の上限を超えた後も、エンティティ/関係の説明を更新し続けるかどうかを制御します（デフォルトでは更新を停止します。その時点でエンティティ関係の説明はすでに十分豊富であり、さらなる更新はほとんど価値を加えないためです。更新をスキップすることで知識ベースの構築を大幅に高速化できます）。
-- **DEFAULT_MAX_FILE_PATHS**: 1つの `entity/relation` が関連付けられるソースファイルの最大数を制御します。この上限を超えると、新しいファイル名はベクトルストレージに書き込まれなくなります。
+- **MAX_FILE_PATHS**: 1つの `entity/relation` が関連付けられるソースファイルの最大数を制御します。この上限を超えると、新しいファイル名はベクトルストレージに書き込まれなくなります。
 
 ### エンティティ・関係抽出時の LLM タイムアウトの解消
 
@@ -542,6 +535,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 | ドキュメント | 内容 |
 |---|---|
 | [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) [🇨🇳](./docs/LightRAG-API-Server-zh.md) | サーバー完全ガイド：起動、設定、認証、REST エンドポイント、WebUI の使い方 |
+| [UserDefinedUI.md](./docs/UserDefinedUI.md) [🇨🇳](./docs/UserDefinedUI-zh.md) | ウェルカムページ、ログイン画面のテキスト、利用規約、クエリの空状態、著作権表示、ブランドロゴを言語ごとに置き換える（`UI_TEMPLATES_DIR`） |
 
 **ドキュメント処理**
 

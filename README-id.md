@@ -7,8 +7,9 @@
 # 🚀 LightRAG: Retrieval-Augmented Generation yang Sederhana dan Cepat
 
 <div align="center">
-    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending"><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending" height="55"></picture></a>&#32;<a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS/LightRAG | Trendshift" height="55"></a>&#32;<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank"><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank" height="55"></picture></a>
 </div>
+
 <p>
 </p>
 <div align="center">
@@ -51,27 +52,6 @@
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
-</div>
-
----
-
-<div align="center">
-  <table>
-    <tr>
-      <td style="vertical-align: middle;">
-        <img src="./assets/LiteWrite.png"
-             width="56"
-             height="56"
-             alt="LiteWrite"
-             style="border-radius: 12px;" />
-      </td>
-      <td style="vertical-align: middle; padding-left: 12px;">
-        <a href="https://litewrite.ai">
-          <img src="https://img.shields.io/badge/🚀%20LiteWrite-AI%20Native%20LaTeX%20Editor-ff6b6b?style=for-the-badge&logoColor=white&labelColor=1a1a2e">
-        </a>
-      </td>
-    </tr>
-  </table>
 </div>
 
 ---
@@ -202,6 +182,19 @@ lightrag-server
 
 Buka `http://localhost:9621/webui` untuk WebUI. Dokumentasi REST API interaktif ada di `http://localhost:9621/docs`. Ganti host dan port jika Anda mengubah `HOST` / `PORT`.
 
+**Memperbarui setelah `git pull`.** Sinkronkan ulang dengan extras yang Anda pasang di Langkah 2, ditambah `--locked --inexact`. Untuk Opsi B:
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # Opsi A: --locked --inexact --extra api
+```
+
+- **Gunakan extras yang sama setiap kali.** Paket yang hanya dibutuhkan oleh extra yang terlewat tidak lagi dijaga pada versi terkuncinya, dan sinkronisasi tanpa `--inexact` akan mencopotnya.
+- **`--locked`** memasang persis versi yang dikunci `uv.lock`. Jika `uv.lock` tidak sesuai dengan `pyproject.toml`, perintah berhenti dengan error alih-alih menulis ulang `uv.lock`.
+- **`--inexact`** mempertahankan paket yang tidak ada di `uv.lock`, misalnya model spaCy dari `lightrag-download-cache --spacy-install`. `uv sync` biasa akan menghapusnya.
+
+Jika pull mengubah `lightrag_webui/`, ulangi juga Langkah 3.
+
 ### Menjalankan dengan Docker Compose
 
 ```bash
@@ -303,7 +296,7 @@ LightRAG adalah framework knowledge-graph RAG yang ringan dan merupakan alternat
 - **Incremental Update & Selective Deletion:** LightRAG mengatasi tantangan dalam memperbarui dan menghapus konten secara selektif pada knowledge base berbasis graph, sehingga knowledge base tetap mutakhir dalam environment data yang dinamis. Ketika sebuah dokumen dihapus, sistem dapat menggunakan LLM cache yang dibuat saat indexing untuk dengan cepat membangun ulang entity dan relationship yang terdampak, sehingga efisiensi update meningkat secara signifikan.
 - **Beragam Engine Parsing Dokumen:** Pipeline pemrosesan dokumen LightRAG mendukung MinerU, Docling, dan Native serta dapat diperluas dengan parser pihak ketiga. Engine Native LightRAG secara efisien mem-parsing gambar, tabel, dan formula pada dokumen Word dan Markdown, sehingga sangat cocok untuk dokumen yang kaya konten multimodal. Engine Native juga otomatis mendeteksi dan mengoreksi section heading pada dokumen Word, meningkatkan ekstraksi konten dari dokumen dengan outline yang tidak konsisten dan menjadi fondasi untuk text chunking yang memahami struktur bagian.
 - **Beragam Strategi Text Chunking:** LightRAG mendukung empat strategi text chunking: `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, dan `Paragraph semantic (P)`. Strategi native LightRAG `Paragraph semantic (P)` **menyelaraskan batas chunk dengan batas semantik native dokumen**—heading, paragraf, dan tabel—sedekat mungkin. Hal ini mengurangi masalah seperti heading yang tidak cocok dengan konten atau hilangnya header row ketika tabel panjang dipecah.
-- **Beragam Storage Backend:** KV, vector, dan graph store default LightRAG menggunakan database in-memory dengan persistensi file lokal, sehingga cocok untuk mengevaluasi proyek dengan cepat. LightRAG juga mendukung beragam storage backend yang umum digunakan untuk deployment production dengan dataset besar.
+- **Beragam Storage Backend:** KV, vector, dan graph store default LightRAG adalah database in-memory dengan persistensi file lokal — hanya cocok untuk pengujian dan evaluasi skala kecil, **bukan untuk production**. LightRAG juga mendukung beragam storage backend yang umum digunakan (PostgreSQL direkomendasikan) untuk deployment production dengan dataset besar.
 
 ### Peningkatan Kemampuan Multimodal
 
@@ -395,7 +388,11 @@ LightRAG membutuhkan empat jenis backend storage:
 - **GRAPH_STORAGE**: Digunakan untuk menyimpan knowledge graph.
 - **DOC_STATUS_STORAGE**: Digunakan untuk menyimpan daftar dokumen.
 
-Secara default, storage backend LightRAG adalah database in-memory yang dipersist ke file. Storage default ini hanya ditujukan untuk development dan debugging, serta tidak cocok untuk production. Pada environment production, jika Anda lebih memilih satu backend untuk menangani keempat jenis storage, Anda dapat memilih PostgreSQL, MongoDB, atau OpenSearch. Sebagai alternatif, Anda dapat memilih database khusus untuk vector atau graph storage, misalnya Milvus atau Qdrant untuk vector storage, serta Neo4j atau Memgraph untuk graph storage.
+**Keempat storage default adalah database in-memory** (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`, `JsonDocStatusStorage`): seluruh dataset berada di memori proses server dan file lokal di bawah `WORKING_DIR` hanya berfungsi sebagai persistensi, sehingga kapasitasnya dibatasi oleh RAM yang tersedia. Karena itu, storage default **hanya ditujukan untuk pengujian, evaluasi, dan debugging skala kecil, dan tidak cocok untuk production**.
+
+Untuk production, **PostgreSQL adalah backend yang direkomendasikan** — PostgreSQL dapat melayani keempat jenis storage sendirian; MongoDB dan OpenSearch adalah opsi single-backend lainnya. Sebagai alternatif, Anda dapat memilih database khusus untuk vector atau graph storage, misalnya Milvus atau Qdrant untuk vector storage, serta Neo4j atau Memgraph untuk graph storage.
+
+Untuk daftar lengkap implementasi yang tersedia per jenis storage, lihat [Storage Types Supported](./docs/LightRAG-API-Server.md#storage-types-supported).
 
 ### Konfigurasi Penting Lainnya untuk Pemrosesan Dokumen
 
