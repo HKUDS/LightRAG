@@ -416,6 +416,16 @@ def _check_vector_index_dimension(index_type: str | None, embedding_dim: int) ->
     )
 
 
+# Legacy vector migration (see docs/design/PostgresLegacyVectorMigration.md).
+# One row per (target table, workspace) whose copy has started and has not been
+# verified yet. Deliberately NOT in TABLES: it is created on first use, so a
+# deployment that never migrates never sees it.
+LEGACY_VECTOR_MIGRATION_STATE_TABLE = "LIGHTRAG_VDB_MIGRATION_STATE"
+# Rows copied per server-side statement, each its own transaction. Bounds the
+# WAL, lock time and rollback cost of one segment; not a tuning knob.
+LEGACY_VECTOR_MIGRATION_BATCH_SIZE = 5000
+
+
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
     """
     Generate a PostgreSQL-safe index name that won't be truncated.
@@ -4171,79 +4181,156 @@ class PGVectorStorage(BaseVectorStorage):
             )
 
     @staticmethod
+    async def _pg_migration_in_progress(
+        db: PostgreSQLDB, table_name: str, workspace: str
+    ) -> bool:
+        """Whether an earlier legacy migration into this workspace was interrupted.
+
+        True means the target may hold only part of the legacy rows and the copy
+        must be resumed, however many rows the target already has.
+        """
+        if not await db.check_table_exists(LEGACY_VECTOR_MIGRATION_STATE_TABLE):
+            return False
+        row = await db.query(
+            f"SELECT TRUE AS in_progress FROM {LEGACY_VECTOR_MIGRATION_STATE_TABLE} "
+            "WHERE target_table = $1 AND workspace = $2",
+            [table_name.lower(), workspace],
+        )
+        return bool(row and row.get("in_progress") is True)
+
+    @staticmethod
     async def _pg_migrate_workspace_data(
         db: PostgreSQLDB,
         legacy_table_name: str,
         new_table_name: str,
         workspace: str,
         expected_count: int,
-        embedding_dim: int,
-    ) -> int | None:
-        """Copy one workspace atomically on a single connection.
+    ) -> int:
+        """Copy one workspace's legacy rows into the new table, in segments.
 
-        Server-side INSERT SELECT avoids materializing vectors in Python and
-        preserves source column names regardless of target column order. Copy
-        and verification share a repeatable-read snapshot and transaction.
-        expected_count and embedding_dim remain compatibility parameters;
-        the source count is re-read inside the transaction. Returns None when
-        a populated target is preserved, not certified complete. Callers must
-        quiesce writers; old partial targets require offline reconciliation.
-        See docs/design/PostgresMigrationAtomicity.md.
+        Rules for callers:
+
+        - Call it only when the target workspace is empty or
+          ``_pg_migration_in_progress`` is true. It never overwrites a target
+          row (``ON CONFLICT DO NOTHING``), so it is safe to call again after
+          any failure, and calling again is the only recovery.
+        - It raises unless every legacy row of the workspace is present in the
+          target afterwards. A raise leaves the in-progress marker behind on
+          purpose: the next startup resumes instead of accepting a partial
+          target.
+        - Each segment is one server-side statement in its own transaction; no
+          vector travels through Python. ``expected_count`` is used for
+          progress logging only.
+
+        Returns the number of legacy rows scanned. Mechanism, accepted residues
+        and rejected alternatives: docs/design/PostgresLegacyVectorMigration.md.
         """
-
         if not workspace:
             raise ValueError("workspace must be provided")
 
-        def _checked_count(value: Any) -> int:
-            if type(value) is not int or value < 0:
-                raise DataMigrationError("PostgreSQL: Invalid migration count result")
-            return value
+        state_table = LEGACY_VECTOR_MIGRATION_STATE_TABLE
+        marker_key = {"target_table": new_table_name.lower(), "workspace": workspace}
 
-        async def _copy(connection: asyncpg.Connection) -> int | None:
-            # Every read and write uses this connection. A retry starts a new
-            # transaction and rechecks admission, including ambiguous COMMIT.
-            async with connection.transaction(isolation="repeatable_read"):
-                target_count = await connection.fetchval(
-                    f"SELECT COUNT(*) FROM {new_table_name} WHERE workspace = $1",
-                    workspace,
-                )
-                target_count = _checked_count(target_count)
-                if target_count:
-                    # Preserve existing data, including a previous attempt whose
-                    # COMMIT succeeded but whose response was lost. This is not
-                    # a retrospective certification of an old partial target.
-                    return None
-                source_count = await connection.fetchval(
-                    f"SELECT COUNT(*) FROM {legacy_table_name} WHERE workspace = $1",
-                    workspace,
-                )
-                source_count = _checked_count(source_count)
-                statement = await connection.prepare(
-                    f"SELECT * FROM {legacy_table_name} LIMIT 0"
-                )
-                columns = ", ".join(
-                    '"' + attribute.name.replace('"', '""') + '"'
-                    for attribute in statement.get_attributes()
-                )
-                await connection.execute(
-                    f"INSERT INTO {new_table_name} ({columns}) "
-                    f"SELECT {columns} FROM {legacy_table_name} "
-                    "WHERE workspace = $1 ON CONFLICT (workspace, id) DO NOTHING",
-                    workspace,
-                )
-                copied_count = await connection.fetchval(
-                    f"SELECT COUNT(*) FROM {new_table_name} WHERE workspace = $1",
-                    workspace,
-                )
-                copied_count = _checked_count(copied_count)
-                if copied_count != source_count:
-                    raise DataMigrationError(
-                        "PostgreSQL: Migration verification failed, expected "
-                        f"{source_count} records, got {copied_count}."
-                    )
-                return copied_count
+        # Marker BEFORE the first row: from here on a target that holds some
+        # rows is known to be unfinished rather than assumed complete.
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {state_table} (
+                    target_table VARCHAR(255) NOT NULL,
+                    workspace VARCHAR(255) NOT NULL,
+                    legacy_table VARCHAR(255) NOT NULL,
+                    started_at TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT {state_table}_PK PRIMARY KEY (target_table, workspace)
+                    )""",
+            ignore_if_exists=True,
+        )
+        await db.execute(
+            f"INSERT INTO {state_table} (target_table, workspace, legacy_table) "
+            "VALUES ($1, $2, $3) ON CONFLICT (target_table, workspace) DO NOTHING",
+            {**marker_key, "legacy_table": legacy_table_name.lower()},
+        )
 
-        return await db._run_with_retry(_copy)
+        # Name the legacy columns explicitly: the two tables need not share a
+        # column order, and a legacy column the target lacks must fail loudly
+        # rather than be dropped.
+        column_rows = await db.query(
+            "SELECT attname FROM pg_attribute "
+            "WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped "
+            "ORDER BY attnum",
+            [legacy_table_name.lower()],
+            multirows=True,
+        )
+        if not column_rows:
+            raise DataMigrationError(
+                f"PostgreSQL: Could not read the columns of legacy table "
+                f"'{legacy_table_name}'"
+            )
+        columns = ", ".join(
+            '"' + row["attname"].replace('"', '""') + '"' for row in column_rows
+        )
+
+        # Keyset pagination on the legacy primary key. `batch` is referenced
+        # twice, so PostgreSQL materializes it: the rows inserted and the rows
+        # reported are the same set. A retried segment (including one whose
+        # COMMIT response was lost) re-reads the same range and conflicts away.
+        def _segment_sql(after_first: bool) -> str:
+            cursor = "AND id > $2 " if after_first else ""
+            limit = "$3" if after_first else "$2"
+            return (
+                f"WITH batch AS (SELECT {columns} FROM {legacy_table_name} "
+                f"WHERE workspace = $1 {cursor}ORDER BY id LIMIT {limit}), "
+                f"copied AS (INSERT INTO {new_table_name} ({columns}) "
+                f"SELECT {columns} FROM batch "
+                "ON CONFLICT (workspace, id) DO NOTHING) "
+                "SELECT COUNT(*) AS batch_rows, MAX(id) AS last_id FROM batch"
+            )
+
+        batch_size = LEGACY_VECTOR_MIGRATION_BATCH_SIZE
+        scanned = 0
+        last_id: str | None = None
+        while True:
+            if last_id is None:
+                segment = await db.query(_segment_sql(False), [workspace, batch_size])
+            else:
+                segment = await db.query(
+                    _segment_sql(True), [workspace, last_id, batch_size]
+                )
+            batch_rows = segment.get("batch_rows") if segment else None
+            if not isinstance(batch_rows, int) or batch_rows < 0:
+                raise DataMigrationError(
+                    f"PostgreSQL: Unexpected migration segment result: {segment!r}"
+                )
+            if batch_rows == 0:
+                break
+            scanned += batch_rows
+            last_id = segment["last_id"]
+            logger.info(
+                f"PostgreSQL: {scanned}/{expected_count} records migrated "
+                f"for workspace '{workspace}'"
+            )
+            if batch_rows < batch_size:
+                break
+
+        # Verify by identity, not by count: a count would also pass when rows
+        # are missing but unrelated rows make up the number.
+        missing_result = await db.query(
+            f"SELECT COUNT(*) AS missing FROM {legacy_table_name} l "
+            f"WHERE l.workspace = $1 AND NOT EXISTS (SELECT 1 FROM {new_table_name} n "
+            "WHERE n.workspace = l.workspace AND n.id = l.id)",
+            [workspace],
+        )
+        missing = missing_result.get("missing") if missing_result else None
+        if not isinstance(missing, int) or missing != 0:
+            raise DataMigrationError(
+                "PostgreSQL: Migration verification failed, "
+                f"{missing!r} legacy records of workspace '{workspace}' are missing "
+                f"from '{new_table_name}'. The migration resumes on the next startup."
+            )
+
+        await db.execute(
+            f"DELETE FROM {state_table} WHERE target_table = $1 AND workspace = $2",
+            marker_key,
+        )
+        return scanned
 
     @staticmethod
     async def setup_table(
@@ -4461,36 +4548,55 @@ class PGVectorStorage(BaseVectorStorage):
                 new_count_result.get("count", 0) if new_count_result else 0
             )
 
-            if new_table_workspace_count > 0:
+            # An interrupted migration outranks the row count: its target is
+            # non-empty AND incomplete, which a count alone cannot tell apart
+            # from a finished one.
+            resuming = await PGVectorStorage._pg_migration_in_progress(
+                db, table_name, workspace
+            )
+
+            if new_table_workspace_count > 0 and not resuming:
                 logger.warning(
                     f"PostgreSQL: Both new and legacy collection have data. "
                     f"{legacy_count} records in {legacy_table_name} require manual deletion after migration verification."
                 )
+                if new_table_workspace_count < legacy_count:
+                    # Not proof of anything -- deletions after a completed
+                    # migration look the same -- but it is the only trace a
+                    # migration interrupted under an older version leaves.
+                    logger.warning(
+                        f"PostgreSQL: '{table_name}' holds {new_table_workspace_count} "
+                        f"records{workspace_info}, fewer than the {legacy_count} in "
+                        f"'{legacy_table_name}'. If documents were not deleted since "
+                        "the migration, it may have been interrupted under an older "
+                        "version; see docs/design/PostgresLegacyVectorMigration.md."
+                    )
                 return
 
-            # Case 3: Legacy has workspace data and new table is empty for workspace
+            # Case 3: Legacy has workspace data and the new table is empty for
+            #         the workspace, or an earlier migration was interrupted
             logger.info(
                 f"PostgreSQL: Found legacy table '{legacy_table_name}' with {legacy_count} records{workspace_info}."
             )
-            logger.info(
-                f"PostgreSQL: Migrating data from legacy table '{legacy_table_name}' to new table '{table_name}'"
-            )
+            if resuming:
+                logger.warning(
+                    f"PostgreSQL: Resuming interrupted migration from '{legacy_table_name}' "
+                    f"to '{table_name}'{workspace_info}; {new_table_workspace_count} "
+                    "records are already in place."
+                )
+            else:
+                logger.info(
+                    f"PostgreSQL: Migrating data from legacy table '{legacy_table_name}' to new table '{table_name}'"
+                )
 
             try:
-                migrated_count = await PGVectorStorage._pg_migrate_workspace_data(
+                await PGVectorStorage._pg_migrate_workspace_data(
                     db,
                     legacy_table_name,
                     table_name,
                     workspace,
                     legacy_count,
-                    embedding_dim,
                 )
-                if migrated_count is None:
-                    logger.warning(
-                        "PostgreSQL: Target workspace became populated before "
-                        "migration; preserving existing data without verification."
-                    )
-                    return
 
             except DataMigrationError:
                 # Re-raise DataMigrationError as-is to preserve specific error messages

@@ -1,249 +1,245 @@
-"""Stateful fake reproduces batch commits; no PostgreSQL server is involved."""
+"""Legacy vector migration: segmented copy, in-progress marker, resume.
 
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
+The fake below stands in for the database at the ``db.query`` / ``db.execute``
+boundary and commits every statement on its own, which is the property the
+migration has to survive: a failure after some segments leaves their rows in
+place. It checks control flow and statement shape, not SQL semantics.
+See docs/design/PostgresLegacyVectorMigration.md.
+"""
+
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
+import lightrag.kg.postgres_impl as pg_impl
 from lightrag.exceptions import DataMigrationError
-from lightrag.kg.postgres_impl import PGVectorStorage, PostgreSQLDB
+from lightrag.kg.postgres_impl import PGVectorStorage
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
+STATE_TABLE = pg_impl.LEGACY_VECTOR_MIGRATION_STATE_TABLE
+COLUMNS = ["id", "workspace", "content_vector"]
+SETUP_ARGS = dict(
+    table_name="target",
+    workspace="tenant",
+    embedding_dim=3,
+    legacy_table_name="legacy",
+    base_table="LIGHTRAG_VDB_CHUNKS",
+)
 
-class CommittedStore:
-    def __init__(self):
-        self.source = [
-            dict(id=f"row-{i:04}", workspace="tenant", content_vector=[1.0, 0.0, 0.0])
-            for i in range(750)
-        ]
-        self.target = {}
-        self.batch_calls = 0
-        self.acquisitions = 0
-        self.fail_second = True
 
-    @asynccontextmanager
-    async def acquire(self):
-        self.acquisitions += 1
-        yield self
+class FakeServer:
+    """Committed database state, shared by every FakeDB facade."""
 
-    @asynccontextmanager
-    async def transaction(self, *, isolation):
-        assert isolation == "repeatable_read"
-        before = dict(self.target)
-        try:
-            yield
-        except BaseException:
-            self.target = before
-            raise
+    def __init__(self, rows: int = 750):
+        self.source = {f"row-{i:04}": [1.0, 0.0, float(i)] for i in range(rows)}
+        self.target: dict[str, list[float]] = {}
+        self.state_table_exists = False
+        self.markers: set[tuple[str, str]] = set()
+        self.fail_on_id: str | None = None
+        self.after_segment = None
+        self.events: list[str] = []
+        self.segment_sql: list[str] = []
 
-    async def fetchval(self, sql, workspace):
+
+class FakeDB:
+    vector_index_type = None
+
+    def __init__(self, server: FakeServer):
+        self.server = server
+        self._create_vector_index = AsyncMock()
+
+    async def check_table_exists(self, name: str) -> bool:
+        if name == STATE_TABLE:
+            return self.server.state_table_exists
+        return True
+
+    async def query(self, sql, params=None, multirows=False, **kwargs):
+        server = self.server
+        if "pg_attribute" in sql:
+            assert params == ["legacy"]
+            return [{"attname": name} for name in COLUMNS]
+        if "in_progress" in sql:
+            return {"in_progress": True} if tuple(params) in server.markers else None
+        if sql.startswith("WITH batch"):
+            return self._copy_segment(sql, params)
+        if "AS missing" in sql:
+            server.events.append("verify")
+            return {"missing": len(set(server.source) - set(server.target))}
+        assert "COUNT(*)" in sql, sql
+        if "FROM legacy" in sql:
+            return {"count": len(server.source)}
+        return {"count": len(server.target)}
+
+    def _copy_segment(self, sql, params):
+        server = self.server
+        server.segment_sql.append(sql)
+        if "id > $2" in sql:
+            workspace, last_id, limit = params
+        else:
+            (workspace, limit), last_id = params, None
         assert workspace == "tenant"
-        return len(self.source) if "FROM legacy" in sql else len(self.target)
+        ids = sorted(i for i in server.source if last_id is None or i > last_id)
+        batch = ids[:limit]
+        if server.fail_on_id in batch:
+            # One statement is one transaction: nothing of this segment lands.
+            raise RuntimeError("injected segment failure")
+        for row_id in batch:
+            server.target.setdefault(row_id, server.source[row_id])
+        server.events.append(f"segment:{len(batch)}")
+        if server.after_segment:
+            server.after_segment()
+        return {"batch_rows": len(batch), "last_id": batch[-1] if batch else None}
 
-    async def prepare(self, sql):
-        assert sql == "SELECT * FROM legacy LIMIT 0"
-        return SimpleNamespace(
-            get_attributes=lambda: [
-                SimpleNamespace(name=name) for name in self.source[0]
-            ]
-        )
-
-    async def execute(self, sql, workspace):
-        assert 'INSERT INTO target ("id", "workspace", "content_vector")' in sql
-        assert 'SELECT "id", "workspace", "content_vector" FROM legacy' in sql
-        assert "WHERE workspace = $1" in sql
-        self.batch_calls += 1
-        for row in self.source:
-            self.target.setdefault(row["id"], (workspace, row["content_vector"]))
-            if self.fail_second and len(self.target) == 500:
-                raise ValueError("injected copy failure")
-
-
-def make_db(store):
-    db = SimpleNamespace(
-        vector_index_type=None,
-        pool=store,
-        _ensure_pool=AsyncMock(),
-        connection_retry_backoff=0,
-        connection_retry_backoff_max=0,
-        connection_retry_attempts=1,
-        _transient_exceptions=(),
-        _before_sleep=AsyncMock(),
-        check_table_exists=AsyncMock(return_value=True),
-        _create_vector_index=AsyncMock(),
-    )
-    # Exercise the actual acquire/retry boundary instead of mocking it away.
-    db._run_with_retry = PostgreSQLDB._run_with_retry.__get__(db)
-
-    async def query(sql, params=None, multirows=False):
-        if multirows:
-            assert "FROM legacy" in sql
-            rows = store.source
-            if "id >" in sql:
-                rows = [row for row in rows if row["id"] > params[1]]
-            return rows[: params[-1]]
-        assert "COUNT(*)" in sql
-        return {
-            "count": len(store.source) if "FROM legacy" in sql else len(store.target)
-        }
-
-    db.query = query
-    return db
+    async def execute(self, sql, data=None, **kwargs):
+        server = self.server
+        if sql.startswith("CREATE TABLE"):
+            assert STATE_TABLE in sql
+            server.state_table_exists = True
+        elif sql.startswith(f"INSERT INTO {STATE_TABLE}"):
+            server.markers.add((data["target_table"], data["workspace"]))
+            server.events.append("marker:set")
+        elif sql.startswith(f"DELETE FROM {STATE_TABLE}"):
+            server.markers.discard((data["target_table"], data["workspace"]))
+            server.events.append("marker:clear")
+        else:
+            raise AssertionError(f"unexpected statement: {sql}")
 
 
-async def test_restart_must_not_accept_prior_committed_partial_batches():
-    store = CommittedStore()
-    args = dict(
-        table_name="target",
-        workspace="tenant",
-        embedding_dim=3,
-        legacy_table_name="legacy",
-        base_table="LIGHTRAG_VDB_CHUNKS",
-    )
+@pytest.fixture
+def small_batches(monkeypatch):
+    monkeypatch.setattr(pg_impl, "LEGACY_VECTOR_MIGRATION_BATCH_SIZE", 200)
+
+
+async def test_interrupted_migration_is_resumed_not_accepted(small_batches):
+    """The defect: a restart took a partly filled target for a finished one."""
+    server = FakeServer()
+    server.fail_on_id = "row-0600"
     with pytest.raises(DataMigrationError):
-        await PGVectorStorage.setup_table(db=make_db(store), **args)
-    assert store.batch_calls == 1
-    assert store.acquisitions == 1
-    assert len(store.target) == 0
-    assert len(store.source) == 750
+        await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert len(server.target) == 600
+    assert server.markers == {("target", "tenant")}
 
-    # A new DB facade shares only committed server state, not migration state.
-    store.fail_second = False
-    await PGVectorStorage.setup_table(db=make_db(store), **args)
-    assert len(store.target) == 750, (
-        "Restart accepted 500 committed rows as a complete 750-row migration"
-    )
+    # Same fault on the next startup: still refused, nothing lost.
+    with pytest.raises(DataMigrationError):
+        await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert len(server.target) == 600
+
+    server.fail_on_id = None
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.target == server.source
+    assert server.markers == set()
+
+    # A finished migration is not repeated.
+    server.events.clear()
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.events == []
 
 
-async def test_transaction_verification_failure_rolls_back(monkeypatch):
-    store = CommittedStore()
-    store.fail_second = False
-    fetchval = store.fetchval
+async def test_marker_brackets_the_copy_and_verification(small_batches):
+    server = FakeServer()
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.events == [
+        "marker:set",
+        "segment:200",
+        "segment:200",
+        "segment:200",
+        "segment:150",
+        "verify",
+        "marker:clear",
+    ]
 
-    async def wrong_count(sql, workspace):
-        count = await fetchval(sql, workspace)
-        return count - 1 if "FROM target" in sql and count else count
 
-    monkeypatch.setattr(store, "fetchval", wrong_count)
+async def test_segments_are_server_side_keyset_statements(small_batches):
+    server = FakeServer()
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    names = '"id", "workspace", "content_vector"'
+    first, later = server.segment_sql[0], server.segment_sql[1]
+    assert "id >" not in first
+    assert "AND id > $2 ORDER BY id LIMIT $3" in later
+    for sql in (first, later):
+        assert f"INSERT INTO target ({names}) SELECT {names} FROM batch" in sql
+        assert f"SELECT {names} FROM legacy WHERE workspace = $1" in sql
+        assert "ON CONFLICT (workspace, id) DO NOTHING" in sql
+
+
+async def test_exact_multiple_of_batch_size_terminates(small_batches):
+    server = FakeServer(rows=400)
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.target == server.source
+    assert server.events.count("segment:200") == 2
+    assert server.events[-3:] == ["segment:0", "verify", "marker:clear"]
+
+
+async def test_failed_verification_keeps_the_marker(small_batches):
+    server = FakeServer()
+    # A row vanishes from the target while the copy is still running.
+    server.after_segment = lambda: server.target.pop("row-0001", None)
     with pytest.raises(DataMigrationError, match="verification failed"):
-        await PGVectorStorage._pg_migrate_workspace_data(
-            make_db(store), "legacy", "target", "tenant", 750, 3
-        )
-    assert store.target == {}
+        await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.markers == {("target", "tenant")}
+
+    server.after_segment = None
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.target == server.source
+    assert server.markers == set()
 
 
-async def test_populated_target_is_preserved_without_copy():
-    store = CommittedStore()
-    store.target["custom"] = ("tenant", [9.0, 8.0, 7.0])
-    result = await PGVectorStorage._pg_migrate_workspace_data(
-        make_db(store), "legacy", "target", "tenant", 750, 3
-    )
-    assert result is None
-    assert store.batch_calls == 0
-    assert store.target == {"custom": ("tenant", [9.0, 8.0, 7.0])}
+async def test_cancellation_leaves_a_resumable_marker(small_batches):
+    server = FakeServer()
 
-
-async def test_cancellation_before_commit_rolls_back(monkeypatch):
-    import asyncio
-
-    store = CommittedStore()
-    store.fail_second = False
-    execute = store.execute
-
-    async def cancelled(*args):
-        await execute(*args)
+    def cancel():
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(store, "execute", cancelled)
+    server.after_segment = cancel
     with pytest.raises(asyncio.CancelledError):
-        await PGVectorStorage._pg_migrate_workspace_data(
-            make_db(store), "legacy", "target", "tenant", 750, 3
-        )
-    assert store.target == {}
+        await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert len(server.target) == 200
+    assert server.markers == {("target", "tenant")}
 
 
-async def test_lost_commit_response_retry_does_not_recopy(monkeypatch):
-    store = CommittedStore()
-    store.fail_second = False
-    attempts = 0
-
-    @asynccontextmanager
-    async def transaction(*, isolation):
-        nonlocal attempts
-        attempts += 1
-        yield
-        if attempts == 1:
-            raise ConnectionError("COMMIT applied but response lost")
-
-    monkeypatch.setattr(store, "transaction", transaction)
-    db = make_db(store)
-    db._transient_exceptions = (ConnectionError,)
-    db.connection_retry_attempts = 2
-    result = await PGVectorStorage._pg_migrate_workspace_data(
-        db, "legacy", "target", "tenant", 750, 3
-    )
-    assert result is None
-    assert len(store.target) == 750
-    assert store.batch_calls == 1
-    assert attempts == 2
+async def test_resume_does_not_overwrite_rows_already_in_the_target(small_batches):
+    server = FakeServer()
+    server.state_table_exists = True
+    server.markers.add(("target", "tenant"))
+    server.target["row-0003"] = [9.0, 9.0, 9.0]
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert len(server.target) == 750
+    assert server.target["row-0003"] == [9.0, 9.0, 9.0]
 
 
-async def test_helper_rejects_empty_workspace_without_acquiring_connection():
-    store = CommittedStore()
+async def test_populated_target_without_marker_is_left_alone(lightrag_caplog):
+    """An unmarked target is a finished migration or an old partial one; the
+    two cannot be told apart, so it is preserved and the shortfall reported."""
+    server = FakeServer()
+    server.target = {"row-0000": [9.0, 9.0, 9.0]}
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    assert server.target == {"row-0000": [9.0, 9.0, 9.0]}
+    assert server.events == []
+    assert "fewer than the 750" in lightrag_caplog.text
+
+
+async def test_progress_is_logged_per_segment(small_batches, lightrag_caplog):
+    server = FakeServer()
+    await PGVectorStorage.setup_table(db=FakeDB(server), **SETUP_ARGS)
+    for done in (200, 400, 600, 750):
+        assert f"{done}/750 records migrated" in lightrag_caplog.text
+
+
+async def test_malformed_segment_result_is_not_read_as_end_of_data():
+    server = FakeServer()
+    db = FakeDB(server)
+    db._copy_segment = lambda sql, params: {}
+    with pytest.raises(DataMigrationError, match="segment result"):
+        await PGVectorStorage.setup_table(db=db, **SETUP_ARGS)
+    assert server.markers == {("target", "tenant")}
+
+
+async def test_helper_rejects_empty_workspace_before_touching_the_database():
+    server = FakeServer()
     with pytest.raises(ValueError, match="workspace must be provided"):
         await PGVectorStorage._pg_migrate_workspace_data(
-            make_db(store), "legacy", "target", "", 750, 3
+            FakeDB(server), "legacy", "target", "", 750
         )
-    assert store.acquisitions == 0
-
-
-@pytest.mark.parametrize("bad", [None, -1, True, "0"])
-@pytest.mark.parametrize("bad_read", [1, 2, 3])
-async def test_invalid_count_is_not_treated_as_empty(monkeypatch, bad, bad_read):
-    store = CommittedStore()
-    store.fail_second = False
-    fetchval = store.fetchval
-    reads = 0
-
-    async def invalid(*args):
-        nonlocal reads
-        reads += 1
-        return bad if reads == bad_read else await fetchval(*args)
-
-    monkeypatch.setattr(store, "fetchval", invalid)
-    with pytest.raises(DataMigrationError, match="Invalid migration count"):
-        await PGVectorStorage._pg_migrate_workspace_data(
-            make_db(store), "legacy", "target", "tenant", 750, 3
-        )
-    assert store.target == {}
-
-
-async def test_explicit_columns_preserve_metadata_order_and_quote_names(monkeypatch):
-    store = CommittedStore()
-    store.fail_second = False
-    names = ["content_vector", "workspace", "id", 'odd"column']
-
-    async def prepare(sql):
-        return SimpleNamespace(
-            get_attributes=lambda: [SimpleNamespace(name=name) for name in names]
-        )
-
-    async def execute(sql, workspace):
-        expected = '"content_vector", "workspace", "id", "odd""column"'
-        assert f"INSERT INTO target ({expected}) SELECT {expected} FROM legacy" in sql
-        assert "WHERE workspace = $1 ON CONFLICT (workspace, id) DO NOTHING" in sql
-        assert workspace == "tenant"
-        store.target.update(
-            {row["id"]: (workspace, row["content_vector"]) for row in store.source}
-        )
-
-    monkeypatch.setattr(store, "prepare", prepare)
-    monkeypatch.setattr(store, "execute", execute)
-    assert (
-        await PGVectorStorage._pg_migrate_workspace_data(
-            make_db(store), "legacy", "target", "tenant", 750, 3
-        )
-        == 750
-    )
+    assert server.events == [] and not server.state_table_exists
