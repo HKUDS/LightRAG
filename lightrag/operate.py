@@ -4858,6 +4858,9 @@ async def kg_query(
     kg_chunk_pick_method = retrieval_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
     )
+    keyword_fallback = _kg_keyword_fallback(
+        query_param.mode, ll_keywords_str, hl_keywords_str
+    )
     args_hash = compute_args_hash(
         _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
@@ -4887,6 +4890,11 @@ async def kg_query(
         related_chunk_number,
         kg_chunk_pick_method,
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        # Present only when the search swaps keyword lists between stores. An
+        # answer cached before that routing existed was written from another
+        # store's context, so it must miss; every other entry keeps hitting,
+        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        *(("\n<kg_keyword_fallback>\n", keyword_fallback) if keyword_fallback else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -5266,6 +5274,19 @@ async def _get_vector_context(
     return valid_chunks
 
 
+def _kg_keyword_fallback(mode: str, ll_keywords: str, hl_keywords: str) -> str:
+    """Name the keyword fallback a KG search applies; "" when it applies none.
+
+    The name is part of the answer-cache key (see ``kg_query``), so renaming a
+    value retires the cached answers of every request that took that fallback.
+    """
+    if not ll_keywords and hl_keywords and mode in ("local", "hybrid", "mix"):
+        return "entities_by_high_level_keywords"
+    if not hl_keywords and ll_keywords and mode == "global":
+        return "relationships_by_low_level_keywords"
+    return ""
+
+
 def _resolve_kg_search_queries(
     mode: str, ll_keywords: str, hl_keywords: str
 ) -> tuple[str, str]:
@@ -5288,20 +5309,18 @@ def _resolve_kg_search_queries(
     A mode never falls through to the store it does not own: ``local`` with no
     low-level keywords stays an entity search, it does not become ``global``.
     """
-    search_entities = mode in ("local", "hybrid", "mix")
-    search_relations = mode in ("global", "hybrid", "mix")
+    entity_query = ll_keywords if mode in ("local", "hybrid", "mix") else ""
+    relation_query = hl_keywords if mode in ("global", "hybrid", "mix") else ""
 
-    entity_query = ll_keywords if search_entities else ""
-    relation_query = hl_keywords if search_relations else ""
-
-    if search_entities and not entity_query and hl_keywords:
+    fallback = _kg_keyword_fallback(mode, ll_keywords, hl_keywords)
+    if fallback == "entities_by_high_level_keywords":
         entity_query = hl_keywords
         logger.warning(
             "low_level_keywords is empty: querying entities with "
             "high_level_keywords instead (mode=%s)",
             mode,
         )
-    if mode == "global" and not relation_query and ll_keywords:
+    elif fallback == "relationships_by_low_level_keywords":
         relation_query = ll_keywords
         logger.warning(
             "high_level_keywords is empty: querying relationships with "
