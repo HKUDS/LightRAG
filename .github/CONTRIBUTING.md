@@ -88,6 +88,7 @@ The same checks run automatically on every pull request. If the CI check fails, 
 
 - **Python code and comments**: English
 - **Frontend (WebUI)**: uses i18next for internationalization — add translation keys rather than hardcoding strings
+- **README**: `README.md` and its translations `README-zh.md`, `README-ja.md` and `README-id.md` stay line-for-line aligned. Make every README change in all four files in the same commit, with the same line count and the same line breaks (`wc -l README*.md` prints one number for all four). If you cannot translate the change, put the English text at the same lines in the translations so it can be translated later. Do not leave those files unchanged.
 
 ---
 
@@ -138,6 +139,7 @@ Set `LIGHTRAG_RUN_INTEGRATION=true` as an environment variable as an alternative
 - [ ] Pre-commit checks pass (`pre-commit run --all-files`)
 - [ ] Unit/integration tests added or updated where applicable
 - [ ] Documentation updated if behavior changes
+- [ ] README changes applied to all four language versions (`README.md`, `-zh`, `-ja`, `-id`), line counts equal
 - [ ] PR description explains the *why*, not just the *what*
 
 ---
