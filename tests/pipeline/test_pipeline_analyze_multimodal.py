@@ -62,6 +62,11 @@ def _png_bytes(width: int, height: int) -> bytes:
 
 PNG_BYTES = _png_bytes(64, 64)
 TINY_PNG_BYTES = _png_bytes(8, 8)
+TINY_JPEG_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8U"
+    "HRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAAIAAgBAREA"
+    "/8QAFAABAAAAAAAAAAAAAAAAAAAAB//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8Af3//2Q=="
+)
 
 
 class _SimpleTokenizerImpl:
@@ -428,7 +433,13 @@ async def test_unsupported_vector_format_writes_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
+@pytest.mark.parametrize(
+    ("extension", "metadata_segments"),
+    [("png", 0), ("jpg", 0), ("jpg", 1), ("jpg", 2)],
+)
+async def test_tiny_image_writes_skipped_without_vlm_call(
+    tmp_path, extension, metadata_segments
+):
     """Image smaller than VLM_MIN_IMAGE_PIXEL (32px) is decorative; skip
     without calling VLM."""
     call_log: list[dict] = []
@@ -439,8 +450,15 @@ async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
     try:
         parsed_dir = tmp_path / "parsed"
         parsed_dir.mkdir()
-        img_path = parsed_dir / "tiny.png"
-        img_path.write_bytes(TINY_PNG_BYTES)
+        img_path = parsed_dir / f"tiny.{extension}"
+        image_bytes = TINY_PNG_BYTES if extension == "png" else TINY_JPEG_BYTES
+        if metadata_segments:
+            # Legal JPEG comments can put the frame header beyond the first 64 KiB.
+            comment = b"\xff\xfe\xff\xff" + b"x" * 65533
+            image_bytes = (
+                image_bytes[:20] + comment * metadata_segments + image_bytes[20:]
+            )
+        img_path.write_bytes(image_bytes)
 
         blocks_path = parsed_dir / "doc.blocks.jsonl"
         blocks_path.write_text(

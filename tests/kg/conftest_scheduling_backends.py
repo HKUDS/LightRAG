@@ -229,7 +229,7 @@ _JSON_BACKEND = BackendSpec(
 # the default offline suite — a contract test that only executes behind
 # ``--run-integration`` would go stale between the runs that use it.
 BACKEND_PARAMS = [
-    pytest.param(_JSON_BACKEND, id=_JSON_BACKEND.name),
+    pytest.param(_JSON_BACKEND, id=_JSON_BACKEND.name, marks=pytest.mark.offline),
     *[
         pytest.param(
             spec,

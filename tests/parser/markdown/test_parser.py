@@ -27,6 +27,9 @@ from lightrag.parser.markdown.parser import (
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
+
+pytestmark = pytest.mark.offline
+
 _PNG_B64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
 

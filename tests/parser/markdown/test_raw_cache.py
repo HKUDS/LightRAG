@@ -17,6 +17,9 @@ from lightrag.parser.markdown.parser import NativeMarkdownParser
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
+
+pytestmark = pytest.mark.offline
+
 _URL = "http://host/y.png"
 _MD = f"# H\n\n![x]({_URL})\n"
 

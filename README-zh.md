@@ -23,7 +23,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -151,7 +151,7 @@ lightrag-server
 | 工具 | 用途 | 安装方式 |
 |---|---|---|
 | git | 克隆仓库 | 系统包管理器 |
-| [uv](https://docs.astral.sh/uv/) | 创建虚拟环境、安装 Python 依赖；系统没有合适的 Python（3.10+）时会自动下载 | 见上方 uv 说明 |
+| [uv](https://docs.astral.sh/uv/) | 创建虚拟环境、安装 Python 依赖；系统没有合适的 Python（3.11+）时会自动下载 | 见上方 uv 说明 |
 | [bun](https://bun.sh/docs/installation) | 构建 WebUI | `curl -fsSL https://bun.sh/install \| bash`（Windows：`powershell -c "irm bun.sh/install.ps1 \| iex"`）。Linux 安装脚本依赖 `unzip`，精简版 Debian / Ubuntu 镜像需先执行 `sudo apt-get install -y unzip` |
 | make | 可选：`make dev` 快捷命令和 `make env-*` 设置向导 | 系统包管理器 |
 
