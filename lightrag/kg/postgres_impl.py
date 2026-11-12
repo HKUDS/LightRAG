@@ -1353,6 +1353,12 @@ class PostgreSQLDB:
         never cache library initialization per process. Reapply ``search_path``
         on every checkout because pool release resets it. Only graph existence
         is cached by :meth:`_ensure_age_graph`.
+
+        The ``agtype`` literal is what loads AGE: its type input function pulls
+        in ``age.so`` with ordinary privileges and is a no-op when AGE is
+        preloaded. Do not replace it with ``LOAD 'age'``, which requires
+        superuser and breaks managed deployments that preload AGE for a
+        non-superuser role.
         """
         await connection.execute(  # type: ignore
             'SET search_path = ag_catalog, "$user", public; '
