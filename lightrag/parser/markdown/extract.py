@@ -33,7 +33,7 @@ left as verbatim text rather than misrecognised.
 from __future__ import annotations
 
 import re
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -204,18 +204,41 @@ def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
     return len(delim_cells) == len(_split_pipe_row(header_line))
 
 
-# Where a lenient bare image source may end: an image file extension the
-# resolver can turn into an asset, directly followed by the tail the strict
-# grammar requires (optional ``"title"``, then ``)``). Group 1 is that tail.
-# A match can never start inside the tail of an earlier one that matters: such
-# a source would span a ``"``, which the lenient scan refuses.
-_LENIENT_IMAGE_SOURCE_END_RE = re.compile(
-    r'\.(?:png|jpe?g|gif|webp|svg)(\s*\)|\s+"[^"]*"\s*\))',
-    re.IGNORECASE,
-)
-
+# Lenient bare image sources end in an image file extension the resolver can
+# turn into an asset, followed by the tail the strict grammar requires
+# (optional ``"title"``, then ``)``). The two are matched separately so that
+# one candidate's tail can never hide the extension of another.
+_LENIENT_IMAGE_EXTENSION_RE = re.compile(r"\.(?:png|jpe?g|gif|webp|svg)", re.IGNORECASE)
+_IMAGE_TAIL_RE = re.compile(r'\s*\)|\s+"[^"]*"\s*\)')
 
 _PAREN_RE = re.compile(r"[()]")
+
+# A bare image source that contains parentheses must close within this many
+# characters. Matching pairs needs an index of the parentheses, and the bound
+# keeps that index a fixed-size window however long the line is. Sources
+# without parentheses (every base64 ``data:`` URL) are not limited.
+_PAREN_SOURCE_MAX_CHARS = 4096
+
+
+class _ForwardCharFinder:
+    """:class:`_ForwardFinder` for one literal character, at C speed."""
+
+    def __init__(self, line: str, char: str) -> None:
+        self._line = line
+        self._char = char
+        self._match = -1
+        self._exhausted = False
+
+    def find(self, start: int) -> int | None:
+        if self._match >= start:
+            return self._match
+        if self._exhausted:
+            return None
+        self._match = self._line.find(self._char, start)
+        if self._match < 0:
+            self._exhausted = True
+            return None
+        return self._match
 
 
 class _ForwardFinder:
@@ -262,9 +285,14 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     grammar.
 
     A candidate that grammar rejects gets one lenient retry: a bare source may
-    also contain whitespace when it ends in an image file extension (``![alt](./my doc.assets/shot (1).png)``). Editors such as
-    Typora write local paths that way. The strict grammar always wins, so the
-    retry only ever turns text that was not an image into one.
+    also contain whitespace when it ends in an image file extension
+    (``![alt](./my doc.assets/shot (1).png)``). Editors such as Typora write
+    local paths that way. The strict grammar always wins, so the retry only
+    ever turns text that was not an image into one.
+
+    Extra memory stays bounded whatever the line holds: no per-line index is
+    built, and a bare source with parentheses is limited to
+    ``_PAREN_SOURCE_MAX_CHARS``.
     """
 
     if "![" not in line:
@@ -289,42 +317,57 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     )
     bare_quote = _ForwardFinder(line, lambda char: char == '"')
 
-    # Parenthesis index, built on first use by one C-level scan so that a
-    # megabyte ``data:`` line costs nothing here: the position of every
-    # parenthesis, the nesting depth in front of it, and the closing ones
-    # grouped by that depth.
-    paren_positions: list[int] | None = None
-    paren_depths: list[int] = []
-    closing_by_depth: dict[int, list[int]] = {}
+    open_paren = _ForwardCharFinder(line, "(")
+    close_paren = _ForwardCharFinder(line, ")")
+
+    # Parenthesis index over a sliding window of the line: the position of
+    # every parenthesis in it, the nesting depth in front of each (relative to
+    # the window start), and the closing ones grouped by that depth. A window
+    # spans twice the source limit and is rebuilt only once a source start has
+    # moved past its first half, so rebuilding stays linear overall.
+    window_start = -1
+    window_end = -1
+    window_positions: list[int] = []
+    window_depths: list[int] = []
+    window_closing: dict[int, list[int]] = {}
+
+    def _load_window(source_start: int) -> None:
+        """Make the window cover the source limit from ``source_start`` on."""
+
+        nonlocal window_start, window_end
+        needed_end = min(len(line), source_start + _PAREN_SOURCE_MAX_CHARS + 1)
+        if window_start <= source_start and needed_end <= window_end:
+            return
+        window_start = source_start
+        window_end = min(len(line), source_start + 2 * _PAREN_SOURCE_MAX_CHARS + 1)
+        window_positions.clear()
+        window_depths.clear()
+        window_closing.clear()
+        depth = 0
+        for found in _PAREN_RE.finditer(line, window_start, window_end):
+            position = found.start()
+            window_positions.append(position)
+            window_depths.append(depth)
+            if line[position] == "(":
+                depth += 1
+            else:
+                window_closing.setdefault(depth, []).append(position)
+                depth -= 1
 
     def _paren_depth(index: int) -> int:
-        """Nesting depth in front of ``index``, counted from the line start."""
+        """Nesting depth in front of ``index``, which the window covers."""
 
-        nonlocal paren_positions
-        if paren_positions is None:
-            paren_positions = []
-            depth = 0
-            for found in _PAREN_RE.finditer(line):
-                position = found.start()
-                paren_positions.append(position)
-                paren_depths.append(depth)
-                if line[position] == "(":
-                    depth += 1
-                else:
-                    closing_by_depth.setdefault(depth, []).append(position)
-                    depth -= 1
-        previous = bisect_left(paren_positions, index) - 1
+        previous = bisect_left(window_positions, index) - 1
         if previous < 0:
             return 0
-        step = 1 if line[paren_positions[previous]] == "(" else -1
-        return paren_depths[previous] + step
+        step = 1 if line[window_positions[previous]] == "(" else -1
+        return window_depths[previous] + step
 
     def _closing_paren(source_start: int) -> int | None:
-        """First ``)`` at or after ``source_start`` that no ``(`` in between
-        opened, i.e. the one that would close the image."""
+        """First ``)`` in the window, at or after ``source_start``, that no
+        ``(`` in between opened, i.e. the one that would close the image."""
 
-        depth = _paren_depth(source_start)
-        closing = closing_by_depth.get(depth)
+        closing = window_closing.get(_paren_depth(source_start))
         if not closing:
             return None
         candidate = bisect_left(closing, source_start)
@@ -382,7 +425,24 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         # A bare source ends at whitespace or at the ``)`` that closes the
         # image, whichever comes first; balanced pairs belong to the source.
         whitespace_end = whitespace.find(source_start)
-        paren_end = _closing_paren(source_start)
+        paren_end = close_paren.find(source_start)
+        source_limit = min(
+            len(line) if whitespace_end is None else whitespace_end,
+            len(line) if paren_end is None else paren_end,
+        )
+        first_open = open_paren.find(source_start)
+        has_pairs = first_open is not None and first_open < source_limit
+        if has_pairs:
+            # The first ``)`` may belong to a pair: ask the index instead.
+            _load_window(source_start)
+            longest_end = source_start + _PAREN_SOURCE_MAX_CHARS
+            paren_end = _closing_paren(source_start)
+            if paren_end is not None and paren_end > longest_end:
+                paren_end = None
+            if paren_end is None and (
+                whitespace_end is None or whitespace_end > longest_end
+            ):
+                return None
         if paren_end is not None and (
             whitespace_end is None or paren_end < whitespace_end
         ):
@@ -391,11 +451,12 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             return paren_end + 1, line[source_start:paren_end]
         if whitespace_end is None:
             return None
-        if _paren_depth(whitespace_end) != _paren_depth(source_start):
+        if has_pairs and _paren_depth(whitespace_end) != _paren_depth(source_start):
             # Whitespace inside an open pair: not a bare source.
             return None
         # Only whitespace-ended sources reach the tail finders, which keeps
-        # their queries monotonic; ``_closing_paren`` is not monotonic.
+        # their queries monotonic; a closing parenthesis found through the
+        # index is not monotonic in the source start.
         end = _tail_end(
             whitespace_end,
             tail_non_whitespace=bare_tail_non_whitespace,
@@ -406,61 +467,57 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             return end, line[source_start:whitespace_end]
         return None
 
-    # Lenient source ends, computed once and only when the strict grammar
-    # first rejects a candidate: ``(source end, index after the closing paren)``.
-    lenient_source_ends: list[int] | None = None
-    lenient_match_ends: list[int] = []
-    lenient_results: dict[int, tuple[int, str] | None] = {}
+    # Candidates nested in one alt text share a source start and arrive one
+    # after the other, so remembering the last retry is a complete memo.
+    lenient_source_start = -1
+    lenient_result: tuple[int, str] | None = None
 
     def _lenient_match_end(start: int) -> tuple[int, str] | None:
         """Retry a rejected candidate with whitespace allowed in the source.
 
-        Candidates nested in one alt text share a source start, hence the
-        memo. Each walk stops at the next ``![``, which no earlier source
-        start can lie beyond, so the walks never overlap and stay linear in
+        A retry reads no further than the next ``![``, which no earlier source
+        start can lie beyond, so the retries never overlap and stay linear in
         the line length together.
         """
 
+        nonlocal lenient_source_start, lenient_result
         alt_end = close_bracket.find(start + 2)
         if alt_end is None or alt_end + 1 >= len(line) or line[alt_end + 1] != "(":
             return None
         source_start = source_non_whitespace.find(alt_end + 2)
         if source_start is None:
             return None
-        if source_start not in lenient_results:
-            lenient_results[source_start] = _lenient_source_match(source_start)
-        return lenient_results[source_start]
+        if source_start != lenient_source_start:
+            lenient_source_start = source_start
+            lenient_result = _lenient_source_match(source_start)
+        return lenient_result
 
     def _lenient_source_match(source_start: int) -> tuple[int, str] | None:
-        nonlocal lenient_source_ends
-        if lenient_source_ends is None:
-            lenient_source_ends = []
-            for found in _LENIENT_IMAGE_SOURCE_END_RE.finditer(line):
-                lenient_source_ends.append(found.start(1))
-                lenient_match_ends.append(found.end())
-        candidate = bisect_right(lenient_source_ends, source_start)
-        if candidate == len(lenient_source_ends):
-            return None
-
+        region_end = line.find("![", source_start)
+        if region_end < 0:
+            region_end = len(line)
         depth = 0
-        for index in range(source_start, lenient_source_ends[-1]):
-            if index == lenient_source_ends[candidate]:
-                if depth == 0:
-                    return lenient_match_ends[candidate], line[source_start:index]
-                candidate += 1
-            char = line[index]
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth < 0:
+        checked = source_start
+        for found in _LENIENT_IMAGE_EXTENSION_RE.finditer(
+            line, source_start, region_end
+        ):
+            source_end = found.end()
+            if line.find('"', checked, source_end) >= 0:
+                return None
+            for paren in _PAREN_RE.finditer(line, checked, source_end):
+                if line[paren.start()] == "(":
+                    depth += 1
+                elif depth == 0:
                     # The parenthesis that closes this candidate: whatever
                     # follows belongs to the surrounding text.
                     return None
-            elif char == '"' or line.startswith("![", index):
-                return None
-        if depth == 0:
-            return lenient_match_ends[-1], line[source_start : lenient_source_ends[-1]]
+                else:
+                    depth -= 1
+            checked = source_end
+            if depth == 0:
+                tail = _IMAGE_TAIL_RE.match(line, source_end)
+                if tail is not None:
+                    return tail.end(), line[source_start:source_end]
         return None
 
     parts: list[str] = []

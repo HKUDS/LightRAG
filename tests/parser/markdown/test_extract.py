@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import itertools
 import time
+import tracemalloc
 
 import pytest
 
 from lightrag.parser.markdown.extract import (
     PREFACE_HEADING,
     ResolvedImage,
+    _PAREN_SOURCE_MAX_CHARS,
     _has_unescaped_pipe,
     _replace_inline_images,
     _split_pipe_row,
@@ -662,6 +664,19 @@ def test_inline_image_scanner_lenient_retry_leaves_non_images_alone(line):
     assert _replace_inline_images(line, lambda src: f"<{src}>") == line
 
 
+def test_lenient_retry_sees_an_image_inside_an_earlier_tail():
+    # Codex finding: ``old.png "...")`` is itself a valid source end plus
+    # quoted title, and that title spans the real image. Looking for source
+    # ends with one non-overlapping scan of the line hid the image's own end.
+    line = '(old.png "![x](my pic.png)")'
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == (
+        '(old.png "<my pic.png>")'
+    )
+    ex = _extract(line)
+    (drawing,) = ex.drawings.values()
+    assert drawing["src"] == "my pic.png"
+
+
 def test_lenient_retry_does_not_reach_into_the_next_candidate():
     # The first candidate is rejected; its retry must stop at the next ``![``
     # so the second image is matched on its own, by the strict grammar.
@@ -713,9 +728,58 @@ def test_image_path_with_spaces_becomes_a_drawing():
     assert "my doc.assets" not in ex.blocks[0]["content"]
 
 
+def test_parenthesised_source_is_limited_in_length():
+    limit = _PAREN_SOURCE_MAX_CHARS
+    fits = "a(1)" + "x" * (limit - 4)
+    assert len(fits) == limit
+    assert _replace_inline_images(f"![x]({fits})", lambda src: f"<{src}>") == (
+        f"<{fits}>"
+    )
+    assert _replace_inline_images(f'![x]({fits} "t")', lambda src: "<>") == "<>"
+    too_long = f"![x]({fits}x)"
+    assert _replace_inline_images(too_long, lambda src: "<>") == too_long
+    too_long = f'![x]({fits}x "t")'
+    assert _replace_inline_images(too_long, lambda src: "<>") == too_long
+    # The limit is on sources WITH parentheses only: a base64 data URL has
+    # none and may be any length.
+    data_url = "data:image/png;base64," + "QUJD" * limit
+    assert _replace_inline_images(f"![x]({data_url})", lambda src: "<>") == "<>"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Codex finding: a whole-line parenthesis index grew one entry per
+        # depth for a suffix no image could ever reach (230 MiB for 1 MB).
+        "![x](a.png) " + ")" * 1_000_000,
+        "![x](a(1).png) " + ")" * 1_000_000,
+        "![x](" + "(" * 1_000_000,
+        "![x](a(" + "()" * 500_000 + ")",
+        "![x](a b" + ".png)" * 200_000,
+        "![x](a (b" + ".png) " * 200_000,
+    ],
+)
+def test_inline_image_scanner_memory_stays_bounded(line):
+    tracemalloc.start()
+    try:
+        _replace_inline_images(line, lambda src: "")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # The output is a copy of (most of) the line; allow that and a fixed
+    # overhead, far below what any per-character index would take.
+    assert peak < 2 * len(line) + 4_000_000
+
+
 @pytest.mark.parametrize(
     "unit",
-    ["![](a(", "![](a)", "![](a(b)", "![]((", "![](a ("],
+    [
+        "![](a(",
+        "![](a)",
+        "![](a(b)",
+        "![]((",
+        "![](a (",
+    ],
 )
 def test_parenthesis_matching_scales_linearly_for_malformed_candidates(unit):
     def elapsed(repetitions: int) -> float:
@@ -727,6 +791,20 @@ def test_parenthesis_matching_scales_linearly_for_malformed_candidates(unit):
 
     small = elapsed(1_024)
     large = elapsed(8_192)
+    assert large / max(small, 1e-9) < 16
+
+
+def test_parenthesis_window_rebuilds_scale_linearly():
+    # Every candidate lies beyond the previous window, so each one rebuilds it.
+    def elapsed(repetitions: int) -> float:
+        line = ("![](a(" + "x" * 5_000) * repetitions
+        started = time.perf_counter()
+        for _ in range(3):
+            assert _replace_inline_images(line, lambda src: src) == line
+        return time.perf_counter() - started
+
+    small = elapsed(32)
+    large = elapsed(256)
     assert large / max(small, 1e-9) < 16
 
 
