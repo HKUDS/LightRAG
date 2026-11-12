@@ -37,11 +37,11 @@ def _load_zhipu_module(monkeypatch, client_factory):
         RateLimitError=type("RateLimitError", (Exception,), {}),
         APITimeoutError=type("APITimeoutError", (Exception,), {}),
     )
-    fake_zhipuai = SimpleNamespace(ZhipuAI=client_factory)
+    fake_zai = SimpleNamespace(ZhipuAiClient=client_factory)
 
     monkeypatch.setitem(sys.modules, "pipmaster", fake_pm)
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
-    monkeypatch.setitem(sys.modules, "zhipuai", fake_zhipuai)
+    monkeypatch.setitem(sys.modules, "zai", fake_zai)
     sys.modules.pop("lightrag.llm.zhipu", None)
 
     return importlib.import_module("lightrag.llm.zhipu")
@@ -103,6 +103,34 @@ async def test_zhipu_embedding_omits_dimensions_when_embedding_dim_not_provided(
     await zhipu_module.zhipu_embedding.func(["hello"], api_key="test-key")
 
     assert captured_calls == [{"model": "embedding-3", "input": ["hello"]}]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_embedding_reads_legacy_zhipuai_env_when_no_api_key(
+    monkeypatch,
+):
+    received_keys = []
+
+    class FakeClient:
+        def __init__(self, api_key=None, base_url=None):
+            received_keys.append((api_key, base_url))
+            self.embeddings = SimpleNamespace(create=self.create)
+
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                data=[SimpleNamespace(embedding=_fake_embedding_vector())]
+            )
+
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "env-key")
+    monkeypatch.setenv("ZHIPUAI_BASE_URL", "https://proxy.example/v4")
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    await zhipu_module.zhipu_embedding.func(["hello"])
+
+    assert received_keys == [("env-key", "https://proxy.example/v4")]
 
 
 @pytest.mark.offline
