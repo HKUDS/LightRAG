@@ -623,7 +623,7 @@ The default query mode is `mix` if you send a message (query) from the Ollama in
 
 A query prefix in the query string can determine which LightRAG query mode is used to generate the response for the query. The supported prefixes include:
 
-RAG queries must have an English-equivalent length of at least 3 after the prefix is removed; each Chinese, Japanese or Korean character counts as 2. Direct-LLM `/bypass` requests do not use this minimum, but no request may carry an empty query — a prefix that consumes the whole message (`/local[hint]`) is refused with **400**.
+RAG queries must have an English-equivalent length of at least 3 after the prefix is removed; each Chinese, Japanese or Korean character counts as 2. Direct-LLM `/bypass` requests do not use this minimum, but no request may carry an empty query — a prefix that consumes the whole message (`/local[hint]`, or a bare `/bypass`) is refused with **400**.
 
 ```
 /local
@@ -641,7 +641,7 @@ RAG queries must have an English-equivalent length of at least 3 after the prefi
 /mixcontext
 ```
 
-For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default.
+For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default. The prefix must be followed by whitespace or by the end of the message: a space, a tab or a line break all work, so the question may start on the next line. A longer word that merely starts with a prefix, such as `/localize`, is not a prefix and is sent as an ordinary query.
 
 `/bypass` is not a LightRAG query mode; it will tell the API Server to pass the query directly to the underlying LLM, including the chat history. So the user can use the LLM to answer questions based on the chat history. If you are using Open WebUI as a front end, you can just switch the model to a normal LLM instead of using the `/bypass` prefix.
 
