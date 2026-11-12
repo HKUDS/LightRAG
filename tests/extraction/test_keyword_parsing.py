@@ -110,26 +110,108 @@ def test_parse_keywords_payload_warns_when_json_repair_is_used():
     )
 
 
+_ANSWER = '{"high_level_keywords":["AI"],"low_level_keywords":["RAG","Graph"]}'
+
+
 @pytest.mark.offline
-def test_parse_keywords_payload_keeps_first_object_from_fence_prose_second_object():
-    """json_repair returns a list for a fenced object, prose, then a second
-    object; the first genuine object must still be used."""
-    result = (
-        '```json\n{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n```\n\n'
-        "Wait, I need to correct my format - no markdown code fences allowed:\n\n"
-        '{"high_level_keywords":["AI"],"low_level_keywords":["RAG","Graph"]}\n```'
-    )
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(
+            '```json\n{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n```'
+            "\n\nWait, I need to correct my format - no markdown code fences"
+            f" allowed:\n\n{_ANSWER}\n```",
+            id="fence-prose-second-object",
+        ),
+        pytest.param(f"{_ANSWER}\n{_ANSWER}", id="two-bare-objects"),
+    ],
+)
+def test_parse_keywords_payload_accepts_repeated_objects(result):
+    """json_repair returns a list for a reply that repeats its object; the
+    first object carrying keywords is the answer."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords[0] == "RAG"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "leading_object",
+    [
+        pytest.param(
+            '{"high_level_keywords": ["<high_level_keyword>"],'
+            ' "low_level_keywords": ["<low_level_keyword>"]}',
+            id="echoed-format-template",
+        ),
+        pytest.param(
+            '{"high_level_keywords": [], "low_level_keywords": []}',
+            id="echoed-empty-example",
+        ),
+        pytest.param('{"note": "thinking"}', id="unrelated-object"),
+    ],
+)
+def test_parse_keywords_payload_skips_leading_object_without_keywords(leading_object):
+    """An object that carries no real keyword must not shadow the answer."""
+    result = f"The format is {leading_object}. Answer:\n{_ANSWER}"
 
     is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
 
     assert is_valid is True
     assert hl_keywords == ["AI"]
-    assert ll_keywords == ["RAG"]
+    assert ll_keywords == ["RAG", "Graph"]
 
 
 @pytest.mark.offline
-def test_parse_keywords_payload_rejects_array_without_objects():
-    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload('["AI", "RAG"]')
+def test_parse_keywords_payload_keeps_empty_answer_valid_when_repeated():
+    empty = '{"high_level_keywords": [], "low_level_keywords": []}'
+
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(f"{empty}\n{empty}")
+
+    assert is_valid is True
+    assert hl_keywords == []
+    assert ll_keywords == []
+
+
+@pytest.mark.offline
+def test_parse_keywords_payload_drops_template_placeholders():
+    """An echoed placeholder is never a keyword, even in a single clean
+    object; a real angle-bracket keyword is kept."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(
+        '{"high_level_keywords": ["<high_level_keyword>", "HTML"],'
+        ' "low_level_keywords": ["<low_level_keyword>", "<div>"]}'
+    )
+
+    assert is_valid is True
+    assert hl_keywords == ["HTML"]
+    assert ll_keywords == ["<div>"]
+
+
+@pytest.mark.offline
+def test_keyword_template_placeholders_match_the_prompt_template():
+    from lightrag.operate import _KEYWORD_TEMPLATE_PLACEHOLDERS
+    from lightrag.prompt import PROMPTS
+
+    template = "\n".join(PROMPTS["keywords_extraction_examples"])
+
+    assert _KEYWORD_TEMPLATE_PLACEHOLDERS
+    for placeholder in _KEYWORD_TEMPLATE_PLACEHOLDERS:
+        assert placeholder in template
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param('["AI", "RAG"]', id="array-of-strings"),
+        pytest.param(f"[{_ANSWER}]", id="array-of-one-object"),
+        pytest.param(f"[{_ANSWER},{_ANSWER}", id="truncated-array-of-objects"),
+        pytest.param(f"Result: [{_ANSWER},{_ANSWER}", id="prose-then-truncated-array"),
+    ],
+)
+def test_parse_keywords_payload_rejects_top_level_array(result):
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
 
     assert is_valid is False
     assert hl_keywords == []
