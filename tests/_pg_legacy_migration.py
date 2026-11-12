@@ -25,11 +25,11 @@ def answer_legacy_migration(
     async def wrapped(sql: str, params: Any = None, *args: Any, **kwargs: Any) -> Any:
         if "attname" in sql:
             return [{"attname": "id"}, {"attname": "workspace"}]
-        if sql.startswith("WITH batch"):
+        if sql.startswith("WITH guard"):
             on_copy(sql, list(params or []))
-            return {"batch_rows": 1, "last_id": "last-id"}
-        if "AS missing" in sql:
-            return {"missing": 0}
+            return {"batch_rows": 1, "last_id": "last-id", "active": True}
+        if "AS cleared" in sql:
+            return {"missing": 0, "cleared": 1}
         return await query(sql, params, *args, **kwargs)
 
     return wrapped

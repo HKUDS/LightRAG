@@ -4205,15 +4205,22 @@ class PGVectorStorage(BaseVectorStorage):
         new_table_name: str,
         workspace: str,
         expected_count: int,
+        resume: bool = False,
     ) -> int:
         """Copy one workspace's legacy rows into the new table, in segments.
 
         Rules for callers:
 
-        - Call it only when the target workspace is empty or
+        - Call it with ``resume=False`` only when the target workspace is
+          empty, and with ``resume=True`` only when
           ``_pg_migration_in_progress`` is true. It never overwrites a target
           row (``ON CONFLICT DO NOTHING``), so it is safe to call again after
           any failure, and calling again is the only recovery.
+        - The marker row is the fence between server instances: whoever
+          clears it ends the migration for everyone. Never copy a legacy row
+          outside a statement that holds the marker, and never re-create the
+          marker on the resume path -- either one lets a slow instance write
+          back rows that a finished instance has since deleted.
         - It raises unless every legacy row of the workspace is present in the
           target afterwards. A raise leaves the in-progress marker behind on
           purpose: the next startup resumes instead of accepting a partial
@@ -4232,7 +4239,10 @@ class PGVectorStorage(BaseVectorStorage):
         marker_key = {"target_table": new_table_name.lower(), "workspace": workspace}
 
         # Marker BEFORE the first row: from here on a target that holds some
-        # rows is known to be unfinished rather than assumed complete.
+        # rows is known to be unfinished rather than assumed complete. Only a
+        # fresh migration writes it, and only while the target is still empty:
+        # another instance may have finished the whole migration since the
+        # caller looked, and a new marker would reopen it.
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {state_table} (
                     target_table VARCHAR(255) NOT NULL,
@@ -4243,11 +4253,14 @@ class PGVectorStorage(BaseVectorStorage):
                     )""",
             ignore_if_exists=True,
         )
-        await db.execute(
-            f"INSERT INTO {state_table} (target_table, workspace, legacy_table) "
-            "VALUES ($1, $2, $3) ON CONFLICT (target_table, workspace) DO NOTHING",
-            {**marker_key, "legacy_table": legacy_table_name.lower()},
-        )
+        if not resume:
+            await db.execute(
+                f"INSERT INTO {state_table} (target_table, workspace, legacy_table) "
+                "SELECT $1::varchar, $2::varchar, $3::varchar WHERE NOT EXISTS "
+                f"(SELECT 1 FROM {new_table_name} WHERE workspace = $2) "
+                "ON CONFLICT (target_table, workspace) DO NOTHING",
+                {**marker_key, "legacy_table": legacy_table_name.lower()},
+            )
 
         # Name the legacy columns explicitly: the two tables need not share a
         # column order, and a legacy column the target lacks must fail loudly
@@ -4268,37 +4281,63 @@ class PGVectorStorage(BaseVectorStorage):
             '"' + row["attname"].replace('"', '""') + '"' for row in column_rows
         )
 
-        # Keyset pagination on the legacy primary key. `batch` is referenced
-        # twice, so PostgreSQL materializes it: the rows inserted and the rows
-        # reported are the same set. A retried segment (including one whose
-        # COMMIT response was lost) re-reads the same range and conflicts away.
+        # Keyset pagination on the legacy primary key. Every segment takes a
+        # share lock on the marker row and copies only while it exists, so the
+        # instance that clears the marker waits for segments in flight and no
+        # segment starts after it. `guard` and `batch` are each referenced more
+        # than once, so PostgreSQL materializes them: the rows inserted and the
+        # rows reported are the same set. A retried segment (including one
+        # whose COMMIT response was lost) re-reads the same range and conflicts
+        # away.
         def _segment_sql(after_first: bool) -> str:
-            cursor = "AND id > $2 " if after_first else ""
-            limit = "$3" if after_first else "$2"
+            cursor = "AND id > $3 " if after_first else ""
+            limit = "$4" if after_first else "$3"
             return (
-                f"WITH batch AS (SELECT {columns} FROM {legacy_table_name} "
-                f"WHERE workspace = $1 {cursor}ORDER BY id LIMIT {limit}), "
+                f"WITH guard AS (SELECT 1 FROM {state_table} "
+                "WHERE target_table = $2 AND workspace = $1 FOR SHARE), "
+                f"batch AS (SELECT {columns} FROM {legacy_table_name} "
+                f"WHERE workspace = $1 AND EXISTS (SELECT 1 FROM guard) "
+                f"{cursor}ORDER BY id LIMIT {limit}), "
                 f"copied AS (INSERT INTO {new_table_name} ({columns}) "
                 f"SELECT {columns} FROM batch "
                 "ON CONFLICT (workspace, id) DO NOTHING) "
-                "SELECT COUNT(*) AS batch_rows, MAX(id) AS last_id FROM batch"
+                "SELECT (SELECT COUNT(*) FROM batch) AS batch_rows, "
+                "(SELECT MAX(id) FROM batch) AS last_id, "
+                "EXISTS (SELECT 1 FROM guard) AS active"
             )
 
+        finished_elsewhere = (
+            f"PostgreSQL: Migration of workspace '{workspace}' into "
+            f"'{new_table_name}' was completed by another instance"
+        )
+        target = new_table_name.lower()
         batch_size = LEGACY_VECTOR_MIGRATION_BATCH_SIZE
         scanned = 0
         last_id: str | None = None
         while True:
             if last_id is None:
-                segment = await db.query(_segment_sql(False), [workspace, batch_size])
+                segment = await db.query(
+                    _segment_sql(False), [workspace, target, batch_size]
+                )
             else:
                 segment = await db.query(
-                    _segment_sql(True), [workspace, last_id, batch_size]
+                    _segment_sql(True), [workspace, target, last_id, batch_size]
                 )
             batch_rows = segment.get("batch_rows") if segment else None
-            if not isinstance(batch_rows, int) or batch_rows < 0:
+            active = segment.get("active") if segment else None
+            if (
+                not isinstance(batch_rows, int)
+                or batch_rows < 0
+                or not isinstance(active, bool)
+            ):
                 raise DataMigrationError(
                     f"PostgreSQL: Unexpected migration segment result: {segment!r}"
                 )
+            if not active:
+                # Not an error and not ours to verify: rows missing from the
+                # target now may have been deleted on purpose.
+                logger.info(finished_elsewhere)
+                return scanned
             if batch_rows == 0:
                 break
             scanned += batch_rows
@@ -4311,25 +4350,38 @@ class PGVectorStorage(BaseVectorStorage):
                 break
 
         # Verify by identity, not by count: a count would also pass when rows
-        # are missing but unrelated rows make up the number.
-        missing_result = await db.query(
-            f"SELECT COUNT(*) AS missing FROM {legacy_table_name} l "
+        # are missing but unrelated rows make up the number. The marker is
+        # cleared in the same statement, and only on a clean result, so there
+        # is no moment at which a verified target is still marked unfinished
+        # or an unverified one is not.
+        outcome = await db.query(
+            f"WITH missing AS (SELECT COUNT(*) AS n FROM {legacy_table_name} l "
             f"WHERE l.workspace = $1 AND NOT EXISTS (SELECT 1 FROM {new_table_name} n "
-            "WHERE n.workspace = l.workspace AND n.id = l.id)",
-            [workspace],
+            "WHERE n.workspace = l.workspace AND n.id = l.id)), "
+            f"cleared AS (DELETE FROM {state_table} WHERE target_table = $2 "
+            "AND workspace = $1 AND (SELECT n FROM missing) = 0 RETURNING 1) "
+            "SELECT (SELECT n FROM missing) AS missing, "
+            "(SELECT COUNT(*) FROM cleared) AS cleared",
+            [workspace, target],
         )
-        missing = missing_result.get("missing") if missing_result else None
-        if not isinstance(missing, int) or missing != 0:
+        missing = outcome.get("missing") if outcome else None
+        cleared = outcome.get("cleared") if outcome else None
+        if not isinstance(missing, int) or not isinstance(cleared, int):
             raise DataMigrationError(
-                "PostgreSQL: Migration verification failed, "
-                f"{missing!r} legacy records of workspace '{workspace}' are missing "
-                f"from '{new_table_name}'. The migration resumes on the next startup."
+                f"PostgreSQL: Unexpected migration verification result: {outcome!r}"
             )
-
-        await db.execute(
-            f"DELETE FROM {state_table} WHERE target_table = $1 AND workspace = $2",
-            marker_key,
-        )
+        if cleared == 0:
+            if await PGVectorStorage._pg_migration_in_progress(
+                db, new_table_name, workspace
+            ):
+                raise DataMigrationError(
+                    "PostgreSQL: Migration verification failed, "
+                    f"{missing} legacy records of workspace '{workspace}' are missing "
+                    f"from '{new_table_name}'. The migration resumes on the next startup."
+                )
+            # The marker went before this statement ran (another instance, or
+            # this statement retried after a lost COMMIT response).
+            logger.info(finished_elsewhere)
         return scanned
 
     @staticmethod
@@ -4596,6 +4648,7 @@ class PGVectorStorage(BaseVectorStorage):
                     table_name,
                     workspace,
                     legacy_count,
+                    resume=resuming,
                 )
 
             except DataMigrationError:
