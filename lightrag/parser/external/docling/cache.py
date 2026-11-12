@@ -61,7 +61,48 @@ DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
     "DOCLING_OCR_PRESET",
     "DOCLING_OCR_LANG",
     "DOCLING_DO_FORMULA_ENRICHMENT",
+    "DOCLING_PIPELINE",
+    "DOCLING_VLM_PRESET",
 )
+
+DOCLING_PIPELINES: tuple[str, ...] = ("standard", "vlm")
+DEFAULT_DOCLING_PIPELINE = "standard"
+
+
+def resolve_docling_pipeline(raw: str | None = None) -> str:
+    """Validate ``DOCLING_PIPELINE`` and return the effective pipeline.
+
+    Raises ``ValueError`` for an unknown value. Nothing calls this at server
+    startup: it runs when the docling client is built or a cached bundle is
+    checked, so a misconfiguration fails the first parsed document.
+    """
+    value = (
+        (raw if raw is not None else os.getenv("DOCLING_PIPELINE", "")).strip().lower()
+    )
+    if not value:
+        return DEFAULT_DOCLING_PIPELINE
+    if value not in DOCLING_PIPELINES:
+        raise ValueError(
+            f"DOCLING_PIPELINE must be one of {DOCLING_PIPELINES}, got {value!r}"
+        )
+    return value
+
+
+def current_vlm_preset() -> str:
+    """The VLM preset named by ``DOCLING_VLM_PRESET`` (empty when unset)."""
+    return os.getenv("DOCLING_VLM_PRESET", "").strip()
+
+
+# Documented defaults for the OCR settings. Shared with the client so the
+# "ignored under vlm" warning and the cache signature cannot drift apart.
+OCR_ENV_DEFAULTS: dict[str, object] = {
+    "DOCLING_DO_OCR": True,
+    "DOCLING_FORCE_OCR": True,
+    "DOCLING_OCR_ENGINE": "auto",
+    "DOCLING_OCR_PRESET": "auto",
+    "DOCLING_OCR_LANG": "",
+    "DOCLING_DO_FORMULA_ENRICHMENT": False,
+}
 
 
 def current_endpoint_signature() -> str:
@@ -131,16 +172,32 @@ def snapshot_tunable_env(
         if "force_ocr" in overrides
         else env_bool("DOCLING_FORCE_OCR", True)
     )
-    return {
-        "DOCLING_DO_OCR": str(env_bool("DOCLING_DO_OCR", True)).lower(),
+    values = {
+        "DOCLING_DO_OCR": str(
+            env_bool("DOCLING_DO_OCR", OCR_ENV_DEFAULTS["DOCLING_DO_OCR"])
+        ).lower(),
         "DOCLING_FORCE_OCR": str(force_ocr).lower(),
         "DOCLING_OCR_ENGINE": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
         "DOCLING_OCR_PRESET": os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto",
         "DOCLING_OCR_LANG": os.getenv("DOCLING_OCR_LANG", "").strip(),
         "DOCLING_DO_FORMULA_ENRICHMENT": str(
-            env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
+            env_bool(
+                "DOCLING_DO_FORMULA_ENRICHMENT",
+                OCR_ENV_DEFAULTS["DOCLING_DO_FORMULA_ENRICHMENT"],
+            )
         ).lower(),
     }
+    pipeline = resolve_docling_pipeline()
+    if pipeline != DEFAULT_DOCLING_PIPELINE:
+        # The VLM pipeline ignores every OCR setting, so including them would
+        # invalidate vlm caches for env changes that cannot alter the output.
+        return {
+            "DOCLING_PIPELINE": pipeline,
+            "DOCLING_VLM_PRESET": current_vlm_preset(),
+        }
+    # Standard pipeline: the dict above is exactly the pre-VLM signature, so
+    # existing bundles keep their cache hits.
+    return values
 
 
 def is_bundle_valid(
@@ -212,12 +269,20 @@ def is_bundle_valid(
     #    case keeps the deliberate leniency above for legacy bundles.
     if overrides and not manifest.options_signature:
         return False
+    #    An unsigned bundle can only be standard-pipeline output (every VLM
+    #    bundle records a signature), so it must miss under any other pipeline;
+    #    the lenient legacy hit is kept for the standard pipeline only.
+    if (
+        not manifest.options_signature
+        and resolve_docling_pipeline() != DEFAULT_DOCLING_PIPELINE
+    ):
+        return False
     if manifest.options_signature:
-        from lightrag.parser.external.docling.client import FIXED_CONSTANTS
+        from lightrag.parser.external.docling.client import fixed_constants_for
 
         cur_options = compute_options_signature(
             tunable_env=snapshot_tunable_env(overrides),
-            fixed_constants=FIXED_CONSTANTS,
+            fixed_constants=fixed_constants_for(resolve_docling_pipeline()),
         )
         if cur_options != manifest.options_signature:
             return False
