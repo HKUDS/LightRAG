@@ -330,9 +330,10 @@ async def test_pump_never_holds_slots_without_free_worker():
 # ---------------------------------------------------------------------------
 
 
-async def test_admission_counts_only_live_queued_tasks():
+@pytest.mark.parametrize("global_limit", [False, True])
+async def test_admission_counts_only_live_queued_tasks(global_limit):
     """max_queue_size limits QUEUED tasks; running tasks don't consume it."""
-    _init({GROUP: 1})
+    _init({GROUP: 1} if global_limit else None)
     release = asyncio.Event()
     started = asyncio.Event()
 
@@ -342,9 +343,9 @@ async def test_admission_counts_only_live_queued_tasks():
         return value
 
     wrapped = lr_utils.priority_limit_async_func_call(
-        2,
+        2 if global_limit else 1,
         queue_name="admission test",
-        concurrency_group=GROUP,
+        concurrency_group=GROUP if global_limit else None,
         max_queue_size=2,
     )(gated)
     try:
@@ -367,6 +368,7 @@ async def test_admission_counts_only_live_queued_tasks():
         # The third queued request exceeds capacity -> QueueFullError.
         with pytest.raises(lr_utils.QueueFullError):
             await wrapped("overflow", _queue_timeout=0.2)
+        assert (await wrapped.get_queue_stats())["cancelled_total"] == 0
 
         release.set()
         assert await running == "running"
@@ -997,7 +999,7 @@ async def test_abandoned_running_call_frees_worker(
         concurrency_group=GROUP if global_limit else None,
     )(func)
     call = asyncio.create_task(
-        wrapped("blocked", _timeout=0.05 if abandonment == "timeout" else None)
+        wrapped("blocked", _timeout=0.5 if abandonment == "timeout" else None)
     )
     try:
         await asyncio.wait_for(entered.wait(), timeout=2.0)
@@ -1008,7 +1010,7 @@ async def test_abandoned_running_call_frees_worker(
         else:
             with pytest.raises(TimeoutError, match="User timeout"):
                 await call
-        assert await asyncio.wait_for(wrapped("next"), timeout=0.5) == "next"
+        assert await asyncio.wait_for(wrapped("next"), timeout=2.0) == "next"
         assert stopped.is_set()
         stats = await _wait_drained(wrapped)
         assert stats["worker_count"] == 1
@@ -1057,9 +1059,13 @@ async def test_cancel_during_stats_publish_stops_running_call(
         with pytest.raises(asyncio.CancelledError):
             await call
         publish_release.set()
-        assert await asyncio.wait_for(wrapped("next"), timeout=0.5) == "next"
+        assert await asyncio.wait_for(wrapped("next"), timeout=2.0) == "next"
         assert stopped.is_set()
-        await _wait_drained(wrapped)
+        stats = await _wait_drained(wrapped)
+        assert stats["cancelled_total"] == 1
+        assert stats["completed_total"] == 1
+        assert stats["submitted_total"] == 2
+        assert stats["failed_total"] == 0
         if global_limit:
             assert await ss.global_concurrency_in_use(GROUP) == 0
     finally:

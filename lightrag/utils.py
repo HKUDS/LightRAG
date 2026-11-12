@@ -1550,6 +1550,16 @@ def priority_limit_async_func_call(
         async def _execute_call(
             task_state: TaskState, args: tuple, kwargs: dict, ctx: contextvars.Context
         ):
+            # Execute the call under the enqueuer's captured
+            # context, not the worker's creation-time context
+            # (asyncio.Task snapshots contextvars once, at
+            # create_task() time, and this worker task is
+            # long-lived — reused across many unrelated
+            # calls). ctx.run(asyncio.ensure_future, ...)
+            # schedules the coroutine as a fresh Task whose
+            # own context is copied from ctx (works on
+            # Python 3.10, unlike create_task's context=
+            # kwarg which needs 3.11+).
             exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
 
             def cancel_execution(future):
@@ -1608,16 +1618,6 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute the call under the enqueuer's captured
-                            # context, not the worker's creation-time context
-                            # (asyncio.Task snapshots contextvars once, at
-                            # create_task() time, and this worker task is
-                            # long-lived — reused across many unrelated
-                            # calls). ctx.run(asyncio.ensure_future, ...)
-                            # schedules the coroutine as a fresh Task whose
-                            # own context is copied from ctx (works on
-                            # Python 3.10, unlike create_task's context=
-                            # kwarg which needs 3.11+).
                             result = await _execute_call(task_state, args, kwargs, ctx)
 
                             # Set result if future is still valid
@@ -1860,9 +1860,6 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
-                            # Run under the enqueuer's captured context, not
-                            # this long-lived worker's creation-time context
-                            # — see the matching comment in worker().
                             result = await _execute_call(task_state, args, kwargs, ctx)
 
                             if not task_state.future.done():
@@ -2416,6 +2413,12 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers.
+                if future.cancel():
+                    cancelled_total += 1
+                raise
             finally:
                 if not future.done():
                     future.cancel()
@@ -2444,6 +2447,9 @@ def priority_limit_async_func_call(
             Execute function with enhanced priority-based concurrency control and timeout handling.
 
             Caller cancellation and _timeout are propagated to the running coroutine.
+            Cancellation is cooperative: capacity is released when that coroutine
+            exits, which can be before synchronous SDK work in a background thread
+            or an already accepted remote request stops.
 
             Args:
                 *args: Positional arguments passed to the function
@@ -2581,6 +2587,12 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers.
+                if future.cancel():
+                    cancelled_total += 1
+                raise
             finally:
                 # Ensure cleanup
                 if not future.done():
