@@ -127,7 +127,6 @@ class DoclingIRBuilder:
     ) -> IRDoc:
         document_format = Path(document_name).suffix.lower().lstrip(".")
         ref_index = _build_ref_index(doc)
-        ref_index = _build_ref_index(doc)
         consumed_refs, picture_inner_refs = _precompute_consumed_refs(doc, raw_dir)
 
         blocks: list[IRBlock] = []

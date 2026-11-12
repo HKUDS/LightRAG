@@ -70,7 +70,12 @@ DEFAULT_DOCLING_PIPELINE = "standard"
 
 
 def resolve_docling_pipeline(raw: str | None = None) -> str:
-    """Validate ``DOCLING_PIPELINE``; an invalid value fails fast at startup."""
+    """Validate ``DOCLING_PIPELINE`` and return the effective pipeline.
+
+    Raises ``ValueError`` for an unknown value. Nothing calls this at server
+    startup: it runs when the docling client is built or a cached bundle is
+    checked, so a misconfiguration fails the first parsed document.
+    """
     value = (
         (raw if raw is not None else os.getenv("DOCLING_PIPELINE", "")).strip().lower()
     )

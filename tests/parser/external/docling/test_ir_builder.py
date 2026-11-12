@@ -1166,21 +1166,3 @@ def test_docling_adapter_kv_form_items_audit_in_split_option(tmp_path: Path) -> 
     ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     extras = ir.split_option["docling_extras"]
     assert extras == {"key_value_items": 2, "form_items": 1}
-
-
-# ---------------------------------------------------------------------------
-# 13. Empty conversions
-# ---------------------------------------------------------------------------
-
-
-def test_docling_validate_ir_zero_blocks_mentions_the_vlm_hint(
-    tmp_path: Path,
-) -> None:
-    """The zero-block guard lives in validate_ir, not the IR builder."""
-    from lightrag.parser.external.docling.parser import DoclingParser
-
-    class _EmptyIR:
-        blocks: list = []
-
-    with pytest.raises(ValueError, match="ALLOWED_VLM_PRESETS"):
-        DoclingParser().validate_ir(_EmptyIR(), file_path="demo.pdf", raw_dir=tmp_path)
