@@ -4751,10 +4751,19 @@ async def kg_query(
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
-    # Handle empty keywords
-    if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
+    # Handle empty keywords. An empty list that the search covers with a
+    # fallback is reported there (_resolve_kg_search_queries), with the
+    # substitution it makes; warn here only when nothing stands in for it.
+    if (
+        ll_keywords == []
+        and query_param.mode in ["local", "hybrid", "mix"]
+        and not hl_keywords
+    ):
         logger.warning("low_level_keywords is empty")
-    if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
+    if hl_keywords == [] and (
+        query_param.mode in ["hybrid", "mix"]
+        or (query_param.mode == "global" and not ll_keywords)
+    ):
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
         if len(query) < 50:

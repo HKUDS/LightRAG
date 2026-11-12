@@ -93,3 +93,39 @@ async def test_request_without_fallback_keeps_its_existing_cache_key(
     written, old = await _cache_key(_param(mode, hl=hl, ll=ll))
 
     assert written == old
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode, hl, ll, expected",
+    [
+        # A fallback reports the empty list itself: no second, bare warning.
+        pytest.param("local", HL, [], [], id="local-ll-empty-fallback"),
+        pytest.param("hybrid", HL, [], [], id="hybrid-ll-empty-fallback"),
+        pytest.param("global", [], LL, [], id="global-hl-empty-fallback"),
+        # Nothing stands in for the empty list: the bare warning stays.
+        pytest.param(
+            "hybrid", [], LL, ["high_level_keywords is empty"], id="hybrid-hl-empty"
+        ),
+        pytest.param("local", HL, LL, [], id="both-present"),
+    ],
+)
+async def test_bare_empty_keyword_warning_only_without_a_fallback(
+    mode,
+    hl,
+    ll,
+    expected,
+    stub_query_context,
+    lightrag_log_records,  # noqa: F811
+):
+    cache = _FakeKVStorage()
+    cfg = _query_global_config(_RecordingModel())
+
+    await _run_kg(_param(mode, hl=hl, ll=ll), cfg, cache)
+
+    bare = [
+        record.getMessage()
+        for record in lightrag_log_records
+        if record.getMessage().endswith("_level_keywords is empty")
+    ]
+    assert bare == expected
