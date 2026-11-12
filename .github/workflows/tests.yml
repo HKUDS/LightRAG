@@ -20,7 +20,11 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ['3.12', '3.14']
+        # Pull requests test 3.12 (the Docker images' runtime) and 3.14 (the
+        # newest interpreter). Pushes to main/dev add 3.11, the
+        # requires-python floor, so a change that only breaks the floor is
+        # caught right after it merges without adding a third job to every PR.
+        python-version: ${{ fromJSON(github.event_name == 'push' && '["3.11", "3.12", "3.14"]' || '["3.12", "3.14"]') }}
 
     steps:
     - uses: actions/checkout@v7
@@ -38,7 +42,8 @@ jobs:
         # between uv releases, and an unpinned "latest" could fail or pass a
         # PR for reasons unrelated to it. 0.13.7 is the uv Dependabot's uv
         # ecosystem currently runs; uv 0.11.0 through 0.13.7 all accept the
-        # current uv.lock. Bump deliberately, and in setup-tests.yml too.
+        # current uv.lock. Bump deliberately, here, in evaluation-tests.yml
+        # and in setup-tests.yml.
         version: "0.13.7"
         enable-cache: true
 
@@ -52,6 +57,8 @@ jobs:
       # mock-target libraries (qdrant-client, pymongo, anthropic, boto3, ...)
       # the offline suite constructs data classes from; the pytest extra brings
       # pytest/pytest-asyncio/httpx2. Without them importorskip silently skips.
+      # The evaluation extra is deliberately NOT installed here; it has its
+      # own path-filtered workflow, evaluation-tests.yml.
       run: >-
         uv sync --locked --python ${{ matrix.python-version }}
         --extra api --extra offline-storage --extra offline-llm --extra pytest

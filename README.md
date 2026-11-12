@@ -24,7 +24,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -101,77 +101,93 @@
 >
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
-### Install LightRAG Server
+> [!WARNING]
+> **Secure the server before you start it on a shared network.** `lightrag-server` binds to all interfaces (`HOST=0.0.0.0`) and ships with authentication off, so on a cloud host every endpoint is public — and spends your LLM quota. Before the first start, either bind to a private address in `.env` (`HOST=127.0.0.1`, or a VPN / tunnel address), or configure authentication: `LIGHTRAG_API_KEY`, or `AUTH_ACCOUNTS` together with `TOKEN_SECRET` (generate one with `openssl rand -hex 32`). The Ollama-compatible `/api/*` routes stay open by default for client compatibility; set `WHITELIST_PATHS=/health` to require auth on them too. This applies to every installation method below.
 
-* Install from PyPI
+### Install from PyPI
+
+The PyPI package ships a prebuilt WebUI, so no frontend build is needed.
 
 ```bash
-### Install LightRAG Server as tool using uv (recommended)
+# Install LightRAG Server as a tool using uv (recommended)
 uv tool install "lightrag-hku[api]"
 
-### Or using pip
+# Or using pip inside a virtual environment
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# Setup env file
-# Obtain the env.example file by downloading it from the GitHub repository root
-# or by copying it from a local source checkout.
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# Launch the server. It binds to all interfaces (0.0.0.0) by default.
-# SECURITY: before exposing it on a network, configure authentication in .env
-# (LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together with TOKEN_SECRET), or bind to
-# 127.0.0.1 for local-only access; without auth every endpoint is public.
-# Note: the Ollama-compatible /api/* routes stay open by default for client
-# compatibility; set WHITELIST_PATHS=/health to require auth on them too.
+# Get the configuration template and edit it (see "Minimum .env Changes" below)
+curl -O https://raw.githubusercontent.com/HKUDS/LightRAG/main/env.example
+cp env.example .env
+
 lightrag-server
 ```
 
-* Installation from Source
+### Install from Source
+
+**Prerequisites**
+
+| Tool | Used for | How to install |
+|---|---|---|
+| git | Cloning the repository | Your system package manager |
+| [uv](https://docs.astral.sh/uv/) | Virtual environment and Python dependencies. Downloads a suitable Python (3.11+) if the system has none | See the uv note above |
+| [bun](https://bun.sh/docs/installation) | Building the WebUI | `curl -fsSL https://bun.sh/install \| bash` (Windows: `powershell -c "irm bun.sh/install.ps1 \| iex"`). The Linux script needs `unzip`, which minimal Debian / Ubuntu images lack: `sudo apt-get install -y unzip` |
+| make | Optional: the `make dev` shortcut and the `make env-*` setup wizard | Your system package manager |
+
+**Step 1 — Clone the repository**
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+```
 
-# Bootstrap the development environment (recommended)
-make dev
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+**Step 2 — Install the Python dependencies.** Pick **one** of the two options:
 
-# make dev installs the test toolchain plus the full offline stack
-# (API, storage backends, and provider integrations), then builds the frontend.
-# Run make env-base or copy env.example to .env before starting the server.
+```bash
+# Option A: just run the server (API + WebUI) — the smallest install
+uv sync --extra api
+```
 
-# Equivalent manual steps with uv
-# Note: uv sync automatically creates a virtual environment in .venv/
+```bash
+# Option B: contributing — the test toolchain plus every storage backend
+# and LLM provider integration
 uv sync --extra test --extra offline
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+```
 
-### Or using pip with virtual environment
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[test,offline]"
+`uv sync` creates the virtual environment in `.venv/`. Activate it with `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`). With pip instead of uv: `python -m venv .venv`, activate it, then `pip install -e ".[api]"` (or `pip install -e ".[test,offline]"`).
 
-# Build front-end artifacts
+**Step 3 — Build the WebUI**
+
+```bash
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
+```
 
-# setup env file
-make env-base  # Or: cp env.example .env and update it manually
-# Launch API-WebUI server
+> `make dev` runs Step 2 Option B and Step 3 in one command. If you used it, continue with Step 4.
+
+**Step 4 — Create `.env`.** Either run the interactive wizard, `make env-base` (see [Create .env File With Setup Tool](#create-env-file-with-setup-tool)), or copy the template and edit it by hand (see [Minimum .env Changes](#minimum-env-changes)):
+
+```bash
+cp env.example .env
+```
+
+**Step 5 — Start the server**
+
+```bash
 lightrag-server
 ```
 
-* Launching the LightRAG Server with Docker Compose
+Open `http://localhost:9621/webui` for the WebUI. The interactive REST API docs are at `http://localhost:9621/docs`. Replace the host and port if you changed `HOST` / `PORT`.
+
+### Launch with Docker Compose
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# modify LLM and Embedding settings in .env
+cp env.example .env  # edit it first: see "Minimum .env Changes" below
 docker compose up
 ```
 
@@ -180,6 +196,22 @@ docker compose up
 > Official GHCR images published by GitHub Actions are signed with Sigstore Cosign using GitHub OIDC. See [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) for verification commands.
 >
 > On Apple Silicon (macOS 26) without Docker Desktop, you can run the same Postgres/Neo4j/Milvus storage stack on Apple's native `container` runtime — see [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md).
+
+### Minimum .env Changes
+
+`env.example` works out of the box with local file-based storage, no reranker, and the built-in document parser, so no database or extra service is needed. Only the model settings need attention. With the default OpenAI models:
+
+| Variable | What to do |
+|---|---|
+| `LLM_BINDING_API_KEY` | **Required.** Set your OpenAI API key |
+| `EMBEDDING_BINDING_API_KEY` | **Required.** Set your OpenAI API key (it can be the same key) |
+| `OPENAI_LLM_REASONING_EFFORT` | **Recommended.** Uncomment it and keep `low`. The default model `gpt-6-luna` is a reasoning model whose API default effort is `medium`, which makes entity extraction — one LLM call per text chunk — noticeably slower and more expensive |
+
+Using another provider? Also set `LLM_BINDING_HOST` and `LLM_MODEL` (keep `LLM_BINDING=openai` for any OpenAI-compatible API), and `EMBEDDING_BINDING_HOST`, `EMBEDDING_MODEL` and `EMBEDDING_DIM`. `EMBEDDING_DIM` must equal the embedding model's output dimension. See [Key Configuration Guide](#key-configuration-guide) for model choices.
+
+> **Settle the embedding model before your first upload.** Changing it later means re-indexing every document (see [Embedding Models](#embedding-models)).
+
+**Next step:** once the server runs, [Exploring LightRAG](./docs/ExploreLightRAG.md) ([🇨🇳](./docs/ExploreLightRAG-zh.md)) walks through enabling the rest, one step at a time and with measured results: PostgreSQL storage, authentication, role-specific LLMs, reranking, image analysis, Word smart headings, MinerU and concurrency tuning.
 
 ### Create .env File With Setup Tool
 
@@ -203,6 +235,8 @@ The native docx parser's opt-in `smart_heading` engine parameter uses spaCy for 
 ```bash
 lightrag-download-cache --spacy-install
 ```
+
+> In a `uv sync` environment (which has no pip) the command installs through `uv pip install` instead. The models are not in `uv.lock`, so a plain `uv sync` removes them again; use `uv sync --inexact` afterwards to keep them.
 
 Enable smart_heading per file/rule (e.g. `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), or globally in `.env`:
 
@@ -269,7 +303,8 @@ LightRAG requires LLM/VLMs of four different roles during its workflow. You shou
 
 **Recommended models by role:**
 
-- **Extraction LLM (`EXTRACT`)**: Entity-relation extraction runs on every text chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended to avoid slow, expensive extraction. Good hosted options include GPT-5.6-luna, Claude Haiku, or Gemini-mini internationally, and DeepSeek-V4-lite or Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+- **Extraction LLM (`EXTRACT`)**: Entity-relation extraction runs on every text chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended to avoid slow, expensive extraction. Good hosted options include GPT-6 Luna, Claude Haiku, or Gemini-mini internationally, and DeepSeek-V4-lite or Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+  With OpenAI's default `gpt-6-luna`, which is a reasoning model, set `OPENAI_LLM_REASONING_EFFORT=low` to keep extraction fast and inexpensive (see [Minimum .env Changes](#minimum-env-changes)).
 - **Query LLM (`QUERY`)**: This model writes the final answer from long, noisy retrieved context, so it should be *stronger* than the extraction model in order to maximize answer quality. Choose a higher-tier model from the same families; a thinking-capable model is fine here.
 - **Keyword LLM (`KEYWORD`)**: A lightweight, latency-sensitive step that **must** use a non-thinking model to keep query latency low; a fast model comparable to the extraction one is sufficient.
 - **VLM (`VLM`)**: Any mainstream multimodal model with image-input support works. For local deployment, consider Qwen3.6-35B-A3B.
@@ -290,7 +325,7 @@ The default query mode for LightRAG is `mix`. Using `mix` mode generally yields 
 
 ### Embedding Models
 
-When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. Any mainstream, up-to-date embedding model works well; for local deployment, `BAAI/bge-m3` is a solid choice. We highly recommend deploying the Embedding model locally to achieve the best performance.
+When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. The `env.example` default, OpenAI `text-embedding-3-large` (3072 dimensions), favors multilingual quality; `text-embedding-3-small` (1536 dimensions, set `EMBEDDING_DIM=1536`) is cheaper and faster. Any mainstream, up-to-date embedding model works well; for local deployment, `BAAI/bge-m3` is a solid choice. We highly recommend deploying the Embedding model locally to achieve the best performance.
 
 **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used in the query phase. Once selected, embedding models generally cannot be changed. If changed, you will need to re-embed all text chunks, entities, and relationships. LightRAG does not currently provide a re-embedding tool. Some storage backends (e.g., PostgreSQL) require the vector dimension to be defined when creating tables for the first time, so changing the Embedding model requires deleting vector-related tables so LightRAG can recreate them.
 
@@ -474,6 +509,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 | Document | What it covers |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | From the default setup to production: PostgreSQL, auth, role LLMs, rerank, VLM, smart headings, MinerU and concurrency, step by step with measured results |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | The `make env-*` setup wizard: generating `.env` and the wizard-managed `docker-compose.final.yml` |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose deployment, image variants, and Cosign verification of the official GHCR images |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Running the Postgres / Neo4j / Milvus storage stack on Apple's native `container` runtime (Apple Silicon, no Docker Desktop) |

@@ -26,6 +26,8 @@ from lightrag.file_atomic import (
 )
 from tests._log_capture import capture_lightrag_logs
 
+from tests._sleep_patch import patch_module_sleep
+
 
 @pytest.mark.offline
 def test_tmp_path_for_unique_across_concurrent_writers():
@@ -231,7 +233,7 @@ def test_replace_file_windows_transient_permission_error_retries_and_succeeds(tm
     with (
         patch("lightrag.file_atomic.sys.platform", "win32"),
         patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
-        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+        patch_module_sleep("lightrag.file_atomic") as mock_sleep,
     ):
         _replace_file(src, dst)
 
@@ -260,7 +262,7 @@ def test_atomic_write_windows_retry_exhaustion_cleans_tmp_and_raises(tmp_path):
     with (
         patch("lightrag.file_atomic.sys.platform", "win32"),
         patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
-        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+        patch_module_sleep("lightrag.file_atomic") as mock_sleep,
     ):
         with pytest.raises(PermissionError, match="Permission denied"):
             atomic_write(dst, lambda tmp: open(tmp, "w").write("v2"))
@@ -291,7 +293,7 @@ def test_atomic_write_non_windows_does_not_retry_permission_error(tmp_path):
     with (
         patch("lightrag.file_atomic.sys.platform", "linux"),
         patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
-        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+        patch_module_sleep("lightrag.file_atomic") as mock_sleep,
     ):
         with pytest.raises(PermissionError, match="Permission denied"):
             atomic_write(dst, lambda tmp: open(tmp, "w").write("v1"))

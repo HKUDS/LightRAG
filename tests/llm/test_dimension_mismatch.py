@@ -20,6 +20,8 @@ from lightrag.kg.postgres_impl import PGVectorStorage
 from lightrag.exceptions import VectorSpaceMismatchError
 
 
+pytestmark = pytest.mark.offline
+
 # Note: Tests should use proper table names that have DDL templates
 # Valid base tables: LIGHTRAG_VDB_CHUNKS, LIGHTRAG_VDB_ENTITIES, LIGHTRAG_VDB_RELATIONSHIPS,
 #                    LIGHTRAG_DOC_CHUNKS, LIGHTRAG_DOC_FULL_DOCS, LIGHTRAG_DOC_TEXT_CHUNKS
@@ -193,6 +195,8 @@ class TestPostgresDimensionMismatch:
         """
         # Setup mock database
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Mock check_table_exists
         async def mock_check_table_exists(table_name):
@@ -240,6 +244,8 @@ class TestPostgresDimensionMismatch:
         Expected: VectorSpaceMismatchError is raised to prevent data corruption.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Mock check_table_exists
         async def mock_check_table_exists(table_name):
@@ -292,6 +298,8 @@ class TestPostgresDimensionMismatch:
         Expected: Migration proceeds normally.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Track migration state
         migration_done = {"value": False}

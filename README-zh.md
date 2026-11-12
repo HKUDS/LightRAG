@@ -23,7 +23,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -117,81 +117,96 @@
 
 **💡 使用 uv 进行包管理**: 本项目使用 [uv](https://docs.astral.sh/uv/) 进行快速可靠的 Python 包管理。首先安装 uv: `curl -LsSf https://astral.sh/uv/install.sh | sh` (Unix/macOS) 或 `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
 
-> **注意**：如果您愿意，也可以使用 pip，但为了获得更好的性能 and 更可靠的依赖管理，建议使用 uv。
+> **注意**：如果您愿意，也可以使用 pip，但为了获得更好的性能和更可靠的依赖管理，建议使用 uv。
 >
 > **📦 离线部署**: 对于离线或隔离环境，请参阅[离线部署指南](./docs/OfflineDeployment.md)，了解预安装所有依赖项和缓存文件的说明。
 
-### 安装LightRAG服务器
+> [!WARNING]
+> **在共享网络上启动服务前，请先做好访问保护。** `lightrag-server` 默认监听所有网卡（`HOST=0.0.0.0`），且默认不开启认证。在云服务器上，这意味着所有接口都对公网开放，任何人都能调用并消耗你的 LLM 额度。首次启动前，请二选一：在 `.env` 中绑定到私有地址（`HOST=127.0.0.1`，或 VPN / 隧道地址）；或者配置认证：`LIGHTRAG_API_KEY`，或 `AUTH_ACCOUNTS` 加 `TOKEN_SECRET`（可用 `openssl rand -hex 32` 生成）。为兼容客户端，Ollama 兼容的 `/api/*` 路由默认不需要认证；设置 `WHITELIST_PATHS=/health` 可让它们也要求认证。以下所有安装方式均适用。
 
-* 从PyPI安装
+### 从 PyPI 安装
+
+PyPI 包已内置构建好的 WebUI，无需构建前端。
 
 ```bash
-### 使用 uv 安装 LightRAG 服务器（作为工具，推荐)
+# 使用 uv 将 LightRAG 服务器安装为工具（推荐）
 uv tool install "lightrag-hku[api]"
 
-### 或使用 pip
+# 或在虚拟环境中使用 pip
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# 配置 env 文件
-# 从 GitHub 仓库的根目录上下载 env.example 文件
-# 或从本地检出的源代码中获取 env.example 文件
-cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
-# 启动 API-WebUI 服务。默认绑定所有网络接口(0.0.0.0)。
-# 安全提示:对外网暴露前,请在 .env 中配置认证(LIGHTRAG_API_KEY,或
-# AUTH_ACCOUNTS 搭配 TOKEN_SECRET);若仅需本机访问,可绑定 127.0.0.1;
-# 否则所有接口都将公开可访问。
-# 注意:为兼容 Ollama 客户端,/api/* 路由默认不鉴权;如需对其启用认证,
-# 请将 WHITELIST_PATHS 收窄为 /health。
+# 获取配置模板并编辑（参见下文"最少需要修改的 .env 配置"）
+curl -O https://raw.githubusercontent.com/HKUDS/LightRAG/main/env.example
+cp env.example .env
+
 lightrag-server
 ```
 
-* 从源代码安装
+### 从源码安装
+
+**前置要求**
+
+| 工具 | 用途 | 安装方式 |
+|---|---|---|
+| git | 克隆仓库 | 系统包管理器 |
+| [uv](https://docs.astral.sh/uv/) | 创建虚拟环境、安装 Python 依赖；系统没有合适的 Python（3.11+）时会自动下载 | 见上方 uv 说明 |
+| [bun](https://bun.sh/docs/installation) | 构建 WebUI | `curl -fsSL https://bun.sh/install \| bash`（Windows：`powershell -c "irm bun.sh/install.ps1 \| iex"`）。Linux 安装脚本依赖 `unzip`，精简版 Debian / Ubuntu 镜像需先执行 `sudo apt-get install -y unzip` |
+| make | 可选：`make dev` 快捷命令和 `make env-*` 设置向导 | 系统包管理器 |
+
+**第 1 步：克隆仓库**
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+```
 
-# 一键初始化开发环境（推荐）
-make dev
-source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
-# Windows 系统: .venv\Scripts\activate
+**第 2 步：安装 Python 依赖。** 以下两种方式**二选一**：
 
-# make dev 会安装测试工具链以及完整的离线依赖栈
-# （API、存储后端与各类 Provider 集成），并构建前端；不会生成 .env。
-# 启动服务前请先运行 make env-base，或手动从 env.example 复制并配置 .env。
+```bash
+# 方式 A：只运行服务器（API + WebUI），安装量最小
+uv sync --extra api
+```
 
-# 使用 uv 的等价手动步骤
-# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+```bash
+# 方式 B：参与开发，安装测试工具链以及全部存储后端和 LLM 提供商集成
 uv sync --extra test --extra offline
-source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
-# Windows 系统: .venv\Scripts\activate
+```
 
-### 或使用 pip 和虚拟环境
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[test,offline]"
+`uv sync` 会在 `.venv/` 中创建虚拟环境，用 `source .venv/bin/activate` 激活（Windows：`.venv\Scripts\activate`）。使用 pip 而非 uv 时：`python -m venv .venv`，激活后执行 `pip install -e ".[api]"`（或 `pip install -e ".[test,offline]"`）。
 
-# 构建前端代码
+**第 3 步：构建 WebUI**
+
+```bash
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
+```
 
-# 配置 env 文件
-make env-base  # 或: cp env.example .env 后手动修改
-# 启动API-WebUI服务
+> `make dev` 一条命令即可完成第 2 步方式 B 和第 3 步。如果已经运行过它，直接进入第 4 步。
+
+**第 4 步：创建 `.env`。** 可以运行交互式向导 `make env-base`（参见[使用设置向导创建 .env 文件](#使用设置向导创建-env-文件)），也可以复制模板后手动编辑（参见[最少需要修改的 .env 配置](#最少需要修改的-env-配置)）：
+
+```bash
+cp env.example .env
+```
+
+**第 5 步：启动服务器**
+
+```bash
 lightrag-server
 ```
 
-* 使用 Docker Compose 启动 LightRAG 服务器
+浏览器打开 `http://localhost:9621/webui` 进入 WebUI；交互式 REST API 文档位于 `http://localhost:9621/docs`。如果修改过 `HOST` / `PORT`，请替换成对应的地址和端口。
+
+### 使用 Docker Compose 启动
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
-# modify LLM and Embedding settings in .env
+cp env.example .env  # 先编辑它：参见下文"最少需要修改的 .env 配置"
 docker compose up
 ```
 
@@ -200,6 +215,22 @@ docker compose up
 > 由 GitHub Actions 发布到 GHCR 的官方镜像已使用 GitHub OIDC 和 Sigstore Cosign 进行签名。校验方式请参阅 [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign)。
 >
 > 在 Apple Silicon（macOS 26）上，无需 Docker Desktop 即可在 Apple 原生的 `container` 运行时上运行相同的 Postgres/Neo4j/Milvus 存储栈 —— 参见 [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md)。
+
+### 最少需要修改的 .env 配置
+
+`env.example` 开箱即用：默认使用本地文件存储、不启用重排序、使用内置文档解析器，无需安装数据库或其他服务，只需要关注模型配置。使用默认的 OpenAI 模型时：
+
+| 变量 | 操作 |
+|---|---|
+| `LLM_BINDING_API_KEY` | **必改。** 填入你的 OpenAI API key |
+| `EMBEDDING_BINDING_API_KEY` | **必改。** 填入你的 OpenAI API key（可以与上面相同） |
+| `OPENAI_LLM_REASONING_EFFORT` | **推荐。** 取消注释并保持 `low`。默认模型 `gpt-6-luna` 是推理模型，API 默认推理强度为 `medium`，会让实体抽取（每个文本块调用一次 LLM）明显变慢、变贵 |
+
+使用其他服务商时，还需设置 `LLM_BINDING_HOST` 和 `LLM_MODEL`（任何 OpenAI 兼容接口都保持 `LLM_BINDING=openai`），以及 `EMBEDDING_BINDING_HOST`、`EMBEDDING_MODEL` 和 `EMBEDDING_DIM`。`EMBEDDING_DIM` 必须与嵌入模型的实际输出维度一致。模型选择请参见[关键配置说明](#关键配置说明)。
+
+> **请在首次上传文档前确定嵌入模型。** 之后再更换需要重新索引所有文档（参见 [Embedding 模型](#embedding-模型)）。
+
+**下一步：** 服务跑起来之后，可以按 [探索 LightRAG](./docs/ExploreLightRAG-zh.md) 逐步打开其余能力，每一步都附实测结果：PostgreSQL 存储、账号认证、角色 LLM、Rerank、图片分析、Word 智能标题、MinerU 和并发调优。
 
 ### 使用设置向导创建 .env 文件
 
@@ -223,6 +254,8 @@ Native docx 解析器的可选引擎参数 `smart_heading` 使用 spaCy 做分�
 ```bash
 lightrag-download-cache --spacy-install
 ```
+
+> 在 `uv sync` 创建的环境中（其中没有 pip），该命令会改用 `uv pip install` 安装。这些模型不在 `uv.lock` 中，普通的 `uv sync` 会把它们删掉；安装后请改用 `uv sync --inexact` 以保留它们。
 
 可以按文件/规则启用 smart_heading（如 `LIGHTRAG_PARSER=docx:native(smart_heading=true)`），也可以在 `.env` 中全局启用：
 
@@ -289,7 +322,8 @@ LightRAG 的工作过程中需要使用到 4 种角色的 LLM/VLM。应该为不
 
 **按角色推荐的模型：**
 
-- **抽取 LLM（`EXTRACT`）**：实体关系抽取会对每个文本块调用，选择主流的高速模型即可，并**强烈推荐使用非思考模型（关闭 reasoning/thinking 模式）**，以免抽取变慢、变贵。国外可选 GPT-5.6-luna、Claude Haiku、Gemini-mini；国内可选 DeepSeek-V4-lite、Kimi。本地部署最低可考虑 Qwen3-30B-A3B-Instruct。
+- **抽取 LLM（`EXTRACT`）**：实体关系抽取会对每个文本块调用，选择主流的高速模型即可，并**强烈推荐使用非思考模型（关闭 reasoning/thinking 模式）**，以免抽取变慢、变贵。国外可选 GPT-6 Luna、Claude Haiku、Gemini-mini；国内可选 DeepSeek-V4-lite、Kimi。本地部署最低可考虑 Qwen3-30B-A3B-Instruct。
+  如果使用 OpenAI 默认的 `gpt-6-luna`（推理模型），请设置 `OPENAI_LLM_REASONING_EFFORT=low`，让抽取保持快速、低成本（参见[最少需要修改的 .env 配置](#最少需要修改的-env-配置)）。
 - **查询 LLM（`QUERY`）**：负责在长且嘈杂的召回内容上生成最终答案，应选择比抽取模型*更强*的模型，尽量提高回答质量；此处使用带思考能力的模型没有问题。
 - **关键词 LLM（`KEYWORD`）**：轻量、对延迟敏感的环节，**一定要选择非思考模型**以降低查询延迟；选用与抽取模型相当的高速模型即可。
 - **VLM（`VLM`）**：主流的多模态模型均可，需支持图片输入。本地部署可考虑 Qwen3.6-35B-A3B。
@@ -310,7 +344,7 @@ LightRAG 的默认查询模式为 mix。使用 mix 模式通常可以获得最�
 
 ### Embedding 模型
 
-在选择 Embedding 模型的时候需要注意其对多语言的支持能力。LightRAG 的检索质量对 Embedding 模型的依赖有限，因此建议尽量选择低维度和速度快的模型。选择主流最新的 Embedding 模型即可；本地部署首选 `BAAI/bge-m3`。建议尽量本地部署 Embedding 模型，以获得最好的性能。
+在选择 Embedding 模型的时候需要注意其对多语言的支持能力。LightRAG 的检索质量对 Embedding 模型的依赖有限，因此建议尽量选择低维度和速度快的模型。`env.example` 的默认值 OpenAI `text-embedding-3-large`（3072 维）更注重多语言质量；`text-embedding-3-small`（1536 维，需设置 `EMBEDDING_DIM=1536`）更便宜、更快。选择主流最新的 Embedding 模型即可；本地部署首选 `BAAI/bge-m3`。建议尽量本地部署 Embedding 模型，以获得最好的性能。
 
 **重要提示**：在文档索引前必须确定使用的 Embedding 模型，且在文档查询阶段必须沿用与索引阶段相同的模型。嵌入模型一旦选定通常就不能修改。如果修改的话，需要对所有文本块、实体和关系进行重新嵌入。LightRAG 目前没有提供重新嵌入的工具。有些存储（例如 PostgreSQL）在首次建立数据表的时候需要确定向量维度，因此更换 Embedding 模型后需要删除向量相关库表，以便让 LightRAG 重建新的库表。
 
@@ -494,6 +528,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 | 文档 | 内容 |
 |---|---|
+| [ExploreLightRAG-zh.md](./docs/ExploreLightRAG-zh.md) | 从默认配置到生产可用：PostgreSQL、认证、角色 LLM、Rerank、VLM、智能标题、MinerU 与并发调优，逐步操作并附实测结果 |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | `make env-*` 安装向导：生成 `.env` 以及由向导管理的 `docker-compose.final.yml` |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose 部署、镜像版本差异，以及用 Cosign 验证官方 GHCR 镜像 |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | 在 Apple 原生 `container` 运行时上运行 Postgres / Neo4j / Milvus 存储栈（Apple Silicon，无需 Docker Desktop） |
