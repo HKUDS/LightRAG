@@ -18,6 +18,7 @@ import time
 import uuid
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -1285,7 +1286,7 @@ def priority_limit_async_func_call(
         publish_stats = False
         shared = None  # lazily imported lightrag.kg.shared_storage module
         work_available = asyncio.Event()
-        queue_space_available = asyncio.Event()
+        queue_waiters: deque[asyncio.Future] = deque()
         admission_cond = asyncio.Condition()
         # Logical queued count: live tasks waiting in the queue (excludes
         # running tasks and cancelled zombies) — same capacity semantics as
@@ -1548,6 +1549,13 @@ def priority_limit_async_func_call(
             if publish_stats:
                 await _publish_stats(force=True)
 
+        def _wake_next_submitter():
+            while queue_waiters:
+                waiter = queue_waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(None)
+                    break
+
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
@@ -1566,7 +1574,7 @@ def priority_limit_async_func_call(
                         except asyncio.TimeoutError:
                             continue
 
-                        queue_space_available.set()
+                        _wake_next_submitter()
 
                         # Get task state and mark worker as started
                         async with task_states_lock:
@@ -2169,7 +2177,8 @@ def priority_limit_async_func_call(
                     admission_cond.notify_all()
             else:
                 accepting_new_tasks = False
-                queue_space_available.set()
+                while queue_waiters:
+                    _wake_next_submitter()
 
             drain_timed_out = False
             if graceful and queue is not None:
@@ -2509,8 +2518,21 @@ def priority_limit_async_func_call(
                     # Python 3.10. Wait for capacity or closure, then admit
                     # without yielding so shutdown cannot race the final check.
                     while queue.full() and accepting_new_tasks:
-                        queue_space_available.clear()
-                        await queue_space_available.wait()
+                        waiter = asyncio.get_running_loop().create_future()
+                        queue_waiters.append(waiter)
+                        try:
+                            await waiter
+                        except BaseException:
+                            waiter.cancel()
+                            try:
+                                queue_waiters.remove(waiter)
+                            except ValueError:
+                                pass
+                            # A selected submitter can be cancelled before
+                            # using its slot. Pass it on, as Queue.put() does.
+                            if not queue.full() and not waiter.cancelled():
+                                _wake_next_submitter()
+                            raise
                     if not accepting_new_tasks:
                         rejected_total += 1
                         raise RuntimeError(f"{queue_name}: Queue is shutting down")
