@@ -27,6 +27,7 @@ from lightrag.utils import (
     repair_vlm_json_escape_damage_nested,
     strip_markdown_code_fence,
     tolerant_load_json_dict,
+    _first_structural_opener,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     acount_tokens,
@@ -4993,6 +4994,12 @@ async def get_keywords_from_query(
     return hl_keywords, ll_keywords
 
 
+# The placeholder tokens of PROMPTS["keywords_extraction_examples"], with an
+# optional numeric suffix so the template may list several per array. Matched
+# by name, never by shape: "<div>" is a legitimate keyword for an HTML query.
+_KEYWORD_TEMPLATE_PLACEHOLDER = re.compile(r"<(?:high|low)_level_keyword(?:_\d+)?>")
+
+
 def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     """Normalize keyword payloads into a clean list of strings.
 
@@ -5023,7 +5030,9 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     for idx, value in enumerate(raw_values):
         if isinstance(value, str):
             cleaned = value.strip()
-            if cleaned:
+            # An echoed template placeholder is not a keyword: kept, it would
+            # be embedded for retrieval and cached for every later run.
+            if cleaned and not _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch(cleaned):
                 normalized.append(cleaned)
             continue
 
@@ -5035,6 +5044,34 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
         )
 
     return normalized
+
+
+def _select_keywords_object(text: str, candidates: list[Any]) -> Any:
+    """Pick the keyword object out of a reply that holds several JSON objects.
+
+    ``json_repair`` returns a list when a reply repeats itself, e.g. a fenced
+    object, a "let me fix my format" line, then a second object. Returns the
+    first object that carries a real keyword, so an echoed format template, an
+    echoed empty-list example or an unrelated leading object does not shadow
+    the answer; failing that the first object, so an all-empty reply is still
+    a valid "no keywords" answer.
+
+    Returns ``candidates`` unchanged, which the caller rejects, when the reply
+    is a top-level array or holds no object at all: an array element is never
+    taken for the whole answer.
+    """
+    opener, _ = _first_structural_opener(text)
+    if opener != "{":
+        return candidates
+
+    objects = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    for candidate in objects:
+        if any(
+            _normalize_keyword_list(candidate.get(field_name), field_name)
+            for field_name in ("high_level_keywords", "low_level_keywords")
+        ):
+            return candidate
+    return objects[0] if objects else candidates
 
 
 def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
@@ -5067,6 +5104,8 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
                     strict_error,
                     cleaned_result[:500],
                 )
+                if isinstance(payload, list):
+                    payload = _select_keywords_object(cleaned_result, payload)
             except Exception as repair_error:
                 logger.error(
                     "JSON parsing error: %s; repair failed: %s; response: %r",
