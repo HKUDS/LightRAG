@@ -191,17 +191,14 @@ def _block_to_paragraphs(content: str) -> list[dict[str, Any]]:
 
 
 def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
-    """Read ``type == "content"`` rows from a blocks.jsonl file in order."""
+    """Read content rows in order; reject malformed JSON rather than lose a row."""
     rows: list[dict[str, Any]] = []
     with Path(blocks_path).open("r", encoding="utf-8") as fh:
         for raw in fh:
             raw = raw.strip()
             if not raw:
                 continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+            obj = json.loads(raw)
             if isinstance(obj, dict) and obj.get("type") == "content":
                 rows.append(obj)
     return rows
@@ -2109,7 +2106,7 @@ def chunking_by_paragraph_semantic(
             above for the full mapping.
         blocks_path: Path to the document's ``.blocks.jsonl`` sidecar
             (typically ``parsed_data["blocks_path"]``). When ``None``,
-            unreadable, or empty, this function falls back to
+            unreadable, malformed JSON, or empty, this function falls back to
             :func:`chunking_by_recursive_character` on ``content``
             (per ``docs/FileProcessingPipeline.md``).
             That fallback hard-requires ``langchain-text-splitters``;
@@ -2195,7 +2192,7 @@ def chunking_by_paragraph_semantic(
     else:
         try:
             rows = _load_blocks_from_jsonl(blocks_path)
-        except (OSError, UnicodeDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             # UnicodeDecodeError is a ValueError, not an OSError: a sidecar
             # holding invalid UTF-8 is as unreadable as a missing one.
             fallback_reason = f"cannot read blocks.jsonl at {blocks_path}: {exc}"

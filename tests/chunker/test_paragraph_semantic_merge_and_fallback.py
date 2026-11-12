@@ -460,6 +460,77 @@ def test_paragraph_semantic_falls_back_when_blocks_jsonl_is_not_utf8(tmp_path):
     )
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize("corrupt_row", [0, 1, 2])
+def test_paragraph_semantic_falls_back_for_partially_malformed_jsonl(
+    tmp_path, corrupt_row
+):
+    tokenizer = _make_tokenizer()
+    paragraphs = ["Alpha section.", "Beta section.", "Gamma section."]
+    content = "\n\n".join(paragraphs)
+    rows = [
+        json.dumps({"type": "content", "blockid": f"blk-{i}", "content": text})
+        for i, text in enumerate(paragraphs)
+    ]
+    # A truncated row must invalidate the whole sidecar, even when other
+    # content rows can be read. Keeping only those rows loses source text.
+    rows[corrupt_row] = rows[corrupt_row][:-1]
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        content,
+        30,
+        blocks_path=str(blocks_path),
+        chunk_overlap_token_size=7,
+    )
+    expected = chunking_by_paragraph_semantic(
+        tokenizer, content, 30, chunk_overlap_token_size=7
+    )
+
+    assert chunks == expected
+    assert all(any(text in chunk["content"] for chunk in chunks) for text in paragraphs)
+
+
+@pytest.mark.offline
+def test_valid_jsonl_keeps_structured_chunks_with_blank_and_metadata_rows(tmp_path):
+    content = "# Topic\nStructured paragraph."
+    row = {
+        "type": "content",
+        "blockid": "blk-topic",
+        "heading": "Topic",
+        "level": 2,
+        "parent_headings": ["Parent"],
+        "content": content,
+    }
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_title": "Document"})
+        + "\n\n"
+        + json.dumps(row)
+        + "\n \t\n",
+        encoding="utf-8",
+    )
+
+    chunks = chunking_by_paragraph_semantic(
+        _make_tokenizer(), content, 100, blocks_path=str(blocks_path)
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["content"] == content
+    assert chunks[0]["heading"] == {
+        "heading": "Topic",
+        "level": 2,
+        "parent_headings": ["Parent"],
+    }
+    assert chunks[0]["sidecar"] == {
+        "type": "block",
+        "id": "blk-topic",
+        "refs": [{"type": "block", "id": "blk-topic"}],
+    }
+
+
 # ---------------------------------------------------------------------------
 # HeadingGlue — body-less heading glue (forward into child / backward into prev).
 # ---------------------------------------------------------------------------
