@@ -171,7 +171,15 @@ class _DiskPlan:
     def sync(self) -> None:
         """Commit the plan and force its file and directory entry to disk."""
         self.connection.commit()
-        file_fd = os.open(self.path, os.O_RDONLY)
+        # The commit already flushed the database (the plan runs with
+        # ``PRAGMA synchronous=FULL``); this is the belt to SQLite's braces.
+        # O_RDWR is required on Windows: ``os.fsync`` maps to
+        # ``FlushFileBuffers``, which rejects a handle without GENERIC_WRITE
+        # with ``[Errno 9] Bad file descriptor``. POSIX ``fsync`` accepts a
+        # read-only descriptor, which is why only NTFS ever failed here. The
+        # open cannot fail where the commit succeeded — a read-only filesystem
+        # rejects the write first.
+        file_fd = os.open(self.path, os.O_RDWR)
         try:
             os.fsync(file_fd)
         finally:
