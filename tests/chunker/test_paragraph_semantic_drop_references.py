@@ -27,6 +27,9 @@ from lightrag.utils import Tokenizer, TokenizerInterface, logger as _lightrag_lo
 from tests._log_capture import capture_lightrag_logs
 
 
+pytestmark = pytest.mark.offline
+
+
 class _CharTokenizer(TokenizerInterface):
     """1:1 character-to-token mapping — keeps math obvious in assertions."""
 

@@ -5,6 +5,8 @@ This file provides command-line options and fixtures for test configuration.
 """
 
 import logging
+import os
+import sys
 
 import pytest
 
@@ -145,6 +147,66 @@ def _reset_r_separator_caches():
     _cached_surrounding_chunk_separators.cache_clear()
 
 
+_API_MODULE_PREFIX = "lightrag.api"
+
+
+@pytest.fixture(autouse=True)
+def _restore_lightrag_api_module_identity():
+    """Restore ``lightrag.api.*`` entries a test replaced or removed.
+
+    ``lightrag.api.config`` / ``auth`` / ``utils_api`` compute module-level
+    state at IMPORT time, and some of their functions re-read siblings through
+    ``sys.modules`` at CALL time (``utils_api`` imports ``global_args`` inside
+    the token-renewal check). A test that pops those modules and re-imports
+    them under an isolated env therefore leaves a different object live than
+    the one later tests imported at collection time: they patch a module
+    nobody consults, and fail depending on which test ran first. This is
+    session-wide rather than under ``tests/api/`` because such re-import
+    helpers also live elsewhere (``tests/llm/``).
+
+    REPLACEMENTS and REMOVALS are healed by identity comparison. When any
+    entry had to be healed, the ``lightrag.api.*`` modules first imported
+    during the test are evicted as well: they were bound to the replaced
+    objects (``lightrag_server`` imported inside such a test holds the
+    re-imported ``utils_api``), so keeping them would split one live module
+    graph across two generations. The next import rebuilds them against the
+    restored modules. A test that only imported new modules, without
+    replacing any, is left alone. Parent-package attributes are kept in step
+    in both directions, because ``from lightrag.api import x`` returns an
+    existing attribute without consulting ``sys.modules``.
+    """
+
+    def _api_modules():
+        return {
+            name: module
+            for name, module in sys.modules.items()
+            if name == _API_MODULE_PREFIX or name.startswith(_API_MODULE_PREFIX + ".")
+        }
+
+    saved = _api_modules()
+    yield
+    healed = False
+    for name, module in saved.items():
+        if sys.modules.get(name) is module:
+            continue
+        healed = True
+        sys.modules[name] = module
+        parent_name, _, child = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and child and getattr(parent, child, None) is not module:
+            setattr(parent, child, module)
+    if not healed:
+        return
+    for name, module in _api_modules().items():
+        if name in saved:
+            continue
+        del sys.modules[name]
+        parent_name, _, child = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and getattr(parent, child, None) is module:
+            delattr(parent, child)
+
+
 #: Populated in ``pytest_configure`` and read by ``requires_spacy_models`` /
 #: ``pytest_terminal_summary``. Two independent facts:
 #: - which pinned spaCy models are missing (empty tuple == all present);
@@ -174,11 +236,16 @@ def pytest_configure(config):
         f"(install with `{_SPACY_DOWNLOAD_HINT}`)",
     )
 
-    # Mirror the server's own .env load so DOCX_SMART_HEADING reflects the
-    # developer's real configuration here, before _hermetic_mineru_env pins it.
-    from dotenv import load_dotenv
+    # The suite never loads .env (tests/__init__.py), but a developer's
+    # DOCX_SMART_HEADING opt-in may live only there. Copy that one key, so the
+    # rest of the file stays out of the process; _hermetic_mineru_env still
+    # pins it to "false" inside each test.
+    if "DOCX_SMART_HEADING" not in os.environ:
+        from dotenv import dotenv_values
 
-    load_dotenv(dotenv_path=".env", override=False)
+        opt_in = dotenv_values(".env").get("DOCX_SMART_HEADING")
+        if opt_in is not None:
+            os.environ["DOCX_SMART_HEADING"] = opt_in
 
     from lightrag.parser.docx.smart_heading import nlp
 
@@ -208,7 +275,14 @@ def pytest_runtest_setup(item):
       smart_heading are not forced to download the models.
 
     Either way ``pytest_terminal_summary`` restates the command at the end.
+
+    It also fails every test that ``pytest_collection_modifyitems`` found
+    without a gate marker (see ``GATE_MARKERS``).
     """
+    if item.stash.get(_UNGATED_KEY, False):
+        # Fail before any fixture runs; pytest_runtest_makereport makes the
+        # failure stick even under xfail/skip markers.
+        pytest.fail(_ungated_message(item), pytrace=False)
     if item.get_closest_marker("requires_spacy_models") is None:
         return
     missing = getattr(item.config, "_missing_spacy_models", ())
@@ -273,12 +347,67 @@ def pytest_addoption(parser):
     )
 
 
+#: Every test must carry at least one of these. CI selects with ``-m offline``,
+#: so a test with none of them is neither run in CI nor reported as skipped.
+GATE_MARKERS = frozenset(
+    {"offline", "integration", "requires_db", "requires_api", "pg_smoke"}
+)
+
+
+_UNGATED_KEY = pytest.StashKey[bool]()
+
+
+def _ungated_message(item):
+    return (
+        f"{item.nodeid} carries none of the gate markers "
+        f"{sorted(GATE_MARKERS)}, so CI's `-m offline` would deselect it "
+        "and never run it. Add `pytestmark = pytest.mark.offline` to the "
+        "module, or the matching integration/requires_* marker."
+    )
+
+
+# tryfirst on a wrapper makes it the outermost one, so it sees the setup
+# report after the skipping plugin has rewritten it.
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Report an ungated test's setup as failed, whatever its other markers.
+
+    The ``pytest.fail()`` in ``pytest_runtest_setup`` is not enough on its
+    own: an ``xfail`` marker turns it into XFAIL, and a ``skip``/``skipif``
+    marker skips the test before that hook runs. Both would exit green and
+    leave the test unrun, which is what the gate exists to prevent.
+    """
+    report = yield
+    if call.when == "setup" and item.stash.get(_UNGATED_KEY, False):
+        report.outcome = "failed"
+        report.longrepr = _ungated_message(item)
+        if hasattr(report, "wasxfail"):
+            del report.wasxfail
+    return report
+
+
+# tryfirst: the gate check must see every collected item, before pytest's own
+# ``-m`` handling deselects the ungated ones it is meant to catch.
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
-    """Modify test collection to skip integration tests by default.
+    """Flag ungated tests, then skip integration tests by default.
+
+    A test without a gate marker would be deselected silently by CI's
+    ``-m offline`` and never run. Such a test is marked ``offline`` here, so
+    that ``-m offline`` selects it, and flagged, so that
+    ``pytest_runtest_setup`` and ``pytest_runtest_makereport`` fail it with
+    the fix. This surfaces as an ordinary test failure in serial and xdist
+    runs alike; raising from this hook would be an INTERNALERROR inside an
+    xdist worker.
 
     Integration tests are skipped unless --run-integration flag is provided.
     This allows running offline tests quickly without needing external services.
     """
+    for item in items:
+        if not GATE_MARKERS.intersection(m.name for m in item.iter_markers()):
+            item.add_marker(pytest.mark.offline)
+            item.stash[_UNGATED_KEY] = True
+
     if config.getoption("--run-integration"):
         # If --run-integration is specified, run all tests
         return

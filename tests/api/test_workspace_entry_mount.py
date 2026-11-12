@@ -24,6 +24,8 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 PLACEHOLDER = "<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
 
 _ENV_VARS_TO_ISOLATE = (
