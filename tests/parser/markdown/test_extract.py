@@ -552,6 +552,107 @@ def test_inline_image_scanner_preserves_supported_image_grammar(line, expected):
     assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Typora-style local path: spaces, no angle brackets.
+        ("![alt](./my doc.assets/a.png)", "<./my doc.assets/a.png>"),
+        ("a ![x](my doc/a b.JPG) b", "a <my doc/a b.JPG> b"),
+        ('![x](my doc/a.png "the caption")', "<my doc/a.png>"),
+        ("![x](  my doc/a.webp  )", "<my doc/a.webp>"),
+        # Balanced parentheses inside such a path.
+        ("![x](shots/shot (1).png)", "<shots/shot (1).png>"),
+        # The first extension is followed by more path, so the source runs on.
+        ("![x](a.png copy.png)", "<a.png copy.png>"),
+        ("![x](pics (old.png) new.svg)", "<pics (old.png) new.svg>"),
+        ("![x](a b.png) and ![y](c d.gif)", "<a b.png> and <c d.gif>"),
+        ("![broken ![nested](a b.png)", "<a b.png>"),
+    ],
+)
+def test_inline_image_scanner_accepts_bare_source_with_spaces(line, expected):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # No image extension: still not an image.
+        "![alt](some words here)",
+        "![alt](my doc/readme.md)",
+        # The candidate's own parenthesis closes before any image extension,
+        # so a later parenthetical or link is not swallowed into its source.
+        "![alt](not an image) see (figure one.png)",
+        "![alt](two words) and [a link](my pic.png)",
+        # Unbalanced parentheses and quotes are not paths.
+        "![alt](shot (1.png)",
+        '![alt](my "doc".png)',
+        '![alt](a b.png "unterminated)',
+        # The extension must end the source.
+        "![alt](my doc.png?raw=1 x)",
+        "![alt](my doc.png extra)",
+    ],
+)
+def test_inline_image_scanner_lenient_retry_leaves_non_images_alone(line):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == line
+
+
+def test_lenient_retry_does_not_reach_into_the_next_candidate():
+    # The first candidate is rejected; its retry must stop at the next ``![``
+    # so the second image is matched on its own, by the strict grammar.
+    line = "![a](two words ![b](ok.png)"
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == (
+        "![a](two words <ok.png>"
+    )
+
+
+def test_strict_grammar_wins_over_the_lenient_retry():
+    # ``a.png`` already is a complete image; the retry must not extend it.
+    line = "![x](a.png) trailing (b c.png)"
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == (
+        "<a.png> trailing (b c.png)"
+    )
+    # Unchanged legacy behavior: without whitespace the strict grammar still
+    # ends the source at the first ``)``, and the retry is never consulted.
+    assert _replace_inline_images("![x](shot(1).png)", lambda src: f"<{src}>") == (
+        "<shot(1>.png)"
+    )
+
+
+def test_image_path_with_spaces_becomes_a_drawing():
+    resolver = _StubResolver()
+    ex = extract_markdown(
+        "Intro\n\n![shot](./my doc.assets/shot (1).png)\n", image_resolver=resolver
+    )
+    assert resolver.calls == ["./my doc.assets/shot (1).png"]
+    (drawing,) = ex.drawings.values()
+    assert drawing["src"] == "./my doc.assets/shot (1).png"
+    assert "my doc.assets" not in ex.blocks[0]["content"]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "![](a b",  # no extension anywhere near
+        "![](a b.png",  # extension, never closed
+        "![](a (b.png) ",  # closed at the wrong depth
+        '![](a b.png "',  # dangling titles
+        "![",  # candidates nested in one alt text ...
+    ],
+)
+def test_lenient_retry_scales_linearly_for_malformed_candidates(unit):
+    def elapsed(repetitions: int) -> float:
+        # ... which all share the source start after this suffix.
+        line = unit * repetitions + "](a ( b.png)"
+        started = time.perf_counter()
+        for _ in range(5):
+            _replace_inline_images(line, lambda src: src)
+        return time.perf_counter() - started
+
+    small = elapsed(1_024)
+    large = elapsed(8_192)
+    assert large / max(small, 1e-9) < 16
+
+
 def test_inline_image_scanner_matches_legacy_regex_for_short_title_inputs():
     def legacy_replace(line: str) -> str:
         return _LEGACY_INLINE_IMAGE_RE.sub(

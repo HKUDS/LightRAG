@@ -33,6 +33,7 @@ left as verbatim text rather than misrecognised.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -203,6 +204,17 @@ def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
     return len(delim_cells) == len(_split_pipe_row(header_line))
 
 
+# Where a lenient bare image source may end: an image file extension the
+# resolver can turn into an asset, directly followed by the tail the strict
+# grammar requires (optional ``"title"``, then ``)``). Group 1 is that tail.
+# A match can never start inside the tail of an earlier one that matters: such
+# a source would span a ``"``, which the lenient scan refuses.
+_LENIENT_IMAGE_SOURCE_END_RE = re.compile(
+    r'\.(?:png|jpe?g|gif|webp|svg)(\s*\)|\s+"[^"]*"\s*\))',
+    re.IGNORECASE,
+)
+
+
 class _ForwardFinder:
     """Cache a forward search over one monotonic query stream.
 
@@ -244,6 +256,12 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     keeps every cached forward search in its own monotonic parser phase,
     making its work linear in the line length while retaining the supported
     grammar.
+
+    A candidate that grammar rejects gets one lenient retry: a bare source may
+    contain whitespace and balanced parentheses when it ends in an image file
+    extension (``![alt](./my doc.assets/shot (1).png)``). Editors such as
+    Typora write local paths that way. The strict grammar always wins, so the
+    retry only ever turns text that was not an image into one.
     """
 
     if "![" not in line:
@@ -336,6 +354,63 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             return end, line[source_start:source_end]
         return None
 
+    # Lenient source ends, computed once and only when the strict grammar
+    # first rejects a candidate: ``(source end, index after the closing paren)``.
+    lenient_source_ends: list[int] | None = None
+    lenient_match_ends: list[int] = []
+    lenient_results: dict[int, tuple[int, str] | None] = {}
+
+    def _lenient_match_end(start: int) -> tuple[int, str] | None:
+        """Retry a rejected candidate with whitespace allowed in the source.
+
+        Candidates nested in one alt text share a source start, hence the
+        memo. Each walk stops at the next ``![``, which no earlier source
+        start can lie beyond, so the walks never overlap and stay linear in
+        the line length together.
+        """
+
+        alt_end = close_bracket.find(start + 2)
+        if alt_end is None or alt_end + 1 >= len(line) or line[alt_end + 1] != "(":
+            return None
+        source_start = source_non_whitespace.find(alt_end + 2)
+        if source_start is None:
+            return None
+        if source_start not in lenient_results:
+            lenient_results[source_start] = _lenient_source_match(source_start)
+        return lenient_results[source_start]
+
+    def _lenient_source_match(source_start: int) -> tuple[int, str] | None:
+        nonlocal lenient_source_ends
+        if lenient_source_ends is None:
+            lenient_source_ends = []
+            for found in _LENIENT_IMAGE_SOURCE_END_RE.finditer(line):
+                lenient_source_ends.append(found.start(1))
+                lenient_match_ends.append(found.end())
+        candidate = bisect_right(lenient_source_ends, source_start)
+        if candidate == len(lenient_source_ends):
+            return None
+
+        depth = 0
+        for index in range(source_start, lenient_source_ends[-1]):
+            if index == lenient_source_ends[candidate]:
+                if depth == 0:
+                    return lenient_match_ends[candidate], line[source_start:index]
+                candidate += 1
+            char = line[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    # The parenthesis that closes this candidate: whatever
+                    # follows belongs to the surrounding text.
+                    return None
+            elif char == '"' or line.startswith("![", index):
+                return None
+        if depth == 0:
+            return lenient_match_ends[-1], line[source_start : lenient_source_ends[-1]]
+        return None
+
     parts: list[str] = []
     position = 0
     while True:
@@ -343,7 +418,7 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         if start < 0:
             parts.append(line[position:])
             return "".join(parts)
-        matched = _match_end(start)
+        matched = _match_end(start) or _lenient_match_end(start)
         if matched is None:
             # No match begins at this prefix.  Advance only past ``![`` so a
             # nested, valid image remains visible to the next iteration.
