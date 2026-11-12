@@ -207,7 +207,7 @@ The `VLM` role defaults to `LLM_MODEL`. `gpt-6-luna` accepts image input, so not
 | Markdown remote `http(s)` images | Downloaded (guarded against private addresses); a failed download keeps the link and logs a warning |
 | Markdown **local** images such as `./doc.assets/a.png` | **Only inside a `.textpack`**, a zip of the `.md` plus its images. A plain `.md` upload does not carry the image files, so the parser logs `skipping image (file reference outside .textpack)` |
 
-A local image path that contains spaces must be written `![alt](<./my doc.assets/a.png>)`. Without the angle brackets it is not Markdown image syntax at all, so it stays as plain text and no warning is logged. Editors such as Typora write such paths without brackets.
+Editors such as Typora write a local image path that contains spaces as `![alt](./my doc.assets/a.png)`, without angle brackets. That is not standard Markdown, but LightRAG still reads it as an image when the path ends in an image extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`). In any other case use the standard form `![alt](<./my doc.assets/a.png>)` or write the spaces as `%20`; otherwise it is not an image, so it stays as plain text and no warning is logged.
 
 Images smaller than `VLM_MIN_IMAGE_PIXEL` (64 px on either side) are treated as decoration and skipped.
 
@@ -375,7 +375,7 @@ VLM_MAX_ASYNC_LLM=12
 | Symptom | Cause | Fix |
 |---|---|---|
 | Vector index creation fails, or the server refuses to start after switching to PostgreSQL | `HNSW` / `IVFFlat` with an embedding above 2000 dimensions | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
-| Images in a Markdown file are not analysed | Local image files are not uploaded with a plain `.md`; or the path contains spaces without `<...>` | Upload a `.textpack`; write `![](<path with spaces>)` |
+| Images in a Markdown file are not analysed | Local image files are not uploaded with a plain `.md`; or the path contains spaces, does not end in an image extension and has no `<...>` | Upload a `.textpack`; write `![](<path with spaces>)` |
 | A document with images ends up `FAILED` | `i` in its options while `VLM_PROCESS_ENABLE=false` | Enable both together |
 | `DOCX_SMART_HEADING=true` changes nothing | The document is below `DOCX_SMART_MIN_TOKENS` | Check `smart_audit.json`; test with a longer document |
 | MinerU parsing fails with HTTP 401 `A0202` | MinerU rejected the token | Test it with the `curl` in Step 7; then `POST /documents/reprocess_failed` |

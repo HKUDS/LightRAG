@@ -207,7 +207,7 @@ VLM_PROCESS_ENABLE=true
 | Markdown 里的远程 `http(s)` 图片 | 会下载（禁止访问内网地址）；下载失败时保留链接并记一条警告 |
 | Markdown 里的**本地**图片，如 `./doc.assets/a.png` | **只有打包成 `.textpack` 才行**，即把 `.md` 和图片一起打成 zip。单独上传 `.md` 时图片文件不会一起传上去，解析器会记录 `skipping image (file reference outside .textpack)` |
 
-本地图片路径里有空格时，必须写成 `![alt](<./my doc.assets/a.png>)`。不加尖括号，它根本不算 Markdown 图片语法，会被当作普通文本保留，也不会有任何警告。Typora 等编辑器生成的这类路径就不带尖括号。
+本地图片路径里有空格时，Typora 等编辑器会直接写成 `![alt](./my doc.assets/a.png)`，不加尖括号。这不是标准 Markdown，但只要路径以图片扩展名（`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`）结尾，LightRAG 仍会把它识别为图片。其他情况请用标准写法 `![alt](<./my doc.assets/a.png>)`，或把空格写成 `%20`；否则它不算图片，会被当作普通文本保留，也不会有任何警告。
 
 宽或高小于 `VLM_MIN_IMAGE_PIXEL`（64 像素）的图片会被当作装饰图标跳过。
 
@@ -375,7 +375,7 @@ VLM_MAX_ASYNC_LLM=12
 | 现象 | 原因 | 解决办法 |
 |---|---|---|
 | 切换到 PostgreSQL 后向量索引建不出来，或服务拒绝启动 | 嵌入超过 2000 维却用了 `HNSW` / `IVFFlat` | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
-| Markdown 里的图片没有被分析 | 单独上传 `.md` 时本地图片不会一起上传；或路径含空格却没加 `<...>` | 改传 `.textpack`；写成 `![](<含空格的路径>)` |
+| Markdown 里的图片没有被分析 | 单独上传 `.md` 时本地图片不会一起上传；或路径含空格、又不以图片扩展名结尾，却没加 `<...>` | 改传 `.textpack`；写成 `![](<含空格的路径>)` |
 | 带图片的文档处理失败（`FAILED`） | 处理选项带 `i`，但 `VLM_PROCESS_ENABLE=false` | 两者一起打开 |
 | `DOCX_SMART_HEADING=true` 没有效果 | 文档正文短于 `DOCX_SMART_MIN_TOKENS` | 查看 `smart_audit.json`；用更长的文档测试 |
 | MinerU 解析失败，HTTP 401 `A0202` | MinerU 拒绝了这个 token | 用第 7 步的 `curl` 测试 token，再调用 `POST /documents/reprocess_failed` |
