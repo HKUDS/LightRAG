@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import warnings
 from ..utils import verbose_debug
@@ -10,8 +11,8 @@ else:
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
-if not pm.is_installed("zhipuai"):
-    pm.install("zhipuai")
+if not pm.is_installed("zai-sdk"):
+    pm.install("zai-sdk")
 
 from openai import (
     APIConnectionError,
@@ -33,6 +34,21 @@ from lightrag.utils import (
 
 import numpy as np
 from typing import Any, Union, List, Optional, Dict
+
+
+def _build_client(client_cls, api_key: Optional[str]):
+    """zai-sdk reads ZAI_* variables; keep honoring the old zhipuai ones."""
+    kwargs = {}
+    api_key = (
+        api_key or os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY")
+    )
+    if api_key:
+        kwargs["api_key"] = api_key
+    if not os.environ.get("ZAI_BASE_URL"):
+        base_url = os.environ.get("ZHIPUAI_BASE_URL")
+        if base_url:
+            kwargs["base_url"] = base_url
+    return client_cls(**kwargs)
 
 
 @retry(
@@ -73,16 +89,11 @@ async def zhipu_complete_if_cache(
     """
     # dynamically load ZhipuAI
     try:
-        from zhipuai import ZhipuAI
+        from zai import ZhipuAiClient
     except ImportError:
-        raise ImportError("Please install zhipuai before initialize zhipuai backend.")
+        raise ImportError("Please install zai-sdk before initialize zhipuai backend.")
 
-    if api_key:
-        client = ZhipuAI(api_key=api_key)
-    else:
-        # please set ZHIPUAI_API_KEY in your environment
-        # os.environ["ZHIPUAI_API_KEY"]
-        client = ZhipuAI()
+    client = _build_client(ZhipuAiClient, api_key)
 
     messages = []
 
@@ -268,15 +279,10 @@ async def zhipu_embedding(
 ) -> np.ndarray:
     # dynamically load ZhipuAI
     try:
-        from zhipuai import ZhipuAI
+        from zai import ZhipuAiClient
     except ImportError:
-        raise ImportError("Please install zhipuai before initialize zhipuai backend.")
-    if api_key:
-        client = ZhipuAI(api_key=api_key)
-    else:
-        # please set ZHIPUAI_API_KEY in your environment
-        # os.environ["ZHIPUAI_API_KEY"]
-        client = ZhipuAI()
+        raise ImportError("Please install zai-sdk before initialize zhipuai backend.")
+    client = _build_client(ZhipuAiClient, api_key)
 
     # Convert single text to list if needed
     if isinstance(texts, str):
