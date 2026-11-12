@@ -56,7 +56,9 @@ def _client(monkeypatch, api_prefix: str) -> TestClient:
     monkeypatch.setattr(_utils_api, "auth_configured", True)
 
     dependency = _utils_api.get_combined_auth_dependency(API_KEY)
-    app = FastAPI(root_path=api_prefix or None)
+    app = FastAPI()
+    # Same as create_app: the constructor argument is deprecated.
+    app.root_path = api_prefix
     if api_prefix:
         app.add_middleware(_server._RootPathNormalizationMiddleware)
 

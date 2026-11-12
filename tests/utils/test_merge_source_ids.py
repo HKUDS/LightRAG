@@ -15,6 +15,11 @@ from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import logger as lightrag_logger, merge_source_ids
 from tests._log_capture import capture_lightrag_logs
 
+import pytest
+
+
+pytestmark = pytest.mark.offline
+
 
 @contextmanager
 def _captured_logs(caplog, level):

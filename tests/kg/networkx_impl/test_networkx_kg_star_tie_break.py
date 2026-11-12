@@ -5,6 +5,9 @@ from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import initialize_share_data
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.mark.asyncio
 async def test_get_knowledge_graph_star_breaks_degree_ties_by_label(tmp_path):
     """Isolates at the max_nodes cutoff must prefer label order, not insert order."""

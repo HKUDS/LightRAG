@@ -7,6 +7,11 @@ causes an infinite loop in the chunking function.
 
 from lightrag.rerank import chunk_documents_for_rerank
 
+import pytest
+
+
+pytestmark = pytest.mark.offline
+
 
 class TestOverlapValidation:
     """Test suite for overlap_tokens validation"""

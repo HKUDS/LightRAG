@@ -16,6 +16,8 @@ from lightrag.tools.rebuild_vdb import (
 from lightrag.utils import EmbeddingFunc, compute_mdhash_id
 
 
+pytestmark = pytest.mark.offline
+
 EXTRACTION_RESULT = "\n".join(
     [
         "entity<|#|>Alice<|#|>person<|#|>A person",

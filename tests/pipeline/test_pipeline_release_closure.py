@@ -40,6 +40,9 @@ from lightrag.utils import (
 from tests._log_capture import capture_lightrag_logs
 
 
+pytestmark = pytest.mark.offline
+
+
 async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
     """Drive a parser the way the pipeline worker does (registry dispatch)."""
     result = await get_parser(engine).parse(

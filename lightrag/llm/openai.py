@@ -38,6 +38,7 @@ from lightrag.utils import (
 
 from lightrag.api import __api_version__
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.tiktoken_cache import load_tiktoken_encoding
 from lightrag.llm._error_utils import is_permanent_rate_limit_error
 
 import numpy as np
@@ -167,12 +168,16 @@ def _get_tiktoken_encoding_for_model(model: str) -> Any:
     """
     if model not in _TIKTOKEN_ENCODING_CACHE:
         try:
-            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.encoding_for_model(model)
+            _TIKTOKEN_ENCODING_CACHE[model] = load_tiktoken_encoding(
+                lambda: tiktoken.encoding_for_model(model)
+            )
         except KeyError:
             logger.debug(
                 f"Encoding for model '{model}' not found, falling back to cl100k_base"
             )
-            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.get_encoding("cl100k_base")
+            _TIKTOKEN_ENCODING_CACHE[model] = load_tiktoken_encoding(
+                lambda: tiktoken.get_encoding("cl100k_base")
+            )
     return _TIKTOKEN_ENCODING_CACHE[model]
 
 
@@ -594,7 +599,10 @@ async def openai_complete_if_cache(
             cot_active = False
             cot_started = False
             initial_content_seen = False
-            closing_via_generator_exit = False
+            # Set on GeneratorExit and CancelledError: the finally block must
+            # not yield on either, or cleanup is suspended before the stream
+            # and client are closed.
+            closing_without_yield = False
 
             try:
                 iteration_started = True
@@ -694,7 +702,16 @@ async def openai_complete_if_cache(
                 # Consumer disconnect mid-COT: tell the finally block below to
                 # skip its yield, which would otherwise abort cleanup with
                 # "async generator ignored GeneratorExit".
-                closing_via_generator_exit = True
+                closing_without_yield = True
+                raise
+            except asyncio.CancelledError:
+                # A cancelled read (request timeout, client gone) mid-COT.
+                # CancelledError is a BaseException, so neither neighbouring
+                # handler sees it; without this clause the finally block hands
+                # "</think>" to the cancelled read in place of the
+                # cancellation, and cleanup stays suspended at that yield --
+                # a later aclose() then skips the stream and client close.
+                closing_without_yield = True
                 raise
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
@@ -711,7 +728,7 @@ async def openai_complete_if_cache(
                         # aclose() raises "async generator ignored
                         # GeneratorExit", and the frame is abandoned before
                         # the stream and the client are ever closed.
-                        closing_via_generator_exit = True
+                        closing_without_yield = True
                         raise
                     except Exception as close_error:
                         logger.warning(
@@ -742,8 +759,8 @@ async def openai_complete_if_cache(
                 raise
             finally:
                 # Final safety check for unclosed COT tags, skipped while
-                # closing via GeneratorExit (see the except clause above).
-                if enable_cot and cot_active and not closing_via_generator_exit:
+                # closing via GeneratorExit or CancelledError (see above).
+                if enable_cot and cot_active and not closing_without_yield:
                     try:
                         yield "</think>"
                         cot_active = False

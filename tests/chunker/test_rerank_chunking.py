@@ -15,6 +15,9 @@ from lightrag.rerank import (
 )
 
 
+pytestmark = pytest.mark.offline
+
+
 class TestChunkDocumentsForRerank:
     """Test suite for chunk_documents_for_rerank function"""
 
