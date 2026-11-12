@@ -259,7 +259,7 @@ class BindingOptions:
                     if isinstance(value, bool):
                         return value
                     if isinstance(value, str):
-                        return value.lower() in _BOOL_TRUE_WORDS
+                        return value.strip().lower() in _BOOL_TRUE_WORDS
                     return bool(value)
 
                 # Get environment variable with proper type conversion
