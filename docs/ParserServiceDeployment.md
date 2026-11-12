@@ -226,4 +226,3 @@ and preset settings.
 > than the HTTP upload. LightRAG names that requirement in the task-failure
 > message, including `DOCLING_SERVE_ALLOWED_VLM_PRESETS` when the serve host
 > restricts presets.
-
