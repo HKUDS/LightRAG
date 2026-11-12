@@ -115,8 +115,8 @@ async def test_bare_empty_keyword_warning_only_without_a_fallback(
     hl,
     ll,
     expected,
-    stub_query_context,
-    lightrag_log_records,  # noqa: F811
+    stub_query_context,  # noqa: F811
+    lightrag_log_records,
 ):
     cache = _FakeKVStorage()
     cfg = _query_global_config(_RecordingModel())
