@@ -113,6 +113,27 @@ def test_pipe_table_with_header():
     assert table["header"] == [["Name", "Age"]]
 
 
+def test_pipe_table_stops_at_atx_heading_with_pipe():
+    md = (
+        "# Regional inventory\n"
+        "| Item | Quantity |\n"
+        "| --- | --- |\n"
+        "| # Available | 2 |\n"
+        "## Delivery | Next steps\n"
+        "Confirm the shipment date.\n"
+    )
+    ex = _extract(md)
+
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["# Available", "2"]]
+    assert [block["heading"] for block in ex.blocks] == [
+        "Regional inventory",
+        "Delivery | Next steps",
+    ]
+    assert ex.blocks[1]["parent_headings"] == ["Regional inventory"]
+    assert "Confirm the shipment date." in ex.blocks[1]["content"]
+
+
 def test_pipe_table_requires_delimiter_row():
     # A pipe-containing line with no delimiter row underneath is plain text.
     md = "| just | text |\nnot a delimiter\n"
