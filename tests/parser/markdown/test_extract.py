@@ -9,7 +9,6 @@ resolver.
 from __future__ import annotations
 
 import itertools
-import re
 import time
 
 import pytest
@@ -27,9 +26,76 @@ from lightrag.parser.markdown.extract import (
 pytestmark = pytest.mark.offline
 
 
-_LEGACY_INLINE_IMAGE_RE = re.compile(
-    r'!\[(?P<alt>[^\]]*)\]\(\s*(?P<src><[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)'
-)
+def _reference_tail_end(line: str, source_end: int) -> int | None:
+    index = source_end
+    while index < len(line) and line[index].isspace():
+        index += 1
+    if index < len(line) and line[index] == ")":
+        return index + 1
+    if index == source_end or index >= len(line) or line[index] != '"':
+        return None
+    index = line.find('"', index + 1)
+    if index < 0:
+        return None
+    index += 1
+    while index < len(line) and line[index].isspace():
+        index += 1
+    return index + 1 if index < len(line) and line[index] == ")" else None
+
+
+def _reference_match(line: str, start: int) -> tuple[int, str] | None:
+    alt_end = line.find("]", start + 2)
+    if alt_end < 0 or line[alt_end + 1 : alt_end + 2] != "(":
+        return None
+    source_start = alt_end + 2
+    while source_start < len(line) and line[source_start].isspace():
+        source_start += 1
+    if source_start >= len(line):
+        return None
+    if line[source_start] == "<":
+        angle_end = line.find(">", source_start + 1)
+        if angle_end >= 0:
+            end = _reference_tail_end(line, angle_end + 1)
+            if end is not None:
+                return end, line[source_start : angle_end + 1]
+    depth = 0
+    source_end = source_start
+    while source_end < len(line) and not line[source_end].isspace():
+        if line[source_end] == "(":
+            depth += 1
+        elif line[source_end] == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        source_end += 1
+    if source_end == source_start or depth != 0:
+        return None
+    end = _reference_tail_end(line, source_end)
+    return None if end is None else (end, line[source_start:source_end])
+
+
+def _reference_replace_inline_images(line: str) -> str:
+    """The strict image grammar, written naively (quadratic, no caches).
+
+    It is the oracle for the scanner's cached searches. It has no lenient
+    retry, so it is only valid for lines without an image file extension.
+    """
+    parts: list[str] = []
+    position = 0
+    while True:
+        start = line.find("![", position)
+        if start < 0:
+            parts.append(line[position:])
+            return "".join(parts)
+        matched = _reference_match(line, start)
+        if matched is None:
+            parts.append(line[position : start + 2])
+            position = start + 2
+            continue
+        end, src = matched
+        parts.append(line[position:start])
+        parts.append(f"<{src}>")
+        position = end
 
 
 class _StubResolver:
@@ -611,11 +677,29 @@ def test_strict_grammar_wins_over_the_lenient_retry():
     assert _replace_inline_images(line, lambda src: f"<{src}>") == (
         "<a.png> trailing (b c.png)"
     )
-    # Unchanged legacy behavior: without whitespace the strict grammar still
-    # ends the source at the first ``)``, and the retry is never consulted.
-    assert _replace_inline_images("![x](shot(1).png)", lambda src: f"<{src}>") == (
-        "<shot(1>.png)"
-    )
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # CommonMark: a bare destination may hold balanced parentheses.
+        ("![x](shot(1).png)", "<shot(1).png>"),
+        ("see ![x](a(b(c))d) end", "see <a(b(c))d> end"),
+        ('![x](shot(1).png "caption")', "<shot(1).png>"),
+        (
+            "![x](https://en.wikipedia.org/wiki/File:Foo_(bar).svg) tail)",
+            "<https://en.wikipedia.org/wiki/File:Foo_(bar).svg> tail)",
+        ),
+        ("(![x](a(1).png))", "(<a(1).png>)"),
+        ("![x](a.png)(b)", "<a.png>(b)"),
+        # Unbalanced: not an image (CommonMark asks for escapes or <...>).
+        ("![x](foo(and(bar))", "![x](foo(and(bar))"),
+        ('![x](foo(bar "title")', '![x](foo(bar "title")'),
+        ("![x]()", "![x]()"),
+    ],
+)
+def test_inline_image_scanner_keeps_balanced_parentheses_in_source(line, expected):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
 
 
 def test_image_path_with_spaces_becomes_a_drawing():
@@ -627,6 +711,23 @@ def test_image_path_with_spaces_becomes_a_drawing():
     (drawing,) = ex.drawings.values()
     assert drawing["src"] == "./my doc.assets/shot (1).png"
     assert "my doc.assets" not in ex.blocks[0]["content"]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["![](a(", "![](a)", "![](a(b)", "![]((", "![](a ("],
+)
+def test_parenthesis_matching_scales_linearly_for_malformed_candidates(unit):
+    def elapsed(repetitions: int) -> float:
+        line = unit * repetitions
+        started = time.perf_counter()
+        for _ in range(5):
+            _replace_inline_images(line, lambda src: src)
+        return time.perf_counter() - started
+
+    small = elapsed(1_024)
+    large = elapsed(8_192)
+    assert large / max(small, 1e-9) < 16
 
 
 @pytest.mark.parametrize(
@@ -653,29 +754,28 @@ def test_lenient_retry_scales_linearly_for_malformed_candidates(unit):
     assert large / max(small, 1e-9) < 16
 
 
-def test_inline_image_scanner_matches_legacy_regex_for_short_title_inputs():
-    def legacy_replace(line: str) -> str:
-        return _LEGACY_INLINE_IMAGE_RE.sub(
-            lambda match: f"<{match.group('src')}>", line
-        )
-
+def test_inline_image_scanner_matches_reference_grammar_for_short_inputs():
     # The first case previously exposed a cache query that fell back to an
-    # earlier start after a title search. The generated short corpus protects
-    # the title and alternate-source grammar without a timing dependency.
+    # earlier start after a title search. The generated short corpora protect
+    # the title, alternate-source and parenthesis grammar without a timing
+    # dependency.
     lines = (
         'srcb"bb![a]( ![a]( " "title")<![a](>',
         '![a](src "title") ![b](other "caption")',
         '![a](<a b> "title") ![b](<c>d)',
+        '![a](x(y)z) ![b]((x) "t") ![c](a(b c)',
     )
     pieces = ("![a](", "![", "]", "(", ")", "<", ">", " ", '"', "title", "src")
+    paren_pieces = ("![a](", "(", ")", " ", "x", '"')
     corpus = itertools.chain(
         lines,
         ("".join(parts) for parts in itertools.product(pieces, repeat=4)),
+        ("".join(parts) for parts in itertools.product(paren_pieces, repeat=6)),
     )
     for line in corpus:
-        assert _replace_inline_images(line, lambda src: f"<{src}>") == legacy_replace(
-            line
-        )
+        assert _replace_inline_images(
+            line, lambda src: f"<{src}>"
+        ) == _reference_replace_inline_images(line), line
 
 
 def test_inline_image_scanner_scales_linearly_for_malformed_candidates():

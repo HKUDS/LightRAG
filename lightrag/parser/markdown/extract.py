@@ -33,7 +33,7 @@ left as verbatim text rather than misrecognised.
 from __future__ import annotations
 
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -215,6 +215,9 @@ _LENIENT_IMAGE_SOURCE_END_RE = re.compile(
 )
 
 
+_PAREN_RE = re.compile(r"[()]")
+
+
 class _ForwardFinder:
     """Cache a forward search over one monotonic query stream.
 
@@ -249,7 +252,8 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     """Replace supported inline images without retrying a regex at each ``![``.
 
     The native Markdown subset accepts ``![alt](src "optional title")`` with
-    either an angle-bracketed or whitespace-free source.  A global regular
+    either an angle-bracketed or whitespace-free source; as in CommonMark, a
+    whitespace-free source may contain balanced parentheses.  A global regular
     expression replacement tried the complete expression at every ``![``.
     Malformed input with many candidate prefixes consequently rescanned the
     same suffix quadratically. This scanner visits candidates left-to-right and
@@ -258,8 +262,7 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     grammar.
 
     A candidate that grammar rejects gets one lenient retry: a bare source may
-    contain whitespace and balanced parentheses when it ends in an image file
-    extension (``![alt](./my doc.assets/shot (1).png)``). Editors such as
+    also contain whitespace when it ends in an image file extension (``![alt](./my doc.assets/shot (1).png)``). Editors such as
     Typora write local paths that way. The strict grammar always wins, so the
     retry only ever turns text that was not an image into one.
     """
@@ -268,7 +271,6 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         return line
 
     close_bracket = _ForwardFinder(line, lambda char: char == "]")
-    close_paren = _ForwardFinder(line, lambda char: char == ")")
     close_angle = _ForwardFinder(line, lambda char: char == ">")
     whitespace = _ForwardFinder(line, str.isspace)
     source_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
@@ -286,6 +288,47 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         line, lambda char: not char.isspace()
     )
     bare_quote = _ForwardFinder(line, lambda char: char == '"')
+
+    # Parenthesis index, built on first use by one C-level scan so that a
+    # megabyte ``data:`` line costs nothing here: the position of every
+    # parenthesis, the nesting depth in front of it, and the closing ones
+    # grouped by that depth.
+    paren_positions: list[int] | None = None
+    paren_depths: list[int] = []
+    closing_by_depth: dict[int, list[int]] = {}
+
+    def _paren_depth(index: int) -> int:
+        """Nesting depth in front of ``index``, counted from the line start."""
+
+        nonlocal paren_positions
+        if paren_positions is None:
+            paren_positions = []
+            depth = 0
+            for found in _PAREN_RE.finditer(line):
+                position = found.start()
+                paren_positions.append(position)
+                paren_depths.append(depth)
+                if line[position] == "(":
+                    depth += 1
+                else:
+                    closing_by_depth.setdefault(depth, []).append(position)
+                    depth -= 1
+        previous = bisect_left(paren_positions, index) - 1
+        if previous < 0:
+            return 0
+        step = 1 if line[paren_positions[previous]] == "(" else -1
+        return paren_depths[previous] + step
+
+    def _closing_paren(source_start: int) -> int | None:
+        """First ``)`` at or after ``source_start`` that no ``(`` in between
+        opened, i.e. the one that would close the image."""
+
+        depth = _paren_depth(source_start)
+        closing = closing_by_depth.get(depth)
+        if not closing:
+            return None
+        candidate = bisect_left(closing, source_start)
+        return closing[candidate] if candidate < len(closing) else None
 
     def _tail_end(
         source_end: int,
@@ -336,22 +379,31 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
                 if end is not None:
                     return end, line[source_start : angle_end + 1]
 
+        # A bare source ends at whitespace or at the ``)`` that closes the
+        # image, whichever comes first; balanced pairs belong to the source.
         whitespace_end = whitespace.find(source_start)
-        paren_end = close_paren.find(source_start)
-        source_end = min(
-            len(line) if whitespace_end is None else whitespace_end,
-            len(line) if paren_end is None else paren_end,
-        )
-        if source_end == source_start:
+        paren_end = _closing_paren(source_start)
+        if paren_end is not None and (
+            whitespace_end is None or paren_end < whitespace_end
+        ):
+            if paren_end == source_start:
+                return None
+            return paren_end + 1, line[source_start:paren_end]
+        if whitespace_end is None:
             return None
+        if _paren_depth(whitespace_end) != _paren_depth(source_start):
+            # Whitespace inside an open pair: not a bare source.
+            return None
+        # Only whitespace-ended sources reach the tail finders, which keeps
+        # their queries monotonic; ``_closing_paren`` is not monotonic.
         end = _tail_end(
-            source_end,
+            whitespace_end,
             tail_non_whitespace=bare_tail_non_whitespace,
             after_title_non_whitespace=bare_after_title_non_whitespace,
             quote=bare_quote,
         )
         if end is not None:
-            return end, line[source_start:source_end]
+            return end, line[source_start:whitespace_end]
         return None
 
     # Lenient source ends, computed once and only when the strict grammar
