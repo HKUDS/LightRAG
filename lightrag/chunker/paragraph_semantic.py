@@ -2195,7 +2195,9 @@ def chunking_by_paragraph_semantic(
     else:
         try:
             rows = _load_blocks_from_jsonl(blocks_path)
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError is a ValueError, not an OSError: a sidecar
+            # holding invalid UTF-8 is as unreadable as a missing one.
             fallback_reason = f"cannot read blocks.jsonl at {blocks_path}: {exc}"
         else:
             if not rows:

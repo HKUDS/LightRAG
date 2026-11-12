@@ -692,19 +692,17 @@ def _consume_pipe_table(
     """Parse a GFM pipe table whose header is ``lines[start]`` and delimiter is
     ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``.
 
-    A body row is any following line that is non-blank and contains a ``|``,
-    escaped or not — deliberately NOT the header gate's unescaped-``|`` test.
-    The table is established by this point, so an escape is cell content and
-    must not push a row out into a paragraph. Requiring a ``|`` at all is this
-    parser's narrowing: GFM ends the table only at a blank line or the start of
-    another block, which needs block-structure detection the subset omits.
+    A body row is any following non-blank line containing a ``|`` unless it
+    starts an ATX heading recognized by ``extract_markdown``. An escaped pipe
+    counts as cell content once the table is established. This subset still
+    requires a pipe in each body row and does not detect all GFM block types.
     A row may carry fewer cells than the header; the IR builder pads it."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter
     while j < len(lines):
         s = lines[j].strip()
-        if not s or "|" not in s:
+        if not s or "|" not in s or _HEADING_RE.match(lines[j]):
             break
         body.append(_split_pipe_row(lines[j]))
         j += 1

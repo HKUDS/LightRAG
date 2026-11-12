@@ -436,6 +436,30 @@ def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeyp
     assert captured.get("chunk_token_size") == 500
 
 
+@pytest.mark.offline
+def test_paragraph_semantic_falls_back_when_blocks_jsonl_is_not_utf8(tmp_path):
+    # A blocks.jsonl holding invalid UTF-8 raises UnicodeDecodeError (a
+    # ValueError, not an OSError) while it is being read. It must take the
+    # same P→R fallback as a missing sidecar instead of aborting chunking.
+    tokenizer = _make_tokenizer()
+    content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+    expected = chunking_by_paragraph_semantic(
+        tokenizer, content, 40, blocks_path=str(tmp_path / "missing.blocks.jsonl")
+    )
+    assert expected
+
+    # A valid first row proves the failure is tolerated mid-file as well.
+    corrupt = tmp_path / "doc.blocks.jsonl"
+    corrupt.write_bytes(
+        json.dumps({"type": "content", "content": "ok"}).encode() + b"\n\xff\xfe\n"
+    )
+
+    assert (
+        chunking_by_paragraph_semantic(tokenizer, content, 40, blocks_path=str(corrupt))
+        == expected
+    )
+
+
 # ---------------------------------------------------------------------------
 # HeadingGlue — body-less heading glue (forward into child / backward into prev).
 # ---------------------------------------------------------------------------
