@@ -62,6 +62,7 @@ from pydantic import (
 from lightrag import LightRAG
 from lightrag.api.utils_api import internal_server_error, new_error_id
 from lightrag.base import (
+    BaseVectorStorage,
     CURSOR_START,
     CursorAfter,
     CursorPosition,
@@ -6063,7 +6064,12 @@ def create_document_routes(
 
             for storage in storages:
                 if storage is not None:
-                    drop_tasks.append(storage.drop())
+                    # Vector stores clear every embedding model's container for
+                    # the workspace, not just the active model's.
+                    if isinstance(storage, BaseVectorStorage):
+                        drop_tasks.append(storage.drop_all_models())
+                    else:
+                        drop_tasks.append(storage.drop())
 
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)

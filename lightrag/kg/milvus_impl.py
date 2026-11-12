@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -996,9 +997,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         return CollectionSchema(
             fields=all_fields,
-            description=description,
+            description=f"{description} {self._ownership_marker()}",
             enable_dynamic_field=True,  # Support dynamic fields
         )
+
+    def _ownership_marker(self) -> str:
+        """Schema-description tag naming the workspace and namespace that own a
+        collection; ``drop_sibling_models`` trusts it, never the name alone."""
+        return f"[lightrag:workspace={self.workspace};namespace={self.namespace}]"
 
     def _get_varchar_field_limits_for_namespace(self) -> dict[str, int]:
         base_fields = {
@@ -3643,3 +3649,62 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
+
+    async def drop_sibling_models(self) -> dict[str, str]:
+        """Drop every other model's collection owned by this workspace+namespace.
+
+        Collection names carry the workspace as a plain prefix, so one
+        workspace's prefix can also match another's (``a`` + ``chunks`` vs.
+        ``a_chunks_m`` + ``entities``). A collection is therefore only dropped
+        when its schema description carries this instance's ownership marker,
+        which ``_create_schema_for_namespace`` writes at creation. Collections
+        created before the marker existed are NOT dropped: they are reported in
+        the error message so the operator can remove them, rather than risk
+        deleting another workspace's data. Same preconditions as ``drop()``.
+        """
+        prefix = f"{self.legacy_namespace}_"
+        marker = self._ownership_marker()
+
+        def _drop_siblings() -> tuple[list[str], list[str]]:
+            dropped: list[str] = []
+            unmarked: list[str] = []
+            for name in self._client.list_collections():
+                if (
+                    name == self.final_namespace
+                    or not name.startswith(prefix)
+                    or not re.search(r"_\d+d$", name)
+                ):
+                    continue
+                info = self._client.describe_collection(name)
+                description = info.get("description") or ""
+                if marker in description:
+                    self._client.drop_collection(name)
+                    dropped.append(name)
+                elif "[lightrag:" not in description:
+                    # Owned by another workspace/namespace when a marker is
+                    # present but not ours: skipped, not reported.
+                    unmarked.append(name)
+            return dropped, unmarked
+
+        try:
+            dropped, unmarked = await run_in_milvus_executor_uninterruptible(
+                _drop_siblings
+            )
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping sibling model collections "
+                f"for Milvus namespace {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+        if dropped:
+            logger.info(
+                f"[{self.workspace}] Dropped sibling Milvus model collections: {dropped}"
+            )
+        if unmarked:
+            message = (
+                f"collections without an ownership marker were left in place "
+                f"and may hold this workspace's vectors: {unmarked}"
+            )
+            logger.warning(f"[{self.workspace}] {message}")
+            return {"status": "error", "message": message}
+        return {"status": "success", "message": "sibling models dropped"}

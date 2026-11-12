@@ -3,6 +3,7 @@ import configparser
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, List, final
@@ -1530,5 +1531,53 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error dropping workspace data from Qdrant collection {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+
+    async def drop_sibling_models(self) -> dict[str, str]:
+        """Delete this workspace's points from every other model's collection.
+
+        A sibling is a collection named ``lightrag_vdb_{namespace}_{model}_{dim}d``
+        other than ``final_namespace`` that indexes ``workspace_id`` -- the
+        marker ``setup_collection`` writes -- so a same-named collection that
+        LightRAG did not provision is left alone. Only this workspace's points
+        are removed; the collections stay, because they are shared with other
+        workspaces. Same preconditions as ``drop()``.
+        """
+        try:
+            prefix = f"lightrag_vdb_{self.namespace}_"
+            workspace_selector = models.FilterSelector(
+                filter=models.Filter(
+                    must=[workspace_filter_condition(self.effective_workspace)]
+                )
+            )
+            cleared = []
+            for collection in self._client.get_collections().collections:
+                name = collection.name
+                if (
+                    name == self.final_namespace
+                    or not name.startswith(prefix)
+                    or not re.search(r"_\d+d$", name)
+                ):
+                    continue
+                info = self._client.get_collection(name)
+                if WORKSPACE_ID_FIELD not in (info.payload_schema or {}):
+                    continue
+                self._client.delete(
+                    collection_name=name,
+                    points_selector=workspace_selector,
+                    wait=True,
+                )
+                cleared.append(name)
+            if cleared:
+                logger.info(
+                    f"[{self.workspace}] Cleared workspace data from sibling "
+                    f"Qdrant model collections: {cleared}"
+                )
+            return {"status": "success", "message": "sibling models dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error clearing sibling model collections "
+                f"for Qdrant namespace {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
