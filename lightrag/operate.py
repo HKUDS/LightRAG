@@ -5266,6 +5266,50 @@ async def _get_vector_context(
     return valid_chunks
 
 
+def _resolve_kg_search_queries(
+    mode: str, ll_keywords: str, hl_keywords: str
+) -> tuple[str, str]:
+    """Return ``(entity_query, relation_query)`` for a KG search; "" skips a store.
+
+    ``local`` owns the entity store, ``global`` the relationship store,
+    ``hybrid`` / ``mix`` both. Low-level keywords normally drive the entity
+    search and high-level keywords the relationship search.
+
+    When keyword extraction leaves a mode's own list empty, the other list
+    stands in for it on the SAME store. Weaker models routinely put the named
+    entities under ``high_level_keywords`` and return no low-level ones, which
+    would otherwise leave the entity store unqueried. The fallbacks are:
+
+    * low-level empty, ``local`` / ``hybrid`` / ``mix``: high-level keywords
+      query the entity store.
+    * high-level empty, ``global``: low-level keywords query the relationship
+      store.
+
+    A mode never falls through to the store it does not own: ``local`` with no
+    low-level keywords stays an entity search, it does not become ``global``.
+    """
+    search_entities = mode in ("local", "hybrid", "mix")
+    search_relations = mode in ("global", "hybrid", "mix")
+
+    entity_query = ll_keywords if search_entities else ""
+    relation_query = hl_keywords if search_relations else ""
+
+    if search_entities and not entity_query and hl_keywords:
+        entity_query = hl_keywords
+        logger.warning(
+            "low_level_keywords is empty: querying entities with "
+            "high_level_keywords instead (mode=%s)",
+            mode,
+        )
+    if mode == "global" and not relation_query and ll_keywords:
+        relation_query = ll_keywords
+        logger.warning(
+            "high_level_keywords is empty: querying relationships with "
+            "low_level_keywords instead (mode=global)"
+        )
+    return entity_query, relation_query
+
+
 async def _perform_kg_search(
     query: str,
     ll_keywords: str,
@@ -5312,8 +5356,11 @@ async def _perform_kg_search(
     hl_embedding = None
 
     mode = query_param.mode
-    need_ll = mode in ("local", "hybrid", "mix") and bool(ll_keywords)
-    need_hl = mode in ("global", "hybrid", "mix") and bool(hl_keywords)
+    entity_query, relation_query = _resolve_kg_search_queries(
+        mode, ll_keywords, hl_keywords
+    )
+    need_ll = bool(entity_query)
+    need_hl = bool(relation_query)
 
     if actual_embedding_func:
         texts_to_embed: list[str] = []
@@ -5324,11 +5371,13 @@ async def _perform_kg_search(
             text_purposes.append("query")
 
         if need_ll:
-            texts_to_embed.append(ll_keywords)
+            texts_to_embed.append(entity_query)
             text_purposes.append("ll")
 
-        if need_hl:
-            texts_to_embed.append(hl_keywords)
+        # A fallback can route one keyword string to both stores; embed it once.
+        share_keyword_embedding = need_ll and relation_query == entity_query
+        if need_hl and not share_keyword_embedding:
+            texts_to_embed.append(relation_query)
             text_purposes.append("hl")
 
         if texts_to_embed:
@@ -5343,6 +5392,8 @@ async def _perform_kg_search(
                         ll_embedding = all_embeddings[i]
                     elif purpose == "hl":
                         hl_embedding = all_embeddings[i]
+                if share_keyword_embedding:
+                    hl_embedding = ll_embedding
                 logger.debug(
                     "Pre-computed %d embeddings in single batch (purposes: %s)",
                     len(texts_to_embed),
@@ -5351,72 +5402,51 @@ async def _perform_kg_search(
             except Exception as e:
                 logger.warning(f"Failed to batch pre-compute embeddings: {e}")
 
-    # Handle local and global modes
-    if query_param.mode == "local" and len(ll_keywords) > 0:
+    # Each store is searched with the query string resolved above, so a mode
+    # never reaches a store it does not own (see _resolve_kg_search_queries).
+    if entity_query:
         if progress_callback:
             await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
         local_entities, local_relations = await _get_node_data(
-            ll_keywords,
+            entity_query,
             knowledge_graph_inst,
             entities_vdb,
             query_param,
             query_embedding=ll_embedding,
         )
 
-    elif query_param.mode == "global" and len(hl_keywords) > 0:
+    if relation_query:
         if progress_callback:
             await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
         global_relations, global_entities = await _get_edge_data(
-            hl_keywords,
+            relation_query,
             knowledge_graph_inst,
             relationships_vdb,
             query_param,
             query_embedding=hl_embedding,
         )
 
-    else:  # hybrid or mix mode
-        if len(ll_keywords) > 0:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
-            local_entities, local_relations = await _get_node_data(
-                ll_keywords,
-                knowledge_graph_inst,
-                entities_vdb,
-                query_param,
-                query_embedding=ll_embedding,
-            )
-        if len(hl_keywords) > 0:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
-            global_relations, global_entities = await _get_edge_data(
-                hl_keywords,
-                knowledge_graph_inst,
-                relationships_vdb,
-                query_param,
-                query_embedding=hl_embedding,
-            )
-
-        # Get vector chunks for mix mode
-        if query_param.mode == "mix" and chunks_vdb:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
-            vector_chunks = await _get_vector_context(
-                query,
-                chunks_vdb,
-                query_param,
-                query_embedding,
-            )
-            # Track vector chunks with source metadata
-            for i, chunk in enumerate(vector_chunks):
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
-                if chunk_id:
-                    chunk_tracking[chunk_id] = {
-                        "source": "C",
-                        "frequency": 1,  # Vector chunks always have frequency 1
-                        "order": i + 1,  # 1-based order in vector search results
-                    }
-                else:
-                    logger.warning(f"Vector chunk missing chunk_id: {chunk}")
+    # Get vector chunks for mix mode
+    if query_param.mode == "mix" and chunks_vdb:
+        if progress_callback:
+            await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
+        vector_chunks = await _get_vector_context(
+            query,
+            chunks_vdb,
+            query_param,
+            query_embedding,
+        )
+        # Track vector chunks with source metadata
+        for i, chunk in enumerate(vector_chunks):
+            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            if chunk_id:
+                chunk_tracking[chunk_id] = {
+                    "source": "C",
+                    "frequency": 1,  # Vector chunks always have frequency 1
+                    "order": i + 1,  # 1-based order in vector search results
+                }
+            else:
+                logger.warning(f"Vector chunk missing chunk_id: {chunk}")
 
     # Round-robin merge entities
     final_entities = []
