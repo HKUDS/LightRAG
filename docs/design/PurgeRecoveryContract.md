@@ -162,7 +162,7 @@ The generation is bumped before the bulk rather than from its reported success c
 
 A resume purge deletes a document's chunk rows — and with them every reference to its cache rows — before re-chunking, and deliberately does not touch `llm_response_cache`. Re-extraction hits those rows and the cache-hit branch re-attaches them to the freshly written chunk rows, so the loop closes on its own; a run that dies in between leaves them unreferenced until the next attempt.
 
-Reprocessing under **changed** chunking never closes it at all: the chunk text differs, so the old prompts are never reissued and no hit occurs. That is unreachable by any ordering — the prompt is gone. Reclaiming those rows needs an operator-invoked sweep that deletes cache rows whose owning chunk no longer exists, which is also the only thing that can reach `summary`, `smartheading` and multimodal analysis rows: they carry no chunk reference in the first place.
+Reprocessing under **changed** chunking never closes it at all: the chunk text differs, so the old prompts are never reissued and no hit occurs. That is unreachable by any ordering — the prompt is gone. Reclaiming those rows needs an operator-invoked sweep that deletes cache rows whose owning chunk no longer exists. The `summary`, `smartheading` and multimodal `analysis` rows are out of that sweep's reach — none of them carries a chunk reference — and of the three only `summary` has no deletion path at all: `smartheading` rows ride `smartheading_llm_cache_ids` into the deletion pool and `analysis` rows ride the multimodal chunk's merged `llm_cache_list`.
 
 ## Merge and rename failure model
 
