@@ -1256,3 +1256,14 @@ async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
     # Option 2 rebuilds entities + relationships only, so only those are
     # recovered; chunks stays refused until its own rebuild.
     tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
+
+
+@pytest.mark.parametrize("bad", ["0", "-3"])
+def test_build_global_config_rejects_nonpositive_embedding_batch_num(monkeypatch, bad):
+    """The tool builds vector storages without a LightRAG instance, so it
+    must reject the batch size itself instead of failing mid-rebuild."""
+    monkeypatch.setenv("EMBEDDING_BATCH_NUM", bad)
+    tool = rebuild_vdb.RebuildTool()
+    tool.storage_names = {"kv": "k", "vector": "v", "graph": "g"}
+    with pytest.raises(ValueError, match="EMBEDDING_BATCH_NUM must be >= 1"):
+        tool.build_global_config()
