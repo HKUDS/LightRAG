@@ -1349,22 +1349,20 @@ class PostgreSQLDB:
     ) -> None:
         """Prepare a pooled connection for Apache AGE access.
 
-        Two very different things are needed before an AGE statement can run,
-        and they have very different lifetimes:
+        AGE must be loaded in each physical connection before any Cypher query;
+        never cache library initialization per process. Reapply ``search_path``
+        on every checkout because pool release resets it. Only graph existence
+        is cached by :meth:`_ensure_age_graph`.
 
-        - ``SET search_path`` is genuine session state.  ``_reset_connection``
-          deliberately runs ``RESET ALL`` on every pool release so an AGE
-          search_path never leaks into a non-AGE checkout, which means it has
-          to be re-applied on every checkout.
-        - The graph itself is one-time DDL.  Creating it here unconditionally
-          made PostgreSQL log an ERROR/STATEMENT pair for *every* graph read
-          and write, because the server writes its log entry before the client
-          ever sees the error and can swallow it.  Graph
-          existence is now handled by :meth:`_ensure_age_graph`, which reaches
-          the database at most once per process.
+        The ``agtype`` literal is what loads AGE: its type input function pulls
+        in ``age.so`` with ordinary privileges and is a no-op when AGE is
+        preloaded. Do not replace it with ``LOAD 'age'``, which requires
+        superuser and breaks managed deployments that preload AGE for a
+        non-superuser role.
         """
         await connection.execute(  # type: ignore
-            'SET search_path = ag_catalog, "$user", public'
+            'SET search_path = ag_catalog, "$user", public; '
+            "SELECT 'null'::ag_catalog.agtype"
         )
         await self._ensure_age_graph(connection, graph_name)
 
