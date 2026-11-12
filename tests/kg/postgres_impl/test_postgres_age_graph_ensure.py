@@ -8,7 +8,7 @@ pairs.
 
 The contract pinned here:
 
-- `SET search_path` still runs on every checkout (RESET ALL clears it).
+- AGE loading and `SET search_path` run on every checkout (RESET ALL clears it).
 - The graph is looked up in `ag_catalog.ag_graph`, and `create_graph()` only
   runs when it is genuinely absent.
 - Once the graph is known to exist, no SQL is issued for it at all.
@@ -28,7 +28,9 @@ from lightrag.kg.postgres_impl import PGGraphStorage, PostgreSQLDB
 
 pytestmark = pytest.mark.offline
 
-SEARCH_PATH_SQL = 'SET search_path = ag_catalog, "$user", public'
+AGE_SESSION_SQL = (
+    "SET search_path = ag_catalog, \"$user\", public; SELECT 'null'::ag_catalog.agtype"
+)
 GRAPH_LOOKUP_SQL = "SELECT 1 FROM ag_catalog.ag_graph WHERE name = left($1, 63)::name"
 
 
@@ -82,16 +84,40 @@ async def test_existing_graph_is_not_recreated():
 
 
 @pytest.mark.asyncio
-async def test_search_path_is_set_on_every_checkout():
-    """RESET ALL clears search_path, so it must be re-applied every time."""
+async def test_age_is_loaded_on_every_checkout_with_an_ensured_graph():
+    """An ensured graph does not imply AGE is loaded in another session."""
     db = _make_db()
+    db._ensured_age_graphs.add("g")
     conn = FakeConnection(graph_exists=True)
+    replacement = FakeConnection(graph_exists=True)
 
     await db.configure_age(conn, "g")
     await db.configure_age(conn, "g")
-    await db.configure_age(conn, "g")
+    await db.configure_age(replacement, "g")
 
-    assert conn.executed == [SEARCH_PATH_SQL] * 3
+    assert conn.executed == [AGE_SESSION_SQL] * 2
+    assert replacement.executed == [AGE_SESSION_SQL]
+    assert conn.fetched == replacement.fetched == []
+
+
+@pytest.mark.asyncio
+async def test_age_load_failure_does_not_ensure_graph():
+    db = _make_db()
+    conn = AsyncMock()
+    conn.execute.side_effect = asyncpg.exceptions.UndefinedObjectError(
+        'type "ag_catalog.agtype" does not exist'
+    )
+
+    with pytest.raises(asyncpg.exceptions.UndefinedObjectError):
+        await db.configure_age(conn, "g")
+
+    conn.fetchval.assert_not_awaited()
+    assert db._ensured_age_graphs == set()
+
+    retry_conn = FakeConnection(graph_exists=True)
+    await db.configure_age(retry_conn, "g")
+    assert retry_conn.executed == [AGE_SESSION_SQL]
+    assert db._ensured_age_graphs == {"g"}
 
 
 @pytest.mark.asyncio
