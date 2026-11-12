@@ -5005,11 +5005,10 @@ async def get_keywords_from_query(
     return hl_keywords, ll_keywords
 
 
-# The placeholder tokens of PROMPTS["keywords_extraction_examples"]. Matched
-# exactly, never by shape: "<div>" is a legitimate keyword for an HTML query.
-_KEYWORD_TEMPLATE_PLACEHOLDERS = frozenset(
-    {"<high_level_keyword>", "<low_level_keyword>"}
-)
+# The placeholder tokens of PROMPTS["keywords_extraction_examples"], with an
+# optional numeric suffix so the template may list several per array. Matched
+# by name, never by shape: "<div>" is a legitimate keyword for an HTML query.
+_KEYWORD_TEMPLATE_PLACEHOLDER = re.compile(r"<(?:high|low)_level_keyword(?:_\d+)?>")
 
 
 def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
@@ -5044,7 +5043,7 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
             cleaned = value.strip()
             # An echoed template placeholder is not a keyword: kept, it would
             # be embedded for retrieval and cached for every later run.
-            if cleaned and cleaned not in _KEYWORD_TEMPLATE_PLACEHOLDERS:
+            if cleaned and not _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch(cleaned):
                 normalized.append(cleaned)
             continue
 

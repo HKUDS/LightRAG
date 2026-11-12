@@ -180,7 +180,7 @@ def test_parse_keywords_payload_drops_template_placeholders():
     object; a real angle-bracket keyword is kept."""
     is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(
         '{"high_level_keywords": ["<high_level_keyword>", "HTML"],'
-        ' "low_level_keywords": ["<low_level_keyword>", "<div>"]}'
+        ' "low_level_keywords": ["<low_level_keyword_2>", "<div>"]}'
     )
 
     assert is_valid is True
@@ -189,15 +189,26 @@ def test_parse_keywords_payload_drops_template_placeholders():
 
 
 @pytest.mark.offline
-def test_keyword_template_placeholders_match_the_prompt_template():
-    from lightrag.operate import _KEYWORD_TEMPLATE_PLACEHOLDERS
+def test_keyword_template_placeholder_pattern_covers_the_prompt_template():
+    """Every keyword of the prompt's format template must be recognised as a
+    placeholder, or an echoed template comes back as keywords."""
+    import json
+
+    from lightrag.operate import _KEYWORD_TEMPLATE_PLACEHOLDER
     from lightrag.prompt import PROMPTS
 
-    template = "\n".join(PROMPTS["keywords_extraction_examples"])
+    placeholders = [
+        keyword
+        for example in PROMPTS["keywords_extraction_examples"]
+        for keywords in json.loads(example).values()
+        for keyword in keywords
+    ]
 
-    assert _KEYWORD_TEMPLATE_PLACEHOLDERS
-    for placeholder in _KEYWORD_TEMPLATE_PLACEHOLDERS:
-        assert placeholder in template
+    assert placeholders
+    for placeholder in placeholders:
+        assert _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch(placeholder), placeholder
+    assert _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch("<low_level_keyword_2>")
+    assert not _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch("<div>")
 
 
 @pytest.mark.offline
