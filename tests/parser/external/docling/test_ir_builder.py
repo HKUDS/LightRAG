@@ -1173,12 +1173,14 @@ def test_docling_adapter_kv_form_items_audit_in_split_option(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_docling_adapter_rejects_a_document_without_body_or_kv_items(
+def test_docling_validate_ir_zero_blocks_mentions_the_vlm_hint(
     tmp_path: Path,
 ) -> None:
-    """A VLM pipeline that returns empty Markdown must fail, not index nothing."""
-    raw_dir = _write_doc(
-        tmp_path, {"schema_name": "DoclingDocument", "body": {"children": []}}
-    )
-    with pytest.raises(ValueError, match="produced no content"):
-        DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    """The zero-block guard lives in validate_ir, not the IR builder."""
+    from lightrag.parser.external.docling.parser import DoclingParser
+
+    class _EmptyIR:
+        blocks: list = []
+
+    with pytest.raises(ValueError, match="ALLOWED_VLM_PRESETS"):
+        DoclingParser().validate_ir(_EmptyIR(), file_path="demo.pdf", raw_dir=tmp_path)

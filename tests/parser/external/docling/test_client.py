@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -284,6 +285,10 @@ def source_pdf(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def docling_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lightrag.parser.external.docling import client as client_mod
+
+    client_mod._vlm_ignored_warned.clear()
+    client_mod._vlm_preset_ignored_warned = False
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling.test")
     for name in (
         "DOCLING_DO_OCR",
@@ -396,24 +401,44 @@ async def test_docling_client_vlm_requires_a_preset(
         DoclingRawClient()
 
 
-async def test_docling_client_vlm_warns_about_ocr_settings(
+async def test_docling_client_vlm_does_not_warn_for_default_ocr_settings(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
     monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    # env.example ships these uncommented; they equal the defaults.
     monkeypatch.setenv("DOCLING_DO_OCR", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENGINE", "easyocr")
+    monkeypatch.setenv("DOCLING_FORCE_OCR", "true")
+    monkeypatch.setenv("DOCLING_DO_FORMULA_ENRICHMENT", "false")
 
     with caplog.at_level("WARNING"):
         DoclingRawClient()
 
-    message = "\n".join(record.getMessage() for record in caplog.records)
-    assert "DOCLING_DO_OCR" in message
-    assert "DOCLING_OCR_ENGINE" in message
+    assert not [r for r in caplog.records if "ignores" in r.getMessage()]
 
 
-async def test_docling_client_vlm_error_names_the_docling_floor(
+async def test_docling_client_vlm_warns_once_for_changed_ocr_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    monkeypatch.setenv("DOCLING_OCR_ENGINE", "easyocr")
+    monkeypatch.setenv("DOCLING_DO_FORMULA_ENRICHMENT", "true")
+
+    with caplog.at_level("WARNING"):
+        DoclingRawClient()
+        DoclingRawClient()
+
+    warnings = [r.getMessage() for r in caplog.records if "ignores" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "DOCLING_OCR_ENGINE" in warnings[0]
+    assert "DOCLING_DO_FORMULA_ENRICHMENT" in warnings[0]
+    assert "DOCLING_DO_OCR" not in warnings[0]
+
+
+async def test_docling_client_vlm_task_failure_names_the_preset_requirement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     source_pdf: Path,
@@ -421,18 +446,37 @@ async def test_docling_client_vlm_error_names_the_docling_floor(
     monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
     monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
     recorder = _Recorder(
-        terminal_status="success",
+        terminal_status="failure",
         zip_bytes=_fake_zip_with_main_json("demo"),
-        submit_status_code=422,
-        submit_text='{"detail":"unknown vlm preset: minicpm_ocr"}',
     )
     _CURRENT["recorder"] = recorder
     _install_fake_httpx(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="docling>=2.149"):
+    with pytest.raises(RuntimeError, match="DOCLING_SERVE_ALLOWED_VLM_PRESETS") as info:
         await DoclingRawClient().download_into(
             tmp_path / "demo.docling_raw", source_pdf
         )
+    assert "docling>=2.149" in str(info.value)
+    assert "minicpm_ocr" in str(info.value)
+
+
+async def test_docling_client_standard_task_failure_has_no_preset_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    recorder = _Recorder(
+        terminal_status="failure",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError) as info:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+    assert "DOCLING_SERVE_ALLOWED_VLM_PRESETS" not in str(info.value)
 
 
 def test_docling_cache_signature_only_records_pipeline_when_set(
@@ -445,6 +489,14 @@ def test_docling_cache_signature_only_records_pipeline_when_set(
     )
 
     standard = snapshot_tunable_env()
+    assert set(standard) == {
+        "DOCLING_DO_OCR",
+        "DOCLING_FORCE_OCR",
+        "DOCLING_OCR_ENGINE",
+        "DOCLING_OCR_PRESET",
+        "DOCLING_OCR_LANG",
+        "DOCLING_DO_FORMULA_ENRICHMENT",
+    }
     assert "DOCLING_PIPELINE" not in standard
     assert "DOCLING_VLM_PRESET" not in standard
     assert fixed_constants_for("standard") is FIXED_CONSTANTS
@@ -481,10 +533,24 @@ async def test_docling_client_vlm_warns_about_force_ocr_override(
     monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
 
     with caplog.at_level("WARNING"):
-        DoclingRawClient(overrides={"force_ocr": True})
+        # The env default is true, so only an override that differs matters.
+        DoclingRawClient(overrides={"force_ocr": False})
 
     message = "\n".join(record.getMessage() for record in caplog.records)
     assert "force_ocr" in message
+
+
+async def test_docling_client_vlm_ignores_a_default_matching_override(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+
+    with caplog.at_level("WARNING"):
+        DoclingRawClient(overrides={"force_ocr": True})
+
+    assert not [r for r in caplog.records if "force_ocr" in r.getMessage()]
 
 
 async def test_docling_client_warns_when_a_preset_is_set_without_vlm(
@@ -495,33 +561,61 @@ async def test_docling_client_warns_when_a_preset_is_set_without_vlm(
 
     with caplog.at_level("WARNING"):
         client = DoclingRawClient()
+        DoclingRawClient()
 
     assert client.pipeline == "standard"
-    message = "\n".join(record.getMessage() for record in caplog.records)
-    assert "DOCLING_VLM_PRESET" in message
+    warnings = [r for r in caplog.records if "DOCLING_VLM_PRESET" in r.getMessage()]
+    assert len(warnings) == 1
 
 
-async def test_docling_client_vlm_500_is_not_blamed_on_the_preset(
+async def test_docling_client_vlm_envelope_failure_names_the_preset(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     source_pdf: Path,
 ) -> None:
     monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
     monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    body = json_dump({"status": "failure", "error_message": "unknown vlm preset"})
     recorder = _Recorder(
         terminal_status="success",
         zip_bytes=_fake_zip_with_main_json("demo"),
-        submit_status_code=500,
-        submit_text="upstream converter crashed",
+        result_content=body.encode(),
+        result_content_type="application/json",
     )
     _CURRENT["recorder"] = recorder
     _install_fake_httpx(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="HTTP 500") as excinfo:
+    with pytest.raises(RuntimeError, match="DOCLING_SERVE_ALLOWED_VLM_PRESETS"):
         await DoclingRawClient().download_into(
             tmp_path / "demo.docling_raw", source_pdf
         )
-    assert "docling>=2.149" not in str(excinfo.value)
+
+
+def test_pipeline_signature_changes_with_pipeline_and_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightrag.parser.external.docling.cache import (
+        compute_options_signature,
+        snapshot_tunable_env,
+    )
+    from lightrag.parser.external.docling.client import fixed_constants_for
+
+    def signature() -> str:
+        return compute_options_signature(
+            tunable_env=snapshot_tunable_env(),
+            fixed_constants=fixed_constants_for(
+                (os.environ.get("DOCLING_PIPELINE") or "standard").strip().lower()
+            ),
+        )
+
+    standard = signature()
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    vlm_minicpm = signature()
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "granite_docling")
+    vlm_granite = signature()
+
+    assert len({standard, vlm_minicpm, vlm_granite}) == 3
 
 
 async def test_docling_client_partial_success_aborts(

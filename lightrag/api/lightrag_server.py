@@ -543,18 +543,41 @@ def _build_docling_status() -> dict[str, Any]:
     endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
     if not endpoint:
         return {"endpoint": "", "options": {}}
-    return {
-        "endpoint": endpoint,
-        "options": {
-            "do_ocr": get_env_value("DOCLING_DO_OCR", True, bool),
-            "force_ocr": get_env_value("DOCLING_FORCE_OCR", True, bool),
-            "ocr_engine": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
-            "ocr_lang": os.getenv("DOCLING_OCR_LANG", "").strip(),
-            "do_formula_enrichment": get_env_value(
-                "DOCLING_DO_FORMULA_ENRICHMENT", False, bool
-            ),
-        },
-    }
+    from lightrag.parser.external.docling.cache import (
+        current_vlm_preset,
+        resolve_docling_pipeline,
+    )
+
+    try:
+        pipeline = resolve_docling_pipeline()
+    except ValueError as exc:
+        return {"endpoint": endpoint, "options": {"pipeline_error": str(exc)}}
+
+    options: dict[str, Any] = {"pipeline": pipeline}
+    if pipeline == "vlm":
+        # The VLM pipeline ignores the standard OCR options, so don't report
+        # them as if they were in effect.
+        preset = current_vlm_preset()
+        options["vlm_pipeline_preset"] = preset
+        if not preset:
+            # The client refuses to parse in this state; surface it here rather
+            # than reporting a clean pipeline with an empty preset.
+            options["pipeline_error"] = (
+                "DOCLING_PIPELINE=vlm requires DOCLING_VLM_PRESET"
+            )
+    else:
+        options.update(
+            {
+                "do_ocr": get_env_value("DOCLING_DO_OCR", True, bool),
+                "force_ocr": get_env_value("DOCLING_FORCE_OCR", True, bool),
+                "ocr_engine": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
+                "ocr_lang": os.getenv("DOCLING_OCR_LANG", "").strip(),
+                "do_formula_enrichment": get_env_value(
+                    "DOCLING_DO_FORMULA_ENRICHMENT", False, bool
+                ),
+            }
+        )
+    return {"endpoint": endpoint, "options": options}
 
 
 class LLMConfigCache:

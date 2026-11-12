@@ -126,20 +126,7 @@ class DoclingIRBuilder:
         document_name: str,
     ) -> IRDoc:
         document_format = Path(document_name).suffix.lower().lstrip(".")
-        body = doc.get("body")
-        has_body_children = isinstance(body, dict) and bool(body.get("children"))
-        has_kv_or_form = bool(doc.get("key_value_items") or doc.get("form_items"))
-        if not has_body_children and not has_kv_or_form:
-            # A VLM pipeline that returned empty Markdown (or a conversion that
-            # produced no body at all) lands here. Raising beats embedding an
-            # empty document, which LightRAG's parser contract forbids.
-            raise ValueError(
-                "Docling JSON has no body children and no key-value/form items, "
-                "so the conversion produced no content. For the VLM pipeline "
-                "this usually means the model returned empty Markdown; for the "
-                "standard pipeline check the OCR settings and whether the page "
-                "carries any text. See the docling-serve logs for this document."
-            )
+        ref_index = _build_ref_index(doc)
         ref_index = _build_ref_index(doc)
         consumed_refs, picture_inner_refs = _precompute_consumed_refs(doc, raw_dir)
 

@@ -57,5 +57,7 @@ class DoclingParser(ExternalParserBase):
         if not ir.blocks:
             raise ValueError(
                 f"Docling IR builder produced zero blocks for {file_path} "
-                f"(raw_dir={raw_dir})"
+                f"(raw_dir={raw_dir}). A VLM pipeline whose model returned empty "
+                "Markdown lands here too; check the docling-serve task result and, "
+                "for a VLM preset, that DOCLING_SERVE_ALLOWED_VLM_PRESETS includes it."
             )

@@ -72,8 +72,8 @@ DEFAULT_DOCLING_PIPELINE = "standard"
 def resolve_docling_pipeline(raw: str | None = None) -> str:
     """Validate ``DOCLING_PIPELINE``; an invalid value fails fast at startup."""
     value = (
-        raw if raw is not None else os.getenv("DOCLING_PIPELINE", "")
-    ).strip().lower()
+        (raw if raw is not None else os.getenv("DOCLING_PIPELINE", "")).strip().lower()
+    )
     if not value:
         return DEFAULT_DOCLING_PIPELINE
     if value not in DOCLING_PIPELINES:
@@ -86,6 +86,18 @@ def resolve_docling_pipeline(raw: str | None = None) -> str:
 def current_vlm_preset() -> str:
     """The VLM preset named by ``DOCLING_VLM_PRESET`` (empty when unset)."""
     return os.getenv("DOCLING_VLM_PRESET", "").strip()
+
+
+# Documented defaults for the OCR settings. Shared with the client so the
+# "ignored under vlm" warning and the cache signature cannot drift apart.
+OCR_ENV_DEFAULTS: dict[str, object] = {
+    "DOCLING_DO_OCR": True,
+    "DOCLING_FORCE_OCR": True,
+    "DOCLING_OCR_ENGINE": "auto",
+    "DOCLING_OCR_PRESET": "auto",
+    "DOCLING_OCR_LANG": "",
+    "DOCLING_DO_FORMULA_ENRICHMENT": False,
+}
 
 
 def current_endpoint_signature() -> str:
@@ -156,13 +168,18 @@ def snapshot_tunable_env(
         else env_bool("DOCLING_FORCE_OCR", True)
     )
     values = {
-        "DOCLING_DO_OCR": str(env_bool("DOCLING_DO_OCR", True)).lower(),
+        "DOCLING_DO_OCR": str(
+            env_bool("DOCLING_DO_OCR", OCR_ENV_DEFAULTS["DOCLING_DO_OCR"])
+        ).lower(),
         "DOCLING_FORCE_OCR": str(force_ocr).lower(),
         "DOCLING_OCR_ENGINE": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
         "DOCLING_OCR_PRESET": os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto",
         "DOCLING_OCR_LANG": os.getenv("DOCLING_OCR_LANG", "").strip(),
         "DOCLING_DO_FORMULA_ENRICHMENT": str(
-            env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
+            env_bool(
+                "DOCLING_DO_FORMULA_ENRICHMENT",
+                OCR_ENV_DEFAULTS["DOCLING_DO_FORMULA_ENRICHMENT"],
+            )
         ).lower(),
     }
     pipeline = resolve_docling_pipeline()

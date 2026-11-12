@@ -56,6 +56,7 @@ from lightrag.parser.external._common import (
 )
 from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.docling.cache import (
+    OCR_ENV_DEFAULTS,
     compute_options_signature,
     current_endpoint_signature,
     current_vlm_preset,
@@ -93,16 +94,27 @@ FIXED_CONSTANTS: dict[str, object] = {
     "image_export_mode": IMAGE_EXPORT_MODE,
 }
 
-# Form fields that only the standard pipeline understands. The VLM pipeline
-# renders pages through the model and rejects (or silently ignores) these.
-_STANDARD_ONLY_OCR_ENVS: tuple[str, ...] = (
-    "DOCLING_DO_OCR",
-    "DOCLING_FORCE_OCR",
-    "DOCLING_OCR_ENGINE",
-    "DOCLING_OCR_PRESET",
-    "DOCLING_OCR_LANG",
-    "DOCLING_DO_FORMULA_ENRICHMENT",
-)
+# Values that differ from the documented defaults are the ones a VLM user
+# actually changed; env.example ships the defaults, so warning on "set at all"
+# would fire for every deployment.
+_vlm_ignored_warned: set[tuple[str, ...]] = set()
+_vlm_preset_ignored_warned = False
+
+
+def _non_default_ocr_envs() -> list[str]:
+    """OCR envs explicitly set to something other than their documented default."""
+    configured: list[str] = []
+    for name, default in OCR_ENV_DEFAULTS.items():
+        raw = os.getenv(name)
+        if raw is None:
+            continue
+        if isinstance(default, bool):
+            value: object = env_bool(name, default)
+        else:
+            value = raw.strip() or default
+        if value != default:
+            configured.append(name)
+    return configured
 
 
 def fixed_constants_for(pipeline: str) -> dict[str, object]:
@@ -115,6 +127,7 @@ def fixed_constants_for(pipeline: str) -> dict[str, object]:
     if pipeline == PIPELINE:
         return FIXED_CONSTANTS
     return {**FIXED_CONSTANTS, "pipeline": pipeline}
+
 
 CONVERT_PATH = "/v1/convert/file/async"
 POLL_PATH = "/v1/status/poll/{task_id}"
@@ -146,29 +159,37 @@ class DoclingRawClient:
 
         self.pipeline = resolve_docling_pipeline()
         self.vlm_preset = current_vlm_preset()
+        self._failure_vlm_preset = (
+            self.vlm_preset if self.pipeline == VLM_PIPELINE else None
+        )
         if self.pipeline == VLM_PIPELINE:
             if not self.vlm_preset:
                 raise ValueError(
                     "DOCLING_PIPELINE=vlm requires DOCLING_VLM_PRESET "
                     "(for example minicpm_ocr)"
                 )
-            configured = [
-                name for name in _STANDARD_ONLY_OCR_ENVS if os.getenv(name, "").strip()
-            ]
-            if "force_ocr" in self._overrides:
+            configured = _non_default_ocr_envs()
+            if "force_ocr" in self._overrides and bool(
+                self._overrides["force_ocr"]
+            ) != env_bool("DOCLING_FORCE_OCR", True):
                 configured.append("force_ocr (per-file override)")
-            if configured:
+            key = tuple(configured)
+            if configured and key not in _vlm_ignored_warned:
+                _vlm_ignored_warned.add(key)
                 logger.warning(
                     "[docling] DOCLING_PIPELINE=vlm ignores the standard-pipeline "
                     "OCR settings: %s",
                     ", ".join(configured),
                 )
         elif self.vlm_preset:
-            logger.warning(
-                "[docling] DOCLING_VLM_PRESET is set but DOCLING_PIPELINE=%s; "
-                "the preset is ignored",
-                self.pipeline,
-            )
+            global _vlm_preset_ignored_warned
+            if not _vlm_preset_ignored_warned:
+                _vlm_preset_ignored_warned = True
+                logger.warning(
+                    "[docling] DOCLING_VLM_PRESET is set but DOCLING_PIPELINE=%s; "
+                    "the preset is ignored",
+                    self.pipeline,
+                )
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
         self.force_ocr = (
@@ -313,17 +334,7 @@ class DoclingRawClient:
             resp = await client.post(
                 url, data=self._build_multipart_data(), files=files
             )
-        try:
-            raise_for_status_with_detail(resp, f"Docling upload for {filename!r}")
-        except RuntimeError as exc:
-            if self.pipeline == VLM_PIPELINE and resp.status_code in (400, 422):
-                raise RuntimeError(
-                    f"{exc}. If the server rejected the VLM preset: it needs a "
-                    "docling-serve built with docling>=2.149 (the release that "
-                    f"registers {self.vlm_preset!r}); older releases reject it. "
-                    "Build the serve image from source or upgrade docling-serve."
-                ) from exc
-            raise
+        raise_for_status_with_detail(resp, f"Docling upload for {filename!r}")
         payload = resp.json() if resp.text else {}
         task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
         if not task_id:
@@ -350,7 +361,14 @@ class DoclingRawClient:
             if status in SUCCESS_STATES:
                 return
             if status in FAILURE_STATES:
-                raise RuntimeError(_format_failure(task_id, status, payload))
+                raise RuntimeError(
+                    _format_failure(
+                        task_id,
+                        status,
+                        payload,
+                        vlm_preset=self._failure_vlm_preset,
+                    )
+                )
             if status not in IN_PROGRESS_STATES:
                 # Unknown status: keep polling, but surface it so operators notice.
                 logger.warning(
@@ -410,7 +428,13 @@ class DoclingRawClient:
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
             if _is_json_result(body, ctype):
-                _materialize_json_result(body, task_id, raw_dir, upload_filename)
+                _materialize_json_result(
+                    body,
+                    task_id,
+                    raw_dir,
+                    upload_filename,
+                    vlm_preset=self._failure_vlm_preset,
+                )
                 return
             raise RuntimeError(
                 f"Docling result {task_id} returned non-zip content-type "
@@ -469,7 +493,12 @@ def _result_envelope_status(payload: Any) -> str:
 
 
 def _materialize_json_result(
-    body: bytes, task_id: str, raw_dir: Path, upload_filename: str
+    body: bytes,
+    task_id: str,
+    raw_dir: Path,
+    upload_filename: str,
+    *,
+    vlm_preset: str | None = None,
 ) -> None:
     try:
         payload = json.loads(body) if body else {}
@@ -486,7 +515,9 @@ def _materialize_json_result(
     # no status field; those skip the check.)
     status = _result_envelope_status(payload)
     if status and status not in SUCCESS_STATES:
-        raise RuntimeError(_format_failure(task_id, status, payload))
+        raise RuntimeError(
+            _format_failure(task_id, status, payload, vlm_preset=vlm_preset)
+        )
 
     document, markdown = _extract_document_payload(payload)
 
@@ -582,7 +613,9 @@ def _referenced_image_uris(document: dict[str, Any]) -> list[str]:
     return referenced
 
 
-def _format_failure(task_id: str, status: str, payload: Any) -> str:
+def _format_failure(
+    task_id: str, status: str, payload: Any, *, vlm_preset: str | None = None
+) -> str:
     if isinstance(payload, dict):
         err = (
             payload.get("error_message")
@@ -593,7 +626,17 @@ def _format_failure(task_id: str, status: str, payload: Any) -> str:
     else:
         err = "<no error_message>"
     truncated = json.dumps(payload, ensure_ascii=False)[:400]
-    return f"Docling task {task_id} ended in {status}: {err}; payload={truncated}"
+    message = f"Docling task {task_id} ended in {status}: {err}; payload={truncated}"
+    if vlm_preset:
+        # docling-serve accepts the preset at upload and resolves it in the
+        # worker, so an unknown or disallowed preset fails the task instead of
+        # returning HTTP 422 on submit.
+        message += (
+            f". If the task failed on the VLM preset {vlm_preset!r}, the serve "
+            "host needs a docling release that registers it (minicpm_ocr needs "
+            "docling>=2.149), and DOCLING_SERVE_ALLOWED_VLM_PRESETS must include it."
+        )
+    return message
 
 
 __all__ = [
