@@ -88,7 +88,7 @@ The same checks run automatically on every pull request. If the CI check fails, 
 
 - **Python code and comments**: English
 - **Frontend (WebUI)**: uses i18next for internationalization — add translation keys rather than hardcoding strings
-- **README**: `README.md` and its translations `README-zh.md`, `README-ja.md` and `README-id.md` stay line-for-line aligned. Make every README change in all four files in the same commit, with the same line count and the same line breaks (`wc -l README*.md` prints one number for all four). If you cannot translate the change, put the English text at the same lines in the translations so it can be translated later. Do not leave those files unchanged.
+- **README**: `README.md` and its translations `README-zh.md`, `README-ja.md` and `README-id.md` stay line-for-line aligned. Make every README change in all four files in the same commit, with the same line count and the same line breaks. `tests/test_readme_translations.py` checks this in CI and names the first line that differs. If you cannot translate the change, put the English text at the same lines in the translations so it can be translated later. Do not leave those files unchanged.
 
 ---
 
