@@ -31,21 +31,26 @@ Thank you for your interest in contributing! This guide covers everything you ne
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 
-# Install in development mode (requires uv)
-uv sync
+# Install the development environment (requires uv): the test toolchain
+# (pytest, ruff, pre-commit) plus the API server, every storage backend and
+# every LLM provider integration
+uv sync --extra test --extra offline
 source .venv/bin/activate        # Linux/macOS
 # .venv\Scripts\activate         # Windows
 
-# Install with optional extras as needed
-uv sync --extra api              # FastAPI server
-uv sync --extra test             # Test dependencies
-uv sync --extra offline-storage  # Storage backends
-uv sync --extra offline-llm      # Additional LLM providers
-
 # Set up pre-commit hooks (run once)
-pip install pre-commit
 pre-commit install
 ```
+
+Pass every extra you need to **one** `uv sync` command. By default `uv sync` removes packages the selected extras do not need, so `uv sync --extra offline-storage` run after `uv sync --extra test` uninstalls pytest again.
+
+After each `git pull`, re-sync with the same extras:
+
+```bash
+uv sync --locked --inexact --extra test --extra offline
+```
+
+`--locked` installs exactly what `uv.lock` pins and fails instead of rewriting it. `--inexact` keeps packages that are not in `uv.lock`, such as the spaCy models. See [Updating after `git pull`](../README.md#install-from-source) in the README.
 
 ---
 

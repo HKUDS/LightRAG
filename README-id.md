@@ -202,6 +202,19 @@ lightrag-server
 
 Buka `http://localhost:9621/webui` untuk WebUI. Dokumentasi REST API interaktif ada di `http://localhost:9621/docs`. Ganti host dan port jika Anda mengubah `HOST` / `PORT`.
 
+**Memperbarui setelah `git pull`.** Sinkronkan ulang dengan extras yang Anda pasang di Langkah 2, ditambah `--locked --inexact`. Untuk Opsi B:
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # Opsi A: --locked --inexact --extra api
+```
+
+- **Gunakan extras yang sama setiap kali.** Paket yang hanya dibutuhkan oleh extra yang terlewat tidak lagi dijaga pada versi terkuncinya, dan sinkronisasi tanpa `--inexact` akan mencopotnya.
+- **`--locked`** memasang persis versi yang dikunci `uv.lock`. Jika `uv.lock` tidak sesuai dengan `pyproject.toml`, perintah berhenti dengan error alih-alih menulis ulang `uv.lock`.
+- **`--inexact`** mempertahankan paket yang tidak ada di `uv.lock`, misalnya model spaCy dari `lightrag-download-cache --spacy-install`. `uv sync` biasa akan menghapusnya.
+
+Jika pull mengubah `lightrag_webui/`, ulangi juga Langkah 3.
+
 ### Menjalankan dengan Docker Compose
 
 ```bash

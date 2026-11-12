@@ -202,6 +202,19 @@ lightrag-server
 
 ブラウザで `http://localhost:9621/webui` を開くと WebUI が表示されます。対話式の REST API ドキュメントは `http://localhost:9621/docs` です。`HOST` / `PORT` を変更した場合は、そのアドレスとポートに置き換えてください。
 
+**`git pull` 後の環境更新。** ステップ 2 でインストールしたときと同じ extras に `--locked --inexact` を付けて再同期します。オプション B の場合：
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # オプション A：--locked --inexact --extra api
+```
+
+- **毎回同じ extras を指定します。** 指定し忘れた extra だけが必要とするパッケージは、ロックされたバージョンに保たれなくなります。`--inexact` なしで同期するとアンインストールされます。
+- **`--locked`** は `uv.lock` が固定したバージョンをそのままインストールします。`uv.lock` が `pyproject.toml` と食い違っている場合は、`uv.lock` を書き換えずにエラーで停止します。
+- **`--inexact`** は `uv.lock` にないパッケージを残します。たとえば `lightrag-download-cache --spacy-install` でインストールした spaCy モデルです。付けずに `uv sync` を実行すると削除されます。
+
+pull で `lightrag_webui/` が変更された場合は、ステップ 3 もやり直してください。
+
 ### Docker Compose で起動
 
 ```bash
