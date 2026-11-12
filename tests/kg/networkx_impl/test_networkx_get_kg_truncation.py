@@ -4,6 +4,9 @@ from lightrag.kg.shared_storage import initialize_share_data
 from lightrag.kg.networkx_impl import NetworkXStorage
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.mark.asyncio
 async def test_get_knowledge_graph_is_truncated_when_max_nodes_reached(tmp_path):
     initialize_share_data()

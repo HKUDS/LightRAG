@@ -570,6 +570,7 @@ class LLMConfigCache:
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
         self.bedrock_llm_options = None
+        self.openai_responses_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -577,6 +578,18 @@ class LLMConfigCache:
 
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
             logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
+
+        # Responses keeps its own namespace so Chat Completions options
+        # (max_completion_tokens, flat reasoning_effort) cannot leak into it.
+        if args.llm_binding == "openai_responses":
+            from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
+
+            self.openai_responses_llm_options = OpenAIResponsesLLMOptions.options_dict(
+                args
+            )
+            logger.info(
+                f"OpenAI Responses LLM Options: {self.openai_responses_llm_options}"
+            )
 
         if args.llm_binding == "gemini":
             from lightrag.llm.binding_options import GeminiLLMOptions
@@ -645,6 +658,7 @@ _PROVIDER_LOG_LABELS = {
     "lollms": "Lollms",
     "ollama": "Ollama",
     "openai": "OpenAI",
+    "openai_responses": "OpenAI Responses",
 }
 
 
@@ -1595,6 +1609,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "openai_responses",
         "azure_openai",
         "bedrock",
         "gemini",
@@ -1737,7 +1752,6 @@ def create_app(args):
         "openapi_url": "/openapi.json" if api_docs_enabled else None,
         "docs_url": None,  # custom endpoint for offline Swagger support
         "redoc_url": "/redoc" if api_docs_enabled else None,
-        "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
 
@@ -1749,6 +1763,13 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
+    # Assigned after construction: FastAPI deprecated the ``root_path``
+    # constructor argument but still applies ``app.root_path`` to every
+    # request scope in ``__call__``, which the prefix routing relies on.
+    # Moving the prefix to the ASGI server is not equivalent here; see
+    # docs/MultiSiteDeployment.md.
+    if api_prefix:
+        app.root_path = api_prefix
 
     # Custom validation error handler, shaped per endpoint (see the
     # module-level function for why it is not a closure).
@@ -1965,6 +1986,40 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
+    def create_optimized_openai_responses_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized OpenAI Responses LLM function with pre-processed configuration"""
+
+        async def optimized_openai_responses_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            **kwargs,
+        ):
+            from lightrag.llm.openai_responses import (
+                openai_responses_complete_if_cache,
+            )
+
+            if history_messages is None:
+                history_messages = []
+
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_responses_llm_options:
+                kwargs.update(config_cache.openai_responses_llm_options)
+
+            return await openai_responses_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=args.llm_binding_api_key,
+                **kwargs,
+            )
+
+        return optimized_openai_responses_model_complete
+
     def create_optimized_gemini_llm_func(
         config_cache: LLMConfigCache, args, llm_timeout: int
     ):
@@ -2025,6 +2080,13 @@ def create_app(args):
                 )
             elif binding == "gemini":
                 return create_optimized_gemini_llm_func(config_cache, args, llm_timeout)
+            elif binding == "openai_responses":
+                # Explicit branch: the bare `else` below routes to Chat
+                # Completions, so omitting this would silently send Responses
+                # traffic to /v1/chat/completions with no error.
+                return create_optimized_openai_responses_llm_func(
+                    config_cache, args, llm_timeout
+                )
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
@@ -2081,6 +2143,12 @@ def create_app(args):
                 from lightrag.llm.binding_options import OpenAILLMOptions
 
                 role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "openai_responses":
+                from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
+
+                role_provider_options = OpenAIResponsesLLMOptions.options_dict_for_role(
                     args, role, is_cross_provider
                 )
             elif role_binding == "gemini":
@@ -2276,6 +2344,33 @@ def create_app(args):
                     )
 
                 return role_azure_openai_complete
+            if role_binding == "openai_responses":
+                from lightrag.llm.openai_responses import (
+                    openai_responses_complete_if_cache,
+                )
+
+                async def role_openai_responses_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ):
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options:
+                        kwargs.update(role_provider_options)
+                    return await openai_responses_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_openai_responses_complete
             if role_binding == "gemini":
                 from lightrag.llm.gemini import gemini_complete_if_cache
 

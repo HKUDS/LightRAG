@@ -638,7 +638,9 @@ class TestRenewalSkipUnderApiPrefix:
         server = importlib.import_module("lightrag.api.lightrag_server")
 
         dependency = utils_api.get_combined_auth_dependency(None)
-        app = FastAPI(root_path=api_prefix or None)
+        app = FastAPI()
+        # Same as create_app: the constructor argument is deprecated.
+        app.root_path = api_prefix
         if api_prefix:
             app.add_middleware(server._RootPathNormalizationMiddleware)
 

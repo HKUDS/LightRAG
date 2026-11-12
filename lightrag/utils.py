@@ -3803,8 +3803,12 @@ class TiktokenTokenizer(Tokenizer):
                 "tiktoken is not installed. Please install it with `pip install tiktoken` or pass a custom `tokenizer`."
             )
 
+        from lightrag.tiktoken_cache import load_tiktoken_encoding
+
         try:
-            tokenizer = tiktoken.encoding_for_model(model_name)
+            tokenizer = load_tiktoken_encoding(
+                lambda: tiktoken.encoding_for_model(model_name)
+            )
             super().__init__(model_name=model_name, tokenizer=tokenizer)
         except KeyError:
             raise ValueError(f"Invalid model_name: {model_name}.")

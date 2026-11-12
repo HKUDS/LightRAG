@@ -23,7 +23,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -121,77 +121,93 @@
 >
 > **📦 Deployment Offline**: Untuk environment offline atau air-gapped, lihat [Panduan Deployment Offline](./docs/OfflineDeployment.md) untuk petunjuk menginstal semua dependency dan file cache sebelumnya.
 
-### Instal LightRAG Server
+> [!WARNING]
+> **Amankan server sebelum menjalankannya di jaringan bersama.** `lightrag-server` secara default mendengarkan di semua interface (`HOST=0.0.0.0`) dan autentikasinya nonaktif, sehingga di cloud host setiap endpoint terbuka untuk publik — dan siapa pun dapat menghabiskan kuota LLM Anda. Sebelum start pertama, pilih salah satu: bind ke alamat privat di `.env` (`HOST=127.0.0.1`, atau alamat VPN / tunnel), atau konfigurasikan autentikasi: `LIGHTRAG_API_KEY`, atau `AUTH_ACCOUNTS` bersama `TOKEN_SECRET` (buat dengan `openssl rand -hex 32`). Route `/api/*` yang kompatibel dengan Ollama tetap terbuka secara default demi kompatibilitas klien; set `WHITELIST_PATHS=/health` agar route tersebut juga memerlukan autentikasi. Ini berlaku untuk semua metode instalasi di bawah.
 
-* Instal dari PyPI
+### Instal dari PyPI
+
+Package PyPI sudah menyertakan WebUI yang telah di-build, sehingga frontend tidak perlu di-build.
 
 ```bash
-### Install LightRAG Server as tool using uv (recommended)
+# Instal LightRAG Server sebagai tool menggunakan uv (direkomendasikan)
 uv tool install "lightrag-hku[api]"
 
-### Or using pip
+# Atau menggunakan pip di dalam virtual environment
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# Setup env file
-# Obtain the env.example file by downloading it from the GitHub repository root
-# or by copying it from a local source checkout.
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# Launch the server. It binds to all interfaces (0.0.0.0) by default.
-# SECURITY: before exposing it on a network, configure authentication in .env
-# (LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together with TOKEN_SECRET), or bind to
-# 127.0.0.1 for local-only access; without auth every endpoint is public.
-# Note: the Ollama-compatible /api/* routes stay open by default for client
-# compatibility; set WHITELIST_PATHS=/health to require auth on them too.
+# Ambil template konfigurasi lalu edit (lihat "Perubahan Minimum pada .env" di bawah)
+curl -O https://raw.githubusercontent.com/HKUDS/LightRAG/main/env.example
+cp env.example .env
+
 lightrag-server
 ```
 
-* Instalasi dari Source
+### Instal dari Source
+
+**Prasyarat**
+
+| Tool | Kegunaan | Cara instal |
+|---|---|---|
+| git | Clone repository | Package manager sistem |
+| [uv](https://docs.astral.sh/uv/) | Virtual environment dan dependency Python. Mengunduh Python yang sesuai (3.11+) bila sistem tidak memilikinya | Lihat catatan uv di atas |
+| [bun](https://bun.sh/docs/installation) | Build WebUI | `curl -fsSL https://bun.sh/install \| bash` (Windows: `powershell -c "irm bun.sh/install.ps1 \| iex"`). Script Linux memerlukan `unzip`, yang tidak ada di image Debian / Ubuntu minimal: `sudo apt-get install -y unzip` |
+| make | Opsional: shortcut `make dev` dan setup wizard `make env-*` | Package manager sistem |
+
+**Langkah 1 — Clone repository**
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+```
 
-# Bootstrap the development environment (recommended)
-make dev
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+**Langkah 2 — Instal dependency Python.** Pilih **salah satu** opsi:
 
-# make dev installs the test toolchain plus the full offline stack
-# (API, storage backends, and provider integrations), then builds the frontend.
-# Run make env-base or copy env.example to .env before starting the server.
+```bash
+# Opsi A: hanya menjalankan server (API + WebUI) — instalasi terkecil
+uv sync --extra api
+```
 
-# Equivalent manual steps with uv
-# Note: uv sync automatically creates a virtual environment in .venv/
+```bash
+# Opsi B: berkontribusi — toolchain test plus semua storage backend
+# dan integrasi provider LLM
 uv sync --extra test --extra offline
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+```
 
-### Or using pip with virtual environment
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[test,offline]"
+`uv sync` membuat virtual environment di `.venv/`. Aktifkan dengan `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`). Dengan pip alih-alih uv: `python -m venv .venv`, aktifkan, lalu `pip install -e ".[api]"` (atau `pip install -e ".[test,offline]"`).
 
-# Build front-end artifacts
+**Langkah 3 — Build WebUI**
+
+```bash
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
+```
 
-# setup env file
-make env-base  # Or: cp env.example .env and update it manually
-# Launch API-WebUI server
+> `make dev` menjalankan Langkah 2 Opsi B dan Langkah 3 dalam satu perintah. Jika Anda sudah menjalankannya, lanjutkan ke Langkah 4.
+
+**Langkah 4 — Buat `.env`.** Jalankan wizard interaktif `make env-base` (lihat [Membuat File .env dengan Setup Tool](#membuat-file-env-dengan-setup-tool)), atau salin template lalu edit secara manual (lihat [Perubahan Minimum pada .env](#perubahan-minimum-pada-env)):
+
+```bash
+cp env.example .env
+```
+
+**Langkah 5 — Jalankan server**
+
+```bash
 lightrag-server
 ```
 
-* Menjalankan LightRAG Server dengan Docker Compose
+Buka `http://localhost:9621/webui` untuk WebUI. Dokumentasi REST API interaktif ada di `http://localhost:9621/docs`. Ganti host dan port jika Anda mengubah `HOST` / `PORT`.
+
+### Menjalankan dengan Docker Compose
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# modify LLM and Embedding settings in .env
+cp env.example .env  # edit terlebih dahulu: lihat "Perubahan Minimum pada .env" di bawah
 docker compose up
 ```
 
@@ -200,6 +216,22 @@ docker compose up
 > Image GHCR resmi yang dipublikasikan melalui GitHub Actions ditandatangani menggunakan Sigstore Cosign dengan GitHub OIDC. Lihat [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) untuk perintah verifikasi.
 >
 > Pada Apple Silicon (macOS 26) tanpa Docker Desktop, Anda dapat menjalankan stack storage Postgres/Neo4j/Milvus yang sama pada runtime `container` native Apple — lihat [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md).
+
+### Perubahan Minimum pada .env
+
+`env.example` langsung berfungsi dengan storage berbasis file lokal, tanpa reranker, dan parser dokumen bawaan, sehingga tidak perlu database atau layanan tambahan. Hanya pengaturan model yang perlu diperhatikan. Dengan model OpenAI default:
+
+| Variabel | Yang perlu dilakukan |
+|---|---|
+| `LLM_BINDING_API_KEY` | **Wajib.** Isi dengan API key OpenAI Anda |
+| `EMBEDDING_BINDING_API_KEY` | **Wajib.** Isi dengan API key OpenAI Anda (boleh key yang sama) |
+| `OPENAI_LLM_REASONING_EFFORT` | **Direkomendasikan.** Hapus komentarnya dan biarkan `low`. Model default `gpt-6-luna` adalah model reasoning dengan effort default API `medium`, yang membuat ekstraksi entity — satu panggilan LLM per text chunk — jauh lebih lambat dan mahal |
+
+Menggunakan provider lain? Set juga `LLM_BINDING_HOST` dan `LLM_MODEL` (biarkan `LLM_BINDING=openai` untuk API apa pun yang kompatibel dengan OpenAI), serta `EMBEDDING_BINDING_HOST`, `EMBEDDING_MODEL`, dan `EMBEDDING_DIM`. `EMBEDDING_DIM` harus sama dengan dimensi output model embedding. Lihat [Panduan Konfigurasi Utama](#panduan-konfigurasi-utama) untuk pilihan model.
+
+> **Tentukan model embedding sebelum upload pertama.** Mengubahnya nanti berarti mengindeks ulang semua dokumen (lihat [Model Embedding](#model-embedding)).
+
+**Langkah berikutnya:** setelah server berjalan, [Exploring LightRAG](./docs/ExploreLightRAG.md) ([🇨🇳](./docs/ExploreLightRAG-zh.md)) memandu mengaktifkan fitur lainnya satu per satu, lengkap dengan hasil pengukuran: storage PostgreSQL, autentikasi, LLM per peran, rerank, analisis gambar, smart heading Word, MinerU, dan tuning konkurensi.
 
 ### Membuat File .env dengan Setup Tool
 
@@ -223,6 +255,8 @@ Parameter engine `smart_heading` yang bersifat opt-in pada native docx parser me
 ```bash
 lightrag-download-cache --spacy-install
 ```
+
+> Di environment hasil `uv sync` (yang tidak memiliki pip), perintah ini memasang model melalui `uv pip install`. Model tidak tercantum di `uv.lock`, sehingga `uv sync` biasa akan menghapusnya kembali; gunakan `uv sync --inexact` setelahnya agar model tetap terpasang.
 
 Aktifkan smart_heading per file/rule (misalnya `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), atau secara global di `.env`:
 
@@ -289,7 +323,8 @@ LightRAG membutuhkan LLM/VLM dengan empat role berbeda selama workflow-nya. Anda
 
 **Model yang direkomendasikan berdasarkan role:**
 
-- **Extraction LLM (`EXTRACT`)**: Ekstraksi entity-relation dijalankan pada setiap text chunk, sehingga model mainstream yang cepat dan hemat biaya sudah cukup — model **non-thinking** (mode reasoning/thinking dinonaktifkan) sangat direkomendasikan untuk menghindari proses ekstraksi yang lambat dan mahal. Opsi hosted yang baik antara lain GPT-5.6-luna, Claude Haiku, atau Gemini-mini secara internasional, serta DeepSeek-V4-lite atau Kimi di China. Untuk deployment lokal, Qwen3-30B-A3B-Instruct merupakan minimum yang wajar.
+- **Extraction LLM (`EXTRACT`)**: Ekstraksi entity-relation dijalankan pada setiap text chunk, sehingga model mainstream yang cepat dan hemat biaya sudah cukup — model **non-thinking** (mode reasoning/thinking dinonaktifkan) sangat direkomendasikan untuk menghindari proses ekstraksi yang lambat dan mahal. Opsi hosted yang baik antara lain GPT-6 Luna, Claude Haiku, atau Gemini-mini secara internasional, serta DeepSeek-V4-lite atau Kimi di China. Untuk deployment lokal, Qwen3-30B-A3B-Instruct merupakan minimum yang wajar.
+  Dengan model default OpenAI `gpt-6-luna` (model reasoning), set `OPENAI_LLM_REASONING_EFFORT=low` agar ekstraksi tetap cepat dan murah (lihat [Perubahan Minimum pada .env](#perubahan-minimum-pada-env)).
 - **Query LLM (`QUERY`)**: Model ini menulis jawaban akhir berdasarkan context hasil retrieval yang panjang dan noisy, sehingga sebaiknya *lebih kuat* daripada model extraction untuk memaksimalkan kualitas jawaban. Pilih model tier lebih tinggi dari keluarga yang sama; model yang mendukung thinking dapat digunakan di sini.
 - **Keyword LLM (`KEYWORD`)**: Langkah ringan yang sensitif terhadap latency dan **harus** menggunakan model non-thinking agar query latency tetap rendah; model cepat yang setara dengan model extraction sudah cukup.
 - **VLM (`VLM`)**: Model multimodal mainstream apa pun yang mendukung input gambar dapat digunakan. Untuk deployment lokal, pertimbangkan Qwen3.6-35B-A3B.
@@ -310,7 +345,7 @@ Mode query default LightRAG adalah `mix`. Menggunakan mode `mix` umumnya menghas
 
 ### Model Embedding
 
-Saat memilih model Embedding, perhatikan kemampuan dukungan multilingual-nya. Karena kualitas retrieval LightRAG hanya memiliki ketergantungan terbatas pada model Embedding, disarankan memilih model berdimensi rendah dan cepat. Model embedding mainstream yang mutakhir dapat bekerja dengan baik; untuk deployment lokal, `BAAI/bge-m3` merupakan pilihan yang solid. Kami sangat merekomendasikan deployment model Embedding secara lokal untuk memperoleh performa terbaik.
+Saat memilih model Embedding, perhatikan kemampuan dukungan multilingual-nya. Karena kualitas retrieval LightRAG hanya memiliki ketergantungan terbatas pada model Embedding, disarankan memilih model berdimensi rendah dan cepat. Default `env.example`, OpenAI `text-embedding-3-large` (3072 dimensi), mengutamakan kualitas multilingual; `text-embedding-3-small` (1536 dimensi, set `EMBEDDING_DIM=1536`) lebih murah dan cepat. Model embedding mainstream yang mutakhir dapat bekerja dengan baik; untuk deployment lokal, `BAAI/bge-m3` merupakan pilihan yang solid. Kami sangat merekomendasikan deployment model Embedding secara lokal untuk memperoleh performa terbaik.
 
 **Catatan Penting**: Model Embedding harus ditentukan sebelum indexing dokumen, dan model yang sama harus digunakan pada fase query. Setelah dipilih, model embedding umumnya tidak dapat diubah. Jika diubah, Anda perlu melakukan re-embed terhadap seluruh text chunk, entity, dan relationship. LightRAG saat ini tidak menyediakan tool re-embedding. Beberapa storage backend (misalnya PostgreSQL) mengharuskan dimensi vector ditentukan saat membuat tabel untuk pertama kali, sehingga mengganti model Embedding memerlukan penghapusan tabel terkait vector agar LightRAG dapat membuatnya ulang.
 
@@ -490,6 +525,7 @@ Entri yang ditandai 🇨🇳 juga menyediakan terjemahan bahasa Mandarin sebagai
 
 | Dokumen | Cakupan |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | Dari setup default ke produksi: PostgreSQL, auth, LLM per peran, rerank, VLM, smart heading, MinerU, dan konkurensi, langkah demi langkah dengan hasil pengukuran |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | Setup wizard `make env-*`: menghasilkan `.env` dan `docker-compose.final.yml` yang dikelola wizard |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Deployment Docker / Docker Compose, varian image, dan verifikasi Cosign untuk image GHCR resmi |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Menjalankan stack storage Postgres / Neo4j / Milvus pada runtime `container` native Apple (Apple Silicon, tanpa Docker Desktop) |

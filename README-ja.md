@@ -23,7 +23,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -121,77 +121,93 @@
 >
 > **📦 オフラインデプロイ**: オフライン環境やエアギャップ環境については、すべての依存関係とキャッシュファイルを事前インストールする手順を記した[オフラインデプロイガイド](./docs/OfflineDeployment.md)を参照してください。
 
-### LightRAG サーバーのインストール
+> [!WARNING]
+> **共有ネットワーク上でサーバーを起動する前に、アクセス保護を設定してください。** `lightrag-server` はデフォルトですべてのインターフェース（`HOST=0.0.0.0`）で待ち受け、認証も無効です。クラウドホストでは全エンドポイントが公開され、誰でも LLM の利用枠を消費できてしまいます。初回起動の前に、`.env` でプライベートアドレス（`HOST=127.0.0.1`、または VPN / トンネルのアドレス）にバインドするか、認証を設定してください：`LIGHTRAG_API_KEY`、または `AUTH_ACCOUNTS` と `TOKEN_SECRET` の組み合わせ（`openssl rand -hex 32` で生成できます）。Ollama 互換の `/api/*` ルートはクライアント互換性のためデフォルトで認証不要です。これらにも認証を求めるには `WHITELIST_PATHS=/health` を設定してください。以下のすべてのインストール方法に当てはまります。
 
-* PyPI からのインストール
+### PyPI からインストール
+
+PyPI パッケージにはビルド済みの WebUI が含まれているため、フロントエンドのビルドは不要です。
 
 ```bash
-### uv を使って LightRAG サーバーをツールとしてインストール（推奨）
+# uv を使って LightRAG サーバーをツールとしてインストール（推奨）
 uv tool install "lightrag-hku[api]"
 
-### または pip を使用
+# または仮想環境内で pip を使用
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# env ファイルのセットアップ
-# env.example ファイルは GitHub リポジトリのルートからダウンロードするか、
-# ローカルのソースチェックアウトからコピーして入手してください。
-cp env.example .env  # .env を自分の LLM・埋め込み設定で更新
-# サーバーの起動。デフォルトではすべてのネットワークインターフェース(0.0.0.0)にバインドされます。
-# セキュリティ: ネットワークに公開する前に、.env で認証を設定してください
-#（LIGHTRAG_API_KEY、または AUTH_ACCOUNTS と TOKEN_SECRET の組み合わせ）。ローカル専用
-# アクセスの場合は 127.0.0.1 にバインドしてください。認証がない場合、すべてのエンドポイントが公開されます。
-# 注記: Ollama 互換の /api/* ルートは、クライアント互換性のためデフォルトで開放されたままです。
-# これらにも認証を要求するには WHITELIST_PATHS=/health を設定してください。
+# 設定テンプレートを取得して編集（下記「.env の最小限の変更」を参照）
+curl -O https://raw.githubusercontent.com/HKUDS/LightRAG/main/env.example
+cp env.example .env
+
 lightrag-server
 ```
 
-* ソースからのインストール
+### ソースからインストール
+
+**前提条件**
+
+| ツール | 用途 | インストール方法 |
+|---|---|---|
+| git | リポジトリのクローン | システムのパッケージマネージャー |
+| [uv](https://docs.astral.sh/uv/) | 仮想環境と Python 依存関係。適切な Python（3.11+）がなければ自動でダウンロード | 上記の uv の説明を参照 |
+| [bun](https://bun.sh/docs/installation) | WebUI のビルド | `curl -fsSL https://bun.sh/install \| bash`（Windows：`powershell -c "irm bun.sh/install.ps1 \| iex"`）。Linux 用スクリプトは `unzip` が必要で、最小構成の Debian / Ubuntu イメージには含まれていません：`sudo apt-get install -y unzip` |
+| make | 任意：`make dev` ショートカットと `make env-*` セットアップウィザード | システムのパッケージマネージャー |
+
+**ステップ 1 — リポジトリのクローン**
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+```
 
-# 開発環境のブートストラップ（推奨）
-make dev
-source .venv/bin/activate  # 仮想環境の有効化（Linux/macOS）
-# Windows の場合: .venv\Scripts\activate
+**ステップ 2 — Python 依存関係のインストール。** 次のどちらか**一方**を選びます：
 
-# make dev はテストツールチェーンに加えて、完全なオフラインスタック
-#（API、ストレージバックエンド、プロバイダー統合）をインストールし、フロントエンドをビルドします。
-# サーバーを起動する前に、make env-base を実行するか env.example を .env にコピーしてください。
+```bash
+# オプション A：サーバー（API + WebUI）を動かすだけ — 最小のインストール
+uv sync --extra api
+```
 
-# uv による同等の手動手順
-# 注記: uv sync は .venv/ ディレクトリに自動的に仮想環境を作成します
+```bash
+# オプション B：開発に参加 — テストツールチェーンと、すべてのストレージ
+# バックエンドおよび LLM プロバイダー統合
 uv sync --extra test --extra offline
-source .venv/bin/activate  # 仮想環境の有効化（Linux/macOS）
-# Windows の場合: .venv\Scripts\activate
+```
 
-### または仮想環境付きで pip を使用
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[test,offline]"
+`uv sync` は `.venv/` に仮想環境を作成します。`source .venv/bin/activate`（Windows：`.venv\Scripts\activate`）で有効化してください。uv の代わりに pip を使う場合：`python -m venv .venv` で作成して有効化し、`pip install -e ".[api]"`（または `pip install -e ".[test,offline]"`）を実行します。
 
-# フロントエンド成果物のビルド
+**ステップ 3 — WebUI のビルド**
+
+```bash
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
+```
 
-# env ファイルのセットアップ
-make env-base  # または: cp env.example .env して手動で更新
-# API-WebUI サーバーの起動
+> `make dev` はステップ 2 のオプション B とステップ 3 を 1 コマンドで実行します。実行済みの場合はステップ 4 に進んでください。
+
+**ステップ 4 — `.env` の作成。** 対話式ウィザード `make env-base` を実行するか（[セットアップツールによる .env ファイルの作成](#セットアップツールによる-env-ファイルの作成)を参照）、テンプレートをコピーして手動で編集します（[.env の最小限の変更](#env-の最小限の変更)を参照）：
+
+```bash
+cp env.example .env
+```
+
+**ステップ 5 — サーバーの起動**
+
+```bash
 lightrag-server
 ```
 
-* Docker Compose による LightRAG サーバーの起動
+ブラウザで `http://localhost:9621/webui` を開くと WebUI が表示されます。対話式の REST API ドキュメントは `http://localhost:9621/docs` です。`HOST` / `PORT` を変更した場合は、そのアドレスとポートに置き換えてください。
+
+### Docker Compose で起動
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env  # .env を自分の LLM・埋め込み設定で更新
-# .env で LLM と埋め込みの設定を変更
+cp env.example .env  # 先に編集してください：下記「.env の最小限の変更」を参照
 docker compose up
 ```
 
@@ -200,6 +216,22 @@ docker compose up
 > GitHub Actions により公開された公式 GHCR イメージは、GitHub OIDC を用いた Sigstore Cosign で署名されています。検証コマンドについては [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) を参照してください。
 >
 > Apple Silicon（macOS 26）では、Docker Desktop なしで、同じ Postgres/Neo4j/Milvus ストレージスタックを Apple ネイティブの `container` ランタイム上で実行できます。詳細は [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md) を参照してください。
+
+### .env の最小限の変更
+
+`env.example` はそのまま動作します。ローカルのファイルベースストレージ、リランカーなし、組み込みのドキュメントパーサーを使うため、データベースや追加サービスは不要で、設定が必要なのはモデルだけです。デフォルトの OpenAI モデルを使う場合：
+
+| 変数 | 対応 |
+|---|---|
+| `LLM_BINDING_API_KEY` | **必須。** OpenAI API キーを設定 |
+| `EMBEDDING_BINDING_API_KEY` | **必須。** OpenAI API キーを設定（上と同じキーで可） |
+| `OPENAI_LLM_REASONING_EFFORT` | **推奨。** コメントを外して `low` のままにします。デフォルトモデル `gpt-6-luna` は推論モデルで、API のデフォルト推論強度は `medium` です。そのままではエンティティ抽出（テキストチャンクごとに LLM を 1 回呼び出し）が大幅に遅く、高価になります |
+
+他のプロバイダーを使う場合は、`LLM_BINDING_HOST` と `LLM_MODEL`（OpenAI 互換 API なら `LLM_BINDING=openai` のまま）、さらに `EMBEDDING_BINDING_HOST`、`EMBEDDING_MODEL`、`EMBEDDING_DIM` も設定してください。`EMBEDDING_DIM` は埋め込みモデルの出力次元と一致させる必要があります。モデルの選び方は[主要な設定ガイド](#主要な設定ガイド)を参照してください。
+
+> **最初のアップロードの前に埋め込みモデルを決めてください。** 後から変更すると、すべてのドキュメントの再インデックスが必要になります（[埋め込みモデル](#埋め込みモデル)を参照）。
+
+**次のステップ：** サーバーが動いたら、[Exploring LightRAG](./docs/ExploreLightRAG.md)（[🇨🇳](./docs/ExploreLightRAG-zh.md)）で残りの機能を 1 つずつ実測結果付きで有効化できます：PostgreSQL ストレージ、認証、ロール別 LLM、リランク、画像解析、Word のスマート見出し、MinerU、並行処理の調整。
 
 ### セットアップツールによる .env ファイルの作成
 
@@ -223,6 +255,8 @@ Native docx パーサーのオプトイン式エンジンパラメータ `smart_
 ```bash
 lightrag-download-cache --spacy-install
 ```
+
+> `uv sync` で作成した環境（pip を含まない）では、このコマンドは代わりに `uv pip install` でインストールします。モデルは `uv.lock` に含まれないため、通常の `uv sync` を実行すると削除されます。インストール後は `uv sync --inexact` を使用して保持してください。
 
 smart_heading はファイル / ルール単位（例：`LIGHTRAG_PARSER=docx:native(smart_heading=true)`）でも、`.env` でグローバルにも有効化できます：
 
@@ -289,7 +323,8 @@ LightRAG のワークフローでは、4つの異なるロールの LLM/VLM を�
 
 **ロール別の推奨モデル：**
 
-- **抽出 LLM（`EXTRACT`）**：エンティティ・関係抽出は各テキストチャンクに対して実行されるため、高速でコスト効率に優れた一般的なモデルで十分です。抽出処理の低速化やコスト増加を避けるため、**非思考モデル（reasoning/thinking モードを無効化）**を強く推奨します。海外サービスでは GPT-5.6-luna、Claude Haiku、Gemini-mini、中国国内では DeepSeek-V4-lite、Kimi が選択肢となります。ローカルデプロイでは、最低ラインとして Qwen3-30B-A3B-Instruct を検討できます。
+- **抽出 LLM（`EXTRACT`）**：エンティティ・関係抽出は各テキストチャンクに対して実行されるため、高速でコスト効率に優れた一般的なモデルで十分です。抽出処理の低速化やコスト増加を避けるため、**非思考モデル（reasoning/thinking モードを無効化）**を強く推奨します。海外サービスでは GPT-6 Luna、Claude Haiku、Gemini-mini、中国国内では DeepSeek-V4-lite、Kimi が選択肢となります。ローカルデプロイでは、最低ラインとして Qwen3-30B-A3B-Instruct を検討できます。
+  OpenAI のデフォルト `gpt-6-luna`（推論モデル）を使う場合は、`OPENAI_LLM_REASONING_EFFORT=low` を設定して抽出を高速かつ低コストに保ってください（[.env の最小限の変更](#env-の最小限の変更)を参照）。
 - **クエリ LLM（`QUERY`）**：長くノイズを含む取得コンテキストから最終回答を生成するため、回答品質を最大限に高められるよう、抽出モデルよりも*高性能*なモデルを選択してください。このロールでは、思考機能を備えたモデルを使用しても問題ありません。
 - **キーワード LLM（`KEYWORD`）**：軽量かつレイテンシに敏感な処理であるため、クエリの遅延を抑えるには**必ず非思考モデルを使用してください**。抽出モデルと同等の高速なモデルで十分です。
 - **VLM（`VLM`）**：画像入力に対応する一般的なマルチモーダルモデルであれば使用できます。ローカルデプロイでは Qwen3.6-35B-A3B を検討できます。
@@ -310,7 +345,7 @@ LightRAG のデフォルトのクエリモードは `mix` です。`mix` モー�
 
 ### 埋め込みモデル
 
-埋め込みモデルを選ぶ際は、その多言語サポート能力に注意してください。LightRAG の検索品質は埋め込みモデルへの依存度が限定的であるため、低次元で高速なモデルを選ぶことを推奨します。通常、`BAAI/bge-m3` で十分です。最良のパフォーマンスを得るため、埋め込みモデルをローカルにデプロイすることを強く推奨します。
+埋め込みモデルを選ぶ際は、その多言語サポート能力に注意してください。LightRAG の検索品質は埋め込みモデルへの依存度が限定的であるため、低次元で高速なモデルを選ぶことを推奨します。`env.example` のデフォルトである OpenAI `text-embedding-3-large`（3072 次元）は多言語品質を重視しています。`text-embedding-3-small`（1536 次元、`EMBEDDING_DIM=1536` を設定）はより安価で高速です。通常、`BAAI/bge-m3` で十分です。最良のパフォーマンスを得るため、埋め込みモデルをローカルにデプロイすることを強く推奨します。
 
 **重要な注記**: 埋め込みモデルはドキュメントのインデックス作成前に確定する必要があり、クエリ段階でも同じモデルを使用しなければなりません。一度選択すると、埋め込みモデルは一般に変更できません。変更した場合は、すべてのテキストチャンク、エンティティ、関係を再埋め込みする必要があります。LightRAG は現在、再埋め込みツールを提供していません。一部のストレージバックエンド（例: PostgreSQL）では、テーブルの初回作成時にベクトル次元を定義する必要があるため、埋め込みモデルを変更するにはベクトル関連テーブルを削除し、LightRAG が再作成できるようにする必要があります。
 
@@ -494,6 +529,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 | ドキュメント | 内容 |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | デフォルト構成から本番運用まで：PostgreSQL、認証、ロール別 LLM、リランク、VLM、スマート見出し、MinerU、並行処理を実測結果付きで段階的に設定 |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | `make env-*` セットアップウィザード：`.env` およびウィザード管理下の `docker-compose.final.yml` の生成 |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose によるデプロイ、イメージの種類、公式 GHCR イメージの Cosign 検証 |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Apple ネイティブの `container` ランタイムで Postgres / Neo4j / Milvus のストレージスタックを動かす方法（Apple Silicon、Docker Desktop 不要） |

@@ -13,6 +13,9 @@ from lightrag.utils import is_truncated_response
 from tests._log_capture import capture_lightrag_logs
 
 
+pytestmark = pytest.mark.offline
+
+
 def _make_completion(
     content: str,
     finish_reason: str = "stop",

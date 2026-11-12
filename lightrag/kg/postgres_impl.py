@@ -369,6 +369,53 @@ _VECTOR_INDEX_SUFFIXES = [
 ]
 
 
+# pgvector refuses to build these index types above these dimensions. VCHORDRQ
+# is absent: VectorChord's own limit is far above any embedding model.
+_VECTOR_INDEX_MAX_DIMS = {
+    "HNSW": 2000,
+    "IVFFLAT": 2000,
+    "HNSW_HALFVEC": 4000,
+}
+
+
+def _check_vector_index_dimension(index_type: str | None, embedding_dim: int) -> None:
+    """Refuse an index type that pgvector cannot build for this dimension.
+
+    Must run before any DDL touches the vector table: index creation drops
+    the other index types first, so a doomed CREATE INDEX would leave the
+    table with no ANN index at all and every query on a sequential scan.
+
+    Raises:
+        ValueError: ``embedding_dim`` exceeds the index type's limit.
+    """
+    if not index_type:
+        return
+    limit = _VECTOR_INDEX_MAX_DIMS.get(index_type.upper())
+    if limit is None or embedding_dim <= limit:
+        return
+    # Chosen by the dimension, not by the refused type's limit: HNSW at 4096
+    # dimensions must not be sent to HNSW_HALFVEC, which refuses it too.
+    if embedding_dim <= _VECTOR_INDEX_MAX_DIMS["HNSW_HALFVEC"]:
+        hint = (
+            "Set POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC (up to 4000 "
+            "dimensions, pgvector >= 0.7.0). On a table that already holds "
+            "vectors, the switch converts them in place to 16-bit floats, a "
+            "precision loss that switching back cannot undo; back up first if "
+            "that matters. Otherwise use VCHORDRQ (VectorChord extension) or "
+            "an embedding model with at most 2000 dimensions."
+        )
+    else:
+        hint = (
+            "Use POSTGRES_VECTOR_INDEX_TYPE=VCHORDRQ (VectorChord extension), "
+            "or an embedding model with at most 4000 dimensions together "
+            "with HNSW_HALFVEC."
+        )
+    raise ValueError(
+        f"POSTGRES_VECTOR_INDEX_TYPE={index_type} supports at most {limit} "
+        f"dimensions, but the embedding model produces {embedding_dim}. {hint}"
+    )
+
+
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
     """
     Generate a PostgreSQL-safe index name that won't be truncated.
@@ -2449,9 +2496,11 @@ class PostgreSQLDB:
             if k in vector_tables_to_skip:
                 continue
 
-            try:
-                await self.query(f"SELECT 1 FROM {k} LIMIT 1")
-            except Exception:
+            # Probe with to_regclass rather than selecting from the table: a
+            # failed SELECT goes through query(), which logs an ERROR, so a
+            # fresh database would report every missing table as an error
+            # right before creating it.
+            if not await self.check_table_exists(k):
                 try:
                     logger.info(f"PostgreSQL, Try Creating table {k} in database")
                     await self.execute(v["ddl"])
@@ -2798,6 +2847,8 @@ class PostgreSQLDB:
                 "Supported types: HNSW, HNSW_HALFVEC, IVFFLAT, VCHORDRQ"
             )
             return
+        # Outside the try below, which logs and swallows DDL failures.
+        _check_vector_index_dimension(self.vector_index_type, embedding_dim)
 
         k = table_name
         # Use _safe_index_name to avoid PostgreSQL's 63-byte identifier truncation
@@ -4285,6 +4336,11 @@ class PGVectorStorage(BaseVectorStorage):
                 f"embedding_dim must be provided to create or migrate "
                 f"'{table_name}': the configured embedding function declares none."
             )
+        # Before any table is created or migrated, for the same reason as the
+        # guard above: a configuration error must not leave a half-built table.
+        _check_vector_index_dimension(
+            getattr(db, "vector_index_type", None), embedding_dim
+        )
 
         new_table_exists = await db.check_table_exists(table_name)
         legacy_exists = legacy_table_name and await db.check_table_exists(
