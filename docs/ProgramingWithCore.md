@@ -1980,6 +1980,71 @@ The deletion process:
 4. Update all related vector indexes
 5. Clean up document status records
 
+### Update Chunks in a Document
+
+Adds, removes or replaces some of a processed document's chunks and keeps the
+rest, so a small change to a large document does not need a delete and a full
+re-insert. Only the changed chunks are extracted. An entity or relation the
+removed chunks fed is deleted when they were its only sources, and rebuilt from
+its surviving chunks otherwise.
+
+```python
+# Add: returns one generated chunk id per text, in order
+ids = await rag.aadd_chunks_to_doc("doc-12345", ["Rent is $2,000 per month."])
+
+# Replace one chunk's text: returns the id of the chunk now holding it
+new_id = await rag.amodify_chunk_in_doc(
+    "doc-12345", ids[0], "Rent is $2,150 per month."
+)
+
+# Remove: ids the document does not own are skipped
+result = await rag.adelete_chunks_from_doc("doc-12345", [new_id])
+
+# Synchronous forms: add_chunks_to_doc, modify_chunk_in_doc, delete_chunks_from_doc
+```
+
+Chunk ids are generated from the document id and the text
+(`lightrag.utils_pipeline.make_custom_chunk_id`), so the same text in two
+documents never shares a chunk, and a caller that knows a chunk's text can
+recompute its id. Store the ids `aadd_chunks_to_doc` returns, or recompute
+them; there is no way to choose them.
+
+**`aadd_chunks_to_doc`** only extends an existing `PROCESSED` document and
+never creates one. Text the document already holds is not added again; its
+existing chunk id is returned instead. New chunks are numbered after the
+document's existing ones. It runs as a custom-chunk patch, so a failure leaves
+the document `FAILED` with the operation journaled: repeating the call resumes
+it, and `/documents/scan` rolls it back. It raises `RuntimeError` when refused.
+
+**`amodify_chunk_in_doc`** adds the new text first and then removes the old
+chunk, so a failure between the two leaves both versions, never neither.
+Repeating the call finishes the job, and a repeat after success returns the
+same id. New text equal to the old is a no-op. Modifies of one document run one
+at a time, so of two concurrent modifies of the same chunk, the second fails
+instead of leaving a second replacement. A query that runs between the two
+halves can briefly see both versions. It raises
+`ValueError` for empty text or a chunk the document does not hold, and
+`RuntimeError` when either half is refused or fails; the message says whether
+the new chunk was already added.
+
+**`adelete_chunks_from_doc`** returns a `DeletionResult` and does not raise for
+the cases below. `delete_llm_cache=True` also drops the removed chunks'
+extraction cache.
+
+| Result | When |
+|---|---|
+| `success` / 200 | Deleted, or nothing to delete (repeating a finished call is a no-op) |
+| `not_found` / 404 | No such document |
+| `not_allowed` / 409 | Document not `PROCESSED`, or it has an unfinished custom-chunk operation or document deletion |
+| `not_allowed` / 403 | The pipeline is busy (ingestion, scan or another delete). Retry when idle |
+| `fail` / 409 | Recovery anchors unusable; nothing was deleted. Run `audit_kg_integrity(..., apply=True)` first |
+| `fail` / 500 | Failed part-way; the document stays `PROCESSED`. Repeat the same call |
+
+`full_docs` keeps the original text, so a later whole-document reprocess
+re-chunks it and the removed content returns, the same way it drops chunks a
+custom-chunk patch added. The ordering and crash behavior are specified in
+[PurgeRecoveryContract.md](design/PurgeRecoveryContract.md#chunk-level-deletion).
+
 **Important Reminders:**
 1. All deletion operations are **irreversible** — use with caution
 2. Deleting large amounts of data may take time, especially deletion by document ID
