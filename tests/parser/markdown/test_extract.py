@@ -14,6 +14,7 @@ import tracemalloc
 
 import pytest
 
+from lightrag.parser.markdown import extract as extract_module
 from lightrag.parser.markdown.extract import (
     PREFACE_HEADING,
     ResolvedImage,
@@ -117,6 +118,31 @@ class _StubResolver:
             suggested_name="img.png",
             fmt="png",
         )
+
+
+def _scan_time_ratio(small: str, large: str) -> float:
+    """How much longer ``large`` takes to scan than ``small``.
+
+    Timing on a shared machine is noisy in one direction only: a scan can be
+    delayed, never sped up. So each line is timed by its fastest scan, and the
+    lowest ratio of a few attempts is returned. An eightfold input that
+    scanned quadratically would still give about 64 every time.
+    """
+
+    def fastest(line: str) -> float:
+        best = float("inf")
+        for _ in range(5):
+            started = time.perf_counter()
+            _replace_inline_images(line, lambda src: src)
+            best = min(best, time.perf_counter() - started)
+        return best
+
+    ratio = float("inf")
+    for _ in range(3):
+        ratio = min(ratio, fastest(large) / max(fastest(small), 1e-9))
+        if ratio < 12:
+            break
+    return ratio
 
 
 def _extract(md: str):
@@ -781,31 +807,19 @@ def test_inline_image_scanner_memory_stays_bounded(line):
         "![](a (",
     ],
 )
-def test_parenthesis_matching_scales_linearly_for_malformed_candidates(unit):
-    def elapsed(repetitions: int) -> float:
-        line = unit * repetitions
-        started = time.perf_counter()
-        for _ in range(5):
-            _replace_inline_images(line, lambda src: src)
-        return time.perf_counter() - started
-
-    small = elapsed(1_024)
-    large = elapsed(8_192)
-    assert large / max(small, 1e-9) < 16
+def test_parenthesis_matching_scales_linearly_for_malformed_candidates(
+    unit, monkeypatch
+):
+    # A small window, so that both sizes span many windows and their cost
+    # per candidate is comparable.
+    monkeypatch.setattr(extract_module, "_PAREN_SOURCE_MAX_CHARS", 64)
+    assert _scan_time_ratio(unit * 1_024, unit * 8_192) < 16
 
 
 def test_parenthesis_window_rebuilds_scale_linearly():
     # Every candidate lies beyond the previous window, so each one rebuilds it.
-    def elapsed(repetitions: int) -> float:
-        line = ("![](a(" + "x" * 5_000) * repetitions
-        started = time.perf_counter()
-        for _ in range(3):
-            assert _replace_inline_images(line, lambda src: src) == line
-        return time.perf_counter() - started
-
-    small = elapsed(32)
-    large = elapsed(256)
-    assert large / max(small, 1e-9) < 16
+    unit = "![](a(" + "x" * 5_000
+    assert _scan_time_ratio(unit * 32, unit * 256) < 16
 
 
 @pytest.mark.parametrize(
@@ -819,17 +833,9 @@ def test_parenthesis_window_rebuilds_scale_linearly():
     ],
 )
 def test_lenient_retry_scales_linearly_for_malformed_candidates(unit):
-    def elapsed(repetitions: int) -> float:
-        # ... which all share the source start after this suffix.
-        line = unit * repetitions + "](a ( b.png)"
-        started = time.perf_counter()
-        for _ in range(5):
-            _replace_inline_images(line, lambda src: src)
-        return time.perf_counter() - started
-
-    small = elapsed(1_024)
-    large = elapsed(8_192)
-    assert large / max(small, 1e-9) < 16
+    # ... which all share the source start after this suffix.
+    suffix = "](a ( b.png)"
+    assert _scan_time_ratio(unit * 1_024 + suffix, unit * 8_192 + suffix) < 16
 
 
 def test_inline_image_scanner_matches_reference_grammar_for_short_inputs():
