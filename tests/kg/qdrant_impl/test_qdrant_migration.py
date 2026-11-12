@@ -98,6 +98,14 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
 
     def count_mock(collection_name, exact=True, count_filter=None):
         mock_result = MagicMock()
+        if count_filter and any(
+            getattr(condition, "key", None) == "_lightrag_pending_migration"
+            for condition in (count_filter.must or [])
+        ):
+            # These pre-existing scenarios contain no interrupted migration.
+            # Their old total-count mock must not also answer a pending query.
+            mock_result.count = 0
+            return mock_result
         if collection_name == legacy_collection:
             mock_result.count = 100
         elif collection_name == storage.final_namespace:
@@ -308,6 +316,14 @@ async def test_scenario_2_legacy_upgrade_migration(
 
     def count_mock(collection_name, exact=True, count_filter=None):
         mock_result = MagicMock()
+        if count_filter and any(
+            getattr(condition, "key", None) == "_lightrag_pending_migration"
+            for condition in (count_filter.must or [])
+        ):
+            # These pre-existing scenarios contain no interrupted migration.
+            # Their old total-count mock must not also answer a pending query.
+            mock_result.count = 0
+            return mock_result
         if collection_name == legacy_collection:
             mock_result.count = 150
         elif collection_name == new_collection:
@@ -474,6 +490,14 @@ async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embeddin
     # Mock: Legacy collection is empty (0 records)
     def count_mock(collection_name, exact=True, count_filter=None):
         mock_result = MagicMock()
+        if count_filter and any(
+            getattr(condition, "key", None) == "_lightrag_pending_migration"
+            for condition in (count_filter.must or [])
+        ):
+            # These pre-existing scenarios contain no interrupted migration.
+            # Their old total-count mock must not also answer a pending query.
+            mock_result.count = 0
+            return mock_result
         if collection_name == legacy_collection:
             mock_result.count = 0  # Empty legacy collection
         else:
@@ -543,6 +567,14 @@ async def test_case1_nonempty_legacy_warning(mock_qdrant_client, mock_embedding_
     # Mock: Legacy collection has data (50 records)
     def count_mock(collection_name, exact=True, count_filter=None):
         mock_result = MagicMock()
+        if count_filter and any(
+            getattr(condition, "key", None) == "_lightrag_pending_migration"
+            for condition in (count_filter.must or [])
+        ):
+            # These pre-existing scenarios contain no interrupted migration.
+            # Their old total-count mock must not also answer a pending query.
+            mock_result.count = 0
+            return mock_result
         if collection_name == legacy_collection:
             mock_result.count = 50  # Legacy has data
         else:

@@ -36,6 +36,7 @@ WORKSPACE_ID_FIELD = "workspace_id"
 ENTITY_PREFIX = "ent-"
 CREATED_AT_FIELD = "created_at"
 ID_FIELD = "id"
+MIGRATION_PENDING_FIELD = "_lightrag_pending_migration"
 DEFAULT_QDRANT_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_QDRANT_UPSERT_MAX_POINTS_PER_BATCH = 128
 DEFAULT_QDRANT_DELETE_MAX_POINTS_PER_BATCH = 1000
@@ -70,6 +71,34 @@ def compute_mdhash_id_for_qdrant(
         return f"urn:uuid:{generated_uuid}"
     else:
         raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
+
+
+def _pending_migration_filter(workspace: str) -> models.Filter:
+    return models.Filter(
+        must=[
+            workspace_filter_condition(workspace),
+            models.FieldCondition(
+                key=MIGRATION_PENDING_FIELD, match=models.MatchValue(value=True)
+            ),
+        ]
+    )
+
+
+def _refuse_pending_migration(client, collection_name: str, workspace: str) -> None:
+    """Do not accept a partially copied workspace after a failed startup."""
+    pending = client.count(
+        collection_name=collection_name,
+        count_filter=_pending_migration_filter(workspace),
+        exact=True,
+    ).count
+    if pending:
+        raise DataMigrationError(
+            f"Qdrant collection '{collection_name}', workspace '{workspace}' "
+            "has an unfinished legacy migration. Stop all writers and preserve "
+            "the legacy source before recovering the unpublished target. "
+            "Do not clear the pending marker or use storage.drop(): drop also "
+            "deletes legacy data. See docs/design/QdrantMigrationRecovery.md."
+        )
 
 
 def _normalize_qdrant_point_id(point_id: Any) -> str:
@@ -222,6 +251,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
 
         new_collection_exists = client.collection_exists(collection_name)
+        if new_collection_exists:
+            # Strict-mode servers may reject filters on unindexed fields.
+            # Provision the boolean index before the first pending-state read.
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=MIGRATION_PENDING_FIELD,
+                field_schema=models.PayloadSchemaType.BOOL,
+                wait=True,
+            )
+            _refuse_pending_migration(client, collection_name, workspace)
         legacy_collection = _find_legacy_collection(
             client, namespace, workspace, model_suffix
         )
@@ -320,6 +359,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
             client.create_collection(
                 collection_name, vectors_config=vectors_config, hnsw_config=hnsw_config
+            )
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=MIGRATION_PENDING_FIELD,
+                field_schema=models.PayloadSchemaType.BOOL,
+                wait=True,
             )
             logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
             if not legacy_collection:
@@ -448,6 +493,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         # Set workspace_id in payload
                         new_payload = dict(point.payload or {})
                         new_payload[WORKSPACE_ID_FIELD] = workspace
+                        # Persist progress with every copied point, not in
+                        # process memory. A failed batch may already be durable.
+                        new_payload[MIGRATION_PENDING_FIELD] = True
 
                         # Create new point with workspace-prefixed ID
                         original_id = new_payload.get(ID_FIELD)
@@ -495,6 +543,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     )
                     logger.error(error_msg)
                     raise DataMigrationError(error_msg)
+
+                # Only verified copies may lose the pending indication. A lost
+                # response or partial payload update remains safe: restart
+                # refuses whenever even one marked point is still present.
+                client.delete_payload(
+                    collection_name=collection_name,
+                    keys=[MIGRATION_PENDING_FIELD],
+                    points=_pending_migration_filter(workspace),
+                    wait=True,
+                )
+                _refuse_pending_migration(client, collection_name, workspace)
 
             except DataMigrationError:
                 # Re-raise DataMigrationError as-is to preserve specific error messages
