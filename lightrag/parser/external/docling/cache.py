@@ -269,6 +269,14 @@ def is_bundle_valid(
     #    case keeps the deliberate leniency above for legacy bundles.
     if overrides and not manifest.options_signature:
         return False
+    #    An unsigned bundle can only be standard-pipeline output (every VLM
+    #    bundle records a signature), so it must miss under any other pipeline;
+    #    the lenient legacy hit is kept for the standard pipeline only.
+    if (
+        not manifest.options_signature
+        and resolve_docling_pipeline() != DEFAULT_DOCLING_PIPELINE
+    ):
+        return False
     if manifest.options_signature:
         from lightrag.parser.external.docling.client import fixed_constants_for
 
