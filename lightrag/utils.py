@@ -1265,9 +1265,6 @@ def priority_limit_async_func_call(
         shutdown_event = asyncio.Event()
         initialized = False
         accepting_new_tasks = True
-        # Set once shutdown starts cancelling by force. From then on the
-        # worker's own cancellation is the single cancel a running call gets.
-        forced_shutdown = False
         worker_health_check_task = None
 
         # Enhanced task state management
@@ -1565,13 +1562,17 @@ def priority_limit_async_func_call(
             # kwarg which needs 3.11+).
             exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
 
-            # A running call is cancelled at most once by the two sources
-            # below (the caller abandoning it, the execution timeout). A
-            # second cancel would land in the cleanup the first one started
-            # (an async finally / __aexit__ closing the provider client) and
-            # abort it. Whichever source fires first wins; the other is a
-            # no-op. This is why the timeout is a timer owned here instead of
-            # asyncio.wait_for, which cancels without telling anyone.
+            # A running call has three cancellation sources: the caller
+            # abandoning it, the execution timeout, and the worker being
+            # cancelled by a forced shutdown. All three go through
+            # cancel_once, so the call is cancelled once: a second cancel
+            # would land in the cleanup the first one started (an async
+            # finally / __aexit__ closing the provider client) and abort it.
+            # This is why the timeout is a timer owned here rather than
+            # asyncio.wait_for, and why the await below is shielded: both
+            # would otherwise cancel the call without consulting the guard.
+            # The one exception is a worker cancelled while the call is
+            # already unwinding: it waits cleanup_timeout, then forces.
             cancel_sent = False
             timed_out = False
 
@@ -1584,9 +1585,7 @@ def priority_limit_async_func_call(
                 return True
 
             def cancel_execution(future):
-                # A forced shutdown cancels the result future AND the worker;
-                # the worker's cancellation is the one cancel the call gets.
-                if future.cancelled() and not forced_shutdown:
+                if future.cancelled():
                     cancel_once()
 
             def expire_execution():
@@ -1601,8 +1600,22 @@ def priority_limit_async_func_call(
                     max_execution_timeout, expire_execution
                 )
             try:
-                return await exec_task
+                return await asyncio.shield(exec_task)
             except asyncio.CancelledError:
+                if not exec_task.done():
+                    # The call is still running, so this is the worker
+                    # itself being cancelled (a forced shutdown).
+                    if not cancel_once():
+                        # Already unwinding from an earlier cancel: let the
+                        # cleanup finish, and force it only if it overruns.
+                        await asyncio.wait({exec_task}, timeout=cleanup_timeout)
+                        if not exec_task.done():
+                            exec_task.cancel()
+                    # The worker holds the call's slot until the call is gone.
+                    await asyncio.wait({exec_task})
+                    if not exec_task.cancelled():
+                        exec_task.exception()  # mark retrieved
+                    raise
                 # Report the timeout only when it is what cancelled the call.
                 if timed_out and exec_task.cancelled():
                     raise asyncio.TimeoutError from None
@@ -2188,7 +2201,7 @@ def priority_limit_async_func_call(
             cancellation so shutdown never blocks indefinitely.
             """
             nonlocal accepting_new_tasks, initialized, worker_health_check_task
-            nonlocal pump_task, forced_shutdown
+            nonlocal pump_task
             logger.info(f"{queue_name}: Shutting down priority queue workers")
 
             if use_global_limit:
@@ -2219,11 +2232,6 @@ def priority_limit_async_func_call(
                     )
 
             if not graceful or drain_timed_out:
-                # Must precede the future cancellations below: their done
-                # callbacks run at the next suspension point (the slot pump
-                # await), before the workers are cancelled.
-                forced_shutdown = True
-
                 # Cancel all active futures
                 for future in list(active_futures):
                     if not future.done():

@@ -1082,6 +1082,111 @@ async def test_forced_shutdown_cancels_running_call_once(
 
 
 @pytest.mark.parametrize("global_limit", [False, True])
+@pytest.mark.parametrize("drain_timeout", [None, 0.1])
+async def test_forced_shutdown_lets_an_abandoned_call_finish_cleanup(
+    global_limit, drain_timeout
+):
+    """A call its caller already cancelled is unwinding when a forced
+    shutdown cancels the worker. The worker must not cancel it again: it
+    waits for the cleanup, which finishes well inside cleanup_timeout."""
+    _init({GROUP: 1} if global_limit else None)
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleanup = {"finished": False, "interrupted": 0}
+
+    async def func():
+        entered.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            cleaning.set()
+            try:
+                await asyncio.sleep(0.3)
+                cleanup["finished"] = True
+            except asyncio.CancelledError:
+                cleanup["interrupted"] += 1
+                raise
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        queue_name="abandoned then shutdown",
+        concurrency_group=GROUP if global_limit else None,
+    )(func)
+    call = asyncio.create_task(wrapped())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.wait_for(cleaning.wait(), timeout=2.0)
+
+        if drain_timeout is None:
+            await wrapped.shutdown(graceful=False)
+        else:
+            await wrapped.shutdown(graceful=True, timeout=drain_timeout)
+
+        # shutdown() waits for its workers, so the cleanup is already over.
+        assert cleanup == {"finished": True, "interrupted": 0}
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(call, return_exceptions=True)
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
+async def test_forced_shutdown_forces_a_call_stuck_in_cleanup(global_limit):
+    """The single-cancel rule must not let a stuck cleanup hold a forced
+    shutdown hostage: after cleanup_timeout the call is cancelled again."""
+    _init({GROUP: 1} if global_limit else None)
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleanup = {"finished": False, "interrupted": 0}
+    cleanup_timeout = 0.3
+
+    async def func():
+        entered.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            cleaning.set()
+            try:
+                await asyncio.sleep(30)  # cleanup that never ends in time
+                cleanup["finished"] = True
+            except asyncio.CancelledError:
+                cleanup["interrupted"] += 1
+                raise
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        queue_name="stuck cleanup",
+        cleanup_timeout=cleanup_timeout,
+        concurrency_group=GROUP if global_limit else None,
+    )(func)
+    call = asyncio.create_task(wrapped())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.wait_for(cleaning.wait(), timeout=2.0)
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait_for(wrapped.shutdown(graceful=False), timeout=5.0)
+        elapsed = loop.time() - started
+
+        # The cleanup got its grace period, then was forced.
+        assert elapsed >= cleanup_timeout * 0.8
+        assert cleanup == {"finished": False, "interrupted": 1}
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(call, return_exceptions=True)
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
 async def test_execution_timeout_fails_the_call_and_frees_the_worker(global_limit):
     """max_execution_timeout alone: the caller gets a TimeoutError naming the
     worker timeout, the call counts as failed, and the worker is reusable."""
