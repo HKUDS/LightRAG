@@ -5839,6 +5839,13 @@ def sanitize_and_normalize_extracted_text(
     Returns:
         Sanitized and normalized text string
     """
+    if multiline and input_text:
+        # Vertical tab (a soft line break in a PowerPoint text box) and form
+        # feed are control characters the sanitizer deletes. In free text they
+        # are line breaks, so convert them first. In a single-line value they
+        # stay deleted: turning them into a space would split a name the
+        # current rule already merges (see normalize_extracted_info).
+        input_text = input_text.replace("\v", "\n").replace("\f", "\n")
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
         normalized_text = normalize_extracted_info(
@@ -5859,14 +5866,15 @@ def normalize_extracted_info(
     name: str, remove_inner_quotes=False, *, multiline: bool = False
 ) -> str:
     """Normalize entity/relation names and description with the following rules:
-    - Replace paragraph and line break tags (``<p>``, ``</p>``, ``<br>``,
-      ``<br/>``, ``<br />`` ...) with a line break when ``multiline`` is set,
-      otherwise with a space
-    - multiline = False (names, types, keywords): collapse every run of ASCII
-      whitespace, line breaks and tabs included, into one space, so a value
-      never carries a line break and one spelling maps to one identifier
-    - multiline = True (descriptions): keep line breaks, drop the spaces and
-      tabs around them, and allow at most one blank line in a row
+    - Paragraph and line break tags (``<p>``, ``</p>``, ``<br>``, ``<br/>``,
+      ``<br />`` ...): removed in a single-line value, a line break when
+      ``multiline`` is set
+    - multiline = False (names, types, keywords): as the last step, collapse
+      every run of spaces, tabs and line breaks (``\\n``, ``\\r``, U+0085,
+      U+2028, U+2029) into one space, so a value never carries a line break
+    - multiline = True (descriptions): those line breaks, vertical tab and
+      form feed become ``\\n``; spaces and tabs around a line break are
+      dropped, and at most one blank line is kept in a row
     - Convert Chinese symbols to English symbols
     - Remove spaces between Chinese characters
     - Remove spaces between Chinese characters and English letters/numbers
@@ -5893,19 +5901,22 @@ def normalize_extracted_info(
 
     Returns:
         Normalized entity name
+
+    A change to what a single-line value normalizes to may only MERGE names
+    that used to differ, never split names that used to be equal: rebuilding
+    an entity after a document deletion re-parses the cached LLM output with
+    the current rules and matches it by the stored name, so a split drops the
+    facts of the records that no longer match. See "Entity name normalization
+    changes" in docs/design/PurgeRecoveryContract.md.
     """
     # Paragraph and line break tags stand for a line break: the delimited
     # extraction format is one record per line, so an LLM cannot emit a real
-    # one. Turn them into a line break in free text and a space elsewhere; an
-    # empty replacement would glue "Acme<br>Corp" into "AcmeCorp". A
-    # self-closing tag may have a space before its slash (<br />, <p />).
-    #
-    # Accepted residue: a name stored by an older normalizer (glued, or with a
-    # raw line break or a double space) is not migrated, so a new extraction of
-    # the same entity lands on a second node. It is harmless in direction (an
-    # extra node, nothing lost); manual edits and merges still reach the old
-    # node because they try the exact spelling before the normalized one.
-    tag_replacement = "\n" if multiline else " "
+    # one. In free text they become one. In a single-line value they are
+    # removed, which glues "Acme<br>Corp" into "AcmeCorp": a space would read
+    # better, but it would split "Acme<br>Corp" from a stored "AcmeCorp" (see
+    # the merge-only rule in the docstring). A self-closing tag may have a
+    # space before its slash (<br />, <p />).
+    tag_replacement = "\n" if multiline else ""
     name = re.sub(r"</p\s*>|<p\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
     name = re.sub(r"</br\s*>|<br\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
 
@@ -5935,16 +5946,15 @@ def normalize_extracted_info(
     # Chinese full-width space to regular space (after other replacements)
     name = name.replace("　", " ")
 
-    # Line breaks and runs of whitespace (ASCII only: the non-breaking space
-    # rules below stay in charge of U+00A0 / U+202F). Strip here as well, so
-    # the outer-quote removal below still sees a quote a tag sat next to.
+    # Free text: one spelling for every line break, no spaces around one, at
+    # most one blank line in a row. Strip here, so the outer-quote removal
+    # below still sees a quote a tag sat next to. Single-line values are
+    # collapsed at the very end instead, which keeps the merge-only rule.
     if multiline:
-        name = name.replace("\r\n", "\n").replace("\r", "\n")
-        name = re.sub(r"[ \t\f\v]*\n[ \t\f\v]*", "\n", name)
+        name = re.sub(r"\r\n?|[\v\f\x85\u2028\u2029]", "\n", name)
+        name = re.sub(r"[ \t]*\n[ \t]*", "\n", name)
         name = re.sub(r"\n{3,}", "\n\n", name)
-    else:
-        name = re.sub(r"[ \t\n\r\f\v]+", " ", name)
-    name = name.strip()
+        name = name.strip()
 
     # In free text only horizontal whitespace is a "space" to remove below: a
     # line break between two Chinese characters is content and stays.
@@ -6005,6 +6015,14 @@ def normalize_extracted_info(
         name = name.replace("\u00a0", " ")
         # Convert narrow non-breaking space to regular space when after non-digits
         name = re.sub(r"(?<=[^\d])\u202F", " ", name)
+
+    # Single-line value: collapse spaces, tabs and line breaks into one space.
+    # This runs last, after the non-breaking space conversions, so its result
+    # is a function of what the previous rules produced: it only merges names,
+    # and a second pass finds no whitespace left to change. U+00A0 / U+202F
+    # are left to the rules above (a U+202F after a digit is kept on purpose).
+    if not multiline:
+        name = re.sub(r"[ \t\n\r\x85\u2028\u2029]+", " ", name)
 
     # Remove spaces from the beginning and end of the text
     name = name.strip()
