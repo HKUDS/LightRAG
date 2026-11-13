@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 
+pytestmark = pytest.mark.offline
+
 # Env vars that the project's `.env` may have populated (via load_dotenv at
 # import time of lightrag.api.config). Tests must be hermetic and not depend
 # on developer-local .env values, so we clear/override anything that affects
@@ -545,6 +547,25 @@ class TestUvicornRootPathSemantics:
         finally:
             sys.argv = original_argv
 
+    def _build_app_with_staged_webui(self, prefix, tmp_path, monkeypatch):
+        """Build the app against a minimal staged WebUI build.
+
+        The /webui Mount only exists when the build is present (otherwise
+        /webui/ redirects to /docs), and the build is git-ignored, so CI has
+        none. Point the server module's ``__file__`` at ``tmp_path`` so both
+        the build check and the StaticFiles directory resolve to the stage.
+        """
+        webui_dir = tmp_path / "webui"
+        webui_dir.mkdir()
+        (webui_dir / "index.html").write_text(
+            "<!doctype html><title>stub</title>", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "lightrag.api.lightrag_server.__file__",
+            str(tmp_path / "lightrag_server.py"),
+        )
+        return self._build_app_with_prefix(prefix)
+
     @pytest.mark.asyncio
     async def test_route_strip_mode_matches(self):
         """Plain Route, proxy-strip mode: backend receives /openapi.json."""
@@ -565,7 +586,7 @@ class TestUvicornRootPathSemantics:
         assert status == 200
 
     @pytest.mark.asyncio
-    async def test_mount_strip_mode_matches(self):
+    async def test_mount_strip_mode_matches(self, tmp_path, monkeypatch):
         """WebUI Mount, proxy-strip mode: backend receives /webui/.
 
         This is the bug the middleware fixes. Without normalization,
@@ -575,12 +596,12 @@ class TestUvicornRootPathSemantics:
         /site01/webui/ before routing and the lookup resolves to
         index.html.
         """
-        app = self._build_app_with_prefix("/site01")
+        app = self._build_app_with_staged_webui("/site01", tmp_path, monkeypatch)
         status = await self._call_with_scope(app, "/webui/")
         assert status == 200
 
     @pytest.mark.asyncio
-    async def test_mount_verbatim_mode_matches(self):
+    async def test_mount_verbatim_mode_matches(self, tmp_path, monkeypatch):
         """WebUI Mount, verbatim mode: backend receives /site01/webui/.
 
         Already canonical; the middleware is a no-op for this case. The
@@ -588,7 +609,7 @@ class TestUvicornRootPathSemantics:
         strip — symmetric to test_route_verbatim_mode_matches but exercises
         the Mount path with its nested ``get_route_path`` resolution.
         """
-        app = self._build_app_with_prefix("/site01")
+        app = self._build_app_with_staged_webui("/site01", tmp_path, monkeypatch)
         status = await self._call_with_scope(app, "/site01/webui/")
         assert status == 200
 
@@ -774,11 +795,13 @@ class TestWhitelistUnderApiPrefix:
     the routers' own auth dependency all come together.
     """
 
-    @pytest.fixture
-    def _default_whitelist(self, monkeypatch):
-        """Pin the shipped default so a developer-local WHITELIST_PATHS in .env
-        (already baked into the module-level patterns at import time) cannot
-        change what these tests assert."""
+    @pytest.fixture(params=[False, True], ids=["api-key-only", "password-and-api-key"])
+    def _default_whitelist(self, monkeypatch, request):
+        """Pin the shipped whitelist and both auth modes, independent of .env.
+
+        Auth state is cached at import time; patch the cached value as well.
+        Return the missing-credentials status for the selected auth mode.
+        """
         original_argv = sys.argv.copy()
         try:
             # config resolves its args on first attribute access; importing under
@@ -791,6 +814,8 @@ class TestWhitelistUnderApiPrefix:
         monkeypatch.setattr(
             utils_api, "whitelist_patterns", [("/health", False), ("/api", True)]
         )
+        monkeypatch.setattr(utils_api, "auth_configured", request.param)
+        return 401 if request.param else 403
 
     @staticmethod
     def _args_with_prefix(prefix: str):
@@ -835,7 +860,9 @@ class TestWhitelistUnderApiPrefix:
             client = TestClient(create_app(_colliding_prefix_args))
             prefix = "" if mode == "strip" else "/api/v1"
 
-            assert client.delete(f"{prefix}/documents").status_code == 401
+            assert (
+                client.delete(f"{prefix}/documents").status_code == _default_whitelist
+            )
 
     @pytest.mark.parametrize("mode", ["verbatim", "strip"])
     def test_whitelisted_routes_stay_open_under_a_prefix(
@@ -845,7 +872,7 @@ class TestWhitelistUnderApiPrefix:
         Ollama-compatible routes must keep their documented exemption.
 
         Both answered 401 under this prefix before the fix. The assertion is
-        "not 401" rather than 200 because these handlers reach further into a
+        "neither 401 nor 403" rather than 200 because these handlers reach into a
         LightRAG that is only a MagicMock here: /health reads shared storage that
         no test initializes, and /api/tags feeds mock attributes to a Pydantic
         response model. Both therefore fail *after* the auth gate, which is why
@@ -862,7 +889,7 @@ class TestWhitelistUnderApiPrefix:
             )
             prefix = "" if mode == "strip" else "/site01"
 
-            assert client.get(f"{prefix}/health").status_code != 401
+            assert client.get(f"{prefix}/health").status_code not in (401, 403)
             # GET, matching the real registration; GET /api/chat would be a 405
             # from the router without the dependency ever running.
-            assert client.get(f"{prefix}/api/tags").status_code != 401
+            assert client.get(f"{prefix}/api/tags").status_code not in (401, 403)

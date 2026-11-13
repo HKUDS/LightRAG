@@ -97,9 +97,13 @@ git commit -m "Upgrade dependencies to latest compatible versions"
 ### Scenario 4: Teammate syncing the project
 
 ```bash
-git pull               # Fetch latest code and lock file
-uv sync --frozen       # Install exactly what uv.lock specifies
+git pull                                                  # Fetch latest code and lock file
+uv sync --locked --inexact --extra test --extra offline   # Same extras as your first install
 ```
+
+- Pass the extras you installed with. A bare `uv sync` / `uv sync --frozen` installs no extras, and because it is exact by default it uninstalls the ones you had.
+- `--locked` installs exactly what `uv.lock` specifies and fails, rather than rewriting `uv.lock`, when the lock is out of date with `pyproject.toml`.
+- `--inexact` keeps packages that are not in `uv.lock`, such as the spaCy models installed by `lightrag-download-cache --spacy-install`.
 
 ## Using uv.lock in Docker
 
@@ -110,15 +114,9 @@ RUN uv sync --frozen --no-dev --extra api
 `--frozen` guarantees reproducible builds because uv will refuse to deviate from the locked versions.
 `--extra api` install API server
 
-## Generating a lock file that includes offline dependencies
+## Optional dependencies (extras) in the lock file
 
-If you need `uv.lock` to capture the optional offline stacks, regenerate it with the relevant extras enabled:
-
-```bash
-uv lock --extra api --extra offline
-```
-
-This command resolves the base project requirements plus both the `api` and `offline` optional dependency sets, ensuring downstream `uv sync --frozen --extra api --extra offline` installs work without further resolution.
+`uv lock` always resolves every optional dependency set declared in `pyproject.toml` (`api`, `offline`, `test`, …) into one `uv.lock`. It has no `--extra` option, and none is needed. The extras are chosen at install time instead, for example `uv sync --frozen --extra api --extra offline`, and that works without further resolution.
 
 ## Frequently asked questions
 
@@ -146,7 +144,7 @@ This command resolves the base project requirements plus both the `api` and `off
 
 1. Commit `uv.lock` alongside `pyproject.toml`.
 2. Use `uv sync --frozen` in CI, Docker, and other reproducible environments.
-3. Use plain `uv sync` during local development if you want uv to reconcile the lock for you.
+3. In a local checkout, update with `uv sync --locked --inexact` plus your extras (Scenario 4). Drop `--locked` only when you deliberately want uv to reconcile the lock for you.
 4. Run `uv lock --upgrade` periodically to pick up the latest compatible releases.
 5. Regenerate the lock file immediately after changing dependency constraints.
 
@@ -165,6 +163,7 @@ This command resolves the base project requirements plus both the `api` and `off
 | `uv add <pkg>`        | ✅ Yes            | Add a dependency                          |
 | `uv remove <pkg>`     | ✅ Yes            | Remove a dependency                       |
 | `uv sync`             | ⚠️ Maybe          | Local development; can regenerate the lock |
+| `uv sync --locked`    | ❌ No (fails if stale) | Local development after `git pull`  |
 | `uv sync --frozen`    | ❌ No             | CI/CD, Docker, reproducible builds        |
 
 Remember: `uv.lock` only changes when you run a command that tells it to. Keep it in sync with your project and commit it whenever it changes.

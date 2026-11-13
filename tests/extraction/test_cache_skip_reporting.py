@@ -117,13 +117,6 @@ def _make_global_config(extract_func=None, *, gleaning: int = 0) -> dict:
 
 
 @pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    """``lightrag.utils.logger`` disables propagation; restore it so caplog
-    can see WARNING records emitted from inside ``lightrag.operate``."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
-@pytest.fixture
 def status_messages(monkeypatch) -> list[str]:
     """Capture what extraction publishes to ``pipeline_status``.
 
@@ -188,7 +181,7 @@ async def test_status_lines_do_not_grow_with_the_number_of_skipped_chunks(
 
 @pytest.mark.asyncio
 async def test_every_occurrence_still_reaches_the_server_log(
-    status_messages, _propagate_lightrag_logger, caplog
+    status_messages, lightrag_caplog, caplog
 ):
     chunks = _make_chunks(3)
     with caplog.at_level(logging.WARNING, logger="lightrag"):

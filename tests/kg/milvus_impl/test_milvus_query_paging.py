@@ -11,6 +11,7 @@ import pytest
 from pymilvus import MilvusException
 
 from lightrag.kg.milvus_impl import MilvusVectorDBStorage, _escape_milvus_str
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -307,17 +308,12 @@ class TestGetVectorsByIdsPaging:
 
         s._client.query.side_effect = _side_effect
 
-        lightrag_logger = logging.getLogger("lightrag")
-        previous_propagate = lightrag_logger.propagate
-        lightrag_logger.propagate = True  # caplog hooks the root logger
-        try:
+        with capture_lightrag_logs(caplog):
             with caplog.at_level(logging.ERROR, logger="lightrag"):
                 with patch(
                     "lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 2
                 ):
                     vectors = await s.get_vectors_by_ids(ids)
-        finally:
-            lightrag_logger.propagate = previous_propagate
 
         # Buffered vector survives; nothing from the server (not even the
         # first, successful page) leaked into the result.
@@ -536,17 +532,12 @@ class TestOversizePageBisection:
         s._client.query.side_effect = _oversize_above_side_effect(0, call_sizes)
 
         ids = [f"srv-{i}" for i in range(8)]
-        lightrag_logger = logging.getLogger("lightrag")
-        previous_propagate = lightrag_logger.propagate
-        lightrag_logger.propagate = True  # caplog hooks the root logger
-        try:
+        with capture_lightrag_logs(caplog):
             with caplog.at_level(logging.ERROR, logger="lightrag"):
                 with patch(
                     "lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 8
                 ):
                     results = await s.get_by_ids(ids)
-        finally:
-            lightrag_logger.propagate = previous_propagate
 
         assert call_sizes == [8, 4, 2, 1]
         assert results == []

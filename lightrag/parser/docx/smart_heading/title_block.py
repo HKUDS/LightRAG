@@ -101,7 +101,11 @@ def _estimate_tokens(text: str) -> int:
     if _TIKTOKEN_ENCODER is None:
         import tiktoken
 
-        _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+        from lightrag.tiktoken_cache import load_tiktoken_encoding
+
+        _TIKTOKEN_ENCODER = load_tiktoken_encoding(
+            lambda: tiktoken.get_encoding("cl100k_base")
+        )
     return len(_TIKTOKEN_ENCODER.encode(text))
 
 

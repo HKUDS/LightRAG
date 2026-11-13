@@ -12,6 +12,9 @@ from lightrag.parser.markdown.extract import (
 from lightrag.parser.markdown.ir_builder import NativeMarkdownIRBuilder
 
 
+pytestmark = pytest.mark.offline
+
+
 def _normalize(blocks, meta, *, document_name="doc.md"):
     return NativeMarkdownIRBuilder().normalize(
         blocks,

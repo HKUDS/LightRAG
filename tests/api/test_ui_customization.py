@@ -33,6 +33,9 @@ from lightrag.api.ui_customization import (
     resolve_ui_customization_snapshot,
 )
 
+
+pytestmark = pytest.mark.offline
+
 PLACEHOLDER = "<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
 
 _ENV_VARS_TO_ISOLATE = (
@@ -1164,13 +1167,15 @@ class TestCustomizationEndpointWithBundle:
     def test_route_audit_includes_mounts_and_customization(self, tmp_path, monkeypatch):
         client = self._client(tmp_path, monkeypatch)
         app = client.app
-        paths = set()
-        for route in app.routes:
-            paths.add(getattr(route, "path", None))
-        assert "/webui" in paths
-        assert "/workspace" in paths
-        assert "/ui/customization" in paths
-        assert "/ui/customization/assets/{asset_hash}/{asset_id}" in paths
+        # Mounts are top-level entries of app.routes. Routes added through
+        # include_router are not: FastAPI keeps each included APIRouter as one
+        # nested entry with no `path`, so read those from the OpenAPI schema.
+        mount_paths = {getattr(route, "path", None) for route in app.routes}
+        assert "/webui" in mount_paths
+        assert "/workspace" in mount_paths
+        api_paths = set(app.openapi()["paths"])
+        assert "/ui/customization" in api_paths
+        assert "/ui/customization/assets/{asset_hash}/{asset_id}" in api_paths
 
 
 class TestOrthogonality:

@@ -24,6 +24,9 @@ from lightrag.file_atomic import (
     reap_orphan_tmp_files,
     tmp_path_for,
 )
+from tests._log_capture import capture_lightrag_logs
+
+from tests._sleep_patch import patch_module_sleep
 
 
 @pytest.mark.offline
@@ -230,7 +233,7 @@ def test_replace_file_windows_transient_permission_error_retries_and_succeeds(tm
     with (
         patch("lightrag.file_atomic.sys.platform", "win32"),
         patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
-        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+        patch_module_sleep("lightrag.file_atomic") as mock_sleep,
     ):
         _replace_file(src, dst)
 
@@ -259,7 +262,7 @@ def test_atomic_write_windows_retry_exhaustion_cleans_tmp_and_raises(tmp_path):
     with (
         patch("lightrag.file_atomic.sys.platform", "win32"),
         patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
-        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+        patch_module_sleep("lightrag.file_atomic") as mock_sleep,
     ):
         with pytest.raises(PermissionError, match="Permission denied"):
             atomic_write(dst, lambda tmp: open(tmp, "w").write("v2"))
@@ -290,7 +293,7 @@ def test_atomic_write_non_windows_does_not_retry_permission_error(tmp_path):
     with (
         patch("lightrag.file_atomic.sys.platform", "linux"),
         patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
-        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+        patch_module_sleep("lightrag.file_atomic") as mock_sleep,
     ):
         with pytest.raises(PermissionError, match="Permission denied"):
             atomic_write(dst, lambda tmp: open(tmp, "w").write("v1"))
@@ -313,10 +316,7 @@ def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog
     src = str(tmp_path / "src.txt")
     dst = str(tmp_path / "dst.txt")
 
-    logger = logging.getLogger("lightrag")
-    previous_propagate = logger.propagate
-    logger.propagate = True  # lightrag's logger does not propagate by default
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.DEBUG, logger="lightrag"):
             with (
                 patch("lightrag.file_atomic.sys.platform", "linux"),
@@ -327,7 +327,5 @@ def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog
             ):
                 with pytest.raises(PermissionError, match="Permission denied"):
                     _replace_file(src, dst)
-    finally:
-        logger.propagate = previous_propagate
 
     assert caplog.records == []

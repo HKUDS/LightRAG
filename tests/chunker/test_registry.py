@@ -32,13 +32,12 @@ def test_registry_import_does_not_load_builtin_or_plugin_implementations():
 
 
 @pytest.fixture(autouse=True)
-def isolated_registry(monkeypatch):
+def isolated_registry(monkeypatch, lightrag_caplog):
     monkeypatch.setattr(registry, "_REGISTRY", {})
     monkeypatch.setattr(registry, "_DUPLICATES", set())
     monkeypatch.setattr(plugins, "_loaded", False)
     monkeypatch.setattr(plugins, "_failures", [])
     monkeypatch.setattr(plugins, "entry_points", lambda **kwargs: [])
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 def spec(name="acme", **kwargs):

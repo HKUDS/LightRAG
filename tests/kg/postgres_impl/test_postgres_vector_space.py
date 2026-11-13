@@ -60,6 +60,8 @@ class TestPostgresVectorSpaceRefusal:
     @staticmethod
     def _db(*, legacy_table, legacy_dim, legacy_rows):
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
         db.check_table_exists = AsyncMock(
             side_effect=lambda name: name.lower() == legacy_table.lower()
         )

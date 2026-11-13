@@ -90,6 +90,34 @@ class _RoleLLMState:
     wrapped: Callable[..., object] | None = None
 
 
+def _role_max_async_seed(
+    spec: RoleSpec, role_llm_configs: Any
+) -> tuple[int | None, str]:
+    """Construction-time ``max_async`` seed for one role, and who supplied it.
+
+    Returns ``(value, source)``: an explicit ``role_llm_configs`` entry wins
+    over the ``{ROLE}_MAX_ASYNC_LLM`` env var, and ``value`` is None when
+    neither is set (the role then follows ``llm_model_max_async``).
+    ``source`` names the setting for error messages. A malformed
+    ``role_llm_configs`` is treated as "no override" here; its type errors
+    are raised where the role states are built.
+    """
+    override = (
+        role_llm_configs.get(spec.name)
+        if isinstance(role_llm_configs, Mapping)
+        else None
+    )
+    explicit = None
+    if isinstance(override, RoleLLMConfig):
+        explicit = override.max_async
+    elif isinstance(override, Mapping):
+        explicit = override.get("max_async")
+    if explicit is not None:
+        return explicit, f"role_llm_configs[{spec.name!r}].max_async"
+    env_key = f"{spec.env_prefix}_MAX_ASYNC_LLM"
+    return _optional_env_int(env_key), env_key
+
+
 class _RoleLLMMixin:
     """Mixin that owns the role LLM runtime on :class:`LightRAG`.
 
@@ -185,6 +213,17 @@ class _RoleLLMMixin:
         timeout: int,
         model_kwargs: dict[str, Any],
     ) -> Callable[..., object]:
+        # Every role queue funnels through here, which makes this the check
+        # for runtime config updates (a rejected update rolls back). The
+        # construction-time seeds (role_llm_configs, {ROLE}_MAX_ASYNC_LLM)
+        # are rejected earlier, in __post_init__, by the name of the
+        # setting; this is their backstop.
+        if max_async < 1:
+            raise ValueError(
+                f"max_async for LLM role {role_name!r} must be >= 1 (a "
+                "non-positive limit dispatches no workers, so calls "
+                f"through this role would never run); got {max_async}"
+            )
         spec = ROLES_BY_NAME[role_name]
         return priority_limit_async_func_call(
             max_async,
