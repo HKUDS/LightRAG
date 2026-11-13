@@ -312,29 +312,14 @@ class _RoleLLMMixin:
             tasks = list(self._retired_llm_queue_cleanup_tasks)
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _shutdown_model_queues(self) -> None:
-        """Shut down every queue owned by this instance.
+    async def _shutdown_queue_wrappers(
+        self, wrappers: list[tuple[str, Callable[..., object] | None]]
+    ) -> None:
+        """Shut the given queue wrappers down, best-effort.
 
-        Finalization must call this before tearing down storages: role LLM
-        calls can still use the response cache while their queues drain.
-        Queue shutdown is best-effort, matching storage finalization, but one
-        broken wrapper must not leave the remaining workers attached to the
-        event loop.
+        Matches storage finalization: one broken wrapper must not leave the
+        remaining workers attached to the event loop.
         """
-        await self.wait_for_retired_llm_queues()
-
-        wrappers: list[tuple[str, Callable[..., object] | None]] = [
-            (f"{spec.name} LLM", self._role_llm_states[spec.name].wrapped)
-            for spec in ROLES
-        ]
-        embedding = getattr(self, "embedding_func", None)
-        wrappers.extend(
-            (
-                ("embedding", getattr(embedding, "func", None)),
-                ("rerank", getattr(self, "rerank_model_func", None)),
-            )
-        )
-
         seen: set[int] = set()
         for label, wrapped in wrappers:
             if wrapped is None or id(wrapped) in seen:
@@ -344,6 +329,36 @@ class _RoleLLMMixin:
                 await self._shutdown_llm_wrapper(wrapped)
             except Exception as e:
                 logger.error(f"Failed to shut down {label} queue: {e}")
+
+    async def _shutdown_llm_and_rerank_queues(self) -> None:
+        """Shut down the role LLM queues and the rerank queue.
+
+        Finalization must call this BEFORE tearing down storages: role LLM
+        calls can still use the response cache while their queues drain.
+        The embedding queue is not included, because storages need it to
+        finalize; see ``_shutdown_embedding_queue``.
+        """
+        await self.wait_for_retired_llm_queues()
+
+        wrappers: list[tuple[str, Callable[..., object] | None]] = [
+            (f"{spec.name} LLM", self._role_llm_states[spec.name].wrapped)
+            for spec in ROLES
+        ]
+        wrappers.append(("rerank", getattr(self, "rerank_model_func", None)))
+        await self._shutdown_queue_wrappers(wrappers)
+
+    async def _shutdown_embedding_queue(self) -> None:
+        """Shut down the embedding queue.
+
+        Finalization must call this AFTER the storages are finalized: a
+        vector storage's ``finalize()`` flushes its pending upserts, and that
+        flush embeds first. Closing the queue earlier makes the flush fail and
+        the buffered vectors are dropped.
+        """
+        embedding = getattr(self, "embedding_func", None)
+        await self._shutdown_queue_wrappers(
+            [("embedding", getattr(embedding, "func", None))]
+        )
 
     def _apply_llm_role_config_update(
         self,

@@ -922,6 +922,71 @@ async def test_finalize_storages_shuts_down_all_model_queues(tmp_path):
     assert all(status["worker_count"] == 0 for status in statuses)
 
 
+@pytest.mark.asyncio
+async def test_finalize_keeps_embedding_queue_open_until_storages_are_finalized(
+    tmp_path,
+):
+    """A vector storage's ``finalize()`` flushes pending upserts, and that
+    flush embeds first. The embedding queue used to be shut down together
+    with the LLM queues, before the storages, so the flush was rejected with
+    "Queue is shutting down" and the buffered vectors were dropped -- on every
+    server stop that interrupted an ingestion."""
+    rag = _make_rag(tmp_path)
+    await rag.initialize_storages()
+    for wrapped in rag.role_llm_funcs.values():
+        assert await wrapped("warmup") == "base"
+    await rag.embedding_func(["warmup"])
+
+    seen: dict[str, object] = {}
+    original_finalize = rag.chunks_vdb.finalize
+
+    async def finalize_with_pending_flush():
+        # What the LLM queues look like when the storages are torn down.
+        seen["llm_queues_open"] = [
+            role
+            for role, status in (await rag.get_llm_queue_status()).items()
+            if status["initialized"]
+        ]
+        # The pending-upsert flush: it must still be able to embed.
+        seen["flushed"] = len(await rag.embedding_func(["pending vector"]))
+        await original_finalize()
+
+    rag.chunks_vdb.finalize = finalize_with_pending_flush
+
+    await rag.finalize_storages()
+
+    assert seen == {"llm_queues_open": [], "flushed": 1}
+    # ... and finalize still owns the embedding queue's shutdown.
+    embedding_status = await rag.get_embedding_queue_status()
+    assert embedding_status["initialized"] is False
+    assert embedding_status["worker_count"] == 0
+    with pytest.raises(RuntimeError, match="Queue is shutting down"):
+        await rag.embedding_func(["after finalize"])
+
+
+@pytest.mark.asyncio
+async def test_finalize_shuts_embedding_queue_down_when_a_storage_finalize_fails(
+    tmp_path,
+):
+    """The embedding queue is shut down last, so a failure before it must not
+    leave its workers pending on the event loop."""
+    rag = _make_rag(tmp_path)
+    await rag.initialize_storages()
+    await rag.embedding_func(["warmup"])
+
+    async def interrupted():
+        raise asyncio.CancelledError()
+
+    rag.chunks_vdb.finalize = interrupted
+
+    with pytest.raises(asyncio.CancelledError):
+        await rag.finalize_storages()
+
+    embedding_status = await rag.get_embedding_queue_status()
+    assert embedding_status["initialized"] is False
+    assert embedding_status["worker_count"] == 0
+
+
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
     rag = _make_rag(tmp_path)
     rag.set_role_llm_metadata(
