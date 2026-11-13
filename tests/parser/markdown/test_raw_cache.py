@@ -7,6 +7,7 @@ proven by it NOT being called (it raises) while assets still materialize.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -180,14 +181,22 @@ def test_tampered_cache_file_falls_back_to_download(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("manifest", [b"\xff", b'{"images":'])
-def test_corrupt_manifest_does_not_block_text_extraction(tmp_path, manifest):
+def test_corrupt_manifest_does_not_block_text_extraction(
+    tmp_path, manifest, lightrag_caplog
+):
     src, parsed = _make_doc(tmp_path, text="# Heading\n\nReadable content.\n")
     raw = _raw_dir(tmp_path)
     raw.mkdir()
     (raw / "_manifest.json").write_bytes(manifest)
 
-    blocks, _, _ = _extract(NativeMarkdownParser(), src, parsed)
+    with lightrag_caplog.at_level(logging.DEBUG, logger="lightrag"):
+        blocks, _, _ = _extract(NativeMarkdownParser(), src, parsed)
 
+    # The miss is traceable in the debug log rather than silent.
+    assert any("unreadable manifest" in r.getMessage() for r in lightrag_caplog.records)
+    # Documented residue: an image-less run stores nothing, so the corrupt
+    # manifest stays on disk untouched (and is read as a miss again next time).
+    assert (raw / "_manifest.json").read_bytes() == manifest
     assert blocks == [
         {
             "heading": "Heading",
