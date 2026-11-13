@@ -46,17 +46,15 @@ _DOCX_BLOCK_TAGS = frozenset({_W + "p", _W + "tbl"})
 # fields of a form template, whole template sections and repeating table rows
 # are such controls.
 _DOCX_BLOCK_WRAPPERS = frozenset({_W + "sdt", _W + "sdtContent", _W + "customXml"})
-# Runs below these are not text of their paragraph: deleted and moved-away
-# revisions, the pronunciation guide of ruby text, text boxes, and the fallback
-# copy of alternate content.
-_DOCX_SKIPPED_RUN_ANCESTORS = frozenset(
-    {
-        _W + "del",
-        _W + "moveFrom",
-        _W + "rt",
-        _W + "txbxContent",
-        "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback",
-    }
+_MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+# Content below these is not text of its paragraph: deleted and moved-away
+# revisions, the pronunciation guide of ruby text, and text boxes.
+_DOCX_SKIPPED_INLINE = frozenset(
+    {_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent"}
+)
+# The children of a w:r that python-docx's run text is made of.
+_DOCX_RUN_TEXT_TAGS = frozenset(
+    _W + tag for tag in ("t", "tab", "br", "cr", "noBreakHyphen", "ptab")
 )
 
 
@@ -105,19 +103,35 @@ def _docx_paragraph_text(paragraph) -> str:
     inline content control, a tracked insertion, a simple field's result or a
     smart tag is missing from it. Deleted text, and the controls
     :func:`_is_skipped_docx_control` names, stay out.
+
+    Text comes out in document order, also when a run holds ruby text between
+    its own pieces. Of an ``mc:AlternateContent``, only the branch a reader
+    shows is read: the first ``mc:Choice``, or the ``mc:Fallback`` without one.
     """
-    parts = []
-    for run in paragraph.iter(_W + "r"):
-        ancestor = run.getparent()
-        while (
-            ancestor is not paragraph
-            and ancestor.tag not in _DOCX_SKIPPED_RUN_ANCESTORS
-            and not (ancestor.tag == _W + "sdt" and _is_skipped_docx_control(ancestor))
-        ):
-            ancestor = ancestor.getparent()
-        if ancestor is paragraph:
-            parts.append(run.text)
+    parts: list[str] = []
+    _collect_docx_inline_text(paragraph, parts)
     return "".join(parts)
+
+
+def _collect_docx_inline_text(element, parts: list[str]) -> None:
+    for child in element:
+        tag = child.tag
+        if tag in _DOCX_RUN_TEXT_TAGS:
+            # A w:tab outside a run is a tab stop of the paragraph properties.
+            if element.tag == _W + "r":
+                parts.append(str(child))
+        elif tag == _MC + "AlternateContent":
+            branch = child.find(_MC + "Choice")
+            if branch is None:
+                branch = child.find(_MC + "Fallback")
+            if branch is not None:
+                _collect_docx_inline_text(branch, parts)
+        elif tag in _DOCX_SKIPPED_INLINE or (
+            tag == _W + "sdt" and _is_skipped_docx_control(child)
+        ):
+            continue
+        else:
+            _collect_docx_inline_text(child, parts)
 
 
 def _docx_cell_text(tc) -> str:

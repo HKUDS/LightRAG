@@ -468,6 +468,37 @@ def test_extract_text_docx_leaves_out_runs_that_are_not_the_paragraph_text():
 
 
 @pytest.mark.offline
+def test_extract_text_docx_keeps_document_order_and_reads_one_alternate_branch():
+    mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+
+    def alternate(*branches: str) -> str:
+        return f"<mc:AlternateContent {mc}>{''.join(branches)}</mc:AlternateContent>"
+
+    paragraphs = [
+        # Ruby text between two pieces of the same run.
+        "<w:r><w:t>before</w:t><w:ruby><w:rubyPr/><w:rt><w:r><w:t>kan</w:t>"
+        "</w:r></w:rt><w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby>"
+        "<w:t>after</w:t></w:r>",
+        # Two choices: only the first is shown.
+        alternate(
+            f'<mc:Choice Requires="w14">{_run("5")}</mc:Choice>',
+            f'<mc:Choice Requires="w15">{_run("5")}</mc:Choice>',
+            f"<mc:Fallback>{_run('five')}</mc:Fallback>",
+        ),
+        # No choice: the fallback is what is shown.
+        alternate(f"<mc:Fallback>{_run('only fallback')}</mc:Fallback>"),
+    ]
+
+    def build(document):
+        for content in paragraphs:
+            _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "before漢after\n5\nonly fallback"
+    )
+
+
+@pytest.mark.offline
 def test_extract_text_docx_reads_nested_runs_in_table_cells():
     def build(document):
         table = document.add_table(rows=1, cols=2)
