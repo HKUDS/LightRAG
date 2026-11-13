@@ -32,8 +32,9 @@ export default function QueryComposer({
   const [inputValue, setInputValue] = useState('')
   const [inputError, setInputError] = useState('')
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
-  // The caret position to carry across an element swap, or null when the next
-  // render is not a swap. See the layout effect below.
+  // The caret position the next render must restore, or null when it has
+  // nothing to restore. Set only together with a draft change, so the layout
+  // effect below consumes it in the very render that change causes.
   const pendingSelectionRef = useRef<number | null>(null)
 
   const dismissInputError = useCallback(() => {
@@ -58,6 +59,23 @@ export default function QueryComposer({
       setInputValue(nextValue)
     },
     [hasMultipleLines]
+  )
+
+  // Replace the draft and put the caret at `caret` once React has rendered it.
+  // The caret cannot be set here: the change may swap the input for a
+  // textarea (or back), and the new element only exists after the render.
+  const replaceDraft = useCallback(
+    (target: HTMLInputElement | HTMLTextAreaElement, nextValue: string, caret: number) => {
+      if (nextValue === inputValue) {
+        // React skips the render for an unchanged value, so nothing would
+        // consume a pending caret; the element stays, so set it directly.
+        target.setSelectionRange(caret, caret)
+        return
+      }
+      pendingSelectionRef.current = caret
+      setInputValue(nextValue)
+    },
+    [inputValue]
   )
 
   // Unified height adjustment function for textarea
@@ -98,26 +116,15 @@ export default function QueryComposer({
         const start = target.selectionStart || 0
         const end = target.selectionEnd || 0
         const newValue = inputValue.slice(0, start) + '\n' + inputValue.slice(end)
-        setInputValue(newValue)
-
-        // Set cursor position after the newline and adjust height if needed
-        setTimeout(() => {
-          if (inputRef.current?.setSelectionRange) {
-            inputRef.current.setSelectionRange(start + 1, start + 1)
-          }
-
-          // Manually trigger height adjustment for textarea after component switch
-          if (inputRef.current && inputRef.current.tagName === 'TEXTAREA') {
-            adjustTextareaHeight(inputRef.current as HTMLTextAreaElement)
-          }
-        }, 0)
+        // The textarea height follows from the height effect below.
+        replaceDraft(target, newValue, start + 1)
       } else if (e.key === 'Enter' && !e.shiftKey) {
         // Enter: Submit form
         e.preventDefault()
         handleSubmit(e as any)
       }
     },
-    [inputValue, handleSubmit, adjustTextareaHeight]
+    [inputValue, handleSubmit, replaceDraft]
   )
 
   const handlePaste = useCallback(
@@ -134,28 +141,20 @@ export default function QueryComposer({
         const start = target.selectionStart || 0
         const end = target.selectionEnd || 0
 
-        // Build new value
+        // Build new value; pasted into an input, it switches to a textarea
         const newValue = inputValue.slice(0, start) + pastedText + inputValue.slice(end)
-
-        // Update state (this will trigger component switch to Textarea)
-        setInputValue(newValue)
-
-        // Set cursor position to end of pasted content
-        setTimeout(() => {
-          if (inputRef.current && inputRef.current.setSelectionRange) {
-            const newCursorPosition = start + pastedText.length
-            inputRef.current.setSelectionRange(newCursorPosition, newCursorPosition)
-          }
-        }, 0)
+        replaceDraft(target, newValue, start + pastedText.length)
       }
       // If no newlines, let default paste behavior continue
     },
-    [inputValue]
+    [inputValue, replaceDraft]
   )
 
-  // A textarea -> input swap must restore the caret synchronously: the next
-  // keystroke can arrive before the next animation frame. Reading the caret in
-  // a rAF here is what made the reverse switch lose the cursor position.
+  // Restore the caret synchronously after the render. When the draft change
+  // swapped the input for a textarea or back, the focused element was removed
+  // and the new one starts unfocused with its own selection; a timer or an
+  // animation frame would fix that too late, since the next keystroke can
+  // arrive first and land in the wrong place or nowhere.
   useLayoutEffect(() => {
     const pending = pendingSelectionRef.current
     if (pending === null || !inputRef.current) return
@@ -166,12 +165,14 @@ export default function QueryComposer({
     if (element.setSelectionRange) {
       element.setSelectionRange(pending, pending)
     }
-  }, [hasMultipleLines])
+  }, [hasMultipleLines, inputValue])
 
   // Effect to handle component switching and maintain focus
   useEffect(() => {
     if (inputRef.current) {
-      // When component type changes, restore focus and cursor position
+      // Keep focus on the composer after renders the layout effect above does
+      // not handle, such as the switch back to an input when a send clears a
+      // multi-line draft. Edits restore their caret there, not here.
       const currentElement = inputRef.current
 
       // Use requestAnimationFrame to ensure DOM update is complete

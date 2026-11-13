@@ -159,6 +159,97 @@ describe('query composer multiline editing', () => {
     expect((input() as HTMLInputElement).value).toBe('alphaX beta')
     expect(sent).toEqual([])
   })
+
+  // The cases above let the stubbed frame run before the next keystroke. A
+  // fast typist does not wait for it: the keystrokes below arrive within the
+  // same frame as the switch (user-event only yields a zero-delay timer between
+  // keys), so the new element must already be focused with the caret in place.
+  test('G: typing right after Shift+Enter in the middle lands after the newline', async () => {
+    const user = userEvent.setup()
+    renderComposer()
+
+    await user.type(input(), 'alpha beta')
+    await settleFrame()
+    await user.keyboard('{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}')
+    await user.keyboard('{Shift>}{Enter}{/Shift}NEW')
+
+    expect((input() as HTMLTextAreaElement).value).toBe('alpha\nNEW beta')
+    expect(sent).toEqual([])
+  })
+
+  test('H: typing right after Shift+Enter at the end lands after the newline', async () => {
+    const user = userEvent.setup()
+    renderComposer()
+
+    await user.type(input(), 'alpha')
+    await settleFrame()
+    await user.keyboard('{Shift>}{Enter}{/Shift}NEW')
+
+    expect((input() as HTMLTextAreaElement).value).toBe('alpha\nNEW')
+    expect(sent).toEqual([])
+  })
+
+  test('I: typing right after a multi-line paste lands after the pasted text', async () => {
+    const user = userEvent.setup()
+    renderComposer()
+
+    await user.type(input(), 'alpha beta')
+    await settleFrame()
+    await user.keyboard('{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}')
+    await user.paste('x\ny')
+    await user.keyboard('Z')
+
+    expect((input() as HTMLTextAreaElement).value).toBe('alphax\nyZ beta')
+    expect(sent).toEqual([])
+  })
+
+  test('J: pasting over an identical selection collapses the caret to its end', async () => {
+    const user = userEvent.setup()
+    renderComposer()
+
+    await user.type(input(), 'a')
+    await user.keyboard('{Shift>}{Enter}{/Shift}')
+    await settleFrame()
+    await user.type(input(), 'b')
+    await settleFrame()
+
+    // The pasted text equals the selection, so the draft does not change and
+    // React does not re-render: the caret must still move past the paste, and
+    // nothing may be left over to move it again on a later keystroke.
+    const textarea = input() as HTMLTextAreaElement
+    textarea.setSelectionRange(0, 3)
+    await user.paste('a\nb')
+    await settleFrame()
+    await user.keyboard('Z')
+    await settleFrame()
+    await user.keyboard('Y')
+
+    expect((input() as HTMLTextAreaElement).value).toBe('a\nbZY')
+    expect(sent).toEqual([])
+  })
+
+  test('K: Shift+Enter and paste inside a textarea keep the caret without a switch', async () => {
+    const user = userEvent.setup()
+    renderComposer()
+
+    await user.type(input(), 'ab')
+    await user.keyboard('{Shift>}{Enter}{/Shift}')
+    await settleFrame()
+    await user.type(input(), 'cd')
+    await settleFrame()
+
+    // Already a textarea: these edits re-render the same element, so the
+    // caret restore must not depend on the element type changing.
+    const textarea = input() as HTMLTextAreaElement
+    textarea.setSelectionRange(1, 1)
+    await user.keyboard('{Shift>}{Enter}{/Shift}X')
+    await user.paste('1\n2')
+    await user.keyboard('Y')
+
+    expect(input() === textarea).toBe(true)
+    expect(textarea.value).toBe('a\nX1\n2Yb\ncd')
+    expect(sent).toEqual([])
+  })
 })
 
 describe('query composer validation notice', () => {
