@@ -5878,9 +5878,10 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     Returns:
         Normalized entity name
     """
-    # Clean HTML tags - remove paragraph and line break tags
-    name = re.sub(r"</p\s*>|<p\s*>|<p/>", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"</br\s*>|<br\s*>|<br/>", "", name, flags=re.IGNORECASE)
+    # Clean HTML tags - remove paragraph and line break tags. A self-closing
+    # tag may have a space before its slash (<br />, <p />), the XHTML spelling.
+    name = re.sub(r"</p\s*>|<p\s*/?>", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*/?>", "", name, flags=re.IGNORECASE)
 
     # Chinese full-width letters to half-width (A-Z, a-z)
     name = name.translate(
