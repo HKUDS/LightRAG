@@ -1082,6 +1082,98 @@ async def test_forced_shutdown_cancels_running_call_once(
 
 
 @pytest.mark.parametrize("global_limit", [False, True])
+async def test_execution_timeout_fails_the_call_and_frees_the_worker(global_limit):
+    """max_execution_timeout alone: the caller gets a TimeoutError naming the
+    worker timeout, the call counts as failed, and the worker is reusable."""
+    _init({GROUP: 1} if global_limit else None)
+    stopped = asyncio.Event()
+
+    async def func(value):
+        if value != "blocked":
+            return value
+        try:
+            await asyncio.sleep(30)
+        finally:
+            stopped.set()
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        max_execution_timeout=0.2,
+        queue_name="execution timeout",
+        concurrency_group=GROUP if global_limit else None,
+    )(func)
+    try:
+        with pytest.raises(TimeoutError, match="Worker execution timeout"):
+            await asyncio.wait_for(wrapped("blocked"), timeout=5.0)
+        assert stopped.is_set()
+        assert await asyncio.wait_for(wrapped("next"), timeout=2.0) == "next"
+        stats = await _wait_drained(wrapped)
+        assert stats["failed_total"] == 1
+        assert stats["completed_total"] == 1
+        assert stats["cancelled_total"] == 0
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        await wrapped.shutdown(graceful=False)
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
+@pytest.mark.parametrize("first", ["execution_timeout", "caller_cancel"])
+async def test_timeout_and_caller_cancel_cancel_running_call_once(global_limit, first):
+    """The execution timeout and a caller cancel may both hit one running
+    call, in either order. Only the first may cancel it: the second would
+    land in the call's async cleanup and abort it."""
+    _init({GROUP: 1} if global_limit else None)
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleanup = {"finished": False, "interrupted": 0}
+
+    async def func(value):
+        if value != "blocked":
+            return value
+        entered.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            cleaning.set()
+            # Async teardown that outlasts the execution timeout below.
+            try:
+                await asyncio.sleep(0.5)
+                cleanup["finished"] = True
+            except asyncio.CancelledError:
+                cleanup["interrupted"] += 1
+                raise
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        max_execution_timeout=0.3,
+        queue_name="single cancel",
+        concurrency_group=GROUP if global_limit else None,
+    )(func)
+    call = asyncio.create_task(wrapped("blocked"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        if first == "execution_timeout":
+            # Cleanup has started, so the execution timeout already fired.
+            await asyncio.wait_for(cleaning.wait(), timeout=2.0)
+        # Otherwise the caller cancels first, and the execution timeout
+        # expires while the cleanup that cancel started is still running.
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+        # The worker is held until the cleanup is over.
+        assert await asyncio.wait_for(wrapped("next"), timeout=3.0) == "next"
+        assert cleanup == {"finished": True, "interrupted": 0}
+        await _wait_drained(wrapped)
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(call, return_exceptions=True)
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
 @pytest.mark.parametrize("execution_timeout", [None, 30.0])
 @pytest.mark.parametrize("abandonment", ["cancel", "timeout"])
 async def test_abandoned_running_call_frees_worker(

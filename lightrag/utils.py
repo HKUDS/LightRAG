@@ -1565,23 +1565,51 @@ def priority_limit_async_func_call(
             # kwarg which needs 3.11+).
             exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
 
+            # A running call is cancelled at most once by the two sources
+            # below (the caller abandoning it, the execution timeout). A
+            # second cancel would land in the cleanup the first one started
+            # (an async finally / __aexit__ closing the provider client) and
+            # abort it. Whichever source fires first wins; the other is a
+            # no-op. This is why the timeout is a timer owned here instead of
+            # asyncio.wait_for, which cancels without telling anyone.
+            cancel_sent = False
+            timed_out = False
+
+            def cancel_once() -> bool:
+                nonlocal cancel_sent
+                if cancel_sent or exec_task.done():
+                    return False
+                cancel_sent = True
+                exec_task.cancel()
+                return True
+
             def cancel_execution(future):
-                # A forced shutdown cancels the result future AND the worker.
-                # Forwarding here as well would cancel the call twice, and the
-                # second cancel would abort cleanup the first one started
-                # (an async finally / __aexit__ closing the provider client).
+                # A forced shutdown cancels the result future AND the worker;
+                # the worker's cancellation is the one cancel the call gets.
                 if future.cancelled() and not forced_shutdown:
-                    exec_task.cancel()
+                    cancel_once()
+
+            def expire_execution():
+                nonlocal timed_out
+                timed_out = cancel_once()
 
             # The caller awaits a separate result future, not the execution task.
             task_state.future.add_done_callback(cancel_execution)
+            timeout_handle = None
+            if max_execution_timeout is not None:
+                timeout_handle = asyncio.get_running_loop().call_later(
+                    max_execution_timeout, expire_execution
+                )
             try:
-                if max_execution_timeout is not None:
-                    return await asyncio.wait_for(
-                        exec_task, timeout=max_execution_timeout
-                    )
                 return await exec_task
+            except asyncio.CancelledError:
+                # Report the timeout only when it is what cancelled the call.
+                if timed_out and exec_task.cancelled():
+                    raise asyncio.TimeoutError from None
+                raise
             finally:
+                if timeout_handle is not None:
+                    timeout_handle.cancel()
                 task_state.future.remove_done_callback(cancel_execution)
 
         async def worker():
