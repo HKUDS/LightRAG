@@ -573,6 +573,31 @@ def test_extract_text_docx_reads_rows_and_cells_inside_content_controls():
 
 
 @pytest.mark.offline
+def test_extract_text_docx_placeholder_cell_keeps_its_grid_columns():
+    def cell(text: str, span: int = 1) -> str:
+        grid_span = f'<w:tcPr><w:gridSpan w:val="{span}"/></w:tcPr>' if span > 1 else ""
+        return f"<w:tc>{grid_span}<w:p>{_run(text)}</w:p></w:tc>"
+
+    placeholder = (
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
+        f"<w:sdtContent>{cell('Enter quantity', span=2)}</w:sdtContent></w:sdt>"
+    )
+    table = (
+        f"<w:tbl {_W_DECL}><w:tblPr/><w:tblGrid>{'<w:gridCol/>' * 4}</w:tblGrid>"
+        f"<w:tr>{cell('Item')}{cell('Qty')}{cell('Price')}{cell('Note')}</w:tr>"
+        f"<w:tr>{cell('Apples')}{placeholder}{cell('fresh')}</w:tr></w:tbl>"
+    )
+
+    def build(document):
+        _append_xml(document, table)
+
+    # The placeholder spans Qty and Price; "fresh" stays under Note.
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Item\tQty\tPrice\tNote\nApples\t\t\tfresh"
+    )
+
+
+@pytest.mark.offline
 def test_extract_text_docx_leaves_out_the_table_of_contents_control():
     def control(gallery: str, *texts: str) -> str:
         paragraphs = "".join(f"<w:p>{_run(text)}</w:p>" for text in texts)

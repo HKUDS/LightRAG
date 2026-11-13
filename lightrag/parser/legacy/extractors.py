@@ -96,6 +96,24 @@ def _iter_docx_children(container, tags=_DOCX_BLOCK_TAGS):
             yield from _iter_docx_children(child, tags)
 
 
+def _iter_docx_row_cells(container, hidden: bool = False):
+    """Yield ``(w:tc, hidden)`` for each cell of a ``w:tr``, in order.
+
+    Looks through the same wrappers as :func:`_iter_docx_children`, but a cell
+    inside a control that :func:`_is_skipped_docx_control` names is still
+    yielded, with ``hidden`` set: it takes its grid columns, so the cells after
+    it keep theirs, and only its text is left out.
+    """
+    for child in container:
+        if child.tag == _W + "tc":
+            yield child, hidden
+        elif child.tag in _DOCX_BLOCK_WRAPPERS:
+            yield from _iter_docx_row_cells(
+                child,
+                hidden or (child.tag == _W + "sdt" and _is_skipped_docx_control(child)),
+            )
+
+
 def _docx_paragraph_text(paragraph) -> str:
     """Text of a ``w:p`` element, including runs nested below the paragraph.
 
@@ -206,7 +224,8 @@ def _docx_table_grid_rows(table) -> Iterator[list[str]]:
     - A vertically merged cell repeats the text of the row above at the same
       grid column; with no cell there, the slot is empty.
     - Rows and cells inside a content control or custom XML markup (a
-      repeating section) count like direct ones.
+      repeating section) count like direct ones. A cell inside a table of
+      contents or placeholder control keeps its grid columns but no text.
 
     The two merge rules are the native table extractor's.
 
@@ -221,9 +240,11 @@ def _docx_table_grid_rows(table) -> Iterator[list[str]]:
     for tr in _iter_docx_children(table._tbl, frozenset({qn("w:tr")})):
         row = [""] * _docx_grid_skip(tr, "w:gridBefore")
         current: dict[int, str] = {}
-        for tc in _iter_docx_children(tr, frozenset({qn("w:tc")})):
+        for tc, hidden in _iter_docx_row_cells(tr):
             column = len(row)
-            if tc.vMerge == "continue":
+            if hidden:
+                text = ""
+            elif tc.vMerge == "continue":
                 text = above.get(column, "")
             else:
                 text = _docx_cell_text(tc)
