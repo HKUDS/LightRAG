@@ -689,6 +689,11 @@ DEFAULT_PROCESSING_PRIORITY = 10
 # queue fairly and advance evenly — otherwise a busy ingestion queue starves
 # analysis tasks, stalling analysis nodes and dragging down overall throughput.
 DEFAULT_MM_ANALYSIS_PRIORITY = DEFAULT_PROCESSING_PRIORITY
+# In-flight multimodal analysis items per sidecar, as a multiple of the role's
+# max_async. An internal tuning constant, not read from the environment: the
+# operator-facing knobs are the role limit (VLM_MAX_ASYNC_LLM /
+# EXTRACT_MAX_ASYNC_LLM, falling back to MAX_ASYNC_LLM) and MAX_PARALLEL_ANALYZE.
+MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR = 2
 
 # Multimodal analysis / chunk thresholds
 # Minimum token count retained when truncating a multimodal chunk's

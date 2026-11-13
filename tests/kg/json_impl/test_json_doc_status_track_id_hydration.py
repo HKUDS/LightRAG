@@ -17,7 +17,7 @@ import pytest
 
 from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.utils import logger as lightrag_logger
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -130,17 +130,10 @@ async def test_get_docs_by_track_id_logs_and_skips_a_non_mapping_row(tmp_path, c
     # Bypass upsert: only externally-written / corrupted stores hold non-mappings.
     storage._data["corrupt_doc"] = "this is not a mapping"
 
-    # The lightrag logger sets propagate=False (lightrag/utils.py), so caplog —
-    # which attaches to root by default — never sees its records. Flip propagate
-    # for the duration of the call, then restore.
     caplog.clear()
-    old_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.ERROR, logger="lightrag"):
             docs = await storage.get_docs_by_track_id("track_123")
-    finally:
-        lightrag_logger.propagate = old_propagate
 
     assert "valid_doc" in docs
     assert "corrupt_doc" not in docs

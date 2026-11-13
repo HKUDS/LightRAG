@@ -11,6 +11,9 @@ from lightrag.exceptions import VectorSpaceMismatchError
 from lightrag.namespace import NameSpace
 
 
+pytestmark = pytest.mark.offline
+
+
 # Mock PostgreSQLDB
 @pytest.fixture
 def mock_pg_db():

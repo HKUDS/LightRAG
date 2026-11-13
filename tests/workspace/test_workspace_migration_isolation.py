@@ -12,6 +12,10 @@ import pytest
 from unittest.mock import AsyncMock
 
 from lightrag.kg.postgres_impl import PGVectorStorage
+from tests._pg_legacy_migration import answer_legacy_migration
+
+
+pytestmark = pytest.mark.offline
 
 
 class TestWorkspaceMigrationIsolation:
@@ -26,6 +30,8 @@ class TestWorkspaceMigrationIsolation:
         Expected: New table contains only workspace_a data, workspace_b data excluded.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Configure mock return values to avoid unawaited coroutine warnings
         db._create_vector_index.return_value = None
@@ -123,15 +129,16 @@ class TestWorkspaceMigrationIsolation:
 
         db.check_table_exists = AsyncMock(side_effect=check_table_exists_side_effect)
 
-        # Track migration through _run_with_retry calls
+        # Track migration through its server-side copy statement
         migration_executed = []
 
-        async def mock_run_with_retry(operation, *args, **kwargs):
+        def record_migration(sql, params):
             migration_executed.append(True)
             new_table_record_count["count"] = 2  # Simulate 2 records migrated
-            return None
 
-        db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+        db.query = AsyncMock(
+            side_effect=answer_legacy_migration(db.query.side_effect, record_migration)
+        )
 
         # Migrate for workspace_a only - correct parameter order
         await PGVectorStorage.setup_table(
@@ -156,6 +163,8 @@ class TestWorkspaceMigrationIsolation:
         Expected: ValueError is raised because workspace is required.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # workspace is now a required parameter - calling with None should raise ValueError
         with pytest.raises(ValueError, match="workspace must be provided"):
@@ -176,6 +185,8 @@ class TestWorkspaceMigrationIsolation:
         Expected: Only workspace_b data is queried, workspace_a data excluded.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Configure mock return values to avoid unawaited coroutine warnings
         db._create_vector_index.return_value = None
@@ -264,15 +275,16 @@ class TestWorkspaceMigrationIsolation:
 
         db.check_table_exists = AsyncMock(side_effect=check_table_exists_side_effect)
 
-        # Track migration through _run_with_retry calls
+        # Track migration through its server-side copy statement
         migration_executed = []
 
-        async def mock_run_with_retry(operation, *args, **kwargs):
+        def record_migration(sql, params):
             migration_executed.append(True)
             new_table_count["count"] = 1  # Simulate migration
-            return None
 
-        db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+        db.query = AsyncMock(
+            side_effect=answer_legacy_migration(db.query.side_effect, record_migration)
+        )
 
         # Migrate workspace_b - correct parameter order
         await PGVectorStorage.setup_table(

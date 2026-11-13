@@ -130,7 +130,7 @@ LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原�
 | `F` | 分块 | 默认 | Fix/固定长度分块：遗留方法, 按固定Token长度或按分隔符机械分割（按分隔符分割时文本块不会出现重叠） |
 | `R` | 分块 | - | Recursive/递归字符分块(RecursiveCharacterTextSplitter@LangChain)：接收一个分隔符列表（默认是 `["\n\n","\n","。","！","？","；","，"," ",""]`，按从语义最强到最弱排列）。优先按段落（双换行符）切分；如果切出的块依然超过 Token 限制，逐级降级使用单换行符 → 中文句末标点（`。！？`）→ 中文句中标点（`；，`）→ 空格 → 逐字符切分。**默认 cascade 包含中文标点**，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 故意排除（字面量匹配会误切 `0.95` / `e.g.`）。 |
 | `V` | 分块 | - | Vector/向量语义分块(SemanticChunker@LangChain)：首先按句子拆分文本（默认句子切分正则同时识别英文 `.?!` 与中文 `。？！`，使中文 / 中英混合文档能正确切句），计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。`SemanticChunker` 本身没有 chunk size 上限——任何超过 `chunk_token_size` 的语义块在落库前会自动通过 R 二次切分（保留 V 的非重叠语义）。此分块策略不会出现文本块重叠的情况。由于它按句子滑窗逐条求 Embedding，这些 Embedding 请求的规模由 `EMBEDDING_BATCH_NUM`（单请求条目数）限制，而不是由 `chunk_token_size` 决定。 |
-| `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，严格避免上一标题底部内容与下一个标题内容混合破坏语义。适合对能够准确识别标题且标题结构清晰的文档进行分块。同一标题下的超长正文 fallback 到 R 时允许按 `CHUNK_P_OVERLAP_SIZE` 保留重叠；相邻大表格之间的桥接文字也可按该预算重复进入前后表格块。此分块方法只能运用在保存在 sidecar 目录的 `lightrag` 内容。如果 `lightrag` 内容不存在，将退化为使用 `R` 方法进行文本分块。此分块方法出现文本块重叠的情况远少于 `R策略` 和 `F策略`。 |
+| `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，严格避免上一标题底部内容与下一个标题内容混合破坏语义。适合对能够准确识别标题且标题结构清晰的文档进行分块。同一标题下的超长正文 fallback 到 R 时允许按 `CHUNK_P_OVERLAP_SIZE` 保留重叠；相邻大表格之间的桥接文字也可按该预算重复进入前后表格块。此分块方法只能运用在保存在 sidecar 目录的 `lightrag` 内容。如果 `lightrag` 内容不存在，将退化为使用 `R` 方法进行文本分块。`blocks.jsonl` sidecar 存在但已损坏（某行 JSON 格式错误，或包含非法 UTF-8）时**不会**退化：文档会被标记为 FAILED，因为只对仍可解析的行分块会静默丢失文本，而退化不会留下任何记录。此分块方法出现文本块重叠的情况远少于 `R策略` 和 `F策略`。 |
 | `C` | 分块 | - | Custom/自定义分块：显式调用已配置的 `LightRAG.chunking_func`，保持原有六参数契约不变，并复用 `fixed_token` 参数快照。已持久化或后台发现的 C 文档若处理时没有自定义回调，流水线会告警一次并走精确定长分块 fallback；新文本/上传请求则直接返回 422。 |
 
 > 多模态全局开关 `addon_params["enable_multimodal_pipeline"]` 已废弃，相关行为统一由文件级 `i/t/e` 选项控制。详见[附录 A](#附录-a从旧版升级的注意事项)。
@@ -564,7 +564,7 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 
 ### 4.5 图片限制与吞吐
 
-`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.6），与解析、入库阶段互不影响。
+`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.6），与解析、入库阶段互不影响。在单篇文档内，每种模态同时分析的 item 数最多为所用角色并发数的 `2 ×`：图片用 `VLM_MAX_ASYNC_LLM`，表格与公式用 Extract 角色的上限（未设置时都回落到 `MAX_ASYNC_LLM`）。一个 item 从读取图片开始，经过读缓存、模型调用到写缓存，全程占用一个名额，所以含上千张图片的文档既不会把它们一次性全部载入内存，也不会同时为每个 item 发出一次存储请求；整个分析阶段同时在途的 item 最多为 `MAX_PARALLEL_ANALYZE × 2 ×` 该上限。
 
 ### 4.6 模型配置不在本章
 
@@ -1109,7 +1109,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: native 解析（docx / pdf / txt 等纯本地处理）并发 worker 数 | 纯 CPU、内存占用低，可按 CPU 核数提高 |
 | `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，因此默认只启用一个 worker。本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
 | `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，因此默认只启用一个 worker。本地部署且 CPU/GPU 充足时可设 2-3 |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
+| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限。单篇文档内，item 同时最多运行角色并发数的 `2 ×`（§4.5） |
 | `MAX_ASYNC_LLM` | `4` | 基础 LLM 并发与 N5 的单文档 task 基数 | 对单个文档，文本块实体/关系抽取最多并发运行 `MAX_ASYNC_LLM` 个 task；每个实体合并或关系合并阶段最多运行 `2 × MAX_ASYNC_LLM` 个 task。设置 `EXTRACT_MAX_ASYNC_LLM` 后，它会独立限制实际 Extract 角色 LLM 请求，不改变这些 task 上限 |
 | `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。它控制文档数量，不控制单个文档内的 chunk 或合并 task 上限。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_PARSE` | `20` | parse（native/MinerU/Docling）输入队列长度 | 一般无需调整。队列内仅为轻量 doc_id（大文档体在进入 analyze 前已剥离），仅限制 pipeline 一次预派发给 parse worker 的待处理文档数，调整影响很小 |
@@ -1201,7 +1201,8 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 部分图片被分析，另一些被静默跳过 | 非栅格格式、小于 `VLM_MIN_IMAGE_PIXEL`、或大于 `VLM_MAX_IMAGE_BYTES`（§4.3） | 看该 item 的 `llm_analyze_result` 消息；图片确实需要就调高字节上限 |
 | 多模态 item 因 token 预算失败 | 上下文预算挤占了 item 自身的空间（§4.4） | 调高 `MAX_EXTRACT_INPUT_TOKENS`，或调低 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
 | 指定了 `P`，分块结果却像 `R` | 没有产出结构化的 `LightRAG Document`，`P` 已退化（§2.7、§3.2） | 把文件路由给 `native` / `mineru` / `docling`，而不是 `legacy` |
-| `.docx` 标题识别不准，导致 `P` 切分很差 | 该文档的 Word 大纲不可靠 | 试试 `native(smart_heading=true)`（§3.3），配合 parser CLI 迭代 |
+| 文档 FAILED，提示 "blocks.jsonl at … is corrupt" | `blocks.jsonl` sidecar 存在，但含有格式错误的 JSON 行或非法 UTF-8，`P` 拒绝对其分块（§2.7） | 删除该文档后重新上传，让解析器重新生成 sidecar——重试会复用已损坏的 sidecar 并以同样方式失败。如果反复出现，请检查 `*.parsed/` 所在的存储 |
+| `.docx` 标题识别不准，导致 `P` 切分很差 | 该文档的 Word 大纲不可靠 | 试试 `native(smart_heading=true)`（§3.3）：用 `report.[native(smart_heading)].docx` 这样的文件名提示重新上传，再查看 `.parsed/` 目录下的 `<文件名>.smart_audit.json`。parser CLI 目前还不能运行 smart_heading（无法传入引擎参数，也没有判定标题块所需的 LLM）。正文短于 `DOCX_SMART_MIN_TOKENS`（1800）的文档会被跳过，日志中记为 `[smart_heading] skipped` |
 | 日志提示部分段落缺少 `paraId` | 由 LibreOffice / WPS / 旧版 Word 产生（§3.3） | 仅提示性。只有确实需要段落级溯源时，才用 Word 2013+ 另存一次 |
 | 文档 FAILED 且标记为重复 | 文件名查重（规范化并剥掉 hint 后）或内容 hash 查重（§7.1、§7.2） | 先删除已有文档，或给新文件改名；重复记录（`dup-*`，或解析后就地改为 FAILED 的原记录）只能显式删除（§7.3） |
 | 上传返回 `409` | 输入目录或 doc_status 里已存在同规范名的文档（§7.2） | 用 `POST /documents/delete_document` 删除后再上传 |

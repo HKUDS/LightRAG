@@ -21,6 +21,7 @@ import logging
 import pytest
 
 from lightrag.kg.postgres_impl import PostgreSQLDB
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -91,12 +92,9 @@ async def test_a_failed_create_keeps_the_superseded_index(caplog):
     db = _FakeDB(existing={_SUPERSEDED})
     db.create_fails = RuntimeError("canceling statement due to lock timeout")
 
-    logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger=logger.name):
             await PostgreSQLDB._migrate_doc_status_add_scheduling_index(db)
-    finally:
-        logger.propagate = False
 
     assert "drop" not in _kinds(db)
     assert _SUPERSEDED in db.existing  # paging is no worse than before the upgrade
