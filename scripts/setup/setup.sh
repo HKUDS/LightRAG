@@ -1831,8 +1831,8 @@ default_llm_model_for_binding() {
   local binding="$1"
 
   case "$binding" in
-    openai|azure_openai)
-      printf 'gpt-5-mini'
+    openai|openai_responses|azure_openai)
+      printf 'gpt-6-luna'
       ;;
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
@@ -1844,7 +1844,7 @@ default_llm_model_for_binding() {
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
-      printf 'gpt-5-mini'
+      printf 'gpt-6-luna'
       ;;
   esac
 }
@@ -1900,7 +1900,7 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
+  local options=("openai" "openai_responses" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
@@ -1938,6 +1938,12 @@ collect_llm_config() {
       host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "DEFAULT_BEDROCK_ENDPOINT")"
       api_key=""
       collect_bedrock_credentials
+      ;;
+    openai_responses)
+      log_info "openai_responses calls the OpenAI Responses API (/v1/responses). Many OpenAI-compatible servers only implement /v1/chat/completions; choose openai for those."
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://api.openai.com/v1")"
+      host="$(prompt_with_default "LLM endpoint" "$host_default")"
+      api_key="$(prompt_secret_until_valid_with_default "LLM API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key "$binding")"
       ;;
     *)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://api.openai.com/v1")"
@@ -1980,7 +1986,10 @@ collect_embedding_config() {
   dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
 
   local llm_host_fallback="" llm_api_key_default=""
-  if [[ "$binding" == "${ENV_VALUES[LLM_BINDING]:-}" ]]; then
+  # openai_responses is an LLM-only transport for the same OpenAI provider, so
+  # an openai embedding reuses its endpoint and key like a same-binding pair.
+  if [[ "$binding" == "${ENV_VALUES[LLM_BINDING]:-}" ]] \
+    || [[ "$binding" == "openai" && "${ENV_VALUES[LLM_BINDING]:-}" == "openai_responses" ]]; then
     llm_host_fallback="${ENV_VALUES[LLM_BINDING_HOST]:-}"
     llm_api_key_default="${ENV_VALUES[LLM_BINDING_API_KEY]:-}"
   fi

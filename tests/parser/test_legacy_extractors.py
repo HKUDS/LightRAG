@@ -155,6 +155,75 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     assert '=A1&"bar"' not in text
 
 
+def _retype_b1_formula(
+    file_bytes: bytes, attrs: dict[str, str], formula_text: str | None
+) -> bytes:
+    """Rewrite the ``<f>`` node of cell B1 in ``sheet1.xml``.
+
+    ``openpyxl`` cannot write array or data-table formulas without cached
+    values the way other producers do, so the tests build an ordinary formula
+    workbook and retype its formula node here. Any cached ``<v>`` is kept.
+    """
+
+    patched = BytesIO()
+    with (
+        ZipFile(BytesIO(file_bytes)) as source,
+        ZipFile(patched, "w", ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                cell = root.find(".//main:c[@r='B1']", _NS)
+                formula_node = cell.find("main:f", _NS)
+                for key, value in attrs.items():
+                    formula_node.set(key, value)
+                formula_node.text = formula_text
+                data = ET.tostring(root, encoding="utf-8")
+            target.writestr(item, data)
+    return patched.getvalue()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("formula", ["=A1:A2*2", "=_xlfn._xlws.FILTER(A1:A2,A1:A2>1)"])
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_preserves_array_formula_content(formula, cached_value):
+    """Array formula objects must yield cached values or their formula text."""
+    file_bytes = _retype_b1_formula(
+        _make_xlsx_bytes(cached_formula_value=cached_value),
+        {"t": "array", "ref": "B1:B2"},
+        formula.removeprefix("="),
+    )
+
+    text = extract_text(file_bytes, "xlsx")
+
+    expected = formula if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "ArrayFormula object" not in text
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_never_indexes_data_table_formula_object(cached_value):
+    """A data-table formula carries no text: cached value or an empty cell.
+
+    openpyxl >= 3.1 reads it as a ``DataTableFormula`` object and older
+    versions as a bare ``"="``; neither may reach the extracted text.
+    """
+    file_bytes = _retype_b1_formula(
+        _make_xlsx_bytes(cached_formula_value=cached_value),
+        {"t": "dataTable", "ref": "B1:B1", "dt2D": "0", "dtr": "0", "r1": "A1"},
+        None,
+    )
+
+    text = extract_text(file_bytes, "xlsx")
+
+    expected = "" if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "DataTableFormula" not in text
+    assert " object at 0x" not in text
+
+
 @pytest.mark.offline
 @pytest.mark.parametrize("group_depth", [0, 1, 2])
 def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
@@ -183,3 +252,67 @@ def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
         "Before\nGrouped paragraph\nSecond paragraph\vSoft break\n\n"
         "Group sibling\nAfter\nNext slide\n"
     )
+
+
+def _make_encrypted_pdf_bytes(text: str, *, password: str, algorithm: str) -> bytes:
+    """Build a one-page PDF showing ``text`` and encrypt it with pypdf."""
+    from pypdf import PdfReader, PdfWriter
+
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+    ]
+    out = BytesIO()
+    out.write(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(b"%d 0 obj\n%s\nendobj\n" % (number, body))
+    xref = out.tell()
+    out.write(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1))
+    for offset in offsets:
+        out.write(b"%010d 00000 n \n" % offset)
+    out.write(
+        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+        % (len(objects) + 1, xref)
+    )
+
+    writer = PdfWriter(clone_from=PdfReader(BytesIO(out.getvalue())))
+    writer.encrypt(user_password=password, algorithm=algorithm)
+    encrypted = BytesIO()
+    writer.write(encrypted)
+    return encrypted.getvalue()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("algorithm", ["AES-128", "AES-256"])
+def test_extract_text_pdf_decrypts_aes_encrypted_pdf(algorithm):
+    # pypdf decrypts AES only through an installed crypto backend
+    # (``cryptography``, else ``pycryptodome``); its pure-Python fallback raises
+    # DependencyError. LightRAG ships ``cryptography`` for this, so this pins
+    # that dropping it breaks encrypted-PDF uploads loudly here, not in prod.
+    file_bytes = _make_encrypted_pdf_bytes(
+        "Encrypted hello", password="secret", algorithm=algorithm
+    )
+
+    assert "Encrypted hello" in extract_text(file_bytes, "pdf", pdf_password="secret")
+
+
+@pytest.mark.offline
+def test_extract_text_pdf_rejects_wrong_password():
+    file_bytes = _make_encrypted_pdf_bytes(
+        "Encrypted hello", password="secret", algorithm="AES-256"
+    )
+
+    with pytest.raises(Exception, match="Incorrect PDF password"):
+        extract_text(file_bytes, "pdf", pdf_password="wrong")
+
+    with pytest.raises(Exception, match="no password provided"):
+        extract_text(file_bytes, "pdf")

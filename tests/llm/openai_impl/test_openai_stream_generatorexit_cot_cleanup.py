@@ -13,6 +13,7 @@ run. Mirrors ``tests/llm/anthropic_impl/test_anthropic_client_cleanup.py``'s
 ``test_stream_closed_on_early_consumer_break``.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -181,5 +182,51 @@ async def test_stream_closed_on_disconnect_during_error_path_cot_close():
         await gen.aclose()
 
     assert yielded == ["<think>", "thinking...", "</think>"]
+    stream.aclose.assert_awaited()
+    fake_client.close.assert_awaited()
+
+
+class _StallingOpenAIStream(_FakeOpenAIStream):
+    """Fake stream whose next read blocks forever once its chunks run out."""
+
+    async def __anext__(self):
+        if not self._chunks:
+            await asyncio.Event().wait()
+        return self._chunks.pop(0)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cancelled_read_mid_cot_propagates_and_cleans_up():
+    """A cancelled read mid-COT must raise CancelledError and close everything.
+
+    ``CancelledError`` is a ``BaseException``: it escapes both ``except
+    GeneratorExit`` and ``except Exception``, so without its own handler the
+    ``finally`` block yields ``</think>`` into the cancelled read. The read
+    then *returns* the tag instead of raising, the cancellation is swallowed,
+    and cleanup stays suspended at that yield, leaking the stream and client.
+    """
+    stream = _StallingOpenAIStream([_make_chunk(reasoning_content="thinking")])
+    fake_client = _make_stream_client(stream)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client", return_value=fake_client
+    ):
+        gen = await openai_complete_if_cache.__wrapped__(
+            model="deepseek-reasoner",
+            prompt="hello",
+            enable_cot=True,
+            stream=True,
+            api_key="test-key",
+        )
+        assert await gen.__anext__() == "<think>"
+        assert await gen.__anext__() == "thinking"
+
+        pending = asyncio.ensure_future(gen.__anext__())
+        await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
     stream.aclose.assert_awaited()
     fake_client.close.assert_awaited()
