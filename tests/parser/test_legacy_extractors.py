@@ -155,6 +155,75 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     assert '=A1&"bar"' not in text
 
 
+def _retype_b1_formula(
+    file_bytes: bytes, attrs: dict[str, str], formula_text: str | None
+) -> bytes:
+    """Rewrite the ``<f>`` node of cell B1 in ``sheet1.xml``.
+
+    ``openpyxl`` cannot write array or data-table formulas without cached
+    values the way other producers do, so the tests build an ordinary formula
+    workbook and retype its formula node here. Any cached ``<v>`` is kept.
+    """
+
+    patched = BytesIO()
+    with (
+        ZipFile(BytesIO(file_bytes)) as source,
+        ZipFile(patched, "w", ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                cell = root.find(".//main:c[@r='B1']", _NS)
+                formula_node = cell.find("main:f", _NS)
+                for key, value in attrs.items():
+                    formula_node.set(key, value)
+                formula_node.text = formula_text
+                data = ET.tostring(root, encoding="utf-8")
+            target.writestr(item, data)
+    return patched.getvalue()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("formula", ["=A1:A2*2", "=_xlfn._xlws.FILTER(A1:A2,A1:A2>1)"])
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_preserves_array_formula_content(formula, cached_value):
+    """Array formula objects must yield cached values or their formula text."""
+    file_bytes = _retype_b1_formula(
+        _make_xlsx_bytes(cached_formula_value=cached_value),
+        {"t": "array", "ref": "B1:B2"},
+        formula.removeprefix("="),
+    )
+
+    text = extract_text(file_bytes, "xlsx")
+
+    expected = formula if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "ArrayFormula object" not in text
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_never_indexes_data_table_formula_object(cached_value):
+    """A data-table formula carries no text: cached value or an empty cell.
+
+    openpyxl >= 3.1 reads it as a ``DataTableFormula`` object and older
+    versions as a bare ``"="``; neither may reach the extracted text.
+    """
+    file_bytes = _retype_b1_formula(
+        _make_xlsx_bytes(cached_formula_value=cached_value),
+        {"t": "dataTable", "ref": "B1:B1", "dt2D": "0", "dtr": "0", "r1": "A1"},
+        None,
+    )
+
+    text = extract_text(file_bytes, "xlsx")
+
+    expected = "" if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "DataTableFormula" not in text
+    assert " object at 0x" not in text
+
+
 @pytest.mark.offline
 @pytest.mark.parametrize("group_depth", [0, 1, 2])
 def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):

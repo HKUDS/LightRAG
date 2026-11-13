@@ -6,6 +6,7 @@ from lightrag.kg.postgres_impl import (
     PGVectorStorage,
 )
 from lightrag.namespace import NameSpace
+from tests._pg_legacy_migration import answer_legacy_migration
 
 
 pytestmark = pytest.mark.offline
@@ -181,16 +182,19 @@ async def test_postgres_migration_trigger(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
-    # Track migration through _run_with_retry calls
+    # Track migration through its server-side copy statement
     migration_executed = []
 
-    async def mock_run_with_retry(operation, **kwargs):
+    def record_migration(sql, params):
         # Track that migration batch operation was called
         migration_executed.append(True)
         migration_state["new_table_count"] = 100
-        return None
 
-    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+    mock_pg_db.query = AsyncMock(
+        side_effect=answer_legacy_migration(
+            mock_pg_db.query.side_effect, record_migration
+        )
+    )
 
     with patch(
         "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
@@ -198,8 +202,7 @@ async def test_postgres_migration_trigger(
         # Initialize storage (should trigger migration)
         await storage.initialize()
 
-        # Verify migration was executed by checking _run_with_retry was called
-        # (batch migration uses _run_with_retry with executemany)
+        # Verify migration was executed by checking the copy statement was issued
         assert len(migration_executed) > 0, "Migration should have been executed"
 
 
@@ -397,16 +400,19 @@ async def test_scenario_2_legacy_upgrade_migration(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
-    # Track migration through _run_with_retry calls
+    # Track migration through its server-side copy statement
     migration_executed = []
 
-    async def mock_run_with_retry(operation, **kwargs):
+    def record_migration(sql, params):
         # Track that migration batch operation was called
         migration_executed.append(True)
         migration_state["new_table_count"] = 50
-        return None
 
-    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+    mock_pg_db.query = AsyncMock(
+        side_effect=answer_legacy_migration(
+            mock_pg_db.query.side_effect, record_migration
+        )
+    )
 
     with patch(
         "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
@@ -416,7 +422,7 @@ async def test_scenario_2_legacy_upgrade_migration(
         # Verify table name contains ada-002
         assert "text_embedding_ada_002_1536d" in storage.table_name
 
-        # Verify migration was executed (batch migration uses _run_with_retry)
+        # Verify migration was executed
         assert len(migration_executed) > 0, "Migration should have been executed"
         mock_create.assert_called_once()
 
@@ -739,15 +745,18 @@ async def test_case1_sequential_workspace_migration(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query_a)
 
-    # Track migration via _run_with_retry (batch migration uses this)
+    # Track migration through its server-side copy statement
     migration_a_executed = []
 
-    async def mock_run_with_retry_a(operation, **kwargs):
+    def record_migration_a(sql, params):
         migration_a_executed.append(True)
         migration_state["workspace_a_migration_count"] = len(mock_rows_a)
-        return None
 
-    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry_a)
+    mock_pg_db.query = AsyncMock(
+        side_effect=answer_legacy_migration(
+            mock_pg_db.query.side_effect, record_migration_a
+        )
+    )
 
     # Initialize workspace_a (Case 3)
     with patch("lightrag.kg.postgres_impl.logger"):
@@ -756,7 +765,7 @@ async def test_case1_sequential_workspace_migration(
         migration_state["workspace_a_migrated"] = True
 
     print("✅ Step 1: Workspace A initialized")
-    # Verify migration was executed via _run_with_retry (batch migration uses executemany)
+    # Verify migration was executed
     assert len(migration_a_executed) > 0, (
         "Migration should have been executed for workspace_a"
     )
@@ -833,15 +842,18 @@ async def test_case1_sequential_workspace_migration(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query_b)
 
-    # Track migration via _run_with_retry for workspace_b
+    # Track migration through its server-side copy statement
     migration_b_executed = []
 
-    async def mock_run_with_retry_b(operation, **kwargs):
+    def record_migration_b(sql, params):
         migration_b_executed.append(True)
         migration_state["workspace_b_migration_count"] = len(mock_rows_b)
-        return None
 
-    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry_b)
+    mock_pg_db.query = AsyncMock(
+        side_effect=answer_legacy_migration(
+            mock_pg_db.query.side_effect, record_migration_b
+        )
+    )
 
     # Initialize workspace_b (Case 3 - both tables exist)
     with patch("lightrag.kg.postgres_impl.logger"):

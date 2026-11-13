@@ -133,6 +133,23 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     def escape_sheet_title(title: str) -> str:
         return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
 
+    def formula_fallback(formula_value: object) -> str | None:
+        """Formula text to index for a cell that carries no cached value.
+
+        Only reached when the values view is empty, so ``formula_value`` is
+        ``None``, a formula string, or an openpyxl formula object. openpyxl
+        >= 3.1 reads array formulas as ``ArrayFormula`` (text in ``.text``) and
+        data-table formulas as ``DataTableFormula`` (no text at all); older
+        versions return strings, a data-table master being a bare ``"="``.
+        Anything that is not formula text becomes an empty cell, so an object
+        repr -- which embeds a memory address and would make the dedup content
+        hash differ on every parse -- never reaches the index.
+        """
+        text = getattr(formula_value, "text", formula_value)
+        if not isinstance(text, str) or text == "=":
+            return None
+        return text
+
     content_parts: list[str] = []
     sheet_separator = "=" * 20
 
@@ -155,7 +172,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
             row_has_content = False
             for cell_value, formula_value in zip(value_row, formula_row):
                 if cell_value is None:
-                    cell_value = formula_value
+                    cell_value = formula_fallback(formula_value)
                 cell_text = escape_cell(cell_value)
                 row_parts.append(cell_text)
                 if cell_text:
