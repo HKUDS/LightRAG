@@ -127,6 +127,7 @@ from lightrag.utils import (
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
     TokenLimitTruncationTally,
+    cancel_and_drain_tasks,
     tolerant_load_json_dict,
     validate_file_path_security,
 )
@@ -6973,6 +6974,7 @@ class _PipelineMixin:
         # metadata, not just the server log. Created BEFORE the try so the
         # every-exit hand-off in its finally can always read it.
         mm_truncation_tally = TokenLimitTruncationTally()
+        task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()
             if not lines:
@@ -7803,7 +7805,7 @@ class _PipelineMixin:
                         * MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
                     )
                 )
-                task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
+                task_meta = {}
                 for item_id, item in items.items():
                     if not isinstance(item, dict):
                         continue
@@ -8002,6 +8004,13 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         finally:
+            # The polling loop's asyncio.wait never cancels the item tasks, so
+            # an external cancellation (worker shutdown) landing on it, or on
+            # the fail-fast drain, would leave them running -- still calling
+            # the model for an abandoned document. Stop and collect them
+            # before this method exits. On a normal exit every task is done
+            # and this is a no-op.
+            await cancel_and_drain_tasks(task_meta)
             # Analyze→process hand-off of the truncation record, on EVERY
             # exit — not just success. Ride the hand-off dict rather than
             # doc_status: LLM_TRUNCATION_METADATA_KEY is per-attempt (not

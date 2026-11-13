@@ -59,6 +59,7 @@ from lightrag.utils import (
     make_relation_chunk_key,
     has_chunk_tracking_row,
     _cooperative_yield,
+    cancel_and_drain_tasks,
     wait_tasks_with_drain,
     performance_timing_log,
 )
@@ -3724,6 +3725,8 @@ async def merge_nodes_and_edges(
         if on_anchors_durable is not None:
             await on_anchors_durable()
 
+    entity_tasks: list[asyncio.Task] = []
+    edge_tasks: list[asyncio.Task] = []
     try:
         # Get max async tasks limit from global_config for semaphore control
         graph_max_async = global_config.get("llm_model_max_async", 4) * 2
@@ -3795,7 +3798,6 @@ async def merge_nodes_and_edges(
                         raise prefixed_exception from e
 
         # Create entity processing tasks
-        entity_tasks = []
         for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
             task = asyncio.create_task(
                 _locked_process_entity_name(entity_name, entities)
@@ -3892,7 +3894,6 @@ async def merge_nodes_and_edges(
                         raise prefixed_exception from e
 
         # Create relationship processing tasks
-        edge_tasks = []
         edge_task_labels: dict[asyncio.Task, str] = {}
         for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
             task = asyncio.create_task(_locked_process_edges(edge_key, edges))
@@ -3930,6 +3931,16 @@ async def merge_nodes_and_edges(
         # exceptions — is gone: a merge whose anchors cannot be persisted no
         # longer mutates the graph at all.
 
+    except (Exception, asyncio.CancelledError):
+        # wait_tasks_with_drain only covers cancellation while it is waiting.
+        # The creation loops yield (_cooperative_yield) before it starts, so a
+        # cancellation landing there would leave the writers created so far
+        # merging into the graph after this coroutine has exited and recovery
+        # has begun. Same exit rule as extract_entities: stop and collect
+        # every scheduled writer first. Tasks already drained by
+        # wait_tasks_with_drain are done, so this is then a no-op.
+        await cancel_and_drain_tasks(entity_tasks + edge_tasks)
+        raise
     finally:
         # On EVERY exit — the inter-phase await points (sleep(0) yields,
         # status-lock acquires) sit outside any narrower handler, and a
@@ -4648,10 +4659,7 @@ async def extract_entities(
         # collect every outcome before unwinding. On the failure path above
         # the tasks are already done; this then only retrieves whatever the
         # cancelled siblings raised.
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await cancel_and_drain_tasks(tasks)
         raise
     finally:
         # On EVERY exit — mirrors merge_nodes_and_edges. The success and
