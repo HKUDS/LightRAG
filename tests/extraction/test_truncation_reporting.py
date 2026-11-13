@@ -203,9 +203,8 @@ async def test_extraction_cancelled_mid_wait_still_feeds_the_document_tally(
     extract_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await extract_task
-    # Unblock the orphaned chunk-2 task so it finishes cleanly.
-    release_b.set()
-    await asyncio.sleep(0)
+    # The cancellation also cancelled the parked chunk-2 task; nothing is
+    # left running that would need release_b.
 
     payload = tally.as_metadata()
     assert payload is not None, (
