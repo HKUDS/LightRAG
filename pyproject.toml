@@ -117,7 +117,7 @@ api = [
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
     "pypdf>=6.1.0",                 # PDF processing
-    "python-docx>=0.8.11,<2.0.0",  # DOCX processing
+    "python-docx>=1.1.2,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
     "cairosvg>=2.5.0,<3.0.0",      # SVG->PNG rasterization for native markdown images
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx

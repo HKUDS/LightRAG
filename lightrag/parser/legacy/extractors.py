@@ -197,9 +197,9 @@ def _docx_table_grid_rows(table) -> Iterator[list[str]]:
     The two merge rules are the native table extractor's.
 
     Walks the ``w:tr`` / ``w:tc`` XML instead of ``python-docx``'s
-    ``row.cells``: that ignores ``w:gridBefore`` / ``w:gridAfter``, and
-    python-docx before 1.0 builds it by slicing one flat cell list at a
-    fixed table width, so one short row shifts every row after it.
+    ``row.cells``: that omits the ``w:gridBefore`` / ``w:gridAfter`` columns,
+    and it raises ``ValueError`` on a vertical-merge continuation with no
+    cell at the same grid column above, which would fail the whole document.
     """
     from docx.oxml.ns import qn  # type: ignore
 
