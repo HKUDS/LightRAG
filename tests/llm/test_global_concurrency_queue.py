@@ -377,6 +377,67 @@ async def test_admission_counts_only_live_queued_tasks(global_limit):
         await wrapped.shutdown()
 
 
+@pytest.mark.parametrize("global_limit", [False, True])
+async def test_cancel_while_waiting_for_admission_is_not_counted(global_limit):
+    """A caller cancelled before its call entered the queue was never
+    submitted, so it must not show up in cancelled_total on either path."""
+    _init({GROUP: 1} if global_limit else None)
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def gated(value):
+        started.set()
+        await release.wait()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        queue_name="admission cancel",
+        concurrency_group=GROUP if global_limit else None,
+        max_queue_size=1,
+    )(gated)
+    running = asyncio.create_task(wrapped("running"))
+    queued = asyncio.create_task(wrapped("queued"))
+    waiting = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        async def one_queued():
+            return (await wrapped.get_queue_stats())["queued"] == 1
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while not await one_queued():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+
+        # The queue is full: this caller blocks before its call is submitted.
+        waiting = asyncio.create_task(wrapped("waiting"))
+        await asyncio.sleep(0.1)
+        assert not waiting.done()
+        assert (await wrapped.get_queue_stats())["submitted_total"] == 2
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+        stats = await wrapped.get_queue_stats()
+        assert stats["submitted_total"] == 2
+        assert stats["cancelled_total"] == 0
+
+        release.set()
+        assert await running == "running"
+        assert await queued == "queued"
+        stats = await _wait_drained(wrapped)
+        assert stats["completed_total"] == 2
+        assert stats["cancelled_total"] == 0
+    finally:
+        release.set()
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(
+            running, queued, *([waiting] if waiting else []), return_exceptions=True
+        )
+
+
 async def test_zombies_do_not_consume_admission_capacity():
     _init({GROUP: 1})
     external = await ss.try_acquire_global_slot(GROUP)

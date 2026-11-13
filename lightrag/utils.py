@@ -2346,6 +2346,7 @@ def priority_limit_async_func_call(
             # From here the reservation belongs to the exactly-once rule
             # (worker_started transfer, or the finally cleanup below).
 
+            submitted = False
             try:
                 active_futures.add(future)
 
@@ -2365,6 +2366,7 @@ def priority_limit_async_func_call(
                 # (priority, count, ...) tuple keeps heap ordering intact.
                 queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
+                submitted = True
                 work_available.set()
                 await _publish_stats()
 
@@ -2415,8 +2417,10 @@ def priority_limit_async_func_call(
 
             except asyncio.CancelledError:
                 # Count cancellation before the result wait starts, without
-                # counting a future already cancelled by the inner handlers.
-                if future.cancel():
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
                     cancelled_total += 1
                 raise
             finally:
@@ -2490,6 +2494,7 @@ def priority_limit_async_func_call(
                 future=future, start_time=asyncio.get_running_loop().time()
             )
 
+            submitted = False
             try:
                 # Register task state
                 async with task_states_lock:
@@ -2528,6 +2533,7 @@ def priority_limit_async_func_call(
                             (_priority, current_count, task_id, args, kwargs, ctx)
                         )
                     submitted_total += 1
+                    submitted = True
                     await _publish_stats()
                 except asyncio.TimeoutError:
                     raise QueueFullError(
@@ -2589,8 +2595,10 @@ def priority_limit_async_func_call(
 
             except asyncio.CancelledError:
                 # Count cancellation before the result wait starts, without
-                # counting a future already cancelled by the inner handlers.
-                if future.cancel():
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
                     cancelled_total += 1
                 raise
             finally:
