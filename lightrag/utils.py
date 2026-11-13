@@ -2514,8 +2514,9 @@ def priority_limit_async_func_call(
 
                 async def enqueue():
                     nonlocal rejected_total
-                    # A bounded Queue.put() cannot be woken by shutdown on
-                    # Python 3.10. Wait for capacity or closure, then admit
+                    # Queue.shutdown() only exists from Python 3.13, so before
+                    # that nothing can wake a blocked bounded Queue.put() when
+                    # shutdown starts. Wait for capacity or closure, then admit
                     # without yielding so shutdown cannot race the final check.
                     while queue.full() and accepting_new_tasks:
                         waiter = asyncio.get_running_loop().create_future()
