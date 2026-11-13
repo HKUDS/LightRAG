@@ -4703,6 +4703,33 @@ async def _cooperative_yield(iteration: int, every: int = 64) -> None:
         await asyncio.sleep(0)
 
 
+async def cancel_and_drain_tasks(tasks: Iterable[asyncio.Task]) -> None:
+    """Cancel every unfinished task in *tasks* and wait until all have ended.
+
+    Use it on the exit path of any coroutine that owns child tasks and waits
+    on them with ``asyncio.wait`` (or has not started waiting yet): neither
+    stops the children, so without this a cancelled or failed parent leaves
+    them running after it has returned. Every child's outcome is retrieved,
+    so none is reported as "Task exception was never retrieved".
+
+    Never raises for a child's failure or cancellation. It awaits only when a
+    child was still running, so on an exit where every child has finished it
+    adds no await point -- safe in a ``finally`` that must not open a fresh
+    cancellation window on the success path. A cancellation of the caller
+    while it does wait propagates as usual (``gather`` then cancels the
+    children it was still waiting on).
+    """
+    tasks = list(tasks)
+    running = [task for task in tasks if not task.done()]
+    for task in running:
+        task.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+    for task in tasks:
+        if not task.cancelled():
+            task.exception()  # mark retrieved; never raises for a done task
+
+
 async def wait_tasks_with_drain(
     tasks: list[asyncio.Task],
     *,
@@ -4780,9 +4807,7 @@ async def wait_tasks_with_drain(
         # propagating so no task keeps writing in the background. Per-task
         # CancelledError stored in a task's own result is caught by the
         # inner handler and does NOT take this path.
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await cancel_and_drain_tasks(tasks)
         raise
 
     if first_exception is not None:

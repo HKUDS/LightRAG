@@ -62,8 +62,10 @@ async def test_cancelled_extraction_drains_running_and_queued_chunks(monkeypatch
         await parent
     try:
         assert all(task.done() for task in children)
+        # Give any child that escaped the drain time to finish its late write:
+        # a single sleep(0) can resume the check before such a child has run.
         release.set()
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
         assert writes == []
         assert len(children) == 1, "queued chunks must not start after cancellation"
     finally:
@@ -123,8 +125,10 @@ async def test_merge_cancelled_during_task_creation_drains_writers(monkeypatch, 
         await parent
     try:
         assert all(task.done() for task in children)
+        # Give any child that escaped the drain time to finish its late write:
+        # a single sleep(0) can resume the check before such a child has run.
         release.set()
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
         assert writes == []
     finally:
         release.set()

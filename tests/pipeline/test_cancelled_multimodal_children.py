@@ -54,8 +54,10 @@ async def test_external_cancel_drains_multimodal_tasks(tmp_path, monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await parent
         assert all(task.done() for task in children)
+        # Give any child that escaped the drain time to finish its late write:
+        # a single sleep(0) can resume the check before such a child has run.
         release.set()
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
         assert writes == []
     finally:
         release.set()

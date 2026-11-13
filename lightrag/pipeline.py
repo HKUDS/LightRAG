@@ -127,6 +127,7 @@ from lightrag.utils import (
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
     TokenLimitTruncationTally,
+    cancel_and_drain_tasks,
     tolerant_load_json_dict,
     validate_file_path_security,
 )
@@ -7989,13 +7990,13 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         finally:
-            # External cancellation can interrupt the polling loop before its
-            # fail-fast drain. Finish these children before recovery starts.
-            if any(not task.done() for task in task_meta):
-                for task in task_meta:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*task_meta, return_exceptions=True)
+            # The polling loop's asyncio.wait never cancels the item tasks, so
+            # an external cancellation (worker shutdown) landing on it, or on
+            # the fail-fast drain, would leave them running -- still calling
+            # the model for an abandoned document. Stop and collect them
+            # before this method exits. On a normal exit every task is done
+            # and this is a no-op.
+            await cancel_and_drain_tasks(task_meta)
             # Analyze→process hand-off of the truncation record, on EVERY
             # exit — not just success. Ride the hand-off dict rather than
             # doc_status: LLM_TRUNCATION_METADATA_KEY is per-attempt (not
