@@ -2240,11 +2240,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
         await self._cancel_admin_release_drives()
-        # These wrappers own long-lived worker and health-check tasks. Drain
-        # them while the response cache and other storages are still usable;
-        # otherwise closing an asyncio.run()/manual loop after finalize leaves
-        # their queue.get() coroutines pending on the destroyed event loop.
-        await self._shutdown_model_queues()
+        # The model queues own long-lived worker and health-check tasks, so
+        # all of them are shut down here: closing an asyncio.run()/manual loop
+        # after finalize would otherwise leave their queue.get() coroutines
+        # pending on the destroyed event loop. They are shut down in two
+        # steps around the storages, because the dependency runs both ways:
+        # the LLM queues drain while the response cache is still usable, and
+        # the embedding queue stays open until the vector storages have
+        # flushed, since that flush embeds first.
+        await self._shutdown_llm_and_rerank_queues()
+        try:
+            await self._finalize_initialized_storages()
+        finally:
+            await self._shutdown_embedding_queue()
+
+    async def _finalize_initialized_storages(self) -> None:
+        """Finalize each storage once; does nothing unless they are initialized.
+
+        Only ``finalize_storages`` may call this: it relies on the LLM queues
+        being drained already and on the embedding queue still being open.
+        """
         if self._storages_status == StoragesStatus.INITIALIZED:
             await self._commit_cache_pair_before_finalize()
             storages = [

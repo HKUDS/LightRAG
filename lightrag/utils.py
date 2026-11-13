@@ -18,6 +18,7 @@ import time
 import uuid
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -1296,6 +1297,7 @@ def priority_limit_async_func_call(
         publish_stats = False
         shared = None  # lazily imported lightrag.kg.shared_storage module
         work_available = asyncio.Event()
+        queue_waiters: deque[asyncio.Future] = deque()
         admission_cond = asyncio.Condition()
         # Logical queued count: live tasks waiting in the queue (excludes
         # running tasks and cancelled zombies) — same capacity semantics as
@@ -1558,6 +1560,91 @@ def priority_limit_async_func_call(
             if publish_stats:
                 await _publish_stats(force=True)
 
+        async def _execute_call(
+            task_state: TaskState, args: tuple, kwargs: dict, ctx: contextvars.Context
+        ):
+            # Execute the call under the enqueuer's captured
+            # context, not the worker's creation-time context
+            # (asyncio.Task snapshots contextvars once, at
+            # create_task() time, and this worker task is
+            # long-lived — reused across many unrelated
+            # calls). ctx.run(asyncio.ensure_future, ...)
+            # schedules the coroutine as a fresh Task whose
+            # own context is copied from ctx (works on
+            # Python 3.10, unlike create_task's context=
+            # kwarg which needs 3.11+).
+            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
+
+            # A running call has three cancellation sources: the caller
+            # abandoning it, the execution timeout, and the worker being
+            # cancelled by a forced shutdown. All three go through
+            # cancel_once, so the call is cancelled once: a second cancel
+            # would land in the cleanup the first one started (an async
+            # finally / __aexit__ closing the provider client) and abort it.
+            # This is why the timeout is a timer owned here rather than
+            # asyncio.wait_for, and why the await below is shielded: both
+            # would otherwise cancel the call without consulting the guard.
+            # The one exception is a worker cancelled while the call is
+            # already unwinding: it waits cleanup_timeout, then forces.
+            cancel_sent = False
+            timed_out = False
+
+            def cancel_once() -> bool:
+                nonlocal cancel_sent
+                if cancel_sent or exec_task.done():
+                    return False
+                cancel_sent = True
+                exec_task.cancel()
+                return True
+
+            def cancel_execution(future):
+                if future.cancelled():
+                    cancel_once()
+
+            def expire_execution():
+                nonlocal timed_out
+                timed_out = cancel_once()
+
+            # The caller awaits a separate result future, not the execution task.
+            task_state.future.add_done_callback(cancel_execution)
+            timeout_handle = None
+            if max_execution_timeout is not None:
+                timeout_handle = asyncio.get_running_loop().call_later(
+                    max_execution_timeout, expire_execution
+                )
+            try:
+                return await asyncio.shield(exec_task)
+            except asyncio.CancelledError:
+                if not exec_task.done():
+                    # The call is still running, so this is the worker
+                    # itself being cancelled (a forced shutdown).
+                    if not cancel_once():
+                        # Already unwinding from an earlier cancel: let the
+                        # cleanup finish, and force it only if it overruns.
+                        await asyncio.wait({exec_task}, timeout=cleanup_timeout)
+                        if not exec_task.done():
+                            exec_task.cancel()
+                    # The worker holds the call's slot until the call is gone.
+                    await asyncio.wait({exec_task})
+                    if not exec_task.cancelled():
+                        exec_task.exception()  # mark retrieved
+                    raise
+                # Report the timeout only when it is what cancelled the call.
+                if timed_out and exec_task.cancelled():
+                    raise asyncio.TimeoutError from None
+                raise
+            finally:
+                if timeout_handle is not None:
+                    timeout_handle.cancel()
+                task_state.future.remove_done_callback(cancel_execution)
+
+        def _wake_next_submitter():
+            while queue_waiters:
+                waiter = queue_waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(None)
+                    break
+
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
@@ -1575,6 +1662,8 @@ def priority_limit_async_func_call(
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
+
+                        _wake_next_submitter()
 
                         # Get task state and mark worker as started
                         async with task_states_lock:
@@ -1599,25 +1688,7 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute the call under the enqueuer's captured
-                            # context, not the worker's creation-time context
-                            # (asyncio.Task snapshots contextvars once, at
-                            # create_task() time, and this worker task is
-                            # long-lived — reused across many unrelated
-                            # calls). ctx.run(asyncio.ensure_future, ...)
-                            # schedules the coroutine as a fresh Task whose
-                            # own context is copied from ctx (works on
-                            # Python 3.10, unlike create_task's context=
-                            # kwarg which needs 3.11+).
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task, timeout=max_execution_timeout
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1859,19 +1930,7 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
-                            # Run under the enqueuer's captured context, not
-                            # this long-lived worker's creation-time context
-                            # — see the matching comment in worker().
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task,
-                                    timeout=max_execution_timeout,
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -2177,6 +2236,8 @@ def priority_limit_async_func_call(
                     admission_cond.notify_all()
             else:
                 accepting_new_tasks = False
+                while queue_waiters:
+                    _wake_next_submitter()
 
             drain_timed_out = False
             if graceful and queue is not None:
@@ -2357,6 +2418,7 @@ def priority_limit_async_func_call(
             # From here the reservation belongs to the exactly-once rule
             # (worker_started transfer, or the finally cleanup below).
 
+            submitted = False
             try:
                 active_futures.add(future)
 
@@ -2376,6 +2438,7 @@ def priority_limit_async_func_call(
                 # (priority, count, ...) tuple keeps heap ordering intact.
                 queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
+                submitted = True
                 work_available.set()
                 await _publish_stats()
 
@@ -2424,7 +2487,17 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
+                    cancelled_total += 1
+                raise
             finally:
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 notify_needed = False
                 async with task_states_lock:
@@ -2447,7 +2520,12 @@ def priority_limit_async_func_call(
             **kwargs,
         ):
             """
-            Execute function with enhanced priority-based concurrency control and timeout handling
+            Execute function with enhanced priority-based concurrency control and timeout handling.
+
+            Caller cancellation and _timeout are propagated to the running coroutine.
+            Cancellation is cooperative: capacity is released when that coroutine
+            exits, which can be before synchronous SDK work in a background thread
+            or an already accepted remote request stops.
 
             Args:
                 *args: Positional arguments passed to the function
@@ -2462,6 +2540,7 @@ def priority_limit_async_func_call(
             Raises:
                 TimeoutError: If the function call times out at any level
                 QueueFullError: If the queue is full and waiting times out
+                RuntimeError: If shutdown closes admission, including while waiting for queue capacity
                 Any exception raised by the decorated function
             """
             nonlocal submitted_total, completed_total, cancelled_total, failed_total
@@ -2488,6 +2567,7 @@ def priority_limit_async_func_call(
                 future=future, start_time=asyncio.get_running_loop().time()
             )
 
+            submitted = False
             try:
                 # Register task state
                 async with task_states_lock:
@@ -2509,32 +2589,52 @@ def priority_limit_async_func_call(
                 # limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
-                # Queue the task with timeout handling
-                try:
+                async def enqueue():
+                    nonlocal rejected_total
+                    # Queue.shutdown() only exists from Python 3.13, so before
+                    # that nothing can wake a blocked bounded Queue.put() when
+                    # shutdown starts. Wait for capacity or closure, then admit
+                    # without yielding so shutdown cannot race the final check.
+                    while queue.full() and accepting_new_tasks:
+                        waiter = asyncio.get_running_loop().create_future()
+                        queue_waiters.append(waiter)
+                        try:
+                            await waiter
+                        except BaseException:
+                            waiter.cancel()
+                            try:
+                                queue_waiters.remove(waiter)
+                            except ValueError:
+                                pass
+                            # A selected submitter can be cancelled before
+                            # using its slot. Pass it on, as Queue.put() does.
+                            if not queue.full() and not waiter.cancelled():
+                                _wake_next_submitter()
+                            raise
                     if not accepting_new_tasks:
                         rejected_total += 1
                         raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                    queue.put_nowait(
+                        (_priority, current_count, task_id, args, kwargs, ctx)
+                    )
+
+                # Queue the task with timeout handling
+                try:
                     if _queue_timeout is not None:
-                        await asyncio.wait_for(
-                            queue.put(
-                                (_priority, current_count, task_id, args, kwargs, ctx)
-                            ),
-                            timeout=_queue_timeout,
-                        )
+                        await asyncio.wait_for(enqueue(), timeout=_queue_timeout)
                     else:
-                        await queue.put(
-                            (_priority, current_count, task_id, args, kwargs, ctx)
-                        )
+                        await enqueue()
                     submitted_total += 1
+                    submitted = True
                     await _publish_stats()
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
                     )
-                except Exception as e:
-                    # Clean up on queue error
+                except Exception:
+                    # Admission failed: no worker will consume this future.
                     if not future.done():
-                        future.set_exception(e)
+                        future.cancel()
                     raise
 
                 # Wait for result with timeout handling
@@ -2585,8 +2685,18 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
+                    cancelled_total += 1
+                raise
             finally:
                 # Ensure cleanup
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 async with task_states_lock:
                     task_states.pop(task_id, None)

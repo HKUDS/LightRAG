@@ -4638,6 +4638,21 @@ async def extract_entities(
                 first_exception, progress_prefix
             )
             raise prefixed_exception from first_exception
+    except (Exception, asyncio.CancelledError):
+        # asyncio.wait never cancels the tasks it waits on. Without this, an
+        # external cancellation of this coroutine (pipeline cancel, server
+        # shutdown) leaves the chunk tasks running: still calling the LLM for
+        # a document already abandoned, and failing later with nobody left to
+        # retrieve the exception ("Task exception was never retrieved").
+        # Same rule as wait_tasks_with_drain: cancel what still runs and
+        # collect every outcome before unwinding. On the failure path above
+        # the tasks are already done; this then only retrieves whatever the
+        # cancelled siblings raised.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     finally:
         # On EVERY exit — mirrors merge_nodes_and_edges. The success and
         # failure paths used to publish explicitly, but an external
