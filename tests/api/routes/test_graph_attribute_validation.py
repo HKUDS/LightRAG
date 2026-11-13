@@ -85,6 +85,9 @@ class _VectorStorage(_KVStorage):
         super().__init__()
         self.global_config = global_config
 
+    async def get_by_ids(self, ids):
+        return [self.records.get(i) for i in ids]
+
 
 class _Fixture:
     """A real NetworkXStorage plus in-memory VDB/KV doubles.

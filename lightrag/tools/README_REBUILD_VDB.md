@@ -120,6 +120,16 @@ Menu options:
   before it is acted on. Options 2–4 recover exactly the targets they rebuild:
   picking option 2 leaves a refused `chunks_vdb` refused until option 3 or 4
   runs.
+- **Versioned relation IDs (1.6.0, breaking).** Relation VDB records are now
+  keyed by a versioned id (`rel-v2-...`) computed from the length-prefixed
+  endpoint pair, so distinct edges whose names concatenate identically no
+  longer share one record. After upgrading, run **Rebuild ALL vector
+  storages** (or option 2) once: the rebuild rewrites every relation record
+  under its versioned id and drops the legacy aliases. Until that rebuild
+  runs, old records stay readable through a legacy fallback, but edges that
+  shared a legacy alias remain collapsed under it, and the consistency check
+  reports the overwritten edge as missing. Do not downgrade after a rebuild:
+  the old code cannot see versioned records.
 - **Embedding cost.** A rebuild re-embeds every affected record. On large
   datasets this means real API cost and time. Use the check mode first, and
   rebuild only the storages that need it.

@@ -83,6 +83,9 @@ class _VectorStorage:
         for record_id in record_ids:
             self.records.pop(record_id, None)
 
+    async def get_by_ids(self, record_ids):
+        return [self.records.get(i) for i in record_ids]
+
     async def index_done_callback(self):
         return None
 

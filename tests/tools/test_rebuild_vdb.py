@@ -29,6 +29,7 @@ from lightrag.tools.rebuild_vdb import (
 from lightrag.utils import (
     VectorStorageConsistencyError,
     compute_mdhash_id,
+    make_relation_vdb_id,
     make_relation_vdb_ids,
 )
 
@@ -301,7 +302,7 @@ async def test_rebuild_relationships_payload_normalized():
 
     stats = await rebuild_relationships_vdb(graph, vdb, {})
 
-    rel_id = compute_mdhash_id("Alice" + "Bob", prefix="rel-")
+    rel_id = make_relation_vdb_id("Alice", "Bob")
     assert stats["rebuilt"] == 1
     assert vdb.records == {
         rel_id: {
@@ -324,8 +325,8 @@ async def test_rebuild_relationships_weight_fallback():
 
     await rebuild_relationships_vdb(graph, vdb, {})
 
-    assert vdb.records[compute_mdhash_id("AB", prefix="rel-")]["weight"] == 3.0
-    assert vdb.records[compute_mdhash_id("CD", prefix="rel-")]["weight"] == 1.0
+    assert vdb.records[make_relation_vdb_id("A", "B")]["weight"] == 3.0
+    assert vdb.records[make_relation_vdb_id("C", "D")]["weight"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -351,7 +352,7 @@ async def test_rebuild_relationships_preserves_quote_bearing_endpoint_ids():
 
     await rebuild_relationships_vdb(graph, vdb, {})
 
-    rel_id = compute_mdhash_id(QUOTE_BEARING_ID + "Bob", prefix="rel-")
+    rel_id = make_relation_vdb_id(QUOTE_BEARING_ID, "Bob")
     assert vdb.records[rel_id]["src_id"] == QUOTE_BEARING_ID
     assert vdb.records[rel_id]["tgt_id"] == "Bob"
 
@@ -365,6 +366,33 @@ async def test_rebuild_relationships_skips_edges_without_endpoints():
 
     assert stats["rebuilt"] == 1
     assert stats["skipped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rebuild_keeps_colliding_endpoint_pairs_distinct():
+    # Two edges whose names concatenate identically must not collapse into
+    # one record: the rebuild dedups on the versioned id, not the legacy
+    # concatenation hash.
+    graph = make_graph(edges=[edge("A", "BC"), edge("AB", "C")])
+    vdb = MockVDB()
+
+    stats = await rebuild_relationships_vdb(graph, vdb, {})
+
+    assert stats["rebuilt"] == 2
+    assert stats["duplicates"] == 0
+    first_id = make_relation_vdb_id("A", "BC")
+    second_id = make_relation_vdb_id("AB", "C")
+    assert first_id != second_id
+    assert vdb.records[first_id]["src_id"] == "A"
+    assert vdb.records[first_id]["tgt_id"] == "BC"
+    assert vdb.records[second_id]["src_id"] == "AB"
+    assert vdb.records[second_id]["tgt_id"] == "C"
+
+    report = await check_vdb_consistency(graph, MockVDB(), vdb)
+
+    assert report["graph_relations"] == 2
+    assert report["missing_relations"] == 0
+    assert report["consistent"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -544,13 +572,36 @@ async def test_check_accepts_legacy_reverse_relation_id():
     graph = make_graph(edges=[edge("Bob", "Alice")])
     entities_vdb = MockVDB()
     relationships_vdb = MockVDB()
-    reverse_id = make_relation_vdb_ids("Bob", "Alice")[1]
+    reverse_id = make_relation_vdb_ids("Bob", "Alice")[-1]
     relationships_vdb.records[reverse_id] = {"src_id": "Bob", "tgt_id": "Alice"}
 
     report = await check_vdb_consistency(graph, entities_vdb, relationships_vdb)
 
     assert report["missing_relations"] == 0
     assert report["consistent"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_reports_overwritten_colliding_edge():
+    # Pre-migration state: both edges share one legacy id, and the store
+    # holds only the last writer's payload. The check must report the
+    # overwritten edge as missing instead of accepting the shared alias
+    # as evidence for both edges.
+    graph = make_graph(edges=[edge("A", "BC"), edge("AB", "C")])
+    entities_vdb = MockVDB()
+    relationships_vdb = MockVDB()
+    shared_legacy_id = compute_mdhash_id("ABC", prefix="rel-")
+    relationships_vdb.records[shared_legacy_id] = {
+        "src_id": "AB",
+        "tgt_id": "C",
+    }
+
+    report = await check_vdb_consistency(graph, entities_vdb, relationships_vdb)
+
+    assert report["graph_relations"] == 2
+    assert report["missing_relations"] == 1
+    assert report["missing_relation_pairs"] == ["A ~ BC"]
+    assert report["consistent"] is False
 
 
 @pytest.mark.asyncio

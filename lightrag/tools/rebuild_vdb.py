@@ -86,6 +86,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     get_env_value,
     logger,
+    make_relation_vdb_id,
     make_relation_vdb_ids,
     safe_vdb_operation_with_exception,
     setup_logger,
@@ -343,9 +344,9 @@ async def rebuild_relationships_vdb(
 
     Payloads mirror the authoritative write point in
     operate._merge_edges_then_upsert field for field: endpoints are sorted and
-    the VDB id is the normalized ``rel-`` hash. Backends that return each
+    the VDB id is the versioned relation id. Backends that return each
     undirected edge once per direction (e.g. Neo4j, Memgraph) are deduplicated
-    by that normalized id.
+    by that versioned id.
     """
     _ensure_vector_rebuild_supported(relationships_vdb)
     from lightrag.operate import _truncate_vdb_content
@@ -368,7 +369,7 @@ async def rebuild_relationships_vdb(
         if src_id > tgt_id:
             src_id, tgt_id = tgt_id, src_id
 
-        rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
+        rel_vdb_id = make_relation_vdb_id(src_id, tgt_id)
         if rel_vdb_id in payloads:
             stats["duplicates"] += 1
             continue
@@ -515,6 +516,22 @@ async def rebuild_chunks_vdb(
     return stats
 
 
+def _legacy_relation_record_matches_edge(record: Any, src: str, tgt: str) -> bool:
+    """True when a legacy vector record names this edge's endpoints.
+
+    Records without endpoint fields cannot be attributed, so they count
+    as present: the check must not report phantom gaps for stores that
+    do not return payload fields.
+    """
+    if not isinstance(record, dict):
+        return True
+    rec_src = record.get("src_id")
+    rec_tgt = record.get("tgt_id")
+    if rec_src is None or rec_tgt is None:
+        return True
+    return sorted((str(rec_src), str(rec_tgt))) == sorted((str(src), str(tgt)))
+
+
 async def check_vdb_consistency(
     graph,
     entities_vdb,
@@ -527,9 +544,10 @@ async def check_vdb_consistency(
 
     Only the graph -> VDB direction is covered; stale reverse orphans
     (records present in the VDB but absent from the graph) can only be
-    eliminated by a full rebuild. Relations are probed with both candidate
-    ids from make_relation_vdb_ids so legacy reverse-order ids are not
-    misreported as missing.
+    eliminated by a full rebuild. Relations are probed by versioned id
+    first, then by legacy aliases, so legacy records are not misreported
+    as missing; a legacy record only counts when its payload names the
+    edge, so a shared legacy alias cannot mask an overwritten edge.
 
     ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
     storage refused to attach because its container holds another embedding
@@ -582,7 +600,9 @@ async def check_vdb_consistency(
                 if len(report["missing_entity_names"]) < MAX_REPORTED_MISSING:
                     report["missing_entity_names"].append(entity_name)
 
-    # Relations: both candidate ids (normalized + legacy reverse) per edge
+    # Relations: versioned id first, then legacy aliases per edge. A legacy
+    # record only counts when its payload names this edge, so one shared
+    # legacy alias cannot mask an overwritten edge as present.
     edges = await graph.get_all_edges()
     relation_items: List[tuple] = []
     seen_relation_ids: set = set()
@@ -596,7 +616,8 @@ async def check_vdb_consistency(
         if candidate_ids[0] in seen_relation_ids:
             continue
         seen_relation_ids.add(candidate_ids[0])
-        relation_items.append((candidate_ids, f"{src} ~ {tgt}"))
+        sorted_src, sorted_tgt = sorted((str(src), str(tgt)))
+        relation_items.append((candidate_ids, f"{src} ~ {tgt}", sorted_src, sorted_tgt))
 
     report["graph_relations"] = len(relation_items)
     if "relationships" in incompatible:
@@ -604,15 +625,22 @@ async def check_vdb_consistency(
     for start in range(0, len(relation_items), batch_size):
         batch = relation_items[start : start + batch_size]
         flat_ids: List[str] = []
-        for candidate_ids, _ in batch:
+        for candidate_ids, _, _, _ in batch:
             flat_ids.extend(candidate_ids)
         results = await relationships_vdb.get_by_ids(flat_ids)
 
         offset = 0
-        for candidate_ids, pair_label in batch:
+        for candidate_ids, pair_label, sorted_src, sorted_tgt in batch:
             candidate_records = results[offset : offset + len(candidate_ids)]
             offset += len(candidate_ids)
-            if all(record is None for record in candidate_records):
+            present = candidate_records[0] is not None or any(
+                record is not None
+                and _legacy_relation_record_matches_edge(
+                    record, sorted_src, sorted_tgt
+                )
+                for record in candidate_records[1:]
+            )
+            if not present:
                 report["missing_relations"] += 1
                 if len(report["missing_relation_pairs"]) < MAX_REPORTED_MISSING:
                     report["missing_relation_pairs"].append(pair_label)

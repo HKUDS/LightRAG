@@ -115,6 +115,9 @@ class _DummyVectorStorage:
     async def get_by_id(self, id_):
         return None
 
+    async def get_by_ids(self, ids):
+        return [None for _ in ids]
+
     async def index_done_callback(self):
         return True
 

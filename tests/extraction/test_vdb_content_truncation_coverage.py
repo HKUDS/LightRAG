@@ -307,7 +307,7 @@ async def test_rebuild_single_relationship_truncates_own_content():
         global_config=cfg,
     )
     assert degraded is False
-    rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
+    rel_id = operate.make_relation_vdb_id("A", "B")
     record = relationships_vdb.records[rel_id]
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
@@ -482,7 +482,7 @@ async def test_merge_edges_then_upsert_truncates_relation_content():
         entities_vdb,
         cfg,
     )
-    rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
+    rel_id = operate.make_relation_vdb_id("A", "B")
     record = relationships_vdb.records[rel_id]
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
@@ -644,7 +644,7 @@ async def test_acreate_relation_truncates_content():
         "B",
         {"description": LONG_DESCRIPTION, "keywords": "k"},
     )
-    rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
+    rel_id = operate.make_relation_vdb_id("A", "B")
     record = relationships_vdb.records[rel_id]
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
@@ -698,7 +698,7 @@ async def test_edit_relation_truncates_content():
         "B",
         {"description": LONG_DESCRIPTION},
     )
-    rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
+    rel_id = operate.make_relation_vdb_id("A", "B")
     record = relationships_vdb.records[rel_id]
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
@@ -738,14 +738,16 @@ async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
     assert rel_id in relationships_vdb.records  # delete never happened either
 
 
-async def test_edit_relation_vdb_delete_failure_still_leaves_graph_updated():
+async def test_edit_relation_vdb_upsert_failure_still_leaves_graph_updated():
     """A *transient* VDB I/O failure (unlike a TokenBudgetError) must not
     prevent the graph write: the vector records are written after the graph
     commit and after the chunk-tracking shrink that commit justifies (issue
-    #3895), so a delete failure still leaves the new relation content saved in
+    #3895), so an upsert failure still leaves the new relation content saved in
     the graph -- the recoverable (graph-updated, VDB-stale) window the offline
     rebuild tool is for. It surfaces as `VectorStorageConsistencyError`, the
-    type that says the graph update IS durable, matching the entity path."""
+    type that says the graph update IS durable, matching the entity path.
+    The edit writes the versioned record directly and never deletes legacy
+    aliases, so the failure point under test is the upsert, not a delete."""
     graph = _MemGraph()
     for name in ("A", "B"):
         await graph.upsert_node(name, {"entity_id": name, "description": name})
@@ -761,10 +763,10 @@ async def test_edit_relation_vdb_delete_failure_still_leaves_graph_updated():
     entities_vdb = _MemVDB(cfg)
     relationships_vdb = _MemVDB(cfg)
 
-    async def _boom(_ids):
+    async def _boom(_payload):
         raise RuntimeError("transient VDB backend error")
 
-    relationships_vdb.delete = _boom
+    relationships_vdb.upsert = _boom
 
     with pytest.raises(
         VectorStorageConsistencyError, match="transient VDB backend error"
@@ -778,9 +780,8 @@ async def test_edit_relation_vdb_delete_failure_still_leaves_graph_updated():
             {"description": "updated description"},
         )
 
-    # The graph write already happened before the failing VDB delete.
+    # The graph write already happened before the failing VDB upsert.
     assert graph.edges[("A", "B")]["description"] == "updated description"
-    assert relationships_vdb.upsert_calls == 0
 
 
 async def test_edit_entity_rename_truncates_content():

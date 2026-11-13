@@ -1070,21 +1070,92 @@ async def move_file_to_parsed_dir(
     return target_path
 
 
+def make_relation_vdb_id(src_entity: str, tgt_entity: str) -> str:
+    """Return the versioned VDB ID for an undirected edge.
+
+    The canonical endpoint pair is sorted, then encoded with a length
+    prefix on the first endpoint, so distinct pairs that concatenate
+    identically still hash differently. The length counts UTF-8 bytes,
+    which keeps the boundary unambiguous for non-ASCII names too.
+    """
+    normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
+    src_bytes = normalized_src.encode("utf-8")
+    material = (
+        str(len(src_bytes)).encode("ascii")
+        + b":"
+        + src_bytes
+        + b":"
+        + normalized_tgt.encode("utf-8")
+    )
+    return "rel-v2-" + md5(material).hexdigest()
+
+
 def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
     """Return candidate relation VDB IDs for an undirected edge.
 
-    The normalized ID is returned first for all new writes. The reverse-order ID is
-    kept as a compatibility fallback for historical custom-KG imports that hashed
-    the relation using the original endpoint order.
+    The versioned ID is returned first for all new writes. The legacy
+    IDs follow as read fallbacks for records written before versioning,
+    so unmigrated stores stay readable until the graph-authoritative
+    rebuild rewrites them. Callers must never delete a legacy alias on
+    a write path: one alias can belong to two distinct edges. Genuine
+    removals must go through filter_deletable_relation_vdb_ids, which
+    deletes a legacy alias only when its record names the removed edge.
     """
+    relation_ids = [make_relation_vdb_id(src_entity, tgt_entity)]
     normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
-    relation_ids = [compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")]
-    reverse_relation_id = compute_mdhash_id(
-        normalized_tgt + normalized_src, prefix="rel-"
-    )
-    if reverse_relation_id not in relation_ids:
-        relation_ids.append(reverse_relation_id)
+    for legacy_id in (
+        compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-"),
+        compute_mdhash_id(normalized_tgt + normalized_src, prefix="rel-"),
+    ):
+        if legacy_id not in relation_ids:
+            relation_ids.append(legacy_id)
     return relation_ids
+
+
+async def filter_deletable_relation_vdb_ids(
+    relationships_vdb, edges: list[tuple[str, str]]
+) -> list[str]:
+    """Return the relation VDB IDs safe to delete for removed edges.
+
+    Versioned IDs are unique per edge, so they are always deleted. A
+    legacy alias is deleted only when the record stored under it names
+    one of the removed edges (sorted src_id/tgt_id payload match): one
+    alias can belong to two distinct edges, and deleting it for one
+    edge would destroy the other edge's only vector. Aliases whose
+    record is missing, has no endpoint payload, or names a different
+    edge are retained; the graph-authoritative rebuild rewrites or
+    drops them. Callers delete exactly the returned IDs.
+    """
+    candidates: list[str] = []
+    legacy_claimants: dict[str, set[tuple[str, str]]] = {}
+    for src, tgt in edges:
+        ids = make_relation_vdb_ids(src, tgt)
+        candidates.append(ids[0])
+        sorted_edge = tuple(sorted((str(src), str(tgt))))
+        for legacy_id in ids[1:]:
+            legacy_claimants.setdefault(legacy_id, set()).add(sorted_edge)
+    retained = 0
+    if legacy_claimants:
+        records = await relationships_vdb.get_by_ids(list(legacy_claimants))
+        for legacy_id, record in zip(legacy_claimants, records):
+            if not isinstance(record, dict):
+                retained += 1
+                continue
+            rec_src = record.get("src_id")
+            rec_tgt = record.get("tgt_id")
+            if rec_src is None or rec_tgt is None:
+                retained += 1
+                continue
+            if tuple(sorted((str(rec_src), str(rec_tgt)))) in legacy_claimants[legacy_id]:
+                candidates.append(legacy_id)
+            else:
+                retained += 1
+    if retained:
+        logger.debug(
+            f"Retaining {retained} legacy relation alias(es) whose records "
+            "do not name a removed edge"
+        )
+    return list(dict.fromkeys(candidates))
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:

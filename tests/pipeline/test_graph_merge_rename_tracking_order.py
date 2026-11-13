@@ -110,6 +110,12 @@ class _VectorStorage:
         if self.delete_error is not None:
             raise self.delete_error
 
+    async def get_by_ids(self, ids):
+        # The fake stores no records, so every lookup reports absence.
+        # Reads stay infallible: failure phases in these tests are driven
+        # by the delete path, exactly as before.
+        return [None for _ in ids]
+
     async def delete_entity(self, entity_name):
         pass
 
