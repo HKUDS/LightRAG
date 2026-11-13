@@ -1,5 +1,7 @@
 import asyncio
+import gc
 import logging
+import weakref
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -313,3 +315,31 @@ async def test_retry_log_reports_the_limit_of_the_running_loop(lightrag_log_reco
     ]
     assert len(messages) == 1
     assert "attempt 1/2" in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_failed_reconnects_do_not_retain_earlier_callers():
+    """Only the latest failure may stay reachable, not one per failed attempt."""
+    db = make_db(attempts=1)
+    create_pool = AsyncMock(
+        side_effect=lambda **_kwargs: (_ for _ in ()).throw(refused())
+    )
+
+    class Payload:
+        pass
+
+    refs = []
+
+    async def caller():
+        payload = Payload()
+        refs.append(weakref.ref(payload))
+        with pytest.raises(ConnectionRefusedError):
+            await db.query("SELECT 1")
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        for _ in range(20):
+            await caller()
+
+    gc.collect()
+    assert create_pool.await_count == 20
+    assert sum(ref() is not None for ref in refs) <= 1

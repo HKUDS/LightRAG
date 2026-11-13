@@ -872,9 +872,15 @@ class PostgreSQLDB:
         async with self._pool_reconnect_lock:
             if self.pool is not None:
                 return
-            failure = self._pool_connect_failure
-            if generation != self._pool_connect_generation and failure is not None:
-                exc, tb = failure
+            # Bind no local to the stored failure on the path that connects: a
+            # new failure's traceback keeps this frame alive, so such a local
+            # would chain every failure of an outage, and their callers'
+            # frames, together until a reconnect succeeds.
+            if (
+                generation != self._pool_connect_generation
+                and self._pool_connect_failure is not None
+            ):
+                exc, tb = self._pool_connect_failure
                 raise exc.with_traceback(tb)
             try:
                 await self.initdb(reconnect=True)
