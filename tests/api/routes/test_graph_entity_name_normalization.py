@@ -118,8 +118,61 @@ async def test_create_entity_rejects_name_removed_by_normalization():
         )
 
 
+def _source_company_graph():
+    return _Graph(
+        {
+            "Source公司": {
+                "entity_id": "Source公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            }
+        }
+    )
+
+
 @pytest.mark.asyncio
-async def test_edit_resolves_normalized_source_and_normalizes_rename_target():
+async def test_edit_without_rename_resolves_normalized_source():
+    graph = _source_company_graph()
+
+    result = await utils_graph.aedit_entity(
+        graph,
+        _VectorStorage(),
+        _VectorStorage(),
+        "Ｓｏｕｒｃｅ 公 司",
+        {"description": "updated"},
+        allow_rename=False,
+    )
+
+    assert set(graph.nodes) == {"Source公司"}
+    assert graph.nodes["Source公司"]["description"] == "updated"
+    assert result["entity_name"] == "Source公司"
+
+
+@pytest.mark.parametrize("allow_merge", [False, True])
+@pytest.mark.asyncio
+async def test_rename_refuses_a_source_spelling_that_is_not_stored(allow_merge):
+    """A rename removes the node it addresses, so its source must be the
+    stored name: a resolved one would let a retry reach a different entity."""
+    graph = _source_company_graph()
+
+    with pytest.raises(ValueError, match="it is stored as 'Source公司'"):
+        await utils_graph.aedit_entity(
+            graph,
+            _VectorStorage(),
+            _VectorStorage(),
+            "Ｓｏｕｒｃｅ 公 司",
+            {"entity_name": "T目标", "description": "renamed"},
+            allow_rename=True,
+            allow_merge=allow_merge,
+        )
+
+    assert set(graph.nodes) == {"Source公司"}
+    assert graph.nodes["Source公司"]["description"] == "old"
+
+
+@pytest.mark.asyncio
+async def test_rename_by_stored_name_normalizes_rename_target():
     graph = _Graph(
         {
             "Source公司": {
@@ -138,7 +191,7 @@ async def test_edit_resolves_normalized_source_and_normalizes_rename_target():
         graph,
         entities_vdb,
         relationships_vdb,
-        "Ｓｏｕｒｃｅ 公 司",
+        "Source公司",
         updated_data,
         allow_rename=True,
     )
@@ -230,7 +283,26 @@ async def test_create_refuses_duplicate_exact_legacy_key():
 
 
 @pytest.mark.asyncio
-async def test_merge_normalizes_sources_and_creates_normalized_target_once():
+async def test_merge_refuses_a_source_spelling_that_is_not_stored():
+    """Sources are removed by the merge, so they are matched exactly: a
+    resolved source would let a retry reach a different entity."""
+    graph = _source_company_graph()
+
+    with pytest.raises(ValueError, match="it is stored as 'Source公司'"):
+        await utils_graph.amerge_entities(
+            graph,
+            _VectorStorage(),
+            _VectorStorage(),
+            ["Ｓｏｕｒｃｅ 公 司"],
+            "T目标",
+        )
+
+    assert set(graph.nodes) == {"Source公司"}
+    assert graph.deleted_nodes == []
+
+
+@pytest.mark.asyncio
+async def test_merge_dedupes_sources_and_creates_normalized_target_once():
     graph = _Graph(
         {
             "Source公司": {
@@ -247,7 +319,7 @@ async def test_merge_normalizes_sources_and_creates_normalized_target_once():
         graph,
         entities_vdb,
         _VectorStorage(),
-        ["Ｓｏｕｒｃｅ 公 司", "Source公司"],
+        ["Source公司", "Source公司"],
         " “Ｔ 目 标” ",
     )
 
