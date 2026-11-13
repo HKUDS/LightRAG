@@ -6994,9 +6994,9 @@ class _PipelineMixin:
                 table_content_format_label,
             )
             from lightrag.constants import (
-                DEFAULT_MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
                 DEFAULT_MM_ANALYSIS_PRIORITY,
                 DEFAULT_SUMMARY_LANGUAGE,
+                MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
             )
 
             global_config = self._build_global_config()
@@ -7800,7 +7800,7 @@ class _PipelineMixin:
                         self._get_effective_role_llm_max_async(
                             "vlm" if kind == "drawing" else "extract"
                         )
-                        * DEFAULT_MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
+                        * MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
                     )
                 )
                 task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
@@ -7885,11 +7885,20 @@ class _PipelineMixin:
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
 
+                # Name the failing item the way its own errors do
+                # (``drawings/<id>``, ``table/<id>``, ``equation/<id>``), so the
+                # sibling markers and the wrapped error below match the
+                # item's own failure message.
+                fail_fast_subject = (
+                    f"drawings/{fail_fast_item_id}"
+                    if kind == "drawing"
+                    else f"{kind}/{fail_fast_item_id}"
+                )
                 if fail_fast_item_id is not None and not isinstance(
                     fail_fast_exc, PipelineCancelledException
                 ):
                     sibling_cancel_message = (
-                        f"cancelled (sibling {root_key}/{fail_fast_item_id} failed)"
+                        f"cancelled (sibling {fail_fast_subject} failed)"
                     )
                 else:
                     sibling_cancel_message = "cancelled"
@@ -7942,7 +7951,7 @@ class _PipelineMixin:
                         (PipelineCancelledException, MultimodalAnalysisError),
                     ):
                         raise MultimodalAnalysisError(
-                            f"{root_key}/{fail_fast_item_id}: unexpected error: "
+                            f"{fail_fast_subject}: unexpected error: "
                             f"{type(fail_fast_exc).__name__}: {fail_fast_exc}"
                         ) from fail_fast_exc
                     raise fail_fast_exc
