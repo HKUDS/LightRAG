@@ -74,7 +74,16 @@ def _extract_docx(file_bytes: bytes) -> str:
             in_table = True
             table = Table(element, doc)
             for row in table.rows:
-                row_text = [escape_cell(cell.text) for cell in row.cells]
+                # python-docx lists a horizontally merged cell once per column
+                # it spans. Keep its text in the first column only, and leave
+                # the others empty so the columns stay aligned.
+                row_text = []
+                previous_tc = None
+                for cell in row.cells:
+                    row_text.append(
+                        "" if cell._tc is previous_tc else escape_cell(cell.text)
+                    )
+                    previous_tc = cell._tc
                 if any(cell for cell in row_text):
                     content_parts.append("\t".join(row_text))
     return "\n".join(content_parts)

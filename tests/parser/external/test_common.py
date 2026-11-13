@@ -238,6 +238,19 @@ def test_manifest_load_handles_missing_file(tmp_path: Path) -> None:
     assert load_manifest(tmp_path / "no-such-dir", expected_engine="docling") is None
 
 
+@pytest.mark.parametrize("payload", [b"\xff", b'{"engine":'])
+def test_manifest_load_treats_undecodable_file_as_missing(
+    tmp_path: Path, payload: bytes
+) -> None:
+    # Invalid UTF-8 raises UnicodeDecodeError (a ValueError, not an OSError)
+    # before json.loads runs; it must read as a stale bundle, like malformed
+    # JSON, instead of escaping and failing the parse on every retry.
+    raw = tmp_path / "demo.docling_raw"
+    raw.mkdir()
+    (raw / "_manifest.json").write_bytes(payload)
+    assert load_manifest(raw, expected_engine="docling") is None
+
+
 # ---------------------------------------------------------------------------
 # download_timeout
 # ---------------------------------------------------------------------------
