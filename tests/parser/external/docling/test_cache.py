@@ -124,6 +124,12 @@ def test_is_bundle_valid_missing_manifest(tmp_path: Path, source_file: Path) -> 
     assert is_bundle_valid(raw, source_file) is False
 
 
+def test_is_bundle_valid_manifest_not_utf8(tmp_path: Path, source_file: Path) -> None:
+    raw = _build_valid_bundle(tmp_path, source_file)
+    (raw / "_manifest.json").write_bytes(b"\xff\xfe")
+    assert is_bundle_valid(raw, source_file) is False
+
+
 def test_is_bundle_valid_wrong_engine(tmp_path: Path, source_file: Path) -> None:
     raw = _build_valid_bundle(tmp_path, source_file)
     manifest_path = raw / "_manifest.json"
