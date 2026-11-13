@@ -7,6 +7,7 @@ proven by it NOT being called (it raises) while assets still materialize.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -177,6 +178,65 @@ def test_tampered_cache_file_falls_back_to_download(tmp_path, monkeypatch):
     _wipe_parsed(parsed)
     _extract(p, src, parsed)
     assert counter["n"] == 2  # integrity mismatch -> miss -> re-download
+
+
+@pytest.mark.parametrize("manifest", [b"\xff", b'{"images":'])
+def test_corrupt_manifest_does_not_block_text_extraction(
+    tmp_path, manifest, lightrag_caplog
+):
+    src, parsed = _make_doc(tmp_path, text="# Heading\n\nReadable content.\n")
+    raw = _raw_dir(tmp_path)
+    raw.mkdir()
+    (raw / "_manifest.json").write_bytes(manifest)
+
+    with lightrag_caplog.at_level(logging.DEBUG, logger="lightrag"):
+        blocks, _, _ = _extract(NativeMarkdownParser(), src, parsed)
+
+    # The miss is traceable in the debug log rather than silent.
+    assert any("unreadable manifest" in r.getMessage() for r in lightrag_caplog.records)
+    # Documented residue: an image-less run stores nothing, so the corrupt
+    # manifest stays on disk untouched (and is read as a miss again next time).
+    assert (raw / "_manifest.json").read_bytes() == manifest
+    assert blocks == [
+        {
+            "heading": "Heading",
+            "level": 1,
+            "parent_headings": [],
+            "content": "# Heading\n\nReadable content.",
+        }
+    ]
+
+
+@pytest.mark.parametrize("manifest", [b"\xff", b'{"images":'])
+def test_corrupt_manifest_can_be_rebuilt(tmp_path, manifest):
+    from lightrag.parser.markdown.raw_cache import (
+        NativeImageRawCache,
+        native_md_options_signature,
+    )
+
+    src, _ = _make_doc(tmp_path)
+    raw = _raw_dir(tmp_path)
+    raw.mkdir()
+    (raw / "_manifest.json").write_bytes(manifest)
+    (raw / "stale.png").write_bytes(_PNG_BYTES)
+
+    def _cache():
+        cache = NativeImageRawCache(
+            raw,
+            source_path=src,
+            options_signature=native_md_options_signature(),
+            force_reparse=False,
+        )
+        cache.load()
+        return cache
+
+    cache = _cache()
+    assert cache.get(_URL) is None
+    cache.put(_URL, _PNG_BYTES, "png")
+    cache.flush()
+
+    assert not (raw / "stale.png").exists()
+    assert _cache().get(_URL) == (_PNG_BYTES, "png")
 
 
 def test_svg_cached_as_png_and_reused_without_rasterizing(tmp_path, monkeypatch):
