@@ -6004,9 +6004,10 @@ def normalize_extracted_info(
     - Paragraph and line break tags (``<p>``, ``</p>``, ``<br>``, ``<br/>``,
       ``<br />`` ...): removed in a single-line value, a line break when
       ``multiline`` is set
-    - multiline = False (names, types, keywords): as the last step, collapse
-      every run of spaces, tabs and line breaks (``\\n``, ``\\r``, U+0085,
-      U+2028, U+2029) into one space, so a value never carries a line break
+    - multiline = False (names, types, keywords): after every rule below but
+      the last, collapse every run of spaces, tabs and line breaks (``\\n``,
+      ``\\r``, U+0085, U+2028, U+2029) into one space, so a value never carries
+      a line break
     - multiline = True (descriptions): those line breaks, vertical tab and
       form feed become ``\\n``; spaces and tabs around a line break are
       dropped, and at most one blank line is kept in a row
@@ -6024,6 +6025,9 @@ def normalize_extracted_info(
         - Remove English quotation marks adjacent to Chinese characters
         - Convert non-breaking spaces to regular spaces
         - Convert narrow non-breaking spaces after non-digits to regular spaces
+        - Last, in a single-line value: remove the spaces this leaves between
+          Chinese characters and between Chinese and Latin text
+          (``Apple "苹果"`` gives ``Apple苹果``, as ``Apple 苹果`` does)
 
     Args:
         name: Entity name to normalize
@@ -6095,20 +6099,27 @@ def normalize_extracted_info(
     # line break between two Chinese characters is content and stays.
     space = r"[^\S\n]+" if multiline else r"\s+"
 
-    # Use regex to remove spaces between Chinese characters
-    # Regex explanation:
-    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
-    # {space}: One or more whitespace characters
-    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
-    name = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", name)
+    def remove_spaces_next_to_chinese(text: str) -> str:
+        # Use regex to remove spaces between Chinese characters
+        # Regex explanation:
+        # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
+        # {space}: One or more whitespace characters
+        # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
+        text = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", text)
 
-    # Remove spaces between Chinese and English/numbers/symbols
-    name = re.sub(
-        rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
-    )
-    name = re.sub(
-        rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])", "", name
-    )
+        # Remove spaces between Chinese and English/numbers/symbols
+        text = re.sub(
+            rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])",
+            "",
+            text,
+        )
+        return re.sub(
+            rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])",
+            "",
+            text,
+        )
+
+    name = remove_spaces_next_to_chinese(name)
 
     # Remove outer quotes
     if len(name) >= 2:
@@ -6152,7 +6163,7 @@ def normalize_extracted_info(
         name = re.sub(r"(?<=[^\d])\u202F", " ", name)
 
     # Single-line value: collapse spaces, tabs and line breaks into one space.
-    # This runs last, after the non-breaking space conversions, so its result
+    # This runs after the non-breaking space conversions, so its result
     # is a function of what the previous rules produced: it only merges names,
     # and a second pass finds no whitespace left to change. U+00A0 / U+202F
     # are left to the rules above (a U+202F after a digit is kept on purpose).
@@ -6176,6 +6187,14 @@ def normalize_extracted_info(
     if len(name) < 6 and should_filter_by_dots(name):
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
+
+    # Removing the inner quotes can leave a space the rules above ran too early
+    # to see: 'Apple "苹果"' became "Apple 苹果", while "Apple 苹果" gives
+    # "Apple苹果". Run them once more on the final single-line result. This
+    # comes after everything else, so it is a function of the previous result
+    # and only merges names (see the merge-only rule in the docstring).
+    if remove_inner_quotes and not multiline:
+        name = remove_spaces_next_to_chinese(name)
 
     return name
 

@@ -224,13 +224,14 @@ A rebuild takes the names it rebuilds from the stored objects, but their content
 | split | `<br>` becoming a space: `AcmeCorp` and `Acme<br>Corp` were both stored as `AcmeCorp`, and now normalize to `AcmeCorp` and `Acme Corp` | **Some** records still match. The object is rebuilt from those alone, the no-data fallback never runs, and the facts of the other records are dropped from its description. **Data is lost.** |
 | merge | collapsing whitespace: `Acme\nCorp` and `Acme  Corp` were two stored names, and now both normalize to `Acme Corp` | Each old object matches **all** of its records or **none** of them, because every raw spelling that produced its name moves to the same new name. "None" takes the existing no-data path (`structural_fallback` keeps the stored semantic fields under the rollback policy; otherwise the entity is re-summarized from its relations). |
 
-A split also breaks the agreement between extraction paths in a fresh graph: an entity and a relation endpoint that spelled the same name differently land on different nodes. That was the case when whitespace was collapsed *before* the non-breaking space conversion, so `Acme&nbsp;&nbsp;Corp` kept two spaces while `Acme  Corp` got one; the collapse now runs last.
+A split also breaks the agreement between extraction paths in a fresh graph: an entity and a relation endpoint that spelled the same name differently land on different nodes. That was the case when whitespace was collapsed *before* the non-breaking space conversion, so `Acme&nbsp;&nbsp;Corp` kept two spaces while `Acme  Corp` got one; the collapse now runs after it.
 
 ### Consequences in the current rules
 
 - Paragraph and line break tags are **removed** from a single-line value (`Acme<br>Corp` → `AcmeCorp`), not replaced with a space, although a space would read better.
 - Vertical tab and form feed stay **deleted** by `sanitize_text_for_encoding` in a single-line value, for the same reason. Descriptions convert them to a line break first.
-- The whitespace collapse (spaces, tabs, `\n`, `\r`, U+0085, U+2028, U+2029 into one space) is the **last** step, so it can only merge.
+- The whitespace collapse (spaces, tabs, `\n`, `\r`, U+0085, U+2028, U+2029 into one space) runs **after** the rules that produce the value, so it can only merge.
+- The rules that remove the space between Chinese characters, and between Chinese and Latin text, run **a second time on the final result** of a single-line value whose inner quotes are removed (names, relation endpoints, types, keywords). Removing a quote next to a Chinese character can leave such a space behind (`Apple "苹果"` → `Apple 苹果`), which the first run was too early to see, while the unquoted spelling gives `Apple苹果`. The second run comes after the collapse, the strip and the numeric filters, so it is a function of the previous result and can only merge.
 - Descriptions are not identifiers and are free to change: there, tags and line break characters become `\n`.
 
 ### Accepted residue
