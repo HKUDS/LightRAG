@@ -2498,7 +2498,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.2.0" },
     { name = "pytest-xdist", marker = "extra == 'pytest'", specifier = ">=3.6.0" },
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.6.0" },
-    { name = "python-docx", marker = "extra == 'api'", specifier = ">=0.8.11,<2.0.0" },
+    { name = "python-docx", marker = "extra == 'api'", specifier = ">=1.1.2,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.0" },
     { name = "python-dotenv", marker = "extra == 'api'", specifier = ">=1.2.0" },
     { name = "python-dotenv", marker = "extra == 'pytest'", specifier = ">=1.2.0" },
