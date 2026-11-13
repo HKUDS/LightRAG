@@ -22,6 +22,7 @@ from lightrag.utils import (
     Tokenizer,
     TokenBudgetError,
     normalize_entity_name,
+    remove_spaces_next_to_chinese,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
@@ -246,6 +247,24 @@ def _truncate_entity_identifier(
         preview,
     )
     return display_value
+
+
+def _finalize_extracted_identifier(
+    identifier: str, chunk_key: str, identifier_role: str
+) -> str:
+    """Cap an extracted entity identifier, then run the final space pass.
+
+    ``identifier`` must come from ``normalize_entity_name(...,
+    final_space_pass=False)``. The pass runs after the cap, never before it:
+    the pass shortens a name, so cutting its output can give two spellings
+    different keys where the cut of the previous rules gave them one, which
+    breaks the merge-only rule of :func:`normalize_extracted_info`. Running it
+    on the capped key keeps the new key a function of the stored one.
+    """
+    capped = _truncate_entity_identifier(
+        identifier, DEFAULT_ENTITY_NAME_MAX_LENGTH, chunk_key, identifier_role
+    )
+    return remove_spaces_next_to_chinese(capped)
 
 
 def _truncate_section_context(
@@ -724,7 +743,9 @@ def _handle_single_entity_extraction(
         return None
 
     try:
-        entity_name = normalize_entity_name(record_attributes[1])
+        entity_name = normalize_entity_name(
+            record_attributes[1], final_space_pass=False
+        )
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -792,8 +813,8 @@ def _handle_single_relationship_extraction(
         return None
 
     try:
-        source = normalize_entity_name(record_attributes[1])
-        target = normalize_entity_name(record_attributes[2])
+        source = normalize_entity_name(record_attributes[1], final_space_pass=False)
+        target = normalize_entity_name(record_attributes[2], final_space_pass=False)
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -978,7 +999,9 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            entity_name = normalize_entity_name(str(entity_data.get("name", "")))
+            entity_name = normalize_entity_name(
+                str(entity_data.get("name", "")), final_space_pass=False
+            )
             if not entity_name or not entity_name.strip():
                 logger.info(
                     f"{chunk_key}: Empty entity name found after sanitization in JSON result"
@@ -1003,9 +1026,8 @@ async def _process_json_extraction_result(
                 )
                 continue
 
-            truncated_name = _truncate_entity_identifier(
+            truncated_name = _finalize_extracted_identifier(
                 entity_name,
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Entity name",
             )
@@ -1039,8 +1061,12 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            source = normalize_entity_name(str(rel_data.get("source", "")))
-            target = normalize_entity_name(str(rel_data.get("target", "")))
+            source = normalize_entity_name(
+                str(rel_data.get("source", "")), final_space_pass=False
+            )
+            target = normalize_entity_name(
+                str(rel_data.get("target", "")), final_space_pass=False
+            )
 
             if not source:
                 logger.info(
@@ -1071,18 +1097,22 @@ async def _process_json_extraction_result(
                 )
                 continue
 
-            truncated_source = _truncate_entity_identifier(
+            truncated_source = _finalize_extracted_identifier(
                 source,
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
-            truncated_target = _truncate_entity_identifier(
+            truncated_target = _finalize_extracted_identifier(
                 target,
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
+            # The cap and the final space pass can make the endpoints equal.
+            if truncated_source == truncated_target:
+                logger.debug(
+                    f"{chunk_key}: Source and target are the same: '{truncated_source}'"
+                )
+                continue
 
             edge_data = dict(
                 src_id=truncated_source,
@@ -1616,9 +1646,8 @@ async def _process_extraction_result(
             record_attributes, chunk_key, timestamp, file_path
         )
         if entity_data is not None:
-            truncated_name = _truncate_entity_identifier(
+            truncated_name = _finalize_extracted_identifier(
                 entity_data["entity_name"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Entity name",
             )
@@ -1632,21 +1661,27 @@ async def _process_extraction_result(
             record_attributes, chunk_key, timestamp, file_path
         )
         if relationship_data is not None:
-            truncated_source = _truncate_entity_identifier(
+            truncated_source = _finalize_extracted_identifier(
                 relationship_data["src_id"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
-            truncated_target = _truncate_entity_identifier(
+            truncated_target = _finalize_extracted_identifier(
                 relationship_data["tgt_id"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
-            relationship_data["src_id"] = truncated_source
-            relationship_data["tgt_id"] = truncated_target
-            maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
+            # The cap and the final space pass can make the endpoints equal.
+            if truncated_source == truncated_target:
+                logger.debug(
+                    f"Relationship source and target are the same in: {record_attributes}"
+                )
+            else:
+                relationship_data["src_id"] = truncated_source
+                relationship_data["tgt_id"] = truncated_target
+                maybe_edges[(truncated_source, truncated_target)].append(
+                    relationship_data
+                )
         await _cooperative_yield(i, every=8)
 
     return dict(maybe_nodes), dict(maybe_edges)
