@@ -21,6 +21,7 @@ class _NoopLock:
 class _Graph:
     def __init__(self, nodes=None):
         self.nodes = deepcopy(nodes or {})
+        self.edges = {}
         self.deleted_nodes = []
 
     async def has_node(self, entity_name):
@@ -35,6 +36,22 @@ class _Graph:
 
     async def get_node_edges(self, entity_name):
         return []
+
+    async def has_edge(self, source_entity, target_entity):
+        # The default backend is an undirected ``nx.Graph``.
+        return (source_entity, target_entity) in self.edges or (
+            target_entity,
+            source_entity,
+        ) in self.edges
+
+    async def get_edge(self, source_entity, target_entity):
+        edge = self.edges.get((source_entity, target_entity))
+        if edge is None:
+            edge = self.edges.get((target_entity, source_entity))
+        return deepcopy(edge) if edge is not None else None
+
+    async def upsert_edge(self, source_entity, target_entity, edge_data):
+        self.edges[(source_entity, target_entity)] = deepcopy(edge_data)
 
     async def delete_node(self, entity_name):
         self.deleted_nodes.append(entity_name)
@@ -272,3 +289,305 @@ async def test_merge_preserves_exact_legacy_source_and_target_keys():
     assert result["entity_name"] == legacy_target
     assert set(graph.nodes) == {legacy_target}
     assert graph.deleted_nodes == [legacy_source]
+
+
+@pytest.mark.asyncio
+async def test_create_relation_accepts_the_name_create_entity_normalized():
+    """The same spelling must work on both manual create endpoints.
+
+    ``POST /graphs/entity`` stores the extraction-normalized identifier and its
+    response does not carry the stored spelling back, so a caller that then
+    posts the very same name to ``POST /graphs/relation`` has no way to learn
+    the canonical one. Asking the existence check for the raw spelling refused
+    the relation with "Target entity ... does not exist".
+    """
+    graph = _Graph()
+    entities_vdb = _VectorStorage()
+    relationships_vdb = _VectorStorage()
+
+    await utils_graph.acreate_entity(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        "GoodA",
+        {"description": "supplier", "entity_type": "organization"},
+    )
+    await utils_graph.acreate_entity(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        "Tesla（US）",
+        {"description": "electric vehicles", "entity_type": "organization"},
+    )
+
+    assert set(graph.nodes) == {"GoodA", "Tesla(US)"}
+
+    result = await utils_graph.acreate_relation(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        "GoodA",
+        "Tesla（US）",
+        {"description": "supplies"},
+    )
+
+    assert set(graph.edges) == {("GoodA", "Tesla(US)")}
+    assert {result["src_entity"], result["tgt_entity"]} == {"GoodA", "Tesla(US)"}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_accepts_fully_normalized_spellings():
+    """Both endpoints may need resolving, not just the target."""
+    graph = _Graph(
+        {
+            "A公司": {
+                "entity_id": "A公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+            "B公司": {
+                "entity_id": "B公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+        }
+    )
+
+    result = await utils_graph.acreate_relation(
+        graph,
+        _VectorStorage(),
+        _VectorStorage(),
+        " “Ｂ 公 司” ",
+        "  “Ａ 公 司”  ",
+        {"description": "B supplies A"},
+    )
+
+    assert set(graph.edges) == {("B公司", "A公司")}
+    assert {result["src_entity"], result["tgt_entity"]} == {"A公司", "B公司"}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_prefers_exact_legacy_endpoint_key():
+    """A node written before normalization existed keeps its own key.
+
+    Resolving to the canonical spelling first would make a relation to a
+    historical node fail, which is what the same preference in ``aedit_entity``
+    and ``amerge_entities`` prevents.
+    """
+    legacy_name = "“Ａ 公 司”"
+    graph = _Graph(
+        {
+            legacy_name: {
+                "entity_id": legacy_name,
+                "description": "legacy",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+            "B公司": {
+                "entity_id": "B公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+        }
+    )
+
+    result = await utils_graph.acreate_relation(
+        graph,
+        _VectorStorage(),
+        _VectorStorage(),
+        "B公司",
+        legacy_name,
+        {"description": "legacy endpoint"},
+    )
+
+    assert set(graph.nodes) == {legacy_name, "B公司"}
+    assert set(graph.edges) == {("B公司", legacy_name)}
+    assert {result["src_entity"], result["tgt_entity"]} == {"B公司", legacy_name}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_rejects_endpoints_that_collapse_into_one_node():
+    """Two spellings of one node are a self-loop once resolved."""
+    graph = _Graph(
+        {
+            "Tesla(US)": {
+                "entity_id": "Tesla(US)",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"self-loop relation on 'Tesla\(US\)'"):
+        await utils_graph.acreate_relation(
+            graph,
+            _VectorStorage(),
+            _VectorStorage(),
+            "Tesla（US）",
+            "Tesla(US)",
+            {"description": "would be a self-loop"},
+        )
+
+    assert graph.edges == {}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_prefers_exact_legacy_source_key():
+    """The source side resolves exactly like the target side."""
+    legacy_name = "“Ａ 公 司”"
+    graph = _Graph(
+        {
+            legacy_name: {
+                "entity_id": legacy_name,
+                "description": "legacy",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+            "B公司": {
+                "entity_id": "B公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+        }
+    )
+
+    result = await utils_graph.acreate_relation(
+        graph,
+        _VectorStorage(),
+        _VectorStorage(),
+        legacy_name,
+        "B公司",
+        {"description": "legacy endpoint"},
+    )
+
+    assert set(graph.nodes) == {legacy_name, "B公司"}
+    assert set(graph.edges) == {(legacy_name, "B公司")}
+    assert {result["src_entity"], result["tgt_entity"]} == {legacy_name, "B公司"}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_rejects_endpoints_removed_by_normalization():
+    """A name normalization leaves no identifier to look up."""
+    graph = _Graph(
+        {
+            "B公司": {
+                "entity_id": "B公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="Source entity name cannot be empty"):
+        await utils_graph.acreate_relation(
+            graph,
+            _VectorStorage(),
+            _VectorStorage(),
+            "1",
+            "B公司",
+            {"description": "erased source"},
+        )
+
+    with pytest.raises(ValueError, match="Target entity name cannot be empty"):
+        await utils_graph.acreate_relation(
+            graph,
+            _VectorStorage(),
+            _VectorStorage(),
+            "B公司",
+            "1",
+            {"description": "erased target"},
+        )
+
+    assert graph.edges == {}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_sees_one_edge_through_either_spelling():
+    """Resolved endpoints mean the second call is a duplicate, not a new edge."""
+    graph = _Graph()
+    entities_vdb = _VectorStorage()
+    relationships_vdb = _VectorStorage()
+
+    for name in ("GoodA", "Tesla（US）"):
+        await utils_graph.acreate_entity(
+            graph,
+            entities_vdb,
+            relationships_vdb,
+            name,
+            {"description": "d", "entity_type": "organization"},
+        )
+
+    await utils_graph.acreate_relation(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        "GoodA",
+        "Tesla（US）",
+        {"description": "supplies"},
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        await utils_graph.acreate_relation(
+            graph,
+            entities_vdb,
+            relationships_vdb,
+            "GoodA",
+            "Tesla(US)",
+            {"description": "supplies again"},
+        )
+
+    assert set(graph.edges) == {("GoodA", "Tesla(US)")}
+
+
+@pytest.mark.asyncio
+async def test_create_relation_locks_every_spelling(monkeypatch):
+    """Both spellings are locked, so the pipeline's canonical edge lock in the
+    same namespace excludes this write."""
+    captured = []
+
+    class _SpyLock:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def _spy(keys, **kwargs):
+        captured.append((list(keys), kwargs.get("namespace")))
+        return _SpyLock()
+
+    monkeypatch.setattr(utils_graph, "get_storage_keyed_lock", _spy)
+
+    graph = _Graph(
+        {
+            "A公司": {
+                "entity_id": "A公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+            "B公司": {
+                "entity_id": "B公司",
+                "description": "old",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            },
+        }
+    )
+
+    await utils_graph.acreate_relation(
+        graph,
+        _VectorStorage(),
+        _VectorStorage(),
+        "Ｂ公司",
+        "Ａ公司",
+        {"description": "d"},
+    )
+
+    assert captured == [(["A公司", "B公司", "Ａ公司", "Ｂ公司"], "GraphDB")]

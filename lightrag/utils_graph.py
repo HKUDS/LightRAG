@@ -268,11 +268,98 @@ def _reject_self_loop_relation(
         )
 
 
+class _InvalidEntityNameError(ValueError):
+    """A caller-supplied entity name that cannot address any node.
+
+    A ``ValueError``, so every route that maps ``ValueError`` to 400 keeps
+    doing so; the subclass lets the deletion helpers, which report failures
+    through ``DeletionResult`` instead of raising, tell this caller error
+    (400) apart from a storage failure (500).
+    """
+
+
 def _normalize_manual_entity_name(entity_name: Any) -> str:
     """Apply the extraction naming contract to a manual entity identifier."""
     if not isinstance(entity_name, str):
-        raise ValueError("Entity name must be a string")
+        raise _InvalidEntityNameError("Entity name must be a string")
     return normalize_entity_name(entity_name)
+
+
+def _rejected_deletion(doc_id: Any, error: Exception) -> DeletionResult:
+    """The ``DeletionResult`` for a deletion refused on its arguments."""
+    message = f"Invalid deletion request: {error}"
+    logger.warning(message)
+    return DeletionResult(
+        status="fail", doc_id=str(doc_id), message=message, status_code=400
+    )
+
+
+def _manual_entity_lock_keys(*spellings: tuple[str, str]) -> list[str]:
+    """Keyed-lock keys covering every candidate a manual entity name can resolve to.
+
+    Each argument is a ``(requested, normalized)`` pair. Both spellings are
+    locked because :func:`_resolve_manual_entity_name` may pick either, and
+    the doc-ingest pipeline locks the canonical names in the same
+    ``GraphDB`` namespace. An empty normalized name is never a node, so it is
+    not locked.
+    """
+    keys = set()
+    for requested, normalized in spellings:
+        keys.add(requested)
+        if normalized:
+            keys.add(normalized)
+    return sorted(keys)
+
+
+async def _resolve_manual_entity_name(
+    chunk_entity_relation_graph,
+    requested_name: str,
+    normalized_name: str,
+    *,
+    role: str = "Entity",
+) -> str:
+    """Resolve a caller's entity spelling to the node identifier it addresses.
+
+    The rule every manual graph entry point shares: an exact key that differs
+    from its normalized form wins when such a node exists, so a node stored
+    before manual names were normalized stays reachable; otherwise the
+    extraction-normalized identifier that ``acreate_entity`` stores.
+
+    Call it under a keyed lock taken with :func:`_manual_entity_lock_keys` for
+    the same pair, so the chosen node cannot be renamed away before the caller
+    mutates it. Raises ``ValueError`` (``"<role> name cannot be empty after
+    normalization"``) when the name normalizes to nothing and no node holds the
+    exact spelling.
+    """
+    if requested_name != normalized_name and await chunk_entity_relation_graph.has_node(
+        requested_name
+    ):
+        return requested_name
+    if normalized_name:
+        return normalized_name
+    raise _InvalidEntityNameError(f"{role} name cannot be empty after normalization")
+
+
+async def resolve_entity_name_for_lookup(
+    chunk_entity_relation_graph, entity_name: str
+) -> str:
+    """Resolve an entity name for a read, the way the manual write paths do.
+
+    Lets a lookup find the node a caller created through ``acreate_entity``
+    with the spelling that call accepted. Takes no lock, so the answer can be
+    stale by the time the caller acts on it; write paths must use
+    :func:`_resolve_manual_entity_name` under their keyed lock instead. A
+    lookup answers for a name rather than refusing it: a non-string, or a name
+    that normalizes to nothing, is returned unchanged and simply finds nothing.
+    """
+    if not isinstance(entity_name, str):
+        return entity_name
+    normalized_name = normalize_entity_name(entity_name)
+    if not normalized_name:
+        return entity_name
+    return await _resolve_manual_entity_name(
+        chunk_entity_relation_graph, entity_name, normalized_name
+    )
 
 
 def _declined_commit_error(context: str) -> RuntimeError:
@@ -548,6 +635,16 @@ async def adelete_by_entity(
 
     Also cleans up entity_chunks_storage and relation_chunks_storage to remove chunk tracking.
 
+    ``entity_name`` must be the STORED name: unlike every other manual entry
+    point it is not resolved to a normalized spelling, so a retry of the same
+    request always targets the same node. Resolution would let a retry after a
+    partial failure (the documented recovery) fall through to a DIFFERENT live
+    node once the first attempt removed the exact one, and delete it; see
+    ``docs/ProgramingWithCore.md``. When the exact name is absent but its
+    normalized spelling is a node, the ``not_found`` message names that stored
+    spelling. A non-string name answers ``fail`` with ``status_code=400``
+    rather than raising.
+
     Tracking rows are removed only AFTER the graph node is gone, matching the
     ordering of the document purge path. The reverse order is forbidden by the
     purge recovery contract: a tracking row is the authoritative attribution
@@ -605,20 +702,42 @@ async def adelete_by_entity(
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
+    requested_entity_name = entity_name
+    try:
+        normalized_entity_name = _normalize_manual_entity_name(requested_entity_name)
+    except _InvalidEntityNameError as e:
+        return _rejected_deletion(requested_entity_name, e)
+
     # Use keyed lock for entity to ensure atomic graph and vector db operations.
     # The doc-ingest pipeline locks edges under sorted([src, tgt]) in this same
-    # namespace, so [entity_name] already mutually excludes any concurrent edge
-    # write that touches this entity — get_storage_keyed_lock acquires one
-    # mutex per key, and identical key strings share the same mutex.
+    # namespace, so locking the entity's names already mutually excludes any
+    # concurrent edge write that touches this entity — get_storage_keyed_lock
+    # acquires one mutex per key, and identical key strings share the same
+    # mutex.
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
     async with get_storage_keyed_lock(
-        [entity_name], namespace=namespace, enable_logging=False
+        _manual_entity_lock_keys((requested_entity_name, normalized_entity_name)),
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
             # Check if the entity exists
             if not await chunk_entity_relation_graph.has_node(entity_name):
-                logger.warning(f"Entity '{entity_name}' not found.")
+                not_found_message = f"Entity '{entity_name}' not found."
+                if (
+                    normalized_entity_name
+                    and normalized_entity_name != entity_name
+                    and await chunk_entity_relation_graph.has_node(
+                        normalized_entity_name
+                    )
+                ):
+                    # A hint, never a redirect: see the docstring.
+                    not_found_message = (
+                        f"Entity '{entity_name}' not found; it is stored as "
+                        f"'{normalized_entity_name}'. Delete it by that name."
+                    )
+                logger.warning(not_found_message)
                 # An absent node with a surviving tracking row is by definition
                 # an orphan: a previous deletion removed the node but failed
                 # before its tracking row, or an older release never cleaned up
@@ -645,7 +764,7 @@ async def adelete_by_entity(
                 return DeletionResult(
                     status="not_found",
                     doc_id=entity_name,
-                    message=f"Entity '{entity_name}' not found.",
+                    message=not_found_message,
                     status_code=404,
                 )
             # Retrieve related relationships before deleting the node
@@ -778,6 +897,11 @@ async def adelete_by_relation(
 
     Also cleans up relation_chunks_storage to remove chunk tracking.
 
+    Both endpoints are resolved with :func:`_resolve_manual_entity_name`. A
+    pair that resolves to one node is NOT refused: deleting is how a self-loop
+    an older release stored gets removed. A name that cannot address any node
+    answers ``fail`` with ``status_code=400`` rather than raising.
+
     As in :func:`adelete_by_entity`, the tracking row is removed only after the
     edge itself is gone, so a failure can never strand a live relation without
     its authoritative provenance; the inverse residue (an orphan row) is swept
@@ -804,18 +928,49 @@ async def adelete_by_relation(
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     relation_str = f"{source_entity} -> {target_entity}"
-    # Normalize entity order for undirected graph (ensures consistent key generation)
-    if source_entity > target_entity:
-        source_entity, target_entity = target_entity, source_entity
+    requested_source_entity = source_entity
+    requested_target_entity = target_entity
+    try:
+        normalized_source_entity = _normalize_manual_entity_name(
+            requested_source_entity
+        )
+        normalized_target_entity = _normalize_manual_entity_name(
+            requested_target_entity
+        )
+    except _InvalidEntityNameError as e:
+        return _rejected_deletion(relation_str, e)
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-    sorted_edge_key = sorted([source_entity, target_entity])
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        _manual_entity_lock_keys(
+            (requested_source_entity, normalized_source_entity),
+            (requested_target_entity, normalized_target_entity),
+        ),
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
+            resolved_source = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_source_entity,
+                normalized_source_entity,
+                role="Source entity",
+            )
+            resolved_target = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_target_entity,
+                normalized_target_entity,
+                role="Target entity",
+            )
+            # Normalize entity order for undirected graph (ensures consistent
+            # key generation). Both endpoints may resolve to one node: that is
+            # deliberately NOT refused here. A self-loop is invariant-violating
+            # data (see `_reject_self_loop_relation`), and this is the call
+            # that removes one an older release left behind.
+            source_entity, target_entity = sorted([resolved_source, resolved_target])
+
             # Check if the relation exists
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -896,6 +1051,8 @@ async def adelete_by_relation(
                 message=message,
                 status_code=200,
             )
+        except _InvalidEntityNameError as e:
+            return _rejected_deletion(relation_str, e)
         except Exception as e:
             error_message = f"Error while deleting relation from '{source_entity}' to '{target_entity}': {e}"
             logger.error(error_message)
@@ -1656,45 +1813,31 @@ async def aedit_entity(
     # get_storage_keyed_lock takes one mutex per key — so locking the
     # entity name already mutually excludes any concurrent edge write that
     # touches it, no need to enumerate incident edges here.
-    lock_keys = {requested_entity_name}
-    if normalized_entity_name:
-        lock_keys.add(normalized_entity_name)
+    spellings = [(requested_entity_name, normalized_entity_name)]
     if has_new_entity_name:
-        lock_keys.add(requested_new_entity_name)
-        if normalized_new_entity_name:
-            lock_keys.add(normalized_new_entity_name)
+        spellings.append((requested_new_entity_name, normalized_new_entity_name))
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
     async with get_storage_keyed_lock(
-        sorted(lock_keys), namespace=namespace, enable_logging=False
+        _manual_entity_lock_keys(*spellings),
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
-            # Prefer an exact legacy key when it exists. Otherwise resolve the
-            # caller's spelling to the extraction-normalized identifier.
-            if (
-                requested_entity_name != normalized_entity_name
-                and await chunk_entity_relation_graph.has_node(requested_entity_name)
-            ):
-                entity_name = requested_entity_name
-            elif normalized_entity_name:
-                entity_name = normalized_entity_name
-            else:
-                raise ValueError("Entity name cannot be empty after normalization")
+            entity_name = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_entity_name,
+                normalized_entity_name,
+            )
 
             if has_new_entity_name:
-                if (
-                    requested_new_entity_name != normalized_new_entity_name
-                    and await chunk_entity_relation_graph.has_node(
-                        requested_new_entity_name
-                    )
-                ):
-                    new_entity_name = requested_new_entity_name
-                elif normalized_new_entity_name:
-                    new_entity_name = normalized_new_entity_name
-                else:
-                    raise ValueError("Entity name cannot be empty after normalization")
+                new_entity_name = await _resolve_manual_entity_name(
+                    chunk_entity_relation_graph,
+                    requested_new_entity_name,
+                    normalized_new_entity_name,
+                )
                 updated_data["entity_name"] = new_entity_name
             else:
                 new_entity_name = entity_name
@@ -1861,6 +2004,10 @@ async def aedit_relation(
     Updates relation (edge) information in the knowledge graph and re-embeds the relation in the vector database.
     Also synchronizes the relation_chunks_storage to track which chunks reference this relation.
 
+    Both endpoints are resolved with :func:`_resolve_manual_entity_name`, so
+    the spelling ``acreate_entity`` accepted works here too. Two spellings of
+    one node are refused as a self-loop; delete one instead of editing it.
+
     Args:
         chunk_entity_relation_graph: Graph storage instance
         entities_vdb: Vector database storage for entities
@@ -1906,18 +2053,45 @@ async def aedit_relation(
         reject_unknown=True,
     )
 
-    # Normalize entity order for undirected graph (ensures consistent key generation)
-    if source_entity > target_entity:
-        source_entity, target_entity = target_entity, source_entity
+    requested_source_entity = source_entity
+    requested_target_entity = target_entity
+    normalized_source_entity = _normalize_manual_entity_name(requested_source_entity)
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-    sorted_edge_key = sorted([source_entity, target_entity])
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        _manual_entity_lock_keys(
+            (requested_source_entity, normalized_source_entity),
+            (requested_target_entity, normalized_target_entity),
+        ),
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
+            resolved_source = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_source_entity,
+                normalized_source_entity,
+                role="Source entity",
+            )
+            resolved_target = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_target_entity,
+                normalized_target_entity,
+                role="Target entity",
+            )
+            # Two spellings of one node resolve to a self-loop, which an edit
+            # must not write back; an existing one is removed by deleting it.
+            _reject_self_loop_relation(
+                resolved_source, resolved_target, operation="edit"
+            )
+            # Normalize entity order for undirected graph. The sorted pair is
+            # also the VDB identity `acreate_relation` writes, and resolution
+            # can reorder a pair (`Ｂ公司` sorts after `C公司`, `B公司` before).
+            source_entity, target_entity = sorted([resolved_source, resolved_target])
+
             # 1. Get current relation information
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -2504,6 +2678,10 @@ async def acreate_relation(
     Manual creation does not protect the relation or its description from deletion:
     once documents mention it, purging its last real source may delete it entirely.
 
+    Both endpoints are resolved with :func:`_resolve_manual_entity_name`, so
+    the spelling ``acreate_entity`` accepted works here too. Two spellings of
+    one node are refused as a self-loop.
+
     Args:
         chunk_entity_relation_graph: Graph storage instance
         entities_vdb: Vector database storage for entities
@@ -2536,8 +2714,9 @@ async def acreate_relation(
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
     )
-    # The graph edge below is written with these exact strings, so comparing
-    # them raw is precisely the condition that would produce a self-loop.
+    # Cheap early refusal, before the lock: identical strings resolve to one
+    # node whatever the graph holds. Two DIFFERENT spellings of one node are
+    # caught after resolution below.
     _reject_self_loop_relation(source_entity, target_entity, operation="create")
 
     # Same reasoning as `acreate_entity`: values of the recognised fields are
@@ -2549,14 +2728,39 @@ async def acreate_relation(
         reject_unknown=False,
     )
 
+    requested_source_entity = source_entity
+    requested_target_entity = target_entity
+    normalized_source_entity = _normalize_manual_entity_name(requested_source_entity)
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
+
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-    sorted_edge_key = sorted([source_entity, target_entity])
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        _manual_entity_lock_keys(
+            (requested_source_entity, normalized_source_entity),
+            (requested_target_entity, normalized_target_entity),
+        ),
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
+            # The caller's direction is kept: the graph edge below is written
+            # source -> target, only the VDB identity is sorted.
+            source_entity = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_source_entity,
+                normalized_source_entity,
+                role="Source entity",
+            )
+            target_entity = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_target_entity,
+                normalized_target_entity,
+                role="Target entity",
+            )
+            _reject_self_loop_relation(source_entity, target_entity, operation="create")
+
             # Check if both entities exist
             source_exists = await chunk_entity_relation_graph.has_node(source_entity)
             target_exists = await chunk_entity_relation_graph.has_node(target_entity)
@@ -3509,12 +3713,10 @@ async def amerge_entities(
     # Lock every exact/canonical candidate before resolving legacy keys. This
     # shares the extraction pipeline's canonical locks while preserving access
     # to historical manually-created names.
-    lock_key_set = set(requested_source_entities)
-    lock_key_set.update(name for name in normalized_source_entities if name)
-    lock_key_set.add(requested_target_entity)
-    if normalized_target_entity:
-        lock_key_set.add(normalized_target_entity)
-    lock_keys = sorted(lock_key_set)
+    lock_keys = _manual_entity_lock_keys(
+        *zip(requested_source_entities, normalized_source_entities, strict=True),
+        (requested_target_entity, normalized_target_entity),
+    )
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -3529,17 +3731,12 @@ async def amerge_entities(
                 normalized_source_entities,
                 strict=True,
             ):
-                if (
-                    requested_name != normalized_name
-                    and await chunk_entity_relation_graph.has_node(requested_name)
-                ):
-                    resolved_name = requested_name
-                elif normalized_name:
-                    resolved_name = normalized_name
-                else:
-                    raise ValueError(
-                        "Source entity name cannot be empty after normalization"
-                    )
+                resolved_name = await _resolve_manual_entity_name(
+                    chunk_entity_relation_graph,
+                    requested_name,
+                    normalized_name,
+                    role="Source entity",
+                )
 
                 # Multiple caller spellings may resolve to one canonical node.
                 # Merge it once so relations, vectors, and deletion are not
@@ -3548,17 +3745,12 @@ async def amerge_entities(
                     seen_source_entities.add(resolved_name)
                     resolved_source_entities.append(resolved_name)
 
-            if (
-                requested_target_entity != normalized_target_entity
-                and await chunk_entity_relation_graph.has_node(requested_target_entity)
-            ):
-                target_entity = requested_target_entity
-            elif normalized_target_entity:
-                target_entity = normalized_target_entity
-            else:
-                raise ValueError(
-                    "Target entity name cannot be empty after normalization"
-                )
+            target_entity = await _resolve_manual_entity_name(
+                chunk_entity_relation_graph,
+                requested_target_entity,
+                normalized_target_entity,
+                role="Target entity",
+            )
 
             return await _merge_entities_impl(
                 chunk_entity_relation_graph,
@@ -3671,7 +3863,14 @@ async def get_entity_info(
     entity_name: str,
     include_vector_data: bool = False,
 ) -> dict[str, str | None | dict[str, str]]:
-    """Get detailed information of an entity"""
+    """Get detailed information of an entity.
+
+    ``entity_name`` is resolved with :func:`resolve_entity_name_for_lookup`;
+    the returned ``entity_name`` is the stored identifier.
+    """
+    entity_name = await resolve_entity_name_for_lookup(
+        chunk_entity_relation_graph, entity_name
+    )
 
     # Get information from the graph
     node_data = await chunk_entity_relation_graph.get_node(entity_name)
@@ -3708,9 +3907,18 @@ async def get_relation_info(
         tgt_entity: Target entity name
         include_vector_data: Whether to include vector database information
 
+    Both names are resolved with :func:`resolve_entity_name_for_lookup`; the
+    returned ``src_entity`` / ``tgt_entity`` are the stored identifiers.
+
     Returns:
         Dictionary containing relationship information
     """
+    src_entity = await resolve_entity_name_for_lookup(
+        chunk_entity_relation_graph, src_entity
+    )
+    tgt_entity = await resolve_entity_name_for_lookup(
+        chunk_entity_relation_graph, tgt_entity
+    )
 
     # Get information from the graph
     edge_data = await chunk_entity_relation_graph.get_edge(src_entity, tgt_entity)

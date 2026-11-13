@@ -1400,6 +1400,24 @@ endpoints of every relationship before writing any custom KG data.
 `merge_entities` resolves existing exact legacy source/target names first and
 otherwise uses normalized names. The target may be an existing entity or a
 new normalized name created by the merge.
+`create_relation`, `edit_relation` and `delete_by_relation` resolve both
+endpoints the same way, and `get_entity_info`, `get_relation_info` and
+`GET /graph/entity/exists` resolve their names the same way too. A spelling
+`create_entity` accepted therefore addresses that entity, even though the
+stored name differs. Two spellings that resolve to one entity form a
+self-loop, which `create_relation` and `edit_relation` refuse.
+`delete_by_relation` does not refuse it, because deleting is how a self-loop
+left by an older release gets removed.
+
+`delete_by_entity` is the exception: it deletes only the entity stored under
+exactly the given name, so a retry of the same request always targets the
+same node. Suppose an exact legacy name and its normalized spelling are two
+different entities. If a deletion of the legacy one fails after removing the
+node, and the name were resolved, the retry would fall through to the other
+entity and delete it. When the exact name is absent but its normalized
+spelling is stored, the `not_found` (404) message names the stored spelling.
+Look a name up with `get_entity_info` to learn its stored spelling before
+deleting.
 
 ### Relation Weight Contract
 
