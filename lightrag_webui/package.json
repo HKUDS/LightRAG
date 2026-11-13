@@ -39,7 +39,7 @@
     "@react-sigma/layout-random": "^5.0.6",
     "@react-sigma/minimap": "^5.0.6",
     "@sigma/edge-curve": "^3.1.0",
-    "@sigma/node-border": "^3.0.0",
+    "@sigma/node-border": "^4.0.0",
     "axios": "^1.21.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

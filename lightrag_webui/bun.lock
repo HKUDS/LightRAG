@@ -28,7 +28,7 @@
         "@react-sigma/layout-random": "^5.0.6",
         "@react-sigma/minimap": "^5.0.6",
         "@sigma/edge-curve": "^3.1.0",
-        "@sigma/node-border": "^3.0.0",
+        "@sigma/node-border": "^4.0.0",
         "axios": "^1.21.1",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -369,7 +369,7 @@
 
     "@sigma/edge-curve": ["@sigma/edge-curve@3.1.0", "", { "peerDependencies": { "sigma": ">=3.0.0-beta.10" } }, "sha512-OFWkfAXEsm+X8l1K4K49cC0psB0gQ+gqxKA08HG5piNPdzrDZ5gG9Gza6htZ5AirOVwd/4/uq/gPpD5En+H+3Q=="],
 
-    "@sigma/node-border": ["@sigma/node-border@3.0.0", "", { "peerDependencies": { "sigma": ">=3.0.0-beta.17" } }, "sha512-mE3zUfjvJVuAMhSjiP/zdlkqe0OVTETxd04XHUwof01YqdzTk0OB4ACJIhWrwgsBXl7tTd9lPuKoroafLh8MtQ=="],
+    "@sigma/node-border": ["@sigma/node-border@4.0.0", "", { "peerDependencies": { "sigma": "^4.0.0" } }, "sha512-4/HuHrflTRqJvnLg/3dW4zU46fg84Hb+Yd7EGkQshH9PQuKm6nD9CjWhman+3c74bK3B+mfog/q9g/MIjbnobA=="],
 
     "@stylistic/eslint-plugin": ["@stylistic/eslint-plugin@5.10.0", "", { "dependencies": { "@eslint-community/eslint-utils": "^4.9.1", "@typescript-eslint/types": "^8.56.0", "eslint-visitor-keys": "^4.2.1", "espree": "^10.4.0", "estraverse": "^5.3.0", "picomatch": "^4.0.3" }, "peerDependencies": { "eslint": "^9.0.0 || ^10.0.0" } }, "sha512-nPK52ZHvot8Ju/0A4ucSX1dcPV2/1clx0kLcH5wDmrE4naKso7TUC/voUyU1O9OTKTrR6MYip6LP0ogEMQ9jPQ=="],
 
