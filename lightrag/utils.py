@@ -1265,6 +1265,9 @@ def priority_limit_async_func_call(
         shutdown_event = asyncio.Event()
         initialized = False
         accepting_new_tasks = True
+        # Set once shutdown starts cancelling by force. From then on the
+        # worker's own cancellation is the single cancel a running call gets.
+        forced_shutdown = False
         worker_health_check_task = None
 
         # Enhanced task state management
@@ -1563,7 +1566,11 @@ def priority_limit_async_func_call(
             exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
 
             def cancel_execution(future):
-                if future.cancelled():
+                # A forced shutdown cancels the result future AND the worker.
+                # Forwarding here as well would cancel the call twice, and the
+                # second cancel would abort cleanup the first one started
+                # (an async finally / __aexit__ closing the provider client).
+                if future.cancelled() and not forced_shutdown:
                     exec_task.cancel()
 
             # The caller awaits a separate result future, not the execution task.
@@ -2153,7 +2160,7 @@ def priority_limit_async_func_call(
             cancellation so shutdown never blocks indefinitely.
             """
             nonlocal accepting_new_tasks, initialized, worker_health_check_task
-            nonlocal pump_task
+            nonlocal pump_task, forced_shutdown
             logger.info(f"{queue_name}: Shutting down priority queue workers")
 
             if use_global_limit:
@@ -2184,6 +2191,11 @@ def priority_limit_async_func_call(
                     )
 
             if not graceful or drain_timed_out:
+                # Must precede the future cancellations below: their done
+                # callbacks run at the next suspension point (the slot pump
+                # await), before the workers are cancelled.
+                forced_shutdown = True
+
                 # Cancel all active futures
                 for future in list(active_futures):
                     if not future.done():

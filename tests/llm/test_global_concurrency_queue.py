@@ -1033,6 +1033,56 @@ async def test_worker_cancel_cancels_inflight_call_global_limit_path():
 
 @pytest.mark.parametrize("global_limit", [False, True])
 @pytest.mark.parametrize("execution_timeout", [None, 30.0])
+@pytest.mark.parametrize("drain_timeout", [None, 0.1])
+async def test_forced_shutdown_cancels_running_call_once(
+    global_limit, execution_timeout, drain_timeout
+):
+    """A forced shutdown (graceful=False, or a graceful drain that timed out)
+    must cancel a running call exactly once. A second cancel lands in the
+    call's async cleanup and aborts it, leaving provider resources open."""
+    _init({GROUP: 1} if global_limit else None)
+    entered = asyncio.Event()
+    cleanup = {"finished": False, "interrupted": 0}
+
+    async def func():
+        entered.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            # Async teardown, like ``async with client:`` closing on exit.
+            try:
+                await asyncio.sleep(0.05)
+                cleanup["finished"] = True
+            except asyncio.CancelledError:
+                cleanup["interrupted"] += 1
+                raise
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1,
+        max_execution_timeout=execution_timeout,
+        queue_name="forced shutdown",
+        concurrency_group=GROUP if global_limit else None,
+    )(func)
+    call = asyncio.create_task(wrapped())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        if drain_timeout is None:
+            await wrapped.shutdown(graceful=False)
+        else:
+            await wrapped.shutdown(graceful=True, timeout=drain_timeout)
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        # shutdown() waits for its workers, so the cleanup is already over.
+        assert cleanup == {"finished": True, "interrupted": 0}
+        if global_limit:
+            assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(call, return_exceptions=True)
+
+
+@pytest.mark.parametrize("global_limit", [False, True])
+@pytest.mark.parametrize("execution_timeout", [None, 30.0])
 @pytest.mark.parametrize("abandonment", ["cancel", "timeout"])
 async def test_abandoned_running_call_frees_worker(
     global_limit, execution_timeout, abandonment
