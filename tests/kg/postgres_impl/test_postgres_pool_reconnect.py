@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
 from lightrag.kg.postgres_impl import PostgreSQLDB
 
@@ -147,3 +150,166 @@ async def test_reset_pool_closes_only_the_pool_that_failed():
 
     newer.close.assert_awaited_once()
     assert db.pool is None
+
+
+def gated_create_pool(results):
+    """A create_pool stand-in whose first call waits until ``release`` is set.
+
+    ``results`` gives, per call, a pool to return or an exception to raise.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def create_pool(**_kwargs):
+        nonlocal calls
+        calls += 1
+        result = results[calls - 1]
+        if calls == 1:
+            started.set()
+            await release.wait()
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    return create_pool, started, release, lambda: calls
+
+
+@pytest.mark.asyncio
+async def test_waiters_share_the_failure_of_the_attempt_they_waited_on():
+    db = make_db()
+    create_pool, started, release, calls = gated_create_pool(
+        [refused(), make_pool(MagicMock())]
+    )
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        leader = asyncio.create_task(db._ensure_pool())
+        await started.wait()
+        waiters = [asyncio.create_task(db._ensure_pool()) for _ in range(5)]
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(leader, *waiters, return_exceptions=True), timeout=5
+        )
+
+        assert all(isinstance(r, ConnectionRefusedError) for r in results)
+        assert calls() == 1
+        assert db.pool is None
+
+        # A caller that arrives after the failed attempt makes its own.
+        await asyncio.wait_for(db._ensure_pool(), timeout=5)
+
+    assert calls() == 2
+    assert db.pool is not None
+    assert not db._pool_reconnect_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_waiters_share_the_pool_of_the_attempt_they_waited_on():
+    db = make_db()
+    healthy = make_pool(MagicMock())
+    create_pool, started, release, calls = gated_create_pool([healthy])
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        leader = asyncio.create_task(db._ensure_pool())
+        await started.wait()
+        waiters = [asyncio.create_task(db._ensure_pool()) for _ in range(5)]
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(leader, *waiters), timeout=5)
+
+    assert calls() == 1
+    assert db.pool is healthy
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_attempt_is_not_shared_with_its_waiters():
+    db = make_db()
+    healthy = make_pool(MagicMock())
+    create_pool, started, _release, calls = gated_create_pool([refused(), healthy])
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        leader = asyncio.create_task(db._ensure_pool())
+        await started.wait()
+        waiter = asyncio.create_task(db._ensure_pool())
+        await asyncio.sleep(0)
+        leader.cancel()
+        await asyncio.wait_for(waiter, timeout=5)
+
+    with pytest.raises(asyncio.CancelledError):
+        await leader
+    assert calls() == 2
+    assert db.pool is healthy
+
+
+@pytest.mark.asyncio
+async def test_a_transient_reconnect_failure_is_a_warning(lightrag_log_records):
+    db = make_db()
+    create_pool = AsyncMock(side_effect=refused())
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        with pytest.raises(ConnectionRefusedError):
+            await db._ensure_pool()
+
+    messages = [(r.levelno, r.getMessage()) for r in lightrag_log_records]
+    assert any(
+        level == logging.WARNING and "Failed to reconnect database" in msg
+        for level, msg in messages
+    )
+    assert not any(level >= logging.ERROR for level, _ in messages)
+
+
+@pytest.mark.asyncio
+async def test_a_non_transient_reconnect_failure_is_an_error(lightrag_log_records):
+    db = make_db()
+    create_pool = AsyncMock(
+        side_effect=asyncpg.exceptions.InvalidPasswordError("bad password")
+    )
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        with pytest.raises(asyncpg.exceptions.InvalidPasswordError):
+            await db._ensure_pool()
+
+    assert any(
+        r.levelno == logging.ERROR and "Failed to connect database" in r.getMessage()
+        for r in lightrag_log_records
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_is_an_error_after_all_attempts(lightrag_log_records):
+    db = make_db(attempts=3)
+    create_pool = AsyncMock(side_effect=refused())
+
+    with patch("lightrag.kg.postgres_impl.asyncpg.create_pool", create_pool):
+        with pytest.raises(ConnectionRefusedError):
+            await db.initdb()
+
+    assert create_pool.await_count == 3
+    assert any(
+        r.levelno == logging.ERROR and "Failed to connect database" in r.getMessage()
+        for r in lightrag_log_records
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_log_reports_the_limit_of_the_running_loop(lightrag_log_records):
+    db = make_db(attempts=7)
+
+    with pytest.raises(ConnectionRefusedError):
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(2),
+            retry=retry_if_exception_type(ConnectionError),
+            before_sleep=db._log_transient_failure,
+            reraise=True,
+        ):
+            with attempt:
+                raise refused()
+
+    messages = [
+        r.getMessage()
+        for r in lightrag_log_records
+        if "transient connection issue" in r.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "attempt 1/2" in messages[0]
