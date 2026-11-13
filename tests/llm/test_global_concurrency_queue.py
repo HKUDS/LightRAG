@@ -1381,3 +1381,314 @@ async def test_cancel_during_stats_publish_stops_running_call(
         publish_release.set()
         await wrapped.shutdown(graceful=False)
         await asyncio.gather(call, return_exceptions=True)
+
+
+@pytest.mark.parametrize("graceful", [False, True])
+@pytest.mark.parametrize("queue_timeout", [None, 10.0])
+@pytest.mark.parametrize("waiting_count", [1, 32])
+async def test_shutdown_rejects_call_waiting_to_enter_bounded_queue(
+    graceful, queue_timeout, waiting_count
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def provider(value):
+        calls.append(value)
+        if value == "running":
+            entered.set()
+            await release.wait()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1, max_queue_size=1, queue_name="bounded admission shutdown"
+    )(provider)
+    running = asyncio.create_task(wrapped("running"))
+    queued = closing = None
+    waiting = []
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        queued = asyncio.create_task(wrapped("queued"))
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["queued"] != 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+        waiting = [
+            asyncio.create_task(wrapped("not admitted", _queue_timeout=queue_timeout))
+            for _ in range(waiting_count)
+        ]
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["in_flight"] != waiting_count + 2:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+
+        closing = asyncio.create_task(wrapped.shutdown(graceful=graceful, timeout=2.0))
+        for call in waiting:
+            with pytest.raises(RuntimeError, match="Queue is shutting down"):
+                await asyncio.wait_for(asyncio.shield(call), timeout=0.5)
+        assert calls == ["running"]
+
+        if graceful:
+            release.set()
+            assert await running == "running"
+            assert await queued == "queued"
+        else:
+            for call in (running, queued):
+                with pytest.raises(asyncio.CancelledError):
+                    await call
+        await closing
+        assert calls == (["running", "queued"] if graceful else ["running"])
+        stats = await wrapped.get_queue_stats()
+        assert stats["queued"] == 0
+        assert stats["in_flight"] == 0
+        assert stats["submitted_total"] == 2
+        assert stats["rejected_total"] == waiting_count
+        with pytest.raises(RuntimeError, match="Queue is shutting down"):
+            await wrapped("after shutdown")
+        assert (await wrapped.get_queue_stats())["rejected_total"] == waiting_count + 1
+    finally:
+        release.set()
+        if closing is not None:
+            await closing
+        await wrapped.shutdown(graceful=False)
+        await asyncio.gather(
+            *(call for call in (running, queued, *waiting) if call is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.parametrize("abandonment", [None, "cancel", "timeout"])
+async def test_bounded_admission_resumes_after_capacity_is_available(abandonment):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def provider(value):
+        calls.append(value)
+        if value == "running":
+            entered.set()
+            await release.wait()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1, max_queue_size=1, queue_name="bounded admission capacity"
+    )(provider)
+    running = asyncio.create_task(wrapped("running"))
+    pending = [running]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        queued = asyncio.create_task(wrapped("queued"))
+        pending.append(queued)
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["queued"] != 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+
+        waiting = asyncio.create_task(
+            wrapped(
+                "waiting", _queue_timeout=0.05 if abandonment == "timeout" else None
+            )
+        )
+        pending.append(waiting)
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (await wrapped.get_queue_stats())["in_flight"] != 3:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0)
+        if abandonment == "cancel":
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+        elif abandonment == "timeout":
+            with pytest.raises(lr_utils.QueueFullError):
+                await waiting
+
+        if abandonment is None:
+            another = asyncio.create_task(wrapped("another"))
+            pending.append(another)
+            deadline = asyncio.get_running_loop().time() + 2.0
+            while (await wrapped.get_queue_stats())["in_flight"] != 4:
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0)
+
+        release.set()
+        assert await asyncio.wait_for(running, timeout=2.0) == "running"
+        assert await asyncio.wait_for(queued, timeout=2.0) == "queued"
+        if abandonment is None:
+            assert await asyncio.wait_for(waiting, timeout=2.0) == "waiting"
+            assert await asyncio.wait_for(another, timeout=2.0) == "another"
+        assert await asyncio.wait_for(wrapped("next"), timeout=2.0) == "next"
+        assert calls == (
+            ["running", "queued", "waiting", "another", "next"]
+            if abandonment is None
+            else ["running", "queued", "next"]
+        )
+        stats = await _wait_drained(wrapped)
+        assert stats["completed_total"] == len(calls)
+        assert stats["submitted_total"] == len(calls)
+        assert stats["rejected_total"] == 0
+    finally:
+        release.set()
+        for call in pending:
+            call.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await wrapped.shutdown(graceful=False)
+
+
+def test_bounded_admission_drain_has_linear_scheduling_cost():
+    class CountingLoop(asyncio.SelectorEventLoop):
+        def __init__(self):
+            super().__init__()
+            self.scheduled = 0
+
+        def call_soon(self, callback, *args, context=None):
+            self.scheduled += 1
+            return super().call_soon(callback, *args, context=context)
+
+    count = 5000
+
+    async def drain():
+        async def provider(value):
+            return value
+
+        wrapped = lr_utils.priority_limit_async_func_call(
+            16, max_queue_size=1000, queue_name="bounded admission drain"
+        )(provider)
+        try:
+            assert await asyncio.gather(*(wrapped(i) for i in range(count))) == list(
+                range(count)
+            )
+            stats = await _wait_drained(wrapped)
+            assert stats["submitted_total"] == count
+            assert stats["completed_total"] == count
+        finally:
+            await wrapped.shutdown(graceful=False)
+
+    loop = CountingLoop()
+    try:
+        loop.run_until_complete(drain())
+        # Count event-loop work, not wall-clock time. A broadcast on each
+        # dequeue schedules hundreds of thousands of losing submitters.
+        # Allow ample linear overhead for workers, providers and cleanup.
+        assert loop.scheduled < 32 * count
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("abandonment", [None, "cancel", "timeout"])
+def test_bounded_admission_passes_on_an_abandoned_slot(abandonment):
+    selected = contextvars.ContextVar("selected_submitter", default=False)
+
+    class AdmissionLoop(asyncio.SelectorEventLoop):
+        def __init__(self):
+            super().__init__()
+            self.armed = False
+            self.triggered = False
+            self.offset = 0.0
+            self.submitter = None
+
+        def time(self):
+            return super().time() + self.offset
+
+        def call_soon(self, callback, *args, context=None):
+            if self.armed and context is not None and context.get(selected, False):
+                self.armed = False
+                self.triggered = True
+                if abandonment == "cancel":
+                    self.submitter.cancel()
+                else:
+                    # Expire the admission deadline before the selected
+                    # submitter resumes, without sleeping for that deadline.
+                    self.offset += 1.5
+                    return super().call_later(0.01, callback, *args, context=context)
+            return super().call_soon(callback, *args, context=context)
+
+    async def exercise():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        release_queued = asyncio.Event()
+        calls = []
+
+        async def provider(value):
+            calls.append(value)
+            if value == "running":
+                entered.set()
+                await release.wait()
+            elif value == "queued":
+                await release_queued.wait()
+            return value
+
+        wrapped = lr_utils.priority_limit_async_func_call(
+            1, max_queue_size=1, queue_name="bounded admission handoff"
+        )(provider)
+        pending = [asyncio.create_task(wrapped("running"))]
+
+        async def wait_for_stats(key, value):
+            deadline = loop.time() + 5.0
+            while (await wrapped.get_queue_stats())[key] != value:
+                assert loop.time() < deadline
+                await asyncio.sleep(0)
+
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5.0)
+            pending.append(asyncio.create_task(wrapped("queued")))
+            await wait_for_stats("queued", 1)
+            token = selected.set(True)
+            try:
+                submitter = asyncio.create_task(
+                    wrapped(
+                        "selected",
+                        _queue_timeout=1.0 if abandonment == "timeout" else None,
+                    )
+                )
+            finally:
+                selected.reset(token)
+            pending.append(submitter)
+            await wait_for_stats("in_flight", 3)
+            following = asyncio.create_task(wrapped("following"))
+            pending.append(following)
+            await wait_for_stats("in_flight", 4)
+
+            loop.submitter = submitter
+            loop.armed = abandonment is not None
+            release.set()
+            assert await asyncio.wait_for(pending[0], timeout=5.0) == "running"
+            if abandonment is not None:
+                error = (
+                    asyncio.CancelledError
+                    if abandonment == "cancel"
+                    else lr_utils.QueueFullError
+                )
+                with pytest.raises(error):
+                    await asyncio.wait_for(asyncio.shield(submitter), timeout=5.0)
+                assert loop.triggered
+
+            # The worker is still held in the second provider call: no
+            # additional dequeue can rescue a lost admission notification.
+            await wait_for_stats("queued", 1)
+            assert calls == ["running", "queued"]
+            assert not following.done()
+            release_queued.set()
+            assert await asyncio.wait_for(pending[1], timeout=5.0) == "queued"
+            if abandonment is None:
+                assert await asyncio.wait_for(submitter, timeout=5.0) == "selected"
+            assert await asyncio.wait_for(following, timeout=5.0) == "following"
+            expected = ["running", "queued"]
+            if abandonment is None:
+                expected.append("selected")
+            assert calls == expected + ["following"]
+            stats = await _wait_drained(wrapped)
+            assert stats["submitted_total"] == len(calls)
+            assert stats["completed_total"] == len(calls)
+        finally:
+            release.set()
+            release_queued.set()
+            await wrapped.shutdown(graceful=False)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    loop = AdmissionLoop()
+    try:
+        loop.run_until_complete(exercise())
+    finally:
+        loop.close()

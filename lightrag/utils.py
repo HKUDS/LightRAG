@@ -18,6 +18,7 @@ import time
 import uuid
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -1296,6 +1297,7 @@ def priority_limit_async_func_call(
         publish_stats = False
         shared = None  # lazily imported lightrag.kg.shared_storage module
         work_available = asyncio.Event()
+        queue_waiters: deque[asyncio.Future] = deque()
         admission_cond = asyncio.Condition()
         # Logical queued count: live tasks waiting in the queue (excludes
         # running tasks and cancelled zombies) — same capacity semantics as
@@ -1636,6 +1638,13 @@ def priority_limit_async_func_call(
                     timeout_handle.cancel()
                 task_state.future.remove_done_callback(cancel_execution)
 
+        def _wake_next_submitter():
+            while queue_waiters:
+                waiter = queue_waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(None)
+                    break
+
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
@@ -1653,6 +1662,8 @@ def priority_limit_async_func_call(
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
+
+                        _wake_next_submitter()
 
                         # Get task state and mark worker as started
                         async with task_states_lock:
@@ -2225,6 +2236,8 @@ def priority_limit_async_func_call(
                     admission_cond.notify_all()
             else:
                 accepting_new_tasks = False
+                while queue_waiters:
+                    _wake_next_submitter()
 
             drain_timed_out = False
             if graceful and queue is not None:
@@ -2527,6 +2540,7 @@ def priority_limit_async_func_call(
             Raises:
                 TimeoutError: If the function call times out at any level
                 QueueFullError: If the queue is full and waiting times out
+                RuntimeError: If shutdown closes admission, including while waiting for queue capacity
                 Any exception raised by the decorated function
             """
             nonlocal submitted_total, completed_total, cancelled_total, failed_total
@@ -2575,22 +2589,41 @@ def priority_limit_async_func_call(
                 # limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
-                # Queue the task with timeout handling
-                try:
+                async def enqueue():
+                    nonlocal rejected_total
+                    # Queue.shutdown() only exists from Python 3.13, so before
+                    # that nothing can wake a blocked bounded Queue.put() when
+                    # shutdown starts. Wait for capacity or closure, then admit
+                    # without yielding so shutdown cannot race the final check.
+                    while queue.full() and accepting_new_tasks:
+                        waiter = asyncio.get_running_loop().create_future()
+                        queue_waiters.append(waiter)
+                        try:
+                            await waiter
+                        except BaseException:
+                            waiter.cancel()
+                            try:
+                                queue_waiters.remove(waiter)
+                            except ValueError:
+                                pass
+                            # A selected submitter can be cancelled before
+                            # using its slot. Pass it on, as Queue.put() does.
+                            if not queue.full() and not waiter.cancelled():
+                                _wake_next_submitter()
+                            raise
                     if not accepting_new_tasks:
                         rejected_total += 1
                         raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                    queue.put_nowait(
+                        (_priority, current_count, task_id, args, kwargs, ctx)
+                    )
+
+                # Queue the task with timeout handling
+                try:
                     if _queue_timeout is not None:
-                        await asyncio.wait_for(
-                            queue.put(
-                                (_priority, current_count, task_id, args, kwargs, ctx)
-                            ),
-                            timeout=_queue_timeout,
-                        )
+                        await asyncio.wait_for(enqueue(), timeout=_queue_timeout)
                     else:
-                        await queue.put(
-                            (_priority, current_count, task_id, args, kwargs, ctx)
-                        )
+                        await enqueue()
                     submitted_total += 1
                     submitted = True
                     await _publish_stats()
@@ -2598,10 +2631,10 @@ def priority_limit_async_func_call(
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
                     )
-                except Exception as e:
-                    # Clean up on queue error
+                except Exception:
+                    # Admission failed: no worker will consume this future.
                     if not future.done():
-                        future.set_exception(e)
+                        future.cancel()
                     raise
 
                 # Wait for result with timeout handling
