@@ -1400,8 +1400,14 @@ endpoints of every relationship before writing any custom KG data.
 `merge_entities` resolves existing exact legacy source/target names first and
 otherwise uses normalized names. The target may be an existing entity or a
 new normalized name created by the merge.
-`create_relation` resolves both endpoints the same way, so a relation can be
-created with the same spelling `create_entity` accepted for either endpoint.
+`create_relation`, `edit_relation` and `delete_by_relation` resolve both
+endpoints the same way, and `delete_by_entity`, `get_entity_info`,
+`get_relation_info` and `GET /graph/entity/exists` resolve their names the same
+way too. A spelling `create_entity` accepted therefore addresses that entity
+everywhere, even though the stored name differs. Two spellings that resolve to
+one entity form a self-loop, which `create_relation` and `edit_relation`
+refuse. `delete_by_relation` does not refuse it, because deleting is how a
+self-loop left by an older release gets removed.
 
 ### Relation Weight Contract
 

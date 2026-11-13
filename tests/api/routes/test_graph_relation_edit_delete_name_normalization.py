@@ -14,7 +14,7 @@ from copy import deepcopy
 import pytest
 
 from lightrag import utils_graph
-from lightrag.utils import compute_mdhash_id
+from lightrag.utils import compute_mdhash_id, make_relation_chunk_key
 
 pytestmark = pytest.mark.offline
 
@@ -35,8 +35,7 @@ class _Graph:
         # here so the lookup direction does not matter to tests.
         self.nodes = deepcopy(nodes or {})
         self.edges = {
-            tuple(sorted(key)): deepcopy(value)
-            for key, value in (edges or {}).items()
+            tuple(sorted(key)): deepcopy(value) for key, value in (edges or {}).items()
         }
         # ``remove_edges`` is what adelete_by_relation uses to commit the
         # mutation; track the calls so tests can assert what was actually
@@ -155,7 +154,9 @@ async def test_edit_relation_resolves_normalized_endpoint_spelling():
     norm_a = "Tesla(US)"
     norm_b = "SpaceX"
     raw_a = "Tesla（US）"
-    graph = _Graph(edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}})
+    graph = _Graph(
+        edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}}
+    )
     entities_vdb = _VectorStorage()
     relationships_vdb = _VectorStorage()
 
@@ -169,9 +170,10 @@ async def test_edit_relation_resolves_normalized_endpoint_spelling():
     )
 
     # aedit_relation returns the get_relation_info envelope; description
-    # lives under graph_data.
-    assert result["src_entity"] == norm_a
-    assert result["tgt_entity"] == norm_b
+    # lives under graph_data. The pair comes back sorted, resolved names.
+    assert (result["src_entity"], result["tgt_entity"]) == tuple(
+        sorted([norm_a, norm_b])
+    )
     assert result["graph_data"]["description"] == "new"
     # ``upsert_edge`` rewrites the edge under the canonical sorted pair with
     # the weight-floor applied (the default 1.0 on a no-evidence edit).
@@ -198,7 +200,10 @@ async def test_edit_relation_prefers_exact_legacy_endpoint_key():
             legacy: {"entity_id": legacy, "description": "legacy"},
         },
         edges={
-            (legacy, partner): {"description": "legacy edge", "source_id": "manual_creation"},
+            (legacy, partner): {
+                "description": "legacy edge",
+                "source_id": "manual_creation",
+            },
         },
     )
 
@@ -213,8 +218,9 @@ async def test_edit_relation_prefers_exact_legacy_endpoint_key():
 
     # aedit_relation returns the get_relation_info envelope; description
     # lives under graph_data.
-    assert result["src_entity"] == legacy
-    assert result["tgt_entity"] == partner
+    assert (result["src_entity"], result["tgt_entity"]) == tuple(
+        sorted([legacy, partner])
+    )
     assert result["graph_data"]["description"] == "renamed"
     # The legacy pair must be the one mutated, not a (norm, partner) row
     # that does not exist. The fixture sorts keys on init, so compare with
@@ -229,7 +235,9 @@ async def test_edit_relation_uses_canonical_storage_key_for_vdb():
     norm_a = "Tesla(US)"
     norm_b = "SpaceX"
     raw_a = "Tesla（US）"
-    graph = _Graph(edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}})
+    graph = _Graph(
+        edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}}
+    )
     relationships_vdb = _VectorStorage()
     # `acreate_relation` writes the VDB row under the sorted pair, mirroring
     # `lightrag/utils_graph.py::acreate_relation`'s `vdb_src = min(src, tgt)`
@@ -258,13 +266,16 @@ async def test_edit_relation_uses_canonical_storage_key_for_vdb():
     reverse_rel_id = compute_mdhash_id(
         canonical_vdb_tgt + canonical_vdb_src, prefix="rel-"
     )
-    assert {canonical_rel_id, reverse_rel_id}.issubset(set(relationships_vdb.deleted_ids))
+    assert {canonical_rel_id, reverse_rel_id}.issubset(
+        set(relationships_vdb.deleted_ids)
+    )
     # And the new VDB record must use the canonical pair, not the raw pair
     # nor the caller order.
     upserted_ids = set(relationships_vdb.records)
-    assert compute_mdhash_id(
-        canonical_vdb_src + canonical_vdb_tgt, prefix="rel-"
-    ) in upserted_ids
+    assert (
+        compute_mdhash_id(canonical_vdb_src + canonical_vdb_tgt, prefix="rel-")
+        in upserted_ids
+    )
     assert compute_mdhash_id(raw_a + norm_b, prefix="rel-") not in upserted_ids
     assert compute_mdhash_id(norm_a + norm_b, prefix="rel-") not in upserted_ids
 
@@ -273,7 +284,9 @@ async def test_edit_relation_uses_canonical_storage_key_for_vdb():
 async def test_edit_relation_refuses_normalized_self_loop():
     """Two raw spellings that normalize to one identifier must refuse, not silently edit."""
     norm = "Tesla(US)"
-    graph = _Graph(edges={(norm, norm): {"description": "self", "source_id": "chunk-1"}})
+    graph = _Graph(
+        edges={(norm, norm): {"description": "self", "source_id": "chunk-1"}}
+    )
 
     with pytest.raises(ValueError, match="self-loop"):
         await utils_graph.aedit_relation(
@@ -295,7 +308,9 @@ async def test_delete_relation_resolves_normalized_endpoint_spelling():
     norm_a = "Tesla(US)"
     norm_b = "SpaceX"
     raw_a = "Tesla（US）"
-    graph = _Graph(edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}})
+    graph = _Graph(
+        edges={(norm_a, norm_b): {"description": "old", "source_id": "chunk-1"}}
+    )
 
     result = await utils_graph.adelete_by_relation(
         graph,
@@ -325,7 +340,10 @@ async def test_delete_relation_prefers_exact_legacy_endpoint_key():
             legacy: {"entity_id": legacy, "description": "legacy"},
         },
         edges={
-            (legacy, partner): {"description": "legacy edge", "source_id": "manual_creation"},
+            (legacy, partner): {
+                "description": "legacy edge",
+                "source_id": "manual_creation",
+            },
         },
     )
 
@@ -355,32 +373,35 @@ async def test_delete_relation_returns_not_found_for_missing_edge_under_normaliz
 
     assert result.status == "not_found"
     assert result.status_code == 404
-    # The not_found message must carry the resolved pair, so the caller
-    # learns the canonical spelling they would have to use. The order is
-    # the resolution order (resolved source first, resolved target second),
-    # which is the original caller's source-first / target-second framing.
-    assert result.message == "Relation from 'Tesla(US)' to 'SpaceX' does not exist"
+    # The not_found message carries the resolved pair, so the caller learns
+    # the canonical spelling; sorted, as the raw pair was before resolution.
+    assert result.message == "Relation from 'SpaceX' to 'Tesla(US)' does not exist"
 
 
+@pytest.mark.parametrize(
+    "spellings",
+    [("Tesla(US)", "Tesla(US)"), ("Tesla（US）", "Tesla(US)")],
+    ids=["identical", "two-spellings-of-one-node"],
+)
 @pytest.mark.asyncio
-async def test_delete_relation_refuses_normalized_self_loop():
-    """Two raw spellings that normalize to one identifier must refuse, not silently delete.
-
-    ``adelete_by_relation`` catches every exception and returns a
-    ``DeletionResult(status="fail", status_code=500)``; the contract that
-    distinguishes self-loop from a real graph error is the message text.
-    """
+async def test_delete_relation_removes_stored_self_loop(spellings):
+    """A self-loop an older release stored is invariant-violating data, and
+    deleting it is how it gets removed -- so delete must not refuse it the
+    way create and edit do, whichever spelling reaches it."""
     norm = "Tesla(US)"
-    graph = _Graph(edges={(norm, norm): {"description": "self", "source_id": "chunk-1"}})
+    graph = _Graph(
+        edges={(norm, norm): {"description": "self", "source_id": "chunk-1"}}
+    )
+    relation_chunks = _KVStorage()
+    relation_chunks.records[make_relation_chunk_key(norm, norm)] = {
+        "chunk_ids": ["chunk-1"]
+    }
 
     result = await utils_graph.adelete_by_relation(
-        graph,
-        _VectorStorage(),
-        "Tesla（US）",
-        "Tesla(US)",
+        graph, _VectorStorage(), *spellings, relation_chunks_storage=relation_chunks
     )
 
-    assert result.status == "fail"
-    assert result.status_code == 500
-    assert "self-loop" in result.message
-    assert graph.edges == {(norm, norm): {"description": "self", "source_id": "chunk-1"}}
+    assert result.status == "success"
+    assert graph.edges == {}
+    assert graph.removed_edges == [(norm, norm)]
+    assert relation_chunks.records == {}
