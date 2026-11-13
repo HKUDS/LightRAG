@@ -5821,7 +5821,7 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
 
 
 def sanitize_and_normalize_extracted_text(
-    input_text: str, remove_inner_quotes=False
+    input_text: str, remove_inner_quotes=False, *, multiline: bool = False
 ) -> str:
     """Sanitize and normalize extracted text
 
@@ -5832,6 +5832,9 @@ def sanitize_and_normalize_extracted_text(
             normalize non-breaking spaces. Matching outer quotation marks are
             removed independently of this option only when the enclosed text
             contains no corresponding quote characters.
+        multiline: ``True`` for free text (descriptions), whose line breaks
+            are kept; ``False`` (default) for single-line values such as
+            names, types and keywords. See :func:`normalize_extracted_info`.
 
     Returns:
         Sanitized and normalized text string
@@ -5839,7 +5842,9 @@ def sanitize_and_normalize_extracted_text(
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
         normalized_text = normalize_extracted_info(
-            safe_input_text, remove_inner_quotes=remove_inner_quotes
+            safe_input_text,
+            remove_inner_quotes=remove_inner_quotes,
+            multiline=multiline,
         )
         return normalized_text
     return ""
@@ -5850,9 +5855,18 @@ def normalize_entity_name(input_text: str) -> str:
     return sanitize_and_normalize_extracted_text(input_text, remove_inner_quotes=True)
 
 
-def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
+def normalize_extracted_info(
+    name: str, remove_inner_quotes=False, *, multiline: bool = False
+) -> str:
     """Normalize entity/relation names and description with the following rules:
-    - Clean HTML tags (paragraph and line break tags)
+    - Replace paragraph and line break tags (``<p>``, ``</p>``, ``<br>``,
+      ``<br/>``, ``<br />`` ...) with a line break when ``multiline`` is set,
+      otherwise with a space
+    - multiline = False (names, types, keywords): collapse every run of ASCII
+      whitespace, line breaks and tabs included, into one space, so a value
+      never carries a line break and one spelling maps to one identifier
+    - multiline = True (descriptions): keep line breaks, drop the spaces and
+      tabs around them, and allow at most one blank line in a row
     - Convert Chinese symbols to English symbols
     - Remove spaces between Chinese characters
     - Remove spaces between Chinese characters and English letters/numbers
@@ -5874,14 +5888,26 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             non-breaking-space rules above. Matching outer quotation marks are
             removed independently of this option only when the enclosed text
             contains no corresponding quote characters.
+        multiline: whether the value is free text whose line breaks are
+            kept (descriptions) or a single-line value (the default).
 
     Returns:
         Normalized entity name
     """
-    # Clean HTML tags - remove paragraph and line break tags. A self-closing
-    # tag may have a space before its slash (<br />, <p />), the XHTML spelling.
-    name = re.sub(r"</p\s*>|<p\s*/?>", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"</br\s*>|<br\s*/?>", "", name, flags=re.IGNORECASE)
+    # Paragraph and line break tags stand for a line break: the delimited
+    # extraction format is one record per line, so an LLM cannot emit a real
+    # one. Turn them into a line break in free text and a space elsewhere; an
+    # empty replacement would glue "Acme<br>Corp" into "AcmeCorp". A
+    # self-closing tag may have a space before its slash (<br />, <p />).
+    #
+    # Accepted residue: a name stored by an older normalizer (glued, or with a
+    # raw line break or a double space) is not migrated, so a new extraction of
+    # the same entity lands on a second node. It is harmless in direction (an
+    # extra node, nothing lost); manual edits and merges still reach the old
+    # node because they try the exact spelling before the normalized one.
+    tag_replacement = "\n" if multiline else " "
+    name = re.sub(r"</p\s*>|<p\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
 
     # Chinese full-width letters to half-width (A-Z, a-z)
     name = name.translate(
@@ -5909,19 +5935,34 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     # Chinese full-width space to regular space (after other replacements)
     name = name.replace("　", " ")
 
+    # Line breaks and runs of whitespace (ASCII only: the non-breaking space
+    # rules below stay in charge of U+00A0 / U+202F). Strip here as well, so
+    # the outer-quote removal below still sees a quote a tag sat next to.
+    if multiline:
+        name = name.replace("\r\n", "\n").replace("\r", "\n")
+        name = re.sub(r"[ \t\f\v]*\n[ \t\f\v]*", "\n", name)
+        name = re.sub(r"\n{3,}", "\n\n", name)
+    else:
+        name = re.sub(r"[ \t\n\r\f\v]+", " ", name)
+    name = name.strip()
+
+    # In free text only horizontal whitespace is a "space" to remove below: a
+    # line break between two Chinese characters is content and stays.
+    space = r"[^\S\n]+" if multiline else r"\s+"
+
     # Use regex to remove spaces between Chinese characters
     # Regex explanation:
     # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
-    # \s+: One or more whitespace characters
+    # {space}: One or more whitespace characters
     # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
-    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", name)
+    name = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", name)
 
     # Remove spaces between Chinese and English/numbers/symbols
     name = re.sub(
-        r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
+        rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
     )
     name = re.sub(
-        r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
+        rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])", "", name
     )
 
     # Remove outer quotes

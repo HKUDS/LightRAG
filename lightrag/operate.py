@@ -743,7 +743,9 @@ def _handle_single_entity_extraction(
             return None
 
         # Process entity description with same cleaning pipeline
-        entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
+        entity_description = sanitize_and_normalize_extracted_text(
+            record_attributes[3], multiline=True
+        )
 
         if not entity_description.strip():
             logger.warning(
@@ -818,7 +820,9 @@ def _handle_single_relationship_extraction(
         edge_keywords = edge_keywords.replace("，", ",")
 
         # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
+        edge_description = sanitize_and_normalize_extracted_text(
+            record_attributes[4], multiline=True
+        )
         if not edge_description.strip():
             logger.warning(
                 f"Relationship extraction error: empty description for relation '{source}'~'{target}' in chunk '{chunk_key}'"
@@ -990,7 +994,7 @@ async def _process_json_extraction_result(
                 continue
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("description", ""))
+                str(entity_data.get("description", "")), multiline=True
             )
             if not entity_description.strip():
                 logger.warning(
@@ -1057,7 +1061,7 @@ async def _process_json_extraction_result(
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("description", ""))
+                str(rel_data.get("description", "")), multiline=True
             )
 
             if not edge_description.strip():
