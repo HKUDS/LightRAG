@@ -9,6 +9,7 @@ file fails the parse stage instead of silently yielding an empty document.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from io import BytesIO
 
 
@@ -72,27 +73,69 @@ def _extract_docx(file_bytes: bytes) -> str:
             if content_parts and not in_table:
                 content_parts.append("")
             in_table = True
-            table = Table(element, doc)
-            for row in table.rows:
-                # python-docx lists a horizontally merged cell once per column
-                # it spans. Keep its text in the first column only, and leave
-                # the others empty so the columns stay aligned.
-                row_text = []
-                previous_tc = None
-                for cell in row.cells:
-                    row_text.append(
-                        "" if cell._tc is previous_tc else escape_cell(cell.text)
-                    )
-                    previous_tc = cell._tc
+            for row in _docx_table_grid_rows(Table(element, doc)):
+                row_text = [escape_cell(cell) for cell in row]
                 if any(cell for cell in row_text):
                     content_parts.append("\t".join(row_text))
     return "\n".join(content_parts)
 
 
+def _docx_grid_skip(tr, tag: str) -> int:
+    """Return the ``w:gridBefore`` / ``w:gridAfter`` count of a ``w:tr``."""
+    from docx.oxml.ns import qn  # type: ignore
+
+    tr_pr = tr.find(qn("w:trPr"))
+    node = tr_pr.find(qn(tag)) if tr_pr is not None else None
+    if node is None:
+        return 0
+    try:
+        return max(int(node.get(qn("w:val"), "0")), 0)
+    except ValueError:
+        return 0
+
+
+def _docx_table_grid_rows(table) -> Iterator[list[str]]:
+    """Yield each row of a DOCX table as one text slot per layout-grid column.
+
+    - A row that starts or ends late (``w:gridBefore`` / ``w:gridAfter``)
+      gets an empty slot for each skipped grid column, so its cells stay
+      under the columns they are drawn in.
+    - A horizontally merged cell (``w:gridSpan``) puts its text in its first
+      column and leaves the other spanned columns empty.
+    - A vertically merged cell repeats the text of the row above at the same
+      grid column; with no cell there, the slot is empty.
+
+    The two merge rules are the native table extractor's.
+
+    Walks the ``w:tr`` / ``w:tc`` XML instead of ``python-docx``'s
+    ``row.cells``: that ignores ``w:gridBefore`` / ``w:gridAfter``, and
+    python-docx before 1.0 builds it by slicing one flat cell list at a
+    fixed table width, so one short row shifts every row after it.
+    """
+    from docx.oxml.ns import qn  # type: ignore
+    from docx.table import _Cell  # type: ignore
+
+    above: dict[int, str] = {}
+    for tr in table._tbl.findall(qn("w:tr")):
+        row = [""] * _docx_grid_skip(tr, "w:gridBefore")
+        current: dict[int, str] = {}
+        for tc in tr.findall(qn("w:tc")):
+            column = len(row)
+            if tc.vMerge == "continue":
+                text = above.get(column, "")
+            else:
+                text = _Cell(tc, table).text
+            span = max(tc.grid_span, 1)
+            row.append(text)
+            row.extend([""] * (span - 1))
+            current[column] = text
+        row.extend([""] * _docx_grid_skip(tr, "w:gridAfter"))
+        above = current
+        yield row
+
+
 def _extract_pptx(file_bytes: bytes) -> str:
     """Extract PPTX text, including nested groups, in shape order (synchronous)."""
-    from collections.abc import Iterator
-
     from pptx import Presentation  # type: ignore
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     from pptx.shapes.shapetree import GroupShapes, SlideShapes
