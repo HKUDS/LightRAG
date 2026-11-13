@@ -516,6 +516,79 @@ def test_extract_text_docx_reads_a_plain_document_as_before():
     assert extract_text(data, "docx") == "one\ttwo\nthree\nsee the link\n\nA\tB"
 
 
+@pytest.mark.offline
+def test_extract_text_docx_reads_rows_and_cells_inside_content_controls():
+    def cell(text: str) -> str:
+        return f"<w:tc><w:p>{_run(text)}</w:p></w:tc>"
+
+    # Row 2 is a repeating section; row 1's second cell is custom XML.
+    table = (
+        f"<w:tbl {_W_DECL}><w:tblPr/>"
+        "<w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>"
+        f'<w:tr>{cell("Item")}<w:customXml w:element="qty">{cell("Qty")}'
+        "</w:customXml></w:tr>"
+        f"<w:sdt><w:sdtPr/><w:sdtContent><w:tr>{cell('Apples')}{cell('3')}</w:tr>"
+        f"<w:tr>{cell('Pears')}{cell('5')}</w:tr></w:sdtContent></w:sdt>"
+        "</w:tbl>"
+    )
+
+    def build(document):
+        _append_xml(document, table)
+
+    assert (
+        extract_text(_built_docx_bytes(build), "docx")
+        == "Item\tQty\nApples\t3\nPears\t5"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_the_table_of_contents_control():
+    def control(gallery: str, *texts: str) -> str:
+        paragraphs = "".join(f"<w:p>{_run(text)}</w:p>" for text in texts)
+        return (
+            f"<w:sdt {_W_DECL}><w:sdtPr><w:docPartObj>"
+            f'<w:docPartGallery w:val="{gallery}"/><w:docPartUnique/>'
+            f"</w:docPartObj></w:sdtPr><w:sdtContent>{paragraphs}"
+            "</w:sdtContent></w:sdt>"
+        )
+
+    def build(document):
+        _append_xml(document, control("Cover Pages", "Annual report"))
+        _append_xml(document, control("Table of Contents", "Contents", "Intro\t1"))
+        document.add_paragraph("Intro")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "Annual report\nIntro"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_controls_showing_their_placeholder():
+    def control(text: str, placeholder: str) -> str:
+        return (
+            f"<w:sdt><w:sdtPr>{placeholder}</w:sdtPr>"
+            f"<w:sdtContent>{_run(text)}</w:sdtContent></w:sdt>"
+        )
+
+    def build(document):
+        shown = "<w:showingPlcHdr/>"
+        not_shown = '<w:showingPlcHdr w:val="0"/>'
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('Name: ')}"
+            f"{control('Click or tap here to enter text.', shown)}</w:p>",
+        )
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('Date: ')}{control('2024-05-01', not_shown)}</w:p>",
+        )
+        _append_xml(
+            document,
+            f"<w:sdt {_W_DECL}><w:sdtPr>{shown}</w:sdtPr><w:sdtContent>"
+            f"<w:p>{_run('Type the summary here.')}</w:p></w:sdtContent></w:sdt>",
+        )
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "Name: \nDate: 2024-05-01"
+
+
 def _make_encrypted_pdf_bytes(text: str, *, password: str, algorithm: str) -> bytes:
     """Build a one-page PDF showing ``text`` and encrypt it with pypdf."""
     from pypdf import PdfReader, PdfWriter

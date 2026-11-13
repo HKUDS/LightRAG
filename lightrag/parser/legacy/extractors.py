@@ -41,9 +41,10 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _DOCX_BLOCK_TAGS = frozenset({_W + "p", _W + "tbl"})
-# A block-level content control keeps its paragraphs and tables in w:sdtContent,
-# and custom XML markup wraps them directly. Cover pages, the fields of a form
-# template and whole template sections are such controls.
+# A content control keeps its paragraphs, tables, rows or cells in
+# w:sdtContent, and custom XML markup wraps them directly. Cover pages, the
+# fields of a form template, whole template sections and repeating table rows
+# are such controls.
 _DOCX_BLOCK_WRAPPERS = frozenset({_W + "sdt", _W + "sdtContent", _W + "customXml"})
 # Runs below these are not text of their paragraph: deleted and moved-away
 # revisions, the pronunciation guide of ruby text, text boxes, and the fallback
@@ -59,17 +60,42 @@ _DOCX_SKIPPED_RUN_ANCESTORS = frozenset(
 )
 
 
-def _iter_docx_blocks(container):
-    """Yield the ``w:p`` and ``w:tbl`` elements of ``container`` in document order.
+def _is_skipped_docx_control(sdt) -> bool:
+    """True for a ``w:sdt`` whose content is not document text.
 
-    Unlike a loop over the container's own children, this includes the blocks
-    inside content controls and custom XML markup.
+    That is the control Word puts its built-in table of contents in, whose
+    lines repeat the headings with page numbers, and a control still showing
+    its placeholder ("Click or tap here to enter text."). Neither was ever
+    read by this extractor.
+    """
+    sdt_pr = sdt.find(_W + "sdtPr")
+    if sdt_pr is None:
+        return False
+    gallery = sdt_pr.find(f"{_W}docPartObj/{_W}docPartGallery")
+    if gallery is not None and gallery.get(_W + "val") == "Table of Contents":
+        return True
+    placeholder = sdt_pr.find(_W + "showingPlcHdr")
+    return placeholder is not None and placeholder.get(_W + "val") not in (
+        "0",
+        "false",
+        "off",
+    )
+
+
+def _iter_docx_children(container, tags=_DOCX_BLOCK_TAGS):
+    """Yield the children of ``container`` whose tag is in ``tags``, in order.
+
+    Unlike a loop over the container's own children, this includes the ones
+    inside content controls and custom XML markup, except the controls
+    :func:`_is_skipped_docx_control` names.
     """
     for child in container:
-        if child.tag in _DOCX_BLOCK_TAGS:
+        if child.tag in tags:
             yield child
-        elif child.tag in _DOCX_BLOCK_WRAPPERS:
-            yield from _iter_docx_blocks(child)
+        elif child.tag in _DOCX_BLOCK_WRAPPERS and not (
+            child.tag == _W + "sdt" and _is_skipped_docx_control(child)
+        ):
+            yield from _iter_docx_children(child, tags)
 
 
 def _docx_paragraph_text(paragraph) -> str:
@@ -77,7 +103,8 @@ def _docx_paragraph_text(paragraph) -> str:
 
     ``Paragraph.text`` reads only direct runs and hyperlinks, so the text of an
     inline content control, a tracked insertion, a simple field's result or a
-    smart tag is missing from it. Deleted text stays out.
+    smart tag is missing from it. Deleted text, and the controls
+    :func:`_is_skipped_docx_control` names, stay out.
     """
     parts = []
     for run in paragraph.iter(_W + "r"):
@@ -85,6 +112,7 @@ def _docx_paragraph_text(paragraph) -> str:
         while (
             ancestor is not paragraph
             and ancestor.tag not in _DOCX_SKIPPED_RUN_ANCESTORS
+            and not (ancestor.tag == _W + "sdt" and _is_skipped_docx_control(ancestor))
         ):
             ancestor = ancestor.getparent()
         if ancestor is paragraph:
@@ -95,9 +123,8 @@ def _docx_paragraph_text(paragraph) -> str:
 def _docx_cell_text(tc) -> str:
     """Text of a ``w:tc`` element, one line per paragraph, like ``_Cell.text``."""
     return "\n".join(
-        _docx_paragraph_text(block)
-        for block in _iter_docx_blocks(tc)
-        if block.tag == _W + "p"
+        _docx_paragraph_text(paragraph)
+        for paragraph in _iter_docx_children(tc, frozenset({_W + "p"}))
     )
 
 
@@ -123,7 +150,7 @@ def _extract_docx(file_bytes: bytes) -> str:
 
     content_parts = []
     in_table = False
-    for element in _iter_docx_blocks(doc.element.body):
+    for element in _iter_docx_children(doc.element.body):
         if element.tag.endswith("p"):
             if in_table:
                 content_parts.append("")
@@ -164,6 +191,8 @@ def _docx_table_grid_rows(table) -> Iterator[list[str]]:
       column and leaves the other spanned columns empty.
     - A vertically merged cell repeats the text of the row above at the same
       grid column; with no cell there, the slot is empty.
+    - Rows and cells inside a content control or custom XML markup (a
+      repeating section) count like direct ones.
 
     The two merge rules are the native table extractor's.
 
@@ -175,10 +204,10 @@ def _docx_table_grid_rows(table) -> Iterator[list[str]]:
     from docx.oxml.ns import qn  # type: ignore
 
     above: dict[int, str] = {}
-    for tr in table._tbl.findall(qn("w:tr")):
+    for tr in _iter_docx_children(table._tbl, frozenset({qn("w:tr")})):
         row = [""] * _docx_grid_skip(tr, "w:gridBefore")
         current: dict[int, str] = {}
-        for tc in tr.findall(qn("w:tc")):
+        for tc in _iter_docx_children(tr, frozenset({qn("w:tc")})):
             column = len(row)
             if tc.vMerge == "continue":
                 text = above.get(column, "")
