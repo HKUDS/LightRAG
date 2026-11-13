@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Textarea from '@/components/ui/Textarea'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
@@ -32,6 +32,9 @@ export default function QueryComposer({
   const [inputValue, setInputValue] = useState('')
   const [inputError, setInputError] = useState('')
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
+  // The caret position to carry across an element swap, or null when the next
+  // render is not a swap. See the layout effect below.
+  const pendingSelectionRef = useRef<number | null>(null)
 
   const dismissInputError = useCallback(() => {
     setInputError('')
@@ -43,9 +46,18 @@ export default function QueryComposer({
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      setInputValue(e.target.value)
+      const nextValue = e.target.value
+      // Deleting the only newline replaces the textarea with an input. The
+      // browser has already put the caret at the deletion point on the old
+      // element, but the new element starts with its own selection. Remember
+      // it here, while the old element is still mounted, so the layout effect
+      // can restore it before the next keystroke.
+      if (hasMultipleLines && !nextValue.includes('\n')) {
+        pendingSelectionRef.current = e.target.selectionStart ?? null
+      }
+      setInputValue(nextValue)
     },
-    []
+    [hasMultipleLines]
   )
 
   // Unified height adjustment function for textarea
@@ -140,6 +152,21 @@ export default function QueryComposer({
     },
     [inputValue]
   )
+
+  // A textarea -> input swap must restore the caret synchronously: the next
+  // keystroke can arrive before the next animation frame. Reading the caret in
+  // a rAF here is what made the reverse switch lose the cursor position.
+  useLayoutEffect(() => {
+    const pending = pendingSelectionRef.current
+    if (pending === null || !inputRef.current) return
+
+    pendingSelectionRef.current = null
+    const element = inputRef.current
+    element.focus()
+    if (element.setSelectionRange) {
+      element.setSelectionRange(pending, pending)
+    }
+  }, [hasMultipleLines])
 
   // Effect to handle component switching and maintain focus
   useEffect(() => {
