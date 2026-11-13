@@ -1,9 +1,11 @@
-"""A spelling the entity API accepted must address that entity everywhere.
+"""A spelling the entity API accepted must address that entity.
 
 ``POST /graph/entity/create`` stores the extraction-normalized name, and its
-response is the only place a client could learn that name. Every other manual
-entry point therefore has to resolve the caller's spelling the same way, or a
-client re-using the spelling it just sent gets "does not exist".
+response is the only place a client could learn that name. The other manual
+entry points therefore resolve the caller's spelling the same way, or a client
+re-using the spelling it just sent gets "does not exist". Entity deletion is
+the deliberate exception: it is exact-only, so a retry can never fall through
+to a different node, and its 404 names the stored spelling instead.
 
 These run the REST routes against a real ``LightRAG`` (NetworkX graph, JSON KV,
 nano vector DB), so the resolution is checked through the same stores and the
@@ -164,7 +166,14 @@ async def test_raw_spelling_drives_the_whole_lifecycle(rag, client, raw, stored)
     key = make_relation_chunk_key(stored, "SpaceX")
     assert await rag.relation_chunks.get_by_id(key) is None
 
-    deleted = await _delete(client, "entity", {"entity_name": raw})
+    # Entity deletion is exact-only: the raw spelling is refused with the
+    # stored one named, and nothing is deleted until the caller uses it.
+    refused = await _delete(client, "entity", {"entity_name": raw})
+    assert refused.status_code == 404
+    assert f"it is stored as '{stored}'" in refused.json()["detail"]
+    assert await graph.has_node(stored)
+
+    deleted = await _delete(client, "entity", {"entity_name": stored})
     assert deleted.status_code == 200, deleted.text
     assert not await graph.has_node(stored)
 
@@ -274,8 +283,9 @@ async def test_two_spellings_of_one_node_are_refused_by_create_and_edit(rag, cli
 
 @pytest.mark.asyncio
 async def test_names_that_normalize_to_nothing_are_client_errors(rag, client):
-    """A deletion refused on its arguments answers 400, not the 500 a storage
-    failure gets."""
+    """A relation deletion refused on its arguments answers 400, not the 500 a
+    storage failure gets. Entity deletion does not normalize, so for it the
+    same name is simply one no node holds."""
     await _create_entity(client, "SpaceX")
 
     relation = await _delete(
@@ -285,8 +295,7 @@ async def test_names_that_normalize_to_nothing_are_client_errors(rag, client):
     assert "cannot be empty after normalization" in relation.json()["detail"]
 
     entity = await _delete(client, "entity", {"entity_name": "“”"})
-    assert entity.status_code == 400
-    assert "cannot be empty after normalization" in entity.json()["detail"]
+    assert entity.status_code == 404
 
     assert await rag.chunk_entity_relation_graph.has_node("SpaceX")
 
@@ -300,3 +309,51 @@ async def test_non_string_names_are_refused_without_raising(rag):
 
     entity = await rag.adelete_by_entity(None)
     assert (entity.status, entity.status_code) == ("fail", 400)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_attempt", ["fails-after-node-removal", "succeeds"])
+async def test_repeated_entity_delete_never_reaches_another_entity(
+    rag, monkeypatch, first_attempt
+):
+    """An exact legacy name and its normalized spelling can be two entities.
+
+    A deletion of the legacy one that fails after the node removal committed
+    is recovered by retrying the same request; a client that timed out on a
+    successful one resends it. Either way the second call must not resolve the
+    now-absent legacy name to the other, live entity and delete it too.
+    """
+    graph = rag.chunk_entity_relation_graph
+    legacy = "Tesla（US）"
+    await graph.upsert_node(
+        legacy,
+        {
+            "entity_id": legacy,
+            "entity_type": "ORG",
+            "description": "legacy",
+            "source_id": "",
+            "file_path": "",
+        },
+    )
+    await rag.entity_chunks.upsert({legacy: {"chunk_ids": ["chunk-1"], "count": 1}})
+    await rag.acreate_entity("Tesla(US)", {"description": "a different entity"})
+
+    if first_attempt == "fails-after-node-removal":
+
+        async def _fail_tracking_cleanup(ids):
+            raise RuntimeError("injected tracking failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(rag.entity_chunks, "delete", _fail_tracking_cleanup)
+            first = await rag.adelete_by_entity(legacy)
+        assert (first.status, first.status_code) == ("fail", 500)
+    else:
+        first = await rag.adelete_by_entity(legacy)
+        assert first.status == "success"
+    assert not await graph.has_node(legacy)
+
+    second = await rag.adelete_by_entity(legacy)
+
+    assert (second.status, second.status_code) == ("not_found", 404)
+    assert await graph.has_node("Tesla(US)")
+    assert await rag.entity_chunks.get_by_id(legacy) is None

@@ -635,9 +635,15 @@ async def adelete_by_entity(
 
     Also cleans up entity_chunks_storage and relation_chunks_storage to remove chunk tracking.
 
-    ``entity_name`` is resolved with :func:`_resolve_manual_entity_name`. A
-    name that cannot address any node answers ``fail`` with
-    ``status_code=400`` rather than raising.
+    ``entity_name`` must be the STORED name: unlike every other manual entry
+    point it is not resolved to a normalized spelling, so a retry of the same
+    request always targets the same node. Resolution would let a retry after a
+    partial failure (the documented recovery) fall through to a DIFFERENT live
+    node once the first attempt removed the exact one, and delete it; see
+    ``docs/ProgramingWithCore.md``. When the exact name is absent but its
+    normalized spelling is a node, the ``not_found`` message names that stored
+    spelling. A non-string name answers ``fail`` with ``status_code=400``
+    rather than raising.
 
     Tracking rows are removed only AFTER the graph node is gone, matching the
     ordering of the document purge path. The reverse order is forbidden by the
@@ -716,15 +722,22 @@ async def adelete_by_entity(
         enable_logging=False,
     ):
         try:
-            entity_name = await _resolve_manual_entity_name(
-                chunk_entity_relation_graph,
-                requested_entity_name,
-                normalized_entity_name,
-            )
-
             # Check if the entity exists
             if not await chunk_entity_relation_graph.has_node(entity_name):
-                logger.warning(f"Entity '{entity_name}' not found.")
+                not_found_message = f"Entity '{entity_name}' not found."
+                if (
+                    normalized_entity_name
+                    and normalized_entity_name != entity_name
+                    and await chunk_entity_relation_graph.has_node(
+                        normalized_entity_name
+                    )
+                ):
+                    # A hint, never a redirect: see the docstring.
+                    not_found_message = (
+                        f"Entity '{entity_name}' not found; it is stored as "
+                        f"'{normalized_entity_name}'. Delete it by that name."
+                    )
+                logger.warning(not_found_message)
                 # An absent node with a surviving tracking row is by definition
                 # an orphan: a previous deletion removed the node but failed
                 # before its tracking row, or an older release never cleaned up
@@ -751,7 +764,7 @@ async def adelete_by_entity(
                 return DeletionResult(
                     status="not_found",
                     doc_id=entity_name,
-                    message=f"Entity '{entity_name}' not found.",
+                    message=not_found_message,
                     status_code=404,
                 )
             # Retrieve related relationships before deleting the node
@@ -862,8 +875,6 @@ async def adelete_by_entity(
                 message=message,
                 status_code=200,
             )
-        except _InvalidEntityNameError as e:
-            return _rejected_deletion(requested_entity_name, e)
         except Exception as e:
             error_message = f"Error while deleting entity '{entity_name}': {e}"
             logger.error(error_message)
