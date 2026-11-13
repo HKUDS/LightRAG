@@ -135,16 +135,24 @@ def _name_before_the_second_pass(raw: str) -> str:
 # the space before the quote, '苹" A' has it after.
 _PIECES = ["A", "1", "苹", " ", "(", ".", "<br>", "\n", *"\"'“”‘’《》"]
 
+# Every kind of whitespace the rules treat differently: the second pass matches
+# any \s, the collapse only spaces, tabs and line breaks, U+00A0 becomes a
+# space, U+202F only after a non-digit, U+3000 before the first pass.
+_WHITESPACE_PIECES = ["A", "1", "苹", " ", "\t", "\u00a0", "\u202f", "\u3000", '"', "“"]
 
-def _generated_names():
+
+def _generated_names(pieces):
     for length in range(1, 5):
-        for pieces in itertools.product(_PIECES, repeat=length):
-            yield "".join(pieces)
+        for combination in itertools.product(pieces, repeat=length):
+            yield "".join(combination)
 
 
-def test_the_second_pass_only_merges_names():
+@pytest.mark.parametrize(
+    "pieces", [_PIECES, _WHITESPACE_PIECES], ids=["quotes", "whitespace"]
+)
+def test_the_second_pass_only_merges_names(pieces):
     new_name_by_old_name: dict[str, str] = {}
-    for raw in _generated_names():
+    for raw in _generated_names(pieces):
         old_name = _name_before_the_second_pass(raw)
         new_name = normalize_entity_name(raw)
 

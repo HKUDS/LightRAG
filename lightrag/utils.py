@@ -6004,8 +6004,9 @@ def normalize_extracted_info(
     - Paragraph and line break tags (``<p>``, ``</p>``, ``<br>``, ``<br/>``,
       ``<br />`` ...): removed in a single-line value, a line break when
       ``multiline`` is set
-    - multiline = False (names, types, keywords): after every rule below but
-      the last, collapse every run of spaces, tabs and line breaks (``\\n``,
+    - multiline = False (names, types, keywords): once the rules below have
+      rewritten the value, and before the numeric filters and the final space
+      pass, collapse every run of spaces, tabs and line breaks (``\\n``,
       ``\\r``, U+0085, U+2028, U+2029) into one space, so a value never carries
       a line break
     - multiline = True (descriptions): those line breaks, vertical tab and
@@ -6088,7 +6089,8 @@ def normalize_extracted_info(
     # Free text: one spelling for every line break, no spaces around one, at
     # most one blank line in a row. Strip here, so the outer-quote removal
     # below still sees a quote a tag sat next to. Single-line values are
-    # collapsed at the very end instead, which keeps the merge-only rule.
+    # collapsed further down instead, after the quote and non-breaking space
+    # rules, which keeps the merge-only rule.
     if multiline:
         name = re.sub(r"\r\n?|[\v\f\x85\u2028\u2029]", "\n", name)
         name = re.sub(r"[ \t]*\n[ \t]*", "\n", name)
@@ -6151,12 +6153,15 @@ def normalize_extracted_info(
             if "《" not in inner_content and "》" not in inner_content:
                 name = inner_content
 
+    removed_inner_quotes = False
     if remove_inner_quotes:
+        before_quote_removal = name
         # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # Remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+        removed_inner_quotes = name != before_quote_removal
         # Convert non-breaking space to regular space
         name = name.replace("\u00a0", " ")
         # Convert narrow non-breaking space to regular space when after non-digits
@@ -6165,8 +6170,9 @@ def normalize_extracted_info(
     # Single-line value: collapse spaces, tabs and line breaks into one space.
     # This runs after the non-breaking space conversions, so its result
     # is a function of what the previous rules produced: it only merges names,
-    # and a second pass finds no whitespace left to change. U+00A0 / U+202F
-    # are left to the rules above (a U+202F after a digit is kept on purpose).
+    # and running the collapse again finds no whitespace left to change.
+    # U+00A0 / U+202F are left to the rules above (a U+202F after a digit is
+    # kept on purpose).
     if not multiline:
         name = re.sub(r"[ \t\n\r\x85\u2028\u2029]+", " ", name)
 
@@ -6193,7 +6199,11 @@ def normalize_extracted_info(
     # "Apple苹果". Run them once more on the final single-line result. This
     # comes after everything else, so it is a function of the previous result
     # and only merges names (see the merge-only rule in the docstring).
-    if remove_inner_quotes and not multiline:
+    # Only a removed inner quote can expose such a space: the other rules
+    # either keep the characters on both sides of a space, or (the outer
+    # quotes) leave it at an edge for the strip. So the pass is skipped when
+    # no inner quote was removed, which gives the same result.
+    if removed_inner_quotes and not multiline:
         name = remove_spaces_next_to_chinese(name)
 
     return name
