@@ -564,7 +564,7 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 
 ### 4.5 图片限制与吞吐
 
-`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.6），与解析、入库阶段互不影响。
+`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.6），与解析、入库阶段互不影响。在单篇文档内，每种模态同时分析的 item 数最多为所用角色并发数的 `2 ×`：图片用 `VLM_MAX_ASYNC_LLM`，表格与公式用 Extract 角色的上限（未设置时都回落到 `MAX_ASYNC_LLM`）。一个 item 从读取图片开始，经过读缓存、模型调用到写缓存，全程占用一个名额，所以含上千张图片的文档既不会把它们一次性全部载入内存，也不会同时为每个 item 发出一次存储请求；整个分析阶段同时在途的 item 最多为 `MAX_PARALLEL_ANALYZE × 2 ×` 该上限。
 
 ### 4.6 模型配置不在本章
 
@@ -1109,7 +1109,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: native 解析（docx / pdf / txt 等纯本地处理）并发 worker 数 | 纯 CPU、内存占用低，可按 CPU 核数提高 |
 | `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，因此默认只启用一个 worker。本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
 | `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，因此默认只启用一个 worker。本地部署且 CPU/GPU 充足时可设 2-3 |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
+| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限。单篇文档内，item 同时最多运行角色并发数的 `2 ×`（§4.5） |
 | `MAX_ASYNC_LLM` | `4` | 基础 LLM 并发与 N5 的单文档 task 基数 | 对单个文档，文本块实体/关系抽取最多并发运行 `MAX_ASYNC_LLM` 个 task；每个实体合并或关系合并阶段最多运行 `2 × MAX_ASYNC_LLM` 个 task。设置 `EXTRACT_MAX_ASYNC_LLM` 后，它会独立限制实际 Extract 角色 LLM 请求，不改变这些 task 上限 |
 | `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。它控制文档数量，不控制单个文档内的 chunk 或合并 task 上限。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_PARSE` | `20` | parse（native/MinerU/Docling）输入队列长度 | 一般无需调整。队列内仅为轻量 doc_id（大文档体在进入 analyze 前已剥离），仅限制 pipeline 一次预派发给 parse worker 的待处理文档数，调整影响很小 |
