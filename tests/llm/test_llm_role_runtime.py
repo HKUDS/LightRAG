@@ -987,6 +987,54 @@ async def test_finalize_shuts_embedding_queue_down_when_a_storage_finalize_fails
     assert embedding_status["worker_count"] == 0
 
 
+@pytest.mark.asyncio
+async def test_finalize_cancelled_during_rerank_drain_still_stops_embedding_workers(
+    tmp_path,
+):
+    """The LLM/rerank drain runs before the storages, so a cancellation there
+    must reach the embedding shutdown too. It used to sit outside the
+    ``try``, and a finalize cancelled while rerank drained left every
+    embedding worker pending on the event loop (regression case from PR
+    #4335)."""
+    started, release, draining = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def rerank_func(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    rag = _make_rag(tmp_path, rerank_model_func=rerank_func)
+    await rag.initialize_storages()
+    await rag.embedding_func(["warmup"])
+    assert (await rag.get_embedding_queue_status())["worker_count"] > 0
+
+    # An in-flight rerank call keeps the rerank drain waiting.
+    call = asyncio.create_task(rag.rerank_model_func("query", ["document"]))
+    await asyncio.wait_for(started.wait(), 5)
+    original_shutdown = rag.rerank_model_func.shutdown
+
+    async def observed_shutdown(*args, **kwargs):
+        draining.set()
+        await original_shutdown(*args, **kwargs)
+
+    rag.rerank_model_func.shutdown = observed_shutdown
+    stop = asyncio.create_task(rag.finalize_storages())
+    try:
+        await asyncio.wait_for(draining.wait(), 5)
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(stop, 5)
+
+        embedding_status = await rag.get_embedding_queue_status()
+        assert embedding_status["initialized"] is False
+        assert embedding_status["worker_count"] == 0
+    finally:
+        release.set()
+        await asyncio.wait_for(call, 5)
+        rag.rerank_model_func.shutdown = original_shutdown
+        await rag.finalize_storages()
+
+
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
     rag = _make_rag(tmp_path)
     rag.set_role_llm_metadata(

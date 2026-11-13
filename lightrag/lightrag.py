@@ -2236,10 +2236,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         residue table records what this still cannot close.
         """
         self._shutdown_parser_executor()
-        # A release-time queue drive still running at shutdown is
-        # cancelled, not awaited: its auto-rescan flag stays armed in the
-        # mailbox for the next run to honour.
-        await self._cancel_admin_release_drives()
         # The model queues own long-lived worker and health-check tasks, so
         # all of them are shut down here: closing an asyncio.run()/manual loop
         # after finalize would otherwise leave their queue.get() coroutines
@@ -2247,9 +2243,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # steps around the storages, because the dependency runs both ways:
         # the LLM queues drain while the response cache is still usable, and
         # the embedding queue stays open until the vector storages have
-        # flushed, since that flush embeds first.
-        await self._shutdown_llm_and_rerank_queues()
+        # flushed, since that flush embeds first. Every await before the
+        # embedding shutdown sits inside the ``try``: a cancellation anywhere
+        # in between -- the LLM/rerank drain included -- must still stop the
+        # embedding workers.
         try:
+            # A release-time queue drive still running at shutdown is
+            # cancelled, not awaited: its auto-rescan flag stays armed in the
+            # mailbox for the next run to honour.
+            await self._cancel_admin_release_drives()
+            await self._shutdown_llm_and_rerank_queues()
             await self._finalize_initialized_storages()
         finally:
             await self._shutdown_embedding_queue()
