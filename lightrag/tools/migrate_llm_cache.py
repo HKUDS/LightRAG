@@ -69,7 +69,7 @@ DEFAULT_BATCH_SIZE = 1000
 DEFAULT_COUNT_BATCH_SIZE = 1000
 
 # Cache types produced in default mode and migrated by this tool.
-DEFAULT_CACHE_TYPES = ("extract", "summary", "analysis")
+DEFAULT_CACHE_TYPES = ("extract", "summary", "analysis", "entity_merge")
 DEFAULT_CACHE_PREFIXES = tuple(
     f"default:{cache_type}:" for cache_type in DEFAULT_CACHE_TYPES
 )
