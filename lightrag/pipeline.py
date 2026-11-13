@@ -7846,44 +7846,58 @@ class _PipelineMixin:
                 fail_fast_exc: BaseException | None = None
                 fail_fast_item_id: str | None = None
                 POLL_INTERVAL_SECONDS = 0.5
-                while pending:
-                    if (
-                        pipeline_status is not None
-                        and pipeline_status_lock is not None
-                        and await self._cancellation_requested(
-                            pipeline_status, pipeline_status_lock
-                        )
-                    ):
-                        fail_fast_exc = PipelineCancelledException(
-                            "User cancelled during analyze"
-                        )
-                        break
-
-                    done_now, pending = await asyncio.wait(
-                        pending,
-                        timeout=POLL_INTERVAL_SECONDS,
-                        return_when=asyncio.FIRST_EXCEPTION,
-                    )
-                    for t in done_now:
-                        if t.cancelled():
-                            continue
-                        texc = t.exception()
-                        if texc is not None:
-                            # Preserve original exception type so the
-                            # _analyze_worker except dispatch can distinguish
-                            # PipelineCancelledException from
-                            # MultimodalAnalysisError.
-                            fail_fast_exc = texc
-                            fail_fast_item_id = task_meta[t][0]
+                try:
+                    while pending:
+                        if (
+                            pipeline_status is not None
+                            and pipeline_status_lock is not None
+                            and await self._cancellation_requested(
+                                pipeline_status, pipeline_status_lock
+                            )
+                        ):
+                            fail_fast_exc = PipelineCancelledException(
+                                "User cancelled during analyze"
+                            )
                             break
-                    if fail_fast_exc is not None:
-                        break
 
-                # If we broke early, cancel the still-running tasks.
-                for t in pending:
-                    t.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
+                        done_now, pending = await asyncio.wait(
+                            pending,
+                            timeout=POLL_INTERVAL_SECONDS,
+                            return_when=asyncio.FIRST_EXCEPTION,
+                        )
+                        for t in done_now:
+                            if t.cancelled():
+                                continue
+                            texc = t.exception()
+                            if texc is not None:
+                                # Preserve original exception type so the
+                                # _analyze_worker except dispatch can distinguish
+                                # PipelineCancelledException from
+                                # MultimodalAnalysisError.
+                                fail_fast_exc = texc
+                                fail_fast_item_id = task_meta[t][0]
+                                break
+                        if fail_fast_exc is not None:
+                            break
+
+                    # If we broke early, cancel the still-running tasks.
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                except (Exception, asyncio.CancelledError):
+                    # asyncio.wait never cancels the tasks it waits on. Without
+                    # this, an external cancellation of the analyze stage
+                    # (server shutdown, the worker being cancelled) leaves the
+                    # item tasks running: still calling the VLM for a document
+                    # already abandoned, and writing results nobody collects.
+                    # Same rule as wait_tasks_with_drain: cancel what still
+                    # runs and collect every outcome before unwinding.
+                    for t in task_meta:
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(*task_meta, return_exceptions=True)
+                    raise
 
                 # Name the failing item the way its own errors do
                 # (``drawings/<id>``, ``table/<id>``, ``equation/<id>``), so the

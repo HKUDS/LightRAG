@@ -23,6 +23,7 @@ Covers the contract introduced by the LR2 multimodal rewrite:
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import logging
 import struct
@@ -1939,6 +1940,57 @@ async def test_fail_fast_exit_still_hands_over_the_truncation_record(tmp_path):
             "success"
         )
     finally:
+        await rag.finalize_storages()
+
+
+async def test_external_cancellation_cancels_the_running_item_tasks(tmp_path):
+    """The analyze stage fans its items out as tasks and waits on them with
+    ``asyncio.wait``, which never cancels what it waits on. Cancelling the
+    stage from outside (server shutdown) therefore used to leave the item
+    tasks running: the VLM call carried on for a document already abandoned.
+    The stage must cancel them, and wait for them, before it unwinds."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    outcome = {"cancelled": 0, "finished": 0}
+
+    async def parked_vlm(prompt, **kwargs):
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            outcome["cancelled"] += 1
+            raise
+        outcome["finished"] += 1
+        return json.dumps(
+            {"name": "fig-1", "type": "Chart", "description": "late description"}
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=parked_vlm)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, _ = _write_sidecar_fixtures(tmp_path)
+        analyze = asyncio.create_task(
+            rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="i",
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+        analyze.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await analyze
+
+        # Already true when analyze_multimodal returns: nothing is left behind.
+        assert outcome == {"cancelled": 1, "finished": 0}
+        # An item task still running would finish its VLM call now.
+        release.set()
+        await asyncio.sleep(0.05)
+        assert outcome == {"cancelled": 1, "finished": 0}
+    finally:
+        release.set()
         await rag.finalize_storages()
 
 
