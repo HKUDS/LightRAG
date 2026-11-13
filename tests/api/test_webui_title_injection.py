@@ -20,6 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 PLACEHOLDER = "<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
 STATIC_TITLE = "<title>LightRAG</title>"
 

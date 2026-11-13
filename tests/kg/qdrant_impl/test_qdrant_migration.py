@@ -12,6 +12,9 @@ from lightrag.utils import EmbeddingFunc  # noqa: E402
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage  # noqa: E402
 
 
+pytestmark = pytest.mark.offline
+
+
 # Mock QdrantClient
 @pytest.fixture
 def mock_qdrant_client():

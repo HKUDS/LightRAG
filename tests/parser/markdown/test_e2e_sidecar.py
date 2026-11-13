@@ -21,6 +21,9 @@ from lightrag.table_markup import TABLE_TAG_RE
 from lightrag.utils import Tokenizer, TokenizerInterface
 from lightrag.utils_pipeline import compute_text_content_hash
 
+
+pytestmark = pytest.mark.offline
+
 _MD = """# Doc Title
 
 Intro ![x](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==).

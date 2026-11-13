@@ -70,14 +70,9 @@ async def test_ollama_missing_done_reason_is_not_marked_truncated():
     assert is_truncated_response(result) is False
 
 
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
 @pytest.mark.parametrize("content", ["", "   \n  "])
 async def test_ollama_empty_length_truncated_response_raises(
-    caplog, _propagate_lightrag_logger, content
+    caplog, lightrag_caplog, content
 ):
     """Empty AND cut off is structurally broken, not merely short.
 

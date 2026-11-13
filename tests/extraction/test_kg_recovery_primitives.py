@@ -6,6 +6,7 @@ Covers the building blocks later phases depend on:
   may touch (entities + relation endpoints + sorted relation pairs).
 - ``wait_tasks_with_drain``: sibling-task failure/cancellation must leave no
   background task still writing.
+- ``cancel_and_drain_tasks``: the exit-path drain the stage coroutines share.
 - ``rebuild_knowledge_from_chunks(rebuild_policy="rollback")``: missing
   extraction cache is reported as a non-fatal degraded recovery condition.
 """
@@ -22,7 +23,7 @@ from lightrag.operate import (
     collect_kg_merge_candidates,
     rebuild_knowledge_from_chunks,
 )
-from lightrag.utils import wait_tasks_with_drain
+from lightrag.utils import cancel_and_drain_tasks, wait_tasks_with_drain
 
 
 @pytest.fixture(autouse=True)
@@ -219,6 +220,106 @@ async def test_drain_cancellation_between_wait_and_pending_cancel(monkeypatch):
 @pytest.mark.asyncio
 async def test_drain_empty_task_list_is_noop():
     assert await wait_tasks_with_drain([]) == []
+
+
+# --- cancel_and_drain_tasks --------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cancel_and_drain_stops_running_children_before_returning():
+    """A running child is cancelled and has fully ended -- its own cleanup
+    included -- by the time the helper returns."""
+    entered = asyncio.Event()
+    cleaned_up: list[str] = []
+
+    async def _child(name: str):
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            cleaned_up.append(name)
+
+    async def _done():
+        return "ok"
+
+    finished = asyncio.create_task(_done())
+    await finished
+    running = [asyncio.create_task(_child(f"c{i}")) for i in range(3)]
+    await entered.wait()
+
+    await cancel_and_drain_tasks([finished, *running])
+
+    assert all(task.cancelled() for task in running)
+    assert sorted(cleaned_up) == ["c0", "c1", "c2"]
+    assert finished.result() == "ok"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cancel_and_drain_adds_no_await_point_when_all_children_are_done():
+    """With nothing left running the helper must complete without suspending:
+    it runs in ``finally`` blocks on the success path, where a fresh await
+    point would let a late cancellation discard a finished result.
+
+    An unconditional ``gather`` over finished tasks suspends on Python 3.11
+    (3.12+ completes it eagerly), so that regression shows on 3.11; any other
+    added await point shows on every version."""
+
+    async def _done():
+        return 1
+
+    tasks = [asyncio.create_task(_done()) for _ in range(3)]
+    await asyncio.gather(*tasks)
+
+    coro = cancel_and_drain_tasks(tasks)
+    with pytest.raises(StopIteration):
+        coro.send(None)  # completes on the first step: no suspension
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cancel_and_drain_retrieves_failures_and_never_raises():
+    """A child that already failed, and one that fails while being cancelled,
+    are both retrieved -- asyncio reports neither as "never retrieved" -- and
+    the helper itself does not raise."""
+    import gc
+
+    loop = asyncio.get_running_loop()
+    reported: list[str] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reported.append(context.get("message", ""))
+    )
+    try:
+        entered = asyncio.Event()
+
+        async def _fails_now():
+            raise RuntimeError("already failed")
+
+        async def _fails_on_cancel():
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("failed while cancelling") from None
+
+        failed = asyncio.create_task(_fails_now())
+        running = asyncio.create_task(_fails_on_cancel())
+        await entered.wait()
+        await asyncio.sleep(0)
+        assert failed.done()
+
+        await cancel_and_drain_tasks([failed, running])
+
+        assert running.done() and not running.cancelled()
+        del failed, running
+        for _ in range(3):
+            await asyncio.sleep(0)
+            gc.collect()
+        assert [m for m in reported if "never retrieved" in m] == []
+    finally:
+        loop.set_exception_handler(previous)
 
 
 # --- rebuild_knowledge_from_chunks strict mode ------------------------------

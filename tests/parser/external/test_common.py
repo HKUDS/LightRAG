@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 import zipfile
 from pathlib import Path
 
@@ -35,6 +34,8 @@ from lightrag.parser.external import (
     write_manifest,
 )
 
+
+pytestmark = pytest.mark.offline
 
 # ---------------------------------------------------------------------------
 # compute_size_and_hash
@@ -237,63 +238,34 @@ def test_manifest_load_handles_missing_file(tmp_path: Path) -> None:
     assert load_manifest(tmp_path / "no-such-dir", expected_engine="docling") is None
 
 
+@pytest.mark.parametrize("payload", [b"\xff", b'{"engine":'])
+def test_manifest_load_treats_undecodable_file_as_missing(
+    tmp_path: Path, payload: bytes
+) -> None:
+    # Invalid UTF-8 raises UnicodeDecodeError (a ValueError, not an OSError)
+    # before json.loads runs; it must read as a stale bundle, like malformed
+    # JSON, instead of escaping and failing the parse on every retry.
+    raw = tmp_path / "demo.docling_raw"
+    raw.mkdir()
+    (raw / "_manifest.json").write_bytes(payload)
+    assert load_manifest(raw, expected_engine="docling") is None
+
+
 # ---------------------------------------------------------------------------
-# download_timeout -- version-branch selection
-#
-# NOTE: this only proves download_timeout() dispatches to the right
-# implementation based on sys.version_info; it does NOT (and cannot, on a
-# single interpreter) prove async-timeout's actual exception-handling
-# behaves correctly on Python 3.10 -- that requires running under a real
-# 3.10 interpreter, which tests/parser/external/{mineru,docling}/
-# test_*_download_bounds.py's deadline/cancellation tests do (verified
-# separately, not via this monkeypatch).
+# download_timeout
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason=(
-        "asyncio.timeout() does not exist below 3.11 regardless of what "
-        "sys.version_info is monkeypatched to claim -- this test is only "
-        "meaningful on an interpreter where the stdlib API is really there"
-    ),
-)
-async def test_download_timeout_uses_stdlib_asyncio_on_311_plus(monkeypatch):
+async def test_download_timeout_is_the_stdlib_asyncio_timeout():
     import asyncio
 
     from lightrag.parser.external._common import download_timeout
 
-    monkeypatch.setattr(
-        "lightrag.parser.external._common.sys.version_info", (3, 11, 0, "final", 0)
-    )
     # asyncio.timeout() needs a running loop to compute its deadline even
     # just to construct the Timeout object, hence this test is async.
     result = download_timeout(5.0)
     assert isinstance(result, asyncio.Timeout), (
-        f"expected asyncio.Timeout on 3.11+, got {type(result).__name__}"
-    )
-
-
-async def test_download_timeout_uses_async_timeout_backport_below_311(monkeypatch):
-    async_timeout = pytest.importorskip(
-        "async_timeout",
-        reason=(
-            "async-timeout is only a dependency on Python <3.11 (see the "
-            "python_version marker on the api extra in pyproject.toml); "
-            "this environment's Python 3.11+ install correctly does not "
-            "have it, so this branch can't be exercised here -- see "
-            "tests/parser/external/{mineru,docling}/test_*_download_bounds.py "
-            "run under a real 3.10 interpreter for actual coverage of this path."
-        ),
-    )
-    from lightrag.parser.external._common import download_timeout
-
-    monkeypatch.setattr(
-        "lightrag.parser.external._common.sys.version_info", (3, 10, 0, "final", 0)
-    )
-    result = download_timeout(5.0)
-    assert isinstance(result, async_timeout.Timeout), (
-        f"expected async_timeout.Timeout below 3.11, got {type(result).__name__}"
+        f"expected asyncio.Timeout, got {type(result).__name__}"
     )
 
 
