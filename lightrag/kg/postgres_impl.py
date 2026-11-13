@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, ClassVar, Sequence, TypeVar, Union,
 import numpy as np
 import configparser
 import ssl
+import types
 import itertools
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -559,6 +560,13 @@ class PostgreSQLDB:
 
         # Guard concurrent pool resets
         self._pool_reconnect_lock = asyncio.Lock()
+        # Single-flight state for _ensure_pool(): the number of finished
+        # reconnect attempts, and the failure of the latest one (None if it
+        # succeeded), so callers that waited on an attempt share its outcome.
+        self._pool_connect_generation = 0
+        self._pool_connect_failure: (
+            tuple[Exception, types.TracebackType | None] | None
+        ) = None
 
         # AGE graphs this process has already confirmed to exist.  Graph
         # creation is one-time DDL, not connection session state, so it must
@@ -654,7 +662,19 @@ class PostgreSQLDB:
         logger.warning(f"PostgreSQL, Unknown SSL mode: {ssl_mode}, SSL disabled")
         return None
 
-    async def initdb(self):
+    async def initdb(self, *, reconnect: bool = False):
+        """Create the connection pool and assign it to ``self.pool``.
+
+        Startup calls it with the defaults: up to ``connection_retry_attempts``
+        attempts with the configured backoff, and an ERROR log if all of them
+        fail.
+
+        ``reconnect=True`` is for ``_ensure_pool()`` only, which calls it while
+        holding ``_pool_reconnect_lock``. It makes a single attempt, because
+        ``_run_with_retry()`` owns the retries and their backoff, and a
+        transient failure is logged at WARNING, because it will be retried.
+        Never reset the pool from here: ``_reset_pool()`` takes the same lock.
+        """
         # Prepare connection parameters
         connection_params = {
             "user": self.user,
@@ -821,10 +841,12 @@ class PostgreSQLDB:
 
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.connection_retry_attempts),
+                stop=stop_after_attempt(
+                    1 if reconnect else self.connection_retry_attempts
+                ),
                 retry=retry_if_exception_type(self._transient_exceptions),
                 wait=wait_strategy,
-                before_sleep=self._before_sleep,
+                before_sleep=self._log_transient_failure,
                 reraise=True,
             ):
                 with attempt:
@@ -835,20 +857,54 @@ class PostgreSQLDB:
                 f"PostgreSQL, Connected to database at {self.host}:{self.port}/{self.database} {ssl_status}"
             )
         except Exception as e:
-            logger.error(
-                f"PostgreSQL, Failed to connect database at {self.host}:{self.port}/{self.database}, Got:{e}"
-            )
+            if reconnect and isinstance(e, self._transient_exceptions):
+                logger.warning(
+                    f"PostgreSQL, Failed to reconnect database at {self.host}:{self.port}/{self.database}, Got:{e!r}"
+                )
+            else:
+                logger.error(
+                    f"PostgreSQL, Failed to connect database at {self.host}:{self.port}/{self.database}, Got:{e}"
+                )
             raise
 
     async def _ensure_pool(self) -> None:
-        """Ensure the connection pool is initialised."""
-        if self.pool is None:
-            async with self._pool_reconnect_lock:
-                if self.pool is None:
-                    await self.initdb()
+        """Ensure the connection pool is initialised.
 
-    async def _reset_pool(self) -> None:
+        Single-flight: a caller that waited on the lock while another caller's
+        reconnect attempt ran gets that attempt's outcome instead of making an
+        attempt of its own, so N concurrent requests during an outage cost one
+        connect attempt per round rather than N attempts made one after another.
+        A caller that arrives after an attempt finished always makes its own.
+        """
+        if self.pool is not None:
+            return
+        generation = self._pool_connect_generation
         async with self._pool_reconnect_lock:
+            if self.pool is not None:
+                return
+            # Bind no local to the stored failure on the path that connects: a
+            # new failure's traceback keeps this frame alive, so such a local
+            # would chain every failure of an outage, and their callers'
+            # frames, together until a reconnect succeeds.
+            if (
+                generation != self._pool_connect_generation
+                and self._pool_connect_failure is not None
+            ):
+                exc, tb = self._pool_connect_failure
+                raise exc.with_traceback(tb)
+            try:
+                await self.initdb(reconnect=True)
+            except Exception as exc:
+                self._pool_connect_failure = (exc, exc.__traceback__)
+                self._pool_connect_generation += 1
+                raise
+            self._pool_connect_failure = None
+            self._pool_connect_generation += 1
+
+    async def _reset_pool(self, failed_pool: Pool | None = None) -> None:
+        async with self._pool_reconnect_lock:
+            if failed_pool is not None and self.pool is not failed_pool:
+                return
             if self.pool is not None:
                 try:
                     await asyncio.wait_for(
@@ -865,16 +921,20 @@ class PostgreSQLDB:
                     )
             self.pool = None
 
-    async def _before_sleep(self, retry_state: RetryCallState) -> None:
-        """Hook invoked by tenacity before sleeping between retries."""
+    async def _log_transient_failure(self, retry_state: RetryCallState) -> None:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
+        # Report the limit of the retry loop that is running, not the config.
+        max_attempts = getattr(
+            retry_state.retry_object.stop,
+            "max_attempt_number",
+            self.connection_retry_attempts,
+        )
         logger.warning(
             "PostgreSQL transient connection issue on attempt %s/%s: %r",
             retry_state.attempt_number,
-            self.connection_retry_attempts,
+            max_attempts,
             exc,
         )
-        await self._reset_pool()
 
     async def _run_with_retry(
         self,
@@ -907,17 +967,25 @@ class PostgreSQLDB:
             if self.connection_retry_backoff > 0
             else wait_fixed(0)
         )
+        pool: Pool | None = None
+
+        async def _before_sleep(retry_state: RetryCallState) -> None:
+            await self._log_transient_failure(retry_state)
+            if pool is not None:
+                await self._reset_pool(pool)
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self.connection_retry_attempts),
             retry=retry_if_exception_type(self._transient_exceptions),
             wait=wait_strategy,
-            before_sleep=self._before_sleep,
+            before_sleep=_before_sleep,
             reraise=True,
         ):
             with attempt:
+                pool = None
                 await self._ensure_pool()
-                assert self.pool is not None
+                pool = self.pool
+                assert pool is not None
                 if timing_label:
                     pool_snapshot_before = self._get_pool_snapshot()
                     performance_timing_log(
@@ -926,7 +994,7 @@ class PostgreSQLDB:
                         pool_snapshot_before,
                     )
                 acquire_start = time.perf_counter()
-                async with self.pool.acquire() as connection:  # type: ignore[arg-type]
+                async with pool.acquire() as connection:
                     acquire_elapsed = time.perf_counter() - acquire_start
                     if timing_label:
                         pool_snapshot_after = self._get_pool_snapshot()
