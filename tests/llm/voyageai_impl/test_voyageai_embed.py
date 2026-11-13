@@ -11,6 +11,9 @@ import numpy as np
 import pytest
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.fixture
 def fake_voyage_response():
     """Build a fake VoyageAI embed response with N rows of fixed-dim vectors."""

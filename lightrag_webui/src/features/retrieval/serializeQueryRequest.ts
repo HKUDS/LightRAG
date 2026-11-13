@@ -8,6 +8,45 @@ import type { MessageWithError } from '@/types/retrieval'
  */
 export const BYPASS_DEFAULT_HISTORY_TURNS = 3
 
+type HistoryTurn = [MessageWithError, MessageWithError]
+
+/**
+ * Groups history into completed question/answer turns, the only unit that is
+ * sent back as conversation context.
+ *
+ * A turn is a user message immediately followed by an assistant message. The
+ * whole turn is dropped when either side is marked failed (`isError`) or
+ * terminated (`isAborted`), or when the answer is empty: such an answer tells
+ * the model nothing, and keeping its question alone would leave an
+ * unanswered prompt the model may try to answer again. A message that is not
+ * part of such a pair is dropped too, so the window always alternates
+ * user/assistant and never starts with an answer.
+ *
+ * Accepted cost: after Stop, a follow-up like "continue" no longer sees the
+ * partial answer it refers to.
+ */
+function completedTurns(history: MessageWithError[]): HistoryTurn[] {
+  const turns: HistoryTurn[] = []
+  let i = 0
+  while (i < history.length) {
+    const question = history[i]
+    const answer = history[i + 1]
+    if (question.role !== 'user' || answer?.role !== 'assistant') {
+      i += 1
+      continue
+    }
+    const usable =
+      !question.isError &&
+      !question.isAborted &&
+      !answer.isError &&
+      !answer.isAborted &&
+      answer.content.trim() !== ''
+    if (usable) turns.push([question, answer])
+    i += 2
+  }
+  return turns
+}
+
 /**
  * The single request serializer shared by BOTH query pages.
  *
@@ -45,9 +84,9 @@ export function serializeQueryRequest(
     include_progress: true,
     conversation_history:
       effectiveHistoryTurns > 0
-        ? history
-          .filter((m) => m.isError !== true)
-          .slice(-effectiveHistoryTurns * 2)
+        ? completedTurns(history)
+          .slice(-effectiveHistoryTurns)
+          .flat()
           .map((m) => ({ role: m.role, content: m.content }))
         : []
   }

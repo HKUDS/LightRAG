@@ -230,8 +230,8 @@ class _AsyncEmbeddingFuncAdapter(Embeddings):
         error to its awaiter but does NOT cancel the remaining awaitables,
         so one 429 would leave thousands of batches hammering the provider
         after the document had already failed.  It also materialises one
-        Task per batch up front.  ``asyncio.TaskGroup`` would do, but the
-        project floor is Python 3.10.
+        Task per batch up front.  ``asyncio.TaskGroup`` would cancel the
+        rest on the first error too, but it still creates every Task up front.
 
         The pool also bounds how many queue slots V occupies in
         ``priority_limit_async_func_call``: that wrapper enqueues at CALL

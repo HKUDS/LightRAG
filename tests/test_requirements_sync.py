@@ -42,17 +42,13 @@ rule 5 closes the remaining copy:
 from __future__ import annotations
 
 import pathlib
-import sys
+import tomllib
 from collections import defaultdict
 
 import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - requires-python still allows 3.10
-    tomllib = pytest.importorskip("tomli")
 
 pytestmark = pytest.mark.offline
 

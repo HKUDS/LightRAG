@@ -110,7 +110,7 @@ def _handler_with_accounts(monkeypatch, auth_accounts: str):
         "global_args",
         SimpleNamespace(
             auth_accounts=auth_accounts,
-            token_secret="test-jwt-secret",
+            token_secret="test-jwt-secret-that-is-at-least-32-bytes",
             jwt_algorithm="HS256",
             token_expire_hours=48,
             guest_token_expire_hours=24,
@@ -638,7 +638,9 @@ class TestRenewalSkipUnderApiPrefix:
         server = importlib.import_module("lightrag.api.lightrag_server")
 
         dependency = utils_api.get_combined_auth_dependency(None)
-        app = FastAPI(root_path=api_prefix or None)
+        app = FastAPI()
+        # Same as create_app: the constructor argument is deprecated.
+        app.root_path = api_prefix
         if api_prefix:
             app.add_middleware(server._RootPathNormalizationMiddleware)
 

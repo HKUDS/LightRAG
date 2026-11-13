@@ -4,6 +4,9 @@ from lightrag.operate import _rebuild_single_entity, _rebuild_single_relationshi
 from lightrag.utils import Tokenizer, TokenizerInterface
 
 
+pytestmark = pytest.mark.offline
+
+
 class _DummyTokenizer(TokenizerInterface):
     def encode(self, content: str):
         return [ord(ch) for ch in content]
