@@ -41,6 +41,7 @@ from lightrag.utils import (
     get_storage_io_executor,
     run_in_storage_io,
 )
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -206,16 +207,10 @@ async def test_cancellation_wins_over_a_worker_exception(caplog, monkeypatch):
     await _wait_for(lambda: seen.setdefault(2, asyncio.Event()).is_set())
     work.release.set()
 
-    # lightrag's logger does not propagate, so caplog needs it turned on.
-    lr_logger = logging.getLogger("lightrag")
-    previous = lr_logger.propagate
-    lr_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.ERROR, logger="lightrag"):
             with pytest.raises(asyncio.CancelledError):
                 await task
-    finally:
-        lr_logger.propagate = previous
 
     assert any("disk full" in record.getMessage() for record in caplog.records)
 

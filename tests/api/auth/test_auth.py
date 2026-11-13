@@ -12,6 +12,9 @@ from lightrag.tools.hash_password import main as hash_password_main
 from lightrag.utils import logger as lightrag_logger
 
 
+pytestmark = pytest.mark.offline
+
+
 def import_real_api_module(module_name: str):
     sys.modules.pop(module_name, None)
 
@@ -28,7 +31,7 @@ def auth_module(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="test-jwt-secret",
+        token_secret="test-jwt-secret-that-is-at-least-32-bytes",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -177,7 +180,7 @@ def test_invalid_auth_accounts_raises(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="test-jwt-secret",
+        token_secret="test-jwt-secret-that-is-at-least-32-bytes",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -197,7 +200,7 @@ def load_auth_handler(monkeypatch, auth_accounts: str):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="test-jwt-secret",
+        token_secret="test-jwt-secret-that-is-at-least-32-bytes",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -269,7 +272,7 @@ def test_initialize_config_allows_custom_token_secret_with_auth_accounts():
 
     secure_args = SimpleNamespace(
         auth_accounts="admin:admin_pass",
-        token_secret="custom-jwt-secret",
+        token_secret="custom-jwt-secret-that-is-at-least-32-bytes",
     )
 
     initialized = config.initialize_config(secure_args, force=True)

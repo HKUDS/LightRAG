@@ -27,6 +27,7 @@ from lightrag.utils import (
     repair_vlm_json_escape_damage_nested,
     strip_markdown_code_fence,
     tolerant_load_json_dict,
+    _first_structural_opener,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     acount_tokens,
@@ -742,7 +743,9 @@ def _handle_single_entity_extraction(
             return None
 
         # Process entity description with same cleaning pipeline
-        entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
+        entity_description = sanitize_and_normalize_extracted_text(
+            record_attributes[3], multiline=True
+        )
 
         if not entity_description.strip():
             logger.warning(
@@ -817,7 +820,9 @@ def _handle_single_relationship_extraction(
         edge_keywords = edge_keywords.replace("，", ",")
 
         # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
+        edge_description = sanitize_and_normalize_extracted_text(
+            record_attributes[4], multiline=True
+        )
         if not edge_description.strip():
             logger.warning(
                 f"Relationship extraction error: empty description for relation '{source}'~'{target}' in chunk '{chunk_key}'"
@@ -989,7 +994,7 @@ async def _process_json_extraction_result(
                 continue
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("description", ""))
+                str(entity_data.get("description", "")), multiline=True
             )
             if not entity_description.strip():
                 logger.warning(
@@ -1056,7 +1061,7 @@ async def _process_json_extraction_result(
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("description", ""))
+                str(rel_data.get("description", "")), multiline=True
             )
 
             if not edge_description.strip():
@@ -4751,10 +4756,19 @@ async def kg_query(
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
-    # Handle empty keywords
-    if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
+    # Handle empty keywords. An empty list that the search covers with a
+    # fallback is reported there (_resolve_kg_search_queries), with the
+    # substitution it makes; warn here only when nothing stands in for it.
+    if (
+        ll_keywords == []
+        and query_param.mode in ["local", "hybrid", "mix"]
+        and not hl_keywords
+    ):
         logger.warning("low_level_keywords is empty")
-    if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
+    if hl_keywords == [] and (
+        query_param.mode in ["hybrid", "mix"]
+        or (query_param.mode == "global" and not ll_keywords)
+    ):
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
         if len(query) < 50:
@@ -4858,6 +4872,9 @@ async def kg_query(
     kg_chunk_pick_method = retrieval_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
     )
+    keyword_fallback = _kg_keyword_fallback(
+        query_param.mode, ll_keywords_str, hl_keywords_str
+    )
     args_hash = compute_args_hash(
         _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
@@ -4887,6 +4904,11 @@ async def kg_query(
         related_chunk_number,
         kg_chunk_pick_method,
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        # Present only when the search swaps keyword lists between stores. An
+        # answer cached before that routing existed was written from another
+        # store's context, so it must miss; every other entry keeps hitting,
+        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        *(("\n<kg_keyword_fallback>\n", keyword_fallback) if keyword_fallback else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -4951,17 +4973,6 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
         # Streaming response (AsyncIterator)
@@ -5004,6 +5015,12 @@ async def get_keywords_from_query(
     return hl_keywords, ll_keywords
 
 
+# The placeholder tokens of PROMPTS["keywords_extraction_examples"], with an
+# optional numeric suffix so the template may list several per array. Matched
+# by name, never by shape: "<div>" is a legitimate keyword for an HTML query.
+_KEYWORD_TEMPLATE_PLACEHOLDER = re.compile(r"<(?:high|low)_level_keyword(?:_\d+)?>")
+
+
 def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     """Normalize keyword payloads into a clean list of strings.
 
@@ -5034,7 +5051,9 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     for idx, value in enumerate(raw_values):
         if isinstance(value, str):
             cleaned = value.strip()
-            if cleaned:
+            # An echoed template placeholder is not a keyword: kept, it would
+            # be embedded for retrieval and cached for every later run.
+            if cleaned and not _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch(cleaned):
                 normalized.append(cleaned)
             continue
 
@@ -5046,6 +5065,34 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
         )
 
     return normalized
+
+
+def _select_keywords_object(text: str, candidates: list[Any]) -> Any:
+    """Pick the keyword object out of a reply that holds several JSON objects.
+
+    ``json_repair`` returns a list when a reply repeats itself, e.g. a fenced
+    object, a "let me fix my format" line, then a second object. Returns the
+    first object that carries a real keyword, so an echoed format template, an
+    echoed empty-list example or an unrelated leading object does not shadow
+    the answer; failing that the first object, so an all-empty reply is still
+    a valid "no keywords" answer.
+
+    Returns ``candidates`` unchanged, which the caller rejects, when the reply
+    is a top-level array or holds no object at all: an array element is never
+    taken for the whole answer.
+    """
+    opener, _ = _first_structural_opener(text)
+    if opener != "{":
+        return candidates
+
+    objects = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    for candidate in objects:
+        if any(
+            _normalize_keyword_list(candidate.get(field_name), field_name)
+            for field_name in ("high_level_keywords", "low_level_keywords")
+        ):
+            return candidate
+    return objects[0] if objects else candidates
 
 
 def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
@@ -5078,6 +5125,8 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
                     strict_error,
                     cleaned_result[:500],
                 )
+                if isinstance(payload, list):
+                    payload = _select_keywords_object(cleaned_result, payload)
             except Exception as repair_error:
                 logger.error(
                     "JSON parsing error: %s; repair failed: %s; response: %r",
@@ -5277,6 +5326,61 @@ async def _get_vector_context(
     return valid_chunks
 
 
+def _kg_keyword_fallback(mode: str, ll_keywords: str, hl_keywords: str) -> str:
+    """Name the keyword fallback a KG search applies; "" when it applies none.
+
+    The name is part of the answer-cache key (see ``kg_query``), so renaming a
+    value retires the cached answers of every request that took that fallback.
+    """
+    if not ll_keywords and hl_keywords and mode in ("local", "hybrid", "mix"):
+        return "entities_by_high_level_keywords"
+    if not hl_keywords and ll_keywords and mode == "global":
+        return "relationships_by_low_level_keywords"
+    return ""
+
+
+def _resolve_kg_search_queries(
+    mode: str, ll_keywords: str, hl_keywords: str
+) -> tuple[str, str]:
+    """Return ``(entity_query, relation_query)`` for a KG search; "" skips a store.
+
+    ``local`` owns the entity store, ``global`` the relationship store,
+    ``hybrid`` / ``mix`` both. Low-level keywords normally drive the entity
+    search and high-level keywords the relationship search.
+
+    When keyword extraction leaves a mode's own list empty, the other list
+    stands in for it on the SAME store. Weaker models routinely put the named
+    entities under ``high_level_keywords`` and return no low-level ones, which
+    would otherwise leave the entity store unqueried. The fallbacks are:
+
+    * low-level empty, ``local`` / ``hybrid`` / ``mix``: high-level keywords
+      query the entity store.
+    * high-level empty, ``global``: low-level keywords query the relationship
+      store.
+
+    A mode never falls through to the store it does not own: ``local`` with no
+    low-level keywords stays an entity search, it does not become ``global``.
+    """
+    entity_query = ll_keywords if mode in ("local", "hybrid", "mix") else ""
+    relation_query = hl_keywords if mode in ("global", "hybrid", "mix") else ""
+
+    fallback = _kg_keyword_fallback(mode, ll_keywords, hl_keywords)
+    if fallback == "entities_by_high_level_keywords":
+        entity_query = hl_keywords
+        logger.warning(
+            "low_level_keywords is empty: querying entities with "
+            "high_level_keywords instead (mode=%s)",
+            mode,
+        )
+    elif fallback == "relationships_by_low_level_keywords":
+        relation_query = ll_keywords
+        logger.warning(
+            "high_level_keywords is empty: querying relationships with "
+            "low_level_keywords instead (mode=global)"
+        )
+    return entity_query, relation_query
+
+
 async def _perform_kg_search(
     query: str,
     ll_keywords: str,
@@ -5323,8 +5427,11 @@ async def _perform_kg_search(
     hl_embedding = None
 
     mode = query_param.mode
-    need_ll = mode in ("local", "hybrid", "mix") and bool(ll_keywords)
-    need_hl = mode in ("global", "hybrid", "mix") and bool(hl_keywords)
+    entity_query, relation_query = _resolve_kg_search_queries(
+        mode, ll_keywords, hl_keywords
+    )
+    need_ll = bool(entity_query)
+    need_hl = bool(relation_query)
 
     if actual_embedding_func:
         texts_to_embed: list[str] = []
@@ -5335,11 +5442,13 @@ async def _perform_kg_search(
             text_purposes.append("query")
 
         if need_ll:
-            texts_to_embed.append(ll_keywords)
+            texts_to_embed.append(entity_query)
             text_purposes.append("ll")
 
-        if need_hl:
-            texts_to_embed.append(hl_keywords)
+        # A fallback can route one keyword string to both stores; embed it once.
+        share_keyword_embedding = need_ll and relation_query == entity_query
+        if need_hl and not share_keyword_embedding:
+            texts_to_embed.append(relation_query)
             text_purposes.append("hl")
 
         if texts_to_embed:
@@ -5354,6 +5463,8 @@ async def _perform_kg_search(
                         ll_embedding = all_embeddings[i]
                     elif purpose == "hl":
                         hl_embedding = all_embeddings[i]
+                if share_keyword_embedding:
+                    hl_embedding = ll_embedding
                 logger.debug(
                     "Pre-computed %d embeddings in single batch (purposes: %s)",
                     len(texts_to_embed),
@@ -5362,72 +5473,51 @@ async def _perform_kg_search(
             except Exception as e:
                 logger.warning(f"Failed to batch pre-compute embeddings: {e}")
 
-    # Handle local and global modes
-    if query_param.mode == "local" and len(ll_keywords) > 0:
+    # Each store is searched with the query string resolved above, so a mode
+    # never reaches a store it does not own (see _resolve_kg_search_queries).
+    if entity_query:
         if progress_callback:
             await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
         local_entities, local_relations = await _get_node_data(
-            ll_keywords,
+            entity_query,
             knowledge_graph_inst,
             entities_vdb,
             query_param,
             query_embedding=ll_embedding,
         )
 
-    elif query_param.mode == "global" and len(hl_keywords) > 0:
+    if relation_query:
         if progress_callback:
             await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
         global_relations, global_entities = await _get_edge_data(
-            hl_keywords,
+            relation_query,
             knowledge_graph_inst,
             relationships_vdb,
             query_param,
             query_embedding=hl_embedding,
         )
 
-    else:  # hybrid or mix mode
-        if len(ll_keywords) > 0:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
-            local_entities, local_relations = await _get_node_data(
-                ll_keywords,
-                knowledge_graph_inst,
-                entities_vdb,
-                query_param,
-                query_embedding=ll_embedding,
-            )
-        if len(hl_keywords) > 0:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
-            global_relations, global_entities = await _get_edge_data(
-                hl_keywords,
-                knowledge_graph_inst,
-                relationships_vdb,
-                query_param,
-                query_embedding=hl_embedding,
-            )
-
-        # Get vector chunks for mix mode
-        if query_param.mode == "mix" and chunks_vdb:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
-            vector_chunks = await _get_vector_context(
-                query,
-                chunks_vdb,
-                query_param,
-                query_embedding,
-            )
-            # Track vector chunks with source metadata
-            for i, chunk in enumerate(vector_chunks):
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
-                if chunk_id:
-                    chunk_tracking[chunk_id] = {
-                        "source": "C",
-                        "frequency": 1,  # Vector chunks always have frequency 1
-                        "order": i + 1,  # 1-based order in vector search results
-                    }
-                else:
-                    logger.warning(f"Vector chunk missing chunk_id: {chunk}")
+    # Get vector chunks for mix mode
+    if query_param.mode == "mix" and chunks_vdb:
+        if progress_callback:
+            await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
+        vector_chunks = await _get_vector_context(
+            query,
+            chunks_vdb,
+            query_param,
+            query_embedding,
+        )
+        # Track vector chunks with source metadata
+        for i, chunk in enumerate(vector_chunks):
+            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            if chunk_id:
+                chunk_tracking[chunk_id] = {
+                    "source": "C",
+                    "frequency": 1,  # Vector chunks always have frequency 1
+                    "order": i + 1,  # 1-based order in vector search results
+                }
+            else:
+                logger.warning(f"Vector chunk missing chunk_id: {chunk}")
 
     # Round-robin merge entities
     final_entities = []
@@ -6160,6 +6250,9 @@ async def _build_query_context(
         progress_callback=progress_callback,
         system_prompt=system_prompt,
     )
+
+    if not context:
+        return None
 
     # Convert keywords strings to lists and add complete metadata to raw_data
     hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
@@ -6965,6 +7058,12 @@ async def naive_query(
         progress_callback=progress_callback,
     )
 
+    if not processed_chunks:
+        logger.info(
+            "[naive_query] No chunks survived final filtering; returning no-result."
+        )
+        return None
+
     # Generate reference list from processed chunks using the new common function
     reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
         processed_chunks
@@ -7106,18 +7205,6 @@ async def naive_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response[len(sys_prompt) :]
-                .replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=raw_data)
     else:
         # Streaming response (AsyncIterator)

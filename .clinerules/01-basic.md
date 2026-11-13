@@ -146,7 +146,7 @@ for key, value in matching_items:
 **Configuration**:
 - `tests/pytest.ini` - Marker definitions and test discovery
 - `tests/conftest.py` - Fixtures and custom options
-- `.github/workflows/tests.yml` - CI/CD workflow (Python 3.10/3.11/3.12)
+- `.github/workflows/tests.yml` - CI/CD workflow (Python 3.12/3.14 on pull requests; 3.11, the floor, added on pushes to main/dev)
 
 **Documentation**: See `memory-bank/testing-guidelines.md` for complete testing guidelines
 

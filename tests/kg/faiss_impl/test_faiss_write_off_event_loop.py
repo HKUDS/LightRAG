@@ -264,7 +264,7 @@ async def test_cancelled_commit_still_notifies_and_retires_the_redo_logs(
 
 
 async def test_a_failed_notification_is_not_reported_as_a_failed_save(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """A publication failure must not be raised as a save failure.
 
@@ -293,10 +293,6 @@ async def test_a_failed_notification_is_not_reported_as_a_failed_save(
         monkeypatch.setattr(
             faiss_impl, "set_all_update_flags", failing_set_all_update_flags
         )
-
-        # lightrag's logger does not propagate, so caplog cannot see it otherwise.
-        logger = logging.getLogger("lightrag")
-        monkeypatch.setattr(logger, "propagate", True)
 
         with caplog.at_level(logging.ERROR, logger="lightrag"):
             committed = await storage.index_done_callback()
