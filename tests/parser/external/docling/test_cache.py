@@ -40,6 +40,8 @@ def _clear_envs(monkeypatch: pytest.MonkeyPatch) -> None:
         "DOCLING_DO_FORMULA_ENRICHMENT",
         "DOCLING_ENGINE_VERSION",
         "DOCLING_ENDPOINT",
+        "DOCLING_PIPELINE",
+        "DOCLING_VLM_PRESET",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling.test")
@@ -176,6 +178,22 @@ def test_is_bundle_valid_legacy_bundle_misses_with_overrides(
     assert is_bundle_valid(raw, source_file) is True
     assert is_bundle_valid(raw, source_file, overrides={"force_ocr": False}) is False
     assert is_bundle_valid(raw, source_file, overrides={"force_ocr": True}) is False
+
+
+def test_is_bundle_valid_legacy_bundle_misses_under_vlm_pipeline(
+    tmp_path: Path, source_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An unsigned legacy bundle can only come from the standard pipeline (every
+    # VLM bundle records a signature). Reusing it under DOCLING_PIPELINE=vlm
+    # would rebuild the sidecar from OCR output and never call the requested
+    # VLM model, so it must miss; under standard it keeps its lenient hit.
+    raw = _build_valid_bundle(tmp_path, source_file, options_signature="")
+    assert is_bundle_valid(raw, source_file) is True
+    monkeypatch.setenv("DOCLING_PIPELINE", "vlm")
+    monkeypatch.setenv("DOCLING_VLM_PRESET", "minicpm_ocr")
+    assert is_bundle_valid(raw, source_file) is False
+    monkeypatch.setenv("DOCLING_PIPELINE", "standard")
+    assert is_bundle_valid(raw, source_file) is True
 
 
 def test_is_bundle_valid_fixed_constants_code_change(

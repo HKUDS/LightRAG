@@ -60,6 +60,7 @@ from lightrag.constants import (
     DEFAULT_P_REFERENCES_HEADINGS,
     DEFAULT_P_REFERENCES_TAIL_N,
 )
+from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.table_markup import (
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
@@ -191,19 +192,38 @@ def _block_to_paragraphs(content: str) -> list[dict[str, Any]]:
 
 
 def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
-    """Read ``type == "content"`` rows from a blocks.jsonl file in order."""
+    """Read ``type == "content"`` rows from a blocks.jsonl file in order.
+
+    Raises :class:`BlocksSidecarCorruptError` on a row that is not valid JSON
+    or on invalid UTF-8. A damaged row is never skipped: the rows that still
+    parse do not cover the document, so chunking them drops text.
+    """
     rows: list[dict[str, Any]] = []
-    with Path(blocks_path).open("r", encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict) and obj.get("type") == "content":
-                rows.append(obj)
+    line_number = 0
+    try:
+        with Path(blocks_path).open("r", encoding="utf-8") as fh:
+            for line_number, raw in enumerate(fh, start=1):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    # ``exc.lineno`` is always 1 here (rows are decoded one at
+                    # a time), so report the file's own line number instead.
+                    raise BlocksSidecarCorruptError(
+                        blocks_path,
+                        f"invalid JSON ({exc.msg}, column {exc.colno})",
+                        line_number,
+                    ) from exc
+                if isinstance(obj, dict) and obj.get("type") == "content":
+                    rows.append(obj)
+    except UnicodeDecodeError as exc:
+        # Raised by the read that follows the last row decoded successfully.
+        raise BlocksSidecarCorruptError(
+            blocks_path,
+            f"invalid UTF-8 after line {line_number} ({exc.reason})",
+        ) from exc
     return rows
 
 
@@ -2109,9 +2129,12 @@ def chunking_by_paragraph_semantic(
             above for the full mapping.
         blocks_path: Path to the document's ``.blocks.jsonl`` sidecar
             (typically ``parsed_data["blocks_path"]``). When ``None``,
-            unreadable, or empty, this function falls back to
+            missing, or without content rows, this function falls back to
             :func:`chunking_by_recursive_character` on ``content``
-            (per ``docs/FileProcessingPipeline.md``).
+            (per ``docs/FileProcessingPipeline.md``). A sidecar that
+            exists but holds malformed JSON or invalid UTF-8 raises
+            :class:`~lightrag.exceptions.BlocksSidecarCorruptError`
+            instead; it never falls back.
             That fallback hard-requires ``langchain-text-splitters``;
             an :class:`ImportError` is surfaced rather than silently
             degrading further.
@@ -2195,9 +2218,10 @@ def chunking_by_paragraph_semantic(
     else:
         try:
             rows = _load_blocks_from_jsonl(blocks_path)
-        except (OSError, UnicodeDecodeError) as exc:
-            # UnicodeDecodeError is a ValueError, not an OSError: a sidecar
-            # holding invalid UTF-8 is as unreadable as a missing one.
+        except OSError as exc:
+            # Only an absent or unopenable sidecar falls back. One that opens
+            # but does not decode raises BlocksSidecarCorruptError and fails
+            # the document: see that exception for why it must not degrade.
             fallback_reason = f"cannot read blocks.jsonl at {blocks_path}: {exc}"
         else:
             if not rows:
