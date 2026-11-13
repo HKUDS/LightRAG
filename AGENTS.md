@@ -98,6 +98,7 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 - Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
 - LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
+- A change to what `normalize_entity_name` produces may only **merge** names that used to differ, never split names that used to be equal: a rebuild re-parses cached LLM output with the current rules, and a split leaves some of a stored object's records unmatched, so their facts are dropped. [Entity name normalization changes](docs/design/PurgeRecoveryContract.md#entity-name-normalization-changes) has the reasoning and the consequences in the current rules.
 
 ### Relation weight contract
 
