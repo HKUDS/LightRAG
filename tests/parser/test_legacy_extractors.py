@@ -7,6 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
 import pytest
+from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_CONNECTOR
@@ -252,6 +253,50 @@ def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
         "Before\nGrouped paragraph\nSecond paragraph\vSoft break\n\n"
         "Group sibling\nAfter\nNext slide\n"
     )
+
+
+def _docx_bytes(document) -> bytes:
+    file_bytes = BytesIO()
+    document.save(file_bytes)
+    return file_bytes.getvalue()
+
+
+@pytest.mark.offline
+def test_extract_text_docx_keeps_horizontally_merged_cell_text_once():
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 2)).text = "Quarterly report"
+    for column, text in enumerate(("Q1", "Q2", "Q3")):
+        table.cell(1, column).text = text
+
+    # The merged cell still takes three columns, so the rows stay aligned.
+    assert extract_text(_docx_bytes(document), "docx") == (
+        "Quarterly report\t\t\nQ1\tQ2\tQ3"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_repeats_vertically_merged_cell_text_per_row():
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).merge(table.cell(1, 0)).text = "Region"
+    table.cell(0, 1).text = "North"
+    table.cell(1, 1).text = "South"
+
+    assert extract_text(_docx_bytes(document), "docx") == (
+        "Region\tNorth\nRegion\tSouth"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_block_merged_cell_text_is_once_per_row():
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).merge(table.cell(1, 1)).text = "Block"
+    table.cell(0, 2).text = "A"
+    table.cell(1, 2).text = "B"
+
+    assert extract_text(_docx_bytes(document), "docx") == "Block\t\tA\nBlock\t\tB"
 
 
 def _make_encrypted_pdf_bytes(text: str, *, password: str, algorithm: str) -> bytes:
