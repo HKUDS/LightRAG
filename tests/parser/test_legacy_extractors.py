@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 from docx import Document
+from docx.oxml import parse_xml
 from docx.oxml.shared import OxmlElement
 from docx.oxml.ns import qn
 from openpyxl import Workbook
@@ -367,6 +368,281 @@ def test_extract_text_docx_vertical_merge_continuation_without_cell_above():
 
     # A malformed continuation in the first row has nothing to repeat.
     assert extract_text(_docx_bytes(document), "docx") == "\tr0c1"
+
+
+_W_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_W_DECL = f'xmlns:w="{_W_URI}"'
+
+
+def _built_docx_bytes(build) -> bytes:
+    """Save a python-docx document after ``build`` has added its content."""
+
+    document = Document()
+    build(document)
+    out = BytesIO()
+    document.save(out)
+    return out.getvalue()
+
+
+def _append_xml(document, xml: str) -> None:
+    """Insert raw WordprocessingML before the body's closing ``w:sectPr``."""
+
+    body = document.element.body
+    body.insert(len(body) - 1, parse_xml(xml))
+
+
+def _run(text: str) -> str:
+    return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_blocks_inside_content_controls_and_custom_xml():
+    table = (
+        "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid>"
+        f"<w:tr><w:tc><w:p>{_run('Cell in a control')}</w:p></w:tc></w:tr></w:tbl>"
+    )
+
+    def build(document):
+        document.add_paragraph("Before")
+        _append_xml(
+            document,
+            f"<w:sdt {_W_DECL}><w:sdtPr/><w:sdtContent>"
+            f"<w:p>{_run('In a control')}</w:p>{table}"
+            "</w:sdtContent></w:sdt>",
+        )
+        _append_xml(
+            document,
+            f'<w:customXml {_W_DECL} w:element="clause">'
+            f"<w:p>{_run('In custom XML')}</w:p></w:customXml>",
+        )
+        document.add_paragraph("After")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Before\nIn a control\n\nCell in a control\n\nIn custom XML\nAfter"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_runs_nested_in_a_paragraph():
+    paragraphs = [
+        _run("Signed by ")
+        + f"<w:sdt><w:sdtPr/><w:sdtContent>{_run('Jane Doe')}</w:sdtContent></w:sdt>",
+        _run("Dose: ")
+        + f'<w:ins w:id="1" w:author="a">{_run("20 mg")}</w:ins>'
+        + '<w:del w:id="2" w:author="a"><w:r><w:tab/><w:delText>10 mg</w:delText></w:r></w:del>',
+        _run("Updated ")
+        + f'<w:fldSimple w:instr="DATE">{_run("2024-05-01")}</w:fldSimple>',
+        f'<w:smartTag w:uri="urn:x" w:element="place">{_run("Reutlingen")}</w:smartTag>',
+    ]
+
+    def build(document):
+        for content in paragraphs:
+            _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Signed by Jane Doe\nDose: 20 mg\nUpdated 2024-05-01\nReutlingen"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_runs_that_are_not_the_paragraph_text():
+    mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+    content = (
+        f'<w:moveFrom w:id="3" w:author="a">{_run("OLD PLACE")}</w:moveFrom>'
+        f'<w:moveTo w:id="4" w:author="a">{_run("NEW PLACE")}</w:moveTo>'
+        "<w:r><w:ruby><w:rubyPr/><w:rt><w:r><w:t>kan</w:t></w:r></w:rt>"
+        "<w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby></w:r>"
+        f'<w:r><mc:AlternateContent xmlns:mc="{mc}"><mc:Choice Requires="wps">'
+        f"<w:txbxContent><w:p>{_run('BOX')}</w:p></w:txbxContent></mc:Choice>"
+        f"<mc:Fallback><w:pict><w:txbxContent><w:p>{_run('BOX COPY')}</w:p>"
+        "</w:txbxContent></w:pict></mc:Fallback></mc:AlternateContent></w:r>"
+        f'<mc:AlternateContent xmlns:mc="{mc}"><mc:Choice Requires="w14">'
+        f"{_run('CHOICE')}</mc:Choice><mc:Fallback>{_run('FALLBACK')}</mc:Fallback>"
+        "</mc:AlternateContent>"
+    )
+
+    def build(document):
+        _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "NEW PLACE漢CHOICE"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_keeps_document_order_and_reads_one_alternate_branch():
+    mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+
+    def alternate(*branches: str) -> str:
+        return f"<mc:AlternateContent {mc}>{''.join(branches)}</mc:AlternateContent>"
+
+    paragraphs = [
+        # Ruby text between two pieces of the same run.
+        "<w:r><w:t>before</w:t><w:ruby><w:rubyPr/><w:rt><w:r><w:t>kan</w:t>"
+        "</w:r></w:rt><w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby>"
+        "<w:t>after</w:t></w:r>",
+        # Two choices: only the first is shown.
+        alternate(
+            f'<mc:Choice Requires="w14">{_run("5")}</mc:Choice>',
+            f'<mc:Choice Requires="w15">{_run("5")}</mc:Choice>',
+            f"<mc:Fallback>{_run('five')}</mc:Fallback>",
+        ),
+        # No choice: the fallback is what is shown.
+        alternate(f"<mc:Fallback>{_run('only fallback')}</mc:Fallback>"),
+    ]
+
+    def build(document):
+        for content in paragraphs:
+            _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "before漢after\n5\nonly fallback"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_nested_runs_in_table_cells():
+    def build(document):
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "Name"
+        tc = table.cell(0, 1)._tc
+        tc.p_lst[0].append(
+            parse_xml(
+                f"<w:sdt {_W_DECL}><w:sdtPr/>"
+                f"<w:sdtContent>{_run('Jane Doe')}</w:sdtContent></w:sdt>"
+            )
+        )
+        tc.append(
+            parse_xml(
+                f"<w:sdt {_W_DECL}><w:sdtPr/><w:sdtContent>"
+                f"<w:p>{_run('second line')}</w:p></w:sdtContent></w:sdt>"
+            )
+        )
+
+    assert (
+        extract_text(_built_docx_bytes(build), "docx")
+        == "Name\tJane Doe<br>second line"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_a_plain_document_as_before():
+    """Direct runs, a tab, a line break, a hyperlink and a table: unchanged."""
+
+    def build(document):
+        paragraph = document.add_paragraph("one\ttwo")
+        paragraph.add_run().add_break()
+        paragraph.add_run("three")
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('see ')}"
+            f'<w:hyperlink w:anchor="x">{_run("the link")}</w:hyperlink></w:p>',
+        )
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "A"
+        table.cell(0, 1).text = "B"
+
+    data = _built_docx_bytes(build)
+    document = Document(BytesIO(data))
+    assert [p.text for p in document.paragraphs] == ["one\ttwo\nthree", "see the link"]
+    assert [c.text for c in document.tables[0].rows[0].cells] == ["A", "B"]
+    assert extract_text(data, "docx") == "one\ttwo\nthree\nsee the link\n\nA\tB"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_rows_and_cells_inside_content_controls():
+    def cell(text: str) -> str:
+        return f"<w:tc><w:p>{_run(text)}</w:p></w:tc>"
+
+    # Row 2 is a repeating section; row 1's second cell is custom XML.
+    table = (
+        f"<w:tbl {_W_DECL}><w:tblPr/>"
+        "<w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>"
+        f'<w:tr>{cell("Item")}<w:customXml w:element="qty">{cell("Qty")}'
+        "</w:customXml></w:tr>"
+        f"<w:sdt><w:sdtPr/><w:sdtContent><w:tr>{cell('Apples')}{cell('3')}</w:tr>"
+        f"<w:tr>{cell('Pears')}{cell('5')}</w:tr></w:sdtContent></w:sdt>"
+        "</w:tbl>"
+    )
+
+    def build(document):
+        _append_xml(document, table)
+
+    assert (
+        extract_text(_built_docx_bytes(build), "docx")
+        == "Item\tQty\nApples\t3\nPears\t5"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_placeholder_cell_keeps_its_grid_columns():
+    def cell(text: str, span: int = 1) -> str:
+        grid_span = f'<w:tcPr><w:gridSpan w:val="{span}"/></w:tcPr>' if span > 1 else ""
+        return f"<w:tc>{grid_span}<w:p>{_run(text)}</w:p></w:tc>"
+
+    placeholder = (
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
+        f"<w:sdtContent>{cell('Enter quantity', span=2)}</w:sdtContent></w:sdt>"
+    )
+    table = (
+        f"<w:tbl {_W_DECL}><w:tblPr/><w:tblGrid>{'<w:gridCol/>' * 4}</w:tblGrid>"
+        f"<w:tr>{cell('Item')}{cell('Qty')}{cell('Price')}{cell('Note')}</w:tr>"
+        f"<w:tr>{cell('Apples')}{placeholder}{cell('fresh')}</w:tr></w:tbl>"
+    )
+
+    def build(document):
+        _append_xml(document, table)
+
+    # The placeholder spans Qty and Price; "fresh" stays under Note.
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Item\tQty\tPrice\tNote\nApples\t\t\tfresh"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_the_table_of_contents_control():
+    def control(gallery: str, *texts: str) -> str:
+        paragraphs = "".join(f"<w:p>{_run(text)}</w:p>" for text in texts)
+        return (
+            f"<w:sdt {_W_DECL}><w:sdtPr><w:docPartObj>"
+            f'<w:docPartGallery w:val="{gallery}"/><w:docPartUnique/>'
+            f"</w:docPartObj></w:sdtPr><w:sdtContent>{paragraphs}"
+            "</w:sdtContent></w:sdt>"
+        )
+
+    def build(document):
+        _append_xml(document, control("Cover Pages", "Annual report"))
+        _append_xml(document, control("Table of Contents", "Contents", "Intro\t1"))
+        document.add_paragraph("Intro")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "Annual report\nIntro"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_controls_showing_their_placeholder():
+    def control(text: str, placeholder: str) -> str:
+        return (
+            f"<w:sdt><w:sdtPr>{placeholder}</w:sdtPr>"
+            f"<w:sdtContent>{_run(text)}</w:sdtContent></w:sdt>"
+        )
+
+    def build(document):
+        shown = "<w:showingPlcHdr/>"
+        not_shown = '<w:showingPlcHdr w:val="0"/>'
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('Name: ')}"
+            f"{control('Click or tap here to enter text.', shown)}</w:p>",
+        )
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('Date: ')}{control('2024-05-01', not_shown)}</w:p>",
+        )
+        _append_xml(
+            document,
+            f"<w:sdt {_W_DECL}><w:sdtPr>{shown}</w:sdtPr><w:sdtContent>"
+            f"<w:p>{_run('Type the summary here.')}</w:p></w:sdtContent></w:sdt>",
+        )
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "Name: \nDate: 2024-05-01"
 
 
 def _make_encrypted_pdf_bytes(text: str, *, password: str, algorithm: str) -> bytes:
