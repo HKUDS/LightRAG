@@ -5269,6 +5269,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
+                    **(param.extra_llm_kwargs or {}),
                 )
                 # isinstance, not exact type: a truncated non-streaming
                 # response arrives as TruncatedResponse (a str subclass) and

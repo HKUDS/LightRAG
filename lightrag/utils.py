@@ -7199,6 +7199,7 @@ async def apply_rerank_if_enabled(
     global_config: dict,
     enable_rerank: bool = True,
     top_n: int = None,
+    extra_rerank_kwargs: dict[str, Any] | None = None,
 ) -> list[dict]:
     """
     Apply reranking to retrieved documents if rerank is enabled.
@@ -7209,6 +7210,10 @@ async def apply_rerank_if_enabled(
         global_config: Global configuration containing rerank settings
         enable_rerank: Whether to enable reranking from query parameter
         top_n: Number of top documents to return after reranking
+        extra_rerank_kwargs: Extra kwargs merged into the rerank call
+            (``QueryParam.extra_rerank_kwargs``). When set, this call's usual
+            graceful degradation is disabled: any error here propagates
+            instead of silently falling back to unreranked results.
 
     Returns:
         Reranked documents if rerank is enabled, otherwise original documents
@@ -7242,6 +7247,7 @@ async def apply_rerank_if_enabled(
             query=query,
             documents=document_texts,
             top_n=top_n,
+            **(extra_rerank_kwargs or {}),
         )
 
         # Process rerank results based on return format
@@ -7288,6 +7294,8 @@ async def apply_rerank_if_enabled(
             return retrieved_docs
 
     except Exception as e:
+        if extra_rerank_kwargs:
+            raise
         logger.error(f"Error during reranking: {e}, using original chunks")
         return retrieved_docs
 
@@ -7363,6 +7371,7 @@ async def process_chunks_unified(
             global_config=global_config,
             enable_rerank=query_param.enable_rerank,
             top_n=rerank_top_k,
+            extra_rerank_kwargs=query_param.extra_rerank_kwargs,
         )
 
     # 2. Filter by minimum rerank score if reranking is enabled
