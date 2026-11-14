@@ -21,7 +21,7 @@ def test_dead_reservation_reconcile_is_shared_storage_private():
     offenders = [
         str(path.relative_to(PROJECT_ROOT))
         for path in _production_python_sources()
-        if "reconcile_dead_pipeline_reservations" in path.read_text()
+        if "reconcile_dead_pipeline_reservations" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
 
@@ -31,6 +31,6 @@ def test_reservation_owner_records_are_created_only_in_shared_storage():
     offenders = [
         str(path.relative_to(PROJECT_ROOT))
         for path in _production_python_sources()
-        if "make_owner_record(" in path.read_text()
+        if "make_owner_record(" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
