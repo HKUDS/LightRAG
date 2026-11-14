@@ -10,7 +10,9 @@ file fails the parse stage instead of silently yielding an empty document.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import ExitStack
 from io import BytesIO
+from itertools import zip_longest
 
 
 class LegacyExtractionError(ValueError):
@@ -284,14 +286,26 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     carries one, falling back to the formula text when it does not. openpyxl
     fixes ``data_only`` at load time, so the workbook is deliberately loaded
     twice -- ``data_only=True`` for values, ``data_only=False`` for formulas.
-    This doubles peak memory/parse cost but is required to have both views;
-    ``read_only=True`` is not a safe optimization here because it can report
-    ``max_row``/``max_column`` as ``None`` and collapse the iteration range.
+
+    Both workbooks are opened ``read_only``, so rows stream from the sheet XML
+    instead of becoming one object per cell, and both are closed on every exit.
+    Three rules keep that mode equal to the normal one:
+
+    - Call ``reset_dimensions()`` before iterating. A read-only sheet otherwise
+      trusts the ``<dimension>`` its producer declared: one that is too small
+      silently drops the cells outside it, one that is too large pads every
+      row out to it.
+    - Never read ``max_row`` / ``max_column``: they are ``None`` once the
+      dimensions are reset.
+    - Rows arrive ragged, each as wide as its own last cell. Content rows are
+      padded to the widest row of the sheet once it has been read, and rows
+      after the last cell are dropped.
+
+    One difference from the normal mode is accepted: a merged range reaching
+    past the last cell of the sheet no longer widens or lengthens it, so such a
+    sheet loses trailing tabs or trailing blank lines, never content.
     """
     from openpyxl import load_workbook  # type: ignore
-
-    wb_values = load_workbook(BytesIO(file_bytes), data_only=True)
-    wb_formulas = load_workbook(BytesIO(file_bytes), data_only=False)
 
     def escape_cell(cell_value: str | int | float | None) -> str:
         if cell_value is None:
@@ -327,35 +341,61 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
     content_parts: list[str] = []
     sheet_separator = "=" * 20
+    with ExitStack() as stack:
+        wb_values = load_workbook(BytesIO(file_bytes), data_only=True, read_only=True)
+        stack.callback(wb_values.close)
+        wb_formulas = load_workbook(
+            BytesIO(file_bytes), data_only=False, read_only=True
+        )
+        stack.callback(wb_formulas.close)
 
-    for idx, sheet in enumerate(wb_values):
-        if idx > 0:
-            content_parts.append("")
-        safe_title = escape_sheet_title(sheet.title)
-        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
-        formula_sheet = wb_formulas[sheet.title]
-        max_rows = max(sheet.max_row or 0, formula_sheet.max_row or 0)
-        max_columns = max(sheet.max_column or 0, formula_sheet.max_column or 0)
-        value_rows = sheet.iter_rows(
-            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
-        )
-        formula_rows = formula_sheet.iter_rows(
-            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
-        )
-        for value_row, formula_row in zip(value_rows, formula_rows):
-            row_parts = []
-            row_has_content = False
-            for cell_value, formula_value in zip(value_row, formula_row):
-                if cell_value is None:
-                    cell_value = formula_fallback(formula_value)
-                cell_text = escape_cell(cell_value)
-                row_parts.append(cell_text)
-                if cell_text:
-                    row_has_content = True
-            if not row_has_content:
+        for idx, sheet in enumerate(wb_values):
+            if idx > 0:
                 content_parts.append("")
-            else:
-                content_parts.append("\t".join(row_parts))
+            safe_title = escape_sheet_title(sheet.title)
+            content_parts.append(
+                f"{sheet_separator} Sheet: {safe_title} {sheet_separator}"
+            )
+            formula_sheet = wb_formulas[sheet.title]
+            sheet.reset_dimensions()
+            formula_sheet.reset_dimensions()
+            # One (line, width) pair per row. A row that holds no cell at all
+            # is only counted until a later row proves it is not trailing: a
+            # formatted empty row at the bottom of the sheet makes read-only
+            # iteration emit every row above it.
+            sheet_rows: list[tuple[str, int]] = []
+            sheet_width = 0
+            pending_empty_rows = 0
+            for value_row, formula_row in zip_longest(
+                sheet.iter_rows(values_only=True),
+                formula_sheet.iter_rows(values_only=True),
+                fillvalue=(),
+            ):
+                width = max(len(value_row), len(formula_row))
+                if width == 0:
+                    pending_empty_rows += 1
+                    continue
+                if pending_empty_rows:
+                    sheet_rows.extend([("", 0)] * pending_empty_rows)
+                    pending_empty_rows = 0
+                sheet_width = max(sheet_width, width)
+                row_parts = []
+                row_has_content = False
+                for cell_value, formula_value in zip_longest(value_row, formula_row):
+                    if cell_value is None:
+                        cell_value = formula_fallback(formula_value)
+                    cell_text = escape_cell(cell_value)
+                    row_parts.append(cell_text)
+                    if cell_text:
+                        row_has_content = True
+                if row_has_content:
+                    sheet_rows.append(("\t".join(row_parts), width))
+                else:
+                    sheet_rows.append(("", width))
+            for line, width in sheet_rows:
+                if line:
+                    line += "\t" * (sheet_width - width)
+                content_parts.append(line)
     content_parts.append(sheet_separator)
     return "\n".join(content_parts)
 

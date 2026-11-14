@@ -159,6 +159,175 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     assert '=A1&"bar"' not in text
 
 
+def _make_ragged_rows_xlsx_bytes() -> bytes:
+    """Rows of unequal width, a row holding no cell, and an uncached formula."""
+    bio = BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Ragged"
+    ws["A1"] = "header-a"
+    ws["C1"] = "header-c"  # B1 empty
+    ws["A2"] = "x"
+    ws["B2"] = "y"
+    ws["C2"] = "z"
+    ws["D2"] = "w"  # the widest row
+    ws["A3"] = "short"
+    ws["B5"] = "=A2"  # row 4 holds no cell
+    wb.save(bio)
+    return bio.getvalue()
+
+
+_RAGGED_ROWS_TEXT = [
+    "header-a\t\theader-c\t",
+    "x\ty\tz\tw",
+    "short\t\t\t",
+    "",
+    "\t=A2\t\t",
+]
+
+
+def _rewrite_sheet1(file_bytes: bytes, rewrite) -> bytes:
+    """Return the workbook with ``rewrite(root)`` applied to ``sheet1.xml``."""
+    patched = BytesIO()
+    with (
+        ZipFile(BytesIO(file_bytes)) as source,
+        ZipFile(patched, "w", ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                rewrite(root)
+                data = ET.tostring(root, encoding="utf-8")
+            target.writestr(item, data)
+    return patched.getvalue()
+
+
+def _set_dimension(file_bytes: bytes, ref: str | None) -> bytes:
+    """Declare ``ref`` as the sheet's ``<dimension>``, or drop it for ``None``."""
+
+    def rewrite(root) -> None:
+        dimension = root.find("main:dimension", _NS)
+        assert dimension is not None
+        if ref is None:
+            root.remove(dimension)
+        else:
+            dimension.set("ref", ref)
+
+    return _rewrite_sheet1(file_bytes, rewrite)
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_pads_ragged_rows_to_the_sheet_width():
+    text = extract_text(_make_ragged_rows_xlsx_bytes(), "xlsx")
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "dimension", ["A1", "A1:B2", "A1:D5", "A1:XFD1048576", "C3:ZZ9", None]
+)
+def test_extract_text_xlsx_ignores_the_declared_dimension(dimension):
+    """The cells decide what is extracted, not the producer's ``<dimension>``.
+
+    A read-only sheet trusts that element: too small a range drops the cells
+    outside it without an error, too large a one pads every row out to it.
+    """
+    file_bytes = _set_dimension(_make_ragged_rows_xlsx_bytes(), dimension)
+
+    text = extract_text(file_bytes, "xlsx")
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+def _append_empty_rows(file_bytes: bytes, *numbers: int) -> bytes:
+    """Append ``<row>`` elements without cells, e.g. formatted empty rows."""
+
+    def rewrite(root) -> None:
+        sheet_data = root.find("main:sheetData", _NS)
+        for number in numbers:
+            ET.SubElement(
+                sheet_data,
+                f"{{{_NS_URI}}}row",
+                {"r": str(number), "ht": "30", "customHeight": "1"},
+            )
+
+    return _rewrite_sheet1(file_bytes, rewrite)
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_drops_rows_after_the_last_cell():
+    file_bytes = _append_empty_rows(_make_ragged_rows_xlsx_bytes(), 6, 9)
+
+    text = extract_text(file_bytes, "xlsx")
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_does_not_buffer_rows_after_the_last_cell():
+    """A formatted empty row far below the cells must not be buffered per row.
+
+    Read-only iteration emits every row up to it; in a real sheet that row can
+    be the last one, 1048576.
+    """
+    import tracemalloc
+
+    file_bytes = _append_empty_rows(_make_ragged_rows_xlsx_bytes(), 150_000)
+
+    tracemalloc.start()
+    try:
+        text = extract_text(file_bytes, "xlsx")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+    # One buffered entry per row took about 9 MiB here; parsing takes under 1.
+    assert peak < 3 * 1024 * 1024
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("failing_load", [None, 1, 2])
+def test_extract_text_xlsx_closes_every_workbook_it_opened(monkeypatch, failing_load):
+    """Both workbooks are closed, also when the second load or the read fails."""
+    import openpyxl
+
+    real_load = openpyxl.load_workbook
+    opened: list = []
+    closed: list = []
+
+    def load_workbook(*args, **kwargs):
+        if failing_load == len(opened) + 1:
+            opened.append(None)
+            raise ValueError("broken workbook")
+        workbook = real_load(*args, **kwargs)
+        real_close = workbook.close
+        opened.append(workbook)
+
+        def close() -> None:
+            closed.append(workbook)
+            real_close()
+
+        workbook.close = close
+        return workbook
+
+    monkeypatch.setattr(openpyxl, "load_workbook", load_workbook)
+    file_bytes = _make_ragged_rows_xlsx_bytes()
+
+    if failing_load is None:
+        extract_text(file_bytes, "xlsx")
+    else:
+        with pytest.raises(ValueError, match="broken workbook"):
+            extract_text(file_bytes, "xlsx")
+
+    loaded = [workbook for workbook in opened if workbook is not None]
+    assert all(workbook.read_only for workbook in loaded)
+    assert closed == loaded[::-1]
+    assert len(closed) == {None: 2, 1: 0, 2: 1}[failing_load]
+
+
 def _retype_b1_formula(
     file_bytes: bytes, attrs: dict[str, str], formula_text: str | None
 ) -> bytes:
