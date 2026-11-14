@@ -1799,7 +1799,14 @@ async def _verify_json_member(
             "snapshot is never re-initialized in place. If it cannot be "
             "restored, or the workspace's directory was removed on purpose: "
             "stop every server and maintenance tool on this WORKING_DIR, "
-            f"back up and delete {path}, and start again. The member list is "
+            + (
+                ""
+                if contents.empty
+                else "back up the damaged snapshot file and move it out of "
+                "WORKING_DIR (a rebind refuses a snapshot that holds "
+                "records it cannot attribute), "
+            )
+            + f"back up and delete {path}, and start again. The member list is "
             "then rebuilt from the snapshots that survive, and this "
             "workspace registers anew with no recorded baseline -- each one "
             "is re-established only on evidence.",

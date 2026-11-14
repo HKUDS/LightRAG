@@ -1309,3 +1309,38 @@ async def test_a_removed_workspace_directory_recovers_through_a_rebind(tmp_path)
     rebound = _anchor(tmp_path)
     assert rebound.storage_uuid == group.storage_uuid
     assert set(rebound.members) == {"", "teamalpha"}
+
+
+async def test_a_damaged_member_snapshot_must_leave_before_the_rebind(tmp_path):
+    """A registered snapshot that still holds records but lost its identity
+    row is refused by the rebind too (``shard_invalid``), so deleting the
+    anchor alone leaves the operator stuck. The refusal says to move the
+    file out first, and following it recovers."""
+    await _start_and_stop(tmp_path, "teamalpha")
+    path = Path(json_config_path(str(tmp_path), "teamalpha"))
+    rows = _snapshot(tmp_path, "teamalpha")
+    del rows[cs.storage_identity_key()]
+    assert rows, "the owner row must remain for the snapshot to be non-empty"
+    path.write_text(json.dumps(rows), encoding="utf-8")
+
+    rag = _rag(tmp_path, "teamalpha")
+    with pytest.raises(ConfigurationIdentityError) as info:
+        await rag.initialize_storages()
+    await rag.finalize_storages()
+    assert info.value.cause == ca.IDENTITY_MEMBER_MISSING
+    assert "move it out of WORKING_DIR" in str(info.value)
+
+    # The anchor alone is not enough ...
+    os.unlink(ca.anchor_path(str(tmp_path)))
+    rag = _rag(tmp_path, "teamalpha")
+    with pytest.raises(ConfigurationIdentityError) as info:
+        await rag.initialize_storages()
+    await rag.finalize_storages()
+    assert info.value.cause == ca.IDENTITY_SHARD_INVALID
+
+    # ... the documented order is: the snapshot out, then the rebind.
+    path.rename(tmp_path / "damaged-teamalpha.json.bak")
+    if os.path.exists(ca.anchor_path(str(tmp_path))):
+        os.unlink(ca.anchor_path(str(tmp_path)))
+    await _start_and_stop(tmp_path, "teamalpha")
+    assert _anchor(tmp_path).members == ("teamalpha",)
