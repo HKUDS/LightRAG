@@ -331,7 +331,15 @@ discovered by a rebind and a migration alike. It never recurses (a link back
 to `working_dir` is probed once, not walked) and never reads a business
 file. Something present that is not a regular file,
 a read or permission error, or a snapshot under a child name that is not a
-legal workspace refuses by path. The snapshot file itself is never
+legal workspace refuses by path. One permission error is not a refusal: a
+child directory the server's user may not search (`lost+found` on a mounted
+volume, a directory another service owns) is skipped with a WARNING. That
+user can neither have written a snapshot there nor serve one, and refusing
+would stop every first start on such a volume. **Accepted residue:** a
+workspace directory whose permissions were broken after it registered is
+left out of a rebind's member list; once access is restored its next start
+refuses the unregistered snapshot (`shard_invalid`), whose recovery is the
+rebind. The snapshot file itself is never
 followed: every save is an atomic replace, so the first flush would turn a
 symlinked snapshot into a regular file and leave its target stale. The JSON
 configuration storage applies the same check to its own snapshot before it
@@ -807,8 +815,10 @@ before the deletion; conflicting snapshot UUIDs, unreadable files and
 invalid metadata still refuse.
 
 It is the recovery for a container intentionally emptied or replaced, for a
-backup older than its identity, and for a JSON member lost by an unprotected
-concurrent append. Back the anchor up first where possible. Never delete it
+backup older than its identity, for a JSON member lost by an unprotected
+concurrent append, and for a JSON member whose snapshot is gone for good (a
+workspace directory removed on purpose): the rebuilt member list leaves it
+out, and its next start registers it anew. Back the anchor up first where possible. Never delete it
 while servers run: running processes do not re-read it, and a respawned
 Gunicorn worker would rebind.
 
@@ -820,7 +830,7 @@ anchor's path, and hides credentials. The advice depends on the cause:
 | container UUID missing | if the container was intentionally emptied, replaced or restored from an old backup, delete the anchor (path given) | primary recovery |
 | backend type differs | set `LIGHTRAG_CONFIG_STORAGE` to the anchored backend explicitly, or run `lightrag-migrate-config` | listed last, marked as abandoning every record in the old container |
 | same type, different UUID | check that the connection settings point at the intended database | listed last, same warning |
-| JSON: registered snapshot missing or without identity/owner (`member_missing`) | restore the complete snapshot from backup | does not help: a lost snapshot is never re-created in place |
+| JSON: registered snapshot missing or without identity/owner (`member_missing`) | restore the complete snapshot from backup | the recovery when the snapshot cannot be restored or the workspace's directory was removed on purpose: nothing re-creates a lost snapshot in place, but the rebind lists only the snapshots that survive, so the workspace's next start registers it anew, without its baselines. A snapshot that still holds records but lost its identity or owner row must first be backed up and moved out of `WORKING_DIR`: the rebind refuses it (`shard_invalid`) |
 | JSON: unregistered snapshot holding records (`shard_invalid`) | a lost registration or a copied/restored file: stop every instance, back up and delete the anchor, start again | primary recovery for a lost registration |
 | JSON: a snapshot whose UUID is not the group's (`uuid_mismatch`) | restore the workspace's snapshot from this deployment's backup; if its records are disposable, move the snapshot out of `WORKING_DIR` (a registered member: then also back up and delete the anchor, so the member list is rebuilt without it) and the next start registers the workspace anew | alone, does not help while the snapshots disagree -- the rebind refuses them; it is the recovery only when EVERY snapshot carries the other UUID, i.e. the anchor is the stale side |
 
@@ -1189,7 +1199,13 @@ handled residue**. Instances on different workspaces claim different keys and
 never contend (`ServerInstanceContract.md`). The container-wide identity is
 serialized across servers on one `working_dir` by the bind lock. A first bind
 from different working directories or hosts against one container is
-unsupported.
+unsupported: each reads the identity as absent and writes its own, the later
+write stays, and the other deployment's anchor names a UUID the container no
+longer has. It starts, and is refused with `uuid_mismatch` at its next
+restart. *Recovery:* delete that deployment's anchor; the container is the
+intended one and the rebind adopts its identity. *Prevention:* start one
+deployment first. Closing it needs an insert-if-absent write on every
+admitted backend, which the KV interface does not have.
 
 ## Reads are strict
 

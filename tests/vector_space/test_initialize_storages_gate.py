@@ -207,6 +207,102 @@ async def test_an_admin_only_workspace_refuses_when_its_vectors_vanish(tmp_path)
     await restarted.finalize_storages()
 
 
+_RELATIONSHIPS_ONLY_KG = {
+    "relationships": [
+        {
+            "src_id": "Alice",
+            "tgt_id": "Bob",
+            "description": "Alice mentors Bob",
+            "keywords": "mentoring",
+            "weight": 1.0,
+        }
+    ]
+}
+
+
+async def _write_legacy_endpoints(rag, names):
+    """The graph nodes ``ainsert_custom_kg`` used to create for relationship
+    endpoints the caller did not declare: placeholders in both fields, and no
+    entity vector."""
+    for name in names:
+        await rag.chunk_entity_relation_graph.upsert_node(
+            name,
+            {
+                "entity_id": name,
+                "source_id": "UNKNOWN",
+                "description": "UNKNOWN",
+                "entity_type": "UNKNOWN",
+                "file_path": "custom_kg",
+            },
+        )
+
+
+async def test_a_legacy_relationships_only_custom_kg_restarts(tmp_path):
+    """A relationships-only custom KG written by a release before the coverage
+    gate has endpoint nodes and no entity vector at all. That empty index is
+    how it was written, not a loss, so the upgrade must not refuse it."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    await _write_legacy_endpoints(rag, ["Alice", "Bob"])
+    await rag.chunk_entity_relation_graph.upsert_edge(
+        "Alice", "Bob", {"description": "Alice mentors Bob", "weight": 1.0}
+    )
+    await rag.relationships_vdb.upsert(
+        {
+            "rel-1": {
+                "content": "mentoring\tAlice\nBob\nAlice mentors Bob",
+                "src_id": "Alice",
+                "tgt_id": "Bob",
+            }
+        }
+    )
+    await rag.chunk_entity_relation_graph.index_done_callback()
+    await rag.relationships_vdb.index_done_callback()
+    await rag.finalize_storages()
+
+    restarted = _rag(tmp_path, model_name="bge-m3")
+    await restarted.initialize_storages()
+    await restarted.finalize_storages()
+
+
+async def test_a_legacy_endpoint_does_not_excuse_a_declared_entity(tmp_path):
+    """The exemption covers a graph of endpoints only: one entity that was
+    written WITH a vector means the empty index lost something."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    await _write_legacy_endpoints(rag, ["Alice"])
+    await rag.chunk_entity_relation_graph.upsert_node(
+        "Bob", {"entity_id": "Bob", "description": "an engineer"}
+    )
+    await rag.chunk_entity_relation_graph.index_done_callback()
+    await rag.finalize_storages()
+
+    restarted = _rag(tmp_path, model_name="bge-m3")
+    with pytest.raises(VectorStorageEmptyError):
+        await restarted.initialize_storages()
+    await restarted.finalize_storages()
+
+
+async def test_a_relationships_only_custom_kg_writes_its_endpoint_vectors(tmp_path):
+    """``ainsert_custom_kg`` embeds the endpoints it creates, like the
+    pipeline's relation merge, so the entity index covers the graph and the
+    next start has nothing to excuse."""
+    rag = _rag(tmp_path, model_name="bge-m3")
+    await rag.initialize_storages()
+    await rag.ainsert_custom_kg(_RELATIONSHIPS_ONLY_KG)
+    for name in ("Alice", "Bob"):
+        stored = await rag.entities_vdb.get_by_id(
+            compute_mdhash_id(name, prefix="ent-")
+        )
+        assert stored is not None and stored["entity_name"] == name
+    await rag.finalize_storages()
+
+    restarted = _rag(tmp_path, model_name="bge-m3")
+    await restarted.initialize_storages()
+    assert not await restarted.entities_vdb.is_empty()
+    await restarted.finalize_storages()
+
+
 async def test_an_unrelated_unfinished_document_does_not_excuse_admin_entities(
     tmp_path,
 ):

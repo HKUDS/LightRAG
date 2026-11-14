@@ -931,6 +931,7 @@ For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can
   * move the container with `lightrag-migrate-config` (see *Configuration Storage Migration Between Backend Types* below).
 
   A container with the same type but another UUID (another or an emptied database, a JSON snapshot from another deployment) is refused too. Connection details (host, port, credentials) are not compared.
+* **Deployments that share one configuration database must not make their first start at the same time.** Each `WORKING_DIR` binds on its own, so two first starts can each create the container's identity; only the later one stays, and the other deployment is refused at its next restart (a different UUID). Start one deployment first and the others after it. If it already happened, stop the refused deployment, delete its anchor file and start it again: it adopts the identity that stayed.
 * **Deleting the anchor file, with every server and maintenance tool stopped, is the sanctioned rebind.** Use it for a container intentionally emptied, replaced or restored from an old backup: the next start binds to whatever is selected (for JSON, the surviving consistent workspace snapshots), with a WARNING. Do not delete it while servers are running.
 * **`WORKING_DIR` must persist, whichever backends are selected**, and belongs in backup, restore and volume migration. An ephemeral `WORKING_DIR`, such as the Helm chart with `persistence.enabled=false`, loses the anchor on every restart, so the check never runs.
 

@@ -146,6 +146,14 @@ Preserved:
   with the *clear LLM cache* option checked.
 - **The `__parsed__` directory** under the input directory, and every other
   subdirectory there: pre-parsed artifacts let a re-added file skip parsing.
+- **The workspace's registration.** With JSON configuration storage the
+  workspace stays a member of the configuration group, and its
+  `kv_workspace_config.json` keeps the identity rows. Leave that file and its
+  directory in place: a registered workspace whose snapshot is missing is
+  refused at its next start. To retire the workspace for good, remove its
+  directory and then, with every server on this `WORKING_DIR` stopped, back
+  up and delete `config_storage_anchor.json`; the next start rebuilds the
+  member list from the snapshots that remain.
 - **Every other workspace.** Backend-specific `*_WORKSPACE` variables outrank
   `WORKSPACE` inside the storage layer; the summary names every such override
   in effect, and the workspace a storage resolved to where its backend reports

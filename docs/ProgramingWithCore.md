@@ -1271,6 +1271,18 @@ Storage-specific workspace environment variables override the common `WORKSPACE`
 
 For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](../examples/lightrag_gemini_workspace_demo.py).
 
+### Startup Checks
+
+`initialize_storages()` verifies that the stored vectors match the configured embedding function and that the working directory is not shared in a way that loses data. Each check refuses with a typed exception from `lightrag.exceptions` instead of serving wrong results:
+
+- **A failed `initialize_storages()` is final for that instance.** Calling it again raises the same error. To retry (for example while waiting for a database), call `finalize_storages()` and create a new `LightRAG` instance.
+- **An instance is not usable after `finalize_storages()`.** The file-backed KV and document status storages raise `StorageNotInitializedError` from then on.
+- **One process tree per workspace on the default file storages.** A second process that opens the same `working_dir` and workspace is refused with `WorkingDirectoryInUseError`: each process would rewrite the whole file from its own copy. Use one process, or a server storage backend.
+- **One `working_dir` per workspace within a process.** Two live instances with the same workspace and different `working_dir` are refused with `SharedNamespaceBackingConflictError`. Give them different workspaces, or finalize the first one.
+- **A changed embedding model or dimension is refused** (`EmbeddingBaselineMismatchError`, `VectorSpaceMismatchError`). Rebuild the vectors with `lightrag-rebuild-vdb`, or clear the workspace with `lightrag-clear-storage`.
+- **A vector storage that lost its vectors while the graph or the text chunks kept their data is refused** (`VectorStorageEmptyError`), for example after deleting only the `vdb_*.json` files. Rebuild with `lightrag-rebuild-vdb`, or pass `rebuilding_vector_storage=True` when the program itself repopulates them.
+- **To start over by deleting files, delete the configuration files too**: `kv_workspace_config.json` in the workspace directory and `config_storage_anchor.json` in `working_dir`. They record the embedding model the deleted vectors were written with. With no other workspace in that `working_dir`, deleting the whole directory is simplest.
+
 
 ## Insert
 

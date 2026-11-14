@@ -45,10 +45,12 @@ invoking workspace's alone, so stop every instance on the `WORKING_DIR`:
 
 - **From JSON**, the anchor's members and the snapshots on disk must agree in
   both directions before anything is written. A registered workspace whose
-  snapshot is missing must be restored first. A snapshot the anchor does not
-  list (a lost registration or a stray file) refuses too: stop every server,
+  snapshot is missing must be restored first, or dropped from the group if
+  its workspace is gone for good. A snapshot the anchor does not
+  list (a lost registration or a stray file) refuses too. Both are repaired
+  the same way: stop every server,
   back up and delete the anchor and start one server to rebuild the member
-  list, or remove the stray file. The per-snapshot owner rows stay behind;
+  list from the snapshots on disk; a stray file can simply be removed. The per-snapshot owner rows stay behind;
   they only mean something in JSON.
 - **Into JSON**, every workspace of the source gets its snapshot, and
   snapshots already on disk with the same identity -- the sources a previous

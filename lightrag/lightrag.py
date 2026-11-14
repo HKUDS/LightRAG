@@ -5445,6 +5445,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                         },
                                     )
                                 )
+                                # The endpoint gets its vector with its node,
+                                # as the pipeline's relation merge does: an
+                                # endpoint without one is unreachable by
+                                # entity retrieval, and a graph whose every
+                                # node lacks one fails the coverage gate.
+                                data_for_entities_vdb[
+                                    compute_mdhash_id(need_insert_id, prefix="ent-")
+                                ] = {
+                                    "content": _truncate_vdb_content(
+                                        f"{need_insert_id}\nUNKNOWN",
+                                        global_config,
+                                        f"entity:{need_insert_id}",
+                                    ),
+                                    "entity_name": need_insert_id,
+                                    "source_id": source_id,
+                                    "description": "UNKNOWN",
+                                    "entity_type": "UNKNOWN",
+                                    "file_path": file_path,
+                                }
                                 existing_nodes.add(need_insert_id)
 
                         normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))

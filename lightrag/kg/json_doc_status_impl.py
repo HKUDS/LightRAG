@@ -137,6 +137,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self._holds_namespace:
             self._holds_namespace = False
             await leave_namespace_init(self.namespace, workspace=self.workspace)
+            # Same rule as ``JsonKVStorage.finalize``: the shared dict may be
+            # empty now, so every later call raises until ``initialize()``.
+            self._storage_lock = None
 
     async def initialize(self):
         """Bind to the shared namespace dict and load from disk on first init.
@@ -230,6 +233,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             return {}
         status_values = {s.value for s in statuses}
         result = {}
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for k, v in self._data.items():
                 try:
@@ -262,6 +267,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         document behind one bad row.
         """
         result = {}
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for k, v in self._data.items():
                 if not isinstance(v, dict):
@@ -297,6 +304,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         ``upsert`` persists on every call, so a purge journalling four phases
         per document commits this file four times for that document alone.
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             if self.storage_updated.value:
                 # DictProxy.copy() is a single Manager RPC that marshals the
@@ -452,6 +461,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             return len(self._data) == 0
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             data = self._data.get(id)
             return copy.deepcopy(data) if isinstance(data, dict) else data
@@ -512,6 +523,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         # holding the lock across them does not reintroduce the "deep-copy
         # the whole corpus" cost. Only the final page (bounded by page_size,
         # <=200) is ever deep-copied.
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             projections: list[tuple[Any, str]] = []
             for doc_id, doc_data in self._data.items():
@@ -600,6 +613,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         Args:
             doc_ids: List of document IDs to be deleted from storage
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             any_deleted = False
             for doc_id in doc_ids:
@@ -1254,6 +1269,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             - On failure: {"status": "error", "message": "<error details>"}
         """
         try:
+            if self._storage_lock is None:
+                raise StorageNotInitializedError("JsonDocStatusStorage")
             async with self._storage_lock:
                 self._data.clear()
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
