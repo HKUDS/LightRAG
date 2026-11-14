@@ -2236,10 +2236,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         residue table records what this still cannot close.
         """
         self._shutdown_parser_executor()
-        # A release-time queue drive still running at shutdown is
-        # cancelled, not awaited: its auto-rescan flag stays armed in the
-        # mailbox for the next run to honour.
-        await self._cancel_admin_release_drives()
         # The model queues own long-lived worker and health-check tasks, so
         # all of them are shut down here: closing an asyncio.run()/manual loop
         # after finalize would otherwise leave their queue.get() coroutines
@@ -2248,11 +2244,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # the LLM queues drain while the response cache is still usable, and
         # the embedding queue stays open until the vector storages have
         # flushed, since that flush embeds first.
+        #
+        # The embedding shutdown is deliberately NOT in a ``finally``. It is
+        # permanent -- a closed wrapper rejects every later call -- so running
+        # it after an interrupted finalize would make the retry's vector
+        # flush fail and drop the buffered vectors while the storages are
+        # still marked FINALIZED. An interrupted finalize (cancelled, or
+        # raising before the storages are finalized) therefore leaves the
+        # embedding queue open for the retry. Accepted residue: with no
+        # retry, its workers stay pending until the event loop closes (no
+        # data is lost by that; the unflushed vectors are lost either way).
+        #
+        # A release-time queue drive still running at shutdown is cancelled,
+        # not awaited: its auto-rescan flag stays armed in the mailbox for
+        # the next run to honour.
+        await self._cancel_admin_release_drives()
         await self._shutdown_llm_and_rerank_queues()
-        try:
-            await self._finalize_initialized_storages()
-        finally:
-            await self._shutdown_embedding_queue()
+        await self._finalize_initialized_storages()
+        await self._shutdown_embedding_queue()
 
     async def _finalize_initialized_storages(self) -> None:
         """Finalize each storage once; does nothing unless they are initialized.
