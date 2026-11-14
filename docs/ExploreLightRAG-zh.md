@@ -4,7 +4,7 @@
 
 | 步骤 | 能力 | 带来什么 | 需要什么 |
 |---|---|---|---|
-| 1 | [PostgreSQL 存储](#第-1-步--postgresql-存储) | 可用于生产环境的存储 | 带 pgvector + Apache AGE 的 PostgreSQL（容器即可） |
+| 1 | [PostgreSQL 存储](#第-1-步--postgresql-存储) | 可用于生产环境的存储 | 带 pgvector 的 PostgreSQL（容器即可） |
 | 2 | [账号认证](#第-2-步--账号认证) | WebUI 登录、给客户端用的 API key | 无 |
 | 3 | [角色 LLM](#第-3-步--角色-llm) | 回答用更强的模型，抽取用更便宜的模型 | 只需你现有的 LLM 服务 |
 | 4 | [Rerank 重排序](#第-4-步--rerank-重排序) | 提高检索精度 | 一个 rerank 接口（兼容 Cohere、Jina 或阿里云格式） |
@@ -32,7 +32,7 @@
 
 ## 第 1 步 — PostgreSQL 存储
 
-默认的四种存储（`JsonKVStorage`、`NanoVectorDBStorage`、`NetworkXStorage`、`JsonDocStatusStorage`）把所有数据放在内存里，靠整文件重写来落盘，只适合小规模测试。PostgreSQL 可以在一个数据库里承担全部四种存储：键值和文档状态用普通表，向量用 pgvector，知识图谱用 Apache AGE。
+默认的四种存储（`JsonKVStorage`、`NanoVectorDBStorage`、`NetworkXStorage`、`JsonDocStatusStorage`）把所有数据放在内存里，靠整文件重写来落盘，只适合小规模测试。PostgreSQL 可以在一个数据库里承担全部四种存储：键值和文档状态用普通表，向量用 pgvector，知识图谱用带索引的普通表（`PGTableGraphStorage`）。LightRAG 自己的配置存储也可以放在这里，第 1.3 步会把它迁过来。
 
 ### 1.1 用设置向导生成 PostgreSQL 服务
 
@@ -40,10 +40,11 @@
 make env-storage
 ```
 
-四种存储分别选择 `PGKVStorage`、`PGVectorStorage`、`PGGraphStorage` 和 `PGDocStatusStorage`，选择由向导通过 Docker 在本地运行 PostgreSQL，再填写用户名、密码和数据库名。向导会：
+四种存储分别选择 `PGKVStorage`、`PGVectorStorage`、`PGTableGraphStorage` 和 `PGDocStatusStorage`，选择由向导通过 Docker 在本地运行 PostgreSQL，再填写用户名、密码和数据库名。向导会：
 
 - 先备份原来的 `.env`，再把存储类型和 `POSTGRES_*` 连接参数写进 `.env`；
-- 在 `docker-compose.final.yml` 里加入一个 `postgres` 服务。它使用的镜像 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 内置了 PostgreSQL 18、pgvector 和 Apache AGE。
+- 在 `docker-compose.final.yml` 里加入一个 `postgres` 服务。它使用的镜像内置了 PostgreSQL 和 pgvector，这四种存储只需要这一个扩展；
+- 写入 `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage`，并提示 `Keeping configuration storage at the anchored backend JsonKVStorage`。这是因为服务已经在默认存储上运行过，属于正常现象。第 1.3 步会解释这一行并修改它。
 
 `.env` 里保持主机上可用的地址（`POSTGRES_HOST=localhost`）；生成的 compose 文件则让其中容器化的 `lightrag` 服务改为连接 `postgres`。向导会问哪些问题，参见 [InteractiveSetup.md](./InteractiveSetup.md)。
 
@@ -57,11 +58,11 @@ docker compose -f docker-compose.final.yml up -d postgres
 docker compose -f docker-compose.final.yml up -d
 ```
 
-确认两个扩展都可用：
+确认 pgvector 可用：
 
 ```bash
 docker compose -f docker-compose.final.yml exec postgres psql -U <用户名> -d <数据库名> -tAc \
-  "select name, default_version from pg_available_extensions where name in ('vector','age')"
+  "select name, default_version from pg_available_extensions where name = 'vector'"
 ```
 
 服务模板会在所有网卡上开放 5432 端口。如果主机能从公网访问，请使用强密码，并用防火墙限制这个端口。
@@ -76,14 +77,39 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 
 **根据嵌入维度选择向量索引类型。** pgvector 无法为超过 2000 维的向量建立 `HNSW` 或 `IVFFlat` 索引；`HNSW_HALFVEC` 最多支持 4000 维，需要 pgvector 0.7 或更高版本，向导使用的镜像满足这个要求。默认的 `text-embedding-3-large` 是 3072 维，所以必须用 `HNSW_HALFVEC`。如果用 `HNSW`，索引会建不出来：没有维度检查的版本只打一条 `ERROR` 就继续运行，此时没有向量索引，每次查询都要全表扫描；带维度检查的版本会拒绝启动，并提示修改方法。请在首次上传前定好：已有向量的表切换到 `HNSW_HALFVEC` 时，存储的向量会被原地转成 16 位浮点数，这个精度损失无法恢复。
 
-重启服务后，启动日志里会列出四个 `PG*` 存储。数据表在第一次启动时创建，向量表的表名里带着嵌入模型和维度，例如 `lightrag_vdb_chunks_text_embedding_3_large_3072d`。
+### 1.3 把配置存储迁移到 PostgreSQL
 
-### 1.3 迁移已有文档
+除了四种存储，LightRAG 还有一个自己用的小型**配置存储**。它记录这套部署的身份，以及每个工作区里各个向量库是用哪个嵌入模型、多少维度建立的。如果嵌入设置和这份记录对不上，服务会拒绝启动，避免把两种嵌入空间混在一起。使用默认存储时，它是 `WORKING_DIR` 下的一个 JSON 文件 `kv_workspace_config.json`（设置了 `WORKSPACE` 时在工作区的子目录里）。同一目录下的 `config_storage_anchor.json`（锚点）记录着配置存放在哪种后端里。
+
+切换四种存储不会搬动配置。所以向导在 1.1 里把 `LIGHTRAG_CONFIG_STORAGE` 固定成了 `JsonKVStorage`：记录还在那个 JSON 文件里。现在把它迁移到 PostgreSQL，让配置和它所描述的数据放在同一个数据库里，不再依赖一个只能由一台服务使用的文件。日后扩展到多个服务节点需要这一点。
+
+1. 停止服务，以及其他所有使用这个 `WORKING_DIR` 的 LightRAG 进程。
+2. 先预览，再执行迁移。工具从 `.env` 读取 `POSTGRES_*` 连接参数，列出将要迁移的内容，并要求输入 `migrate` 确认：
+
+   ```bash
+   lightrag-migrate-config --target-backend PGKVStorage --dry-run
+   lightrag-migrate-config --target-backend PGKVStorage
+   ```
+
+   成功时最后一行是 `✓ Switched: the anchor now binds PGKVStorage`。原来的 JSON 文件会保留，但服务不再读取它。
+3. 在 `.env` 里把向导写的那一行改成：
+
+   ```bash
+   LIGHTRAG_CONFIG_STORAGE=PGKVStorage
+   ```
+
+工具根据运行环境里的 `WORKING_DIR` 找到锚点，所以请在服务使用的目录下、用服务使用的 `.env` 运行它。其他情况参见 [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md)。
+
+**如果跳过这一步**，服务仍然可以运行：向导写的 `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` 让配置继续留在 `WORKING_DIR` 里。这样就必须保留这个目录，并和数据库一起备份，而且每个工作区只能有一台服务使用它。
+
+**如果不用向导、手工修改 `.env`**，又没有设置 `LIGHTRAG_CONFIG_STORAGE`，配置存储会跟着 `LIGHTRAG_KV_STORAGE` 指向 PostgreSQL，而那里没有这套部署的记录，服务会拒绝启动（`Refusing to start: the configuration storage selected now is PGKVStorage ... but the anchor ... binds this deployment to JsonKVStorage`）。报错信息给出的也是这两条出路：执行上面的迁移，或者设置 `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage`。
+
+### 1.4 迁移已有文档
 
 切换存储不会搬运数据。把已经导入的内容带过来，最省钱的办法是先迁移抽取缓存，再把文档重新上传一遍：
 
-1. PostgreSQL 启动后（1.1），在重启服务之前运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要、多模态分析和智能标题判定的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
-2. 重启服务，切换到 PostgreSQL。
+1. PostgreSQL 启动后（1.1），在服务仍然停止的状态下运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要、多模态分析和智能标题判定的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
+2. 启动服务，切换到 PostgreSQL。启动日志里会列出四个 `PG*` 存储和 `Configuration Storage: PGKVStorage`。数据表在第一次启动时创建，向量表的表名里带着嵌入模型和维度，例如 `lightrag_vdb_chunks_text_embedding_3_large_3072d`。
 3. 重新上传原始文件。实体抽取会命中迁移过来的缓存。
 
 在测试部署上，迁移了 139 条缓存记录。重新上传 6 篇文档用了 60 秒，只新增了 17 次 LLM 调用，其余抽取都来自缓存。新存储里的文本块和原来完全一致，都是 56 个。
@@ -326,8 +352,9 @@ POSTGRES_MAX_CONNECTIONS=40
 # 第 1 步 — PostgreSQL
 LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
-LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+LIGHTRAG_CONFIG_STORAGE=PGKVStorage
 POSTGRES_HOST=localhost
 POSTGRES_USER=lightrag
 POSTGRES_PASSWORD='...'
@@ -373,6 +400,7 @@ VLM_MAX_ASYNC_LLM=12
 | 现象 | 原因 | 解决办法 |
 |---|---|---|
 | 切换到 PostgreSQL 后向量索引建不出来，或服务拒绝启动 | 嵌入超过 2000 维却用了 `HNSW` / `IVFFlat` | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
+| 切换存储后服务拒绝启动：`the configuration storage selected now is PGKVStorage ... but the anchor ... binds this deployment to JsonKVStorage` | 配置存储跟着 `LIGHTRAG_KV_STORAGE` 指向了 PostgreSQL，但记录还在 `WORKING_DIR` 的 JSON 文件里 | 按第 1.3 步执行 `lightrag-migrate-config --target-backend PGKVStorage`，再设置 `LIGHTRAG_CONFIG_STORAGE=PGKVStorage`；或者设置 `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` 保持原状 |
 | Markdown 里的图片没有被分析 | 单独上传 `.md` 时本地图片不会一起上传；或路径含空格、又不以图片扩展名结尾，却没加 `<...>` | 改传 `.textpack`；写成 `![](<含空格的路径>)` |
 | 带图片的文档处理失败（`FAILED`） | 处理选项带 `i`，但 `VLM_PROCESS_ENABLE=false` | 两者一起打开 |
 | `DOCX_SMART_HEADING=true` 没有效果 | 文档正文短于 `DOCX_SMART_MIN_TOKENS` | 查看 `smart_audit.json`；用更长的文档测试 |

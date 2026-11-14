@@ -4,7 +4,7 @@ This guide picks up where the README's installation section ends: the server run
 
 | Step | Capability | What it gives you | What it needs |
 |---|---|---|---|
-| 1 | [PostgreSQL storage](#step-1--postgresql-storage) | Storage you can run in production | A PostgreSQL with pgvector + Apache AGE (a container is fine) |
+| 1 | [PostgreSQL storage](#step-1--postgresql-storage) | Storage you can run in production | A PostgreSQL with pgvector (a container is fine) |
 | 2 | [Authentication](#step-2--authentication) | Login for the WebUI, API keys for clients | Nothing |
 | 3 | [Role-specific LLMs](#step-3--role-specific-llms) | A stronger model for answers, a cheaper one for extraction | Nothing beyond your LLM provider |
 | 4 | [Reranking](#step-4--reranking) | Better retrieval precision | A rerank endpoint (Cohere-, Jina- or Aliyun-compatible) |
@@ -32,7 +32,7 @@ Every step below was carried out, in this order, on a real deployment: a 2-vCPU 
 
 ## Step 1 — PostgreSQL Storage
 
-The default storages (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`, `JsonDocStatusStorage`) keep everything in memory and rewrite whole files. They are meant for small-scale testing only. PostgreSQL can hold all four storage types in one database: key-value and document status in tables, vectors with pgvector, and the graph with Apache AGE.
+The default storages (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`, `JsonDocStatusStorage`) keep everything in memory and rewrite whole files. They are meant for small-scale testing only. PostgreSQL can hold all four storage types in one database: key-value and document status in tables, vectors with pgvector, and the graph in plain indexed tables (`PGTableGraphStorage`). It also holds LightRAG's own configuration storage, which step 1.3 moves there.
 
 ### 1.1 Generate the PostgreSQL Service with the Setup Wizard
 
@@ -40,10 +40,11 @@ The default storages (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`,
 make env-storage
 ```
 
-Choose `PGKVStorage`, `PGVectorStorage`, `PGGraphStorage` and `PGDocStatusStorage` for the four storage types, let the wizard run PostgreSQL locally via Docker, and enter the user, password and database name. The wizard then:
+Choose `PGKVStorage`, `PGVectorStorage`, `PGTableGraphStorage` and `PGDocStatusStorage` for the four storage types, let the wizard run PostgreSQL locally via Docker, and enter the user, password and database name. The wizard then:
 
 - writes the storage classes and the `POSTGRES_*` connection settings into `.env`, after backing up the previous file;
-- adds a `postgres` service to `docker-compose.final.yml`. Its image, `gzdaniel/postgres-for-rag:pg18-age-pgvector`, ships PostgreSQL 18 with pgvector and Apache AGE.
+- adds a `postgres` service to `docker-compose.final.yml`. Its image ships PostgreSQL with pgvector, the only extension these four storages need;
+- writes `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` and reports `Keeping configuration storage at the anchored backend JsonKVStorage`, because the server has already run on the default storages. That is expected. Step 1.3 explains the line and changes it.
 
 `.env` stays usable from the host (`POSTGRES_HOST=localhost`); the generated compose file points its containerized `lightrag` service at `postgres` instead. See [InteractiveSetup.md](./InteractiveSetup.md) for every question the wizard asks.
 
@@ -57,11 +58,11 @@ docker compose -f docker-compose.final.yml up -d postgres
 docker compose -f docker-compose.final.yml up -d
 ```
 
-Check that both extensions are available:
+Check that pgvector is available:
 
 ```bash
 docker compose -f docker-compose.final.yml exec postgres psql -U <user> -d <database> -tAc \
-  "select name, default_version from pg_available_extensions where name in ('vector','age')"
+  "select name, default_version from pg_available_extensions where name = 'vector'"
 ```
 
 The service template publishes port 5432 on all interfaces. On a host reachable from the internet, use a strong password and restrict the port with your firewall.
@@ -76,14 +77,39 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 
 **Pick the vector index type from your embedding dimension.** pgvector cannot build an `HNSW` or `IVFFlat` index above 2000 dimensions. `HNSW_HALFVEC` goes up to 4000 and needs pgvector 0.7 or later, which the wizard's image has. The default `text-embedding-3-large` has 3072 dimensions, so it needs `HNSW_HALFVEC`. With `HNSW`, index creation fails. Releases without the dimension check log an `ERROR` and carry on with no vector index (every query then scans the table); releases with it refuse to start and name the fix. Choose it before the first upload: switching a table that already holds vectors to `HNSW_HALFVEC` converts them in place to 16-bit floats, which cannot be undone.
 
-After restarting the server, the startup log lists the four `PG*` storages. The tables appear on first start, and the vector tables carry the embedding model and dimension in their name, for example `lightrag_vdb_chunks_text_embedding_3_large_3072d`.
+### 1.3 Move the Configuration Storage to PostgreSQL
 
-### 1.3 Bring Over Existing Documents
+Besides the four storages, LightRAG keeps a small **configuration storage** of its own. It records the identity of the deployment and, for every workspace, the embedding model and dimension each vector store was built with. A server whose embedding settings no longer match that record refuses to start instead of mixing two embedding spaces. With the default storages it is a JSON file, `kv_workspace_config.json` in `WORKING_DIR` (in the workspace's subdirectory when `WORKSPACE` is set). Next to it, `config_storage_anchor.json` (the anchor) records which backend holds the configuration.
+
+Changing the four storages does not move the configuration. That is why the wizard pinned `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` in 1.1: the records are still in the JSON file. Move them to PostgreSQL now, so that they sit in the database with the data they describe and no longer depend on a file that only one server can use. A later move to several server nodes needs that.
+
+1. Stop the server, and every other LightRAG process that uses this `WORKING_DIR`.
+2. Preview the migration, then run it. The tool reads the `POSTGRES_*` settings from `.env`, shows what it will move, and asks you to type `migrate`:
+
+   ```bash
+   lightrag-migrate-config --target-backend PGKVStorage --dry-run
+   lightrag-migrate-config --target-backend PGKVStorage
+   ```
+
+   It ends with `✓ Switched: the anchor now binds PGKVStorage`. The JSON file is kept; the server no longer reads it.
+3. In `.env`, change the wizard's line to:
+
+   ```bash
+   LIGHTRAG_CONFIG_STORAGE=PGKVStorage
+   ```
+
+The tool resolves the anchor from the `WORKING_DIR` of the environment it runs in, so run it from the directory and with the `.env` the server uses. [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md) covers the other cases.
+
+**If you skip this step**, the server still runs: the wizard's `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` keeps the configuration in `WORKING_DIR`. That directory then has to be kept and backed up together with the database, and only one server per workspace can use it.
+
+**If you edit `.env` by hand** instead of using the wizard and leave `LIGHTRAG_CONFIG_STORAGE` unset, the configuration storage follows `LIGHTRAG_KV_STORAGE` to PostgreSQL, where this deployment has no records, and the server refuses to start (`Refusing to start: the configuration storage selected now is PGKVStorage ... but the anchor ... binds this deployment to JsonKVStorage`). The message names the same two ways out: run the migration above, or set `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage`.
+
+### 1.4 Bring Over Existing Documents
 
 Switching storage does not move data. The cheapest way to carry over what you already indexed is to migrate the extraction cache and then upload the documents again:
 
-1. With PostgreSQL running (1.1) and before restarting the server, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary, multimodal-analysis and smart-heading caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
-2. Restart the server on PostgreSQL.
+1. With PostgreSQL running (1.1) and the server still stopped, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary, multimodal-analysis and smart-heading caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
+2. Start the server on PostgreSQL. The startup log lists the four `PG*` storages and `Configuration Storage: PGKVStorage`. The tables appear on first start, and the vector tables carry the embedding model and dimension in their name, for example `lightrag_vdb_chunks_text_embedding_3_large_3072d`.
 3. Upload the original files again. Extraction hits the migrated cache.
 
 On the test deployment, 139 cache records moved. Re-uploading the six documents took 60 seconds and made 17 new LLM calls; all other extraction came from the cache. The new store held exactly the same 56 chunks as the old one.
@@ -326,8 +352,9 @@ The settings changed from `env.example`, all in one place:
 # Step 1 — PostgreSQL
 LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
-LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+LIGHTRAG_CONFIG_STORAGE=PGKVStorage
 POSTGRES_HOST=localhost
 POSTGRES_USER=lightrag
 POSTGRES_PASSWORD='...'
@@ -373,6 +400,7 @@ VLM_MAX_ASYNC_LLM=12
 | Symptom | Cause | Fix |
 |---|---|---|
 | Vector index creation fails, or the server refuses to start after switching to PostgreSQL | `HNSW` / `IVFFlat` with an embedding above 2000 dimensions | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
+| The server refuses to start after the storages were switched: `the configuration storage selected now is PGKVStorage ... but the anchor ... binds this deployment to JsonKVStorage` | The configuration storage followed `LIGHTRAG_KV_STORAGE`, but its records are still in the JSON file in `WORKING_DIR` | Step 1.3: `lightrag-migrate-config --target-backend PGKVStorage`, then `LIGHTRAG_CONFIG_STORAGE=PGKVStorage`; or keep it with `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` |
 | Images in a Markdown file are not analysed | Local image files are not uploaded with a plain `.md`; or the path contains spaces, does not end in an image extension and has no `<...>` | Upload a `.textpack`; write `![](<path with spaces>)` |
 | A document with images ends up `FAILED` | `i` in its options while `VLM_PROCESS_ENABLE=false` | Enable both together |
 | `DOCX_SMART_HEADING=true` changes nothing | The document is below `DOCX_SMART_MIN_TOKENS` | Check `smart_audit.json`; test with a longer document |
