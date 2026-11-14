@@ -137,9 +137,7 @@ printf 'GRAPH=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
     ("graph_storage", "warns"),
     [("PGGraphStorage", True), ("PGTableGraphStorage", False), ("", False)],
 )
-def test_kept_age_graph_storage_is_reported(
-    graph_storage: str, warns: bool
-) -> None:
+def test_kept_age_graph_storage_is_reported(graph_storage: str, warns: bool) -> None:
     """env-base / env-server keep the selection they find; an AGE one is
     reported, because the generated PostgreSQL service has no AGE."""
     result = run_bash_process(f"""
