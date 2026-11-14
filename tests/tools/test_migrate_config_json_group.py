@@ -295,6 +295,10 @@ class TestDatabaseToJson:
                 tmp_path, source=database, target="json", target_backend="JsonKVStorage"
             )
         assert not Path(json_config_path(str(tmp_path), "teamalpha")).exists()
+        # Not even the directory or its claim file: the refusal says nothing
+        # was written, so the workspace the copy would have created must not
+        # exist either.
+        assert not (tmp_path / "teamalpha").exists()
         assert (
             Path(json_config_path(str(tmp_path), "teambeta")).read_bytes()
             == foreign_bytes

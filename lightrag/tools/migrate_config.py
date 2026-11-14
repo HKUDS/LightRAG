@@ -29,8 +29,9 @@ identity* in ``docs/design/ConfigurationStorageContract.md``; operator guide:
   this ``WORKING_DIR`` (``JsonShardGroup``), never the invoking workspace's
   alone. As a source, the anchor's members and the snapshots on disk must
   agree in both directions before anything is written; as a target, every
-  source workspace and every discovered snapshot is claimed and validated
-  first, same-identity snapshots are converged, and a snapshot the source no
+  source workspace and every discovered snapshot is validated first, the
+  directories of new snapshots are claimed only once the target is accepted,
+  same-identity snapshots are converged, and a snapshot the source no
   longer has rows for is kept with its identity and owner only and stays a
   member. The owner rows are layout metadata and never leave JSON.
 """
@@ -315,8 +316,9 @@ class JsonShardGroup:
     snapshot; the identity is the one UUID every non-empty snapshot carries
     (a disagreement raises); owner rows are hidden -- read, validated and
     written here, never copied. Each snapshot's directory is claimed before
-    it is opened, in sorted order, and the claims are handed back by the
-    caller's ``release_claims``. See the module rules.
+    it is opened -- an existing snapshot's while preparing, a new one's in
+    ``open_planned`` -- and the claims are handed back by the caller's
+    ``release_claims``. See the module rules.
     """
 
     supports_strict_point_reads = True
@@ -333,6 +335,9 @@ class JsonShardGroup:
         self.source_members: tuple[str, ...] = ()
         self._on_disk: set[str] = set()
         self._planned: set[str] = set()
+        # Planned workspaces with no snapshot yet: claimed and opened only by
+        # ``open_planned``, once the target is known to be this migration's.
+        self._pending: set[str] = set()
 
     # -- opening --------------------------------------------------------
 
@@ -479,9 +484,14 @@ class JsonShardGroup:
     async def prepare_target(
         self, source_scan: "ContainerScan", *, dry_run: bool
     ) -> None:
-        """Claim, validate and open every snapshot a JSON target could touch:
-        the source's workspaces and every snapshot already on disk. A dry run
-        opens only the snapshots that exist."""
+        """Validate every snapshot a JSON target could touch -- the source's
+        workspaces and every snapshot already on disk -- and claim and open
+        the ones that exist, which the target's classification reads.
+
+        The snapshots this run would CREATE are claimed and opened only by
+        ``open_planned``, after the classification accepted the target: a
+        refused target must not leave new workspace directories and claim
+        files behind under a report that nothing was written."""
         scopes = set(source_scan.scopes)
         if source_scan.server_keys:
             raise self._refuse(
@@ -535,9 +545,18 @@ class JsonShardGroup:
                 "one of each group in the source"
             )
         self._refuse_shared_directories()
-        wanted = set(on_disk) if dry_run else self._planned
-        for workspace in sorted(wanted):
+        for workspace in sorted(on_disk):
             await self._open(workspace)
+        self._pending = set() if dry_run else self._planned - set(on_disk)
+
+    async def open_planned(self) -> None:
+        """Claim and open the snapshots the copy will create. Called after
+        the target was classified as empty or as this migration's own, and
+        before the first write; a claim another process holds refuses here,
+        while nothing has been written yet."""
+        for workspace in sorted(self._pending):
+            await self._open(workspace)
+        self._pending = set()
 
     def describe_target(self, source_scan: "ContainerScan") -> list[str]:
         """The per-workspace plan a JSON target reports before it writes."""
@@ -998,10 +1017,11 @@ async def migrate_configuration(
                 f"written; remove the fields or choose another target."
             )
 
-        # Step 3. The target, classified. A JSON target first claims and
-        # validates every snapshot it could touch -- the source's workspaces
-        # and the ones already on disk -- so nothing is written before all
-        # of them are known to be this migration's to converge.
+        # Step 3. The target, classified. A JSON target first validates every
+        # snapshot it could touch -- the source's workspaces and the ones
+        # already on disk -- and opens the existing ones, so nothing is
+        # written before all of them are known to be this migration's to
+        # converge. The snapshots it would create wait for step 3b.
         target = await open_target(target_backend)
         opened.append(target)
         prepare = getattr(target, "prepare_target", None)
@@ -1045,6 +1065,12 @@ async def migrate_configuration(
                 "index), as any start on that backend does."
             )
             return result
+
+        # Step 3b. Only now does a JSON target claim and open the snapshots it
+        # will create; a refused target above created none.
+        open_planned = getattr(target, "open_planned", None)
+        if open_planned is not None:
+            await open_planned()
 
         # Step 4. Claim: the ownership marker first.
         if verdict.state == "empty":

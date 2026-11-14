@@ -847,7 +847,10 @@ start the server once, stop it and rerun the tool.
   row is damaged and refuses on either side, as it does at a start and a
   rebind: automatic recovery is limited to consistent state. As a target,
   the source's workspaces and every
-  snapshot already on disk are claimed and validated before any write -- a
+  snapshot already on disk are validated before any write, and only the
+  existing snapshots are claimed then; the directories of the snapshots the
+  copy creates are claimed once the target was classified as empty or as
+  this migration's, so a refused target creates none -- a
   source row whose key is not a registered key of its own scope refuses
   there, since a snapshot written with it would fail verification and could
   not be converged by the next run, and so do distinct workspaces that differ
