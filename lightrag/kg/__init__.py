@@ -75,6 +75,16 @@ STORAGE_IMPLEMENTATIONS = {
 DEPRECATED_STORAGES: dict[str, str] = {
     "RedisKVStorage": "PGKVStorage",
     "RedisDocStatusStorage": "PGDocStatusStorage",
+    "PGGraphStorage": "PGTableGraphStorage",
+}
+
+# How to get to the replacement, where a tool does it without re-indexing.
+# The notice appends this; every key must also be in DEPRECATED_STORAGES.
+DEPRECATED_STORAGE_MIGRATION_HINTS: dict[str, str] = {
+    "PGGraphStorage": (
+        "`python -m lightrag.tools.migrate_graph_storage --apply` moves the "
+        "graph without re-indexing the documents."
+    ),
 }
 
 # Storage implementation environment variable without default value
@@ -211,7 +221,9 @@ def deprecated_storage_message(storage_name: str) -> str | None:
     replacement = DEPRECATED_STORAGES.get(storage_name)
     if replacement is None:
         return None
-    return (
+    message = (
         f"{storage_name} is deprecated and will be removed in a future release; "
         f"migrate to {replacement} (PostgreSQL)."
     )
+    hint = DEPRECATED_STORAGE_MIGRATION_HINTS.get(storage_name)
+    return f"{message} {hint}" if hint else message

@@ -1155,9 +1155,10 @@ select_storage_backends() {
   local graph_options=("${GRAPH_STORAGE_OPTIONS[@]}")
   if [[ "$graph_default" == "PGGraphStorage" ]]; then
     graph_options+=("PGGraphStorage")
-    log_info "This deployment uses PGGraphStorage (Apache AGE). It stays available" \
-      "here so you can keep it; new deployments are offered PGTableGraphStorage," \
-      "which keeps the graph in plain PostgreSQL tables and needs no extension."
+    log_info "This deployment uses PGGraphStorage (Apache AGE), which is deprecated" \
+      "and will be removed in a future release. It stays available here so you can" \
+      "keep it for now; new deployments are offered PGTableGraphStorage, which" \
+      "keeps the graph in plain PostgreSQL tables and needs no extension."
     log_info "To move to PGTableGraphStorage without indexing the documents again," \
       "stop LightRAG and run 'python -m lightrag.tools.migrate_graph_storage --apply'" \
       "while the AGE-enabled PostgreSQL is still running, then choose it here."

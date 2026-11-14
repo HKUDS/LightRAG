@@ -897,7 +897,7 @@ OpenSearchKVStorage  OpenSearch
 ```
 NetworkXStorage          NetworkX (default)
 Neo4JStorage             Neo4J
-PGGraphStorage           PostgreSQL with AGE plugin
+PGGraphStorage           PostgreSQL with AGE plugin (deprecated)
 PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
@@ -909,7 +909,9 @@ OpenSearchGraphStorage   OpenSearch
 > JSONB, so it runs on any stock PostgreSQL 14+ — including managed instances
 > (RDS, Cloud SQL, Supabase, Neon) where the AGE extension cannot be installed.
 > It shares the same `POSTGRES_*` configuration and connection pool as the other
-> PG storages. Choose `PGGraphStorage` only if you specifically need AGE/Cypher.
+> PG storages. `PGGraphStorage` is deprecated and will be removed in a future
+> release; `python -m lightrag.tools.migrate_graph_storage --apply` moves an
+> existing AGE graph to `PGTableGraphStorage` without re-indexing.
 
 **VECTOR_STORAGE**
 ```
@@ -1055,7 +1057,7 @@ PostgreSQL can provide a one-stop solution as KV store, VectorDB (pgvector), and
 
 - PostgreSQL is lightweight; the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
 - If you prefer Docker and graph storage is `PGTableGraphStorage` (the recommended choice, which needs no Apache AGE), the official pgvector image `pgvector/pgvector:pg18` is all you need.
-- Only `PGGraphStorage` requires an AGE-bundled image, which the setup wizard generates only for a deployment that already uses `PGGraphStorage`; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
+- Only the deprecated `PGGraphStorage` requires an AGE-bundled image, which the setup wizard generates only for a deployment that already uses `PGGraphStorage`; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
 - How to start: see [examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
 - For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 

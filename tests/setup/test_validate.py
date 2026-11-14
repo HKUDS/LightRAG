@@ -129,7 +129,7 @@ printf 'GRAPH=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
     assert seen["GRAPH_DEFAULT"] == expected
     assert parse_lines(result.stdout)["GRAPH"] == expected
     output = result.stdout + result.stderr
-    assert ("This deployment uses PGGraphStorage (Apache AGE)" in output) is offered
+    assert ("PGGraphStorage (Apache AGE), which is deprecated" in output) is offered
     assert ("lightrag.tools.migrate_graph_storage --apply" in output) is offered
 
 

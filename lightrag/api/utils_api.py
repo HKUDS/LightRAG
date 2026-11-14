@@ -817,9 +817,9 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.white("    ├─ KV Storage: ", end="")
     _print_storage_name(args.kv_storage)
     ASCIIColors.white("    ├─ Vector Storage: ", end="")
-    ASCIIColors.yellow(f"{args.vector_storage}")
+    _print_storage_name(args.vector_storage)
     ASCIIColors.white("    ├─ Graph Storage: ", end="")
-    ASCIIColors.yellow(f"{args.graph_storage}")
+    _print_storage_name(args.graph_storage)
     ASCIIColors.white("    ├─ Document Status Storage: ", end="")
     _print_storage_name(args.doc_status_storage)
     ASCIIColors.white("    ├─ Configuration Storage: ", end="")
@@ -991,6 +991,8 @@ def _warn_about_deprecated_storages(args) -> None:
         message
         for message in (
             deprecated_storage_message(args.kv_storage),
+            deprecated_storage_message(args.vector_storage),
+            deprecated_storage_message(args.graph_storage),
             deprecated_storage_message(args.doc_status_storage),
         )
         if message
