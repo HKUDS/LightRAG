@@ -1393,13 +1393,14 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 
 Entity names supplied to `create_entity` and new names supplied during
 `edit_entity` renames use the same normalization rules as extracted entity
-names. When editing an existing entity, LightRAG first preserves an exact
-legacy name match and otherwise falls back to the normalized name.
+names. When editing an existing entity without renaming it, LightRAG first
+preserves an exact legacy name match and otherwise falls back to the
+normalized name.
 `insert_custom_kg` applies the same rules to declared entity names and both
 endpoints of every relationship before writing any custom KG data.
-`merge_entities` resolves existing exact legacy source/target names first and
-otherwise uses normalized names. The target may be an existing entity or a
-new normalized name created by the merge.
+`merge_entities` resolves its target the same way: an existing exact legacy
+name first, otherwise the normalized name. The target may be an existing
+entity or a new normalized name created by the merge.
 `create_relation`, `edit_relation` and `delete_by_relation` resolve both
 endpoints the same way, and `get_entity_info`, `get_relation_info` and
 `GET /graph/entity/exists` resolve their names the same way too. A spelling
@@ -1409,15 +1410,19 @@ self-loop, which `create_relation` and `edit_relation` refuse.
 `delete_by_relation` does not refuse it, because deleting is how a self-loop
 left by an older release gets removed.
 
-`delete_by_entity` is the exception: it deletes only the entity stored under
-exactly the given name, so a retry of the same request always targets the
-same node. Suppose an exact legacy name and its normalized spelling are two
-different entities. If a deletion of the legacy one fails after removing the
-node, and the name were resolved, the retry would fall through to the other
-entity and delete it. When the exact name is absent but its normalized
-spelling is stored, the `not_found` (404) message names the stored spelling.
-Look a name up with `get_entity_info` to learn its stored spelling before
-deleting.
+Operations that remove the entity they address are the exception. They are
+`delete_by_entity`, the source entities of `merge_entities`, and the entity
+an `edit_entity` call renames, with or without `allow_merge`. Each accepts
+only the name the entity is stored under, so a retry of the same request
+always targets the same node. Suppose an exact legacy name and its normalized
+spelling are two different entities. If such an operation on the legacy one
+fails after removing the node, and the name were resolved, the retry would
+fall through to the other entity and delete it, merge it away or rename it.
+The same happens when a client resends a request that had succeeded. When
+the exact name is absent but its normalized spelling is stored, the refusal
+names the stored spelling: a `not_found` (404) from `delete_by_entity`, a
+`ValueError` (400 through the API) from the other two. Look a name up with
+`get_entity_info` to learn its stored spelling first.
 
 ### Relation Weight Contract
 

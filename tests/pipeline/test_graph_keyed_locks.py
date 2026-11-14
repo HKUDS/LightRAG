@@ -198,7 +198,12 @@ async def test_aedit_entity_non_rename_locks_single_entity_name():
 
 @pytest.mark.asyncio
 async def test_aedit_entity_locks_exact_and_normalized_name_candidates():
-    """Normalization resolution stays inside the complete candidate lock set."""
+    """Normalization resolution stays inside the complete candidate lock set.
+
+    The rename itself is refused -- a rename's source must be the stored name
+    -- but that decision is taken under the same lock, which is what this
+    pins.
+    """
     from lightrag import utils_graph
 
     spy, captured = _make_keyed_lock_spy()
@@ -206,10 +211,8 @@ async def test_aedit_entity_locks_exact_and_normalized_name_candidates():
     entities_vdb = _make_vdb_mock(workspace="ws1")
     relationships_vdb = _make_vdb_mock(workspace="ws1")
 
-    graph.upsert_node.side_effect = RuntimeError("stop after lock acquisition")
-
     with patch.object(utils_graph, "get_storage_keyed_lock", spy):
-        with pytest.raises(RuntimeError, match="stop after lock acquisition"):
+        with pytest.raises(ValueError, match="it is stored as 'A公司'"):
             await utils_graph.aedit_entity(
                 chunk_entity_relation_graph=graph,
                 entities_vdb=entities_vdb,

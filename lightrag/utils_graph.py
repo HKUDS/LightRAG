@@ -340,6 +340,40 @@ async def _resolve_manual_entity_name(
     raise _InvalidEntityNameError(f"{role} name cannot be empty after normalization")
 
 
+async def _require_stored_entity_name(
+    chunk_entity_relation_graph,
+    requested_name: str,
+    normalized_name: str,
+    *,
+    role: str,
+    operation: str,
+) -> None:
+    """Refuse a node-removing operation unless ``requested_name`` is stored.
+
+    Merging an entity away, renaming it and deleting it remove the node they
+    address, and their documented recovery is to retry the same request. A
+    resolved name would make that retry unsafe: once the first attempt removed
+    the exact node, the same spelling resolves to its normalized form, which
+    can be a DIFFERENT live entity. Use this for the removed side of such an
+    operation instead of :func:`_resolve_manual_entity_name`.
+
+    Raises ``ValueError``; when the normalized spelling is a node, the message
+    names it so the caller can retry by the stored name.
+    """
+    if await chunk_entity_relation_graph.has_node(requested_name):
+        return
+    if (
+        normalized_name
+        and normalized_name != requested_name
+        and await chunk_entity_relation_graph.has_node(normalized_name)
+    ):
+        raise ValueError(
+            f"{role} '{requested_name}' does not exist; it is stored as "
+            f"'{normalized_name}'. {operation} it by that name."
+        )
+    raise ValueError(f"{role} '{requested_name}' does not exist")
+
+
 async def resolve_entity_name_for_lookup(
     chunk_entity_relation_graph, entity_name: str
 ) -> str:
@@ -1724,7 +1758,13 @@ async def aedit_entity(
         chunk_entity_relation_graph: Graph storage instance
         entities_vdb: Vector database storage for entities
         relationships_vdb: Vector database storage for relationships
-        entity_name: Name of the entity to edit
+        entity_name: Name of the entity to edit. An edit that keeps the name
+            resolves it like the other manual names (exact stored name first,
+            otherwise the normalized one). A RENAME requires the stored name,
+            because it removes the node it addresses: a resolved name would let
+            a retry after a partial failure reach a different entity. A
+            spelling whose normalized form is stored is refused with that form
+            named in the error.
         updated_data: Attributes to update. Allowed fields: ``entity_name``
             (rename target), ``entity_type``, ``description``,
             ``source_id``, ``file_path`` -- all strings. Any other key,
@@ -1843,6 +1883,17 @@ async def aedit_entity(
                 new_entity_name = entity_name
 
             is_renaming = new_entity_name != entity_name
+            if is_renaming and entity_name != requested_entity_name:
+                # A rename removes the node it addresses, so its source is
+                # matched exactly, never resolved -- see
+                # `_require_stored_entity_name`. Plain edits keep resolving.
+                await _require_stored_entity_name(
+                    chunk_entity_relation_graph,
+                    requested_entity_name,
+                    normalized_entity_name,
+                    role="Entity",
+                    operation="Rename",
+                )
             operation_summary: dict[str, Any] = {
                 "merged": False,
                 "merge_status": "not_attempted",
@@ -3662,8 +3713,15 @@ async def amerge_entities(
         chunk_entity_relation_graph: Graph storage instance
         entities_vdb: Vector database storage for entities
         relationships_vdb: Vector database storage for relationships
-        source_entities: List of source entity names to merge
-        target_entity: Name of the target entity after merging
+        source_entities: List of source entity names to merge. Each must be
+            the STORED name: sources are removed by the merge, so they are not
+            resolved to a normalized spelling, and a retry of a merge that
+            failed after removing them cannot reach a different entity. A
+            spelling whose normalized form is stored is refused with that form
+            named in the error.
+        target_entity: Name of the target entity after merging. Resolved like
+            the other manual names: an exact stored name wins, otherwise the
+            normalized name, created if absent.
         merge_strategy: Deprecated (Each field uses its own default strategy). If provided,
             customizations are applied but a warning is logged.
         target_entity_data: Dictionary of specific values to set for the target entity,
@@ -3724,6 +3782,8 @@ async def amerge_entities(
         lock_keys, namespace=namespace, enable_logging=False
     ):
         try:
+            # Sources are removed by the merge, so they are matched exactly,
+            # never resolved -- see `_require_stored_entity_name`.
             resolved_source_entities: list[str] = []
             seen_source_entities: set[str] = set()
             for requested_name, normalized_name in zip(
@@ -3731,19 +3791,19 @@ async def amerge_entities(
                 normalized_source_entities,
                 strict=True,
             ):
-                resolved_name = await _resolve_manual_entity_name(
+                await _require_stored_entity_name(
                     chunk_entity_relation_graph,
                     requested_name,
                     normalized_name,
                     role="Source entity",
+                    operation="Merge",
                 )
 
-                # Multiple caller spellings may resolve to one canonical node.
-                # Merge it once so relations, vectors, and deletion are not
-                # processed repeatedly.
-                if resolved_name not in seen_source_entities:
-                    seen_source_entities.add(resolved_name)
-                    resolved_source_entities.append(resolved_name)
+                # A source listed twice is merged once, so relations, vectors
+                # and deletion are not processed repeatedly.
+                if requested_name not in seen_source_entities:
+                    seen_source_entities.add(requested_name)
+                    resolved_source_entities.append(requested_name)
 
             target_entity = await _resolve_manual_entity_name(
                 chunk_entity_relation_graph,

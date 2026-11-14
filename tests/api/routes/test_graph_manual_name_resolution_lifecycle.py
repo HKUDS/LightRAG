@@ -357,3 +357,108 @@ async def test_repeated_entity_delete_never_reaches_another_entity(
     assert (second.status, second.status_code) == ("not_found", 404)
     assert await graph.has_node("Tesla(US)")
     assert await rag.entity_chunks.get_by_id(legacy) is None
+
+
+async def _legacy_and_normalized_entities(rag):
+    """A legacy node and its normalized spelling as two different entities,
+    the second with a relation of its own, plus a merge target."""
+    graph = rag.chunk_entity_relation_graph
+    legacy = "Tesla（US）"
+    await graph.upsert_node(
+        legacy,
+        {
+            "entity_id": legacy,
+            "entity_type": "ORG",
+            "description": "legacy",
+            "source_id": "",
+            "file_path": "",
+        },
+    )
+    await rag.entity_chunks.upsert({legacy: {"chunk_ids": ["chunk-1"], "count": 1}})
+    await rag.acreate_entity("Tesla(US)", {"description": "a different entity"})
+    await rag.acreate_entity("SpaceX", {"description": "partner"})
+    await rag.acreate_entity("Tesla Group", {"description": "merge target"})
+    await rag.acreate_relation("Tesla(US)", "SpaceX", {"description": "its own"})
+    return graph, legacy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_attempt", ["fails-after-node-removal", "succeeds"])
+@pytest.mark.parametrize("operation", ["merge_entities", "rename_with_allow_merge"])
+async def test_repeated_merge_never_reaches_another_entity(
+    rag, monkeypatch, operation, first_attempt
+):
+    """Merges and renames remove the node they address, and a retry is their
+    documented recovery. The second call must be refused, not resolve the
+    now-absent legacy name to the other, live entity and merge it away."""
+    graph, legacy = await _legacy_and_normalized_entities(rag)
+
+    def _call():
+        if operation == "merge_entities":
+            return rag.amerge_entities([legacy], "Tesla Group")
+        return rag.aedit_entity(
+            legacy,
+            {"entity_name": "Tesla Group"},
+            allow_rename=True,
+            allow_merge=True,
+        )
+
+    if first_attempt == "fails-after-node-removal":
+
+        async def _fail_tracking_cleanup(ids):
+            raise RuntimeError("injected tracking failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(rag.entity_chunks, "delete", _fail_tracking_cleanup)
+            with pytest.raises(Exception, match="tracking"):
+                await _call()
+    else:
+        await _call()
+    assert not await graph.has_node(legacy)
+
+    with pytest.raises(ValueError, match="it is stored as 'Tesla\\(US\\)'"):
+        await _call()
+
+    assert await graph.has_node("Tesla(US)")
+    assert await graph.has_edge("Tesla(US)", "SpaceX")
+    assert not await graph.has_edge("Tesla Group", "SpaceX")
+
+
+@pytest.mark.asyncio
+async def test_rest_merge_and_rename_name_the_stored_spelling(rag, client):
+    await _create_entity(client, "Tesla（US）")  # stored as Tesla(US)
+    await _create_entity(client, "Tesla Group")
+
+    merged = await client.post(
+        "/graph/entities/merge",
+        json={
+            "entities_to_change": ["Tesla（US）"],
+            "entity_to_change_into": "Tesla Group",
+        },
+        headers=_HEADERS,
+    )
+    assert merged.status_code == 400
+    assert "it is stored as 'Tesla(US)'" in merged.json()["detail"]
+
+    renamed = await client.post(
+        "/graph/entity/edit",
+        json={
+            "entity_name": "Tesla（US）",
+            "updated_data": {"entity_name": "Tesla Motors"},
+            "allow_rename": True,
+        },
+        headers=_HEADERS,
+    )
+    assert renamed.status_code == 400
+    assert "it is stored as 'Tesla(US)'" in renamed.json()["detail"]
+
+    # Plain edits keep resolving the spelling the entity API accepted.
+    edited = await client.post(
+        "/graph/entity/edit",
+        json={"entity_name": "Tesla（US）", "updated_data": {"description": "new"}},
+        headers=_HEADERS,
+    )
+    assert edited.status_code == 200, edited.text
+    graph = rag.chunk_entity_relation_graph
+    assert (await graph.get_node("Tesla(US)"))["description"] == "new"
+    assert await graph.has_node("Tesla Group")
