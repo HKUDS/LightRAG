@@ -717,7 +717,9 @@ def _select_content_list_candidate(
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            # An undecodable candidate is skipped like a malformed one, so a
+            # readable rival can still win instead of aborting the download.
             continue
         content_list = _find_content_list(payload, "content")
         if content_list is None:

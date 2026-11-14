@@ -1,24 +1,19 @@
 """Offline tests for role-specific LLM runtime configuration."""
 
 import asyncio
-import logging
+import json
 from argparse import Namespace
 
 import numpy as np
 import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
+from lightrag.base import StoragesStatus
 from lightrag.llm.binding_options import OpenAILLMOptions
 from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_call
 
 
 pytestmark = pytest.mark.offline
-
-
-@pytest.fixture
-def lightrag_logger_propagating(monkeypatch):
-    """Force the lightrag logger to propagate so caplog can capture records."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 class _SimpleTokenizerImpl:
@@ -157,7 +152,7 @@ async def test_priority_queue_stats_track_running_and_queued():
 
 @pytest.mark.asyncio
 async def test_priority_queue_graceful_shutdown_timeout_falls_back_to_force(
-    caplog, lightrag_logger_propagating
+    caplog, lightrag_caplog
 ):
     started = asyncio.Event()
 
@@ -319,7 +314,7 @@ def test_role_llm_configs_rejects_unknown_role_keys(tmp_path):
 
 
 def test_role_llm_config_logs_once_on_init_with_metadata(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     with caplog.at_level("INFO", logger="lightrag"):
         rag = _make_rag(
@@ -487,7 +482,7 @@ async def test_sync_update_tracks_retired_queue_cleanup(tmp_path):
 
 
 def test_sync_update_without_event_loop_skips_cleanup(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     async def query_func(*args, **kwargs):
         return "old"
@@ -632,9 +627,7 @@ async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     assert built_calls[-1]["kwargs"]["provider_options"]["top_k"] == 8
 
 
-def test_update_llm_role_config_logs_after_success(
-    tmp_path, caplog, lightrag_logger_propagating
-):
+def test_update_llm_role_config_logs_after_success(tmp_path, caplog, lightrag_caplog):
     async def built_func(*args, **kwargs):
         return "ok"
 
@@ -680,7 +673,7 @@ def test_update_llm_role_config_logs_after_success(
 
 @pytest.mark.asyncio
 async def test_aupdate_llm_role_config_logs_after_success(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     async def new_query_func(*args, **kwargs):
         return "new-query"
@@ -800,7 +793,7 @@ async def test_aupdate_llm_role_config_rolls_back_and_keeps_old_wrapped(tmp_path
 
 @pytest.mark.asyncio
 async def test_aupdate_llm_role_config_drain_timeout_does_not_propagate(
-    tmp_path, monkeypatch, caplog, lightrag_logger_propagating
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """If the retired queue drain hits its timeout, the underlying
     shutdown falls through to forced cancellation. aupdate must absorb
@@ -931,6 +924,155 @@ async def test_finalize_storages_shuts_down_all_model_queues(tmp_path):
     assert all(status["worker_count"] == 0 for status in statuses)
 
 
+@pytest.mark.asyncio
+async def test_finalize_keeps_embedding_queue_open_until_storages_are_finalized(
+    tmp_path,
+):
+    """A vector storage's ``finalize()`` flushes pending upserts, and that
+    flush embeds first. The embedding queue used to be shut down together
+    with the LLM queues, before the storages, so the flush was rejected with
+    "Queue is shutting down" and the buffered vectors were dropped -- on every
+    server stop that interrupted an ingestion."""
+    rag = _make_rag(tmp_path)
+    await rag.initialize_storages()
+    for wrapped in rag.role_llm_funcs.values():
+        assert await wrapped("warmup") == "base"
+    await rag.embedding_func(["warmup"])
+
+    seen: dict[str, object] = {}
+    original_finalize = rag.chunks_vdb.finalize
+
+    async def finalize_with_pending_flush():
+        # What the LLM queues look like when the storages are torn down.
+        seen["llm_queues_open"] = [
+            role
+            for role, status in (await rag.get_llm_queue_status()).items()
+            if status["initialized"]
+        ]
+        # The pending-upsert flush: it must still be able to embed.
+        seen["flushed"] = len(await rag.embedding_func(["pending vector"]))
+        await original_finalize()
+
+    rag.chunks_vdb.finalize = finalize_with_pending_flush
+
+    await rag.finalize_storages()
+
+    assert seen == {"llm_queues_open": [], "flushed": 1}
+    # ... and finalize still owns the embedding queue's shutdown.
+    embedding_status = await rag.get_embedding_queue_status()
+    assert embedding_status["initialized"] is False
+    assert embedding_status["worker_count"] == 0
+    with pytest.raises(RuntimeError, match="Queue is shutting down"):
+        await rag.embedding_func(["after finalize"])
+
+
+async def _buffer_pending_vector(rag: LightRAG) -> None:
+    """Leave one upsert buffered in a Nano vector storage, unflushed.
+
+    The embedding workers start lazily, and the buffered upsert does not
+    embed, so warm them up first: the tests then see whether an interrupted
+    finalize shut them down."""
+    await rag.embedding_func(["warmup"])
+    await rag.relationships_vdb.upsert(
+        {"rel-pending": {"src_id": "A", "tgt_id": "B", "content": "pending"}}
+    )
+    assert rag.relationships_vdb._pending_upserts
+
+
+def _persisted_vector_ids(rag: LightRAG) -> set[str]:
+    with open(rag.relationships_vdb._client_file_name, encoding="utf-8") as f:
+        return {row["__id__"] for row in json.load(f)["data"]}
+
+
+async def _assert_retry_flushes_and_closes_embedding(rag: LightRAG) -> None:
+    """After an interrupted finalize the embedding queue must still be open,
+    so the retry can flush the buffered vector -- and the retry, which runs
+    to completion, must then shut it down."""
+    assert (await rag.get_embedding_queue_status())["worker_count"] > 0
+
+    await rag.finalize_storages()
+
+    assert rag._storages_status == StoragesStatus.FINALIZED
+    assert "rel-pending" in _persisted_vector_ids(rag)
+    embedding_status = await rag.get_embedding_queue_status()
+    assert embedding_status["initialized"] is False
+    assert embedding_status["worker_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_retry_after_finalize_cancelled_in_storage_loop_flushes_vectors(
+    tmp_path,
+):
+    """Shutting the embedding queue down is permanent. It used to run in a
+    ``finally``, so a finalize cancelled inside the storage loop closed it,
+    and the retry's vector flush then failed with "Queue is shutting down":
+    the buffered vectors were dropped and the storages marked FINALIZED."""
+    rag = _make_rag(tmp_path)
+    await rag.initialize_storages()
+    await _buffer_pending_vector(rag)
+
+    original_finalize = rag.entities_vdb.finalize
+    calls = 0
+
+    async def cancelled_once():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise asyncio.CancelledError()
+        await original_finalize()
+
+    rag.entities_vdb.finalize = cancelled_once
+
+    with pytest.raises(asyncio.CancelledError):
+        await rag.finalize_storages()
+    assert rag._storages_status == StoragesStatus.INITIALIZED
+
+    await _assert_retry_flushes_and_closes_embedding(rag)
+
+
+@pytest.mark.asyncio
+async def test_retry_after_finalize_cancelled_during_rerank_drain_flushes_vectors(
+    tmp_path,
+):
+    """The LLM/rerank drain runs before the storages; a finalize cancelled
+    there must leave the embedding queue open for the retry too (regression
+    case from the review of PR #4396)."""
+    started, release, draining = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def rerank_func(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    rag = _make_rag(tmp_path, rerank_model_func=rerank_func)
+    await rag.initialize_storages()
+    await _buffer_pending_vector(rag)
+
+    # An in-flight rerank call keeps the rerank drain waiting.
+    call = asyncio.create_task(rag.rerank_model_func("query", ["document"]))
+    await asyncio.wait_for(started.wait(), 5)
+    original_shutdown = rag.rerank_model_func.shutdown
+
+    async def observed_shutdown(*args, **kwargs):
+        draining.set()
+        await original_shutdown(*args, **kwargs)
+
+    rag.rerank_model_func.shutdown = observed_shutdown
+    stop = asyncio.create_task(rag.finalize_storages())
+    try:
+        await asyncio.wait_for(draining.wait(), 5)
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(stop, 5)
+        assert rag._storages_status == StoragesStatus.INITIALIZED
+    finally:
+        release.set()
+        await asyncio.wait_for(call, 5)
+        rag.rerank_model_func.shutdown = original_shutdown
+
+    await _assert_retry_flushes_and_closes_embedding(rag)
+
+
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
     rag = _make_rag(tmp_path)
     rag.set_role_llm_metadata(
@@ -1050,7 +1192,7 @@ async def test_cross_provider_update_does_not_inherit_base_kwargs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_update_llm_role_config_rolls_back_on_failure(
-    tmp_path, caplog, lightrag_logger_propagating
+    tmp_path, caplog, lightrag_caplog
 ):
     rag = _make_rag(tmp_path, extract_llm_model_kwargs={"tag": "before"})
     original_raw = rag._role_llm_states["extract"].raw_func

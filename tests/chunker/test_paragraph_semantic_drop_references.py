@@ -24,6 +24,10 @@ from lightrag.chunker.paragraph_semantic import (
 )
 from lightrag.constants import DEFAULT_P_REFERENCES_HEADINGS
 from lightrag.utils import Tokenizer, TokenizerInterface, logger as _lightrag_logger
+from tests._log_capture import capture_lightrag_logs
+
+
+pytestmark = pytest.mark.offline
 
 
 class _CharTokenizer(TokenizerInterface):
@@ -312,11 +316,7 @@ def test_drop_references_emits_info_log(tmp_path, caplog):
     ]
     blocks_path = _write_blocks_jsonl(tmp_path, rows)
 
-    # The lightrag logger sets propagate=False, so caplog can't see it by
-    # default — enable propagation for the duration of the call.
-    original_propagate = _lightrag_logger.propagate
-    _lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.INFO, logger=_lightrag_logger.name):
             chunking_by_paragraph_semantic(
                 tokenizer,
@@ -326,8 +326,6 @@ def test_drop_references_emits_info_log(tmp_path, caplog):
                 drop_references=True,
                 doc_id="doc-xyz",
             )
-    finally:
-        _lightrag_logger.propagate = original_propagate
 
     info_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     # Log names the dropped heading and attributes it to the doc_id.

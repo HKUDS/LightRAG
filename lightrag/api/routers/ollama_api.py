@@ -335,21 +335,22 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
         user_prompt = bracket_match.group(2)
         remaining_query = bracket_match.group(3).lstrip()
 
-        # Reconstruct query, removing the bracket part. Keep the separator the
-        # space-suffixed mode keys match on, and emit no bare "/" without a mode.
+        # Reconstruct query, removing the bracket part. Keep a separator so the
+        # mode key still ends at a word boundary, and emit no bare "/" without a
+        # mode.
         query = f"/{mode_prefix} {remaining_query}" if mode_prefix else remaining_query
 
     # Unified handling of mode and only_need_context determination
     mode_map = {
-        "/local ": (SearchMode.local, False),
-        "/global ": (
+        "/local": (SearchMode.local, False),
+        "/global": (
             SearchMode.global_,
             False,
         ),  # global_ is used because 'global' is a Python keyword
-        "/naive ": (SearchMode.naive, False),
-        "/hybrid ": (SearchMode.hybrid, False),
-        "/mix ": (SearchMode.mix, False),
-        "/bypass ": (SearchMode.bypass, False),
+        "/naive": (SearchMode.naive, False),
+        "/hybrid": (SearchMode.hybrid, False),
+        "/mix": (SearchMode.mix, False),
+        "/bypass": (SearchMode.bypass, False),
         "/context": (
             SearchMode.mix,
             True,
@@ -364,12 +365,12 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
     for prefix, (mode, only_need_context) in mode_map.items():
         if query.startswith(prefix):
             rest = query[len(prefix) :]
-            # Unsuffixed context keys carry no trailing space, so they must
-            # stop at a word boundary: end of the query or whitespace.
+            # A key must stop at a word boundary: end of the query or
+            # whitespace of any kind, so a question can start on the next line.
             # Without the check "/context" also prefixes "/contextualize",
             # cutting the word out of the query and forcing context-only
             # retrieval.
-            if not prefix.endswith(" ") and rest and not rest[0].isspace():
+            if rest and not rest[0].isspace():
                 continue
             # After removing prefix and leading spaces
             cleaned_query = rest.lstrip()
