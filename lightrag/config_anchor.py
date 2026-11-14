@@ -334,6 +334,11 @@ def _write_temp(tmp: str, anchor: StorageAnchor) -> None:
         os.fsync(f.fileno())
 
 
+class _EmptyClaimLeft(OSError):
+    """The no-hard-link fallback's empty claim could not be removed after
+    its replace failed: an empty anchor file remains at the target."""
+
+
 def _publish_no_clobber(tmp: str, path: str) -> None:
     """Move ``tmp`` to ``path`` unless ``path`` exists; ``FileExistsError`` if
     it does.
@@ -346,7 +351,9 @@ def _publish_no_clobber(tmp: str, path: str) -> None:
     open, and the keyed lock cannot see another process tree). Until the
     replace lands the anchor is an empty file, which every reader refuses as
     unreadable -- loud, never "absent" -- and a crash in that window leaves
-    it for the operator to delete, the sanctioned rebind.
+    it for the operator to delete, the sanctioned rebind. A replace that
+    FAILS removes the claim again, so "no anchor was published" stays true;
+    if even that removal fails, ``_EmptyClaimLeft`` says the file remains.
     """
     if os.name == "nt":
         os.rename(tmp, path)
@@ -360,7 +367,22 @@ def _publish_no_clobber(tmp: str, path: str) -> None:
             raise
         # Raises FileExistsError itself when another start got there first.
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError as replace_error:
+            # The name is still this start's empty claim: O_EXCL kept every
+            # other no-clobber publisher off it. Give it back, so a failed
+            # publish leaves no anchor behind -- but only if it is still empty.
+            try:
+                if os.path.getsize(path) == 0:
+                    os.unlink(path)
+            except OSError as cleanup_error:
+                raise _EmptyClaimLeft(
+                    replace_error.errno,
+                    f"{replace_error}; the empty claim could not be removed "
+                    f"either ({type(cleanup_error).__name__}: {cleanup_error})",
+                ) from replace_error
+            raise
         return
     # Published. The temp name is a second link to the same file; failing to
     # remove it leaves a harmless orphan, not a failed publish.
@@ -417,15 +439,23 @@ def publish_anchor(working_dir: str, anchor: StorageAnchor, *, replace: bool) ->
         ) from e
     except OSError as e:
         published = stage == "fsync the anchor directory"
+        if published:
+            outcome = (
+                "The anchor was published but may not be durable; the next "
+                "start re-checks it against the container."
+            )
+        elif isinstance(e, _EmptyClaimLeft):
+            outcome = (
+                f"No anchor was published, but an EMPTY file remains at {path}: "
+                f"every start refuses it as unreadable until it is deleted. "
+                f"Delete it, then start again."
+            )
+        else:
+            outcome = "No anchor was published."
         raise ConfigurationIdentityError(
             f"Could not {stage} for the configuration storage anchor {path} "
             f"({type(e).__name__}: {e}). "
-            + (
-                "The anchor was published but may not be durable; the next "
-                "start re-checks it against the container."
-                if published
-                else "No anchor was published."
-            )
+            + outcome
             + " WORKING_DIR must be writable for the first bind, and must "
             "persist across restarts.",
             cause=IDENTITY_ANCHOR_WRITE_FAILED,

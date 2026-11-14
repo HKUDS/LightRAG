@@ -217,6 +217,44 @@ class TestPublish:
         assert excinfo.value.cause == ca.IDENTITY_ANCHOR_APPEARED
         assert ca.read_anchor(str(tmp_path)).storage_uuid == UUID_A
 
+    @pytest.mark.parametrize("cleanup_fails", [False, True], ids=["removed", "left"])
+    def test_without_hard_links_a_failed_replace_reports_what_remains(
+        self, tmp_path, monkeypatch, cleanup_fails
+    ):
+        """The fallback claims the name with an empty file before its replace.
+        If the replace fails, the claim is removed so that "no anchor was
+        published" is true; if even that fails, the refusal says an empty
+        anchor file remains, which every start refuses until it is deleted."""
+
+        def _no_links(src, dst):
+            raise OSError(errno.EPERM, "hard links not supported")
+
+        def _replace_fails(src, dst):
+            raise OSError(errno.EIO, "Input/output error")
+
+        real_unlink = os.unlink
+        anchor_file = ca.anchor_path(str(tmp_path))
+
+        def _unlink(path, *args, **kwargs):
+            if cleanup_fails and os.path.abspath(path) == anchor_file:
+                raise OSError(errno.EACCES, "Permission denied")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(ca.os, "link", _no_links)
+        monkeypatch.setattr(ca.os, "replace", _replace_fails)
+        monkeypatch.setattr(ca.os, "unlink", _unlink)
+        with pytest.raises(ConfigurationIdentityError) as excinfo:
+            ca.publish_anchor(str(tmp_path), self._anchor(), replace=False)
+        message = str(excinfo.value)
+        assert excinfo.value.cause == ca.IDENTITY_ANCHOR_WRITE_FAILED
+        if cleanup_fails:
+            assert "EMPTY file remains" in message
+            assert os.path.getsize(anchor_file) == 0
+        else:
+            assert "No anchor was published." in message
+            assert "EMPTY" not in message
+            assert not os.path.lexists(anchor_file)
+
     def test_without_hard_links_a_winner_that_lands_late_is_never_replaced(
         self, tmp_path, monkeypatch
     ):
