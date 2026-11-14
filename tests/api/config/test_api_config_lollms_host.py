@@ -149,7 +149,7 @@ def test_configured_lollms_host_reaches_the_actual_request(
             return "ok"
 
     class FakeSession:
-        def __init__(self, timeout=None, headers=None):
+        def __init__(self, timeout=None, headers=None, *, raise_for_status=False):
             pass
 
         async def __aenter__(self):
