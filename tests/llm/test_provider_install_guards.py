@@ -22,8 +22,12 @@ inherits the right order, one written from scratch may not.
 from __future__ import annotations
 
 import ast
+import importlib
 import pathlib
+import subprocess
+import sys
 
+import pipmaster
 import pytest
 
 pytestmark = pytest.mark.offline
@@ -161,3 +165,48 @@ def test_every_install_guard_precedes_the_import_it_protects():
     assert not offenders, "install guard placed after its import:\n" + "\n".join(
         offenders
     )
+
+
+def test_an_install_guard_run_under_pytest_never_reaches_pip(tmp_path, monkeypatch):
+    """Collection imports provider modules, so their install guards run here.
+
+    ``tests/conftest.py`` refuses ``pipmaster.install`` for the whole session.
+    Without that, any environment that ships pip installs the missing SDK while
+    collecting (``lmdeploy[all]``, torch included), although CI, whose venv has
+    no pip, never does. The probe is a provider module's guard verbatim,
+    imported with ``subprocess.run`` recording the command instead of running it.
+    """
+    probe = "_lightrag_install_guard_probe"
+    absent = "lightrag-absent-sdk-probe"
+    (tmp_path / f"{probe}.py").write_text(
+        "import pipmaster as pm\n"
+        "\n"
+        f"if not pm.is_installed({absent!r}):\n"
+        f"    pm.install({absent!r})\n",
+        encoding="utf-8",
+    )
+
+    attempted: list[str] = []
+    session_install = pipmaster.install
+
+    def _record_install(package, *args, **kwargs):
+        attempted.append(package)
+        return session_install(package, *args, **kwargs)
+
+    ran: list[object] = []
+
+    def _record_run(command, *args, **kwargs):
+        ran.append(command)
+        return subprocess.CompletedProcess(command, returncode=1)
+
+    monkeypatch.setattr(pipmaster, "install", _record_install)
+    monkeypatch.setattr(subprocess, "run", _record_run)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        importlib.import_module(probe)
+    finally:
+        sys.modules.pop(probe, None)
+
+    # The guard must actually have fired, or the second assertion proves nothing.
+    assert attempted == [absent]
+    assert ran == [], f"an install guard ran a subprocess under pytest: {ran}"
