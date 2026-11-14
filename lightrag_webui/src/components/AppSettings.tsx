@@ -1,11 +1,18 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Button from '@/components/ui/Button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
+import Separator from '@/components/ui/Separator'
 import { useSettingsStore } from '@/stores/settings'
 import { PaletteIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import {
+  getLangfuseTracingStatus,
+  updateLangfuseTracing,
+  type LangfuseTracingStatus
+} from '@/api/lightrag'
 
 interface AppSettingsProps {
   className?: string
@@ -13,6 +20,9 @@ interface AppSettingsProps {
 
 export default function AppSettings({ className }: AppSettingsProps) {
   const [opened, setOpened] = useState<boolean>(false)
+  const [langfuseStatus, setLangfuseStatus] = useState<LangfuseTracingStatus | null>(null)
+  const [isLangfuseLoading, setIsLangfuseLoading] = useState(false)
+  const [isLangfuseUpdating, setIsLangfuseUpdating] = useState(false)
   const { t } = useTranslation()
 
   const language = useSettingsStore.use.language()
@@ -28,6 +38,55 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const handleThemeChange = useCallback((value: string) => {
     setTheme(value as 'light' | 'dark' | 'system')
   }, [setTheme])
+
+  useEffect(() => {
+    if (!opened) return
+
+    let cancelled = false
+
+    const loadLangfuseStatus = async () => {
+      setIsLangfuseLoading(true)
+      try {
+        const status = await getLangfuseTracingStatus()
+        if (!cancelled) setLangfuseStatus(status)
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to load Langfuse tracing status:', error)
+          toast.error(t('settings.langfuseLoadFailed'))
+        }
+      } finally {
+        if (!cancelled) setIsLangfuseLoading(false)
+      }
+    }
+
+    void loadLangfuseStatus()
+
+    return () => {
+      cancelled = true
+    }
+  }, [opened, t])
+
+  const handleLangfuseTracingChange = useCallback(async () => {
+    if (
+      !langfuseStatus ||
+      isLangfuseUpdating ||
+      !langfuseStatus.installed ||
+      !langfuseStatus.configured
+    ) {
+      return
+    }
+
+    setIsLangfuseUpdating(true)
+    try {
+      const status = await updateLangfuseTracing(!langfuseStatus.enabled)
+      setLangfuseStatus(status)
+    } catch (error) {
+      console.error('Failed to update Langfuse tracing:', error)
+      toast.error(t('settings.langfuseUpdateFailed'))
+    } finally {
+      setIsLangfuseUpdating(false)
+    }
+  }, [isLangfuseUpdating, langfuseStatus, t])
 
   return (
     <Popover open={opened} onOpenChange={setOpened}>
@@ -50,7 +109,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
           <PaletteIcon className="h-5 w-5" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent side="bottom" align="end" className="w-56">
+      <PopoverContent side="bottom" align="end" className="w-80">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">{t('settings.language')}</label>
@@ -87,6 +146,49 @@ export default function AppSettings({ className }: AppSettingsProps) {
                 <SelectItem value="system">{t('settings.system')}</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <Separator />
+
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <label htmlFor="langfuse-tracing-toggle" className="text-sm font-medium">
+                {t('settings.langfuseTracing')}
+              </label>
+              <p className="text-muted-foreground mt-1 text-xs">
+                {langfuseStatus && (!langfuseStatus.installed || !langfuseStatus.configured)
+                  ? t('settings.langfuseUnavailable')
+                  : t('settings.langfuseTracingDescription')}
+              </p>
+            </div>
+            <button
+              id="langfuse-tracing-toggle"
+              type="button"
+              role="switch"
+              aria-label={t('settings.langfuseTracing')}
+              aria-checked={langfuseStatus?.enabled ?? false}
+              disabled={
+                isLangfuseLoading ||
+                isLangfuseUpdating ||
+                !langfuseStatus?.installed ||
+                !langfuseStatus.configured
+              }
+              onClick={handleLangfuseTracingChange}
+              className={cn(
+                'relative mt-0.5 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                'focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+                'disabled:cursor-not-allowed disabled:opacity-50',
+                langfuseStatus?.enabled ? 'bg-primary' : 'bg-input'
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'bg-background pointer-events-none block h-5 w-5 rounded-full shadow-lg ring-0 transition-transform',
+                  langfuseStatus?.enabled ? 'translate-x-5' : 'translate-x-0'
+                )}
+              />
+            </button>
           </div>
         </div>
       </PopoverContent>

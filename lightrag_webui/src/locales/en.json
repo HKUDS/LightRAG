@@ -4,7 +4,12 @@
     "theme": "Theme",
     "light": "Light",
     "dark": "Dark",
-    "system": "System"
+    "system": "System",
+    "langfuseTracing": "Langfuse tracing",
+    "langfuseTracingDescription": "Export OpenAI-compatible LLM traces through the operator-configured Langfuse connection.",
+    "langfuseUnavailable": "Install the observability extra and configure Langfuse credentials to use this toggle.",
+    "langfuseLoadFailed": "Unable to load Langfuse tracing status.",
+    "langfuseUpdateFailed": "Unable to update Langfuse tracing."
   },
   "header": {
     "documents": "Documents",
