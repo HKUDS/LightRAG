@@ -1410,6 +1410,52 @@ def _check_identity_against_anchor(
         )
 
 
+def _check_json_snapshot_identity(
+    anchor: StorageAnchor,
+    stored: str,
+    *,
+    working_dir: str,
+    container: str,
+    workspace: str,
+    member: bool,
+) -> None:
+    """``_check_identity_against_anchor`` for one JSON snapshot.
+
+    The database advice -- delete the anchor and the next start rebinds to
+    this container -- does not hold here: a rebind adopts the snapshots on
+    disk only while they agree, so with one stray snapshot among the group's
+    it refuses. The way out depends on which side is stale, and on whether
+    ``workspace`` is a registered member (a member whose snapshot is simply
+    gone is refused too, so it must leave the member list).
+    """
+    if stored == anchor.storage_uuid:
+        return
+    path = anchor_path(working_dir)
+    move_aside = (
+        f"stop every server and maintenance tool on this WORKING_DIR, move the "
+        f"snapshot out of WORKING_DIR, then back up and delete {path}; the "
+        f"next start rebuilds the member list from the remaining snapshots "
+        f"and registers this workspace anew"
+        if member
+        else "move the snapshot out of WORKING_DIR; the next start registers "
+        "this workspace anew"
+    )
+    raise ConfigurationIdentityError(
+        f"Refusing to start: the JSON configuration snapshot {container} of "
+        f"workspace {workspace!r} carries identity {stored}, but the anchor "
+        f"{path} binds this deployment's JSON group to {anchor.storage_uuid}. "
+        f"It was most likely restored or copied from another deployment. "
+        f"Restore this workspace's snapshot from a backup of this deployment; "
+        f"or, if its records are disposable, {move_aside} (its embedding "
+        f"baselines are then re-established on evidence). Only if EVERY "
+        f"snapshot under WORKING_DIR carries {stored} is the anchor the stale "
+        f"side: back up and delete it, and the next start rebinds to that "
+        f"group. Deleting the anchor while the snapshots disagree is refused.",
+        cause=IDENTITY_UUID_MISMATCH,
+        anchor_path=path,
+    )
+
+
 @dataclass(frozen=True)
 class IdentityBinding:
     """What a bind or a verification established."""
@@ -1659,8 +1705,13 @@ async def _verify_json_member(
             cause=IDENTITY_MEMBER_MISSING,
             anchor_path=path,
         )
-    _check_identity_against_anchor(
-        anchor, contents.storage_uuid, working_dir=working_dir, container=container
+    _check_json_snapshot_identity(
+        anchor,
+        contents.storage_uuid,
+        working_dir=working_dir,
+        container=container,
+        workspace=workspace,
+        member=True,
     )
     return IdentityBinding(storage_uuid=contents.storage_uuid, action="verified")
 
@@ -1700,11 +1751,13 @@ async def _register_json_member(
             anchor_path=path,
         )
     if contents.metadata_only:
-        _check_identity_against_anchor(
+        _check_json_snapshot_identity(
             anchor,
             contents.storage_uuid,
             working_dir=working_dir,
             container=container,
+            workspace=workspace,
+            member=False,
         )
         # The rows read above may be only in the shared memory, left by a
         # worker whose flush failed or was cancelled: the anchor must never

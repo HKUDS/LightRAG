@@ -808,6 +808,7 @@ anchor's path, and hides credentials. The advice depends on the cause:
 | same type, different UUID | check that the connection settings point at the intended database | listed last, same warning |
 | JSON: registered snapshot missing or without identity/owner (`member_missing`) | restore the complete snapshot from backup | does not help: a lost snapshot is never re-created in place |
 | JSON: unregistered snapshot holding records (`shard_invalid`) | a lost registration or a copied/restored file: stop every instance, back up and delete the anchor, start again | primary recovery for a lost registration |
+| JSON: a snapshot whose UUID is not the group's (`uuid_mismatch`) | restore the workspace's snapshot from this deployment's backup; if its records are disposable, move the snapshot out of `WORKING_DIR` (a registered member: then also back up and delete the anchor, so the member list is rebuilt without it) and the next start registers the workspace anew | alone, does not help while the snapshots disagree -- the rebind refuses them; it is the recovery only when EVERY snapshot carries the other UUID, i.e. the anchor is the stale side |
 
 ### Maintenance tools
 

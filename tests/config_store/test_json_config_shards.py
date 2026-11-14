@@ -347,6 +347,79 @@ class TestRegistration:
         assert _anchor(tmp_path).members == ("teamalpha",)
         assert Path(json_config_path(str(tmp_path), "teamalpha")).read_bytes() == before
 
+    async def _foreign_snapshot(self, tmp_path, workspace, *, metadata_only):
+        """Place another deployment's snapshot of ``workspace`` here."""
+        other = tmp_path.parent / f"{tmp_path.name}-other"
+        await _bind(other, workspace)
+        rows = _snapshot(other, workspace)
+        if metadata_only:
+            rows = {key: rows[key] for key in (IDENTITY_KEY, OWNER_KEY)}
+        (tmp_path / workspace).mkdir(exist_ok=True)
+        Path(json_config_path(str(tmp_path), workspace)).write_text(json.dumps(rows))
+        return rows[IDENTITY_KEY]["value"]["uuid"]
+
+    async def test_a_member_snapshot_of_another_group_gets_advice_that_works(
+        self, tmp_path
+    ):
+        """Deleting the anchor alone cannot help a member whose snapshot came
+        from another group: the rebind refuses snapshots that disagree. The
+        advice must name the way out that does work, and it must work."""
+        await _bind(tmp_path, "teamalpha")
+        await _bind(tmp_path, "teambeta")
+        group = _anchor(tmp_path)
+        foreign = await self._foreign_snapshot(
+            tmp_path, "teambeta", metadata_only=False
+        )
+
+        with pytest.raises(ConfigurationIdentityError) as info:
+            await _bind(tmp_path, "teambeta")
+        assert info.value.cause == ca.IDENTITY_UUID_MISMATCH
+        message = str(info.value)
+        assert foreign in message and group.storage_uuid in message
+        assert "move the snapshot out of WORKING_DIR" in message
+        assert "rebinds the next start to this container" not in message
+
+        # The old advice: deleting the anchor alone is refused.
+        anchor_file = tmp_path / "config_storage_anchor.json"
+        saved = anchor_file.read_bytes()
+        anchor_file.unlink()
+        with pytest.raises(ConfigurationIdentityError, match="different"):
+            await _bind(tmp_path, "teambeta")
+        anchor_file.write_bytes(saved)
+
+        # The new advice: move the snapshot aside, then delete the anchor.
+        Path(json_config_path(str(tmp_path), "teambeta")).rename(
+            tmp_path.parent / f"{tmp_path.name}-moved.json"
+        )
+        anchor_file.unlink()
+        binding = await _bind(tmp_path, "teambeta")
+        assert binding.storage_uuid == group.storage_uuid
+        assert _anchor(tmp_path) == group
+
+    async def test_an_unregistered_snapshot_of_another_group_gets_advice_that_works(
+        self, tmp_path
+    ):
+        """An interrupted registration copied from another group: the
+        workspace is not a member, so moving the snapshot aside suffices."""
+        await _bind(tmp_path, "teamalpha")
+        group = _anchor(tmp_path)
+        await self._foreign_snapshot(tmp_path, "teambeta", metadata_only=True)
+
+        with pytest.raises(ConfigurationIdentityError) as info:
+            await _bind(tmp_path, "teambeta")
+        message = str(info.value)
+        assert info.value.cause == ca.IDENTITY_UUID_MISMATCH
+        assert "move the snapshot out of WORKING_DIR; the next start" in message
+        assert "rebinds the next start to this container" not in message
+
+        Path(json_config_path(str(tmp_path), "teambeta")).rename(
+            tmp_path.parent / f"{tmp_path.name}-moved.json"
+        )
+        binding = await _bind(tmp_path, "teambeta")
+        assert binding.action == "registered"
+        assert _anchor(tmp_path).members == ("teamalpha", "teambeta")
+        assert _anchor(tmp_path).storage_uuid == group.storage_uuid
+
     async def test_metadata_only_in_shared_memory_is_flushed_before_registering(
         self, tmp_path
     ):
