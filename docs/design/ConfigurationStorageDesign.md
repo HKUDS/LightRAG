@@ -302,12 +302,12 @@ was made; the judgement column is the current assessment.
 | where name rules apply | every effective workspace | the directory rules only where a configured storage is file-backed | a database-only deployment creates no directory and must keep its names | sound |
 | discovery and symlinks | do not follow symlinks | a symlinked child **directory** is followed for its one probe; a symlinked **file** is refused; one physical directory under two names is refused | the running storage follows the link, so registration and discovery must agree, or a symlinked workspace would vanish on rebind and migration | sound |
 | discovered names | never normalize again | spellings are never renormalized, but an HFS+ NFD listing is matched to the requested name or the stored owner spelling when it is the same directory | HFS+ lists NFC names in NFD; an unconditional NFC rule broke NFD workspaces on APFS and hid a real alias, so the stored spelling decides | sound |
-| bind-lock fail-open | only where POSIX reports locking unsupported; Windows: every error is contention | as planned for `flock` contention vs. other errors, but also when the lock file cannot be opened, on every platform | none recorded | **too broad**, see 8 |
-| no-clobber anchor publish | verify a concurrent winner | a lost race refuses with `anchor_appeared`; the winner is not read | fails loud, and a retry heals | acceptable; the message is inaccurate, see 8 |
+| bind-lock fail-open | only where POSIX reports locking unsupported; Windows: every error is contention | identified contention (`EWOULDBLOCK`; every `msvcrt` failure) is never bypassed; every other way the lock cannot be taken fails open with a warning, a lock file that cannot be opened included | no errno list tells "unsupported" apart reliably across NFS and SMB, and refusing would stop a single server that runs there today; the residue is detected and recoverable | sound, now stated precisely in the code and the contracts (8, item 1) |
+| no-clobber anchor publish | verify a concurrent winner | a lost race refuses with `anchor_appeared`; a database loser reads the winning anchor and the container's identity and reports whether they agree | fails loud; a retry heals the consistent case, and the split case names its recovery | sound (8, item 2) |
 | rebuild tool workspace | derive one workspace path | plus `--workspace` for an exact SDK name; every other flag refused | the server rewrites `team-a` to `team_a`, so an SDK workspace was unreachable | sound |
 | unregistered-workspace advice | "start the server once" | that, or a library start for a name the server would rewrite | the server advice can never succeed for such a name | sound |
 | database-to-JSON claims | claim the union of directories in canonical order, then validate | existing snapshots are claimed while preparing; new snapshot directories only after the target is classified | a refused target must not leave directories behind while reporting that nothing was written; the exclusive anchor lock already keeps starters out | sound |
-| JSON targets | refuse foreign UUIDs, malformed rows, wrong owners | as planned, plus server-scope rows other than the identity and keys a snapshot cannot hold refuse; a malformed row in an **owned** target is deleted as this migration's residue | no rule exists for splitting a server-wide setting across snapshots; an owned target is inactive and the source is authoritative | sound, but the malformed-row deletion is not documented, see 8 |
+| JSON targets | refuse foreign UUIDs, malformed rows, wrong owners | as planned, plus server-scope rows other than the identity and keys a snapshot cannot hold refuse; a malformed row in an **owned** target is deleted as this migration's residue | no rule exists for splitting a server-wide setting across snapshots; an owned target is inactive and the source is authoritative | sound; the malformed-row deletion is now documented (8, item 6) |
 | UUID mismatch on a JSON snapshot | delete the anchor and rebind | restore the snapshot, or move it aside (a member: then delete the anchor so the member list is rebuilt); delete the anchor only when every snapshot carries the other UUID | the rebind refuses snapshots that disagree, so the planned advice cannot work with one stray snapshot | sound |
 | clear | retain owner, identity, membership | as planned | | as planned |
 | startup refusals | not specified | anchor, lock and directory-claim refusals are one concise `Startup blocked` line, with the chained I/O cause | the messages carry their own advice; a traceback buried it | sound |
@@ -317,69 +317,41 @@ was made; the judgement column is the current assessment.
 The plan promised that a deployment from the last release needs no
 preparation. That holds except for one case: a server started with
 `WORKSPACE=$x` used to be served as `_x` (the server rewrites every
-character outside `[A-Za-z0-9_]`), and is now refused before that rewrite.
-The rewritten name could not have collided with a `$` scope, so the refusal
-is a policy choice (do not silently serve a name the operator did not
-type), not a necessity. It is recorded only in the API-server
-documentation (`--workspace`). Either keep it and state it in the release notes,
-or restore the rewrite for the server alone while keeping the refusal for the
-SDK, where names are never rewritten.
+character outside `[A-Za-z0-9_]`), and is now refused before that rewrite,
+with a one-line `WORKSPACE: ...` refusal. The rewritten name could not have
+collided with a `$` scope, so the refusal is a policy choice, not a
+necessity.
 
-## 8. Known gaps
+**Decision: keep the refusal.** A name starting with `$` is reserved
+everywhere, the server included, so no layer silently serves a name the
+operator did not type, and the reservation reads the same in the SDK, the
+server and every backend override. The change must be stated in the
+release notes. The upgrade is a one-line change with no data movement: such
+a deployment already stored everything under the rewritten name, so it sets
+`WORKSPACE=_x` -- the name it was served under -- and starts as before.
+Reopening this needs a deployment that cannot make that change.
 
-Found when the implementation was audited against the plan. None of them
-loses data; each is either a misleading message, an undocumented residue, or
-missing test coverage. Fix them in this order.
+## 8. Audit findings and their resolution
 
-**Code**
+Auditing the implementation against the plan found the items below. None
+lost data; each was a misleading message, an undocumented residue or a
+missing test. They are kept here because each records a decision.
 
-1. **The bind lock fails open more widely than documented.** `anchor_lock.py`
-   fails open when the lock file cannot be opened (every platform) and on any
-   `flock` error other than `BlockingIOError`, not only where POSIX reports
-   locking unsupported. Narrow it to `ENOLCK`/`EOPNOTSUPP`-class errors, or
-   document the breadth in the module rules and the contract's *Locking*.
-2. **A lost no-clobber race reports "Nothing was overwritten".** With the
-   bind lock open, two database first starts can both write a new identity;
-   the loser has overwritten the winner's row and then reports that nothing
-   was overwritten, while the winner keeps serving under a UUID the container
-   no longer holds (its next start refuses with `uuid_mismatch`). Read the
-   winner's anchor in the `anchor_appeared` path and name what happened, and
-   list the residue in the contract.
-3. **The no-hard-link publish fallback can misreport.** It claims the name
-   with `O_EXCL` and then replaces the empty claim; if the replace fails, the
-   error says no anchor was published although an empty anchor file remains
-   (every reader refuses it as unreadable). Remove the claim on that failure,
-   or say that it remains.
-4. **The migration's final verification reads memory, not the file.** Before
-   the anchor switch, a JSON target is verified through the open storage's
-   shared dictionary after a strict flush. Registration already checks the
-   file on disk (`_metadata_on_disk`); the migration should re-read the
-   committed snapshots the same way.
-5. **The rebind warning omits staleness.** After a JSON-to-database
-   migration, retained JSON sources adopted by a later JSON rebind may be
-   stale; the contract says so, the WARNING does not.
+| # | finding | resolution |
+| --- | --- | --- |
+| 1 | the bind lock fails open more widely than its docs said (any non-contention `flock` error, an unopenable lock file) | kept: the rule is "identified contention is never bypassed", for the reason in 7; the module docstring and both contracts now state it, and tests pin contention, `ENOLCK` / `EOPNOTSUPP` / `EIO` and an unopenable lock file |
+| 2 | a database start losing the no-clobber anchor race reported "Nothing was overwritten" although its identity upsert may have replaced the winner's | the loser reads the winning anchor and the container's identity and reports the consistent or the split state with its recovery; listed as an accepted residue in the contract |
+| 3 | the no-hard-link publish fallback could leave an empty anchor while reporting that none was published | a failed replace removes the empty claim; if that fails too, the refusal says the empty file remains |
+| 4 | the migration verified a JSON target through shared memory before switching the anchor | `verify_layout` reads every committed snapshot from disk and compares it with what was flushed |
+| 5 | the rebind WARNING did not say retained migration sources may be stale | it does |
+| 6 | the deletion of a malformed row in an owned target was undocumented | documented in the contract and `README_MIGRATE_CONFIG.md` |
+| 7 | `env.example` promised a same-workspace refusal without the file-lock condition | qualified |
+| 8 | `/health` reported the derived directory as `config_dir`, the removed setting's name | renamed `config_snapshot_dir` (never released) |
+| 9-12 | acceptance cases covered only indirectly | each has a direct test: a start refused after registration leaves a rebuildable member; rebuild refuses other options; interrupted database-to-JSON convergence retries; mixed own/foreign target identities refuse; a damaged owned-target row converges; a wrong-owner JSON source refuses; a database bind ignores retained JSON snapshots; a lost member append heals through a rebind; an ambiguous member append is reported as it is |
 
-**Documentation**
-
-6. The contract's *Offline migration* and `README_MIGRATE_CONFIG.md` do not say
-   that a malformed row in an owned JSON target is deleted rather than
-   refused.
-7. `env.example` says a second server on the same workspace is refused,
-   without "where OS locks work".
-8. `/health` still reports a `config_dir` key, a name that suggests the
-   removed setting; it is the derived snapshot directory.
-
-**Tests** (acceptance cases covered only indirectly)
-
-9. A registered workspace whose start is refused at the baseline or probe
-   check, followed by an accepted rebuild.
-10. `lightrag-rebuild-vdb` refusing a flag other than `--workspace`.
-11. An interrupted database-to-JSON convergence retried against an unchanged
-    source with `JsonShardGroup` (the resume tests use generic containers),
-    and a JSON target holding both own and foreign UUIDs.
-12. A database bind ignoring retained JSON sources; a lost member append
-    healed end to end by a stopped-writer delete-and-rebind; an ambiguous
-    member-append publication; a JSON migration source with a wrong owner.
+**Still open (minor):** `anchor_lock.py` reimplements the Windows
+`msvcrt` locking loop instead of sharing `working_dir_lock.py`'s; the
+behaviour is the same, so unify them when either changes.
 
 ## 9. Changing the design
 
