@@ -572,8 +572,14 @@ async def bedrock_embed(
     aws_region: str | None = None,
     api_key: str | None = None,
     endpoint_url: str | None = None,
+    *,
+    embedding_dim: int | None = None,
 ) -> np.ndarray:
     """Generate embeddings with Amazon Bedrock Runtime.
+
+    ``embedding_dim`` requests an output dimension for Titan V2 only.
+    Titan V1 and Cohere keep their model-defined dimensions. The API server
+    forwards this option when ``EMBEDDING_SEND_DIM=true``.
 
     Authentication note:
     - Bedrock does not use LightRAG's generic ``api_key`` fields.
@@ -614,13 +620,13 @@ async def bedrock_embed(
                 for text in texts:
                     try:
                         if "v2" in model:
-                            body = json.dumps(
-                                {
-                                    "inputText": text,
-                                    # 'dimensions': embedding_dim,
-                                    "embeddingTypes": ["float"],
-                                }
-                            )
+                            request_body: dict[str, Any] = {
+                                "inputText": text,
+                                "embeddingTypes": ["float"],
+                            }
+                            if embedding_dim is not None:
+                                request_body["dimensions"] = embedding_dim
+                            body = json.dumps(request_body)
                         elif "v1" in model:
                             body = json.dumps({"inputText": text})
                         else:
