@@ -98,7 +98,14 @@ Changing the four storages does not move the configuration. That is why the wiza
    LIGHTRAG_CONFIG_STORAGE=PGKVStorage
    ```
 
-The tool resolves the anchor from the `WORKING_DIR` of the environment it runs in, so run it from the directory and with the `.env` the server uses. [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md) covers the other cases.
+**When LightRAG Server runs in Docker**, its working directory is `./data/rag_storage` on the host, and the host `.env` does not name it. Run the tool on the host, from the directory that holds `.env`, and point it at that directory:
+
+```bash
+WORKING_DIR=./data/rag_storage lightrag-migrate-config --target-backend PGKVStorage --dry-run
+WORKING_DIR=./data/rag_storage lightrag-migrate-config --target-backend PGKVStorage
+```
+
+Without the prefix the tool looks in `./rag_storage` and refuses with `No configuration storage anchor`. [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md) covers the other cases.
 
 **If you skip this step**, the server still runs: the wizard's `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` keeps the configuration in `WORKING_DIR`. That directory then has to be kept and backed up together with the database, and only one server per workspace can use it.
 
@@ -108,7 +115,7 @@ The tool resolves the anchor from the `WORKING_DIR` of the environment it runs i
 
 Switching storage does not move data. The cheapest way to carry over what you already indexed is to migrate the extraction cache and then upload the documents again:
 
-1. With PostgreSQL running (1.1) and the server still stopped, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary, multimodal-analysis and smart-heading caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
+1. With PostgreSQL running (1.1) and the server still stopped, run `python -m lightrag.tools.migrate_llm_cache` (with the same `WORKING_DIR=./data/rag_storage` prefix when the server runs in Docker). Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary, multimodal-analysis and smart-heading caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
 2. Start the server on PostgreSQL. The startup log lists the four `PG*` storages and `Configuration Storage: PGKVStorage`. The tables appear on first start, and the vector tables carry the embedding model and dimension in their name, for example `lightrag_vdb_chunks_text_embedding_3_large_3072d`.
 3. Upload the original files again. Extraction hits the migrated cache.
 

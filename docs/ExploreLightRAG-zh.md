@@ -98,7 +98,14 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
    LIGHTRAG_CONFIG_STORAGE=PGKVStorage
    ```
 
-工具根据运行环境里的 `WORKING_DIR` 找到锚点，所以请在服务使用的目录下、用服务使用的 `.env` 运行它。其他情况参见 [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md)。
+**如果 LightRAG Server 在 Docker 中运行**，它的工作目录在主机上是 `./data/rag_storage`，而主机上的 `.env` 里没有写这个路径。请在主机上、`.env` 所在的目录里运行工具，并指明这个目录：
+
+```bash
+WORKING_DIR=./data/rag_storage lightrag-migrate-config --target-backend PGKVStorage --dry-run
+WORKING_DIR=./data/rag_storage lightrag-migrate-config --target-backend PGKVStorage
+```
+
+不加这个前缀，工具会去 `./rag_storage` 里找，并以 `No configuration storage anchor` 拒绝执行。其他情况参见 [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md)。
 
 **如果跳过这一步**，服务仍然可以运行：向导写的 `LIGHTRAG_CONFIG_STORAGE=JsonKVStorage` 让配置继续留在 `WORKING_DIR` 里。这样就必须保留这个目录，并和数据库一起备份，而且每个工作区只能有一台服务使用它。
 
@@ -108,7 +115,7 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 
 切换存储不会搬运数据。把已经导入的内容带过来，最省钱的办法是先迁移抽取缓存，再把文档重新上传一遍：
 
-1. PostgreSQL 启动后（1.1），在服务仍然停止的状态下运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要、多模态分析和智能标题判定的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
+1. PostgreSQL 启动后（1.1），在服务仍然停止的状态下运行 `python -m lightrag.tools.migrate_llm_cache`（服务在 Docker 中运行时，同样加上 `WORKING_DIR=./data/rag_storage` 前缀）。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要、多模态分析和智能标题判定的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
 2. 启动服务，切换到 PostgreSQL。启动日志里会列出四个 `PG*` 存储和 `Configuration Storage: PGKVStorage`。数据表在第一次启动时创建，向量表的表名里带着嵌入模型和维度，例如 `lightrag_vdb_chunks_text_embedding_3_large_3072d`。
 3. 重新上传原始文件。实体抽取会命中迁移过来的缓存。
 
