@@ -579,7 +579,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
-default モードのキャッシュ（抽出・要約・マルチモーダル解析）を KV ストレージバックエンド間で移行し、workspace の分離を保ちます。
+default モードのキャッシュ（抽出・要約・マルチモーダル解析・スマート見出し判定）を KV ストレージバックエンド間で移行し、workspace の分離を保ちます。
 
 **`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
 

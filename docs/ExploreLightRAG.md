@@ -82,7 +82,7 @@ After restarting the server, the startup log lists the four `PG*` storages. The 
 
 Switching storage does not move data. The cheapest way to carry over what you already indexed is to migrate the extraction cache and then upload the documents again:
 
-1. With PostgreSQL running (1.1) and before restarting the server, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary and multimodal-analysis caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
+1. With PostgreSQL running (1.1) and before restarting the server, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary, multimodal-analysis and smart-heading caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
 2. Restart the server on PostgreSQL.
 3. Upload the original files again. Extraction hits the migrated cache.
 

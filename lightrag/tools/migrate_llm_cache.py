@@ -2,9 +2,9 @@
 """
 LLM Cache Migration Tool for LightRAG
 
-This tool migrates default-mode LLM response caches (extract, summary, and
-multimodal analysis) between different KV storage implementations while
-preserving workspace isolation.
+This tool migrates default-mode LLM response caches (extract, summary,
+multimodal analysis, and smart-heading judgments) between different KV storage
+implementations while preserving workspace isolation.
 
 Usage:
     python -m lightrag.tools.migrate_llm_cache
@@ -68,8 +68,16 @@ DEFAULT_BATCH_SIZE = 1000
 # Default count batch size for efficient counting
 DEFAULT_COUNT_BATCH_SIZE = 1000
 
-# Cache types produced in default mode and migrated by this tool.
-DEFAULT_CACHE_TYPES = ("extract", "summary", "analysis")
+# Cache types produced in default mode and migrated by this tool. This tuple is
+# the sole definition of "a default cache" (counts, streams and every backend
+# filter derive from it), so it must list every default-mode type the runtime
+# writes; a missing type is silently left behind in the source. Writers:
+# `extract`/`summary` in ``operate.py``, `analysis` in ``pipeline.py``,
+# `smartheading` in ``parser/native_base.py``. Never drop a type the runtime
+# stops writing: existing stores still hold its rows.
+# ``tests/tools/test_migrate_llm_cache_smartheading.py`` scans the package for
+# default-mode writers and fails when one names a type missing here.
+DEFAULT_CACHE_TYPES = ("extract", "summary", "analysis", "smartheading")
 DEFAULT_CACHE_PREFIXES = tuple(
     f"default:{cache_type}:" for cache_type in DEFAULT_CACHE_TYPES
 )
@@ -1174,9 +1182,9 @@ class MigrationTool:
                 counts = await self.count_cache_types(cache_data)
                 total_count = len(cache_data)
 
-                print(f"- default:extract: {counts['extract']:,} records")
-                print(f"- default:summary: {counts['summary']:,} records")
-                print(f"- default:analysis: {counts['analysis']:,} records")
+                # Iterate the tuple so a newly added type shows up here too.
+                for cache_type in DEFAULT_CACHE_TYPES:
+                    print(f"- default:{cache_type}: {counts[cache_type]:,} records")
                 print(f"- Total: {total_count:,} records")
         except Exception as e:
             print(f"✗ {'Counting' if use_streaming else 'Loading'} failed: {e}")

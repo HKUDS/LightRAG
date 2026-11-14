@@ -579,7 +579,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
-在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析），并保持 workspace 隔离。
+在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析、智能标题判定），并保持 workspace 隔离。
 
 **`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
 
