@@ -3201,6 +3201,40 @@ def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     assert unrelated_artifact_dir.is_dir()
 
 
+@pytest.mark.parametrize(
+    ("file_path", "numbered_copy"),
+    [
+        ("scan_001.pdf", "scan_001_001.pdf"),
+        ("export_1700000000.csv", "export_1700000000_001.csv"),
+    ],
+)
+def test_delete_file_variants_removes_archive_of_name_ending_in_archive_suffix(
+    tmp_path, file_path, numbered_copy
+):
+    # A document whose own name ends like an archive suffix keeps that name
+    # when it is first archived into __parsed__; delete_file must still find it.
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    archived = parsed_dir / file_path
+    archived.write_bytes(b"delete me")
+    (parsed_dir / numbered_copy).write_bytes(b"delete me")
+    unrelated = parsed_dir / "other_001.pdf"
+    unrelated.write_bytes(b"keep me")
+
+    deleted_files, errors = _document_routes.delete_file_variants_by_file_path(
+        tmp_path,
+        file_path,
+    )
+
+    assert errors == []
+    assert set(deleted_files) == {
+        str(Path(PARSED_DIR_NAME) / file_path),
+        str(Path(PARSED_DIR_NAME) / numbered_copy),
+    }
+    assert not archived.exists()
+    assert unrelated.exists()
+
+
 async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
     shared_storage = importlib.import_module("lightrag.kg.shared_storage")
     parsed_dir = tmp_path / PARSED_DIR_NAME

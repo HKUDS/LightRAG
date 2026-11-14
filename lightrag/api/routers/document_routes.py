@@ -2258,13 +2258,19 @@ def delete_file_variants_by_file_path(
         in_parsed_dir = candidate_dir.name == PARSED_DIR_NAME
         for candidate in candidates:
             if candidate.is_file():
-                if (
-                    canonicalize_archived_file_variant_basename(
-                        candidate.name,
-                        strip_archive_suffix=in_parsed_dir,
+                variant_names = {
+                    canonicalize_archived_file_variant_basename(candidate.name)
+                }
+                if in_parsed_dir:
+                    # An archived ``scan_001.pdf`` is either a numbered copy of
+                    # ``scan.pdf`` or the first archive of a document that is
+                    # itself named ``scan_001.pdf``; match both readings.
+                    variant_names.add(
+                        canonicalize_archived_file_variant_basename(
+                            candidate.name, strip_archive_suffix=True
+                        )
                     )
-                    not in canonical_names
-                ):
+                if variant_names.isdisjoint(canonical_names):
                     continue
 
                 safe_candidate = validate_file_path_security(
