@@ -17,7 +17,8 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -1241,24 +1242,42 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
 
     The result always ends with ``/`` so a reader can distinguish a directory
     from a file at the URI level. Non-ASCII characters are percent-encoded.
+    The writer uses the platform URI form, so a Windows drive path is stored
+    as ``file:///C:/...`` rather than with the drive letter in the authority.
     """
     p = Path(parsed_artifact_dir).resolve()
-    encoded = quote(str(p), safe="/")
-    return f"file://{encoded}/"
+    uri = p.as_uri()
+    return uri if uri.endswith("/") else uri + "/"
 
 
 def resolve_sidecar_uri(uri: str | None) -> Path | None:
     """Decode a sidecar URI into a local filesystem Path.
 
     Returns None for the unknown sentinel, empty input, or any non-``file://``
-    scheme (remote schemes will get their own resolvers).
+    scheme (remote schemes will get their own resolvers). The reader decodes
+    the path exactly once: the platform converter already percent-decodes,
+    so a second decode would corrupt names containing literal escape-like
+    text. A leading drive letter is recovered both from the canonical
+    ``file:///C:/...`` form and from URIs written by the previous writer,
+    which stored the whole drive path in the authority.
     """
     if not uri or uri == SIDECAR_LOCATION_UNKNOWN:
         return None
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    path_str = unquote(parts.path)
+    if parts.netloc:
+        host = url2pathname(parts.netloc)
+        if re.match(r"^[A-Za-z]:[\\/]", host):
+            return Path(host)
+    path_str = url2pathname(parts.path)
+    if (
+        len(path_str) >= 3
+        and path_str[0] == "/"
+        and path_str[1].isalpha()
+        and path_str[2] == ":"
+    ):
+        path_str = path_str[1:]
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
     return Path(path_str)
