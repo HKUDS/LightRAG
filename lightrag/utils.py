@@ -5955,8 +5955,41 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
+def remove_spaces_next_to_chinese(text: str, *, multiline: bool = False) -> str:
+    """Remove the spaces between Chinese characters, and between Chinese and
+    Latin text (letters, digits and ``()[]@#$%!&*-=+_``).
+
+    These are the space rules of :func:`normalize_extracted_info`, which runs
+    them itself. In free text (``multiline``) only horizontal whitespace is a
+    space, so a line break between two Chinese characters stays.
+    """
+    space = r"[^\S\n]+" if multiline else r"\s+"
+    # Use regex to remove spaces between Chinese characters
+    # Regex explanation:
+    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
+    # {space}: One or more whitespace characters
+    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
+    text = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", text)
+
+    # Remove spaces between Chinese and English/numbers/symbols
+    text = re.sub(
+        rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])",
+        "",
+        text,
+    )
+    return re.sub(
+        rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])",
+        "",
+        text,
+    )
+
+
 def sanitize_and_normalize_extracted_text(
-    input_text: str, remove_inner_quotes=False, *, multiline: bool = False
+    input_text: str,
+    remove_inner_quotes=False,
+    *,
+    multiline: bool = False,
+    final_space_pass: bool = True,
 ) -> str:
     """Sanitize and normalize extracted text
 
@@ -5970,6 +6003,7 @@ def sanitize_and_normalize_extracted_text(
         multiline: ``True`` for free text (descriptions), whose line breaks
             are kept; ``False`` (default) for single-line values such as
             names, types and keywords. See :func:`normalize_extracted_info`.
+        final_space_pass: see :func:`normalize_extracted_info`.
 
     Returns:
         Sanitized and normalized text string
@@ -5987,26 +6021,41 @@ def sanitize_and_normalize_extracted_text(
             safe_input_text,
             remove_inner_quotes=remove_inner_quotes,
             multiline=multiline,
+            final_space_pass=final_space_pass,
         )
         return normalized_text
     return ""
 
 
-def normalize_entity_name(input_text: str) -> str:
-    """Normalize an entity identifier using the extraction naming contract."""
-    return sanitize_and_normalize_extracted_text(input_text, remove_inner_quotes=True)
+def normalize_entity_name(input_text: str, *, final_space_pass: bool = True) -> str:
+    """Normalize an entity identifier using the extraction naming contract.
+
+    A caller that caps the identifier's length must pass
+    ``final_space_pass=False`` and run :func:`remove_spaces_next_to_chinese`
+    on the capped result, as the extraction parsers in ``lightrag.operate`` do
+    (see :func:`normalize_extracted_info`).
+    """
+    return sanitize_and_normalize_extracted_text(
+        input_text, remove_inner_quotes=True, final_space_pass=final_space_pass
+    )
 
 
 def normalize_extracted_info(
-    name: str, remove_inner_quotes=False, *, multiline: bool = False
+    name: str,
+    remove_inner_quotes=False,
+    *,
+    multiline: bool = False,
+    final_space_pass: bool = True,
 ) -> str:
     """Normalize entity/relation names and description with the following rules:
     - Paragraph and line break tags (``<p>``, ``</p>``, ``<br>``, ``<br/>``,
       ``<br />`` ...): removed in a single-line value, a line break when
       ``multiline`` is set
-    - multiline = False (names, types, keywords): as the last step, collapse
-      every run of spaces, tabs and line breaks (``\\n``, ``\\r``, U+0085,
-      U+2028, U+2029) into one space, so a value never carries a line break
+    - multiline = False (names, types, keywords): once the rules below have
+      rewritten the value, and before the numeric filters and the final space
+      pass, collapse every run of spaces, tabs and line breaks (``\\n``,
+      ``\\r``, U+0085, U+2028, U+2029) into one space, so a value never carries
+      a line break
     - multiline = True (descriptions): those line breaks, vertical tab and
       form feed become ``\\n``; spaces and tabs around a line break are
       dropped, and at most one blank line is kept in a row
@@ -6024,6 +6073,9 @@ def normalize_extracted_info(
         - Remove English quotation marks adjacent to Chinese characters
         - Convert non-breaking spaces to regular spaces
         - Convert narrow non-breaking spaces after non-digits to regular spaces
+        - Last, in a single-line value: remove the spaces this leaves between
+          Chinese characters and between Chinese and Latin text
+          (``Apple "苹果"`` gives ``Apple苹果``, as ``Apple 苹果`` does)
 
     Args:
         name: Entity name to normalize
@@ -6033,6 +6085,12 @@ def normalize_extracted_info(
             contains no corresponding quote characters.
         multiline: whether the value is free text whose line breaks are
             kept (descriptions) or a single-line value (the default).
+        final_space_pass: ``False`` leaves out the last rule above (the
+            second run of the space rules). A caller that cuts the value to a
+            length limit passes ``False`` and runs
+            :func:`remove_spaces_next_to_chinese` on the cut value: the pass
+            shortens a value, so running it before the cut lets two spellings
+            that used to be cut to the same key be cut to different ones.
 
     Returns:
         Normalized entity name
@@ -6084,31 +6142,17 @@ def normalize_extracted_info(
     # Free text: one spelling for every line break, no spaces around one, at
     # most one blank line in a row. Strip here, so the outer-quote removal
     # below still sees a quote a tag sat next to. Single-line values are
-    # collapsed at the very end instead, which keeps the merge-only rule.
+    # collapsed further down instead, after the quote and non-breaking space
+    # rules, which keeps the merge-only rule.
     if multiline:
         name = re.sub(r"\r\n?|[\v\f\x85\u2028\u2029]", "\n", name)
         name = re.sub(r"[ \t]*\n[ \t]*", "\n", name)
         name = re.sub(r"\n{3,}", "\n\n", name)
         name = name.strip()
 
-    # In free text only horizontal whitespace is a "space" to remove below: a
-    # line break between two Chinese characters is content and stays.
-    space = r"[^\S\n]+" if multiline else r"\s+"
-
-    # Use regex to remove spaces between Chinese characters
-    # Regex explanation:
-    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
-    # {space}: One or more whitespace characters
-    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
-    name = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", name)
-
-    # Remove spaces between Chinese and English/numbers/symbols
-    name = re.sub(
-        rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
-    )
-    name = re.sub(
-        rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])", "", name
-    )
+    # In free text only horizontal whitespace is a "space" to remove: a line
+    # break between two Chinese characters is content and stays.
+    name = remove_spaces_next_to_chinese(name, multiline=multiline)
 
     # Remove outer quotes
     if len(name) >= 2:
@@ -6140,22 +6184,26 @@ def normalize_extracted_info(
             if "《" not in inner_content and "》" not in inner_content:
                 name = inner_content
 
+    removed_inner_quotes = False
     if remove_inner_quotes:
+        before_quote_removal = name
         # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # Remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+        removed_inner_quotes = name != before_quote_removal
         # Convert non-breaking space to regular space
         name = name.replace("\u00a0", " ")
         # Convert narrow non-breaking space to regular space when after non-digits
         name = re.sub(r"(?<=[^\d])\u202F", " ", name)
 
     # Single-line value: collapse spaces, tabs and line breaks into one space.
-    # This runs last, after the non-breaking space conversions, so its result
+    # This runs after the non-breaking space conversions, so its result
     # is a function of what the previous rules produced: it only merges names,
-    # and a second pass finds no whitespace left to change. U+00A0 / U+202F
-    # are left to the rules above (a U+202F after a digit is kept on purpose).
+    # and running the collapse again finds no whitespace left to change.
+    # U+00A0 / U+202F are left to the rules above (a U+202F after a digit is
+    # kept on purpose).
     if not multiline:
         name = re.sub(r"[ \t\n\r\x85\u2028\u2029]+", " ", name)
 
@@ -6176,6 +6224,20 @@ def normalize_extracted_info(
     if len(name) < 6 and should_filter_by_dots(name):
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
+
+    # Removing the inner quotes can leave a space the rules above ran too early
+    # to see: 'Apple "苹果"' became "Apple 苹果", while "Apple 苹果" gives
+    # "Apple苹果". Run them once more on the final single-line result. This
+    # comes after everything else, so it is a function of the previous result
+    # and only merges names (see the merge-only rule in the docstring).
+    # Only a removed inner quote can expose such a space: the other rules
+    # either keep the characters on both sides of a space, or (the outer
+    # quotes) leave it at an edge for the strip. So the pass is skipped when
+    # no inner quote was removed, which gives the same result. A caller that
+    # cuts the value to a length limit runs the pass after the cut instead
+    # (final_space_pass=False), so the merge-only rule holds for the cut key.
+    if final_space_pass and removed_inner_quotes and not multiline:
+        name = remove_spaces_next_to_chinese(name)
 
     return name
 

@@ -6,10 +6,11 @@ documents bring their own line break characters. What they become depends on
 the field:
 
 - single-line values (entity names, relation endpoints, types, keywords): tags
-  are removed and every run of whitespace collapses into one space, as the last
-  step. A name is an entity's identity in the graph and a rebuild re-parses
-  cached LLM output with the current rules, so a rule change may only merge
-  names that used to differ, never split names that used to be equal (see
+  are removed and every run of whitespace collapses into one space, after the
+  rules that produce the value. A name is an entity's identity in the graph and
+  a rebuild re-parses cached LLM output with the current rules, so a rule
+  change may only merge names that used to differ, never split names that used
+  to be equal (see
   "Entity name normalization changes" in docs/design/PurgeRecoveryContract.md).
 - free text (descriptions, ``multiline=True``): tags and line break characters
   become a line break, so the two lines are not glued into one word.
