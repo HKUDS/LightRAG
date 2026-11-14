@@ -23,6 +23,7 @@ from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from ..utils import safe_log_value
 from lightrag.kg import deprecated_storage_message
+from lightrag.config_store import default_configuration_storage
 from .auth import auth_handler
 from .config import (
     ollama_server_infos,
@@ -822,9 +823,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.white("    ├─ Document Status Storage: ", end="")
     _print_storage_name(args.doc_status_storage)
     ASCIIColors.white("    ├─ Configuration Storage: ", end="")
-    ASCIIColors.yellow(
-        f"{getattr(args, 'config_storage', '') or f'(follows {args.kv_storage})'}"
-    )
+    ASCIIColors.yellow(_configuration_storage_label(args))
     ASCIIColors.white("    └─ Workspace: ", end="")
     ASCIIColors.yellow(f"{args.workspace if args.workspace else '-'}")
 
@@ -964,6 +963,21 @@ def _print_storage_name(storage_name: str) -> None:
         ASCIIColors.red(" (deprecated)")
     else:
         ASCIIColors.yellow(f"{storage_name}")
+
+
+def _configuration_storage_label(args) -> str:
+    """The configuration backend the server will open, as the splash names it.
+
+    An unset selection names the backend it resolves to, which is not always
+    ``kv_storage`` (Redis business KV keeps its configuration in JSON).
+    """
+    selected = (getattr(args, "config_storage", "") or "").strip()
+    if selected:
+        return selected
+    resolved = default_configuration_storage(args.kv_storage)
+    if resolved == args.kv_storage:
+        return f"(follows {args.kv_storage})"
+    return f"{resolved} (default for {args.kv_storage})"
 
 
 def _warn_about_deprecated_storages(args) -> None:

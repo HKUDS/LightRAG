@@ -446,6 +446,18 @@ def configuration_storage_implementations() -> tuple[str, ...]:
     return tuple(STORAGE_IMPLEMENTATIONS["CONFIG_STORAGE"]["implementations"])
 
 
+def default_configuration_storage(kv_storage: str) -> str:
+    """The backend an UNSET ``config_storage`` resolves to for ``kv_storage``.
+
+    The selection rule alone: it neither validates nor logs, so a display
+    (the startup banner) can name the backend without repeating the
+    warning. ``resolve_configuration_storage`` is what a start must call.
+    """
+    if kv_storage == "RedisKVStorage":
+        return "JsonKVStorage"
+    return kv_storage
+
+
 def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> str:
     """The configuration backend to use, refusing anything outside the four.
 
@@ -473,14 +485,14 @@ def resolve_configuration_storage(selected: str | None, *, kv_storage: str) -> s
                 f"independent of), and Redis is excluded."
             )
         return name
-    if kv_storage == "RedisKVStorage":
+    if default_configuration_storage(kv_storage) != kv_storage:
         logger.warning(
             "config_storage is unset with kv_storage=RedisKVStorage; using "
             "JsonKVStorage for configuration, kept beside each workspace's "
             "data under WORKING_DIR; persist WORKING_DIR. Set "
             "LIGHTRAG_CONFIG_STORAGE explicitly to select another backend."
         )
-        return "JsonKVStorage"
+        return default_configuration_storage(kv_storage)
     if kv_storage not in admitted:
         raise ValueError(
             f"config_storage is unset, so it would follow kv_storage="

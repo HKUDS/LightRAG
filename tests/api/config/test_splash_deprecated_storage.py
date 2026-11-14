@@ -65,3 +65,44 @@ def test_default_storages_are_not_flagged(monkeypatch):
 
     assert _BLOCK_MARKER not in output
     assert "(deprecated)" not in output
+
+
+def _configuration_storage_line(output: str) -> str:
+    lines = output.splitlines()
+    index = next(i for i, line in enumerate(lines) if "Configuration Storage" in line)
+    return lines[index + 1]
+
+
+@pytest.mark.parametrize(
+    ("kv_storage", "doc_status_storage", "expected"),
+    [
+        # Redis business KV keeps its configuration in JSON, so the banner
+        # must not claim the configuration follows Redis.
+        (
+            "RedisKVStorage",
+            "RedisDocStatusStorage",
+            "JsonKVStorage (default for RedisKVStorage)",
+        ),
+        ("PGKVStorage", "PGDocStatusStorage", "(follows PGKVStorage)"),
+    ],
+)
+def test_banner_names_the_configuration_backend_an_unset_selection_resolves_to(
+    monkeypatch, kv_storage, doc_status_storage, expected
+):
+    monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
+    output = _splash(
+        monkeypatch, kv_storage=kv_storage, doc_status_storage=doc_status_storage
+    )
+
+    assert _configuration_storage_line(output) == expected
+
+
+def test_banner_names_an_explicit_configuration_backend(monkeypatch):
+    monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "PGKVStorage")
+    output = _splash(
+        monkeypatch,
+        kv_storage="RedisKVStorage",
+        doc_status_storage="RedisDocStatusStorage",
+    )
+
+    assert _configuration_storage_line(output) == "PGKVStorage"
