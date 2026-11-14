@@ -89,11 +89,12 @@ def _para(*, style: str | None = None, num_id: str | None = None, ilvl=None):
     inner = []
     if style is not None:
         inner.append(f'<w:pStyle w:val="{style}"/>')
-    if num_id is not None:
+    if num_id is not None or ilvl is not None:
         numpr = []
         if ilvl is not None:
             numpr.append(f'<w:ilvl w:val="{ilvl}"/>')
-        numpr.append(f'<w:numId w:val="{num_id}"/>')
+        if num_id is not None:
+            numpr.append(f'<w:numId w:val="{num_id}"/>')
         inner.append(f"<w:numPr>{''.join(numpr)}</w:numPr>")
     return etree.fromstring(
         f'<w:p xmlns:w="{W}"><w:pPr>{"".join(inner)}</w:pPr>'
@@ -129,6 +130,22 @@ def test_e_explicit_direct_ilvl_zero_is_preserved() -> None:
     # Explicit direct ilvl=0 must NOT be treated as "missing" (the `x or None`
     # truthy trap): it renders level 0 ("1"), NOT the chain's level 3.
     assert _resolver().get_label(_para(style="H4alt", num_id="100", ilvl=0)) == "1"
+
+
+@pytest.mark.parametrize(
+    ("style", "ilvl", "expected"),
+    [("H4alt", 0, "1"), ("H1", 2, "1.1.1"), ("PS", 1, "1.1")],
+)
+def test_direct_ilvl_without_numid_overrides_inherited_level(
+    style, ilvl, expected
+) -> None:
+    # A paragraph may override only the list level and inherit numId from its
+    # style. The direct level also takes precedence over an abstract pStyle link.
+    assert _resolver().get_label(_para(style=style, ilvl=ilvl)) == expected
+
+
+def test_direct_ilvl_without_any_numid_does_not_create_numbering() -> None:
+    assert _resolver().get_label(_para(ilvl=2)) == ""
 
 
 def test_get_numbering_from_style_merges_numid_and_explicit_ilvl() -> None:
@@ -169,7 +186,8 @@ def test_ilvl_outside_ooxml_domain_is_rejected_not_looped() -> None:
 
 
 @pytest.mark.parametrize("ilvl", [-1, 9, 999999])
-def test_out_of_range_ilvl_values_are_rejected(ilvl) -> None:
+@pytest.mark.parametrize("num_id", ["100", None])
+def test_out_of_range_ilvl_values_are_rejected(ilvl, num_id) -> None:
     r = _resolver()
     r.abstract_nums["10"][ilvl] = {
         "start": 1,
@@ -177,7 +195,7 @@ def test_out_of_range_ilvl_values_are_rejected(ilvl) -> None:
         "lvlText": "%1.",
         "isLgl": False,
     }
-    assert r.get_label(_para(num_id="100", ilvl=ilvl)) == ""
+    assert r.get_label(_para(style="H1", num_id=num_id, ilvl=ilvl)) == ""
 
 
 def test_boundary_ilvl_eight_still_renders() -> None:
