@@ -830,3 +830,157 @@ async def test_empty_and_named_default_workspaces_round_trip_without_key_aliases
         assert set(rows) == {IDENTITY_KEY, OWNER_KEY} | {
             f"{prefix}/embedding/{target}" for target in cs.EMBEDDING_TARGETS
         }
+
+
+# ---------------------------------------------------------------------------
+# Database -> JSON: interrupted convergence, mixed identities, damaged rows
+# ---------------------------------------------------------------------------
+
+
+async def _retained_group(tmp_path):
+    """A JSON group migrated to a database: the JSON snapshots stay behind
+    as the retained source and carry the same UUID."""
+    await _start_and_stop(tmp_path, "teamalpha")
+    await _start_and_stop(tmp_path, "teambeta")
+    database = Database()
+    await _migrate(
+        tmp_path, source="json", target=database, target_backend="PGKVStorage"
+    )
+    return database, ca.read_anchor(str(tmp_path)).storage_uuid
+
+
+async def test_an_interrupted_convergence_retries_against_the_unchanged_source(
+    tmp_path, monkeypatch
+):
+    """The copy deletes and flushes stale target rows before upserting, so an
+    interruption between the two leaves partly emptied snapshots. The anchor
+    has not moved, the database is untouched, and the retry converges every
+    snapshot to the current source."""
+    from lightrag.exceptions import ConfigurationStorageError
+
+    database, storage_uuid = await _retained_group(tmp_path)
+    for key in [
+        k for k, r in database.rows.items() if r.get("workspace") == "teambeta"
+    ]:
+        del database.rows[key]
+    changed = cs.embedding_baseline_key("teamalpha", "chunks")
+    database.rows[changed] = _baseline_row("teamalpha", "chunks")
+    source_before = copy.deepcopy(database.rows)
+
+    real_upsert = mc.JsonShardGroup.upsert
+    interrupted = []
+
+    async def _interrupt_once(self, data):
+        if not interrupted:
+            interrupted.append(True)
+            raise ConfigurationStorageError("simulated interruption mid-copy")
+        return await real_upsert(self, data)
+
+    monkeypatch.setattr(mc.JsonShardGroup, "upsert", _interrupt_once)
+    with pytest.raises((ConfigurationStorageError, mc.MigrationFailed)):
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert interrupted
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+    assert database.rows == source_before
+    # The stale rows were deleted before the interrupted upsert.
+    alpha = json.loads(Path(json_config_path(str(tmp_path), "teamalpha")).read_text())
+    assert changed not in alpha
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+
+    assert result.switched
+    assert database.rows == source_before
+    assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+        "JsonKVStorage", storage_uuid, members=("teamalpha", "teambeta")
+    )
+    alpha = json.loads(Path(json_config_path(str(tmp_path), "teamalpha")).read_text())
+    assert alpha[changed]["value"] == database.rows[changed]["value"]
+    beta = json.loads(Path(json_config_path(str(tmp_path), "teambeta")).read_text())
+    assert set(beta) == {IDENTITY_KEY, OWNER_KEY}
+
+
+async def test_a_target_mixing_own_and_foreign_snapshots_refuses_before_any_write(
+    tmp_path,
+):
+    """One retained snapshot carries this identity, another a foreign one:
+    the target is neither this migration's nor empty. Refused before any
+    claim of a new snapshot or any write."""
+    database, _ = await _retained_group(tmp_path)
+    foreign = tmp_path.parent / f"{tmp_path.name}-foreign"
+    await _start_and_stop(foreign, "teamgamma")
+    (tmp_path / "teamgamma").mkdir()
+    Path(json_config_path(str(tmp_path), "teamgamma")).write_bytes(
+        Path(json_config_path(str(foreign), "teamgamma")).read_bytes()
+    )
+    database.rows[cs.embedding_baseline_key("teamdelta", "entities")] = _baseline_row(
+        "teamdelta"
+    )
+    before = {
+        ws: Path(json_config_path(str(tmp_path), ws)).read_bytes()
+        for ws in ("teamalpha", "teambeta", "teamgamma")
+    }
+
+    with pytest.raises((mc.MigrationRefused, cs.ConfigurationIdentityError)) as info:
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert "identit" in str(info.value)
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+    for ws, data in before.items():
+        assert Path(json_config_path(str(tmp_path), ws)).read_bytes() == data
+    assert not (tmp_path / "teamdelta").exists()
+
+
+@pytest.mark.parametrize("in_source", [True, False], ids=["replaced", "removed"])
+async def test_a_damaged_row_in_an_owned_target_is_converged_not_refused(
+    tmp_path, in_source
+):
+    """A retained snapshot of this identity whose registered row has damaged
+    content: snapshot validation judges keys and owners, so the row reaches
+    the copy, which replaces it with the source's row or deletes it -- the
+    target is this migration's residue and the source is authoritative."""
+    database, _ = await _retained_group(tmp_path)
+    key = cs.embedding_baseline_key("teamalpha", "entities")
+    if not in_source:
+        del database.rows[key]
+    path = Path(json_config_path(str(tmp_path), "teamalpha"))
+    snapshot = json.loads(path.read_text())
+    snapshot[key]["value"] = "damaged"
+    path.write_text(json.dumps(snapshot))
+
+    result = await _migrate(
+        tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+    )
+
+    assert result.switched
+    alpha = json.loads(path.read_text())
+    if in_source:
+        assert alpha[key]["value"] == database.rows[key]["value"]
+    else:
+        assert key not in alpha
+
+
+async def test_a_json_source_snapshot_with_a_wrong_owner_refuses_before_any_write(
+    tmp_path,
+):
+    """A member's snapshot whose owner row names another workspace (a copied
+    file) is not that member's configuration: refused before the target is
+    written."""
+    await _start_and_stop(tmp_path, "teamalpha")
+    await _start_and_stop(tmp_path, "teambeta")
+    path = Path(json_config_path(str(tmp_path), "teambeta"))
+    snapshot = json.loads(path.read_text())
+    snapshot[OWNER_KEY]["value"] = {"workspace": "teamalpha"}
+    path.write_text(json.dumps(snapshot))
+    target = Database()
+
+    with pytest.raises(mc.MigrationRefused, match="owned by workspace 'teamalpha'"):
+        await _migrate(
+            tmp_path, source="json", target=target, target_backend="PGKVStorage"
+        )
+    assert target.writes == 0
+    assert ca.read_anchor(str(tmp_path)).backend == "JsonKVStorage"

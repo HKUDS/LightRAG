@@ -382,6 +382,26 @@ class TestUnanchoredStarts:
         assert excinfo.value.cause == ca.IDENTITY_ANCHOR_APPEARED
         assert real_read(str(tmp_path)).storage_uuid == UUID_B
 
+    async def test_a_database_bind_ignores_retained_json_snapshots(self, tmp_path):
+        """JSON snapshots left under WORKING_DIR (the retained source of a
+        JSON-to-database migration, here with a foreign identity) are not
+        scanned by a database candidate: it binds the selected container."""
+        retained = ca.new_storage_uuid()
+        (tmp_path / "teamalpha").mkdir()
+        (tmp_path / "teamalpha" / "kv_workspace_config.json").write_text(
+            json.dumps(
+                cs.json_shard_metadata_rows("teamalpha", retained, updated_by="test")
+            )
+        )
+        config = FakeConfigKV({IDENTITY_KEY: _identity_row(UUID_A)})
+
+        binding = await _bind(config, tmp_path)
+
+        assert binding == cs.IdentityBinding(storage_uuid=UUID_A, action="adopted")
+        assert ca.read_anchor(str(tmp_path)) == ca.StorageAnchor(
+            backend="PGKVStorage", storage_uuid=UUID_A
+        )
+
     def _lose_the_anchor_race(self, monkeypatch, winner_uuid):
         """Another process publishes its anchor just before this start does:
         what a fail-open bind lock lets happen."""

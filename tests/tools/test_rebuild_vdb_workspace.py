@@ -39,6 +39,26 @@ def test_cli_passes_exact_workspace(monkeypatch, argv, expected):
 
 
 @pytest.mark.parametrize(
+    "argv",
+    [["--embedding-binding", "ollama"], ["--working-dir", "/elsewhere"], ["extra"]],
+    ids=["embedding-binding", "working-dir", "positional"],
+)
+def test_cli_refuses_every_option_but_workspace(monkeypatch, capsys, argv):
+    """Configuration comes from .env / the environment only: a server flag
+    would reach the embedding factory's parser and could select one
+    embedding configuration while the environment selects another."""
+
+    def unexpected(**kwargs):
+        pytest.fail("a refused flag must fail before loading the environment")
+
+    monkeypatch.setattr(rb, "load_dotenv", unexpected)
+    with pytest.raises(SystemExit) as error:
+        rb.main(argv)
+    assert error.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     "workspace, reason",
     [
         ("../other", "path separators"),

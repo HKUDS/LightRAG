@@ -905,6 +905,40 @@ class TestToolVerification:
         assert info.value.cause == ca.IDENTITY_MEMBER_UNREGISTERED
         assert ca.read_anchor(str(tmp_path)) is None
 
+    async def test_a_start_refused_after_registration_leaves_a_rebuildable_member(
+        self, tmp_path, monkeypatch
+    ):
+        """Registration runs before the embedding checks. A first start that
+        registers and is then refused by a baseline mismatch still leaves a
+        registered member, so ``lightrag-rebuild-vdb`` -- the way out of
+        that refusal -- is not met with the first-start advice."""
+        from lightrag import lightrag as lightrag_module
+        from lightrag.exceptions import EmbeddingBaselineMismatchError
+
+        def _mismatch(*args, **kwargs):
+            raise EmbeddingBaselineMismatchError(
+                workspace="teamalpha",
+                mismatches=[
+                    {
+                        "target": "entities",
+                        "recorded_model": "old-model",
+                        "recorded_dim": _DIM,
+                        "expected_model": "bge-m3",
+                        "expected_dim": _DIM,
+                    }
+                ],
+            )
+
+        monkeypatch.setattr(lightrag_module, "precheck_embedding_baselines", _mismatch)
+        rag = _rag(tmp_path, "teamalpha")
+        with pytest.raises(EmbeddingBaselineMismatchError):
+            await rag.initialize_storages()
+        await rag.finalize_storages()
+
+        assert _anchor(tmp_path).members == ("teamalpha",)
+        binding = await self._verify(tmp_path, "teamalpha")
+        assert binding.action == "verified"
+
     async def test_a_registered_member_verifies(self, tmp_path):
         await _start_and_stop(tmp_path, "teamalpha")
         binding = await self._verify(tmp_path, "teamalpha")
@@ -1097,3 +1131,97 @@ async def test_a_bind_lock_file_that_cannot_be_opened_fails_open(
     assert any(
         "binding without it" in record.getMessage() for record in lightrag_log_records
     )
+
+
+# ---------------------------------------------------------------------------
+# Recovery paths, followed end to end
+# ---------------------------------------------------------------------------
+
+
+async def test_a_lost_member_append_heals_through_a_stopped_writer_rebind(tmp_path):
+    """Where the bind lock fails open, two appends can lose a member. That
+    workspace's next start refuses its unregistered snapshot (it holds rows);
+    the documented recovery -- stop every instance, delete the anchor, start
+    again -- rebuilds the member list from the surviving snapshots without
+    rewriting any of them."""
+    await _start_and_stop(tmp_path, "teamalpha")
+    await _start_and_stop(tmp_path, "teambeta")
+    group = _anchor(tmp_path)
+    ca.publish_anchor(
+        str(tmp_path),
+        ca.StorageAnchor("JsonKVStorage", group.storage_uuid, members=("teamalpha",)),
+        replace=True,
+    )
+    beta = Path(json_config_path(str(tmp_path), "teambeta")).read_bytes()
+
+    with pytest.raises(ConfigurationIdentityError) as info:
+        await _bind(tmp_path, "teambeta")
+    assert info.value.cause == ca.IDENTITY_SHARD_INVALID
+    assert "delete" in str(info.value)
+
+    (tmp_path / "config_storage_anchor.json").unlink()
+    await _start_and_stop(tmp_path, "teambeta")
+
+    assert _anchor(tmp_path) == group
+    assert Path(json_config_path(str(tmp_path), "teambeta")).read_bytes() == beta
+
+
+class TestAmbiguousMemberAppend:
+    """The member append replaces the anchor; when that reports a failure the
+    anchor is read back and the outcome stated as it is: committed,
+    unchanged, or unknown -- never a false rollback."""
+
+    async def _register_with(self, tmp_path, monkeypatch, *, lands, readable):
+        await _bind(tmp_path, "teamalpha")
+        real_publish = cs.publish_anchor
+        real_read = cs.read_anchor
+        failed = []
+
+        def _publish(working_dir, anchor, *, replace):
+            if replace and not failed:
+                failed.append(True)
+                if lands:
+                    real_publish(working_dir, anchor, replace=True)
+                raise ConfigurationIdentityError(
+                    "simulated publish failure",
+                    cause=ca.IDENTITY_ANCHOR_WRITE_FAILED,
+                )
+            return real_publish(working_dir, anchor, replace=replace)
+
+        def _read(working_dir):
+            if failed and not readable:
+                raise ConfigurationIdentityError(
+                    "simulated unreadable anchor", cause=ca.IDENTITY_ANCHOR_UNREADABLE
+                )
+            return real_read(working_dir)
+
+        monkeypatch.setattr(cs, "publish_anchor", _publish)
+        monkeypatch.setattr(cs, "read_anchor", _read)
+        return await _bind(tmp_path, "teambeta")
+
+    async def test_a_landed_append_is_reported_as_registered(
+        self, tmp_path, monkeypatch, lightrag_log_records
+    ):
+        binding = await self._register_with(
+            tmp_path, monkeypatch, lands=True, readable=True
+        )
+        assert binding.action == "registered"
+        assert _anchor(tmp_path).members == ("teamalpha", "teambeta")
+        assert any(
+            "could not be fsynced" in record.getMessage()
+            for record in lightrag_log_records
+        )
+
+    async def test_an_append_that_did_not_land_refuses_and_changes_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        with pytest.raises(ConfigurationIdentityError, match="simulated publish"):
+            await self._register_with(tmp_path, monkeypatch, lands=False, readable=True)
+        assert _anchor(tmp_path).members == ("teamalpha",)
+
+    async def test_an_unreadable_read_back_is_reported_as_unknown(
+        self, tmp_path, monkeypatch
+    ):
+        with pytest.raises(ConfigurationIdentityError) as info:
+            await self._register_with(tmp_path, monkeypatch, lands=True, readable=False)
+        assert "may or may not have landed" in str(info.value)
