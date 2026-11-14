@@ -1,2 +1,8 @@
 lightrag/api/webui/** binary
 lightrag/api/webui/** linguist-generated
+
+# Parser baselines are compared byte-for-byte, so checkout must never rewrite
+# them: with core.autocrlf=true (the Git for Windows default) their LF text
+# would turn into CRLF and stop matching the LF bytes the parser writes.
+# "-text" rather than "eol=lf": the directory also holds .docx/.png binaries.
+tests/parser/docx/golden/** -text

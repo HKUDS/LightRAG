@@ -121,6 +121,52 @@ async def test_full_docs_kv_is_guarded_too(fake):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_factory", [_doc_status_storage, _kv_storage])
+@pytest.mark.parametrize("retry_factory", [_doc_status_storage, _kv_storage])
+async def test_rejected_policy_still_refuses_later_storages(
+    fake, monkeypatch, first_factory, retry_factory
+):
+    """A failed startup must not let later instances bypass the same policy."""
+    monkeypatch.delenv("REDIS_ALLOW_EVICTION_POLICY", raising=False)
+    fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
+
+    with pytest.raises(StorageControlPlaneError, match="evicting cache"):
+        await first_factory().initialize()
+
+    retry = retry_factory(workspace="retry-ws")
+    try:
+        with pytest.raises(StorageControlPlaneError, match="evicting cache"):
+            await retry.initialize()
+    finally:
+        await retry.finalize()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_eviction", [False, True])
+async def test_rejected_policy_can_recover_on_later_startup(
+    fake, monkeypatch, caplog, allow_eviction
+):
+    monkeypatch.delenv("REDIS_ALLOW_EVICTION_POLICY", raising=False)
+    fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
+    with pytest.raises(StorageControlPlaneError, match="evicting cache"):
+        await _doc_status_storage().initialize()
+
+    if allow_eviction:
+        monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", "true")
+    else:
+        fake.config_values["maxmemory-policy"] = "noeviction"
+
+    retry = _kv_storage()
+    try:
+        with capture_lightrag_logs(caplog):
+            await retry.initialize()
+        if allow_eviction:
+            assert "configured to EVICT" in caplog.text
+    finally:
+        await retry.finalize()
+
+
+@pytest.mark.asyncio
 async def test_allkeys_policy_without_a_memory_cap_is_safe(fake):
     """maxmemory=0 means no limit, so the policy never fires."""
     fake.config_values = {"maxmemory": "0", "maxmemory-policy": "allkeys-lru"}

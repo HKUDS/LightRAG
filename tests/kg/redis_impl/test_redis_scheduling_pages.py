@@ -101,6 +101,20 @@ async def _bootstrap(storage):
     await storage._rebuild_scheduling_sidecar()
 
 
+@pytest.mark.asyncio
+async def test_deleting_moves_status_index_and_remains_filterable(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("processed")})
+    await storage.update_doc_status_fields("doc-1", {"status": DocStatus.DELETING})
+    assert await storage.count_docs_by_statuses([DocStatus.PROCESSED]) == 0
+    assert await storage.count_docs_by_statuses([DocStatus.DELETING]) == 1
+    page = await storage.get_docs_by_statuses_page([DocStatus.DELETING], limit=10)
+    assert set(page.docs) == {"doc-1"}
+    assert page.docs["doc-1"].status == DocStatus.DELETING
+    counts = await storage.get_all_status_counts()
+    assert counts["deleting"] == 1
+
+
 async def _sweep_ids(storage, statuses, *, limit):
     ids: list[str] = []
     pages = 0

@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends
 from lightrag.base import QueryParam
 from lightrag.api.input_limits import count_conversation_input_chars
-from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
+from lightrag.api.utils_api import (
+    get_combined_auth_dependency,
+    internal_server_error,
+    stream_error_message,
+)
 from lightrag.constants import (
     MAX_KEYWORD_CHARS,
     MAX_KEYWORDS_PER_LIST,
@@ -711,8 +715,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             if chunk:
                                 yield f"{json.dumps({'response': chunk})}\n"
                     except Exception as e:
-                        logger.error(f"Streaming error: {str(e)}")
-                        yield f"{json.dumps({'error': str(e)})}\n"
+                        message = stream_error_message(e, "Streaming error")
+                        yield f"{json.dumps({'error': message})}\n"
             else:
                 # Non-streaming: complete response in one message
                 response_content = llm_response.get("content", "")
@@ -1052,11 +1056,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         try:
                             result = await query_task
                         except Exception as e:
-                            logger.error(
-                                f"Error in progress-enabled streaming query: {str(e)}",
-                                exc_info=True,
+                            message = stream_error_message(
+                                e, "Error in progress-enabled streaming query"
                             )
-                            yield f"{json.dumps({'error': str(e)})}\n"
+                            yield f"{json.dumps({'error': message})}\n"
                             return
 
                         # Yield references + LLM response chunks + response_time.

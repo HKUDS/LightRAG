@@ -1327,6 +1327,7 @@ class DocStatus(str, Enum):
     PREPROCESSED = "preprocessed"  # Deprecated: use ANALYZING in new pipeline
     PROCESSED = "processed"
     FAILED = "failed"
+    DELETING = "deleting"  # User-driven deletion recovery; never ingestion work.
 
 
 @dataclass

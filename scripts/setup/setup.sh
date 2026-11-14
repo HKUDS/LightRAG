@@ -2179,6 +2179,23 @@ collect_ssl_config() {
   SSL_KEY_SOURCE_PATH="$key"
 }
 
+# The WHITELIST_PATHS the server applies: the configured value when set, else
+# the server default, which follows LIGHTRAG_API_KEY (see
+# lightrag/api/config.py default_whitelist_paths).
+effective_whitelist_paths() {
+  local whitelist_is_set="$1"
+  local whitelist_paths="$2"
+  local api_key="$3"
+
+  if [[ "$whitelist_is_set" == "yes" ]]; then
+    printf '%s' "$whitelist_paths"
+  elif [[ -n "$api_key" ]]; then
+    printf '%s' "/health"
+  else
+    printf '%s' "/health,/api/*"
+  fi
+}
+
 collect_security_config() {
   local required="${1:-no}"
   local default_yes="${2:-no}"
@@ -3210,23 +3227,17 @@ security_check_env_file() {
       findings=$((findings + 1))
     fi
 
-    effective_whitelist="$whitelist_paths"
-    if [[ "$whitelist_is_set" != "yes" ]]; then
-      effective_whitelist="/health,/api/*"
-    fi
+    effective_whitelist="$(effective_whitelist_paths "$whitelist_is_set" "$whitelist_paths" "$api_key")"
     if whitelist_exposes_api_routes "$effective_whitelist"; then
       report_security_issue \
         "WHITELIST_PATHS exposes /api routes while AUTH_ACCOUNTS is enabled." \
-        "Use a minimal whitelist such as /health,/docs and keep /api routes authenticated."
+        "Set LIGHTRAG_API_KEY and keep /api out of WHITELIST_PATHS (unset it, or use /health,/docs): Ollama clients cannot log in, so the API key is what protects the /api routes."
       findings=$((findings + 1))
     fi
   fi
 
   if [[ -z "$auth_accounts" && -n "$api_key" ]]; then
-    effective_whitelist="$whitelist_paths"
-    if [[ "$whitelist_is_set" != "yes" ]]; then
-      effective_whitelist="/health,/api/*"
-    fi
+    effective_whitelist="$(effective_whitelist_paths "$whitelist_is_set" "$whitelist_paths" "$api_key")"
     if whitelist_exposes_api_routes "$effective_whitelist"; then
       report_security_issue \
         "WHITELIST_PATHS exposes /api routes while LIGHTRAG_API_KEY is the only active auth mechanism." \

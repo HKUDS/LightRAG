@@ -4,6 +4,7 @@ Utility functions for the LightRAG API.
 
 import os
 import argparse
+import hmac
 from collections import OrderedDict
 from typing import Any, Mapping, Optional, List, Tuple
 import sys
@@ -74,6 +75,37 @@ def internal_server_error(exc: Exception) -> HTTPException:
         status_code=500,
         detail=f"{_INTERNAL_SERVER_ERROR_MESSAGE} (error_id: {error_id})",
     )
+
+
+def stream_error_message(exc: BaseException, context: str) -> str:
+    """Log a mid-stream failure and return a client-safe message for it (CWE-209).
+
+    The streaming counterpart of :func:`internal_server_error`. Once a
+    ``StreamingResponse`` has started, a failure can no longer become an HTTP
+    500, so the generator reports it inline in the stream body instead. That
+    inline text must never be ``str(exc)``: provider exceptions routinely carry
+    endpoint URLs, deployment names and other upstream detail, and some streaming
+    routes are unauthenticated by default (``/api/*`` is whitelisted while no
+    ``LIGHTRAG_API_KEY`` is set).
+
+    This logs ``context``, the exception text and its traceback together with a
+    fresh correlation id, then returns only a generic message plus that id, in
+    the same ``(error_id: ...)`` spelling as the HTTP 500 body. Callers need not
+    log the exception themselves; doing so would only split the detail from the
+    id across two lines.
+
+    Usage::
+
+        except Exception as e:
+            message = stream_error_message(e, "Streaming query failed")
+            yield f"{json.dumps({'error': message})}\n"
+    """
+    error_id = new_error_id()
+    logger.error(
+        f"{context} [error_id={error_id}] ({type(exc).__name__}): {exc}",
+        exc_info=exc,
+    )
+    return f"{_INTERNAL_SERVER_ERROR_MESSAGE} (error_id: {error_id})"
 
 
 # ========== Token Renewal Rate Limiting ==========
@@ -350,6 +382,18 @@ def path_is_whitelisted(scope: Mapping[str, Any], *, mount_prefix: str = "") -> 
     return False
 
 
+def api_key_matches(presented: Optional[str], api_key: Optional[str]) -> bool:
+    """Whether ``presented`` is the configured API key.
+
+    False when either side is empty, so an unset key can never be matched by an
+    empty header. The comparison is constant-time: a plain ``==`` returns as soon
+    as the first byte differs, which leaks how much of a guess was right.
+    """
+    if not presented or not api_key:
+        return False
+    return hmac.compare_digest(presented.encode("utf-8"), api_key.encode("utf-8"))
+
+
 def credentials_accepted(
     *,
     token: Optional[str],
@@ -377,7 +421,7 @@ def credentials_accepted(
     api_key_configured = bool(api_key)
     if not auth_configured and not api_key_configured:
         return True
-    if api_key_configured and api_key_header_value and api_key_header_value == api_key:
+    if api_key_configured and api_key_matches(api_key_header_value, api_key):
         return True
     if token:
         try:
@@ -390,7 +434,10 @@ def credentials_accepted(
 
 
 def get_combined_auth_dependency(
-    api_key: Optional[str] = None, *, respect_whitelist: bool = True
+    api_key: Optional[str] = None,
+    *,
+    respect_whitelist: bool = True,
+    accept_bearer_api_key: bool = False,
 ):
     """
     Create a combined authentication dependency that implements authentication logic
@@ -403,6 +450,14 @@ def get_combined_auth_dependency(
             purpose is to report credential validity: a deployment whose
             whitelist happens to cover it (e.g. ``/auth/*``) must not turn it
             into an unconditional 200 while the protected routes still reject.
+        accept_bearer_api_key: When True, ``Authorization: Bearer <api_key>``
+            authenticates exactly like ``X-API-Key: <api_key>``. Only for the
+            Ollama-compatible routes: Ollama clients can carry nothing but a
+            static key, and they send it as a bearer token, never as
+            ``X-API-Key``. A bearer value that is not the key is still validated
+            as a JWT, so a logged-in caller keeps working there too. Leave it
+            False everywhere else, so the rest of the API keeps one way to
+            present the key.
 
     Returns:
         Callable: A dependency function that implements the authentication logic
@@ -440,6 +495,12 @@ def get_combined_auth_dependency(
         path = get_route_path(request.scope)
         if respect_whitelist and path_is_whitelisted(request.scope):
             return  # Whitelist path, allow access
+
+        # 1b. The API key sent as a bearer token, the only form Ollama clients
+        # can send. Checked before step 2, which would reject it as a malformed
+        # JWT. Nothing to renew: no token was issued for it.
+        if accept_bearer_api_key and api_key_matches(token, api_key):
+            return
 
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
         # Kept in scope for step 4: in API-key-only mode a valid guest token
@@ -486,6 +547,14 @@ def get_combined_auth_dependency(
             except HTTPException as e:
                 # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
+                    if accept_bearer_api_key and api_key_configured:
+                        # An Ollama client's bearer value is meant as the API
+                        # key: "login again" would point it at a flow it cannot
+                        # use.
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid API key or token.",
+                        ) from e
                     raise
                 # For other exceptions, continue processing
 
@@ -494,11 +563,7 @@ def get_combined_auth_dependency(
             return
 
         # 4. Validate API key if provided and API-Key authentication is configured
-        if (
-            api_key_configured
-            and api_key_header_value
-            and api_key_header_value == api_key
-        ):
+        if api_key_configured and api_key_matches(api_key_header_value, api_key):
             # The API key authenticated this request. If the caller ALSO presented
             # a valid token, renew it here. The WebUI sends Authorization and
             # X-API-Key together, and in API-key-only mode its guest token
@@ -512,6 +577,21 @@ def get_combined_auth_dependency(
             return  # API key validation successful
 
         ### Authentication failed ####
+
+        # An Ollama client that sent nothing: name the credential it can send.
+        if (
+            accept_bearer_api_key
+            and api_key_configured
+            and not token
+            and not api_key_header_value
+        ):
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail=(
+                    "API Key required. Send it as 'Authorization: Bearer <key>' "
+                    "or as the X-API-Key header."
+                ),
+            )
 
         # if password authentication is configured but not provided, ensure 401 error if auth_configured
         if auth_configured and not token:
@@ -825,10 +905,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     """)
 
     # When authentication IS configured but the server is reachable from a
-    # network, warn that the default whitelist still exempts the
-    # Ollama-compatible /api/* routes (kept open for Ollama-client compatibility).
-    # Those routes invoke the LLM and read the knowledge base, so they stay
-    # public unless the operator narrows WHITELIST_PATHS (e.g. to /health).
+    # network, warn that WHITELIST_PATHS still exempts the Ollama-compatible
+    # /api/* routes. Those routes invoke the LLM and read the knowledge base.
+    # With the default whitelist this happens only under AUTH_ACCOUNTS without
+    # LIGHTRAG_API_KEY (see config.default_whitelist_paths), and the remedy is
+    # the key, because an Ollama client cannot log in; with a key it means the
+    # operator listed /api explicitly.
     #
     # A configured LIGHTRAG_API_PREFIX counts as reachable regardless of the bind
     # address: the prefix exists to be served behind a reverse proxy, so the
@@ -847,12 +929,19 @@ def display_splash_screen(args: argparse.Namespace) -> None:
                 if behind_proxy
                 else f"on '{args.host}'"
             )
+            if args.key:
+                remedy = """If you do not need
+    open Ollama access, remove /api from WHITELIST_PATHS (or unset it): the
+    routes then require LIGHTRAG_API_KEY."""
+            else:
+                remedy = """To protect them, set
+    LIGHTRAG_API_KEY: unless WHITELIST_PATHS lists /api explicitly, the routes
+    then require it, and Ollama clients send it as 'Authorization: Bearer'."""
             ASCIIColors.yellow("\n⚠️  Security Warning:")
             ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
     /api/* routes (/api/chat, /api/generate, ...) from authentication, so they
     remain publicly accessible {where} even though auth is enabled.
-    These routes invoke the LLM and read your knowledge base. If you do not need
-    open Ollama access, set WHITELIST_PATHS=/health to require authentication.
+    These routes invoke the LLM and read your knowledge base. {remedy}
     """)
 
     _warn_about_body_limits(args)

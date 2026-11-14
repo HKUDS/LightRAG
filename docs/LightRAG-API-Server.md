@@ -611,7 +611,7 @@ We provide Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG
 
 ### Connect Open WebUI to LightRAG
 
-After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin panel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You should install LightRAG as a service for this use case.
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin panel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You should install LightRAG as a service for this use case. If `LIGHTRAG_API_KEY` is set, enter it as the connection's API key: the Ollama endpoints then require it, and the client sends it as `Authorization: Bearer <key>`.
 
 Open WebUI uses an LLM to do the session title and session keyword generation task. So the Ollama chat completion API detects and forwards OpenWebUI session-related requests directly to the underlying LLM. Screenshot from Open WebUI:
 
@@ -623,7 +623,7 @@ The default query mode is `mix` if you send a message (query) from the Ollama in
 
 A query prefix in the query string can determine which LightRAG query mode is used to generate the response for the query. The supported prefixes include:
 
-RAG queries must have an English-equivalent length of at least 3 after the prefix is removed; each Chinese, Japanese or Korean character counts as 2. Direct-LLM `/bypass` requests do not use this minimum, but no request may carry an empty query — a prefix that consumes the whole message (`/local[hint]`) is refused with **400**.
+RAG queries must have an English-equivalent length of at least 3 after the prefix is removed; each Chinese, Japanese or Korean character counts as 2. Direct-LLM `/bypass` requests do not use this minimum, but no request may carry an empty query — a prefix that consumes the whole message (`/local[hint]`, or a bare `/bypass`) is refused with **400**.
 
 ```
 /local
@@ -641,7 +641,7 @@ RAG queries must have an English-equivalent length of at least 3 after the prefi
 /mixcontext
 ```
 
-For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default.
+For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default. The prefix must be followed by whitespace or by the end of the message: a space, a tab or a line break all work, so the question may start on the next line. A longer word that merely starts with a prefix, such as `/localize`, is not a prefix and is sent as an ordinary query.
 
 `/bypass` is not a LightRAG query mode; it will tell the API Server to pass the query directly to the underlying LLM, including the chat history. So the user can use the LLM to answer questions based on the chat history. If you are using Open WebUI as a front end, you can just switch the model to a normal LLM instead of using the `/bypass` prefix.
 
@@ -664,10 +664,9 @@ By default, the LightRAG Server can be accessed without any authentication. We c
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
-WHITELIST_PATHS=/health,/api/*
 ```
 
-> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
+> When `WHITELIST_PATHS` is unset, its default follows `LIGHTRAG_API_KEY`: with a key it is `/health`, so the Ollama emulation endpoints require the key like every other route; without one it is `/health,/api/*`, so they stay open (also when only `AUTH_ACCOUNTS` is set, because an Ollama client cannot log in). The Ollama endpoints accept the key both as `X-API-Key` and as `Authorization: Bearer <key>`, which is how Ollama clients send it; the other routes accept `X-API-Key` only. To keep the Ollama endpoints open next to a key, set `WHITELIST_PATHS=/health,/api/*` explicitly. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
 >
 > **Entries are internal route paths, never prefixed.** A `/*` suffix matches on path-segment boundaries, so `/api/*` covers `/api` and everything under `/api/` and nothing else. If `LIGHTRAG_API_PREFIX` is set, do **not** include it here: the prefix is removed before matching, so `WHITELIST_PATHS=/health` exempts `/site01/health` and `WHITELIST_PATHS=/site01/health` exempts nothing. See [Path Prefix and Multi-Site WebUI](#path-prefix-and-multi-site-webui).
 

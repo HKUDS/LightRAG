@@ -448,6 +448,7 @@ export default function DocumentManager() {
     parse: 1,
     analyze: 1,
     process: 1,
+    deleting: 1,
     failed: 1,
   });
 
@@ -522,6 +523,7 @@ export default function DocumentManager() {
       parse: 1,
       analyze: 1,
       process: 1,
+      deleting: 1,
       failed: 1,
     });
   };
@@ -560,6 +562,11 @@ export default function DocumentManager() {
         return {
           labelKey: 'documentPanel.documentManager.status.pending',
           className: 'text-yellow-600'
+        }
+      case 'deleting':
+        return {
+          labelKey: 'documentPanel.documentManager.status.deleting',
+          className: 'text-orange-600'
         }
       case 'failed':
       default:
@@ -637,6 +644,7 @@ export default function DocumentManager() {
   const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing');
   const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing');
   const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing');
+  const deletingCount = getCountValue(statusCounts, 'DELETING', 'deleting');
   const failedCount = getCountValue(statusCounts, 'FAILED', 'failed');
 
   // Previous status-count digest. `null` means "no snapshot observed yet",
@@ -762,6 +770,7 @@ export default function DocumentManager() {
       parse: 1,
       analyze: 1,
       process: 1,
+      deleting: 1,
       failed: 1,
     });
 
@@ -1405,6 +1414,7 @@ export default function DocumentManager() {
       analyzing: 0,
       processing: 0,
       pending: 0,
+      deleting: 0,
       failed: 0
     });
 
@@ -1624,6 +1634,18 @@ export default function DocumentManager() {
                     )}
                   >
                     {t('documentPanel.documentManager.filters.process')} ({processCount})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'deleting' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('deleting')}
+                    disabled={isRefreshing}
+                    className={cn(
+                      deletingCount > 0 ? 'text-orange-600' : 'text-gray-500',
+                      statusFilter === 'deleting' && 'bg-orange-100 dark:bg-orange-900/30 font-medium border border-orange-400 dark:border-orange-600 shadow-sm'
+                    )}
+                  >
+                    {t('documentPanel.documentManager.filters.deleting')} ({deletingCount})
                   </Button>
                   <Button
                     size="sm"

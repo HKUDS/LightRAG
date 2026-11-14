@@ -98,6 +98,7 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 - Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
 - LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
+- A change to what `normalize_entity_name` produces may only **merge** names that used to differ, never split names that used to be equal: a rebuild re-parses cached LLM output with the current rules, and a split leaves some of a stored object's records unmatched, so their facts are dropped. [Entity name normalization changes](docs/design/PurgeRecoveryContract.md#entity-name-normalization-changes) has the reasoning and the consequences in the current rules.
 
 ### Relation weight contract
 
@@ -362,6 +363,15 @@ See `env.example` for comprehensive template.
 
 ### Language
 Comments, backend code, log messages, and Git commit messages in English. Frontend uses i18next for multi-language support.
+
+### README translations
+
+`README.md` has three translations: `README-zh.md`, `README-ja.md` and `README-id.md`. All four are kept **line-for-line aligned**:
+
+- **A change to any README goes into all four in the same commit.** Never leave a translation for later. Changes that reached `README.md` alone are how the translations drifted before: they were missing a banner, a documentation table row, renamed env vars and whole paragraphs, and their line counts had drifted apart.
+- **Same line count, same structure.** Line N plays the same role in every file: a heading of the same level, a list item, a table row, a code fence, an HTML line, or a blank line. Keep the English line breaks. A two-line code comment stays two lines, and a bullet list does not become a numbered one.
+- **Translate the prose only.** Code, commands, env var names, file paths and anchors stay identical. Link targets do too, except that `README-zh.md` may point at a `*-zh.md` translation of the linked doc.
+- **Enforced by `tests/test_readme_translations.py`**, which is offline and runs in CI. It fails on a line-count mismatch and on the first line whose kind differs, and names that line in all files. Run it after any README edit: `./scripts/test.sh tests/test_readme_translations.py`. A new translation must be added to its `test_translations_exist` list and to this section.
 
 ### Docstrings and comments
 

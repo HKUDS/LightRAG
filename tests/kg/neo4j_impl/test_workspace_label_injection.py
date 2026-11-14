@@ -8,10 +8,14 @@ The workspace label is interpolated into two different syntactic contexts in
 1. Backtick-quoted identifiers, e.g. ``MATCH (n:`{label}`)`` — here backticks
    must be doubled and all other characters (including single quotes) are
    literal.
-2. The APOC ``labelFilter`` config, which lives inside a single-quoted Cypher
-   string literal. Cypher string literals are NOT escaped by doubling quotes
-   (that is SQL); they use backslash escaping. Rather than escape by hand, the
-   label is bound as a query parameter so Neo4j handles it safely.
+2. String-literal contexts. Cypher string literals are NOT escaped by
+   doubling quotes (that is SQL); they use backslash escaping. Rather than
+   escape by hand, the raw label must be bound as a query parameter.
+
+``get_knowledge_graph`` used to pass the label to APOC ``labelFilter``. That
+config is gone (APOC parses it as its own filter syntax, which broke workspace
+names containing ``:`` ``,`` ``|`` ``+``), so the label must not reach the
+APOC call at all.
 
 These tests run without a live Neo4j instance.
 """
@@ -110,7 +114,7 @@ def test_get_raw_workspace_label(workspace, expected):
 
 
 # ---------------------------------------------------------------------------
-# get_knowledge_graph: labelFilter must be parameterized, never interpolated
+# get_knowledge_graph: the workspace label never reaches the APOC config
 # ---------------------------------------------------------------------------
 
 
@@ -153,12 +157,13 @@ class _FakeDriver:
 
 
 @pytest.mark.asyncio
-async def test_label_filter_is_parameterized_not_interpolated():
-    """A malicious workspace must reach APOC labelFilter as a bound parameter.
+async def test_subgraph_query_has_no_label_filter():
+    """The APOC subgraph call must not carry the workspace label.
 
-    If the label were string-interpolated (the old behaviour), a single quote
-    would close the string literal and inject Cypher. Binding it as a parameter
-    makes interpolation — and therefore injection — impossible by construction.
+    APOC ``labelFilter`` is parsed with its own syntax, so passing the
+    workspace there filtered out the workspace's own nodes for names like
+    ``tenant:1``. The label must also never be interpolated into the APOC
+    config, or a single quote in it would inject Cypher.
     """
     payload = "x'); CALL apoc.util.sleep(1);"
     storage = _make_storage(payload)
@@ -168,14 +173,12 @@ async def test_label_filter_is_parameterized_not_interpolated():
 
     await storage.get_knowledge_graph(node_label="some-entity", max_depth=2)
 
-    # The subgraphAll query is the one carrying labelFilter.
     subgraph_calls = [(q, p) for q, p in session.calls if "apoc.path.subgraphAll" in q]
     assert subgraph_calls, "expected an apoc.path.subgraphAll query"
 
     for query, params in subgraph_calls:
-        # labelFilter is bound, not interpolated: there is no single-quoted
-        # string literal for the payload to break out of.
-        assert "labelFilter: $label_filter" in query
-        assert "labelFilter: '" not in query
-        # The raw (un-escaped) label is passed as the bound value.
-        assert params.get("label_filter") == payload
+        assert "labelFilter:" not in query
+        assert "label_filter" not in params
+        # The only place the label appears is the backtick-quoted start MATCH.
+        apoc_config = query[query.index("apoc.path.subgraphAll") :]
+        assert payload not in apoc_config
