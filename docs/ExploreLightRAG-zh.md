@@ -82,7 +82,7 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 
 切换存储不会搬运数据。把已经导入的内容带过来，最省钱的办法是先迁移抽取缓存，再把文档重新上传一遍：
 
-1. PostgreSQL 启动后（1.1），在重启服务之前运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要和多模态分析的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
+1. PostgreSQL 启动后（1.1），在重启服务之前运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要、多模态分析和智能标题判定的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
 2. 重启服务，切换到 PostgreSQL。
 3. 重新上传原始文件。实体抽取会命中迁移过来的缓存。
 

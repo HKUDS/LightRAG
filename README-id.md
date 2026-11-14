@@ -579,7 +579,7 @@ Menghapus entri LLM cache mode query (`mix:*`, `hybrid:*`, `local:*`, `global:*`
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
-Memigrasikan cache mode default (extraction, summary, analisis multimodal) antar-KV storage backend dengan tetap mempertahankan isolasi workspace.
+Memigrasikan cache mode default (extraction, summary, analisis multimodal, smart-heading) antar-KV storage backend dengan tetap mempertahankan isolasi workspace.
 
 **`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
 

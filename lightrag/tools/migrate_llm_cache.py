@@ -68,16 +68,15 @@ DEFAULT_BATCH_SIZE = 1000
 # Default count batch size for efficient counting
 DEFAULT_COUNT_BATCH_SIZE = 1000
 
-# Cache types produced in default mode and migrated by this tool. It must list
-# EVERY default-mode type the runtime writes, because this tuple is the sole
-# definition of "a default cache": it decides what the counts report, what the
-# streams read and therefore what a migration moves. A type missing here is
-# read, counted and written nowhere -- the row is left behind in the source with
-# no error anywhere, which is how ``analysis`` and then ``smartheading`` were
-# each omitted. `extract`/`summary`/`analysis` come from the ingestion pipeline
-# (``operate.py``, ``pipeline.py``); `smartheading` comes from the parse stage
-# (``parser/native_base.py``), which writes its judgments into the same
-# ``llm_response_cache`` namespace under the same ``default:`` mode.
+# Cache types produced in default mode and migrated by this tool. This tuple is
+# the sole definition of "a default cache" (counts, streams and every backend
+# filter derive from it), so it must list every default-mode type the runtime
+# writes; a missing type is silently left behind in the source. Writers:
+# `extract`/`summary` in ``operate.py``, `analysis` in ``pipeline.py``,
+# `smartheading` in ``parser/native_base.py``. Never drop a type the runtime
+# stops writing: existing stores still hold its rows.
+# ``tests/tools/test_migrate_llm_cache_smartheading.py`` scans the package for
+# default-mode writers and fails when one names a type missing here.
 DEFAULT_CACHE_TYPES = ("extract", "summary", "analysis", "smartheading")
 DEFAULT_CACHE_PREFIXES = tuple(
     f"default:{cache_type}:" for cache_type in DEFAULT_CACHE_TYPES
@@ -1183,9 +1182,7 @@ class MigrationTool:
                 counts = await self.count_cache_types(cache_data)
                 total_count = len(cache_data)
 
-                # Driven by DEFAULT_CACHE_TYPES, not spelled out: a hardcoded
-                # list here is how a newly added cache type stays invisible in
-                # the one report an operator uses to check the migration.
+                # Iterate the tuple so a newly added type shows up here too.
                 for cache_type in DEFAULT_CACHE_TYPES:
                     print(f"- default:{cache_type}: {counts[cache_type]:,} records")
                 print(f"- Total: {total_count:,} records")
