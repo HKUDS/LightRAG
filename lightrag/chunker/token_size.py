@@ -28,6 +28,31 @@ from typing import Any
 from lightrag.exceptions import ChunkTokenLimitExceededError
 from lightrag.utils import Tokenizer, logger
 
+# U+FFFD appears when a token window boundary splits a multi-byte UTF-8 character.
+_REPLACEMENT_CHAR = "\ufffd"
+
+
+def _locate_window_in_content(
+    content: str,
+    window: str,
+    start: int,
+    end: int,
+) -> tuple[int, int] | None:
+    """Map a decoded window back to char offsets in ``content``."""
+    if content[start:end] == window:
+        return start, end
+    lo = max(0, start - 32)
+    hi = min(len(content), end + 32 + len(window))
+    found = content.find(window, lo, hi)
+    if found >= 0:
+        return found, found + len(window)
+    trimmed = window.strip(_REPLACEMENT_CHAR)
+    if trimmed and trimmed != window:
+        found = content.find(trimmed, lo, hi)
+        if found >= 0:
+            return found, found + len(trimmed)
+    return None
+
 
 def _trimmed_span(content: str, start: int, end: int) -> tuple[int, int]:
     """Return the source span after applying the chunker's ``.strip()``."""
@@ -80,16 +105,10 @@ def _token_window_source_span(
     else:  # non-monotonic caller (not expected) — fall back to a full prefix decode
         start = len(tokenizer.decode(tokens[:start_token]))
     end = start + len(window)
-    if content[start:end] != window:
-        found = content.find(
-            window,
-            max(0, start - 32),
-            min(len(content), end + 32 + len(window)),
-        )
-        if found < 0:
-            return None, anchor
-        start = found
-        end = found + len(window)
+    located = _locate_window_in_content(content, window, start, end)
+    if located is None:
+        return None, anchor
+    start, end = located
     return _source_span(content, start, end), (start_token, start)
 
 

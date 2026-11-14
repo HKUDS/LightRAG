@@ -20,6 +20,7 @@ import pytest
 
 from lightrag.chunker import chunking_by_fixed_token
 from lightrag.chunker.token_size import _source_span, _token_window_source_span
+from lightrag.sidecar.backfill import _normalize_text
 from lightrag.utils import Tokenizer, TokenizerInterface
 
 
@@ -199,3 +200,50 @@ def test_decode_budget_is_linear_not_quadratic() -> None:
 
     # Empirically ~3.2*N for the delta path; the old prefix decode is ~24*N here.
     assert counting.decoded_tokens <= 6 * n
+
+
+def _source_span_matches_chunk_body(source_text: str, body: str) -> bool:
+    if source_text == body:
+        return True
+    if _normalize_text(source_text) == _normalize_text(body):
+        return True
+    if "\ufffd" not in body:
+        return False
+    cleaned = body.replace("\ufffd", "")
+    if source_text == cleaned:
+        return True
+    return _normalize_text(source_text) == _normalize_text(cleaned)
+
+
+@pytest.mark.offline
+def test_emoji_heavy_fixed_token_windows_keep_source_span_coverage() -> None:
+    pytest.importorskip("tiktoken")
+    from lightrag.utils import TiktokenTokenizer
+
+    tok = TiktokenTokenizer()
+    para = (
+        "Release notes: 🎉 new chunker ✅ tested 🚀 shipped. "
+        "Emoji families 👨👩👧👦 👩🏽🚀 and flags 🇨🇳 🇯🇵 🇩🇪 appear in user text. "
+    )
+    text = para * 120
+
+    chunks = chunking_by_fixed_token(
+        tok,
+        text,
+        chunk_token_size=1200,
+        chunk_overlap_token_size=100,
+        _emit_source_span=True,
+    )
+
+    covered = bytearray(len(text))
+    for chunk in chunks:
+        span = chunk.get("_source_span")
+        assert span is not None, chunk["chunk_order_index"]
+        slice_text = text[span["start"] : span["end"]]
+        body = chunk["content"]
+        assert _source_span_matches_chunk_body(slice_text, body)
+        for j in range(span["start"], span["end"]):
+            covered[j] = 1
+
+    uncovered = len(text) - sum(covered)
+    assert uncovered / len(text) < 0.01
