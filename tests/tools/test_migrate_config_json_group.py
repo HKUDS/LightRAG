@@ -477,6 +477,36 @@ async def test_a_json_target_reports_each_snapshot_and_flags_unknown_ones(tmp_pa
     assert "stale copy" in note
 
 
+@pytest.mark.parametrize(
+    "scope", ["config_storage_anchor.json", "t:prod", "..."], ids=repr
+)
+async def test_a_scope_no_workspace_directory_can_hold_refuses_a_json_target(
+    tmp_path, scope
+):
+    """A database deployment may use names a directory cannot take, and its
+    rows are well formed; a JSON target, which needs that directory, refuses
+    them before anything is claimed or written."""
+    storage_uuid = ca.new_storage_uuid()
+    ca.publish_anchor(
+        str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+    )
+    database = Database(
+        {
+            IDENTITY_KEY: _identity_row(storage_uuid),
+            cs.embedding_baseline_key(scope, "entities"): _baseline_row(scope),
+        }
+    )
+
+    with pytest.raises(mc.MigrationRefused, match="cannot hold source scope"):
+        await _migrate(
+            tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+        )
+    assert not [p for p in tmp_path.iterdir() if p.is_dir()]
+    assert not list(tmp_path.rglob("kv_workspace_config.json"))
+    assert not list(tmp_path.rglob(".lightrag_storage.lock"))
+    assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
+
 async def test_a_source_key_a_json_snapshot_cannot_hold_refuses_before_any_write(
     tmp_path,
 ):

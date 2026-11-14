@@ -76,7 +76,11 @@ from lightrag.kg.anchor_lock import (
     acquire_anchor_lock_shared,
     release_anchor_lock_shared,
 )
-from lightrag.utils import normalize_server_workspace, setup_logger
+from lightrag.utils import (
+    normalize_server_workspace,
+    setup_logger,
+    validate_workspace,
+)
 
 # Fields a backend adds to a row it returns and owns itself; never content.
 BACKEND_METADATA_KEYS = frozenset({"_id", "create_time", "update_time"})
@@ -153,6 +157,10 @@ def is_well_formed(row: Any, *, key: str) -> bool:
 
     Metadata carries no workspace; business rows carry the real name (empty
     included). Audit fields are diagnostic and copied verbatim when present.
+    The name is held to ``validate_workspace``, the rules every backend
+    shares: a deployment entirely on database backends may use names a
+    workspace directory could not take, and only a JSON target refuses them
+    (``JsonShardGroup.prepare_target``).
     """
     if not isinstance(row, dict):
         return False
@@ -166,7 +174,7 @@ def is_well_formed(row: Any, *, key: str) -> bool:
     if not isinstance(workspace, str):
         return False
     try:
-        validate_config_workspace(workspace)
+        validate_workspace(workspace)
     except ValueError:
         return False
     return True

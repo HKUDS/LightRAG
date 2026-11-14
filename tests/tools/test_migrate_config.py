@@ -232,6 +232,28 @@ async def _migrate(
 
 
 class TestTheHappyPath:
+    @pytest.mark.parametrize(
+        "workspace", ["config_storage_anchor.json", "t:prod", "..."], ids=repr
+    )
+    async def test_a_database_workspace_name_no_directory_needs_migrates(
+        self, tmp_path, workspace
+    ):
+        """A deployment entirely on database backends may use names a
+        workspace directory could not take; between two database backends
+        their rows are well formed and move like any other. Only a JSON
+        target refuses them (``JsonShardGroup.prepare_target``)."""
+        _anchor(tmp_path)
+        rows = {IDENTITY_KEY: _identity_row()}
+        for target_name in cs.EMBEDDING_TARGETS:
+            rows.update(_baseline(workspace, target_name))
+        source = Container(rows)
+        target = Container()
+
+        result = await _migrate(tmp_path, source, target)
+
+        assert result.switched
+        assert _data(target) == _data(source)
+
     async def test_every_row_moves_and_the_anchor_follows_last(self, tmp_path):
         _anchor(tmp_path)
         source = Container(_source_rows())
