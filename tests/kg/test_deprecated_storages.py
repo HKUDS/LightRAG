@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from lightrag.kg import (
+    DEPRECATED_STORAGE_MIGRATION_HINTS,
     DEPRECATED_STORAGES,
     STORAGE_IMPLEMENTATIONS,
     deprecated_storage_message,
@@ -39,7 +40,21 @@ def test_redis_backends_are_deprecated_in_favor_of_postgres():
     assert doc_status is not None and "PGDocStatusStorage" in doc_status
 
 
-@pytest.mark.parametrize("name", ["PGKVStorage", "JsonKVStorage", "Unknown"])
+def test_age_graph_storage_is_deprecated_in_favor_of_plain_tables():
+    message = deprecated_storage_message("PGGraphStorage")
+
+    assert message is not None and "PGTableGraphStorage" in message
+    # The graph can be moved without re-indexing; the notice has to say how.
+    assert "lightrag.tools.migrate_graph_storage" in message
+
+
+def test_every_migration_hint_belongs_to_a_deprecated_backend():
+    assert set(DEPRECATED_STORAGE_MIGRATION_HINTS) <= set(DEPRECATED_STORAGES)
+
+
+@pytest.mark.parametrize(
+    "name", ["PGKVStorage", "JsonKVStorage", "PGTableGraphStorage", "Unknown"]
+)
 def test_other_backends_are_not_deprecated(name):
     assert deprecated_storage_message(name) is None
 
@@ -95,6 +110,19 @@ def test_constructing_with_redis_logs_one_warning_per_backend(
     assert any(
         "RedisDocStatusStorage" in m and "PGDocStatusStorage" in m for m in messages
     )
+
+
+def test_constructing_with_age_graph_storage_logs_the_warning(
+    caplog, monkeypatch, tmp_path
+):
+    for key in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"):
+        monkeypatch.setenv(key, "x")
+    messages = _deprecation_records(
+        caplog, monkeypatch, tmp_path, graph_storage="PGGraphStorage"
+    )
+
+    assert len(messages) == 1
+    assert "PGGraphStorage" in messages[0] and "PGTableGraphStorage" in messages[0]
 
 
 def test_default_storages_log_no_deprecation(caplog, monkeypatch, tmp_path):

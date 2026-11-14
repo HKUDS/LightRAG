@@ -18,7 +18,13 @@ pytestmark = pytest.mark.offline
 _BLOCK_MARKER = "Deprecated Storage"
 
 
-def _splash(monkeypatch, *, kv_storage: str, doc_status_storage: str) -> str:
+def _splash(
+    monkeypatch,
+    *,
+    kv_storage: str,
+    doc_status_storage: str,
+    graph_storage: str = "NetworkXStorage",
+) -> str:
     """Render the real banner over real parsed args and return its output.
 
     ASCIIColors writes through its own stream rather than the stdout capsys
@@ -27,6 +33,7 @@ def _splash(monkeypatch, *, kv_storage: str, doc_status_storage: str) -> str:
     # deleted one from a developer-local .env.
     monkeypatch.setenv("LIGHTRAG_KV_STORAGE", kv_storage)
     monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", doc_status_storage)
+    monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", graph_storage)
 
     original_argv = sys.argv.copy()
     try:
@@ -54,6 +61,22 @@ def test_redis_storages_are_flagged(monkeypatch):
     assert "(deprecated)" in output
     assert "PGKVStorage" in output
     assert "PGDocStatusStorage" in output
+
+
+def test_age_graph_storage_is_flagged(monkeypatch):
+    for key in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"):
+        monkeypatch.setenv(key, "x")
+    output = _splash(
+        monkeypatch,
+        kv_storage="JsonKVStorage",
+        doc_status_storage="JsonDocStatusStorage",
+        graph_storage="PGGraphStorage",
+    )
+
+    assert _BLOCK_MARKER in output
+    assert "(deprecated)" in output
+    assert "PGTableGraphStorage" in output
+    assert "lightrag.tools.migrate_graph_storage" in output
 
 
 def test_default_storages_are_not_flagged(monkeypatch):

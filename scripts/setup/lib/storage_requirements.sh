@@ -24,6 +24,12 @@ declare -ag CONFIG_STORAGE_OPTIONS=(
   "OpenSearchKVStorage"
 )
 
+# PGGraphStorage (Apache AGE) is deprecated (DEPRECATED_STORAGES in
+# lightrag/kg/__init__.py) and deliberately absent: a new deployment is
+# offered PGTableGraphStorage, which needs no extension. select_storage_backends
+# adds it back for a deployment that already uses it, so it can be kept, and
+# the PostgreSQL service is then generated from templates/postgres-age.yml.
+# It stays in the requirement tables below either way.
 declare -ag GRAPH_STORAGE_OPTIONS=(
   "NetworkXStorage"
   "PGTableGraphStorage"
@@ -31,7 +37,6 @@ declare -ag GRAPH_STORAGE_OPTIONS=(
   "OpenSearchGraphStorage"
   "MemgraphStorage"
   "Neo4JStorage"
-  "PGGraphStorage"
 )
 
 declare -ag VECTOR_STORAGE_OPTIONS=(

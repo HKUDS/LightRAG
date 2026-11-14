@@ -14,6 +14,7 @@ from tests.setup._helpers import (
     parse_lines,
     run_bash,
     run_bash_lines,
+    run_bash_process,
     write_text_lines,
 )
 
@@ -71,6 +72,65 @@ printf 'DB=%s\\n' "${{STORAGE_DB_TYPES[PGTableGraphStorage]:-}}"
     assert "PGTableGraphStorage" in values["OPTIONS"].split()
     assert values["REQ"] == "POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DATABASE"
     assert values["DB"] == "postgresql"
+
+
+def test_age_graph_storage_is_not_offered_to_new_deployments() -> None:
+    """PGGraphStorage (Apache AGE) is not in the offered list, but an existing
+    .env naming it must still resolve to PostgreSQL."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+printf 'OPTIONS=%s\\n' "${{GRAPH_STORAGE_OPTIONS[*]}}"
+printf 'REQ=%s\\n' "${{STORAGE_ENV_REQUIREMENTS[PGGraphStorage]:-}}"
+printf 'DB=%s\\n' "${{STORAGE_DB_TYPES[PGGraphStorage]:-}}"
+""")
+    values = parse_lines(output)
+    assert "PGGraphStorage" not in values["OPTIONS"].split()
+    assert values["REQ"] == "POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DATABASE"
+    assert values["DB"] == "postgresql"
+
+
+@pytest.mark.parametrize(
+    ("existing_graph", "offered"),
+    [
+        ("PGGraphStorage", True),
+        ("PGTableGraphStorage", False),
+        ("NetworkXStorage", False),
+        ("", False),
+    ],
+)
+def test_age_graph_storage_is_offered_only_to_a_deployment_that_uses_it(
+    existing_graph: str, offered: bool
+) -> None:
+    """An existing PGGraphStorage deployment can keep it: it is offered and it
+    is the default, so Enter keeps it. Nobody else is offered it."""
+    result = run_bash_process(f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="{existing_graph}"
+prompt_choice() {{
+  local prompt="$1" default="$2"
+  shift 2
+  if [[ "$prompt" == "Graph storage" ]]; then
+    printf 'GRAPH_OPTIONS=%s\\n' "$*" >&2
+    printf 'GRAPH_DEFAULT=%s\\n' "$default" >&2
+  fi
+  printf '%s' "$default"
+}}
+check_storage_compatibility() {{ return 0; }}
+select_config_storage() {{ SELECTED_CONFIG_STORAGE=JsonKVStorage; }}
+select_storage_backends development
+printf 'GRAPH=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
+""")
+    assert result.returncode == 0, result.stderr
+    seen = parse_lines(result.stderr)
+    assert ("PGGraphStorage" in seen["GRAPH_OPTIONS"].split()) is offered
+    expected = existing_graph or "NetworkXStorage"
+    assert seen["GRAPH_DEFAULT"] == expected
+    assert parse_lines(result.stdout)["GRAPH"] == expected
+    output = result.stdout + result.stderr
+    assert ("PGGraphStorage (Apache AGE), which is deprecated" in output) is offered
+    assert ("lightrag.tools.migrate_graph_storage --apply" in output) is offered
 
 
 def test_validate_env_file_rejects_container_ssl_paths_for_host_target(

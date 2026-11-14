@@ -1150,11 +1150,25 @@ select_storage_backends() {
   graph_default="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-$graph_default}"
   doc_default="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-$doc_default}"
 
+  # PGGraphStorage (Apache AGE) is offered only to a deployment that already
+  # uses it: it can be kept (it stays the default), but nobody is led into it.
+  local graph_options=("${GRAPH_STORAGE_OPTIONS[@]}")
+  if [[ "$graph_default" == "PGGraphStorage" ]]; then
+    graph_options+=("PGGraphStorage")
+    log_info "This deployment uses PGGraphStorage (Apache AGE), which is deprecated" \
+      "and will be removed in a future release. It stays available here so you can" \
+      "keep it for now; new deployments are offered PGTableGraphStorage, which" \
+      "keeps the graph in plain PostgreSQL tables and needs no extension."
+    log_info "To move to PGTableGraphStorage without indexing the documents again," \
+      "stop LightRAG and run 'python -m lightrag.tools.migrate_graph_storage --apply'" \
+      "while the AGE-enabled PostgreSQL is still running, then choose it here."
+  fi
+
   while true; do
     kv_storage="$(prompt_choice "KV storage" "$kv_default" "${KV_STORAGE_OPTIONS[@]}")"
     doc_storage="$(prompt_choice "Doc status storage" "$doc_default" "${DOC_STATUS_STORAGE_OPTIONS[@]}")"
     vector_storage="$(prompt_choice "Vector storage" "$vector_default" "${VECTOR_STORAGE_OPTIONS[@]}")"
-    graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${GRAPH_STORAGE_OPTIONS[@]}")"
+    graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${graph_options[@]}")"
 
     if check_storage_compatibility "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; then
       break
