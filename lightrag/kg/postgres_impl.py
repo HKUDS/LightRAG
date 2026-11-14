@@ -511,6 +511,16 @@ def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
 _PG_NAME_MAX_BYTES = 63
 
 
+def _is_valid_age_graph_name(name: str) -> bool:
+    """Whether Apache AGE accepts ``name`` as a graph name.
+
+    create_graph() and cypher() take the name as a literal that PostgreSQL clips
+    to 63 bytes, but create_vlabel() / create_elabel() reject anything longer
+    with "graph name is invalid". AGE also rejects a name starting with a digit.
+    """
+    return len(name.encode("utf-8")) <= _PG_NAME_MAX_BYTES and not name[:1].isdigit()
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -7653,6 +7663,10 @@ class PGGraphStorage(BaseGraphStorage):
         Rules:
         - If workspace is empty or "default": graph_name = namespace
         - If workspace has other value: graph_name = workspace_namespace
+        - If that is not a valid AGE graph name (over 63 bytes, or starting
+          with a digit): graph_name = ws_<hash of workspace>_namespace.
+          Such workspaces always failed to initialize before, so no existing
+          graph is renamed.
 
         Args:
             None
@@ -7667,7 +7681,13 @@ class PGGraphStorage(BaseGraphStorage):
             # Ensure names comply with PostgreSQL identifier specifications
             safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", workspace.strip())
             safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
-            return f"{safe_workspace}_{safe_namespace}"
+            graph_name = f"{safe_workspace}_{safe_namespace}"
+            if _is_valid_age_graph_name(graph_name):
+                return graph_name
+            # Hash the workspace rather than clipping it, so two long workspaces
+            # sharing a 63-byte prefix still get separate graphs.
+            workspace_hash = hashlib.md5(workspace.strip().encode("utf-8")).hexdigest()
+            return f"ws_{workspace_hash[:12]}_{safe_namespace}"
         else:
             # When the workspace is "default", use the namespace directly (for backward compatibility with legacy implementations)
             return re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
