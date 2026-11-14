@@ -241,20 +241,51 @@ def test_extract_text_xlsx_ignores_the_declared_dimension(dimension):
     assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
 
 
-@pytest.mark.offline
-def test_extract_text_xlsx_drops_rows_after_the_last_cell():
-    """Trailing ``<row>`` elements without cells, e.g. formatted empty rows."""
+def _append_empty_rows(file_bytes: bytes, *numbers: int) -> bytes:
+    """Append ``<row>`` elements without cells, e.g. formatted empty rows."""
 
     def rewrite(root) -> None:
         sheet_data = root.find("main:sheetData", _NS)
-        for number in (6, 9):
-            ET.SubElement(sheet_data, f"{{{_NS_URI}}}row", {"r": str(number)})
+        for number in numbers:
+            ET.SubElement(
+                sheet_data,
+                f"{{{_NS_URI}}}row",
+                {"r": str(number), "ht": "30", "customHeight": "1"},
+            )
 
-    file_bytes = _rewrite_sheet1(_make_ragged_rows_xlsx_bytes(), rewrite)
+    return _rewrite_sheet1(file_bytes, rewrite)
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_drops_rows_after_the_last_cell():
+    file_bytes = _append_empty_rows(_make_ragged_rows_xlsx_bytes(), 6, 9)
 
     text = extract_text(file_bytes, "xlsx")
 
     assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_does_not_buffer_rows_after_the_last_cell():
+    """A formatted empty row far below the cells must not be buffered per row.
+
+    Read-only iteration emits every row up to it; in a real sheet that row can
+    be the last one, 1048576.
+    """
+    import tracemalloc
+
+    file_bytes = _append_empty_rows(_make_ragged_rows_xlsx_bytes(), 150_000)
+
+    tracemalloc.start()
+    try:
+        text = extract_text(file_bytes, "xlsx")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+    # One buffered entry per row took about 9 MiB here; parsing takes under 1.
+    assert peak < 3 * 1024 * 1024
 
 
 @pytest.mark.offline

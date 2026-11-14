@@ -359,16 +359,25 @@ def _extract_xlsx(file_bytes: bytes) -> str:
             formula_sheet = wb_formulas[sheet.title]
             sheet.reset_dimensions()
             formula_sheet.reset_dimensions()
-            # One (line, width) pair per row; a width of 0 marks a row that
-            # holds no cell at all.
+            # One (line, width) pair per row. A row that holds no cell at all
+            # is only counted until a later row proves it is not trailing: a
+            # formatted empty row at the bottom of the sheet makes read-only
+            # iteration emit every row above it.
             sheet_rows: list[tuple[str, int]] = []
             sheet_width = 0
+            pending_empty_rows = 0
             for value_row, formula_row in zip_longest(
                 sheet.iter_rows(values_only=True),
                 formula_sheet.iter_rows(values_only=True),
                 fillvalue=(),
             ):
                 width = max(len(value_row), len(formula_row))
+                if width == 0:
+                    pending_empty_rows += 1
+                    continue
+                if pending_empty_rows:
+                    sheet_rows.extend([("", 0)] * pending_empty_rows)
+                    pending_empty_rows = 0
                 sheet_width = max(sheet_width, width)
                 row_parts = []
                 row_has_content = False
@@ -383,8 +392,6 @@ def _extract_xlsx(file_bytes: bytes) -> str:
                     sheet_rows.append(("\t".join(row_parts), width))
                 else:
                     sheet_rows.append(("", width))
-            while sheet_rows and sheet_rows[-1][1] == 0:
-                sheet_rows.pop()
             for line, width in sheet_rows:
                 if line:
                     line += "\t" * (sheet_width - width)
