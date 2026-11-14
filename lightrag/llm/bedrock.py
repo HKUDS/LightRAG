@@ -538,7 +538,11 @@ async def bedrock_complete(
     # Bedrock Converse API has no JSON mode; the shim booleans are absorbed
     # and forwarded so bedrock_complete_if_cache can emit DeprecationWarnings
     # with accurate stack frames.
-    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+    global_config = kwargs["hashing_kv"].global_config
+    model_name = global_config["llm_model_name"]
+    # Library callers usually pass no timeout. Fall back to LightRAG's LLM
+    # timeout, as the API server does, instead of botocore's 60s default.
+    kwargs.setdefault("timeout", global_config.get("default_llm_timeout"))
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,
