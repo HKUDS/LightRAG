@@ -197,6 +197,24 @@ DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 # note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
 
+# Document-wide extraction budget for the legacy PDF extractor (pypdf). pypdf
+# caps every stream it decodes (75 MB) but nothing caps the DOCUMENT: pages can
+# share one content stream and a page can invoke one form XObject thousands of
+# times, so a 60 KB PDF made pypdf parse 80 MB of content and return 82 million
+# characters. Content bytes are the decoded bytes of every content stream pypdf
+# parses (each page's /Contents, and a form XObject's stream at every
+# invocation); the cap is min(PDF_MAX_CONTENT_BYTES, max(the floor below,
+# PDF_MAX_CONTENT_RATIO * file size)), so a small upload cannot buy the absolute
+# ceiling. Extracted characters bound the text kept in memory. A non-positive
+# value disables that gate. Env: PDF_MAX_CONTENT_BYTES / PDF_MAX_CONTENT_RATIO /
+# PDF_MAX_EXTRACTED_CHARS, read live at parse time. Mechanism and its limits:
+# lightrag/parser/legacy/pdf_budget.py.
+DEFAULT_PDF_MAX_CONTENT_BYTES = 256 * 1024 * 1024
+DEFAULT_PDF_MAX_CONTENT_RATIO = 100
+# Not a gate: the content allowance every PDF gets regardless of its size.
+DEFAULT_PDF_CONTENT_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
+DEFAULT_PDF_MAX_EXTRACTED_CHARS = 32 * 1024 * 1024
+
 # Native DOCX embedded-image export budgets. Unlike the archive-wide limits
 # above, these cap the bytes materialized into ``*.blocks.assets``: one image
 # and the sum retained for one document. Sized like the native Markdown image

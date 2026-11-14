@@ -19,9 +19,19 @@ class LegacyExtractionError(ValueError):
     """Raised when legacy extraction cannot produce usable text."""
 
 
-def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
-    """Extract PDF content using pypdf (synchronous)."""
+def _extract_pdf_pypdf(
+    file_bytes: bytes, password: str | None = None, file_path: str = "pdf"
+) -> str:
+    """Extract PDF content using pypdf (synchronous).
+
+    Raises :class:`~lightrag.parser.legacy.pdf_budget.PdfExtractionBudgetError`
+    when the document needs more content parsing or yields more text than the
+    ``PDF_MAX_*`` budget allows. pypdf's own limits are per stream, so this
+    document-wide budget must wrap every page extraction here.
+    """
     from pypdf import PdfReader  # type: ignore
+
+    from lightrag.parser.legacy.pdf_budget import PdfExtractionBudget
 
     pdf_file = BytesIO(file_bytes)
     reader = PdfReader(pdf_file)
@@ -35,10 +45,15 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
             else:
                 raise Exception("PDF is encrypted but no password provided")
 
-    content = ""
-    for page in reader.pages:
-        content += page.extract_text() + "\n"
-    return content
+    budget = PdfExtractionBudget(len(file_bytes), file_path)
+    pages = list(reader.pages)
+    budget.check_page_contents(pages)
+    parts: list[str] = []
+    for page in pages:
+        text = page.extract_text(**budget.visitors(page))
+        budget.finish_page(text)
+        parts.append(text + "\n")
+    return "".join(parts)
 
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -467,7 +482,7 @@ def extract_text(
 
     extractor = _BINARY_EXTRACTORS.get(suffix)
     if extractor is _extract_pdf_pypdf:
-        return _extract_pdf_pypdf(file_bytes, pdf_password)
+        return _extract_pdf_pypdf(file_bytes, pdf_password, file_path or suffix)
     if extractor is not None:
         return extractor(file_bytes)
     return _decode_text(file_bytes)
