@@ -115,6 +115,70 @@ async def test_deleting_moves_status_index_and_remains_filterable(storage):
     assert counts["deleting"] == 1
 
 
+def _primary_row_counts(storage) -> dict[str, int]:
+    """Reference tally: what a full scan of the primary rows would report."""
+    fake = storage._redis
+    prefix = f"{storage.final_namespace}:"
+    counts = {status.value: 0 for status in DocStatus}
+    for key, raw in fake.store.items():
+        if key.startswith(prefix):
+            counts[json.loads(raw)["status"]] += 1
+    return counts
+
+
+@pytest.mark.asyncio
+async def test_status_counts_come_from_sidecar_without_reading_rows(
+    storage, monkeypatch
+):
+    """The WebUI asks for these counts on every refresh, so they must not
+    cost a scan of the whole corpus, and must still equal one."""
+    await _bootstrap(storage)
+    await storage.upsert(
+        {
+            "p1": _doc("processed", file_path="p1.pdf"),
+            "p2": _doc("processed", file_path="p2.pdf"),
+            "f1": _doc("failed", file_path="f1.pdf"),
+            "q1": _doc("pending", file_path="q1.pdf"),
+            "dup": _dup("failed", file_path="p1.pdf"),
+        }
+    )
+    await storage.update_doc_status_fields("p2", {"status": DocStatus.DELETING})
+    await storage.delete(["q1"])
+
+    fake = storage._redis
+
+    async def no_scan(*args, **kwargs):
+        raise AssertionError("status counts must not SCAN the primary rows")
+
+    monkeypatch.setattr(fake, "scan", no_scan)
+    gets_before = fake.command_counts["get"]
+
+    counts = await storage.get_all_status_counts()
+
+    assert fake.command_counts["get"] == gets_before
+    expected = _primary_row_counts(storage)
+    assert expected["processed"] == 1 and expected["deleting"] == 1
+    assert expected["failed"] == 2 and expected["pending"] == 0
+    assert counts == {**expected, "all": 4}
+
+
+@pytest.mark.asyncio
+async def test_status_counts_propagate_redis_errors(storage):
+    """A failed read is an error, never a page of zero counts."""
+    await _bootstrap(storage)
+    await storage.upsert({"p1": _doc("processed")})
+    storage._redis.fail_next["execute"] = RedisError("connection lost")
+    with pytest.raises(RedisError, match="connection lost"):
+        await storage.get_all_status_counts()
+
+
+@pytest.mark.asyncio
+async def test_status_counts_refuse_an_unpublished_sidecar(storage):
+    storage._initialized = False
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_status_counts()
+
+
 async def _sweep_ids(storage, statuses, *, limit):
     ids: list[str] = []
     pages = 0

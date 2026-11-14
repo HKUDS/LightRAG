@@ -1215,40 +1215,24 @@ class RedisDocStatusStorage(DocStatusStorage):
         return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
-        """Get counts of documents in each status"""
-        counts = {status.value: 0 for status in DocStatus}
+        """Count documents per status from the scheduling sidecar.
+
+        One ``ZCARD`` per ``DocStatus`` in a single round trip, so the cost
+        does not grow with the corpus. Every write maintains the per-status
+        ZSETs atomically with the row (see the class docstring), so the
+        result equals a full scan of the primary rows.
+
+        Errors propagate, as in the PostgreSQL and MongoDB backends: a failed
+        read must never be reported as zero documents.
+        """
+        self._require_sidecar_ready()
+        statuses = [status.value for status in DocStatus]
         async with self._get_redis_connection() as redis:
-            try:
-                # Use SCAN to iterate through all keys in the namespace
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(
-                        cursor, match=f"{self.final_namespace}:*", count=1000
-                    )
-                    if keys:
-                        # Get all values in batch
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.get(key)
-                        values = await pipe.execute()
-
-                        # Count statuses
-                        for value in values:
-                            if value:
-                                try:
-                                    doc_data = json.loads(value)
-                                    status = doc_data.get("status")
-                                    if status in counts:
-                                        counts[status] += 1
-                                except json.JSONDecodeError:
-                                    continue
-
-                    if cursor == 0:
-                        break
-            except Exception as e:
-                logger.error(f"[{self.workspace}] Error getting status counts: {e}")
-
-        return counts
+            pipe = redis.pipeline()
+            for status in statuses:
+                pipe.zcard(self._zset_key(status))
+            cards = await pipe.execute()
+        return {status: int(card) for status, card in zip(statuses, cards)}
 
     @staticmethod
     def _redis_doc_processing_status_from_data(
