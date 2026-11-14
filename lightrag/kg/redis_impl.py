@@ -25,6 +25,7 @@ from redis.exceptions import (  # type: ignore
 )
 from lightrag.utils import (
     logger,
+    get_env_value,
     get_pinyin_sort_key,
     _cooperative_yield,
     validate_workspace,
@@ -163,11 +164,14 @@ def _dumps_kv_payload(value: dict[str, Any]) -> str:
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
-# Constants for Redis connection pool with environment variable support
-MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "200"))
-SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", "30.0"))
-SOCKET_CONNECT_TIMEOUT = float(os.getenv("REDIS_CONNECT_TIMEOUT", "10.0"))
-RETRY_ATTEMPTS = int(os.getenv("REDIS_RETRY_ATTEMPTS", "3"))
+# Constants for Redis connection pool with environment variable support.
+# Read through get_env_value like the LightRAG field defaults: these run at
+# import time, so a documented knob left present but empty in .env/Compose
+# would otherwise raise ValueError out of the storage module import.
+MAX_CONNECTIONS = get_env_value("REDIS_MAX_CONNECTIONS", 200, int)
+SOCKET_TIMEOUT = get_env_value("REDIS_SOCKET_TIMEOUT", 30.0, float)
+SOCKET_CONNECT_TIMEOUT = get_env_value("REDIS_CONNECT_TIMEOUT", 10.0, float)
+RETRY_ATTEMPTS = get_env_value("REDIS_RETRY_ATTEMPTS", 3, int)
 
 # Tenacity retry decorator for Redis operations
 redis_retry = retry(
