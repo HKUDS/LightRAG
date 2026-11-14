@@ -611,7 +611,7 @@ We provide Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG
 
 ### Connect Open WebUI to LightRAG
 
-After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin panel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You should install LightRAG as a service for this use case.
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin panel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You should install LightRAG as a service for this use case. If `LIGHTRAG_API_KEY` is set, enter it as the connection's API key: the Ollama endpoints then require it, and the client sends it as `Authorization: Bearer <key>`.
 
 Open WebUI uses an LLM to do the session title and session keyword generation task. So the Ollama chat completion API detects and forwards OpenWebUI session-related requests directly to the underlying LLM. Screenshot from Open WebUI:
 
@@ -664,10 +664,9 @@ By default, the LightRAG Server can be accessed without any authentication. We c
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
-WHITELIST_PATHS=/health,/api/*
 ```
 
-> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
+> When `WHITELIST_PATHS` is unset, its default follows `LIGHTRAG_API_KEY`: with a key it is `/health`, so the Ollama emulation endpoints require the key like every other route; without one it is `/health,/api/*`, so they stay open (also when only `AUTH_ACCOUNTS` is set, because an Ollama client cannot log in). The Ollama endpoints accept the key both as `X-API-Key` and as `Authorization: Bearer <key>`, which is how Ollama clients send it; the other routes accept `X-API-Key` only. To keep the Ollama endpoints open next to a key, set `WHITELIST_PATHS=/health,/api/*` explicitly. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
 >
 > **Entries are internal route paths, never prefixed.** A `/*` suffix matches on path-segment boundaries, so `/api/*` covers `/api` and everything under `/api/` and nothing else. If `LIGHTRAG_API_PREFIX` is set, do **not** include it here: the prefix is removed before matching, so `WHITELIST_PATHS=/health` exempts `/site01/health` and `WHITELIST_PATHS=/site01/health` exempts nothing. See [Path Prefix and Multi-Site WebUI](#path-prefix-and-multi-site-webui).
 

@@ -345,6 +345,21 @@ def normalize_api_prefix(value: str | None) -> str:
     return value.rstrip("/")
 
 
+def default_whitelist_paths(api_key: str | None) -> str:
+    """``WHITELIST_PATHS`` when the operator has not set it.
+
+    The Ollama-compatible ``/api/*`` routes follow ``LIGHTRAG_API_KEY``: exempt
+    while no key is configured, protected by it once one is. The key, not
+    ``AUTH_ACCOUNTS``, decides because it is the only credential an Ollama client
+    can carry -- it cannot run the ``/login`` flow a JWT needs -- so requiring
+    authentication there without a key would lock every Ollama client out.
+
+    An explicit ``WHITELIST_PATHS`` always wins, ``/health,/api/*`` included,
+    which is how an operator keeps the routes open next to a key.
+    """
+    return "/health" if api_key else "/health,/api/*"
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
@@ -852,7 +867,9 @@ def parse_args() -> argparse.Namespace:
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
-    args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
+    args.whitelist_paths = get_env_value(
+        "WHITELIST_PATHS", default_whitelist_paths(args.key)
+    )
 
     # Single authoritative switch for the interactive API documentation
     # surfaces (/docs, /docs/oauth2-redirect, /redoc, /openapi.json and the

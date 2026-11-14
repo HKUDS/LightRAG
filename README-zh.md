@@ -102,7 +102,7 @@
 > **📦 离线部署**: 对于离线或隔离环境，请参阅[离线部署指南](./docs/OfflineDeployment.md)，了解预安装所有依赖项和缓存文件的说明。
 
 > [!WARNING]
-> **在共享网络上启动服务前，请先做好访问保护。** `lightrag-server` 默认监听所有网卡（`HOST=0.0.0.0`），且默认不开启认证。在云服务器上，这意味着所有接口都对公网开放，任何人都能调用并消耗你的 LLM 额度。首次启动前，请二选一：在 `.env` 中绑定到私有地址（`HOST=127.0.0.1`，或 VPN / 隧道地址）；或者配置认证：`LIGHTRAG_API_KEY`，或 `AUTH_ACCOUNTS` 加 `TOKEN_SECRET`（可用 `openssl rand -hex 32` 生成）。为兼容客户端，Ollama 兼容的 `/api/*` 路由默认不需要认证；设置 `WHITELIST_PATHS=/health` 可让它们也要求认证。以下所有安装方式均适用。
+> **在共享网络上启动服务前，请先做好访问保护。** `lightrag-server` 默认监听所有网卡（`HOST=0.0.0.0`），且默认不开启认证。在云服务器上，这意味着所有接口都对公网开放，任何人都能调用并消耗你的 LLM 额度。首次启动前，请二选一：在 `.env` 中绑定到私有地址（`HOST=127.0.0.1`，或 VPN / 隧道地址）；或者配置认证：`LIGHTRAG_API_KEY`，或 `AUTH_ACCOUNTS` 加 `TOKEN_SECRET`（可用 `openssl rand -hex 32` 生成）。设置 `LIGHTRAG_API_KEY` 后，Ollama 兼容的 `/api/*` 路由也要求该 key（Ollama 客户端以 `Authorization: Bearer <key>` 发送）；未设置 key 时，为兼容客户端，这些路由保持开放。以下所有安装方式均适用。
 
 ### 从 PyPI 安装
 

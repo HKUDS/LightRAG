@@ -102,7 +102,7 @@
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 > [!WARNING]
-> **Secure the server before you start it on a shared network.** `lightrag-server` binds to all interfaces (`HOST=0.0.0.0`) and ships with authentication off, so on a cloud host every endpoint is public — and spends your LLM quota. Before the first start, either bind to a private address in `.env` (`HOST=127.0.0.1`, or a VPN / tunnel address), or configure authentication: `LIGHTRAG_API_KEY`, or `AUTH_ACCOUNTS` together with `TOKEN_SECRET` (generate one with `openssl rand -hex 32`). The Ollama-compatible `/api/*` routes stay open by default for client compatibility; set `WHITELIST_PATHS=/health` to require auth on them too. This applies to every installation method below.
+> **Secure the server before you start it on a shared network.** `lightrag-server` binds to all interfaces (`HOST=0.0.0.0`) and ships with authentication off, so on a cloud host every endpoint is public — and spends your LLM quota. Before the first start, either bind to a private address in `.env` (`HOST=127.0.0.1`, or a VPN / tunnel address), or configure authentication: `LIGHTRAG_API_KEY`, or `AUTH_ACCOUNTS` together with `TOKEN_SECRET` (generate one with `openssl rand -hex 32`). Once `LIGHTRAG_API_KEY` is set, the Ollama-compatible `/api/*` routes require it too (Ollama clients send it as `Authorization: Bearer <key>`); without a key they stay open for client compatibility. This applies to every installation method below.
 
 ### Install from PyPI
 

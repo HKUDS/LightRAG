@@ -95,8 +95,7 @@ With neither `AUTH_ACCOUNTS` nor `LIGHTRAG_API_KEY` set, every endpoint is publi
 ```bash
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'   # single quotes: the hash contains $
 TOKEN_SECRET=<openssl rand -hex 32>         # required with AUTH_ACCOUNTS
-LIGHTRAG_API_KEY=<a long random string>
-WHITELIST_PATHS=/health                     # also protect the Ollama-compatible /api/*
+LIGHTRAG_API_KEY=<a long random string>   # also protects the Ollama-compatible /api/*
 ```
 
 Store a bcrypt hash rather than a plain password. Generate one with the `bcrypt` package already in the environment:
@@ -105,7 +104,7 @@ Store a bcrypt hash rather than a plain password. Generate one with the `bcrypt`
 python -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
 ```
 
-The server refuses to start with `AUTH_ACCOUNTS` but no non-default `TOKEN_SECRET`. The default `WHITELIST_PATHS` keeps `/api/*` open so Ollama clients work unchanged. Narrow it to `/health` once the server is reachable from a network.
+The server refuses to start with `AUTH_ACCOUNTS` but no non-default `TOKEN_SECRET`. With `LIGHTRAG_API_KEY` set, the default `WHITELIST_PATHS` is `/health`, so the Ollama-compatible `/api/*` routes need the key as well; an Ollama client sends it as `Authorization: Bearer <key>` (enter it as the connection's API key). Without a key the default keeps `/api/*` open, even with `AUTH_ACCOUNTS`, because an Ollama client cannot log in.
 
 **Verify:**
 
@@ -339,7 +338,6 @@ POSTGRES_MAX_CONNECTIONS=40
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'
 TOKEN_SECRET=...
 LIGHTRAG_API_KEY=...
-WHITELIST_PATHS=/health
 
 # Step 3 — Role-specific LLMs
 LLM_MODEL=gpt-6-luna
