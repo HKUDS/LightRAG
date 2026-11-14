@@ -1128,8 +1128,12 @@ class _KeyedLockContext:
         self._namespace = namespace
 
         # The sorting is critical to ensure proper lock and release order
-        # to avoid deadlocks
-        self._keys = sorted(keys)
+        # to avoid deadlocks. Duplicates are dropped for the same reason: the
+        # per-key locks are not reentrant, so a key listed twice would wait on
+        # the mutex this same context acquired one iteration earlier and never
+        # return. A relation call with identical endpoints
+        # (``sorted([name, name])``) reaches this.
+        self._keys = sorted(set(keys))
         self._enable_logging = (
             enable_logging
             if enable_logging is not None

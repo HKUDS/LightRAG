@@ -1,6 +1,6 @@
 # Purge Recovery Contract
 
-Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, or the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
+Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`, or what `normalize_entity_name` produces (see [Entity name normalization changes](#entity-name-normalization-changes)). Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
 
 The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
 
@@ -190,6 +190,7 @@ Both paths therefore flush the migrated rows before the first commit that publis
 3. **The new key is written before the old key is deleted** (f86ef93c). An orphaned new-key row is dead bookkeeping a retry overwrites; a row under neither key loses the curated list outright.
 4. **The removal, its commit and the retirement are one cancellation-deferring region** (`_finish_deferring_cancellation`), starting *before* `delete_node`: on an immediate-write graph backend (Neo4j, Memgraph, MongoDB, PostgreSQL — their graph `index_done_callback` is a no-op) the removal is durable as it returns, so a region that began at the commit would already be too late.
 5. **A failure after a durable graph mutation is raised as `VectorStorageConsistencyError`.** `_edit_entity_impl`'s `allow_merge` branch re-raises only that type and folds everything else into a partial-success summary answering HTTP 200 with `final_entity` set to the source — a source the commit has just removed. A landed merge must never be reported as one that did not happen.
+6. **The removed side is addressed by its stored name only** (`_require_stored_entity_name`). That covers the sources of `amerge_entities` and the entity an `aedit_entity` call renames. Retrying is how the residues below heal, and a client may resend a request that had succeeded. A source name resolved to its normalized spelling would make the second call unsafe: the first one removed the exact legacy node, so the same spelling now resolves to the normalized node, which can be a different live entity, and the retry merges it away. A refusal is the right answer to a retry whose source is already gone. The target side is not removed, so it keeps resolving. `adelete_by_entity` follows the same rule.
 
 ### Accepted residues
 
@@ -208,3 +209,32 @@ Both paths therefore flush the migrated rows before the first commit that publis
 - **A persistent journal** of the staged cleanup. Removed from this series on purpose in 0258af56, which kept the cancellation region and dropped the journal.
 - **An in-memory undo log** restoring the previous rows on a failed first commit. It covers only the process-survives path — the one that already heals on retry — and does nothing for a crash.
 - **Treating a call's return as durability evidence.** `delete_node` returning normally means nothing on a deferred backend; only a confirmed `index_done_callback` does, which is what `_commit_graph_or_raise` checks (an explicit `False` is a decline; backends returning `None` are unaffected).
+
+## Entity name normalization changes
+
+Read this before changing what `normalize_entity_name` (and with it the single-line mode of `normalize_extracted_info`) produces for any input.
+
+A rebuild takes the names it rebuilds from the stored objects, but their content from somewhere else: `rebuild_knowledge_from_chunks` re-parses each surviving chunk's **cached LLM output** with the normalizer of the running code, and `_rebuild_single_entity` / `_rebuild_single_relationship` keep only the records whose re-parsed name equals the stored key. Stored names, by contrast, were produced by the normalizer of whatever version extracted them, and nothing migrates them. A change to the rules therefore decides, for every stored object, which of its cached records the next rebuild still finds.
+
+### The rule
+
+> **A change may only merge names that used to differ, never split names that used to be equal.** Equivalently: the new result must be a function of the old result.
+
+| Direction | Example | What the next rebuild of a stored object sees |
+|---|---|---|
+| split | `<br>` becoming a space: `AcmeCorp` and `Acme<br>Corp` were both stored as `AcmeCorp`, and now normalize to `AcmeCorp` and `Acme Corp` | **Some** records still match. The object is rebuilt from those alone, the no-data fallback never runs, and the facts of the other records are dropped from its description. **Data is lost.** |
+| merge | collapsing whitespace: `Acme\nCorp` and `Acme  Corp` were two stored names, and now both normalize to `Acme Corp` | Each old object matches **all** of its records or **none** of them, because every raw spelling that produced its name moves to the same new name. "None" takes the existing no-data path (`structural_fallback` keeps the stored semantic fields under the rollback policy; otherwise the entity is re-summarized from its relations). |
+
+A split also breaks the agreement between extraction paths in a fresh graph: an entity and a relation endpoint that spelled the same name differently land on different nodes. That was the case when whitespace was collapsed *before* the non-breaking space conversion, so `Acme&nbsp;&nbsp;Corp` kept two spaces while `Acme  Corp` got one; the collapse now runs after it.
+
+### Consequences in the current rules
+
+- Paragraph and line break tags are **removed** from a single-line value (`Acme<br>Corp` → `AcmeCorp`), not replaced with a space, although a space would read better.
+- Vertical tab and form feed stay **deleted** by `sanitize_text_for_encoding` in a single-line value, for the same reason. Descriptions convert them to a line break first.
+- The whitespace collapse (spaces, tabs, `\n`, `\r`, U+0085, U+2028, U+2029 into one space) runs **after** the rules that produce the value, so it can only merge.
+- The rules that remove the space between Chinese characters, and between Chinese and Latin text, run **a second time on the final result** of a single-line value whose inner quotes are removed (names, relation endpoints, types, keywords). Removing a quote next to a Chinese character can leave such a space behind (`Apple "苹果"` → `Apple 苹果`), which the first run was too early to see, while the unquoted spelling gives `Apple苹果`. The second run comes after the collapse, the strip and the numeric filters, so it is a function of the previous result and can only merge. The extraction parsers cut a name to `DEFAULT_ENTITY_NAME_MAX_LENGTH` characters and `DEFAULT_ENTITY_NAME_MAX_BYTES` bytes, and the stored key is the cut name, so they run the second pass **after the cut** (`_finalize_extracted_identifier`, with `normalize_entity_name(..., final_space_pass=False)` before it). Run before the cut, a pass that shortens a name lets two spellings that used to be cut to one key be cut to two: with `p = "A" * 255`, `p + " B"` and `p + ' "苹果"'` were both stored as `p + " "`, and the second would become `p + "苹"`. A future rule that changes a name's length has the same problem: run before the cut, it can split names even when it only merges uncut ones.
+- Descriptions are not identifiers and are free to change: there, tags and line break characters become `\n`.
+
+### Accepted residue
+
+An object stored under a name the current rules no longer produce (`Acme\nCorp`, `Acme  Corp`) is not migrated: a new extraction of the same entity lands on the merged name, a second node next to the old one. Harmless in direction (an extra node, nothing deleted). Manual edits and merges still reach the old node because `aedit_entity` / `amerge_entities` try the exact spelling before the normalized one, which is also the way to fold the two together.

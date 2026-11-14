@@ -7,6 +7,10 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
 import pytest
+from docx import Document
+from docx.oxml import parse_xml
+from docx.oxml.shared import OxmlElement
+from docx.oxml.ns import qn
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_CONNECTOR
@@ -156,40 +160,210 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
 
 
 def _make_ragged_rows_xlsx_bytes() -> bytes:
-    """Rows of unequal width plus a formula view wider than its value view.
-
-    read_only mode may emit ragged rows for sparse tails; the extractor must
-    pad both views to the per-row width instead of dropping the trailing
-    cells (or misaligning the value/formula pairing).
-    """
+    """Rows of unequal width, a row holding no cell, and an uncached formula."""
     bio = BytesIO()
     wb = Workbook()
     ws = wb.active
     ws.title = "Ragged"
     ws["A1"] = "header-a"
-    ws["C1"] = "header-c"          # B1 empty -> ragged row 1
+    ws["C1"] = "header-c"  # B1 empty
     ws["A2"] = "x"
     ws["B2"] = "y"
     ws["C2"] = "z"
-    ws["D2"] = "w"                 # wider than row 1
-    ws["A3"] = "short"             # narrow row again
+    ws["D2"] = "w"  # the widest row
+    ws["A3"] = "short"
+    ws["B5"] = "=A2"  # row 4 holds no cell
     wb.save(bio)
     return bio.getvalue()
 
 
+_RAGGED_ROWS_TEXT = [
+    "header-a\t\theader-c\t",
+    "x\ty\tz\tw",
+    "short\t\t\t",
+    "",
+    "\t=A2\t\t",
+]
+
+
+def _rewrite_sheet1(file_bytes: bytes, rewrite) -> bytes:
+    """Return the workbook with ``rewrite(root)`` applied to ``sheet1.xml``."""
+    patched = BytesIO()
+    with (
+        ZipFile(BytesIO(file_bytes)) as source,
+        ZipFile(patched, "w", ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                rewrite(root)
+                data = ET.tostring(root, encoding="utf-8")
+            target.writestr(item, data)
+    return patched.getvalue()
+
+
+def _set_dimension(file_bytes: bytes, ref: str | None) -> bytes:
+    """Declare ``ref`` as the sheet's ``<dimension>``, or drop it for ``None``."""
+
+    def rewrite(root) -> None:
+        dimension = root.find("main:dimension", _NS)
+        assert dimension is not None
+        if ref is None:
+            root.remove(dimension)
+        else:
+            dimension.set("ref", ref)
+
+    return _rewrite_sheet1(file_bytes, rewrite)
+
+
 @pytest.mark.offline
-def test_extract_text_xlsx_pads_ragged_rows():
-    file_bytes = _make_ragged_rows_xlsx_bytes()
+def test_extract_text_xlsx_pads_ragged_rows_to_the_sheet_width():
+    text = extract_text(_make_ragged_rows_xlsx_bytes(), "xlsx")
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "dimension", ["A1", "A1:B2", "A1:D5", "A1:XFD1048576", "C3:ZZ9", None]
+)
+def test_extract_text_xlsx_ignores_the_declared_dimension(dimension):
+    """The cells decide what is extracted, not the producer's ``<dimension>``.
+
+    A read-only sheet trusts that element: too small a range drops the cells
+    outside it without an error, too large a one pads every row out to it.
+    """
+    file_bytes = _set_dimension(_make_ragged_rows_xlsx_bytes(), dimension)
 
     text = extract_text(file_bytes, "xlsx")
 
-    lines = [l for l in text.splitlines() if l and not set(l) <= {"=", " "}]
-    # Row 1: A and C survive with the empty B padded, in column order.
-    assert any("header-a" in l and "header-c" in l for l in lines)
-    # Row 2: all four cells land on one line, order preserved.
-    assert any(l.strip().split("\t")[:4] == ["x", "y", "z", "w"] for l in lines)
-    # Row 3 stays intact and is not misaligned by the wider row 2.
-    assert any(l.strip().startswith("short") for l in lines)
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+@pytest.mark.offline
+def test_extract_text_xlsx_drops_rows_after_the_last_cell():
+    """Trailing ``<row>`` elements without cells, e.g. formatted empty rows."""
+
+    def rewrite(root) -> None:
+        sheet_data = root.find("main:sheetData", _NS)
+        for number in (6, 9):
+            ET.SubElement(sheet_data, f"{{{_NS_URI}}}row", {"r": str(number)})
+
+    file_bytes = _rewrite_sheet1(_make_ragged_rows_xlsx_bytes(), rewrite)
+
+    text = extract_text(file_bytes, "xlsx")
+
+    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("failing_load", [None, 1, 2])
+def test_extract_text_xlsx_closes_every_workbook_it_opened(monkeypatch, failing_load):
+    """Both workbooks are closed, also when the second load or the read fails."""
+    import openpyxl
+
+    real_load = openpyxl.load_workbook
+    opened: list = []
+    closed: list = []
+
+    def load_workbook(*args, **kwargs):
+        if failing_load == len(opened) + 1:
+            opened.append(None)
+            raise ValueError("broken workbook")
+        workbook = real_load(*args, **kwargs)
+        real_close = workbook.close
+        opened.append(workbook)
+
+        def close() -> None:
+            closed.append(workbook)
+            real_close()
+
+        workbook.close = close
+        return workbook
+
+    monkeypatch.setattr(openpyxl, "load_workbook", load_workbook)
+    file_bytes = _make_ragged_rows_xlsx_bytes()
+
+    if failing_load is None:
+        extract_text(file_bytes, "xlsx")
+    else:
+        with pytest.raises(ValueError, match="broken workbook"):
+            extract_text(file_bytes, "xlsx")
+
+    loaded = [workbook for workbook in opened if workbook is not None]
+    assert all(workbook.read_only for workbook in loaded)
+    assert closed == loaded[::-1]
+    assert len(closed) == {None: 2, 1: 0, 2: 1}[failing_load]
+
+
+def _retype_b1_formula(
+    file_bytes: bytes, attrs: dict[str, str], formula_text: str | None
+) -> bytes:
+    """Rewrite the ``<f>`` node of cell B1 in ``sheet1.xml``.
+
+    ``openpyxl`` cannot write array or data-table formulas without cached
+    values the way other producers do, so the tests build an ordinary formula
+    workbook and retype its formula node here. Any cached ``<v>`` is kept.
+    """
+
+    patched = BytesIO()
+    with (
+        ZipFile(BytesIO(file_bytes)) as source,
+        ZipFile(patched, "w", ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                cell = root.find(".//main:c[@r='B1']", _NS)
+                formula_node = cell.find("main:f", _NS)
+                for key, value in attrs.items():
+                    formula_node.set(key, value)
+                formula_node.text = formula_text
+                data = ET.tostring(root, encoding="utf-8")
+            target.writestr(item, data)
+    return patched.getvalue()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("formula", ["=A1:A2*2", "=_xlfn._xlws.FILTER(A1:A2,A1:A2>1)"])
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_preserves_array_formula_content(formula, cached_value):
+    """Array formula objects must yield cached values or their formula text."""
+    file_bytes = _retype_b1_formula(
+        _make_xlsx_bytes(cached_formula_value=cached_value),
+        {"t": "array", "ref": "B1:B2"},
+        formula.removeprefix("="),
+    )
+
+    text = extract_text(file_bytes, "xlsx")
+
+    expected = formula if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "ArrayFormula object" not in text
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("cached_value", [None, 0, 3, "calculated"])
+def test_extract_text_xlsx_never_indexes_data_table_formula_object(cached_value):
+    """A data-table formula carries no text: cached value or an empty cell.
+
+    openpyxl >= 3.1 reads it as a ``DataTableFormula`` object and older
+    versions as a bare ``"="``; neither may reach the extracted text.
+    """
+    file_bytes = _retype_b1_formula(
+        _make_xlsx_bytes(cached_formula_value=cached_value),
+        {"t": "dataTable", "ref": "B1:B1", "dt2D": "0", "dtr": "0", "r1": "A1"},
+        None,
+    )
+
+    text = extract_text(file_bytes, "xlsx")
+
+    expected = "" if cached_value is None else str(cached_value)
+    assert text.splitlines()[1] == f"1\t{expected}"
+    assert "DataTableFormula" not in text
+    assert " object at 0x" not in text
 
 
 @pytest.mark.offline
@@ -220,3 +394,454 @@ def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
         "Before\nGrouped paragraph\nSecond paragraph\vSoft break\n\n"
         "Group sibling\nAfter\nNext slide\n"
     )
+
+
+def _docx_bytes(document) -> bytes:
+    file_bytes = BytesIO()
+    document.save(file_bytes)
+    return file_bytes.getvalue()
+
+
+@pytest.mark.offline
+def test_extract_text_docx_keeps_horizontally_merged_cell_text_once():
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 2)).text = "Quarterly report"
+    for column, text in enumerate(("Q1", "Q2", "Q3")):
+        table.cell(1, column).text = text
+
+    # The merged cell still takes three columns, so the rows stay aligned.
+    assert extract_text(_docx_bytes(document), "docx") == (
+        "Quarterly report\t\t\nQ1\tQ2\tQ3"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_repeats_vertically_merged_cell_text_per_row():
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).merge(table.cell(1, 0)).text = "Region"
+    table.cell(0, 1).text = "North"
+    table.cell(1, 1).text = "South"
+
+    assert extract_text(_docx_bytes(document), "docx") == (
+        "Region\tNorth\nRegion\tSouth"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_block_merged_cell_text_is_once_per_row():
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).merge(table.cell(1, 1)).text = "Block"
+    table.cell(0, 2).text = "A"
+    table.cell(1, 2).text = "B"
+
+    assert extract_text(_docx_bytes(document), "docx") == "Block\t\tA\nBlock\t\tB"
+
+
+def _filled_table(document, rows: int, cols: int):
+    table = document.add_table(rows=rows, cols=cols)
+    for row in range(rows):
+        for column in range(cols):
+            table.cell(row, column).text = f"r{row}c{column}"
+    return table
+
+
+def _skip_grid_columns(row, *, before: int = 0, after: int = 0) -> None:
+    """Drop cells from a row's ends and record them as gridBefore/gridAfter."""
+    tr = row._tr
+    for _ in range(before):
+        tr.remove(tr.tc_lst[0])
+    for _ in range(after):
+        tr.remove(tr.tc_lst[-1])
+    tr_pr = tr.get_or_add_trPr()
+    for tag, count in (("w:gridBefore", before), ("w:gridAfter", after)):
+        if count:
+            node = OxmlElement(tag)
+            node.set(qn("w:val"), str(count))
+            tr_pr.append(node)
+
+
+@pytest.mark.offline
+def test_extract_text_docx_grid_before_row_keeps_cells_in_their_columns():
+    document = Document()
+    table = _filled_table(document, 3, 3)
+    _skip_grid_columns(table.rows[1], before=1)
+
+    assert extract_text(_docx_bytes(document), "docx") == (
+        "r0c0\tr0c1\tr0c2\n\tr1c1\tr1c2\nr2c0\tr2c1\tr2c2"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_grid_after_row_keeps_trailing_columns():
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    _skip_grid_columns(table.rows[0], after=2)
+
+    assert extract_text(_docx_bytes(document), "docx") == "r0c0\t\t\nr1c0\tr1c1\tr1c2"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_vertical_merge_below_grid_before_row():
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    table.cell(0, 2).merge(table.cell(1, 2)).text = "Total"
+    _skip_grid_columns(table.rows[0], before=1)
+
+    # The continuation in row 2 sits under grid column 2, which row 1
+    # reaches only after its skipped first column.
+    assert extract_text(_docx_bytes(document), "docx") == (
+        "\tr0c1\tTotal\nr1c0\tr1c1\tTotal"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_vertical_merge_continuation_without_cell_above():
+    document = Document()
+    table = _filled_table(document, 1, 2)
+    v_merge = OxmlElement("w:vMerge")
+    table.cell(0, 0)._tc.get_or_add_tcPr().append(v_merge)
+
+    # A malformed continuation in the first row has nothing to repeat.
+    assert extract_text(_docx_bytes(document), "docx") == "\tr0c1"
+
+
+_W_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_W_DECL = f'xmlns:w="{_W_URI}"'
+
+
+def _built_docx_bytes(build) -> bytes:
+    """Save a python-docx document after ``build`` has added its content."""
+
+    document = Document()
+    build(document)
+    out = BytesIO()
+    document.save(out)
+    return out.getvalue()
+
+
+def _append_xml(document, xml: str) -> None:
+    """Insert raw WordprocessingML before the body's closing ``w:sectPr``."""
+
+    body = document.element.body
+    body.insert(len(body) - 1, parse_xml(xml))
+
+
+def _run(text: str) -> str:
+    return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_blocks_inside_content_controls_and_custom_xml():
+    table = (
+        "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid>"
+        f"<w:tr><w:tc><w:p>{_run('Cell in a control')}</w:p></w:tc></w:tr></w:tbl>"
+    )
+
+    def build(document):
+        document.add_paragraph("Before")
+        _append_xml(
+            document,
+            f"<w:sdt {_W_DECL}><w:sdtPr/><w:sdtContent>"
+            f"<w:p>{_run('In a control')}</w:p>{table}"
+            "</w:sdtContent></w:sdt>",
+        )
+        _append_xml(
+            document,
+            f'<w:customXml {_W_DECL} w:element="clause">'
+            f"<w:p>{_run('In custom XML')}</w:p></w:customXml>",
+        )
+        document.add_paragraph("After")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Before\nIn a control\n\nCell in a control\n\nIn custom XML\nAfter"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_runs_nested_in_a_paragraph():
+    paragraphs = [
+        _run("Signed by ")
+        + f"<w:sdt><w:sdtPr/><w:sdtContent>{_run('Jane Doe')}</w:sdtContent></w:sdt>",
+        _run("Dose: ")
+        + f'<w:ins w:id="1" w:author="a">{_run("20 mg")}</w:ins>'
+        + '<w:del w:id="2" w:author="a"><w:r><w:tab/><w:delText>10 mg</w:delText></w:r></w:del>',
+        _run("Updated ")
+        + f'<w:fldSimple w:instr="DATE">{_run("2024-05-01")}</w:fldSimple>',
+        f'<w:smartTag w:uri="urn:x" w:element="place">{_run("Reutlingen")}</w:smartTag>',
+    ]
+
+    def build(document):
+        for content in paragraphs:
+            _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Signed by Jane Doe\nDose: 20 mg\nUpdated 2024-05-01\nReutlingen"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_runs_that_are_not_the_paragraph_text():
+    mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+    content = (
+        f'<w:moveFrom w:id="3" w:author="a">{_run("OLD PLACE")}</w:moveFrom>'
+        f'<w:moveTo w:id="4" w:author="a">{_run("NEW PLACE")}</w:moveTo>'
+        "<w:r><w:ruby><w:rubyPr/><w:rt><w:r><w:t>kan</w:t></w:r></w:rt>"
+        "<w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby></w:r>"
+        f'<w:r><mc:AlternateContent xmlns:mc="{mc}"><mc:Choice Requires="wps">'
+        f"<w:txbxContent><w:p>{_run('BOX')}</w:p></w:txbxContent></mc:Choice>"
+        f"<mc:Fallback><w:pict><w:txbxContent><w:p>{_run('BOX COPY')}</w:p>"
+        "</w:txbxContent></w:pict></mc:Fallback></mc:AlternateContent></w:r>"
+        f'<mc:AlternateContent xmlns:mc="{mc}"><mc:Choice Requires="w14">'
+        f"{_run('CHOICE')}</mc:Choice><mc:Fallback>{_run('FALLBACK')}</mc:Fallback>"
+        "</mc:AlternateContent>"
+    )
+
+    def build(document):
+        _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "NEW PLACE漢CHOICE"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_keeps_document_order_and_reads_one_alternate_branch():
+    mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+
+    def alternate(*branches: str) -> str:
+        return f"<mc:AlternateContent {mc}>{''.join(branches)}</mc:AlternateContent>"
+
+    paragraphs = [
+        # Ruby text between two pieces of the same run.
+        "<w:r><w:t>before</w:t><w:ruby><w:rubyPr/><w:rt><w:r><w:t>kan</w:t>"
+        "</w:r></w:rt><w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby>"
+        "<w:t>after</w:t></w:r>",
+        # Two choices: only the first is shown.
+        alternate(
+            f'<mc:Choice Requires="w14">{_run("5")}</mc:Choice>',
+            f'<mc:Choice Requires="w15">{_run("5")}</mc:Choice>',
+            f"<mc:Fallback>{_run('five')}</mc:Fallback>",
+        ),
+        # No choice: the fallback is what is shown.
+        alternate(f"<mc:Fallback>{_run('only fallback')}</mc:Fallback>"),
+    ]
+
+    def build(document):
+        for content in paragraphs:
+            _append_xml(document, f"<w:p {_W_DECL}>{content}</w:p>")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "before漢after\n5\nonly fallback"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_nested_runs_in_table_cells():
+    def build(document):
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "Name"
+        tc = table.cell(0, 1)._tc
+        tc.p_lst[0].append(
+            parse_xml(
+                f"<w:sdt {_W_DECL}><w:sdtPr/>"
+                f"<w:sdtContent>{_run('Jane Doe')}</w:sdtContent></w:sdt>"
+            )
+        )
+        tc.append(
+            parse_xml(
+                f"<w:sdt {_W_DECL}><w:sdtPr/><w:sdtContent>"
+                f"<w:p>{_run('second line')}</w:p></w:sdtContent></w:sdt>"
+            )
+        )
+
+    assert (
+        extract_text(_built_docx_bytes(build), "docx")
+        == "Name\tJane Doe<br>second line"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_a_plain_document_as_before():
+    """Direct runs, a tab, a line break, a hyperlink and a table: unchanged."""
+
+    def build(document):
+        paragraph = document.add_paragraph("one\ttwo")
+        paragraph.add_run().add_break()
+        paragraph.add_run("three")
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('see ')}"
+            f'<w:hyperlink w:anchor="x">{_run("the link")}</w:hyperlink></w:p>',
+        )
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "A"
+        table.cell(0, 1).text = "B"
+
+    data = _built_docx_bytes(build)
+    document = Document(BytesIO(data))
+    assert [p.text for p in document.paragraphs] == ["one\ttwo\nthree", "see the link"]
+    assert [c.text for c in document.tables[0].rows[0].cells] == ["A", "B"]
+    assert extract_text(data, "docx") == "one\ttwo\nthree\nsee the link\n\nA\tB"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_reads_rows_and_cells_inside_content_controls():
+    def cell(text: str) -> str:
+        return f"<w:tc><w:p>{_run(text)}</w:p></w:tc>"
+
+    # Row 2 is a repeating section; row 1's second cell is custom XML.
+    table = (
+        f"<w:tbl {_W_DECL}><w:tblPr/>"
+        "<w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>"
+        f'<w:tr>{cell("Item")}<w:customXml w:element="qty">{cell("Qty")}'
+        "</w:customXml></w:tr>"
+        f"<w:sdt><w:sdtPr/><w:sdtContent><w:tr>{cell('Apples')}{cell('3')}</w:tr>"
+        f"<w:tr>{cell('Pears')}{cell('5')}</w:tr></w:sdtContent></w:sdt>"
+        "</w:tbl>"
+    )
+
+    def build(document):
+        _append_xml(document, table)
+
+    assert (
+        extract_text(_built_docx_bytes(build), "docx")
+        == "Item\tQty\nApples\t3\nPears\t5"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_placeholder_cell_keeps_its_grid_columns():
+    def cell(text: str, span: int = 1) -> str:
+        grid_span = f'<w:tcPr><w:gridSpan w:val="{span}"/></w:tcPr>' if span > 1 else ""
+        return f"<w:tc>{grid_span}<w:p>{_run(text)}</w:p></w:tc>"
+
+    placeholder = (
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
+        f"<w:sdtContent>{cell('Enter quantity', span=2)}</w:sdtContent></w:sdt>"
+    )
+    table = (
+        f"<w:tbl {_W_DECL}><w:tblPr/><w:tblGrid>{'<w:gridCol/>' * 4}</w:tblGrid>"
+        f"<w:tr>{cell('Item')}{cell('Qty')}{cell('Price')}{cell('Note')}</w:tr>"
+        f"<w:tr>{cell('Apples')}{placeholder}{cell('fresh')}</w:tr></w:tbl>"
+    )
+
+    def build(document):
+        _append_xml(document, table)
+
+    # The placeholder spans Qty and Price; "fresh" stays under Note.
+    assert extract_text(_built_docx_bytes(build), "docx") == (
+        "Item\tQty\tPrice\tNote\nApples\t\t\tfresh"
+    )
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_the_table_of_contents_control():
+    def control(gallery: str, *texts: str) -> str:
+        paragraphs = "".join(f"<w:p>{_run(text)}</w:p>" for text in texts)
+        return (
+            f"<w:sdt {_W_DECL}><w:sdtPr><w:docPartObj>"
+            f'<w:docPartGallery w:val="{gallery}"/><w:docPartUnique/>'
+            f"</w:docPartObj></w:sdtPr><w:sdtContent>{paragraphs}"
+            "</w:sdtContent></w:sdt>"
+        )
+
+    def build(document):
+        _append_xml(document, control("Cover Pages", "Annual report"))
+        _append_xml(document, control("Table of Contents", "Contents", "Intro\t1"))
+        document.add_paragraph("Intro")
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "Annual report\nIntro"
+
+
+@pytest.mark.offline
+def test_extract_text_docx_leaves_out_controls_showing_their_placeholder():
+    def control(text: str, placeholder: str) -> str:
+        return (
+            f"<w:sdt><w:sdtPr>{placeholder}</w:sdtPr>"
+            f"<w:sdtContent>{_run(text)}</w:sdtContent></w:sdt>"
+        )
+
+    def build(document):
+        shown = "<w:showingPlcHdr/>"
+        not_shown = '<w:showingPlcHdr w:val="0"/>'
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('Name: ')}"
+            f"{control('Click or tap here to enter text.', shown)}</w:p>",
+        )
+        _append_xml(
+            document,
+            f"<w:p {_W_DECL}>{_run('Date: ')}{control('2024-05-01', not_shown)}</w:p>",
+        )
+        _append_xml(
+            document,
+            f"<w:sdt {_W_DECL}><w:sdtPr>{shown}</w:sdtPr><w:sdtContent>"
+            f"<w:p>{_run('Type the summary here.')}</w:p></w:sdtContent></w:sdt>",
+        )
+
+    assert extract_text(_built_docx_bytes(build), "docx") == "Name: \nDate: 2024-05-01"
+
+
+def _make_encrypted_pdf_bytes(text: str, *, password: str, algorithm: str) -> bytes:
+    """Build a one-page PDF showing ``text`` and encrypt it with pypdf."""
+    from pypdf import PdfReader, PdfWriter
+
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+    ]
+    out = BytesIO()
+    out.write(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(b"%d 0 obj\n%s\nendobj\n" % (number, body))
+    xref = out.tell()
+    out.write(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1))
+    for offset in offsets:
+        out.write(b"%010d 00000 n \n" % offset)
+    out.write(
+        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+        % (len(objects) + 1, xref)
+    )
+
+    writer = PdfWriter(clone_from=PdfReader(BytesIO(out.getvalue())))
+    writer.encrypt(user_password=password, algorithm=algorithm)
+    encrypted = BytesIO()
+    writer.write(encrypted)
+    return encrypted.getvalue()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("algorithm", ["AES-128", "AES-256"])
+def test_extract_text_pdf_decrypts_aes_encrypted_pdf(algorithm):
+    # pypdf decrypts AES only through an installed crypto backend
+    # (``cryptography``, else ``pycryptodome``); its pure-Python fallback raises
+    # DependencyError. LightRAG ships ``cryptography`` for this, so this pins
+    # that dropping it breaks encrypted-PDF uploads loudly here, not in prod.
+    file_bytes = _make_encrypted_pdf_bytes(
+        "Encrypted hello", password="secret", algorithm=algorithm
+    )
+
+    assert "Encrypted hello" in extract_text(file_bytes, "pdf", pdf_password="secret")
+
+
+@pytest.mark.offline
+def test_extract_text_pdf_rejects_wrong_password():
+    file_bytes = _make_encrypted_pdf_bytes(
+        "Encrypted hello", password="secret", algorithm="AES-256"
+    )
+
+    with pytest.raises(Exception, match="Incorrect PDF password"):
+        extract_text(file_bytes, "pdf", pdf_password="wrong")
+
+    with pytest.raises(Exception, match="no password provided"):
+        extract_text(file_bytes, "pdf")

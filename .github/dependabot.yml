@@ -25,13 +25,25 @@ updates:
     open-pull-requests-limit: 2
 
   # ============================================================
-  # Python (pip) Dependencies
+  # Python (uv) Dependencies
   # PR Strategy:
   #   - Major updates: Individual PR per package (except numpy which is ignored)
   #   - Minor updates: Grouped by category (llm-providers, storage, etc.)
   #   - Patch updates: Grouped by category
+  #
+  # The "uv" ecosystem, not "pip": it rewrites the constraint in pyproject.toml
+  # AND regenerates uv.lock (`uv lock --upgrade-package`). The "pip" ecosystem
+  # never touched uv.lock, so its PRs widened a bound while CI (installing from
+  # uv.lock) kept testing the old version. CI now runs `uv sync --locked`, which
+  # fails any PR whose uv.lock does not match pyproject.toml.
+  #
+  # Do not add a second "pip" entry for the requirements-offline*.txt files:
+  # both entries would read pyproject.toml in "/" and open duplicate PRs for
+  # every bump. Those hand-written files are kept in sync with pyproject.toml
+  # by tests/test_requirements_sync.py, which fails the PR if a bump leaves
+  # them behind; copy the new constraint into them on the PR branch.
   # ============================================================
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

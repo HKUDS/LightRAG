@@ -11,7 +11,7 @@ authors = [
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
@@ -24,23 +24,25 @@ dependencies = [
     "aiohttp",
     "configparser",
     "google-api-core>=2.0.0,<3.0.0",
-    "google-genai>=1.0.0,<3.0.0",
+    # The 2.0.0 floor is a resolver guard, not an API requirement: google-genai
+    # 2.x caps tenacity (<9.2.0 as of 2.34), and without the floor a tenacity
+    # bump makes uv silently fall back to google-genai 1.x, which predates its
+    # tenacity dependency. With the floor such a bump fails to resolve instead.
+    "google-genai>=2.0.0,<3.0.0",
     "json_repair>=0.59.9,<1.0.0",
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "packaging",
-    # pandas 3.0 requires Python >= 3.11 while this project still supports
-    # 3.10, so the ceiling is widened instead of the floor being raised:
-    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
-    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # Both pandas 2.x and 3.x are accepted. Only the Excel branch of
+    # aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
     # which are unchanged in 3.x.
     "pandas>=2.0.0,<4.0.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
     "PyYAML>=6.0,<7.0",
-    "python-dotenv",
+    "python-dotenv>=1.2.0",  # 1.2 adds PYTHON_DOTENV_DISABLED (tests/__init__.py)
     "setuptools",
     "tenacity",
     # 0.7.0 adds o200k_base, required by the default gpt-4o-mini, and is the
@@ -61,6 +63,7 @@ pytest = [
     "pre-commit",
     "ruff",
     "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
+    "python-dotenv>=1.2.0",
 ]
 
 api = [
@@ -72,17 +75,15 @@ api = [
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "openai>=2.0.0,<4.0.0",
-    # pandas 3.0 requires Python >= 3.11 while this project still supports
-    # 3.10, so the ceiling is widened instead of the floor being raised:
-    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
-    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # Both pandas 2.x and 3.x are accepted. Only the Excel branch of
+    # aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
     # which are unchanged in 3.x.
     "pandas>=2.0.0,<4.0.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
     "PyYAML>=6.0,<7.0",
-    "python-dotenv",
+    "python-dotenv>=1.2.0",
     "setuptools",
     "tenacity",
     # 0.7.0 adds o200k_base, required by the default gpt-4o-mini, and is the
@@ -93,16 +94,10 @@ api = [
     # engine (pandas.compat._optional.VERSIONS).
     "xlsxwriter>=3.2.0",
     "google-api-core>=2.0.0,<3.0.0",
-    "google-genai>=1.0.0,<3.0.0",
+    "google-genai>=2.0.0,<3.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
-    # asyncio.timeout() (used directly on 3.11+) is Python 3.11+ only;
-    # requires-python allows 3.10, which needs this backport instead for
-    # the MinerU/Docling result-download wall-clock deadline. Marker keeps
-    # it out of 3.11+ installs entirely, where lightrag/parser/external/
-    # _common.py never imports it.
-    "async-timeout>=4.0.3; python_version < '3.11'",
     "distro",
     "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",
@@ -110,9 +105,9 @@ api = [
     "jiter",
     "bcrypt>=4.0.0",
     "psutil",
-    "PyJWT>=2.8.0,<3.0.0",
-    "python-jose[cryptography]",
-    "cryptography>=48.0.1",        # security floor: GHSA-537c-gmf6-5ccf (via python-jose[cryptography])
+    "PyJWT>=2.15.0,<3.0.0",        # security floor: GHSA-ffc3-869f-jxw9 and 13 other PyJWT advisories
+    # Also pypdf's AES backend for encrypted PDFs (pypdf prefers it over pycryptodome).
+    "cryptography>=48.0.1",        # security floor: GHSA-537c-gmf6-5ccf
     "python-multipart>=0.0.30",    # security floor: CVE-2026-53539
     "starlette>=1.3.1,<2",         # security floor: CVE-2026-54283 / CVE-2026-48818 (transitive via fastapi)
     "pytz",
@@ -121,9 +116,8 @@ api = [
     "gunicorn",
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
-    "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
     "pypdf>=6.1.0",                 # PDF processing
-    "python-docx>=0.8.11,<2.0.0",  # DOCX processing
+    "python-docx>=1.1.2,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
     "cairosvg>=2.5.0,<3.0.0",      # SVG->PNG rasterization for native markdown images
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx
@@ -134,10 +128,24 @@ api = [
     # (sentence/NER heuristics). Language models are separate wheels pinned in
     # requirements-offline-smart-heading.txt and installed via
     # `lightrag-download-cache --spacy-install`.
-    # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, breaking
-    # `uv sync --frozen` on Python 3.14; 3.8.16 restored both. Cap below
-    # 3.8.17 to stay on 3.8.x until spacy 4.x graduates from dev.
-    "spacy>=3.8,<3.8.17",
+    # Capped at the minor version: spaCy models are trained per minor release
+    # and the pinned 3.8.0 models declare spacy_version ">=3.8.0,<3.9.0" in
+    # meta.json only (not in Requires-Dist), so nothing would stop a 3.9
+    # upgrade from silently changing NER / sentence-split decisions. Moving to
+    # 3.9 means swapping the model URLs in requirements-offline-smart-heading.txt
+    # and re-validating smart_heading. Patch releases are vetted by uv.lock:
+    # 3.8.14 and 3.8.15 shipped neither a cp314 wheel nor an sdist, which the
+    # CI Python 3.14 leg's `uv sync --locked` catches at lock-update time.
+    "spacy>=3.8,<3.9",
+    # zh_core_web_sm's tokenizer backend (the model wheel requires it but does
+    # not bundle it). Declared here so uv.lock and `uv sync` own it instead of
+    # leaving it unmanaged next to the model wheels. Exact pin, like the
+    # models: it does the Chinese word segmentation smart_heading's
+    # determinism promise rests on, and the pip-only offline path
+    # (requirements-offline-smart-heading.txt) does not go through uv.lock.
+    # SPACY_MODEL_WHEELS in lightrag/tools/download_cache.py carries the same
+    # pin; tests/test_requirements_sync.py keeps all copies equal.
+    "spacy-pkuseg==1.0.2",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
@@ -157,15 +165,15 @@ offline-storage = [
 offline-llm = [
     # LLM provider dependencies
     "openai>=2.0.0,<4.0.0",
-    "anthropic>=0.18.0,<2.0.0",
+    "anthropic>=0.18.0,<3.0.0",
     "ollama>=0.5.4,<1.0.0",
-    "zhipuai>=2.0.0,<3.0.0",
+    "zai-sdk>=0.2.3,<1.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
     "llama-index>=0.14.0,<1.0.0",  # Updated to ensure compatibility with openai 2.x
     "llama-index-llms-openai>=0.6.12",  # Explicitly require version that supports openai 2.x
     "google-api-core>=2.0.0,<3.0.0",
-    "google-genai>=1.0.0,<3.0.0",
+    "google-genai>=2.0.0,<3.0.0",
 ]
 
 offline = [
@@ -181,11 +189,16 @@ test = [
     "pre-commit",
     "ruff",
     "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
+    "python-dotenv>=1.2.0",
 ]
 
 evaluation = [
     "lightrag-hku[api]",
     "ragas>=0.3.7",
+    # ragas (<=0.4.3) imports langchain_community.chat_models.vertexai at
+    # import time; langchain-community 0.4.2 deleted that module, which
+    # makes `import ragas` fail. Lift this cap once ragas stops importing it.
+    "langchain-community<0.4.2",
     "datasets>=4.3.0",
 ]
 
@@ -246,4 +259,12 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Newer ruff releases (observed with 0.17.x)
+# ship a much wider built-in default selection, so leaving `select` unset
+# makes the result depend on whichever ruff an editor extension or
+# pre-commit happens to bundle. This list is exactly the default of the
+# ruff version pinned in .pre-commit-config.yaml (0.15.17).
+select = ["E4", "E7", "E9", "F"]

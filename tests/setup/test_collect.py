@@ -1887,3 +1887,129 @@ collect_opensearch_config "yes"
 printf 'PASSWORD_VALIDATOR=%s\\n' "$(cat "$validator_file")\"
 """)
     assert values["PASSWORD_VALIDATOR"] == "validate_opensearch_password_strength"
+
+
+def test_collect_llm_config_offers_openai_responses() -> None:
+    """The Responses binding is a selectable LLM provider with OpenAI defaults."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{
+  shift 2
+  printf '%s\\n' "$@" > "$OPTIONS_FILE"
+  printf 'openai_responses'
+}}
+OPTIONS_FILE="$(mktemp)"
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'sk-test-key'; }}
+
+collect_llm_config
+
+printf 'OFFERED=%s\\n' "$(grep -cx openai_responses "$OPTIONS_FILE")"
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+rm -f "$OPTIONS_FILE"
+""")
+    values = parse_lines(output)
+    assert values["OFFERED"] == "1"
+    assert values["LLM_BINDING"] == "openai_responses"
+    assert values["LLM_MODEL"] == "gpt-6-luna"
+    assert values["LLM_BINDING_HOST"] == "https://api.openai.com/v1"
+    assert values["LLM_BINDING_API_KEY"] == "sk-test-key"
+    assert "/v1/responses" in output
+
+
+def test_collect_llm_config_keeps_existing_openai_responses_settings(
+    tmp_path: Path,
+) -> None:
+    """A rerun keeps the binding as the default choice and its model/host/key.
+
+    The real prompt_choice only pre-selects a default that is one of the
+    offered options; otherwise Enter is rejected and the user is forced to
+    pick another binding. The stub models exactly that: accept the default
+    only when it is offered, fail otherwise.
+    """
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai_responses",
+            "LLM_MODEL=gpt-5.6",
+            "LLM_BINDING_HOST=https://gateway.example/v1",
+            "LLM_BINDING_API_KEY=existing-key",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{
+  local default="$2"
+  shift 2
+  local option
+  for option in "$@"; do
+    if [[ "$option" == "$default" ]]; then
+      printf '%s' "$default"
+      return 0
+    fi
+  done
+  echo "DEFAULT_NOT_OFFERED: $default" >&2
+  return 1
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+""")
+    values = parse_lines(output)
+    assert values["LLM_BINDING"] == "openai_responses"
+    assert values["LLM_MODEL"] == "gpt-5.6"
+    assert values["LLM_BINDING_HOST"] == "https://gateway.example/v1"
+    assert values["LLM_BINDING_API_KEY"] == "existing-key"
+
+
+def test_collect_embedding_config_reuses_openai_responses_llm_credentials(
+    tmp_path: Path,
+) -> None:
+    """openai_responses has no embedding side; an openai embedding next to it
+    is the same provider and reuses the LLM endpoint and key."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai_responses",
+            "LLM_BINDING_HOST=https://gateway.example/v1",
+            "LLM_BINDING_API_KEY=shared-key",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'openai'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}}"
+""")
+    values = parse_lines(output)
+    assert values["EMBEDDING_BINDING"] == "openai"
+    assert values["EMBEDDING_BINDING_HOST"] == "https://gateway.example/v1"
+    assert values["EMBEDDING_BINDING_API_KEY"] == "shared-key"
