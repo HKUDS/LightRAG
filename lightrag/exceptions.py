@@ -681,12 +681,12 @@ class ChunkBlockMatchError(ValueError):
 
 
 class BlocksSidecarCorruptError(ValueError):
-    """Raised when a ``*.blocks.jsonl`` sidecar exists but cannot be decoded.
+    """Raised when a ``*.blocks.jsonl`` sidecar has invalid encoding or rows.
 
-    A row that is not valid JSON, or bytes that are not valid UTF-8, mean the
-    parse-time structure of the document is damaged. Paragraph-semantic chunking
-    raises this instead of chunking the rows that still parse (which loses the
-    damaged row's text) or degrading to another strategy (which is recorded
+    Invalid JSON or UTF-8, or a content row without a string ``content`` field,
+    mean the parse-time structure of the document is damaged. Paragraph-semantic
+    chunking raises this instead of chunking the rows that still parse (which
+    loses the damaged row's text) or degrading to another strategy (which is recorded
     nowhere). The pipeline marks the document FAILED.
 
     Retrying does not help: a ``lightrag``-format document reuses its existing
