@@ -27,7 +27,11 @@ from lightrag.query_validation import (
     validate_rag_query,
 )
 from lightrag.utils import TiktokenTokenizer, acount_tokens
-from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
+from lightrag.api.utils_api import (
+    get_combined_auth_dependency,
+    internal_server_error,
+    stream_error_message,
+)
 from fastapi import Depends
 
 
@@ -538,13 +542,13 @@ class OllamaAPI:
                                         }
                                         yield f"{json.dumps(data, ensure_ascii=False)}\n"
                             except (asyncio.CancelledError, Exception) as e:
-                                error_msg = str(e)
                                 if isinstance(e, asyncio.CancelledError):
                                     error_msg = "Stream was cancelled by server"
+                                    logger.error(f"Stream error: {error_msg}")
                                 else:
-                                    error_msg = f"Provider error: {error_msg}"
-
-                                logger.error(f"Stream error: {error_msg}")
+                                    error_msg = stream_error_message(
+                                        e, "Stream error: provider error"
+                                    )
 
                                 # Send error message to client
                                 error_data = {
@@ -789,13 +793,13 @@ class OllamaAPI:
                                         }
                                         yield f"{json.dumps(data, ensure_ascii=False)}\n"
                             except (asyncio.CancelledError, Exception) as e:
-                                error_msg = str(e)
                                 if isinstance(e, asyncio.CancelledError):
                                     error_msg = "Stream was cancelled by server"
+                                    logger.error(f"Stream error: {error_msg}")
                                 else:
-                                    error_msg = f"Provider error: {error_msg}"
-
-                                logger.error(f"Stream error: {error_msg}")
+                                    error_msg = stream_error_message(
+                                        e, "Stream error: provider error"
+                                    )
 
                                 # Send error message to client
                                 error_data = {
