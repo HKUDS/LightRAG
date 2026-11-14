@@ -148,16 +148,15 @@
         "select": "اختيار"
       },
       "filters": {
-          "deleting": "جارٍ الحذف",
         "all": "الكل",
         "completed": "مكتمل",
         "parse": "تحليل ملف",
         "analyze": "وسائط",
         "process": "استخراج",
+        "deleting": "جارٍ الحذف",
         "failed": "فشل"
       },
       "status": {
-          "deleting": "جارٍ الحذف",
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",
@@ -165,6 +164,7 @@
         "analyzing": "وسائط",
         "processing": "استخراج",
         "pending": "معلق",
+        "deleting": "جارٍ الحذف",
         "failed": "فشل"
       },
       "errors": {

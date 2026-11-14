@@ -148,16 +148,15 @@
         "select": "선택"
       },
       "filters": {
-          "deleting": "삭제 중",
         "all": "전체",
         "completed": "완료",
         "parse": "파싱 중",
         "analyze": "분석 중",
         "process": "처리 중",
+        "deleting": "삭제 중",
         "failed": "실패"
       },
       "status": {
-          "deleting": "삭제 중",
         "all": "전체",
         "completed": "완료",
         "preprocessed": "전처리 완료",
@@ -165,6 +164,7 @@
         "analyzing": "분석 중",
         "processing": "처리 중",
         "pending": "대기 중",
+        "deleting": "삭제 중",
         "failed": "실패"
       },
       "errors": {

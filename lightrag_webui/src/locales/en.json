@@ -148,16 +148,15 @@
         "select": "Select"
       },
       "filters": {
-          "deleting": "Deleting",
         "all": "All",
         "completed": "Completed",
         "parse": "Parsing",
         "analyze": "Analyzing",
         "process": "Processing",
+        "deleting": "Deleting",
         "failed": "Failed"
       },
       "status": {
-          "deleting": "Deleting",
         "all": "All",
         "completed": "Completed",
         "preprocessed": "Preprocessed",
@@ -165,6 +164,7 @@
         "analyzing": "Analyzing",
         "processing": "Processing",
         "pending": "Pending",
+        "deleting": "Deleting",
         "failed": "Failed"
       },
       "errors": {

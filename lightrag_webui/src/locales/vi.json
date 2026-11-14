@@ -148,16 +148,15 @@
         "select": "Chọn"
       },
       "filters": {
-          "deleting": "Đang xóa",
         "all": "Tất cả",
         "completed": "Hoàn tất",
         "parse": "Cú pháp",
         "analyze": "Phân tích",
         "process": "Xử lý",
+        "deleting": "Đang xóa",
         "failed": "Thất bại"
       },
       "status": {
-          "deleting": "Đang xóa",
         "all": "Tất cả",
         "completed": "Hoàn tất",
         "preprocessed": "Đã tiền xử lý",
@@ -165,6 +164,7 @@
         "analyzing": "Phân tích",
         "processing": "Xử lý",
         "pending": "Đang chờ",
+        "deleting": "Đang xóa",
         "failed": "Thất bại"
       },
       "errors": {

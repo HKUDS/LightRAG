@@ -6039,6 +6039,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         record that lets a retry survive its own anchor deletion (step 8), and
         the failure mode it creates — anchors gone, journal absent — is a
         permanent fail-closed refusal.
+
+        ``stamp_deleting`` moves the row to ``DocStatus.DELETING`` in the SAME
+        targeted write as the journal (never a separate one), and refreshes
+        ``updated_at`` with it. Only document deletion may pass it; see
+        docs/design/PurgeRecoveryContract.md#visible-deletion-recovery.
         """
         status_doc = await require_doc_status_record(
             self.doc_status, doc_id, purpose=f"journal purge phase '{phase}'"
@@ -6054,9 +6059,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         }
         # missing_ok=False: the row vanishing between the read above and this
         # write is the same unjournaled-purge hazard, not a tolerable race.
-        fields = {"metadata": metadata}
+        fields: dict[str, Any] = {"metadata": metadata}
         if stamp_deleting:
             fields["status"] = DocStatus.DELETING
+            fields["updated_at"] = datetime.now(timezone.utc).isoformat()
         await self.doc_status.update_doc_status_fields(doc_id, fields)
         await self._flush_storages([self.doc_status])
 
@@ -7005,6 +7011,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif doc_status == DocStatus.FAILED:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: FAILED)"
+                    )
+                elif doc_status == DocStatus.DELETING:
+                    warning_msg = (
+                        f"Resuming interrupted deletion of {doc_id} {file_path}"
                     )
                 else:
                     status_text = (

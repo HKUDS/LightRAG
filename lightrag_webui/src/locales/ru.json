@@ -148,16 +148,15 @@
         "select": "Выбрать"
       },
       "filters": {
-          "deleting": "Удаление",
         "all": "Все",
         "completed": "Завершено",
         "parse": "Разбор",
         "analyze": "Анализ",
         "process": "Обработка",
+        "deleting": "Удаление",
         "failed": "Ошибка"
       },
       "status": {
-          "deleting": "Удаление",
         "all": "Все",
         "completed": "Завершено",
         "preprocessed": "Предобработано",
@@ -165,6 +164,7 @@
         "analyzing": "Анализ",
         "processing": "Обработка",
         "pending": "Ожидание",
+        "deleting": "Удаление",
         "failed": "Ошибка"
       },
       "errors": {

@@ -148,16 +148,15 @@
         "select": "Sélectionner"
       },
       "filters": {
-          "deleting": "Suppression en cours",
         "all": "Tous",
         "completed": "Terminé",
         "parse": "Parsing",
         "analyze": "Analyse",
         "process": "Extraction",
+        "deleting": "Suppression en cours",
         "failed": "Échoué"
       },
       "status": {
-          "deleting": "Suppression en cours",
         "all": "Tous",
         "completed": "Terminé",
         "preprocessed": "Prétraité",
@@ -165,6 +164,7 @@
         "analyzing": "Analyse",
         "processing": "Extraction",
         "pending": "En attente",
+        "deleting": "Suppression en cours",
         "failed": "Échoué"
       },
       "errors": {
