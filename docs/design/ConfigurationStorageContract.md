@@ -1367,6 +1367,15 @@ in `AGENTS.md`).
 - **JSON registration residues.** An empty-member anchor, and a metadata-only
   snapshot whose append did not land, are both resumed by the next start.
   *Recovery:* none needed.
+- **Two database first binds at once where the bind lock fails open.** The
+  identity row is an upsert and only the anchor publish is no-clobber, so a
+  start that created an identity can overwrite the winner's before losing
+  the anchor race. The loser is refused and names both identities; the
+  winner keeps serving under an anchor the container no longer matches, and
+  every later start refuses with `uuid_mismatch`. *Recovery:* stop every
+  instance, back up and delete the anchor, start one server (it adopts the
+  identity the container holds). A JSON first bind publishes its anchor
+  before writing any snapshot, so its loser has written nothing.
 - **A lost JSON member append where the bind lock fails open.** Detected by
   the next start of that workspace and by the migration's extra-snapshot
   check; *recovery:* stop every instance, back up and delete the anchor,

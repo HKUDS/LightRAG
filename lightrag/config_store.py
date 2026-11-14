@@ -67,6 +67,7 @@ from enum import Enum
 from typing import Any, AsyncIterator, Callable
 
 from lightrag.config_anchor import (
+    IDENTITY_ANCHOR_APPEARED,
     IDENTITY_ANCHOR_WRITE_FAILED,
     IDENTITY_BACKEND_MISMATCH,
     IDENTITY_MEMBER_MISSING,
@@ -1567,11 +1568,22 @@ async def _bind_unanchored(
         action = "created"
     else:
         action = "adopted"
-    path = publish_anchor(
-        working_dir,
-        StorageAnchor(backend=backend, storage_uuid=stored),
-        replace=False,
-    )
+    try:
+        path = publish_anchor(
+            working_dir,
+            StorageAnchor(backend=backend, storage_uuid=stored),
+            replace=False,
+        )
+    except ConfigurationIdentityError as e:
+        if e.cause != IDENTITY_ANCHOR_APPEARED:
+            raise
+        raise await _lost_bind_race(
+            config,
+            working_dir=working_dir,
+            backend=backend,
+            container=container,
+            written=stored if action == "created" else None,
+        ) from e
     logger.warning(
         f"Bound this deployment to the configuration container {container} "
         f"(identity {stored}, {action}); the anchor is {path}. No anchor was "
@@ -1581,6 +1593,83 @@ async def _bind_unanchored(
         f"between configuration containers was NOT checked on this start."
     )
     return IdentityBinding(storage_uuid=stored, action=action)
+
+
+async def _lost_bind_race(
+    config: Any,
+    *,
+    working_dir: str,
+    backend: str,
+    container: str,
+    written: str | None,
+) -> ConfigurationIdentityError:
+    """The refusal for a database bind whose no-clobber anchor publish lost.
+
+    Only reachable where the bind lock failed open. The identity row is an
+    upsert, so a start that CREATED an identity may have overwritten the
+    winner's before losing the anchor race. Read both sides and say what
+    the deployment now holds, instead of claiming nothing changed.
+    """
+    path = anchor_path(working_dir)
+    try:
+        winner = read_anchor(working_dir)
+    except ConfigurationIdentityError as e:
+        winner, winner_error = None, str(e)
+    else:
+        winner_error = ""
+    try:
+        held = await read_storage_identity(config)
+    except ConfigurationStorageError as e:
+        held, held_error = None, str(e)
+    else:
+        held_error = ""
+    head = (
+        "Refusing to start: another process bound this working directory "
+        "while this start was binding, which is unsupported -- the bind lock "
+        "could not be taken (see the warning above). "
+    )
+    wrote = (
+        f"This start wrote identity {written} to {container} before it lost "
+        f"the anchor race. "
+        if written
+        else ""
+    )
+    if (
+        winner is not None
+        and winner.backend == backend
+        and held is not None
+        and held == winner.storage_uuid
+    ):
+        state = (
+            f"The anchor {path} binds identity {winner.storage_uuid}, which "
+            f"{container} holds: the deployment is consistent. Restart this "
+            f"server; it verifies against that binding."
+        )
+    else:
+        anchored = (
+            f"identity {winner.storage_uuid} ({winner.backend})"
+            if winner is not None
+            else f"an anchor that could not be read ({winner_error})"
+        )
+        holding = (
+            f"identity {held}"
+            if held is not None
+            else (
+                f"no readable identity ({held_error})" if held_error else "no identity"
+            )
+        )
+        state = (
+            f"The anchor {path} now binds {anchored}, but {container} holds "
+            f"{holding}, so every later start refuses until they agree. Stop "
+            f"every server and maintenance tool on this WORKING_DIR, back up "
+            f"and delete {path}, and start ONE server: it adopts the identity "
+            f"the container holds."
+        )
+    return ConfigurationIdentityError(
+        head + wrote + state,
+        cause=IDENTITY_ANCHOR_APPEARED,
+        anchor_path=path,
+    )
 
 
 async def _bind_json(

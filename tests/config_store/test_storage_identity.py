@@ -382,6 +382,64 @@ class TestUnanchoredStarts:
         assert excinfo.value.cause == ca.IDENTITY_ANCHOR_APPEARED
         assert real_read(str(tmp_path)).storage_uuid == UUID_B
 
+    def _lose_the_anchor_race(self, monkeypatch, winner_uuid):
+        """Another process publishes its anchor just before this start does:
+        what a fail-open bind lock lets happen."""
+        real_publish = cs.publish_anchor
+        raced = []
+
+        def _racing(working_dir, anchor, *, replace):
+            if not replace and not raced:
+                raced.append(True)
+                real_publish(
+                    working_dir,
+                    ca.StorageAnchor(backend="PGKVStorage", storage_uuid=winner_uuid),
+                    replace=False,
+                )
+            return real_publish(working_dir, anchor, replace=replace)
+
+        monkeypatch.setattr(cs, "publish_anchor", _racing)
+
+    async def test_a_lost_race_that_overwrote_the_identity_says_so(
+        self, tmp_path, monkeypatch
+    ):
+        """Both starts found no identity and created one; this one's upsert
+        landed last, then it lost the anchor race. The container now holds
+        an identity no anchor names: say so, and how to get back, instead of
+        "nothing was overwritten"."""
+        config = FakeConfigKV()
+        self._lose_the_anchor_race(monkeypatch, UUID_B)
+
+        with pytest.raises(ConfigurationIdentityError) as excinfo:
+            await _bind(config, tmp_path)
+        message = str(excinfo.value)
+        written = config.visible[IDENTITY_KEY]["value"]["uuid"]
+        assert excinfo.value.cause == ca.IDENTITY_ANCHOR_APPEARED
+        assert f"wrote identity {written}" in message
+        assert f"binds identity {UUID_B}" in message
+        assert f"holds identity {written}" in message
+        assert "back up and delete" in message
+        assert "Nothing was overwritten" not in message
+        # The winner's anchor is untouched.
+        assert ca.read_anchor(str(tmp_path)).storage_uuid == UUID_B
+
+    async def test_a_lost_race_over_one_adopted_identity_is_consistent(
+        self, tmp_path, monkeypatch
+    ):
+        """Both starts adopted the identity already in the container: losing
+        the anchor race changed nothing, and a restart verifies."""
+        config = FakeConfigKV({IDENTITY_KEY: _identity_row(UUID_A)})
+        self._lose_the_anchor_race(monkeypatch, UUID_A)
+
+        with pytest.raises(ConfigurationIdentityError) as excinfo:
+            await _bind(config, tmp_path)
+        message = str(excinfo.value)
+        assert "consistent" in message and "Restart this server" in message
+        assert "wrote identity" not in message
+        assert "delete" not in message
+        assert _writes(config) == []
+        assert (await _bind(config, tmp_path)).action == "verified"
+
 
 class TestToolVerification:
     async def test_no_anchor_verifies_nothing_and_writes_nothing(self, tmp_path):

@@ -409,7 +409,8 @@ def publish_anchor(working_dir: str, anchor: StorageAnchor, *, replace: bool) ->
         raise ConfigurationIdentityError(
             f"The configuration storage anchor {path} appeared while this "
             f"start was binding; another process bound this working directory "
-            f"at the same time, which is unsupported. Nothing was overwritten. "
+            f"at the same time, which is unsupported. The anchor on disk was not "
+            f"overwritten. "
             f"Restart, one server at a time.",
             cause=IDENTITY_ANCHOR_APPEARED,
             anchor_path=path,
