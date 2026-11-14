@@ -567,11 +567,15 @@ Entri yang ditandai 🇨🇳 juga menyediakan terjemahan bahasa Mandarin sebagai
 
 ### Tool Pemeliharaan (`lightrag/tools/`)
 
-Tool yang berinteraksi dengan storage membaca `.env` dan environment variable dengan cara yang sama seperti server, jadi jalankan dari root proyek dengan konfigurasi yang sama. Beberapa tool menulis ulang storage secara in-place — periksa panduan terkait untuk mengetahui apakah server (dan writer lainnya) harus dihentikan terlebih dahulu; `rebuild_vdb` mewajibkannya.
+Tool yang berinteraksi dengan storage membaca `.env` dan environment variable dengan cara yang sama seperti server, jadi jalankan dari root proyek dengan konfigurasi yang sama. Beberapa tool menulis ulang storage secara in-place — periksa panduan terkait untuk mengetahui apakah server (dan writer lainnya) harus dihentikan terlebih dahulu; `rebuild_vdb` dan `clear_storage` mewajibkannya.
 
 **`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
 
 Menghapus dan membangun ulang seluruh vector storage dari sumber otoritatifnya (graph node/edge dan KV store `text_chunks`). Ini adalah jalur recovery setelah vector write gagal, dan setelah mengganti model atau dimensi embedding. Tool ini juga menyediakan pemeriksaan konsistensi read-only.
+
+**`clear_storage.py`** — `lightrag-clear-storage` — [README_CLEAR_STORAGE.md](./lightrag/tools/README_CLEAR_STORAGE.md)
+
+Menghapus seluruh data storage dari satu workspace secara offline, persis seperti tombol *Clear* di WebUI, setelah menampilkan apa yang akan dihapus dan meminta konfirmasi yang diketik. Ini adalah jalan keluar ketika server menolak start karena vector index kosong atau tidak terbaca, sementara datanya boleh dibuang dan rebuild akan sia-sia. Tidak pernah menyentuh LLM response cache. Server harus dihentikan terlebih dahulu.
 
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 

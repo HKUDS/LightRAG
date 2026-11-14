@@ -567,11 +567,15 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 ### 運用ツール（`lightrag/tools/`）
 
-ストレージを扱うツールはサーバーと同じように `.env` と環境変数を読み込むため、プロジェクトルートから同一の設定で実行してください。いくつかのツールはストレージをその場で書き換えます。サーバー（および他の書き込み側）を先に停止する必要があるかは各ガイドを確認してください。`rebuild_vdb` は停止が必須です。
+ストレージを扱うツールはサーバーと同じように `.env` と環境変数を読み込むため、プロジェクトルートから同一の設定で実行してください。いくつかのツールはストレージをその場で書き換えます。サーバー（および他の書き込み側）を先に停止する必要があるかは各ガイドを確認してください。`rebuild_vdb` と `clear_storage` は停止が必須です。
 
 **`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
 
 すべてのベクトルストレージを破棄し、権威データ（グラフのノード／エッジ、`text_chunks` KV ストア）から再構築します。ベクトル書き込み失敗後の復旧、および embedding モデルや次元数を変更した後の再構築に使用します。読み取り専用の整合性チェックモードもあります。
+
+**`clear_storage.py`** — `lightrag-clear-storage` — [README_CLEAR_STORAGE.md](./lightrag/tools/README_CLEAR_STORAGE.md)
+
+1 つの workspace のデータストレージをすべてオフラインで破棄します。動作は WebUI の *Clear* ボタンと同じで、削除対象を表示したうえで確認フレーズの入力を求めます。ベクトルインデックスが空または読み取れないためにサーバーが起動を拒否し、データが破棄してよいものである場合に、時間のかかる再構築の代わりに使います。LLM レスポンスキャッシュには一切触れません。サーバーを先に停止する必要があります。
 
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 

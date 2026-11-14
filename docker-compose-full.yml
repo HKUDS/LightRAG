@@ -140,8 +140,9 @@ services:
 
   postgres:
     # Official pgvector image: no Apache AGE, so PGGraphStorage cannot run here.
-    # Use PGTableGraphStorage (recommended) for graph storage on plain tables, or
-    # switch to gzdaniel/postgres-for-rag:pg18-age-pgvector if you need AGE.
+    # Use PGTableGraphStorage for graph storage on plain tables. PGGraphStorage
+    # is deprecated; it needs an AGE image such as
+    # gzdaniel/postgres-for-rag:pg18-age-pgvector.
     image: pgvector/pgvector:pg18
     # ports:
     #   - "5432:5432"

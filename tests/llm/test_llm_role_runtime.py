@@ -984,14 +984,10 @@ def _persisted_vector_ids(rag: LightRAG) -> set[str]:
         return {row["__id__"] for row in json.load(f)["data"]}
 
 
-async def _assert_retry_flushes_and_closes_embedding(rag: LightRAG) -> None:
-    """After an interrupted finalize the embedding queue must still be open,
-    so the retry can flush the buffered vector -- and the retry, which runs
-    to completion, must then shut it down."""
-    assert (await rag.get_embedding_queue_status())["worker_count"] > 0
-
-    await rag.finalize_storages()
-
+async def _assert_flushed_and_embedding_closed(rag: LightRAG) -> None:
+    """The finalize ran its storage teardown to completion with the embedding
+    queue still open, so the buffered vector reached disk -- and only then was
+    the embedding queue shut down."""
     assert rag._storages_status == StoragesStatus.FINALIZED
     assert "rel-pending" in _persisted_vector_ids(rag)
     embedding_status = await rag.get_embedding_queue_status()
@@ -1000,43 +996,35 @@ async def _assert_retry_flushes_and_closes_embedding(rag: LightRAG) -> None:
 
 
 @pytest.mark.asyncio
-async def test_retry_after_finalize_cancelled_in_storage_loop_flushes_vectors(
-    tmp_path,
-):
-    """Shutting the embedding queue down is permanent. It used to run in a
-    ``finally``, so a finalize cancelled inside the storage loop closed it,
-    and the retry's vector flush then failed with "Queue is shutting down":
-    the buffered vectors were dropped and the storages marked FINALIZED."""
+async def test_cancel_inside_storage_loop_still_flushes_later_vectors(tmp_path):
+    """Shutting the embedding queue down is permanent, so it must not run
+    before the vector storages have flushed. A cancel raised inside one
+    storage's release is absorbed by the shielded teardown; the storages
+    after it -- here the one holding the buffered vector -- must still find
+    the embedding queue open and flush."""
     rag = _make_rag(tmp_path)
     await rag.initialize_storages()
     await _buffer_pending_vector(rag)
 
     original_finalize = rag.entities_vdb.finalize
-    calls = 0
 
     async def cancelled_once():
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise asyncio.CancelledError()
-        await original_finalize()
+        rag.entities_vdb.finalize = original_finalize
+        raise asyncio.CancelledError()
 
     rag.entities_vdb.finalize = cancelled_once
 
-    with pytest.raises(asyncio.CancelledError):
-        await rag.finalize_storages()
-    assert rag._storages_status == StoragesStatus.INITIALIZED
+    await rag.finalize_storages()
 
-    await _assert_retry_flushes_and_closes_embedding(rag)
+    await _assert_flushed_and_embedding_closed(rag)
 
 
 @pytest.mark.asyncio
-async def test_retry_after_finalize_cancelled_during_rerank_drain_flushes_vectors(
-    tmp_path,
-):
+async def test_cancel_during_rerank_drain_still_flushes_vectors(tmp_path):
     """The LLM/rerank drain runs before the storages; a finalize cancelled
-    there must leave the embedding queue open for the retry too (regression
-    case from the review of PR #4396)."""
+    there absorbs the cancel, runs the storage teardown with the embedding
+    queue still open, and re-raises the cancellation only afterwards
+    (regression case from the review of PR #4396)."""
     started, release, draining = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def rerank_func(*args, **kwargs):
@@ -1064,13 +1052,12 @@ async def test_retry_after_finalize_cancelled_during_rerank_drain_flushes_vector
         stop.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(stop, 5)
-        assert rag._storages_status == StoragesStatus.INITIALIZED
     finally:
         release.set()
         await asyncio.wait_for(call, 5)
         rag.rerank_model_func.shutdown = original_shutdown
 
-    await _assert_retry_flushes_and_closes_embedding(rag)
+    await _assert_flushed_and_embedding_closed(rag)
 
 
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):

@@ -167,9 +167,9 @@ def test_credential_and_milvus_defaults_when_env_source_lacks_values(tmp_path) -
 def test_image_tags_stay_in_sync_with_repo() -> None:
     """The script must mirror the repo's image tags so the two do not drift.
 
-    Postgres deliberately differs: the setup template's AGE image is amd64-only,
-    so the arm64 stack uses pgvector/pgvector:pg18 (which docker-compose-full.yml
-    also uses).
+    Postgres differs only by tag: the stack uses pgvector/pgvector:pg18 (as
+    docker-compose-full.yml does), while the setup template uses that image's
+    trixie build to stay compatible with volumes the earlier AGE image created.
     """
     script_text = SCRIPT.read_text()
     milvus_tpl = (

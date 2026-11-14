@@ -11,6 +11,13 @@ from typing import Literal, TypeAlias
 # Default values for server settings
 DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
+# Single source for the working directory default: the SDK dataclass default,
+# the server's --working-dir default and the maintenance tools' WORKING_DIR
+# fallback must all name the same directory.
+DEFAULT_WORKING_DIR = "./rag_storage"
+# Single source for the input directory default: the server's --input-dir
+# default and the cwd-relative fallback used when INPUT_DIR is unset.
+DEFAULT_INPUT_DIR = "./inputs"
 
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
