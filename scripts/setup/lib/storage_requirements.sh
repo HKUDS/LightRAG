@@ -24,6 +24,11 @@ declare -ag CONFIG_STORAGE_OPTIONS=(
   "OpenSearchKVStorage"
 )
 
+# PGGraphStorage (Apache AGE) is deliberately not offered: the PostgreSQL
+# service this wizard generates ships pgvector only, and PGTableGraphStorage
+# is the PostgreSQL graph storage to use. It stays in the requirement tables
+# below so that an existing .env naming it is still understood as
+# PostgreSQL-backed; report_age_graph_storage warns about it.
 declare -ag GRAPH_STORAGE_OPTIONS=(
   "NetworkXStorage"
   "PGTableGraphStorage"
@@ -31,7 +36,6 @@ declare -ag GRAPH_STORAGE_OPTIONS=(
   "OpenSearchGraphStorage"
   "MemgraphStorage"
   "Neo4JStorage"
-  "PGGraphStorage"
 )
 
 declare -ag VECTOR_STORAGE_OPTIONS=(

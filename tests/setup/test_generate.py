@@ -1876,7 +1876,7 @@ add_docker_service vllm-embed
 generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:pg18-age-pgvector" in result
+    assert "image: pgvector/pgvector:pg18-trixie" in result
     assert "image: vllm/vllm-openai-cpu:latest" in result
     assert "registry.example.com/postgres-for-rag:patched" not in result
     assert "vllm/vllm-openai-cpu:patched" not in result
