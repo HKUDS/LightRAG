@@ -546,3 +546,42 @@ def test_stream_without_subtype_is_skipped_like_pypdf():
     data = b.bytes()
     assert "Body" in _unbudgeted(data)
     _assert_same_as_pypdf(data)
+
+
+def _shared_empty_array_pdf(pages: int, entries: int, resources) -> bytes:
+    b = _Builder()
+    empty = b.stream(b"")
+    array = b.writer._add_object(ArrayObject([empty] * entries))
+    for _ in range(pages):
+        page = b.writer.add_blank_page(width=612, height=792)
+        page[NameObject("/Resources")] = resources(b)
+        page[NameObject("/Contents")] = array
+    return b.bytes()
+
+
+def test_shared_contents_array_is_traversed_once(monkeypatch):
+    # Recent pypdf skips pages with empty /Resources; the preflight must not
+    # walk a shared array once per such page.
+    data = _shared_empty_array_pdf(200, 500, lambda b: DictionaryObject())
+    calls: list[int] = []
+    original = PdfExtractionBudget._decoded_length
+
+    def spy(self, stream):
+        calls.append(1)
+        return original(self, stream)
+
+    monkeypatch.setattr(PdfExtractionBudget, "_decoded_length", spy)
+    monkeypatch.setenv("PDF_MAX_CONTENT_BYTES", str(1_000_000))
+    _assert_same_as_pypdf(data)
+    assert len(calls) == 500
+
+
+def test_array_of_empty_streams_is_charged_per_entry(monkeypatch):
+    # An array of references is not a content stream, and its entries are
+    # empty, yet pypdf resolves and concatenates every one on every page.
+    data = _shared_empty_array_pdf(200, 500, lambda b: b.resources())
+    monkeypatch.setenv("PDF_MAX_CONTENT_BYTES", str(1_000_000))
+    calls = _count_page_extractions(monkeypatch)
+    with pytest.raises(PdfExtractionBudgetError, match="PDF_MAX_CONTENT_BYTES"):
+        extract_text(data, "pdf")
+    assert calls == []

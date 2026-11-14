@@ -37,6 +37,17 @@ lifetime.
   repeats one stream is charged once per entry, because pypdf concatenates and
   parses each entry. A page that declares no `/Resources`, directly or
   through `/Parent`, is skipped: no pypdf release parses such a page.
+- Pages may share one `/Contents` object, an array included. Its totals (or
+  its error) are memoized, so N pages naming an array of M entries cost M
+  steps of preflight, not N x M. Every page is still charged in full.
+- Each entry of a page pypdf parses is charged at least 64 bytes
+  (`_MIN_CONTENT_ENTRY_BYTES`), even an empty stream. pypdf resolves, decodes
+  and concatenates every entry on every page, and an array of references is
+  not itself a content stream, so N pages sharing an array of empty streams
+  would otherwise cost N x M steps and charge nothing. pypdf caps an array at
+  10,000 entries per page, but not across pages. A page with empty
+  `/Resources`, which recent pypdf skips, is charged its decoded bytes only,
+  without the minimum.
 - A form XObject is charged at every `Do` that invokes it, from
   `visitor_operand_before`, before pypdf parses it.
 - The cap is `min(PDF_MAX_CONTENT_BYTES, max(floor, PDF_MAX_CONTENT_RATIO *
@@ -146,7 +157,11 @@ invocation is charged before pypdf parses it.
 - **Conservative counting.** Forms that pypdf skips because of a cycle or its
   per-page invocation cap are still charged. So are pages and forms with
   empty `/Resources`, which pypdf 6.1.0 still parses but recent pypdf does
-  not. This can only refuse earlier, never later.
+  not. This can only refuse earlier, never later. The exception is the
+  per-entry minimum, which pages with empty `/Resources` do not get: on
+  6.1.0, many such pages sharing an array of empty streams cost per-entry
+  steps that are not charged. That is unchanged from the behavior before the
+  budget existed, and recent pypdf skips those pages.
 - **Failing streams that are each distinct.** Each one costs at most two
   decompressions, one by the budget and one by pypdf, and needs its own bytes
   in the file. That work is bounded by the file size times zlib's maximum

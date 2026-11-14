@@ -41,6 +41,11 @@ from lightrag.utils import get_env_value
 
 _TEXT_OPERATORS = frozenset({b"Tj", b"'", b'"', b"TJ"})
 _MAX_PARENT_DEPTH = 100
+# The least one /Contents entry of a page pypdf parses is charged, even an empty
+# stream: pypdf resolves, decodes and concatenates every entry on every page,
+# and an array of references is not itself a content stream, so its length
+# would otherwise cost nothing.
+_MIN_CONTENT_ENTRY_BYTES = 64
 
 
 class PdfExtractionBudgetError(LegacyExtractionError):
@@ -145,6 +150,9 @@ class PdfExtractionBudget:
         # Keyed by id(); the object is kept so the id cannot be reused.
         self._decoded: dict[int, tuple[Any, int | Exception]] = {}
         self._failed_forms: set[int] = set()
+        # Per /Contents object: (decoded total, total with the per-entry
+        # minimum), or the error it raised.
+        self._contents: dict[int, tuple[Any, tuple[int, int] | Exception]] = {}
 
     @staticmethod
     def _content_limit(file_size: int) -> tuple[int, str]:
@@ -225,10 +233,7 @@ class PdfExtractionBudget:
             if resources is None:
                 continue
             try:
-                contents = _resolve(page.get("/Contents"))
-                streams = contents if isinstance(contents, list) else [contents]
-                for stream in streams:
-                    self._add_content(self._decoded_length(stream), f"page {number}")
+                self._charge_contents(page, bool(resources), f"page {number}")
             except PdfExtractionBudgetError:
                 raise
             except (AttributeError, KeyError):
@@ -241,6 +246,44 @@ class PdfExtractionBudget:
                     raise
                 # Empty /Resources: recent pypdf skips the page.
                 continue
+
+    def _charge_contents(self, page: Any, parsed: bool, what: str) -> None:
+        """Charge one page's ``/Contents``, traversing each object only once.
+
+        Pages may share one ``/Contents`` array, so its totals (or its error)
+        are memoized: N pages naming an array of M entries cost M steps here,
+        not N x M, while each page is still charged in full. ``parsed`` is
+        False for a page with empty ``/Resources``, which recent pypdf skips;
+        it is charged decoded bytes only, without the per-entry minimum.
+        """
+        contents = _resolve(page.get("/Contents"))
+        if contents is None:
+            return
+        key = id(contents)
+        if key in self._contents:
+            totals = self._contents[key][1]
+            if isinstance(totals, Exception):
+                raise _detached(totals)
+            self._add_content(totals[1] if parsed else totals[0], what)
+            return
+        streams = contents if isinstance(contents, list) else [contents]
+        decoded = floored = 0
+        try:
+            for stream in streams:
+                length = self._decoded_length(stream)
+                decoded += length
+                floored += max(length, _MIN_CONTENT_ENTRY_BYTES)
+                self._add_content(
+                    max(length, _MIN_CONTENT_ENTRY_BYTES) if parsed else length, what
+                )
+        except PdfExtractionBudgetError:
+            raise
+        except MemoryError:
+            raise
+        except Exception as exc:
+            self._contents[key] = (contents, exc)
+            raise
+        self._contents[key] = (contents, (decoded, floored))
 
     def visitors(self, page: Any) -> dict[str, Any]:
         """Keyword arguments for ``page.extract_text``."""
