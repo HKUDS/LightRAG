@@ -1,36 +1,27 @@
 """Document-wide extraction budget for the legacy PDF extractor.
 
-pypdf bounds each stream it decodes (75 MB by default) and, in recent
-releases, the form XObjects one page may enter. Nothing bounds the DOCUMENT.
-Pages can share one content stream, and a page can invoke the same form
-XObject thousands of times, which pypdf parses again at every invocation. A
-few tens of kilobytes of PDF therefore make pypdf parse and return gigabytes,
-and ``MAX_UPLOAD_SIZE`` bounds only the file.
+pypdf limits each stream it decodes, not the document. Pages can share one
+content stream, and one form XObject can be invoked many times. A tiny PDF can
+therefore demand gigabytes of parsing, and ``MAX_UPLOAD_SIZE`` bounds only the
+file.
 
-Two document-wide budgets apply, read from the environment for each parse
-(see :data:`lightrag.constants.DEFAULT_PDF_MAX_CONTENT_BYTES`):
+Rules for callers:
 
-* **Content bytes** are the decoded bytes of every content stream pypdf
-  parses. Every page's ``/Contents`` is measured BEFORE any page is parsed,
-  which costs decompression only. A form XObject's stream is added at each
-  ``Do`` that invokes it, before pypdf parses it. This is the CPU bound: a
-  content stream need not show a single character to be expensive.
-* **Extracted characters** bound the text held in memory. While a page is
-  interpreted, the string operands of the text-showing operators are counted.
-  The text each page returns is then counted exactly.
+* Use one :class:`PdfExtractionBudget` per document. Call
+  :meth:`~PdfExtractionBudget.check_page_contents` with EVERY page before
+  extracting any. Then extract each page with
+  ``page.extract_text(**budget.visitors(page))`` and pass the returned text to
+  :meth:`~PdfExtractionBudget.finish_page`. Skipping ``finish_page`` can lose
+  an error that pypdf swallowed inside a form XObject.
+* Do not catch :class:`PdfExtractionBudgetError` to keep partial text. It is a
+  ``LegacyExtractionError``, and the document must be recorded FAILED.
+* The limits are ``PDF_MAX_CONTENT_BYTES``, ``PDF_MAX_CONTENT_RATIO`` and
+  ``PDF_MAX_EXTRACTED_CHARS``, read at construction. Defaults are in
+  :data:`lightrag.constants.DEFAULT_PDF_MAX_CONTENT_BYTES` and its neighbours.
 
-How the abort works: both counters run in pypdf's ``extract_text`` visitor
-callbacks. pypdf catches ``Exception`` around a form XObject, so an error
-raised inside one is logged and swallowed. The budget therefore stays
-tripped and raises again from every later callback. The page-level loop has
-no such catch, so one of those raises propagates. The budget is also checked
-again after each page returns.
-
-Accepted limits: work inside ONE stream is bounded by pypdf's own per-stream
-caps, not by this budget, so the budget can be overrun by at most one
-stream's worth. Counting is conservative: a form XObject pypdf would skip
-(a cycle, or pypdf's per-page invocation cap) is still counted, which can
-only make the budget stricter.
+The mechanism is in docs/design/PdfExtractionBudget.md: what is charged, how
+form XObjects are resolved, why a tripped budget re-raises, the accepted
+limits and the rejected alternatives.
 """
 
 from __future__ import annotations

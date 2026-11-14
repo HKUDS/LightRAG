@@ -208,7 +208,7 @@ DEFAULT_DOCX_MAX_ENTRIES = 10_000
 # ceiling. Extracted characters bound the text kept in memory. A non-positive
 # value disables that gate. Env: PDF_MAX_CONTENT_BYTES / PDF_MAX_CONTENT_RATIO /
 # PDF_MAX_EXTRACTED_CHARS, read live at parse time. Mechanism and its limits:
-# lightrag/parser/legacy/pdf_budget.py.
+# docs/design/PdfExtractionBudget.md.
 DEFAULT_PDF_MAX_CONTENT_BYTES = 256 * 1024 * 1024
 DEFAULT_PDF_MAX_CONTENT_RATIO = 100
 # Not a gate: the content allowance every PDF gets regardless of its size.
