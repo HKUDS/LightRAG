@@ -1762,8 +1762,11 @@ def _rebind_json_group(working_dir: str, *, container: str) -> StorageAnchor:
             f"{list(anchor.members or ())}); the anchor is {path}. No anchor "
             f"was on record, so the previous binding and the historical member "
             f"list could not be verified: a snapshot lost before the anchor "
-            f"was deleted is not listed and is not recovered. Configuration "
-            f"selected now: {container}."
+            f"was deleted is not listed and is not recovered. If these "
+            f"snapshots were kept as the source of an earlier migration to a "
+            f"database backend, they may be stale: the rebind does not "
+            f"synchronize them with that database. Configuration selected "
+            f"now: {container}."
         )
     return anchor
 

@@ -558,6 +558,28 @@ def test_concurrent_registrations_across_process_trees_keep_both_members(
 
 
 class TestRebinding:
+    async def test_the_rebind_warning_states_what_it_cannot_verify(
+        self, tmp_path, lightrag_log_records
+    ):
+        """The WARNING names the group and its members, and says that a lost
+        snapshot is not recovered and that retained migration sources may be
+        stale -- the rebind proves neither completeness nor freshness."""
+        await _start_and_stop(tmp_path, "teamalpha")
+        (tmp_path / "config_storage_anchor.json").unlink()
+
+        await _bind(tmp_path, "teamalpha")
+
+        rebound = [
+            record.getMessage()
+            for record in lightrag_log_records
+            if "Rebound this deployment" in record.getMessage()
+        ]
+        assert len(rebound) == 1
+        assert _anchor(tmp_path).storage_uuid in rebound[0]
+        assert "teamalpha" in rebound[0]
+        assert "not recovered" in rebound[0]
+        assert "may be stale" in rebound[0]
+
     async def test_surviving_snapshots_are_re_enrolled_unchanged(self, tmp_path):
         await _start_and_stop(tmp_path, "teamalpha")
         await _start_and_stop(tmp_path, "teambeta")
