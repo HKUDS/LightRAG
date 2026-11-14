@@ -46,7 +46,7 @@ def startup(monkeypatch, tmp_path, lightrag_caplog):
     captured = []
 
     class Constructed(Exception):
-        pass
+        """Stops startup once the stubbed LightRAG constructor captured its kwargs."""
 
     def construct(**kwargs):
         captured.append(kwargs)

@@ -22,6 +22,7 @@ never were.
 import copy
 import dataclasses
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -136,26 +137,18 @@ def test_builtin_tokenizer_survives_concurrent_encode_and_decode():
     texts = [f"hello {i} 中文测试 " * 200 for i in range(8)]
     expected = [tokenizer.encode(text) for text in texts]
 
-    failures: list[str] = []
+    def round_trip(text: str) -> tuple[list[int], str]:
+        tokens = tokenizer.encode(text)
+        return tokens, tokenizer.decode(tokens)
 
-    def work(index: int) -> None:
-        try:
-            for _ in range(10):
-                tokens = tokenizer.encode(texts[index])
-                if tokens != expected[index]:
-                    failures.append(f"encode mismatch at {index}")
-                if tokenizer.decode(tokens) != texts[index]:
-                    failures.append(f"decode mismatch at {index}")
-        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
-            failures.append(f"{type(exc).__name__}: {exc}")
+    def work(index: int) -> list[tuple[list[int], str]]:
+        return [round_trip(texts[index]) for _ in range(10)]
 
-    threads = [threading.Thread(target=work, args=(i,)) for i in range(len(texts))]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    # Executor.map re-raises the first exception any worker raised.
+    with ThreadPoolExecutor(max_workers=len(texts)) as pool:
+        results = list(pool.map(work, range(len(texts))))
 
-    assert failures == []
+    assert results == [[(expected[i], texts[i])] * 10 for i in range(len(texts))]
 
 
 # ---------------------------------------------------------------------------

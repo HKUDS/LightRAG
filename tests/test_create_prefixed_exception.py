@@ -23,10 +23,9 @@ def test_reconstructable_exception_keeps_type_and_prefix():
 
 @pytest.mark.offline
 def test_jsondecodeerror_does_not_raise_and_preserves_message():
-    try:
+    with pytest.raises(json.JSONDecodeError) as exc_info:
         json.loads('{\n  "x": "abc')  # unterminated string -> JSONDecodeError
-    except json.JSONDecodeError as exc:
-        result = create_prefixed_exception(exc, "`entity`")
+    result = create_prefixed_exception(exc_info.value, "`entity`")
     # JSONDecodeError(msg) is missing (doc, pos): falls back to a clean RuntimeError
     assert isinstance(result, RuntimeError)
     assert result.args  # never an empty/garbled exception

@@ -90,11 +90,11 @@ class TestIndexValidation:
     def test_non_integer_index_is_rejected(self, result):
         assert normalize_rerank_result(result, 2) == (None, "invalid index")
 
-    def test_bool_index_is_rejected_even_though_bool_is_an_int_subclass(self):
+    @pytest.mark.parametrize("index", [True, False])
+    def test_bool_index_is_rejected_even_though_bool_is_an_int_subclass(self, index):
         # ``isinstance(True, int)`` holds, so the bool case must be caught first.
-        for index in (True, False):
-            result = {"index": index, "relevance_score": 0.9}
-            assert normalize_rerank_result(result, 2) == (None, "invalid index")
+        result = {"index": index, "relevance_score": 0.9}
+        assert normalize_rerank_result(result, 2) == (None, "invalid index")
 
     @pytest.mark.parametrize(
         ("result", "max_index"),

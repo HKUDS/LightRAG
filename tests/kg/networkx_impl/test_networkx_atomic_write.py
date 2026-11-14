@@ -29,6 +29,7 @@ import stat
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import networkx as nx
@@ -43,25 +44,17 @@ def test_write_nx_graph_concurrent_writers_no_race(tmp_path):
     """5 threads racing on the same destination must all succeed; the final
     file must parse, and no per-writer .tmp sibling may be left behind."""
     dst = str(tmp_path / "graph_concurrent.graphml")
-    errors: list[BaseException] = []
     barrier = threading.Barrier(5)
 
     def writer(tid: int) -> None:
-        try:
-            g = nx.Graph()
-            g.add_node(f"node-{tid}", label=f"label-{tid}")
-            barrier.wait()
-            NetworkXStorage.write_nx_graph(g, dst, workspace=f"w{tid}")
-        except BaseException as exc:
-            errors.append(exc)
+        g = nx.Graph()
+        g.add_node(f"node-{tid}", label=f"label-{tid}")
+        barrier.wait()
+        NetworkXStorage.write_nx_graph(g, dst, workspace=f"w{tid}")
 
-    threads = [threading.Thread(target=writer, args=(i,)) for i in range(5)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert errors == [], f"Concurrent writers raised: {errors}"
+    # Executor.map re-raises the first exception any writer raised.
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        list(pool.map(writer, range(5)))
 
     # Final file must parse cleanly.
     loaded = nx.read_graphml(dst)

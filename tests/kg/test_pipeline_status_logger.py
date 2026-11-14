@@ -236,6 +236,9 @@ def test_never_raises_even_when_diagnostic_logging_itself_fails(monkeypatch):
     status_logger = PipelineStatusLogger(status)
     # Both the fetch AND its diagnostic logging fail — still must not raise.
     status_logger.log("a")
+    assert status.fail_next_gets == 0  # the injected fetch failure was hit
+    assert status.latest == "a"  # written before the failing fetch
+    assert status.history == []  # fetch failed, so the append was skipped
 
 
 # ---------------------------------------------------------------------------
