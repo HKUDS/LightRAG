@@ -437,50 +437,6 @@ def gate_candidates(
     high_conf = fs_base.confidence_high and not force_low_confidence
     fs = fs_base.size_pt
 
-    para_indices = [
-        i
-        for i in indices
-        if records[i].kind == "para"
-        and not records[i].is_toc_field
-        and not records[i].is_toc_link
-    ]
-
-    # Pre-classify numbering (with homophone veto) for every paragraph.
-    # Zero-visible-char paragraphs (pure <drawing>/<object>/<equation>
-    # placeholders) classify as None: an auto-numbered image line must not
-    # lend a second series vote to an otherwise-singleton numbered paragraph
-    # (base_series / weak_plus_series / lowconf_series).
-    numbering: dict[int, NumberingClassification | None] = {}
-    veto_notes: dict[int, str] = {}
-    for i in para_indices:
-        if _record_weight(records[i]) <= 0:
-            numbering[i] = None
-            continue
-        cls = classify_numbering(
-            records[i].text, numbering_format=records[i].numbering_format
-        )
-        if cls is not None:
-            veto = numbering_veto(cls, records[i].text)
-            if veto is not None:
-                veto_notes[i] = veto
-                cls = None
-        numbering[i] = cls
-    # Deferred single-char roman reclassification (needs the whole list).
-    reclassified = reclassify_single_char_romans([numbering[i] for i in para_indices])
-    for i, cls in zip(para_indices, reclassified):
-        numbering[i] = cls
-
-    # Series population per key (含自身): the "成套编号" gate.
-    series_count: dict[tuple, int] = {}
-    for i in para_indices:
-        cls = numbering[i]
-        if cls is not None:
-            series_count[cls.series_key()] = series_count.get(cls.series_key(), 0) + 1
-
-    def _in_series(i: int) -> bool:
-        cls = numbering[i]
-        return cls is not None and series_count.get(cls.series_key(), 0) >= 2
-
     # The EFFECTIVE verdict is cached deliberately: an outline paragraph
     # spared from an NLP-only pseudo split also participates as valid evidence
     # in centered/weak-size companion checks below. That is a narrow behavioral
@@ -500,11 +456,78 @@ def gate_candidates(
         cached = strong_cache.get(i)
         return cached is not None and cached[1]
 
+    # One pass over the paragraphs gathers every per-paragraph fact: weight,
+    # candidate size, visual centering, numbering (with homophone veto) and
+    # the weak-tier companion count.
+    # Zero-visible-char paragraphs (pure <drawing>/<object>/<equation>
+    # placeholders) classify as None: an auto-numbered image line must not
+    # lend a second series vote to an otherwise-singleton numbered paragraph
+    # (base_series / weak_plus_series / lowconf_series).
+    # Weak-signal companions (P2): count of same-size weak-tier paragraphs.
+    # A strong-body paragraph will be demoted and so is NOT a companion —
+    # only weak-signal paragraphs free of strong-body features count. Excluding it
+    # here prevents a lone +0.5 paragraph from falsely pairing with a same-size
+    # sentence/long paragraph that is about to be dropped. A placeholder's
+    # synthesized style size is no weak-signal evidence either.
+    # Facts live in parallel lists aligned with ``para_indices``.
+    para_indices: list[int] = []
+    para_recs: list[Any] = []
+    weights: list[int] = []
+    sizes: list[float | None] = []
+    classes: list[NumberingClassification | None] = []
+    # visually centered record index -> its position in ``para_indices``
+    visually_centered: dict[int, int] = {}
+    veto_notes: dict[int, str] = {}
+    weak_size = fs + 0.5 if fs is not None else None
+    weak_companions = 0
+    for i in indices:
+        rec = records[i]
+        if rec.kind != "para" or rec.is_toc_field or rec.is_toc_link:
+            continue
+        w = _record_weight(rec)
+        size = _effective_size(rec)
+        para_indices.append(i)
+        para_recs.append(rec)
+        weights.append(w)
+        sizes.append(size)
+        if guardrails.is_visually_centered(rec):
+            visually_centered[i] = len(para_indices) - 1
+        cls = None
+        if w > 0:
+            cls = classify_numbering(rec.text, numbering_format=rec.numbering_format)
+            if cls is not None:
+                veto = numbering_veto(cls, rec.text)
+                if veto is not None:
+                    veto_notes[i] = veto
+                    cls = None
+            if size is not None and size == weak_size and _strong(i) is None:
+                weak_companions += 1
+        classes.append(cls)
+
+    # Deferred single-char roman reclassification (needs the whole list),
+    # then the series population per key (含自身): the "成套编号" gate.
+    classes = reclassify_single_char_romans(classes)
+    series_count: dict[tuple, int] = {}
+    series_keys: dict[int, tuple] = {}
+    for i, cls in zip(para_indices, classes):
+        if cls is not None:
+            key = series_keys[i] = cls.series_key()
+            series_count[key] = series_count.get(key, 0) + 1
+
+    def _in_series(i: int) -> bool:
+        key = series_keys.get(i)
+        return key is not None and series_count[key] >= 2
+
+    heading_max_chars: int | None = None
+
     def _short(i: int) -> bool:
         # Candidate shortness reuses the strong-body length cap.
+        nonlocal heading_max_chars
+        if heading_max_chars is None:
+            heading_max_chars = guardrails.heading_max_chars()
         return (
             guardrails.weighted_char_length(records[i].text.strip())
-            <= guardrails.heading_max_chars()
+            <= heading_max_chars
         )
 
     def _title_short(i: int) -> bool:
@@ -535,76 +558,65 @@ def gate_candidates(
     # open. Under a LOW-confidence FS_base the companion requirement stands
     # (require_companion=True): a same-size centered line from a DIFFERENT
     # run (adjacent centered lines are never companions).
-    centered_shape: dict[int, bool] = {}
-    for i in para_indices:
-        rec = records[i]
-        centered_shape[i] = (
-            guardrails.is_visually_centered(rec)
+    centered_shape: set[int] = set()
+    for i, pos in visually_centered.items():
+        text = para_recs[pos].text
+        if (
             # A zero-visible-char placeholder is not a centered "line": it
             # neither takes the channel nor joins a centered run (a decorative
             # image between title lines must not push the run over the
             # anti-poetry cap). It does not BREAK runs either — the run-build
             # loop below only breaks on weighted paragraphs.
-            and _record_weight(rec) > 0
+            weights[pos] > 0
             and i not in llm_body_vetoes  # confirmed body is no companion
             and _title_short(i)
             and _strong(i) is None
-            and numbering[i] is None
-            and caption_veto(records[i].text) is None
-            and not guardrails.is_document_date(records[i].text)
-            and not guardrails.is_symbolic_line(records[i].text)
-        )
+            and classes[pos] is None
+            and caption_veto(text) is None
+            and not guardrails.is_document_date(text)
+            and not guardrails.is_symbolic_line(text)
+        ):
+            centered_shape.add(i)
     runs: list[list[int]] = []
-    current_run: list[int] = []
-    for i in para_indices:
-        if centered_shape[i]:
-            current_run.append(i)
-        elif records[i].kind == "para" and _record_weight(records[i]) > 0:
-            if current_run:
-                runs.append(current_run)
-                current_run = []
-    if current_run:
-        runs.append(current_run)
+    if centered_shape:
+        current_run: list[int] = []
+        for i, w in zip(para_indices, weights):
+            if i in centered_shape:
+                current_run.append(i)
+            elif w > 0:
+                if current_run:
+                    runs.append(current_run)
+                    current_run = []
+        if current_run:
+            runs.append(current_run)
     run_of: dict[int, int] = {}
     for ridx, run in enumerate(runs):
         for i in run:
             run_of[i] = ridx
 
+    # size -> the eligible (short) runs holding a line of that size; built on
+    # first use by the companion check.
+    size_runs: dict[float | None, set[int]] | None = None
+
     def _centered_channel(i: int, *, require_companion: bool = False) -> bool:
-        if not centered_shape.get(i):
+        nonlocal size_runs
+        if i not in centered_shape:
             return False
         my_run = run_of.get(i)
         if my_run is None or len(runs[my_run]) >= _CENTER_RUN_MAX:
             return False  # anti-poetry: a long centered cluster, whole run out
         if not require_companion:
             return True
-        my_size = _effective_size(records[i])
-        for ridx, run in enumerate(runs):
-            if ridx == my_run or len(run) >= _CENTER_RUN_MAX:
-                continue
-            for j in run:
-                if _effective_size(records[j]) == my_size:
-                    return True
-        return False
-
-    # Weak-signal companions (P2): count of same-size weak-tier paragraphs.
-    # A strong-body paragraph will be demoted and so is NOT a companion —
-    # only weak-signal paragraphs free of strong-body features count. Excluding it
-    # here prevents a lone +0.5 paragraph from falsely pairing with a same-size
-    # sentence/long paragraph that is about to be dropped.
-    weak_size_count: dict[float, int] = {}
-    if fs is not None:
-        for i in para_indices:
-            size = _effective_size(records[i])
-            if (
-                size is not None
-                and size == fs + 0.5
-                and _strong(i) is None
-                # A placeholder's synthesized style size is no weak-signal
-                # evidence — it cannot be the companion vote.
-                and _record_weight(records[i]) > 0
-            ):
-                weak_size_count[size] = weak_size_count.get(size, 0) + 1
+        if size_runs is None:
+            size_runs = {}
+            for ridx, run in enumerate(runs):
+                if len(run) < _CENTER_RUN_MAX:
+                    for j in run:
+                        size_runs.setdefault(sizes[visually_centered[j]], set()).add(
+                            ridx
+                        )
+        companions = size_runs.get(sizes[visually_centered[i]], ())
+        return len(companions) > 1 or (bool(companions) and my_run not in companions)
 
     decisions: list[HeadingDecision] = []
     demoted: list[HeadingDecision] = []
@@ -612,14 +624,11 @@ def gate_candidates(
     grant_rejected: list[HeadingDecision] = []
     admitted: set[int] = set()
 
-    for i in para_indices:
-        rec = records[i]
+    for i, rec, w, size, cls in zip(para_indices, para_recs, weights, sizes, classes):
         text = rec.text
-        size = _effective_size(rec)
-        cls = numbering[i]
         rule: str | None = None
 
-        if _record_weight(rec) <= 0:
+        if w <= 0:
             # Zero visible source characters — a pure <drawing>/<object>/
             # <equation> placeholder paragraph. It carries no textual heading
             # evidence: its "font size" is style metadata synthesized by the
@@ -666,8 +675,6 @@ def gate_candidates(
             rule = "outline"
         elif i in llm_body_vetoes:
             continue  # LLM body vote revokes candidate identity
-        elif caption_veto(text) is not None:
-            continue  # P3: never a heading
         elif fs is None or size is None:
             rule = None
         elif cb1_reestimate:
@@ -685,7 +692,7 @@ def gate_candidates(
                     rule = "weak_plus_bold"
                 elif _centered_channel(i):
                     rule = "weak_plus_center"
-                elif weak_size_count.get(size, 0) >= 2:
+                elif weak_companions >= 2:
                     rule = "weak_pair"  # P2 companions
             elif size == fs:
                 if _in_series(i):
@@ -706,6 +713,15 @@ def gate_candidates(
                     rule = "lowconf_bold"
                 elif _centered_channel(i, require_companion=True):
                     rule = "lowconf_center"
+
+        # P3: a caption is never a heading. The veto is pure and only matters
+        # when a rule matched or a ledger entry would follow, so it runs last.
+        if (
+            rule != "outline"
+            and (rule is not None or i in veto_notes or i in llm_heading_grants)
+            and caption_veto(text) is not None
+        ):
+            continue
 
         if rule is None:
             # Two ledger-only cases, NEVER a silent drop (both output-neutral:
@@ -788,7 +804,7 @@ def gate_candidates(
             font_size_pt=size,
             outline_level=rec.outline_level,
             numbering=cls,
-            centered=guardrails.is_visually_centered(rec),
+            centered=i in visually_centered,
             all_bold=rec.all_bold,
         )
         decision.note(rule)
