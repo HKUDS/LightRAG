@@ -1405,7 +1405,10 @@ def _check_identity_against_anchor(
             f"settings point at the intended database and that WORKING_DIR "
             f"is the deployment's. Last resort: deleting {path} rebinds the "
             f"next start to this container and ABANDONS every record in the "
-            f"anchored one.",
+            f"anchored one. One case abandons nothing: this deployment made "
+            f"its first start together with another one that shares this "
+            f"container, so both created an identity and the other's "
+            f"stayed -- the container is the intended one.",
             cause=IDENTITY_UUID_MISMATCH,
             anchor_path=path,
         )
@@ -1793,7 +1796,13 @@ async def _verify_json_member(
             + ("identity" if contents.storage_uuid is None else "owner")
             + " row -- the file is missing, emptied or damaged. Restore the "
             "complete snapshot from backup. Nothing was created: a lost "
-            "snapshot is never re-initialized in place.",
+            "snapshot is never re-initialized in place. If it cannot be "
+            "restored, or the workspace's directory was removed on purpose: "
+            "stop every server and maintenance tool on this WORKING_DIR, "
+            f"back up and delete {path}, and start again. The member list is "
+            "then rebuilt from the snapshots that survive, and this "
+            "workspace registers anew with no recorded baseline -- each one "
+            "is re-established only on evidence.",
             cause=IDENTITY_MEMBER_MISSING,
             anchor_path=path,
         )

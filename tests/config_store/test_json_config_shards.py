@@ -495,6 +495,9 @@ class TestRegistration:
         # Never re-created in place.
         assert not path.exists()
         assert _anchor(tmp_path).members == ("teamalpha",)
+        # The refusal names the way out for a snapshot that cannot come back.
+        assert ca.anchor_path(str(tmp_path)) in str(info.value)
+        assert "back up and delete" in str(info.value)
 
     async def test_a_copied_snapshot_is_refused_by_its_owner(self, tmp_path):
         await _start_and_stop(tmp_path, "teamalpha")
@@ -1225,3 +1228,84 @@ class TestAmbiguousMemberAppend:
         with pytest.raises(ConfigurationIdentityError) as info:
             await self._register_with(tmp_path, monkeypatch, lands=True, readable=False)
         assert "may or may not have landed" in str(info.value)
+
+
+# ---------------------------------------------------------------------------
+# A child directory this user may not search
+# ---------------------------------------------------------------------------
+
+
+def _deny_lstat_under(monkeypatch, directory, error):
+    """Make ``os.lstat`` fail for anything inside ``directory``, as it does
+    for a directory without search permission. Patched rather than chmod-ed
+    because the suite also runs as root, which no mode stops."""
+    real_lstat = os.lstat
+    prefix = str(directory) + os.sep
+
+    def _lstat(path, *args, **kwargs):
+        if str(path).startswith(prefix):
+            raise error
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", _lstat)
+
+
+async def test_an_unsearchable_child_directory_does_not_stop_the_first_start(
+    tmp_path, monkeypatch, lightrag_log_records
+):
+    """``lost+found`` at the root of a mounted volume is root-only. A store
+    written before the configuration storage existed has no anchor, so its
+    first start scans the children -- and must not be refused by a directory
+    it can neither have written to nor serve."""
+    (tmp_path / "lost+found").mkdir()
+    _deny_lstat_under(
+        monkeypatch,
+        tmp_path / "lost+found",
+        PermissionError(13, "Permission denied"),
+    )
+
+    assert discover_shards(str(tmp_path)) == []
+    assert any(
+        "may not search it" in record.getMessage() for record in lightrag_log_records
+    )
+
+    await _start_and_stop(tmp_path, "")
+    assert _anchor(tmp_path).members == ("",)
+
+
+def test_any_other_error_on_a_child_snapshot_still_refuses(tmp_path, monkeypatch):
+    """Only "may not search" is absence. An I/O error says nothing about
+    whether a snapshot is there, so it refuses by path as before."""
+    (tmp_path / "teamalpha").mkdir()
+    _deny_lstat_under(
+        monkeypatch, tmp_path / "teamalpha", OSError(5, "Input/output error")
+    )
+
+    with pytest.raises(ConfigurationIdentityError, match="not usable"):
+        discover_shards(str(tmp_path))
+
+
+async def test_a_removed_workspace_directory_recovers_through_a_rebind(tmp_path):
+    """A workspace directory removed on purpose leaves a registered member
+    without a snapshot, which refuses. With every writer stopped, deleting
+    the anchor rebuilds the member list from the snapshots that survive; the
+    workspace then registers anew and the others keep their identity."""
+    import shutil
+
+    await _start_and_stop(tmp_path, "")
+    await _start_and_stop(tmp_path, "teamalpha")
+    group = _anchor(tmp_path)
+    shutil.rmtree(tmp_path / "teamalpha")
+
+    rag = _rag(tmp_path, "teamalpha")
+    with pytest.raises(ConfigurationIdentityError) as info:
+        await rag.initialize_storages()
+    await rag.finalize_storages()
+    assert info.value.cause == ca.IDENTITY_MEMBER_MISSING
+
+    os.unlink(ca.anchor_path(str(tmp_path)))
+    await _start_and_stop(tmp_path, "teamalpha")
+
+    rebound = _anchor(tmp_path)
+    assert rebound.storage_uuid == group.storage_uuid
+    assert set(rebound.members) == {"", "teamalpha"}

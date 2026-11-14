@@ -622,6 +622,13 @@ holds. The held-state check and successful acquisition are serialized by the
 initialization lock. After `finalize()` releases the hold, that instance may
 initialize again.
 
+**Until it does, a finalized instance refuses every call**
+(`StorageNotInitializedError`). The last release empties the shared dict, and
+the instance still points at it: a write would land in the empty dict and its
+flush would publish that over the file, dropping every row written before.
+`finalize()` therefore clears the instance's namespace lock, which every
+method checks before it touches the dict.
+
 ### One file per namespace per process tree
 
 The key is `workspace:namespace`. It says nothing about which FILE backs it,

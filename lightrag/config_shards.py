@@ -29,7 +29,9 @@ Full contract: *JSON configuration shards* in
   It never recurses and never reads a business file. The snapshot file itself
   must be a regular file -- a symlinked one is refused, by a start too, since
   the first atomic save would replace the link. A read error is an error,
-  never absence; a child that holds a snapshot under an illegal name is
+  never absence -- except a child directory this user may not search
+  (``lost+found`` on a mounted volume), which is skipped with a warning;
+  a child that holds a snapshot under an illegal name is
   refused by path, never skipped, and so is one snapshot reachable under two
   names (one physical directory holds one workspace; a start refuses to
   create that layout via ``check_snapshot_location``; both apply
@@ -64,7 +66,7 @@ from lightrag.namespace import (
     CONFIG_CLAIM_FILE_NAME,
     CONFIG_JSON_FILE_NAME,
 )
-from lightrag.utils import validate_workspace
+from lightrag.utils import logger, validate_workspace
 
 RESERVED_WORKSPACE_NAMES = frozenset(
     {
@@ -394,7 +396,22 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
         # Only the one snapshot file inside is probed, so a link loop cannot
         # recurse.
         path = os.path.join(entry.path, CONFIG_JSON_FILE_NAME)
-        if not probe_snapshot(path):
+        try:
+            present = probe_snapshot(path)
+        except ConfigurationIdentityError as e:
+            if not isinstance(e.__cause__, PermissionError):
+                raise
+            # This user may not search the directory (``lost+found`` on a
+            # mounted volume, another service's directory), so it can neither
+            # have written a snapshot there nor serve one.
+            logger.warning(
+                f"Skipping {entry.path} while looking for JSON configuration "
+                f"snapshots: this user may not search it "
+                f"({e.__cause__}). A workspace kept there is not listed; "
+                f"restore access before starting it."
+            )
+            continue
+        if not present:
             continue
         name = _discovered_name(root, entry, listed)
         try:

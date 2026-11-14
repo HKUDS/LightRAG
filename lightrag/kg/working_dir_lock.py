@@ -52,7 +52,9 @@ workers inherit it rather than fighting it.
 **It fails OPEN.** Locking is unreliable on NFSv3 without lockd and on SMB/CIFS,
 and a `working_dir` on a network volume is ordinary in container deployments.
 Refusing to start there would break working deployments to protect against a
-rarer one, so a backend that cannot lock gets a warning and proceeds.
+rarer one, so a backend that cannot lock gets a warning and proceeds. So does
+a lock file that cannot be opened -- a read-only directory, or a file left by
+a run under another user.
 
 See *One file per namespace per process tree* in
 ``docs/design/FileBackedSnapshotContract.md`` for the in-process guard this sits
@@ -176,8 +178,22 @@ def acquire_working_dir_lock(working_dir: str) -> None:
         claim.holders += 1
         return
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    handle = open(path, "a+")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handle = open(path, "a+")
+    except OSError as e:
+        # The lock file cannot be opened: a read-only directory, or a file
+        # left by a run under another user. Fails open like a filesystem
+        # that cannot lock; what the storages need of the directory they
+        # report themselves.
+        logger.warning(
+            f"Could not open the lock file '{path}' ({type(e).__name__}: {e}). "
+            f"Two servers started on '{working_dir}' would overwrite each "
+            f"other's file-backed storage without any warning; run one at a "
+            f"time, or make the file writable by this user."
+        )
+        _claims[path] = _Claim(handle=None, enforced=False)
+        return
 
     try:
         locked = _try_lock(handle)
@@ -235,6 +251,8 @@ def release_working_dir_lock(working_dir: str) -> None:
     _claims.pop(path, None)
     if claim.enforced:
         _unlock(claim.handle)
+    if claim.handle is None:
+        return
     try:
         claim.handle.close()
     except OSError:

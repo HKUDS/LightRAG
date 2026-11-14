@@ -526,3 +526,41 @@ async def test_kv_pending_write_survives_reinitialize(tmp_path):
     )
     assert saved["row"]["content"] == "pending data"
     await storage.finalize()
+
+
+# ---------------------------------------------------------------------------
+# An instance used after its finalize()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls,module,namespace", BACKENDS)
+async def test_a_finalized_instance_refuses_every_call(
+    tmp_path, cls, module, namespace
+):
+    """The last ``finalize()`` empties the shared dict. A write through the
+    finalized instance used to land in that empty dict, and its flush then
+    published it over the file -- every earlier row gone from disk. A
+    finalized instance raises instead, and the file keeps its rows."""
+    from lightrag.exceptions import StorageNotInitializedError
+
+    workspace = "claimws"
+    path = _seed_file(tmp_path, workspace, namespace, {"row-1": {"value": "kept"}})
+    storage = _storage(cls, tmp_path, workspace, namespace)
+    await storage.initialize()
+    await storage.finalize()
+
+    with pytest.raises(StorageNotInitializedError):
+        await storage.upsert({"row-2": {"value": "late"}})
+    with pytest.raises(StorageNotInitializedError):
+        await storage.index_done_callback()
+    with pytest.raises(StorageNotInitializedError):
+        await storage.delete(["row-1"])
+    with pytest.raises(StorageNotInitializedError):
+        await storage.get_by_id("row-1")
+    assert sorted(json.loads(path.read_text())) == ["row-1"]
+
+    # ``initialize()`` makes the same instance usable again, on the file's rows.
+    await storage.initialize()
+    row = await storage.get_by_id("row-1")
+    assert row is not None and row["value"] == "kept"
+    await storage.finalize()

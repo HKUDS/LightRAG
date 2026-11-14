@@ -578,6 +578,47 @@ async def _node_source_ids(graph, limit: int) -> list[Any]:
     ]
 
 
+def _is_vectorless_endpoint(node: Any) -> bool:
+    """Whether ``node`` is a relationship endpoint ``ainsert_custom_kg`` created
+    for an entity the caller did not declare: both fields carry the
+    ``UNKNOWN`` placeholder. Releases before the coverage gate wrote such a
+    node WITHOUT a vector. The pipeline's own endpoints keep the relation's
+    description, so they never match."""
+    return (
+        isinstance(node, dict)
+        and node.get("description") == "UNKNOWN"
+        and node.get("entity_type") == "UNKNOWN"
+    )
+
+
+async def _only_vectorless_endpoints(graph, limit: int) -> bool:
+    """Whether every one of up to ``limit`` sampled graph entities is a
+    relationship endpoint that was written without a vector by design
+    (``_is_vectorless_endpoint``).
+
+    Consulted only when the entities pairing is about to refuse, to keep a
+    relationships-only custom KG written by an earlier release startable: its
+    empty entity index is how that release left it, not a lost one. One
+    sampled entity of any other kind answers ``False`` and the refusal stands.
+    A graph that cannot be sampled answers ``True`` -- an unreadable thing
+    never refuses here.
+    """
+    try:
+        labels = await graph.get_popular_labels(limit=limit)
+        if not labels:
+            return False
+        nodes = await graph.get_nodes_batch(list(labels))
+        sampled = list((nodes or {}).values())
+        return bool(sampled) and all(_is_vectorless_endpoint(n) for n in sampled)
+    except Exception as e:
+        logger.warning(
+            f"Could not sample the knowledge graph to tell whether its "
+            f"entities were written without vectors ({type(e).__name__}: {e}); "
+            f"not refusing on it"
+        )
+        return True
+
+
 async def _edge_source_ids(graph, limit: int) -> list[Any]:
     """``source_id`` of the first batch of graph relations."""
     iterator = graph.iter_edges(batch_size=limit)
@@ -782,7 +823,14 @@ class _PairingGate:
         return self._vectors_expected
 
     async def check(
-        self, *, name: str, source: str, vdb, source_probe, no_healing_probe=None
+        self,
+        *,
+        name: str,
+        source: str,
+        vdb,
+        source_probe,
+        no_healing_probe=None,
+        vectorless_by_design_probe=None,
     ) -> bool | None:
         """Refuse iff the source is populated and the index is provably empty.
 
@@ -790,7 +838,9 @@ class _PairingGate:
         ``None`` unreadable or not examined) so the caller can record a
         baseline on it. ``no_healing_probe`` is consulted only on the branch
         the unfinished-document exemption would otherwise take. See
-        ``_nothing_will_heal``.
+        ``_nothing_will_heal``. ``vectorless_by_design_probe`` is consulted
+        last, only when the refusal is otherwise decided: ``True`` means the
+        source's objects never had vectors, so an empty index is no loss.
         """
         if vdb is None:
             return None
@@ -855,6 +905,19 @@ class _PairingGate:
                 f"also holds objects no unfinished document would rewrite, so "
                 f"no pipeline run can recreate their vectors. Refusing."
             )
+
+        if vectorless_by_design_probe is not None and (
+            await vectorless_by_design_probe()
+        ):
+            logger.warning(
+                f"The {name} vector storage holds no vectors while {source} is "
+                f"not empty, but every sampled entity is a relationship "
+                f"endpoint that an earlier release's ainsert_custom_kg wrote "
+                f"without a vector. Serving anyway: nothing was lost. Entity "
+                f"retrieval cannot reach these entities until "
+                f"`lightrag-rebuild-vdb` builds their vectors."
+            )
+            return True
 
         raise VectorStorageEmptyError(
             vdb_name=name,
@@ -1074,6 +1137,9 @@ async def check_vector_space_at_startup(
         vdb=entities_vdb,
         source_probe=lambda: graph_has_nodes(graph),
         no_healing_probe=lambda: _node_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
+        vectorless_by_design_probe=lambda: _only_vectorless_endpoints(
+            graph, DOCUMENTLESS_SAMPLE_SIZE
+        ),
     )
 
     evidence.source_populated["relationships"] = await gate.check(

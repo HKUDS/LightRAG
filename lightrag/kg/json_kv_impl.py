@@ -219,6 +219,8 @@ class JsonKVStorage(BaseKVStorage):
         ``index_done_callback`` does globally is *clear* the dirty
         flags.
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             if self.storage_updated.value:
                 # DictProxy.copy() is a single Manager RPC that marshals the
@@ -343,6 +345,8 @@ class JsonKVStorage(BaseKVStorage):
         return value
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             result = self._as_row(id, self._data.get(id))
             if result:
@@ -381,6 +385,8 @@ class JsonKVStorage(BaseKVStorage):
             return list(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             results = []
             for id in ids:
@@ -400,6 +406,8 @@ class JsonKVStorage(BaseKVStorage):
             return results
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             return set(keys) - set(self._data.keys())
 
@@ -500,6 +508,8 @@ class JsonKVStorage(BaseKVStorage):
         Args:
             ids: List of document IDs to be deleted from storage
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             any_deleted = False
             for doc_id in ids:
@@ -518,6 +528,8 @@ class JsonKVStorage(BaseKVStorage):
         Returns:
             bool: True if storage contains no data, False otherwise
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             return len(self._data) == 0
 
@@ -586,6 +598,8 @@ class JsonKVStorage(BaseKVStorage):
             - On failure: {"status": "error", "message": "<error details>"}
         """
         try:
+            if self._storage_lock is None:
+                raise StorageNotInitializedError("JsonKVStorage")
             async with self._storage_lock:
                 self._data.clear()
                 await set_all_update_flags(
@@ -692,3 +706,8 @@ class JsonKVStorage(BaseKVStorage):
                 await leave_namespace_init(
                     self.namespace, workspace=self._shared_workspace
                 )
+                # The last release emptied the shared dict. A write through
+                # this instance would land in that empty dict and its flush
+                # would publish it over the file, so every later call raises
+                # ``StorageNotInitializedError`` until ``initialize()`` runs.
+                self._storage_lock = None

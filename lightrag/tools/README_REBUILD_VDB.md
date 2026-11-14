@@ -47,8 +47,18 @@ rebuild opens by dropping that container and re-provisioning it in the current
 embedding space. No out-of-band step (deleting the index through the backend's
 own API, `DROP TABLE`, `rm`) is needed.
 
+A **corrupt file-backed vector snapshot** (NanoVectorDB, Faiss) is tolerated
+the same way, because a rebuild is its recovery too: the target shows as
+corrupt in the menu, and once you confirm the rebuild the tool first copies
+every file of it to `<file>.corrupt-<token>` beside the original, then drops
+and rebuilds the index. The copies are private to the user running the tool
+(mode `0600`) and are never deleted automatically. They hold the same
+document-derived content the index did, so remove them yourself once the
+rebuilt index is confirmed. If a copy cannot be made, nothing is changed and
+the message names the files to move aside by hand.
+
 Everything else still aborts. A cluster outage, a bad credential or a corrupt
-file is not a model change, and the recovery for a model change is destructive —
+authoritative source is not a model change, and the recovery for a model change is destructive —
 so it is only ever applied to a refusal that says so in its type. The
 authoritative sources (graph storage and `text_chunks`) likewise keep the
 server-identical startup path, migrations included: rebuilding vectors from a

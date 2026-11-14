@@ -427,10 +427,13 @@ class JsonShardGroup:
             raise self._refuse(
                 f"does not match its anchor: registered members without a "
                 f"snapshot {missing}, snapshots that are not registered "
-                f"{extra}. A missing member must be restored; an unregistered "
-                f"snapshot is a lost registration or a stray file -- stop every "
-                f"server, back up and delete the anchor and start one server "
-                f"to rebuild the member list, or remove the stray file"
+                f"{extra}. A missing member must be restored from backup, "
+                f"or dropped from the group if its workspace is gone for "
+                f"good; an unregistered snapshot is a lost registration or a "
+                f"stray file. To drop a missing member or register a lost "
+                f"one, stop every server, back up and delete the anchor and "
+                f"start one server to rebuild the member list; a stray file "
+                f"can simply be removed"
             )
         for workspace in sorted(members):
             contents = on_disk[workspace]

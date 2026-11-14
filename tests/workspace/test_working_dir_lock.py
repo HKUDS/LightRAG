@@ -37,7 +37,8 @@ def _no_claims_leak():
     yield
     for claim in list(wdl._claims.values()):
         try:
-            claim.handle.close()
+            if claim.handle is not None:
+                claim.handle.close()
         except OSError:
             pass
     wdl._claims.clear()
@@ -124,6 +125,35 @@ def test_a_filesystem_that_cannot_lock_warns_and_proceeds(tmp_path, monkeypatch)
 
     assert holds_working_dir_lock(str(tmp_path)) is True
     assert wdl._claims[wdl._lock_path(str(tmp_path))].enforced is False
+
+
+def test_a_lock_file_that_cannot_be_opened_warns_and_proceeds(
+    tmp_path, monkeypatch, lightrag_log_records
+):
+    """A lock file left by a run under another user, or a read-only
+    directory: the storages that worked before the claim existed must still
+    start, so it fails OPEN like a filesystem that cannot lock."""
+    import builtins
+
+    real_open = builtins.open
+
+    def _refuse(path, *args, **kwargs):
+        if str(path).endswith(LOCK_FILENAME):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _refuse)
+
+    acquire_working_dir_lock(str(tmp_path))
+
+    assert holds_working_dir_lock(str(tmp_path)) is True
+    assert wdl._claims[wdl._lock_path(str(tmp_path))].enforced is False
+    assert any(
+        "Could not open the lock file" in record.getMessage()
+        for record in lightrag_log_records
+    )
+    release_working_dir_lock(str(tmp_path))
+    assert holds_working_dir_lock(str(tmp_path)) is False
 
 
 def test_releasing_without_a_claim_is_a_no_op(tmp_path):

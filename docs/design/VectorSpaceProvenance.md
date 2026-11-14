@@ -564,6 +564,19 @@ document would exempt an admin-built workspace forever. It is also the one place
 where "a later pipeline run repairs it" is simply false: no pipeline run will
 ever recreate objects an operator created by hand.
 
+One documentless shape is not a loss. Until `ainsert_custom_kg` started to
+embed the relationship endpoints it creates for entities the caller did not
+declare, it wrote those nodes with `description` and `entity_type` both
+`UNKNOWN` and **no entity vector**. A relationships-only custom KG written
+that way has a populated graph and an entity index that was never anything
+but empty. So before the entities pairing refuses, the gate samples the graph
+once more (`_only_vectorless_endpoints`): if **every** sampled entity is such
+an endpoint it serves with a WARNING that names `lightrag-rebuild-vdb`; one
+entity of any other kind and the refusal stands. *Accepted residue:* a graph
+whose 32 best-connected entities are all such endpoints, and which did lose
+the vectors of its declared entities, is served as it was before the gate
+existed.
+
 Counting only the *unfinished* states is also what keeps a `PROCESSED` row
 elsewhere from being read as evidence about *this* container. That mattered more
 under the old sampling design, where an ingest that crashed after writing a batch
