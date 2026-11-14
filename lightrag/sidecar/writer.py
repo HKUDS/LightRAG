@@ -332,11 +332,18 @@ def write_sidecar(
     blocks_path.write_text(
         "\n".join([json.dumps(meta, ensure_ascii=False)] + blocks_lines) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
     # Sidecar JSONs end with a trailing newline (POSIX text-file convention;
     # also keeps end-of-file linters / pre-commit hooks happy and matches the
     # ``blocks.jsonl`` convention above).
+    #
+    # ``newline="\n"`` on every artifact here: the sidecar is a byte-level
+    # interchange format (the golden fixtures under
+    # ``tests/parser/docx/golden/`` are compared byte-for-byte), so the bytes
+    # must not depend on the host platform. Without it ``Path.write_text``
+    # translates each ``\n`` to ``os.linesep`` and a Windows parse emits CRLF.
     if tables:
         tables_path.write_text(
             json.dumps(
@@ -346,6 +353,7 @@ def write_sidecar(
             )
             + "\n",
             encoding="utf-8",
+            newline="\n",
         )
     if drawings:
         drawings_path.write_text(
@@ -356,6 +364,7 @@ def write_sidecar(
             )
             + "\n",
             encoding="utf-8",
+            newline="\n",
         )
     if equations:
         equations_path.write_text(
@@ -366,6 +375,7 @@ def write_sidecar(
             )
             + "\n",
             encoding="utf-8",
+            newline="\n",
         )
 
     logger.info(
