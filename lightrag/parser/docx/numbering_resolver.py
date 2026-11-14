@@ -429,10 +429,8 @@ class NumberingResolver:
             if pStyle is not None:
                 style_id = pStyle.get(f"{{{NSMAP['w']}}}val")
 
-            # Check for direct numPr in paragraph. numId is the authoritative
-            # paragraph-local override; ilvl may be absent (kept None so the
-            # style-chain / pStyle-link fallbacks below can supply it — an
-            # explicit ilvl=0 is NOT treated as absent).
+            # numId and ilvl are independent paragraph-local overrides. Either
+            # may inherit from the style when absent; explicit ilvl=0 is kept.
             numPr = pPr.find(f"{{{NSMAP['w']}}}numPr")
             if numPr is not None:
                 num_id_elem = numPr.find(f"{{{NSMAP['w']}}}numId")
@@ -440,8 +438,8 @@ class NumberingResolver:
 
                 if num_id_elem is not None:
                     num_id = num_id_elem.get(f"{{{NSMAP['w']}}}val")
-                    if ilvl_elem is not None:
-                        ilvl = int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
+                if ilvl_elem is not None:
+                    ilvl = int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
 
             # Fall back to style-inherited numbering for a MISSING numId AND/OR
             # a missing ilvl. Gating on ``ilvl is None`` too (not just num_id)
