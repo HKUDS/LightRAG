@@ -85,6 +85,7 @@ from lightrag.config_anchor import (
     read_anchor,
 )
 from lightrag.config_shards import (
+    DiscoveredShard,
     check_snapshot_location,
     discover_shards,
     json_config_dir,
@@ -1273,21 +1274,26 @@ def json_shard_metadata_rows(
     }
 
 
-def surviving_json_group(working_dir: str) -> tuple[str | None, tuple[str, ...]]:
-    """``(uuid, members)`` of the consistent JSON snapshots that survive under
-    ``working_dir`` -- ``(None, ())`` when none does.
+def attributable_json_snapshots(
+    working_dir: str,
+) -> list[tuple[DiscoveredShard, ShardContents]]:
+    """Every non-empty JSON snapshot under ``working_dir``, each validated
+    against the workspace its location names and carrying both an identity
+    and an owner row -- the snapshots that can be attributed to a group.
 
-    Every discovered snapshot is read and validated against the workspace
-    its location names; an empty file is not a member. Refuses a snapshot
-    with rows but no identity or owner, and snapshots that disagree on the
-    UUID: automatic recovery is limited to consistent state.
+    The ONE rule a start's rebind (``surviving_json_group``) and the
+    migration (``JsonShardGroup``) both apply to the files on disk, so the
+    two can never disagree about which snapshots count. An empty file is
+    skipped; a snapshot with rows but no identity or owner raises
+    ``ConfigurationIdentityError`` (``IDENTITY_SHARD_INVALID``): automatic
+    recovery is limited to consistent state.
     """
-    uuids: dict[str, list[str]] = {}
-    members: list[str] = []
+    found: list[tuple[DiscoveredShard, ShardContents]] = []
     for shard in discover_shards(working_dir):
-        rows = read_shard_file(shard.path)
         contents = inspect_shard_rows(
-            rows or {}, workspace=shard.workspace, location=shard.path
+            read_shard_file(shard.path) or {},
+            workspace=shard.workspace,
+            location=shard.path,
         )
         if contents.empty:
             continue
@@ -1298,6 +1304,21 @@ def surviving_json_group(working_dir: str) -> tuple[str | None, tuple[str, ...]]
                 + ("identity" if contents.storage_uuid is None else "owner")
                 + " row, so it cannot be attributed to a configuration group",
             )
+        found.append((shard, contents))
+    return found
+
+
+def surviving_json_group(working_dir: str) -> tuple[str | None, tuple[str, ...]]:
+    """``(uuid, members)`` of the consistent JSON snapshots that survive under
+    ``working_dir`` -- ``(None, ())`` when none does.
+
+    The snapshots are ``attributable_json_snapshots``; snapshots that
+    disagree on the UUID refuse: automatic recovery is limited to
+    consistent state.
+    """
+    uuids: dict[str, list[str]] = {}
+    members: list[str] = []
+    for shard, contents in attributable_json_snapshots(working_dir):
         uuids.setdefault(contents.storage_uuid, []).append(shard.path)
         members.append(shard.workspace)
     if len(uuids) > 1:

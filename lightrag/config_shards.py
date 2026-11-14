@@ -30,8 +30,11 @@ Full contract: *JSON configuration shards* in
   never absence; a child that holds a snapshot under an illegal name is
   refused by path, never skipped, and so is one snapshot reachable under two
   names (one physical directory holds one workspace; a start refuses to
-  create that layout via ``check_snapshot_location``). It reports what
-  survives -- it cannot tell a never-created snapshot from a deleted one.
+  create that layout via ``check_snapshot_location``; both apply
+  ``physical_directory_aliases``). A directory a decomposing filesystem
+  (HFS+) lists only in NFD is named by its NFC spelling when that spelling
+  is the same directory. It reports what survives -- it cannot tell a
+  never-created snapshot from a deleted one.
 
 * **Offline reads are strict.** ``read_shard_file`` returns ``None`` only
   for a file that does not exist; undecodable content or a payload that is
@@ -223,6 +226,55 @@ def _child_directories(root: str) -> list[os.DirEntry]:
     return children
 
 
+def _named_child_directories(root: str) -> list[tuple[str, os.DirEntry]]:
+    """``_child_directories`` with the workspace name each one stands for.
+
+    A filesystem that stores names decomposed (HFS+) lists a directory
+    created under an NFC name in NFD, as its ONLY entry. When no other entry
+    carries the NFC spelling and that spelling resolves to the very same
+    directory, the NFC spelling is the name, so a workspace is never taken
+    for a second name of its own directory. A second entry -- a symlink
+    named in another normalization on a filesystem that keeps both -- keeps
+    its listed name and stays an alias. Filesystems that preserve names
+    (ext4, APFS, NTFS) list them as created and are not affected.
+    """
+    entries = _child_directories(root)
+    listed = {entry.name for entry in entries}
+    named: list[tuple[str, os.DirEntry]] = []
+    for entry in entries:
+        name = entry.name
+        composed = unicodedata.normalize("NFC", name)
+        if (
+            composed != name
+            and composed not in listed
+            and _physical_id(os.path.join(root, composed)) == _physical_id(entry.path)
+        ):
+            name = composed
+        named.append((name, entry))
+    return named
+
+
+def physical_directory_aliases(working_dir: str, names) -> list[list[str]]:
+    """Every group of two or more names that is ONE physical directory.
+
+    The names considered are ``names``, ``WORKING_DIR`` itself (as ``""``,
+    the empty workspace's directory) and every existing direct child
+    directory; a name whose directory does not exist yet is skipped. Each
+    group and the list are sorted. The one rule a start
+    (``check_snapshot_location``) and the migration apply, so they cannot
+    disagree about which spellings share a directory.
+    """
+    root = os.path.abspath(working_dir)
+    candidates = set(names) | {""}
+    candidates.update(name for name, _ in _named_child_directories(root))
+    physical: dict[tuple[int, int], list[str]] = {}
+    for name in candidates:
+        identity = _physical_id(os.path.join(root, name) if name else root)
+        if identity is not None:
+            physical.setdefault(identity, []).append(name)
+    return sorted(sorted(group) for group in physical.values() if len(group) > 1)
+
+
 def _one_directory_error(path: str, names: list[str]) -> ConfigurationIdentityError:
     listed = ", ".join(repr(name) if name else "(default workspace)" for name in names)
     return _shard_error(
@@ -242,18 +294,11 @@ def check_snapshot_location(working_dir: str, workspace: str) -> None:
     another direct child -- ``discover_shards`` would find the snapshot under
     that name too and refuse it."""
     probe_snapshot(json_config_path(working_dir, workspace))
-    root = os.path.abspath(working_dir)
-    own = _physical_id(json_config_dir(working_dir, workspace))
-    if own is None:
+    if _physical_id(json_config_dir(working_dir, workspace)) is None:
         return
-    others = [("", root)] + [(e.name, e.path) for e in _child_directories(root)]
-    shared = sorted(
-        name for name, path in others if name != workspace and _physical_id(path) == own
-    )
-    if shared:
-        raise _one_directory_error(
-            json_config_path(working_dir, workspace), sorted([workspace, *shared])
-        )
+    for group in physical_directory_aliases(working_dir, [workspace]):
+        if workspace in group:
+            raise _one_directory_error(json_config_path(working_dir, workspace), group)
 
 
 def discover_shards(working_dir: str) -> list[DiscoveredShard]:
@@ -268,21 +313,21 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
     if probe_snapshot(root_file):
         found.append(DiscoveredShard(workspace="", path=root_file))
         seen[_physical_id(root)] = ""
-    for entry in _child_directories(root):
+    for name, entry in _named_child_directories(root):
         # Only the one snapshot file inside is probed, so a link loop cannot
         # recurse.
         path = os.path.join(entry.path, CONFIG_JSON_FILE_NAME)
         if not probe_snapshot(path):
             continue
         try:
-            validate_config_workspace(entry.name)
+            validate_config_workspace(name)
         except ValueError as e:
             raise _shard_error(path, f"its directory is not a legal workspace: {e}")
         physical = _physical_id(entry.path)
         if physical in seen:
-            raise _one_directory_error(path, sorted([seen[physical], entry.name]))
-        seen[physical] = entry.name
-        found.append(DiscoveredShard(workspace=entry.name, path=path))
+            raise _one_directory_error(path, sorted([seen[physical], name]))
+        seen[physical] = name
+        found.append(DiscoveredShard(workspace=name, path=path))
     return sorted(found, key=lambda shard: shard.workspace)
 
 

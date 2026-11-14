@@ -642,6 +642,59 @@ class TestRebinding:
         with pytest.raises(ConfigurationIdentityError, match="'alias', 'real'"):
             discover_shards(str(tmp_path))
 
+    def _list_decomposed(self, monkeypatch, root):
+        """Emulate HFS+, which lists a directory created under an NFC name in
+        NFD (its only entry) and resolves either spelling to it."""
+        import unicodedata
+
+        from lightrag import config_shards
+
+        real = config_shards._child_directories
+
+        class _Entry:
+            def __init__(self, entry):
+                self.name = unicodedata.normalize("NFD", entry.name)
+                self.path = entry.path
+
+        monkeypatch.setattr(
+            config_shards,
+            "_child_directories",
+            lambda r: [_Entry(e) for e in real(r)] if r == str(root) else real(r),
+        )
+
+    def test_a_decomposed_listing_is_not_a_second_name_of_the_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        """On HFS+ the NFC workspace 'café' is listed as NFD: one directory,
+        one name. It must neither refuse the start nor surface under a name
+        the anchor's members do not carry."""
+        from lightrag.config_shards import check_snapshot_location
+
+        workspace = "caf\u00e9"
+        (tmp_path / workspace).mkdir()
+        (tmp_path / workspace / "kv_workspace_config.json").write_text("{}")
+        self._list_decomposed(monkeypatch, tmp_path)
+
+        check_snapshot_location(str(tmp_path), workspace)
+        assert [s.workspace for s in discover_shards(str(tmp_path))] == [workspace]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs symlinks")
+    def test_a_link_named_in_another_normalization_is_still_an_alias(self, tmp_path):
+        """Where the filesystem keeps both spellings, an NFD symlink to the NFC
+        directory is a real second name, listed beside it: still refused."""
+        from lightrag.config_shards import check_snapshot_location
+
+        composed, decomposed = "caf\u00e9", "cafe\u0301"
+        (tmp_path / composed).mkdir()
+        if (tmp_path / decomposed).exists():
+            pytest.skip("normalization-insensitive filesystem")
+        (tmp_path / decomposed).symlink_to(
+            tmp_path / composed, target_is_directory=True
+        )
+
+        with pytest.raises(ConfigurationIdentityError, match="one physical directory"):
+            check_snapshot_location(str(tmp_path), composed)
+
     def test_a_snapshot_under_an_illegal_name_is_refused_by_path(self, tmp_path):
         bad = tmp_path / "config_storage_anchor.json"
         bad.mkdir()

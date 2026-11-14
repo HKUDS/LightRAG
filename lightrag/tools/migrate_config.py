@@ -58,10 +58,9 @@ from lightrag.config_anchor import (
     read_anchor,
 )
 from lightrag.config_shards import (
-    discover_shards,
     caseless_alias,
     json_config_dir,
-    read_shard_file,
+    physical_directory_aliases,
     validate_config_workspace,
 )
 from lightrag.constants import DEFAULT_WORKING_DIR
@@ -352,27 +351,13 @@ class JsonShardGroup:
         its location names. One holding records but no identity or owner row
         is damaged and refuses, as it does everywhere else: automatic
         recovery is limited to consistent state."""
-        found: dict[str, cs.ShardContents] = {}
         try:
-            for shard in discover_shards(self.working_dir):
-                contents = cs.inspect_shard_rows(
-                    read_shard_file(shard.path) or {},
-                    workspace=shard.workspace,
-                    location=shard.path,
-                )
-                if contents.empty:
-                    continue
-                if contents.storage_uuid is None or contents.owner is None:
-                    raise cs.shard_invalid_error(
-                        shard.path,
-                        "it holds records but no "
-                        + ("identity" if contents.storage_uuid is None else "owner")
-                        + " row, so it cannot be attributed to a configuration group",
-                    )
-                found[shard.workspace] = contents
+            return {
+                shard.workspace: contents
+                for shard, contents in cs.attributable_json_snapshots(self.working_dir)
+            }
         except ConfigurationIdentityError as e:
             raise MigrationRefused(str(e)) from e
-        return found
 
     def _refuse_shared_directories(self) -> None:
         """Refuse, before any claim, a planned workspace whose directory is
@@ -383,38 +368,11 @@ class JsonShardGroup:
         next discovery would find the snapshot through it too -- and the
         claim is reentrant by realpath, so nothing later stops both names
         opening one snapshot."""
-        names = set(self._planned) | {""}
         try:
-            entries = list(os.scandir(self.working_dir))
-        except FileNotFoundError:
-            entries = []
-        except OSError as e:
-            raise self._refuse(f"cannot be listed ({type(e).__name__}: {e})") from e
-        for entry in entries:
-            try:
-                if entry.is_dir(follow_symlinks=True):
-                    names.add(entry.name)
-            except OSError as e:
-                raise self._refuse(
-                    f"cannot inspect {entry.path} ({type(e).__name__}: {e})"
-                ) from e
-        physical: dict[tuple[int, int], list[str]] = {}
-        for name in names:
-            path = os.path.join(self.working_dir, name) if name else self.working_dir
-            try:
-                info = os.stat(path)
-            except FileNotFoundError:
-                continue  # Created by this run; the lexical check covers it.
-            except OSError as e:
-                raise self._refuse(
-                    f"cannot inspect {path} ({type(e).__name__}: {e})"
-                ) from e
-            physical.setdefault((info.st_dev, info.st_ino), []).append(name)
-        shared = sorted(
-            sorted(group)
-            for group in physical.values()
-            if len(group) > 1 and self._planned.intersection(group)
-        )
+            groups = physical_directory_aliases(self.working_dir, self._planned)
+        except ConfigurationIdentityError as e:
+            raise self._refuse(f"cannot be inspected ({e})") from e
+        shared = [group for group in groups if self._planned.intersection(group)]
         if shared:
             raise self._refuse(
                 "cannot give these names separate snapshots, because their "
