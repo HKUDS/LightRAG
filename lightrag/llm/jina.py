@@ -14,9 +14,23 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 from lightrag.utils import wrap_embedding_func_with_attrs, logger
+
+
+def _is_transient_jina_error(exc: BaseException) -> bool:
+    """tenacity predicate: retry connection failures and 429/5xx, not other 4xx.
+
+    ``fetch_data`` raises ``aiohttp.ClientResponseError`` for every non-200
+    Jina response alike, so retrying on the exception type alone retried a
+    permanent failure (bad API key, malformed request) exactly as eagerly as
+    a transient one (rate limit, server overload) -- three requests plus
+    exponential backoff before the caller ever saw the real error.
+    """
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return exc.status == 429 or exc.status >= 500
+    return isinstance(exc, aiohttp.ClientError)
 
 
 async def fetch_data(url, headers, data):
@@ -67,10 +81,7 @@ async def fetch_data(url, headers, data):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=(
-        retry_if_exception_type(aiohttp.ClientError)
-        | retry_if_exception_type(aiohttp.ClientResponseError)
-    ),
+    retry=retry_if_exception(_is_transient_jina_error),
 )
 async def jina_embed(
     texts: list[str],
