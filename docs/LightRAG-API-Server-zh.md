@@ -611,7 +611,7 @@ sudo systemctl enable lightrag.service
 
 ### 将 Open WebUI 连接到 LightRAG
 
-启动 lightrag-server 后，您可以在 Open WebUI 管理面板中添加 Ollama 类型的连接。然后，一个名为 `lightrag:latest` 的模型将出现在 Open WebUI 的模型管理界面中。用户随后可以通过聊天界面向 LightRAG 发送查询。对于这种用例，最好将 LightRAG 安装为服务。
+启动 lightrag-server 后，您可以在 Open WebUI 管理面板中添加 Ollama 类型的连接。然后，一个名为 `lightrag:latest` 的模型将出现在 Open WebUI 的模型管理界面中。用户随后可以通过聊天界面向 LightRAG 发送查询。对于这种用例，最好将 LightRAG 安装为服务。如果设置了 `LIGHTRAG_API_KEY`，请在该连接中填入这个 key 作为 API 密钥：此时 Ollama 端点要求该 key，客户端会以 `Authorization: Bearer <key>` 发送。
 
 Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因此，Ollama 聊天补全 API 会检测并将 OpenWebUI 会话相关请求直接转发给底层 LLM。Open WebUI 的截图：
 
@@ -619,11 +619,11 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ### 在聊天中选择查询模式
 
-如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `hybrid`。您可以通过发送带有查询前缀的消息来选择查询模式。
+如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `mix`。您可以通过发送带有查询前缀的消息来选择查询模式。
 
 查询字符串中的查询前缀可以决定使用哪种 LightRAG 查询模式来生成响应。支持的前缀包括：
 
-去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`），将返回 **400**。
+去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`，或单独一个 `/bypass`），将返回 **400**。
 
 ```
 /local
@@ -641,7 +641,7 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 /mixcontext
 ```
 
-例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。
+例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。前缀之后必须是空白字符或消息结尾：空格、制表符、换行均可，因此问题可以从下一行开始。仅以前缀开头的更长单词（如 `/localize`）不是前缀，会作为普通查询发送。
 
 "/bypass" 不是 LightRAG 查询模式，它会告诉 API 服务器将查询连同聊天历史直接传递给底层 LLM。因此用户可以使用 LLM 基于聊天历史回答问题。如果您使用 Open WebUI 作为前端，您可以直接切换到普通 LLM 模型，而不是使用 /bypass 前缀。
 
@@ -664,10 +664,9 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
-WHITELIST_PATHS=/health,/api/*
 ```
 
-> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
+> 未设置 `WHITELIST_PATHS` 时，其默认值跟随 `LIGHTRAG_API_KEY`：设置了 key 时为 `/health`，Ollama 模拟端点与其他路由一样需要该 key；未设置 key 时为 `/health,/api/*`，这些端点保持开放（只配置 `AUTH_ACCOUNTS` 时也是如此，因为 Ollama 客户端无法登录）。Ollama 端点既接受 `X-API-Key`，也接受 `Authorization: Bearer <key>`（Ollama 客户端以后者发送 key）；其他路由只接受 `X-API-Key`。如果设置了 key 仍想让 Ollama 端点保持开放，请显式设置 `WHITELIST_PATHS=/health,/api/*`。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
 >
 > **条目是内部路由路径，永远不带前缀。** `/*` 后缀按路径分段边界匹配，因此 `/api/*` 只覆盖 `/api` 及 `/api/` 之下的路径，不会覆盖别的。如果设置了 `LIGHTRAG_API_PREFIX`，这里**不要**包含它：匹配前会先剥离该前缀，所以 `WHITELIST_PATHS=/health` 会豁免 `/site01/health`，而 `WHITELIST_PATHS=/site01/health` 什么都豁免不了。参见[路径前缀和多站点 WebUI](#路径前缀和多站点-webui)。
 

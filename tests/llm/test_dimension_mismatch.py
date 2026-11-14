@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
 from lightrag.exceptions import VectorSpaceMismatchError
+from tests._pg_legacy_migration import answer_legacy_migration
 
 
 pytestmark = pytest.mark.offline
@@ -370,15 +371,16 @@ class TestPostgresDimensionMismatch:
 
         db.query.side_effect = query_side_effect
 
-        # Mock _run_with_retry to track when migration happens
+        # Track migration through its server-side copy statement
         migration_executed = []
 
-        async def mock_run_with_retry(operation, *args, **kwargs):
+        def record_migration(sql, params):
             migration_executed.append(True)
             migration_done["value"] = True
-            return None
 
-        db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+        db.query = AsyncMock(
+            side_effect=answer_legacy_migration(db.query.side_effect, record_migration)
+        )
         db.execute = AsyncMock()
         db._create_vector_index = AsyncMock()
 
@@ -392,5 +394,5 @@ class TestPostgresDimensionMismatch:
             workspace="test",
         )
 
-        # Verify migration WAS called (via _run_with_retry for batch operations)
+        # Verify migration WAS called
         assert len(migration_executed) > 0, "Migration should have been executed"

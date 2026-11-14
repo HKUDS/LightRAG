@@ -82,7 +82,7 @@ After restarting the server, the startup log lists the four `PG*` storages. The 
 
 Switching storage does not move data. The cheapest way to carry over what you already indexed is to migrate the extraction cache and then upload the documents again:
 
-1. With PostgreSQL running (1.1) and before restarting the server, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary and multimodal-analysis caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
+1. With PostgreSQL running (1.1) and before restarting the server, run `python -m lightrag.tools.migrate_llm_cache`. Choose `JsonKVStorage` as source and `PGKVStorage` as target, and confirm. It moves the extraction, summary, multimodal-analysis and smart-heading caches (see [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)).
 2. Restart the server on PostgreSQL.
 3. Upload the original files again. Extraction hits the migrated cache.
 
@@ -95,8 +95,7 @@ With neither `AUTH_ACCOUNTS` nor `LIGHTRAG_API_KEY` set, every endpoint is publi
 ```bash
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'   # single quotes: the hash contains $
 TOKEN_SECRET=<openssl rand -hex 32>         # required with AUTH_ACCOUNTS
-LIGHTRAG_API_KEY=<a long random string>
-WHITELIST_PATHS=/health                     # also protect the Ollama-compatible /api/*
+LIGHTRAG_API_KEY=<a long random string>   # also protects the Ollama-compatible /api/*
 ```
 
 Store a bcrypt hash rather than a plain password. Generate one with the `bcrypt` package already in the environment:
@@ -105,7 +104,7 @@ Store a bcrypt hash rather than a plain password. Generate one with the `bcrypt`
 python -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
 ```
 
-The server refuses to start with `AUTH_ACCOUNTS` but no non-default `TOKEN_SECRET`. The default `WHITELIST_PATHS` keeps `/api/*` open so Ollama clients work unchanged. Narrow it to `/health` once the server is reachable from a network.
+The server refuses to start with `AUTH_ACCOUNTS` but no non-default `TOKEN_SECRET`. With `LIGHTRAG_API_KEY` set, the default `WHITELIST_PATHS` is `/health`, so the Ollama-compatible `/api/*` routes need the key as well; an Ollama client sends it as `Authorization: Bearer <key>` (enter it as the connection's API key). Without a key the default keeps `/api/*` open, even with `AUTH_ACCOUNTS`, because an Ollama client cannot log in.
 
 **Verify:**
 
@@ -207,7 +206,7 @@ The `VLM` role defaults to `LLM_MODEL`. `gpt-6-luna` accepts image input, so not
 | Markdown remote `http(s)` images | Downloaded (guarded against private addresses); a failed download keeps the link and logs a warning |
 | Markdown **local** images such as `./doc.assets/a.png` | **Only inside a `.textpack`**, a zip of the `.md` plus its images. A plain `.md` upload does not carry the image files, so the parser logs `skipping image (file reference outside .textpack)` |
 
-A local image path that contains spaces must be written `![alt](<./my doc.assets/a.png>)`. Without the angle brackets it is not Markdown image syntax at all, so it stays as plain text and no warning is logged. Editors such as Typora write such paths without brackets.
+Editors such as Typora write a local image path that contains spaces as `![alt](./my doc.assets/a.png)`, without angle brackets. That is not standard Markdown, but LightRAG still reads it as an image when the path ends in an image extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`). In any other case use the standard form `![alt](<./my doc.assets/a.png>)` or write the spaces as `%20`; otherwise it is not an image, so it stays as plain text and no warning is logged.
 
 Images smaller than `VLM_MIN_IMAGE_PIXEL` (64 px on either side) are treated as decoration and skipped.
 
@@ -339,7 +338,6 @@ POSTGRES_MAX_CONNECTIONS=40
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'
 TOKEN_SECRET=...
 LIGHTRAG_API_KEY=...
-WHITELIST_PATHS=/health
 
 # Step 3 — Role-specific LLMs
 LLM_MODEL=gpt-6-luna
@@ -375,7 +373,7 @@ VLM_MAX_ASYNC_LLM=12
 | Symptom | Cause | Fix |
 |---|---|---|
 | Vector index creation fails, or the server refuses to start after switching to PostgreSQL | `HNSW` / `IVFFlat` with an embedding above 2000 dimensions | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
-| Images in a Markdown file are not analysed | Local image files are not uploaded with a plain `.md`; or the path contains spaces without `<...>` | Upload a `.textpack`; write `![](<path with spaces>)` |
+| Images in a Markdown file are not analysed | Local image files are not uploaded with a plain `.md`; or the path contains spaces, does not end in an image extension and has no `<...>` | Upload a `.textpack`; write `![](<path with spaces>)` |
 | A document with images ends up `FAILED` | `i` in its options while `VLM_PROCESS_ENABLE=false` | Enable both together |
 | `DOCX_SMART_HEADING=true` changes nothing | The document is below `DOCX_SMART_MIN_TOKENS` | Check `smart_audit.json`; test with a longer document |
 | MinerU parsing fails with HTTP 401 `A0202` | MinerU rejected the token | Test it with the `curl` in Step 7; then `POST /documents/reprocess_failed` |

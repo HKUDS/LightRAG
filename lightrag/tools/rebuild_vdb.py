@@ -861,6 +861,17 @@ class RebuildTool:
         return embedding_func
 
     def build_global_config(self) -> Dict[str, Any]:
+        # This tool builds the vector storages without a LightRAG instance,
+        # so LightRAG.__post_init__'s check never sees this value. It is the
+        # stride of every vector store's embedding loop: reject it here by
+        # name rather than failing mid-rebuild with a range() error.
+        embedding_batch_num = get_env_value(
+            "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
+        )
+        if embedding_batch_num < 1:
+            raise ValueError(
+                f"EMBEDDING_BATCH_NUM must be >= 1; got {embedding_batch_num}"
+            )
         global_config: Dict[str, Any] = {
             "working_dir": os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
             # Backend selection, mirroring LightRAG._build_global_config. PG
@@ -874,9 +885,7 @@ class RebuildTool:
             # Read by the JSON backend when it opens the configuration
             # container; ignored by the server backends.
             "config_dir": self.config_dir,
-            "embedding_batch_num": get_env_value(
-                "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
-            ),
+            "embedding_batch_num": embedding_batch_num,
             "vector_db_storage_cls_kwargs": {
                 "cosine_better_than_threshold": get_env_value(
                     "COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float

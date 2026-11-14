@@ -178,3 +178,51 @@ DOCLING_DO_FORMULA_ENRICHMENT=true
 ```
 
 This enables LightRAG to recognize equations in documents via the local docling-serve and output them in LaTeX form.
+
+## Using the VLM pipeline (for example MiniCPM-OCR)
+
+Docling Serve can also read pages with a vision-language model instead of an
+OCR engine. LightRAG exposes that pipeline with two settings:
+
+```bash
+DOCLING_ENDPOINT=http://localhost:5001
+DOCLING_PIPELINE=vlm
+DOCLING_VLM_PRESET=minicpm_ocr
+```
+
+`DOCLING_VLM_PRESET` names a preset registered in the docling version running
+inside docling-serve. `minicpm_ocr` (MiniCPM-OCR 1.0) is available from
+docling 2.149, but the docling-serve lockfile still pins an older
+`docling-slim`; upgrade that package before syncing and serving:
+
+```bash
+git clone https://github.com/docling-project/docling-serve
+cd docling-serve
+# pyproject allows docling-slim>=2.140,<3; the lockfile is what needs the bump
+uv lock --upgrade-package docling-slim
+uv sync --frozen
+uv run docling-serve run --host 0.0.0.0 --port 5001
+```
+
+`uv sync --frozen` alone installs the locked (pre-2.149) docling, so the
+preset would be missing. Confirm the preset is registered with
+`curl http://localhost:5001/v1/capabilities` (or the equivalent endpoint for
+your serve version) before pointing LightRAG at it.
+
+With the VLM pipeline, the `DOCLING_DO_OCR*` / `DOCLING_OCR_*` settings are
+ignored and left out of the request; LightRAG logs a warning only when one of
+them is set to a non-default value. The document still comes back as a
+DoclingDocument, so the sidecar/IR path is unchanged, but the structure is
+shallower: there is no layout-model reading order or layout-model table
+structure. Markdown tables emitted by the model are still re-imported as table
+items.
+
+Which engine runs the preset (local transformers, vLLM, Ollama, ...) is a
+deployment concern on the docling-serve side; see its `vlm_pipeline_*` options
+and preset settings.
+
+> **Note:** docling-serve accepts the preset at upload and resolves it in the
+> worker, so an unknown or disallowed preset fails the conversion task rather
+> than the HTTP upload. LightRAG names that requirement in the task-failure
+> message, including `DOCLING_SERVE_ALLOWED_VLM_PRESETS` when the serve host
+> restricts presets.

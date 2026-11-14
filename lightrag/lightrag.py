@@ -245,7 +245,7 @@ from lightrag.llm_roles import (
     ROLES,
     RoleLLMConfig,
     RoleSpec,  # noqa: F401  # re-exported via lightrag/__init__.py
-    _optional_env_int,
+    _role_max_async_seed,
     _RoleLLMMixin,
     _RoleLLMState,
 )
@@ -1028,14 +1028,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     embedding_batch_num: int = field(
         default=get_env_value("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int)
     )
-    """Batch size for embedding computations."""
+    """Batch size for embedding computations.
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__``.
+    """
 
     embedding_func_max_async: int = field(
         default=get_env_value(
             "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
         )
     )
-    """Maximum number of concurrent embedding function calls."""
+    """Maximum number of concurrent embedding function calls.
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__`` (a non-positive limit would dispatch no workers).
+    """
 
     embedding_cache_config: dict[str, Any] = field(
         default_factory=lambda: {
@@ -1098,7 +1106,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             int,
         )
     )
-    """Maximum number of concurrent LLM calls."""
+    """Maximum number of concurrent LLM calls.
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__`` (a non-positive limit would dispatch no workers).
+    """
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
@@ -1135,7 +1147,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     )
     """Maximum number of concurrent rerank calls.
     Falls back to MAX_ASYNC_LLM when MAX_ASYNC_RERANK is unset
-    (MAX_ASYNC is still accepted as a deprecated alias)."""
+    (MAX_ASYNC is still accepted as a deprecated alias).
+
+    Must be >= 1; 0 or negative values raise ``ValueError`` in
+    ``__post_init__`` (a non-positive limit would dispatch no workers)."""
 
     default_rerank_timeout: int = field(
         default=get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
@@ -1830,6 +1845,53 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"{self.embedding_chunk_overlap_token_size}"
             )
 
+        # Embedding batch size is the stride of the vector-store flush
+        # loop: 0 makes range() raise there and a negative value embeds
+        # nothing, both surfacing only at the first insert with an error
+        # that never names this setting. Fail fast instead.
+        if self.embedding_batch_num < 1:
+            raise ValueError(
+                "EMBEDDING_BATCH_NUM must be >= 1 (it is the batch size "
+                f"used when flushing embeddings to the vector store); got "
+                f"{self.embedding_batch_num}"
+            )
+
+        # Concurrency limits feed priority_limit_async_func_call, which
+        # dispatches exactly that many workers: 0 or negative dispatches
+        # none, so the wrapped call would never execute and the pipeline
+        # would hang without an error. Fail fast for every queue built
+        # from these fields and from the per-role seeds below.
+        if self.embedding_func_max_async < 1:
+            raise ValueError(
+                "EMBEDDING_FUNC_MAX_ASYNC must be >= 1 (a non-positive "
+                "limit dispatches no workers, so embedding calls would "
+                f"never run); got {self.embedding_func_max_async}"
+            )
+        if self.llm_model_max_async < 1:
+            raise ValueError(
+                "MAX_ASYNC_LLM must be >= 1 (a non-positive limit "
+                "dispatches no workers, so LLM calls would never run); "
+                f"got {self.llm_model_max_async}"
+            )
+        if self.rerank_model_max_async < 1:
+            raise ValueError(
+                "MAX_ASYNC_RERANK must be >= 1 (a non-positive limit "
+                "dispatches no workers, so rerank calls would never "
+                f"run); got {self.rerank_model_max_async}"
+            )
+        # Per-role seeds are checked here too, so a bad one is reported by
+        # the name of the setting that supplied it and before any storage
+        # object or the working directory is created.
+        for spec in ROLES:
+            role_max_async, source = _role_max_async_seed(spec, self.role_llm_configs)
+            if role_max_async is not None and role_max_async < 1:
+                raise ValueError(
+                    f"{source} must be >= 1 (a non-positive limit "
+                    f"dispatches no workers, so calls through the "
+                    f"{spec.name!r} LLM role would never run); got "
+                    f"{role_max_async}"
+                )
+
         # Handle deprecated parameters
         if self.log_level is not None:
             warnings.warn(
@@ -2127,9 +2189,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     f"a dict, got {type(override).__name__}"
                 )
 
-            max_async = cfg.max_async
-            if max_async is None:
-                max_async = _optional_env_int(f"{spec.env_prefix}_MAX_ASYNC_LLM")
+            max_async, _ = _role_max_async_seed(spec, user_role_configs)
 
             metadata = {}
             if cfg.metadata is not None:
@@ -2769,18 +2829,33 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         back only after it. A cancellation is re-raised once that is done.
         """
         self._shutdown_parser_executor()
-        cancelled: asyncio.CancelledError | None = None
+        # The model queues own long-lived worker and health-check tasks, so
+        # all of them are shut down here: closing an asyncio.run()/manual loop
+        # after finalize would otherwise leave their queue.get() coroutines
+        # pending on the destroyed event loop. They are shut down in two
+        # steps around the storages, because the dependency runs both ways:
+        # the LLM queues drain while the response cache is still usable, and
+        # the embedding queue stays open until the vector storages have
+        # flushed, since that flush embeds first.
+        #
+        # The embedding shutdown is deliberately NOT in a ``finally``. It is
+        # permanent -- a closed wrapper rejects every later call -- so running
+        # it after an interrupted finalize would make the retry's vector
+        # flush fail and drop the buffered vectors while the storages are
+        # still marked FINALIZED. A finalize whose storage teardown raises
+        # therefore leaves the embedding queue open for the retry. Accepted
+        # residue: with no retry, its workers stay pending until the event
+        # loop closes (no data is lost by that; the unflushed vectors are
+        # lost either way).
+        #
         # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
+        cancelled: asyncio.CancelledError | None = None
         try:
             try:
                 await self._cancel_admin_release_drives()
-                # These wrappers own long-lived worker and health-check tasks. Drain
-                # them while the response cache and other storages are still usable;
-                # otherwise closing an asyncio.run()/manual loop after finalize leaves
-                # their queue.get() coroutines pending on the destroyed event loop.
-                await self._shutdown_model_queues()
+                await self._shutdown_llm_and_rerank_queues()
             except asyncio.CancelledError as exc:
                 # Absorbed HERE and re-raised at the end, rather than left to
                 # propagate: draining an LLM queue waits on whatever is in
@@ -2811,6 +2886,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 except asyncio.CancelledError as exc:
                     if cancelled is None:
                         cancelled = exc
+            # Re-raises a teardown failure, which skips the embedding
+            # shutdown below and leaves the queue open for the retry.
+            teardown.result()
+            # Reached only once every storage has been released, so the
+            # vector flushes that embed have already run. Interruptible like
+            # the LLM drains: a cancel here loses nothing but the queue
+            # workers, which the loop's close reaps.
+            try:
+                await self._shutdown_embedding_queue()
+            except asyncio.CancelledError as exc:
+                if cancelled is None:
+                    cancelled = exc
         finally:
             # Last, and in a ``finally``: the claim outlives every storage,
             # and it is the one release nothing else can perform -- a retry
@@ -2831,7 +2918,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Runs as its own task that ``finalize_storages`` shields and drains, so
         a cancellation delivered to the caller cannot stop it part-way. Sets
-        ``FINALIZED`` only once every release has been attempted.
+        ``FINALIZED`` only once every release has been attempted. Only
+        ``finalize_storages`` may call this: it relies on the LLM queues
+        being drained already and on the embedding queue still being open.
         """
         if self._storages_status == StoragesStatus.INITIALIZED:
             await self._commit_cache_pair_before_finalize()
@@ -3218,6 +3307,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     return raw.value if isinstance(raw, DocStatus) else str(raw or "")
 
                 resume = False
+                if _row_status_text(existing_row) == DocStatus.DELETING.value:
+                    raise RuntimeError(
+                        f"Document {doc_key} is partially deleted; re-run deletion first."
+                    )
                 if existing_journal is not None:
                     if existing_journal.get("operation_id") != operation_id:
                         raise RuntimeError(
@@ -6596,6 +6689,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         *,
         operation_id: str,
         chunk_count: int,
+        stamp_deleting: bool = False,
     ) -> None:
         """Persist (and flush) the purge journal's phase for ``doc_id``.
 
@@ -6616,6 +6710,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         record that lets a retry survive its own anchor deletion (step 8), and
         the failure mode it creates — anchors gone, journal absent — is a
         permanent fail-closed refusal.
+
+        ``stamp_deleting`` moves the row to ``DocStatus.DELETING`` in the SAME
+        targeted write as the journal (never a separate one), and refreshes
+        ``updated_at`` with it. Only document deletion may pass it; see
+        docs/design/PurgeRecoveryContract.md#visible-deletion-recovery.
         """
         status_doc = await require_doc_status_record(
             self.doc_status, doc_id, purpose=f"journal purge phase '{phase}'"
@@ -6631,7 +6730,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         }
         # missing_ok=False: the row vanishing between the read above and this
         # write is the same unjournaled-purge hazard, not a tolerable race.
-        await self.doc_status.update_doc_status_fields(doc_id, {"metadata": metadata})
+        fields: dict[str, Any] = {"metadata": metadata}
+        if stamp_deleting:
+            fields["status"] = DocStatus.DELETING
+            fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await self.doc_status.update_doc_status_fields(doc_id, fields)
         await self._flush_storages([self.doc_status])
 
     async def _clear_kg_purge_journal(
@@ -6686,6 +6789,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         candidate_entities: list[str] | None = None,
         candidate_relations: list[tuple[str, str]] | None = None,
         patch_only: bool = False,
+        stamp_deleting: bool = False,
         rebuild_policy: Literal["best_effort", "rollback"] = "best_effort",
         pipeline_status: dict,
         pipeline_status_lock: Any,
@@ -6698,6 +6802,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         no-op; ownership is verified per candidate from the union of
         chunk-tracking entries and graph ``source_id`` lists before anything
         is deleted or rebuilt.
+
+        Only document deletion sets ``stamp_deleting``. Ingestion recovery
+        keeps its ingestion status; deletion stamps the status with the durable
+        journal before mutating contributions and never restores the old status.
 
         What this method does:
             1. Resolves the candidate entity/relation set: the explicit
@@ -6766,6 +6874,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         proof: _PurgeRecoveryProof | None = None
         if journaled:
             proof = await self._resolve_purge_recovery_proof(doc_id, chunk_ids)
+            if stamp_deleting and proof.journal_phase is not None:
+                await self._write_kg_purge_phase(
+                    doc_id,
+                    proof.journal_phase,
+                    operation_id=proof.operation_id,
+                    chunk_count=len(chunk_ids),
+                    stamp_deleting=True,
+                )
             if proof.phase_at_least(KG_PURGE_PHASE_COMPLETED):
                 logger.info(
                     f"[purge] {doc_id}: journal reports this purge already "
@@ -6815,6 +6931,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     KG_PURGE_PHASE_PREPARED,
                     operation_id=proof.operation_id,
                     chunk_count=len(chunk_ids),
+                    stamp_deleting=stamp_deleting,
                 )
         elif not chunk_ids:
             return KGRebuildReport()
@@ -6844,6 +6961,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     KG_PURGE_PHASE_DERIVED_COMMITTED,
                     operation_id=proof.operation_id,
                     chunk_count=len(chunk_ids),
+                    stamp_deleting=stamp_deleting,
                 )
         else:
             logger.info(
@@ -7565,6 +7683,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: FAILED)"
                     )
+                elif doc_status == DocStatus.DELETING:
+                    warning_msg = (
+                        f"Resuming interrupted deletion of {doc_id} {file_path}"
+                    )
                 else:
                     status_text = (
                         doc_status.value
@@ -7647,6 +7769,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     await self._purge_kg_contributions(
                         doc_id,
                         chunk_ids,
+                        stamp_deleting=True,
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                     )
@@ -7828,6 +7951,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 await self._purge_kg_contributions(
                     doc_id,
                     chunk_ids,
+                    stamp_deleting=True,
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
                 )
