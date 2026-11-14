@@ -102,6 +102,15 @@ def _normalize_gemini_base_url(base_url: str | None) -> str | None:
     return normalized
 
 
+def _use_vertexai() -> bool:
+    """Whether GOOGLE_GENAI_USE_VERTEXAI enables Vertex AI mode.
+
+    Parsed exactly like the google-genai SDK does ("true" or "1", any case), so
+    LightRAG and the client it builds never disagree about the mode.
+    """
+    return os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+
+
 @lru_cache(maxsize=8)
 def _get_gemini_client(
     api_key: str, base_url: str | None, timeout: int | None = None
@@ -121,7 +130,7 @@ def _get_gemini_client(
     normalized_base_url = _normalize_gemini_base_url(base_url)
 
     # Add Vertex AI support
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = _use_vertexai()
     if use_vertexai:
         # Vertex AI mode: use project/location, NOT api_key
         client_kwargs["vertexai"] = True
@@ -157,7 +166,7 @@ def _get_gemini_client(
 
 def _ensure_api_key(api_key: str | None) -> str:
     # In Vertex AI mode, API key is not required
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = _use_vertexai()
     if use_vertexai:
         # Return empty string for Vertex AI mode (not used)
         return ""
