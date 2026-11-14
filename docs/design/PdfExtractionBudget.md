@@ -62,20 +62,26 @@ It does this the way pypdf does:
 - A resource stack starts with the page's `/Resources`, inherited through
   `/Parent`.
 - On `Do`, the name is looked up in the top entry's `/XObject` dictionary. The
-  form is charged and its own `/Resources` is pushed.
+  form is charged and its `/Resources` is pushed. pypdf looks up a form's
+  resources exactly as it looks up a page's, through `/Parent` included, so
+  the budget does too (`_inherited_resources`). A form with no `/Resources`
+  of its own but a `/Parent` that supplies them is parsed, and therefore
+  charged.
 - `visitor_operand_after` pops the entry for that `Do`.
-- An image XObject, a form without `/Resources`, an entry that is not a
-  stream (`null`, a name, a plain dictionary), or a name that does not resolve
-  pushes `None` and costs nothing. pypdf parses none of them, and it skips a
-  non-stream entry inside its own `try`. So does a form whose `/Resources` is
-  an indirect reference to a corrupt object.
+- The following push `None` and cost nothing, because pypdf parses none of
+  them: an image XObject, a form whose `/Resources` cannot be found even
+  through `/Parent`, an entry that is not a stream (`null`, a name, a plain
+  dictionary), a stream without `/Subtype`, and a name that does not resolve.
+  pypdf reads `/Subtype` as a required key and skips a non-stream entry, both
+  inside its own `try`. A form whose `/Resources` is an indirect reference to
+  a corrupt object is skipped the same way.
 
 The rule behind those cases: **a visitor callback raises nothing but the
 budget's own error.** An error from a visitor escapes pypdf's `try` around the
 form and fails a page that pypdf extracts. Every lookup, resolution and
 inspection in a callback therefore treats a failure as "nothing here". This
 covers `_lookup_form` and the text-operand count. Outside the callbacks,
-`_page_resources` and the preflight's `/Contents` resolution follow the same
+`_inherited_resources` and the preflight's `/Contents` resolution follow the same
 error rule as decoding (see below). A failed resolution leaves pypdf's reader
 reporting a retry of that object as a self-reference loop, so pypdf's error
 for such a page can change type. Whether the page fails does not change.

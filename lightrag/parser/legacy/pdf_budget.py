@@ -71,16 +71,17 @@ def _detached(exc: Exception) -> Exception:
     return exc
 
 
-def _page_resources(page: Any) -> Any:
-    """``/Resources`` of ``page``, inherited through ``/Parent`` like pypdf.
+def _inherited_resources(obj: Any) -> Any:
+    """``/Resources`` of a page or form, inherited through ``/Parent`` like pypdf.
 
-    ``None`` when no node declares it, the one case every supported pypdf
-    release treats as "nothing to parse" for the page, and also when the
-    lookup itself fails: pypdf then fails or skips the page on its own, and
-    either way parses nothing.
+    pypdf looks a form's resources up exactly as a page's, ``/Parent``
+    included. ``None`` when no node declares it, the one case every supported
+    pypdf release treats as "nothing to parse", and also when the lookup
+    itself fails: pypdf then fails or skips the object on its own, and either
+    way parses nothing.
     """
     try:
-        node = page
+        node = obj
         for _ in range(_MAX_PARENT_DEPTH):
             if not isinstance(node, DictionaryObject):
                 return None
@@ -99,19 +100,23 @@ def _lookup_form(resources: Any, operands: Any) -> tuple[Any, Any] | None:
 
     Never raises (except ``MemoryError``): it runs in a visitor callback,
     outside pypdf's own catch, so an error here would fail a page that pypdf
-    extracts. Images, non-streams, forms without ``/Resources`` and anything
-    that fails to resolve are all "nothing", as they are for pypdf.
+    extracts. Images, non-streams, streams without ``/Subtype``, forms whose
+    ``/Resources`` cannot be found even through ``/Parent``, and anything that
+    fails to resolve are all "nothing", as they are for pypdf.
     """
     try:
         xobjects = _resolve(resources.get("/XObject")) if resources else None
         if not xobjects or not operands:
             return None
         form = _resolve(xobjects.get(operands[0]))
-        if not isinstance(form, StreamObject) or form.get("/Subtype") == "/Image":
+        # pypdf reads /Subtype as a required key, so a stream without one is
+        # skipped inside its catch.
+        if not isinstance(form, StreamObject) or form["/Subtype"] == "/Image":
             return None
-        if "/Resources" not in form:
+        resources = _inherited_resources(form)
+        if resources is None:
             return None
-        return form, _resolve(form["/Resources"])
+        return form, resources
     except MemoryError:
         raise
     except Exception:
@@ -216,7 +221,7 @@ class PdfExtractionBudget:
         error would have at that page.
         """
         for number, page in enumerate(pages, start=1):
-            resources = _page_resources(page)
+            resources = _inherited_resources(page)
             if resources is None:
                 continue
             try:
@@ -241,7 +246,7 @@ class PdfExtractionBudget:
         """Keyword arguments for ``page.extract_text``."""
         self._check()
         self._page_chars = 0
-        self._resources = [_page_resources(page)]
+        self._resources = [_inherited_resources(page)]
         return {
             "visitor_operand_before": self._before,
             "visitor_operand_after": self._after,

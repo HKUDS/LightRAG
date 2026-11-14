@@ -501,3 +501,48 @@ def test_corrupt_contents_of_page_with_empty_resources_matches_pypdf():
     )
     page[NameObject("/Contents")] = marked
     _assert_same_as_pypdf(_corrupt_object(b.bytes(), b"/Marker /CorruptMe"))
+
+
+def test_form_inheriting_resources_through_parent_is_charged():
+    # pypdf resolves a form's /Resources through /Parent, as for a page, and
+    # parses it; the budget must charge it rather than treat it as skipped.
+    b = _Builder()
+    form_data = _text_ops(b"P" * 10, 5)
+    s = DecodedStreamObject()
+    s.set_data(form_data)
+    s.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Form"),
+            NameObject("/Parent"): b.writer._add_object(
+                DictionaryObject({NameObject("/Resources"): b.resources()})
+            ),
+        }
+    )
+    form = b.writer._add_object(s.flate_encode())
+    page_data = b"/X0 Do\n" * 20
+    b.page(b.stream(page_data), {"/X0": form})
+    data = b.bytes()
+    page = PdfReader(io.BytesIO(data)).pages[0]
+
+    budget = PdfExtractionBudget(1, "parent.pdf")
+    budget.check_page_contents([page])
+    text = page.extract_text(**budget.visitors(page))
+    budget.finish_page(text)
+    assert budget.content_bytes == len(page_data) + 20 * len(form_data)
+    # Recent pypdf extracts the form's text; 6.1.0 returns none for it.
+    assert text + "\n" == _unbudgeted(data)
+
+
+def test_stream_without_subtype_is_skipped_like_pypdf():
+    # pypdf reads /Subtype as a required key inside its catch, so a stream
+    # without one is skipped; it must not be decoded, charged or refused.
+    b = _Builder()
+    s = EncodedStreamObject()
+    s._data = b"x" * 64
+    s[NameObject("/Filter")] = NameObject("/BogusDecode")
+    s[NameObject("/Resources")] = b.resources()
+    _form_page(b, b.writer._add_object(s), 20)
+    data = b.bytes()
+    assert "Body" in _unbudgeted(data)
+    _assert_same_as_pypdf(data)
