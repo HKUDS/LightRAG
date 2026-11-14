@@ -19,26 +19,19 @@ class LegacyExtractionError(ValueError):
     """Raised when legacy extraction cannot produce usable text."""
 
 
-def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
-    """Extract PDF content using pypdf (synchronous)."""
-    from pypdf import PdfReader  # type: ignore
+def _extract_pdf_pypdf(
+    file_bytes: bytes, password: str | None = None, file_path: str = "pdf"
+) -> str:
+    """Extract PDF content using pypdf (synchronous).
 
-    pdf_file = BytesIO(file_bytes)
-    reader = PdfReader(pdf_file)
+    pypdf runs in a resource-limited child process, never here: see
+    :mod:`lightrag.parser.legacy.pdf_budget`. Raises its
+    ``PdfExtractionBudgetError`` when the document exceeds a ``PDF_MAX_*``
+    limit, and ``LegacyExtractionError`` for any other failure.
+    """
+    from lightrag.parser.legacy.pdf_budget import extract_pdf_text
 
-    if reader.is_encrypted:
-        # Try empty password first (covers permission-only encrypted PDFs)
-        decrypt_result = reader.decrypt(password or "")
-        if decrypt_result == 0:
-            if password:
-                raise Exception("Incorrect PDF password")
-            else:
-                raise Exception("PDF is encrypted but no password provided")
-
-    content = ""
-    for page in reader.pages:
-        content += page.extract_text() + "\n"
-    return content
+    return extract_pdf_text(file_bytes, password, file_path)
 
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -467,7 +460,7 @@ def extract_text(
 
     extractor = _BINARY_EXTRACTORS.get(suffix)
     if extractor is _extract_pdf_pypdf:
-        return _extract_pdf_pypdf(file_bytes, pdf_password)
+        return _extract_pdf_pypdf(file_bytes, pdf_password, file_path or suffix)
     if extractor is not None:
         return extractor(file_bytes)
     return _decode_text(file_bytes)
