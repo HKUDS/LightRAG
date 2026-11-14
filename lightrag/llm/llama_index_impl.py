@@ -167,7 +167,10 @@ async def llama_index_complete(
             is ignored.
         entity_extraction: Deprecated compatibility shim. Emits a warning and
             is ignored.
-        settings: Optional LlamaIndex settings
+        settings: Optional LlamaIndex settings. Applied through
+            :func:`configure_llama_index` exactly as :func:`llama_index_embed`
+            applies its own ``settings``, so one ``llm_model_kwargs`` entry
+            configures both entry points the same way.
         **kwargs: Additional arguments. ``response_format`` is not supported by
             this adapter and is stripped before calling LlamaIndex.
             ``max_tokens`` is folded into ``chat_kwargs`` (without overriding
@@ -178,6 +181,9 @@ async def llama_index_complete(
     - This adapter does not support OpenAI-style ``response_format`` JSON mode.
     - If callers pass ``response_format``, it is stripped before generation.
     """
+    if settings:
+        configure_llama_index(settings)
+
     if history_messages is None:
         history_messages = []
 
