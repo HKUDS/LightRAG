@@ -31,21 +31,26 @@ Thank you for your interest in contributing! This guide covers everything you ne
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 
-# Install in development mode (requires uv)
-uv sync
+# Install the development environment (requires uv): the test toolchain
+# (pytest, ruff, pre-commit) plus the API server, every storage backend and
+# every LLM provider integration
+uv sync --extra test --extra offline
 source .venv/bin/activate        # Linux/macOS
 # .venv\Scripts\activate         # Windows
 
-# Install with optional extras as needed
-uv sync --extra api              # FastAPI server
-uv sync --extra test             # Test dependencies
-uv sync --extra offline-storage  # Storage backends
-uv sync --extra offline-llm      # Additional LLM providers
-
 # Set up pre-commit hooks (run once)
-pip install pre-commit
 pre-commit install
 ```
+
+Pass every extra you need to **one** `uv sync` command. By default `uv sync` removes packages the selected extras do not need, so `uv sync --extra offline-storage` run after `uv sync --extra test` uninstalls pytest again.
+
+After each `git pull`, re-sync with the same extras:
+
+```bash
+uv sync --locked --inexact --extra test --extra offline
+```
+
+`--locked` installs exactly what `uv.lock` pins and fails instead of rewriting it. `--inexact` keeps packages that are not in `uv.lock`, such as the spaCy models. See [Updating after `git pull`](../README.md#install-from-source) in the README.
 
 ---
 
@@ -83,6 +88,7 @@ The same checks run automatically on every pull request. If the CI check fails, 
 
 - **Python code and comments**: English
 - **Frontend (WebUI)**: uses i18next for internationalization — add translation keys rather than hardcoding strings
+- **README**: `README.md` and its translations `README-zh.md`, `README-ja.md` and `README-id.md` stay line-for-line aligned. Make every README change in all four files in the same commit, with the same line count and the same line breaks. `tests/test_readme_translations.py` checks this in CI and names the first line that differs. If you cannot translate the change, put the English text at the same lines in the translations so it can be translated later. Do not leave those files unchanged.
 
 ---
 
@@ -133,6 +139,7 @@ Set `LIGHTRAG_RUN_INTEGRATION=true` as an environment variable as an alternative
 - [ ] Pre-commit checks pass (`pre-commit run --all-files`)
 - [ ] Unit/integration tests added or updated where applicable
 - [ ] Documentation updated if behavior changes
+- [ ] README changes applied to all four language versions (`README.md`, `-zh`, `-ja`, `-id`), line counts equal
 - [ ] PR description explains the *why*, not just the *what*
 
 ---

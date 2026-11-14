@@ -117,6 +117,7 @@ LightRAG 支持以下 LLM 后端：
 * ollama
 * lollms
 * openai 或 openai 兼容
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * bedrock
 * gemini
@@ -618,11 +619,11 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ### 在聊天中选择查询模式
 
-如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `hybrid`。您可以通过发送带有查询前缀的消息来选择查询模式。
+如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `mix`。您可以通过发送带有查询前缀的消息来选择查询模式。
 
 查询字符串中的查询前缀可以决定使用哪种 LightRAG 查询模式来生成响应。支持的前缀包括：
 
-去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`），将返回 **400**。
+去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`，或单独一个 `/bypass`），将返回 **400**。
 
 ```
 /local
@@ -640,7 +641,7 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 /mixcontext
 ```
 
-例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。
+例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。前缀之后必须是空白字符或消息结尾：空格、制表符、换行均可，因此问题可以从下一行开始。仅以前缀开头的更长单词（如 `/localize`）不是前缀，会作为普通查询发送。
 
 "/bypass" 不是 LightRAG 查询模式，它会告诉 API 服务器将查询连同聊天历史直接传递给底层 LLM。因此用户可以使用 LLM 基于聊天历史回答问题。如果您使用 Open WebUI 作为前端，您可以直接切换到普通 LLM 模型，而不是使用 /bypass 前缀。
 
@@ -755,6 +756,7 @@ LightRAG 支持绑定到各种 LLM 后端：
 
 * ollama
 * openai (含openai 兼容)
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * lollms
 * bedrock
@@ -856,7 +858,7 @@ VLM_LLM_MODEL=gpt-5-mini
 
 `VLM_PROCESS_ENABLE` **只闸控图片**。表格和公式由 `EXTRACT` 角色分析，不受该开关影响，因此 `*:native-teP` 无需配置任何 VLM 即可工作。若启用了 `i` 而 VLM 不可用，通过了前置过滤（文件存在、栅格格式、长宽均不小于 `VLM_MIN_IMAGE_PIXEL`）的图片会让**该文档失败**而非被跳过：文档进入 `FAILED`，`error_msg` 为 "VLM analysis required but VLM role is not available"。
 
-当前支持视觉输入的 provider 包括 `openai`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
+当前支持视觉输入的 provider 包括 `openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
 
 ```bash
 VLM_PROCESS_ENABLE=true
@@ -988,7 +990,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--workspace` | `""` | 用于存储隔离的默认 workspace |
 | `--api-prefix` | `""` | 反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置 |
 | `--workers` | `1` | Gunicorn worker 数量 |
-| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`azure_openai`、`bedrock`、`gemini`） |
+| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`openai_responses`、`azure_openai`、`bedrock`、`gemini`） |
 | `--embedding-binding` | `ollama` | Embedding 绑定类型（`lollms`、`ollama`、`openai`、`azure_openai`、`bedrock`、`jina`、`gemini`、`voyageai`） |
 | `--rerank-binding` | `null` | Rerank 绑定类型（`null`、`cohere`、`jina`、`aliyun`） |
 
@@ -1260,7 +1262,7 @@ notes.[-R].md
 
 ## API 端点
 
-所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
+所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`openai_responses`、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
 
 - Swagger UI：http://localhost:9621/docs
 - ReDoc：http://localhost:9621/redoc

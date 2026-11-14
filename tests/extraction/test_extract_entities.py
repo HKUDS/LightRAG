@@ -1,21 +1,12 @@
 """Tests for entity extraction gleaning token limit guard."""
 
 import json
-import logging
 import re
 from unittest.mock import AsyncMock
 
 import pytest
 
 from lightrag.utils import Tokenizer, TokenizerInterface
-
-
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    """``lightrag.utils.logger`` sets ``propagate = False`` to avoid noisy
-    test output; restore propagation locally so ``caplog`` can capture
-    WARNING records emitted from inside ``lightrag.operate``."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 class DummyTokenizer(TokenizerInterface):
@@ -71,7 +62,7 @@ def _make_chunks(content: str = "Test content.") -> dict[str, dict]:
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_gleaning_skipped_when_tokens_exceed_limit(
-    monkeypatch, caplog, _propagate_lightrag_logger
+    monkeypatch, caplog, lightrag_caplog
 ):
     """Gleaning must be skipped (with a WARNING) when the projected
     gleaning input — system + history(user+assistant) + continue prompt —
@@ -406,7 +397,7 @@ async def _projected_gleaning_tokens(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_json", [False, True], ids=["text_mode", "json_mode"])
 async def test_guard_still_counts_the_continue_prompt(
-    monkeypatch, caplog, _propagate_lightrag_logger, use_json
+    monkeypatch, caplog, lightrag_caplog, use_json
 ):
     """The guard must keep counting the continue prompt in both modes.
 

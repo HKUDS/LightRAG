@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import warnings
 from ..utils import verbose_debug
@@ -10,19 +11,14 @@ else:
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
-if not pm.is_installed("zhipuai"):
-    pm.install("zhipuai")
+if not pm.is_installed("zai-sdk"):
+    pm.install("zai-sdk")
 
-from openai import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 
 from lightrag.utils import (
@@ -35,12 +31,58 @@ import numpy as np
 from typing import Any, Union, List, Optional, Dict
 
 
+def _build_client(client_cls, api_key: Optional[str]):
+    """Build a zai-sdk client whose retries are owned by the tenacity decorators.
+
+    zai-sdk reads ZAI_* variables; the old zhipuai ones are still honored.
+    ``max_retries=0`` turns off the SDK's own retry loop, which would otherwise
+    multiply with the decorators (3 SDK attempts per decorator attempt).
+    """
+    kwargs = {"max_retries": 0}
+    api_key = (
+        api_key or os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY")
+    )
+    if api_key:
+        kwargs["api_key"] = api_key
+    if not os.environ.get("ZAI_BASE_URL"):
+        base_url = os.environ.get("ZHIPUAI_BASE_URL")
+        if base_url:
+            kwargs["base_url"] = base_url
+    return client_cls(**kwargs)
+
+
+# The statuses zai-sdk's own ``_should_retry`` retries; with that loop turned
+# off (see _build_client) the decorators have to cover them: 408 request
+# timeout, 409 lock timeout, 429 rate limit, and every 5xx.
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+
+
+def _is_retryable_zhipu_error(error: BaseException) -> bool:
+    """tenacity predicate: retry zai-sdk connection errors and transient statuses.
+
+    zai-sdk raises its own exception types, never openai's. ``APITimeoutError``
+    subclasses ``APIConnectionError``; ``APIConnectionError`` is exported only
+    from ``zai.core._errors``, not from ``zai.core``.
+    """
+    try:
+        from zai.core._errors import APIConnectionError, APIStatusError
+    except ImportError:
+        return False
+    if isinstance(error, APIConnectionError):
+        return True
+    if isinstance(error, APIStatusError):
+        status_code = getattr(error, "status_code", None)
+        return isinstance(status_code, int) and (
+            status_code in _RETRYABLE_STATUS_CODES or status_code >= 500
+        )
+    return False
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_zhipu_error),
+    reraise=True,
 )
 async def zhipu_complete_if_cache(
     prompt: Union[str, List[Dict[str, str]]],
@@ -73,16 +115,11 @@ async def zhipu_complete_if_cache(
     """
     # dynamically load ZhipuAI
     try:
-        from zhipuai import ZhipuAI
+        from zai import ZhipuAiClient
     except ImportError:
-        raise ImportError("Please install zhipuai before initialize zhipuai backend.")
+        raise ImportError("Please install zai-sdk before initialize zhipuai backend.")
 
-    if api_key:
-        client = ZhipuAI(api_key=api_key)
-    else:
-        # please set ZHIPUAI_API_KEY in your environment
-        # os.environ["ZHIPUAI_API_KEY"]
-        client = ZhipuAI()
+    client = _build_client(ZhipuAiClient, api_key)
 
     messages = []
 
@@ -255,9 +292,8 @@ async def zhipu_complete(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_zhipu_error),
+    reraise=True,
 )
 async def zhipu_embedding(
     texts: list[str],
@@ -268,15 +304,10 @@ async def zhipu_embedding(
 ) -> np.ndarray:
     # dynamically load ZhipuAI
     try:
-        from zhipuai import ZhipuAI
+        from zai import ZhipuAiClient
     except ImportError:
-        raise ImportError("Please install zhipuai before initialize zhipuai backend.")
-    if api_key:
-        client = ZhipuAI(api_key=api_key)
-    else:
-        # please set ZHIPUAI_API_KEY in your environment
-        # os.environ["ZHIPUAI_API_KEY"]
-        client = ZhipuAI()
+        raise ImportError("Please install zai-sdk before initialize zhipuai backend.")
+    client = _build_client(ZhipuAiClient, api_key)
 
     # Convert single text to list if needed
     if isinstance(texts, str):
@@ -299,6 +330,10 @@ async def zhipu_embedding(
             )
             embeddings.append(response.data[0].embedding)
         except Exception as e:
-            raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}")
+            # A retryable error must reach the decorator with its own type;
+            # wrapping it in a bare Exception would make it unretryable.
+            if _is_retryable_zhipu_error(e):
+                raise
+            raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}") from e
 
     return np.array(embeddings)

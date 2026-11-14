@@ -129,9 +129,16 @@ def test_native_docx_migration_is_byte_equivalent(
     scenario: Scenario,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    emulate_windows_newlines,
 ) -> None:
     """Every file produced by parse_native must be byte-identical to the
-    captured legacy baseline."""
+    captured legacy baseline.
+
+    Runs under ``emulate_windows_newlines``: the baseline bytes are LF, and
+    a parse on Windows must reproduce them too. Without the fixture a write
+    site that forgot ``newline="\\n"`` would only fail on Windows, which CI
+    does not run.
+    """
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()
     parsed_dir = _run_new_path(scenario, input_dir, monkeypatch)

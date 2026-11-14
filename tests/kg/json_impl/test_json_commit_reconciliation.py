@@ -165,7 +165,7 @@ async def test_reconciliation_is_skipped_when_the_write_fails(
     ids=["kv", "doc_status"],
 )
 async def test_a_failed_flag_clear_is_not_reported_as_a_failed_write(
-    tmp_path, monkeypatch, caplog, factory, row
+    tmp_path, monkeypatch, caplog, factory, row, lightrag_caplog
 ):
     """A publication failure must not be raised as a save failure.
 
@@ -192,10 +192,6 @@ async def test_a_failed_flag_clear_is_not_reported_as_a_failed_write(
         f"{module}.clear_all_update_flags", failing_clear_all_update_flags
     )
     storage.storage_updated.value = True
-
-    # lightrag's logger does not propagate, so caplog cannot see it otherwise.
-    logger = logging.getLogger("lightrag")
-    monkeypatch.setattr(logger, "propagate", True)
 
     with caplog.at_level(logging.ERROR, logger="lightrag"):
         await storage.index_done_callback()

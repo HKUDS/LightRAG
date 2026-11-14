@@ -15,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",
     "EMBEDDING_BINDING",
@@ -328,7 +330,9 @@ class TestQueryStreamProtocolOrder:
             )
             assert response.status_code == 200
             lines = self._parse_ndjson(response.text)
-            assert lines[-1] == {"error": "query failed"}
+            assert set(lines[-1]) == {"error"}
+            assert lines[-1]["error"].startswith("Internal server error (error_id: ")
+            assert "query failed" not in response.text
             assert not any("response_time" in item for item in lines)
         finally:
             sys.argv = original_argv

@@ -17,6 +17,9 @@ from lightrag.kg.milvus_impl import (
 )
 
 
+pytestmark = pytest.mark.offline
+
+
 class TestMilvusIndexConfig:
     """MilvusIndexConfig unit tests"""
 

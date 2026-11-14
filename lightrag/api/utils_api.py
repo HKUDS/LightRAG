@@ -76,6 +76,36 @@ def internal_server_error(exc: Exception) -> HTTPException:
     )
 
 
+def stream_error_message(exc: BaseException, context: str) -> str:
+    """Log a mid-stream failure and return a client-safe message for it (CWE-209).
+
+    The streaming counterpart of :func:`internal_server_error`. Once a
+    ``StreamingResponse`` has started, a failure can no longer become an HTTP
+    500, so the generator reports it inline in the stream body instead. That
+    inline text must never be ``str(exc)``: provider exceptions routinely carry
+    endpoint URLs, deployment names and other upstream detail, and some streaming
+    routes are unauthenticated by default (``WHITELIST_PATHS=/api/*``).
+
+    This logs ``context``, the exception text and its traceback together with a
+    fresh correlation id, then returns only a generic message plus that id, in
+    the same ``(error_id: ...)`` spelling as the HTTP 500 body. Callers need not
+    log the exception themselves; doing so would only split the detail from the
+    id across two lines.
+
+    Usage::
+
+        except Exception as e:
+            message = stream_error_message(e, "Streaming query failed")
+            yield f"{json.dumps({'error': message})}\n"
+    """
+    error_id = new_error_id()
+    logger.error(
+        f"{context} [error_id={error_id}] ({type(exc).__name__}): {exc}",
+        exc_info=exc,
+    )
+    return f"{_INTERNAL_SERVER_ERROR_MESSAGE} (error_id: {error_id})"
+
+
 # ========== Token Renewal Rate Limiting ==========
 # Cache to track last renewal time per user (username as key)
 # Format: {username: last_renewal_timestamp}

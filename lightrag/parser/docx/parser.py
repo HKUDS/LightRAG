@@ -177,6 +177,11 @@ class NativeDocxParser(NativeParserBase):
             audit_path.write_text(
                 json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
+                # LF on every platform: this artifact lives in the ``*.parsed/``
+                # directory next to the sidecars and its byte-identical re-parse
+                # claim (I4) is about the bytes on disk, not about whichever
+                # line ending the host happens to use.
+                newline="\n",
             )
 
         return other or None
