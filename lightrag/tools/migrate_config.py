@@ -1313,7 +1313,12 @@ async def async_main(argv: list[str] | None = None) -> int:
         os.environ.update(overlay)
         print("\nlightrag-migrate-config")
         print(f"- Working dir: {working_dir}")
-        current_workspace = normalize_server_workspace(os.environ.get("WORKSPACE", ""))
+        try:
+            current_workspace = normalize_server_workspace(
+                os.environ.get("WORKSPACE", "")
+            )
+        except ValueError as e:
+            raise MigrationRefused(f"WORKSPACE: {e}. Nothing was written.") from e
         if not args.dry_run and not args.yes:
             # The inventory first, read-only, so the operator confirms the
             # whole list -- the migration is never only this server's

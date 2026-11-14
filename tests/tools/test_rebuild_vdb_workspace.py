@@ -39,9 +39,17 @@ def test_cli_passes_exact_workspace(monkeypatch, argv, expected):
 
 
 @pytest.mark.parametrize(
-    "workspace", ["../other", "config_storage_anchor.json", "$meta", "$default"]
+    "workspace, reason",
+    [
+        ("../other", "path separators"),
+        ("config_storage_anchor.json", "deployment-wide file"),
+        ("$meta", "reserved"),
+        ("$default", "reserved"),
+    ],
 )
-def test_cli_refuses_invalid_workspace_before_run(monkeypatch, workspace):
+def test_cli_refuses_invalid_workspace_before_run(
+    monkeypatch, capsys, workspace, reason
+):
     def unexpected(**kwargs):
         pytest.fail("invalid workspace must fail before loading the environment")
 
@@ -49,6 +57,22 @@ def test_cli_refuses_invalid_workspace_before_run(monkeypatch, workspace):
     with pytest.raises(SystemExit) as error:
         rb.main(["--workspace", workspace])
     assert error.value.code == 2
+    # argparse prints an ArgumentTypeError's text; a bare ValueError would
+    # reduce the reason to "invalid ... value".
+    assert reason in capsys.readouterr().err
+
+
+async def test_a_reserved_workspace_from_the_environment_is_a_clean_refusal(
+    monkeypatch, capsys
+):
+    """``WORKSPACE=$prod`` is refused by the server's own normalization; the
+    tool reports it as a refusal, not a traceback."""
+    monkeypatch.setenv("WORKSPACE", "$prod")
+    tool = rb.RebuildTool()
+    monkeypatch.setattr(tool, "resolve_storage_names", lambda: {})
+
+    assert await tool.setup_storages() is False
+    assert "reserved" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

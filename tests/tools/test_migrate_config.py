@@ -960,6 +960,22 @@ class TestCommandLine:
 
         monkeypatch.setattr(mc, "_opener", _opener)
 
+    async def test_a_reserved_workspace_is_refused_with_exit_1(
+        self, monkeypatch, capsys
+    ):
+        """``WORKSPACE=$prod`` refuses through the server's own rule; the
+        tool reports it like every other refusal, never as a traceback."""
+        _anchor(os.environ["WORKING_DIR"])
+        target = Container()
+        self._wire(monkeypatch, Container(_source_rows()), target)
+        monkeypatch.setenv("WORKSPACE", "$prod")
+
+        code = await mc.async_main(["--target-backend", "MongoKVStorage", "--yes"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "Refused: WORKSPACE:" in out and "reserved" in out
+        assert target.calls == []
+
     async def test_no_anchor_is_refused_with_exit_1(self, capsys):
         assert await mc.async_main(["--target-backend", "MongoKVStorage"]) == 1
         assert "nothing is bound" in capsys.readouterr().out

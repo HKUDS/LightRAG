@@ -1005,7 +1005,12 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
-    args.workspace = normalize_server_workspace(args.workspace)
+    try:
+        args.workspace = normalize_server_workspace(args.workspace)
+    except ValueError as e:
+        # A configuration refusal, reported like the others in this parser:
+        # one line naming the setting, no traceback.
+        raise SystemExit(f"WORKSPACE: {e}") from None
 
     validate_auth_configuration(args)
     validate_bedrock_auth_configuration(args)

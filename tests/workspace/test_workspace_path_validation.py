@@ -207,5 +207,6 @@ def test_server_rejects_reserved_workspace_from_environment(monkeypatch, workspa
 
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("WORKSPACE", workspace)
-    with pytest.raises(ValueError, match="reserved"):
+    # A setting refusal: one SystemExit line, never a ValueError traceback.
+    with pytest.raises(SystemExit, match="reserved"):
         parse_args()

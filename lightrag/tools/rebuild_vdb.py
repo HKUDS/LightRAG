@@ -924,12 +924,12 @@ class RebuildTool:
         self.storage_names = self.resolve_storage_names()
         # Environment defaults follow the server; an explicit override names
         # an existing SDK workspace exactly, including the empty workspace.
-        self.workspace = (
-            self._workspace_override
-            if self._workspace_override is not None
-            else normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
-        )
         try:
+            self.workspace = (
+                self._workspace_override
+                if self._workspace_override is not None
+                else normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
+            )
             validate_config_workspace(self.workspace)
             self.config_dir = self.resolve_config_dir()
         except ValueError as e:
@@ -1701,6 +1701,16 @@ async def async_main(*, workspace: str | None = None) -> bool:
     return await tool.run()
 
 
+def _workspace_argument(value: str) -> str:
+    """``--workspace``, checked by ``validate_config_workspace``. argparse
+    reports only an ``ArgumentTypeError``'s text; a bare ``ValueError``
+    would reach the operator as "invalid value" without the reason."""
+    try:
+        return validate_config_workspace(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 def main(argv: list[str] | None = None):
     """Synchronous entry point for CLI command.
 
@@ -1714,7 +1724,7 @@ def main(argv: list[str] | None = None):
     parser.add_argument(
         "--workspace",
         default=None,
-        type=validate_config_workspace,
+        type=_workspace_argument,
         help="Exact workspace name (no character replacement); use an empty string "
         "for the default workspace. If omitted, WORKSPACE is normalized as by the server.",
     )
