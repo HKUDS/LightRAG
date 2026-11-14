@@ -1,7 +1,7 @@
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
-import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/status/StatusIndicator'
 import { SiteInfo } from '@/lib/constants'
 import { entryHomeHref } from '@/lib/pathPrefix'
@@ -17,7 +17,6 @@ import {
   wasVersionCheckedThisPageLoad
 } from '@/lib/versionCheckCache'
 import SiteHeader from '@/features/SiteHeader'
-import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
 
 import GraphViewer from '@/features/GraphViewer'
@@ -29,10 +28,8 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 function App() {
-  const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
-  const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
   // Bumped by the cross-tab identity watch: remounting the retrieval view
   // drops the live session state that belonged to the previous identity.
@@ -40,13 +37,6 @@ function App() {
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
   const pageRestoreGeneration = usePageRestoreGeneration()
-
-  const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
-    setApiKeyAlertOpen(open)
-    if (!open) {
-      useBackendState.getState().clear()
-    }
-  }, [])
 
   // Track component mount status with useRef
   const isMountedRef = useRef(true);
@@ -79,19 +69,17 @@ function App() {
     // Set health check function in the store
     useBackendState.getState().setHealthCheckFunction(performHealthCheck);
 
-    if (!enableHealthCheck || apiKeyAlertOpen) {
+    if (!enableHealthCheck) {
       useBackendState.getState().clearHealthCheckTimer();
       // With periodic checks disabled the header still needs to know whether
       // the backend serves /docs. Resolve that capability alone (RFC #3671) —
       // never through `check()`, whose failure path would latch `health: false`
       // and stop the document list polling with no timer left to recover it.
-      if (!enableHealthCheck && !apiKeyAlertOpen) {
-        useBackendState.getState().probeApiDocsCapability();
-      }
+      useBackendState.getState().probeApiDocsCapability();
       return;
     }
 
-    // On first mount or when enableHealthCheck becomes true and apiKeyAlertOpen is false,
+    // On first mount or when enableHealthCheck becomes true,
     // perform an immediate health check and start the timer
     if (!healthCheckInitializedRef.current) {
       healthCheckInitializedRef.current = true;
@@ -104,7 +92,7 @@ function App() {
     return () => {
       useBackendState.getState().clearHealthCheckTimer();
     };
-  }, [enableHealthCheck, apiKeyAlertOpen, pageRestoreGeneration]);
+  }, [enableHealthCheck, pageRestoreGeneration]);
 
   // Version check - independent and executed only once
   useEffect(() => {
@@ -131,7 +119,7 @@ function App() {
         // If auth is not configured and a new token is returned, use the new token.
         // A fresh guest activation is an identity transition: clear the previous
         // identity's histories when it differs (same rule as the login page).
-        if (!status.auth_configured && status.access_token) {
+        if (webuiAuthMode(status) === 'guest' && status.access_token) {
           activateLoginIdentityFromToken(status.access_token)
           useAuthStore.getState().login(
             status.access_token, // Use the new token
@@ -141,8 +129,8 @@ function App() {
             status.webui_title || null,
             status.webui_description || null
           );
-        } else if (token && (status.core_version || status.api_version || status.webui_title || status.webui_description)) {
-          // Otherwise use the old token (if it exists)
+        } else if (webuiAuthMode(status) === 'account' && token && (status.core_version || status.api_version || status.webui_title || status.webui_description)) {
+          // Only account mode may refresh the existing session metadata.
           const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode;
           useAuthStore.getState().login(
             token,
@@ -172,16 +160,6 @@ function App() {
     (tab: string) => useSettingsStore.getState().setCurrentTab(tab as any),
     []
   )
-
-  // React to backend message changes during render rather than via useEffect
-  // (avoids cascading renders flagged by react-hooks/set-state-in-effect)
-  const [previousMessage, setPreviousMessage] = useState(message)
-  if (message !== previousMessage) {
-    setPreviousMessage(message)
-    if (message && (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError))) {
-      setApiKeyAlertOpen(true)
-    }
-  }
 
   return (
     <ThemeProvider>
@@ -245,7 +223,6 @@ function App() {
               </div>
             </Tabs>
             {enableHealthCheck && <StatusIndicator />}
-            <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={handleApiKeyAlertOpenChange} />
           </main>
         )}
       </TabVisibilityProvider>

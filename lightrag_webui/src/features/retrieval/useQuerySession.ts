@@ -131,9 +131,7 @@ export interface QuerySessionOptions {
   /**
    * Optional: called with the classified failure message when a query fails
    * for a reason OTHER than auth termination or a user abort. The page
-   * composition layer decides what that means for its entry — the workspace
-   * re-probes credentials on API-key-shaped failures, since a key rotated
-   * after its startup probe would otherwise 403 every query with no way in.
+   * composition layer decides how to present that failure for its entry.
    * This layer stays entry-agnostic: it does not inspect the message.
    */
   onQueryError?: (message: string) => void

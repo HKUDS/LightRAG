@@ -270,8 +270,6 @@
         "node": "node",
         "edge": "edge",
         "degree": "Derajat",
-        "apiKey": "API Key",
-        "enterYourAPIkey": "Masukkan API key Anda",
         "save": "Simpan",
         "refreshLayout": "Refresh Layout"
       },
@@ -503,12 +501,6 @@
       "enableRerankTooltip": "Aktifkan reranking untuk text chunk hasil retrieval. Jika True tetapi tidak ada model rerank yang dikonfigurasi, peringatan akan ditampilkan. Default adalah True."
     }
   },
-  "apiKeyAlert": {
-    "title": "API Key diperlukan",
-    "description": "Masukkan API key Anda untuk mengakses layanan",
-    "placeholder": "Masukkan API key Anda",
-    "save": "Simpan"
-  },
   "pagination": {
     "showing": "Menampilkan {{start}} sampai {{end}} dari {{total}} entri",
     "page": "Halaman",
@@ -533,7 +525,7 @@
     "failedTitle": "Gagal menyiapkan pengaturan lokal",
     "failedBody": "Pengaturan tersimpan Anda tidak dapat dimigrasikan ke format storage baru. Tidak ada data yang hilang — muat ulang untuk mencoba lagi.",
     "dataLostTitle": "Sebagian pengaturan tersimpan tidak dapat dipulihkan",
-    "dataLostBody": "Storage browser penuh, sehingga sebagian pengaturan tersimpan Anda (tema, bahasa, API key) tidak dapat dipertahankan dan tidak dapat dipulihkan lagi. Melanjutkan akan mempertahankan data yang masih ada dan menggunakan default untuk sisanya.",
+    "dataLostBody": "Storage browser penuh, sehingga sebagian pengaturan tersimpan Anda (tema, bahasa) tidak dapat dipertahankan dan tidak dapat dipulihkan lagi. Melanjutkan akan mempertahankan data yang masih ada dan menggunakan default untuk sisanya.",
     "continueAfterLoss": "Lanjutkan",
     "retry": "Muat ulang",
     "historyDropped": "Riwayat chat tidak muat di storage browser selama upgrade dan telah dibuang. Pengaturan berhasil dimigrasikan seperti biasa."

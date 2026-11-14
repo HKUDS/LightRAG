@@ -45,7 +45,7 @@ export default function MigrationErrorScreen() {
         {dataLost
           ? t(
             'migration.dataLostBody',
-            'Browser storage was full, so some of your saved settings (theme, language, API key) could not be preserved and are no longer recoverable. Continuing will keep whatever survived and use defaults for the rest.'
+            'Browser storage was full, so some of your saved settings (theme, language, preferences) could not be preserved and are no longer recoverable. Continuing will keep whatever survived and use defaults for the rest.'
           )
           : t(
             'migration.failedBody',

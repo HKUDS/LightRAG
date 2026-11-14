@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync, existsSync } from 'fs'
-import { execSync } from 'child_process'
+import { sourceFiles } from '@/test/sourceScan'
 import { dirname, join, resolve } from 'path'
 
 /**
@@ -138,16 +138,9 @@ describe('navigation core stays graph-free', () => {
 
 describe('no path-rewriting hard navigation in the SPA', () => {
   test('frontend source contains no location.href= / location.replace( / location.assign(', () => {
-    const output = execSync(
-      String.raw`grep -rnE "location\.href\s*=|location\.replace\(|location\.assign\(" --include='*.ts' --include='*.tsx' . || true`,
-      { cwd: SRC, encoding: 'utf8' }
-    )
-    const offenders = output
-      .split('\n')
-      .filter(Boolean)
-      // window.location.reload() is allowed (same-URL reload, keeps entry);
-      // test files may reference these strings.
-      .filter((line) => !line.includes('.test.'))
+    // Use the shared platform-independent walker rather than a POSIX shell.
+    const offenders = sourceFiles(SRC, file => /\.tsx?$/.test(file) && !file.includes('.test.'))
+      .filter(file => /location\.href\s*=|location\.replace\(|location\.assign\(/.test(readFileSync(file, 'utf8')))
     expect(offenders).toEqual([])
   })
 })

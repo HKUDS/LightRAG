@@ -270,8 +270,6 @@
         "node": "node",
         "edge": "edge",
         "degree": "Degree",
-        "apiKey": "API Key",
-        "enterYourAPIkey": "Enter your API key",
         "save": "Save",
         "refreshLayout": "Refresh Layout"
       },
@@ -503,12 +501,6 @@
       "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }
   },
-  "apiKeyAlert": {
-    "title": "API Key is required",
-    "description": "Please enter your API key to access the service",
-    "placeholder": "Enter your API key",
-    "save": "Save"
-  },
   "pagination": {
     "showing": "Showing {{start}} to {{end}} of {{total}} entries",
     "page": "Page",
@@ -533,12 +525,20 @@
     "failedTitle": "Failed to prepare local settings",
     "failedBody": "Your saved settings could not be migrated to the new storage format. Nothing was lost — reload to try again.",
     "dataLostTitle": "Some saved settings could not be recovered",
-    "dataLostBody": "Browser storage was full, so some of your saved settings (theme, language, API key) could not be preserved and are no longer recoverable. Continuing will keep whatever survived and use defaults for the rest.",
+    "dataLostBody": "Browser storage was full, so some of your saved settings (theme, language, preferences) could not be preserved and are no longer recoverable. Continuing will keep whatever survived and use defaults for the rest.",
     "continueAfterLoss": "Continue",
     "retry": "Reload",
     "historyDropped": "Chat history could not fit in browser storage during the upgrade and was discarded. Settings were migrated normally."
   },
   "retrievalHistory": {
     "quotaDropped": "Browser storage is full: the chat history is no longer being saved. The current conversation stays visible until you leave the page."
+  },
+  "webuiAuth": {
+    "checking": "Checking WebUI access…",
+    "title": "Account configuration required",
+    "guidance": "This server uses an API key without user accounts. To use the protected WebUI, configure AUTH_ACCOUNTS and a strong, non-default TOKEN_SECRET, restart the server, and sign in. Keep your API key for programmatic access; do not remove it to enable guest access.",
+    "unavailableTitle": "WebUI access could not be determined",
+    "unavailable": "Check the server connection and deploy matching frontend and backend versions. This WebUI needs authentication discovery metadata before enabling guest access.",
+    "retry": "Check again"
   }
 }
