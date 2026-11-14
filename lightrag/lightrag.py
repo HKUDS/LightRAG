@@ -2243,19 +2243,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # steps around the storages, because the dependency runs both ways:
         # the LLM queues drain while the response cache is still usable, and
         # the embedding queue stays open until the vector storages have
-        # flushed, since that flush embeds first. Every await before the
-        # embedding shutdown sits inside the ``try``: a cancellation anywhere
-        # in between -- the LLM/rerank drain included -- must still stop the
-        # embedding workers.
-        try:
-            # A release-time queue drive still running at shutdown is
-            # cancelled, not awaited: its auto-rescan flag stays armed in the
-            # mailbox for the next run to honour.
-            await self._cancel_admin_release_drives()
-            await self._shutdown_llm_and_rerank_queues()
-            await self._finalize_initialized_storages()
-        finally:
-            await self._shutdown_embedding_queue()
+        # flushed, since that flush embeds first.
+        #
+        # The embedding shutdown is deliberately NOT in a ``finally``. It is
+        # permanent -- a closed wrapper rejects every later call -- so running
+        # it after an interrupted finalize would make the retry's vector
+        # flush fail and drop the buffered vectors while the storages are
+        # still marked FINALIZED. An interrupted finalize (cancelled, or
+        # raising before the storages are finalized) therefore leaves the
+        # embedding queue open for the retry. Accepted residue: with no
+        # retry, its workers stay pending until the event loop closes (no
+        # data is lost by that; the unflushed vectors are lost either way).
+        #
+        # A release-time queue drive still running at shutdown is cancelled,
+        # not awaited: its auto-rescan flag stays armed in the mailbox for
+        # the next run to honour.
+        await self._cancel_admin_release_drives()
+        await self._shutdown_llm_and_rerank_queues()
+        await self._finalize_initialized_storages()
+        await self._shutdown_embedding_queue()
 
     async def _finalize_initialized_storages(self) -> None:
         """Finalize each storage once; does nothing unless they are initialized.

@@ -354,6 +354,11 @@ class _RoleLLMMixin:
         vector storage's ``finalize()`` flushes its pending upserts, and that
         flush embeds first. Closing the queue earlier makes the flush fail and
         the buffered vectors are dropped.
+
+        Do not call it after an INTERRUPTED finalize (from a ``finally``, an
+        ``except``) either: the shutdown is permanent, so the retried
+        finalize could no longer flush the vectors the interrupted one left
+        buffered. ``finalize_storages`` records the residue this accepts.
         """
         embedding = getattr(self, "embedding_func", None)
         await self._shutdown_queue_wrappers(
