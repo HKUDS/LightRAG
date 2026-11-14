@@ -933,7 +933,9 @@ def test_writer_blockid_unchanged_when_no_control_chars(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
-def test_writer_artifacts_use_lf_line_endings(tmp_path: Path) -> None:
+def test_writer_artifacts_use_lf_line_endings(
+    tmp_path: Path, emulate_windows_newlines
+) -> None:
     """Every artifact keeps LF on every platform.
 
     The canonical bytes of this format are the ones under
@@ -943,6 +945,8 @@ def test_writer_artifacts_use_lf_line_endings(tmp_path: Path) -> None:
     otherwise emit CRLF for the record separators of ``blocks.jsonl`` and for
     every interior line of the indented per-modality JSONs — the same
     document would then not round-trip byte-identically across platforms.
+    ``emulate_windows_newlines`` applies that translation on Linux as well,
+    so this test goes red in CI if the pin is dropped.
     """
     parsed = tmp_path / "lf.parsed"
     ir = IRDoc(

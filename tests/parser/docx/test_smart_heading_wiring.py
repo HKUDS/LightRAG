@@ -467,7 +467,9 @@ def test_smart_audit_json_is_byte_stable_across_reparse(tmp_path, monkeypatch) -
     assert _audit_bytes("a") == _audit_bytes("b")
 
 
-def test_smart_audit_json_uses_lf_line_endings(tmp_path, monkeypatch) -> None:
+def test_smart_audit_json_uses_lf_line_endings(
+    tmp_path, monkeypatch, emulate_windows_newlines
+) -> None:
     """The audit artifact sits in the ``*.parsed/`` directory next to the
     sidecars, so it carries the same floor: LF on every platform.
 
@@ -475,6 +477,8 @@ def test_smart_audit_json_uses_lf_line_endings(tmp_path, monkeypatch) -> None:
     ``newline`` is passed, and both the indented payload and the trailing
     newline are newlines — on Windows the file would otherwise be CRLF while
     the sidecars it is filed beside stay LF.
+    ``emulate_windows_newlines`` applies that translation on Linux as well,
+    so this test goes red in CI if the pin is dropped.
     """
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()

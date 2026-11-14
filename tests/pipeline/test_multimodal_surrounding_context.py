@@ -894,7 +894,7 @@ def test_env_var_invalid_value_falls_back_to_default(monkeypatch):
 
 
 @pytest.mark.offline
-def test_enrich_rewrite_keeps_lf_line_endings(tmp_path):
+def test_enrich_rewrite_keeps_lf_line_endings(tmp_path, emulate_windows_newlines):
     """The surrounding rewrite must not use the platform line ending.
 
     ``enrich_sidecars_with_surrounding`` re-serializes the whole modality
@@ -902,6 +902,8 @@ def test_enrich_rewrite_keeps_lf_line_endings(tmp_path):
     translate: on Windows ``Path.write_text`` turns each ``\\n`` into CRLF and
     the artifact stops matching the LF bytes the sidecar format's golden
     fixtures define.
+    ``emulate_windows_newlines`` applies that translation on Linux as well,
+    so this test goes red in CI if the pin is dropped.
     """
     base = "doc"
     blockid = "b1"

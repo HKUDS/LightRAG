@@ -2530,7 +2530,9 @@ async def test_truncated_blocks_file_does_not_fail_document(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_analyze_rewrite_keeps_lf_line_endings(tmp_path):
+async def test_analyze_rewrite_keeps_lf_line_endings(
+    tmp_path, emulate_windows_newlines
+):
     """Rewriting a modality sidecar must not use the platform line ending.
 
     ``analyze_multimodal`` re-serializes the sidecar with ``indent=2`` after
@@ -2540,6 +2542,8 @@ async def test_analyze_rewrite_keeps_lf_line_endings(tmp_path):
     ``tests/parser/docx/golden/`` are compared byte-for-byte), so a rewrite
     that used the platform ending would make the artifact platform-dependent
     again right after the writer had produced it correctly.
+    ``emulate_windows_newlines`` applies that translation on Linux as well,
+    so this test goes red in CI if the pin is dropped.
     """
     call_log: list[dict] = []
     rag = _build_rag(tmp_path, vlm_func=_make_vlm_mock(call_log))
