@@ -64,8 +64,11 @@ It does this the way pypdf does:
 - On `Do`, the name is looked up in the top entry's `/XObject` dictionary. The
   form is charged and its own `/Resources` is pushed.
 - `visitor_operand_after` pops the entry for that `Do`.
-- An image XObject, a form without `/Resources`, or a name that does not
-  resolve pushes `None` and costs nothing. pypdf parses none of them.
+- An image XObject, a form without `/Resources`, an entry that is not a
+  stream (`null`, a name, a plain dictionary), or a name that does not resolve
+  pushes `None` and costs nothing. pypdf parses none of them, and it skips a
+  non-stream entry inside its own `try`. The budget must not raise there,
+  because an error from a visitor escapes that `try` and fails the page.
 
 The stack stays balanced when an error unwinds a nested form. The level that
 raised never gets `_after` for the `Do` it was charging, because the charge
@@ -80,7 +83,11 @@ output limit, therefore repeats the whole decompression every time. The budget
 decodes on its own, so it must not turn that into a cost per page or per
 invocation:
 
-- Every decode the budget makes is memoized per object, failures included.
+- Every decode the budget makes is memoized per object, failures included. A
+  memoized failure is stored and re-raised with its traceback cleared, along
+  with the tracebacks of the exceptions it chains. The decoder's frames would
+  otherwise keep its buffers alive, and each re-raise of a tolerated form
+  would append more frames to the same instance.
 - **Page contents.** A decode error propagates from `check_page_contents` when
   pypdf would parse the page, meaning its `/Resources` is not empty. pypdf's
   own error would have ended the extraction at that page anyway, so the

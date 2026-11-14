@@ -19,6 +19,7 @@ from pypdf.generic import (
     EncodedStreamObject,
     FloatObject,
     NameObject,
+    NullObject,
 )
 
 from lightrag.parser.legacy import LegacyExtractionError, extract_text
@@ -371,3 +372,48 @@ def test_form_without_resources_is_not_charged():
     budget.check_page_contents([page])
     budget.finish_page(page.extract_text(**budget.visitors(page)))
     assert budget.content_bytes == len(page_data)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [NullObject(), NameObject("/NotAForm"), DictionaryObject()],
+    ids=["null", "name", "plain-dict"],
+)
+def test_xobject_entries_that_are_not_streams_are_skipped_like_pypdf(entry):
+    b = _Builder()
+    ref = b.writer._add_object(entry)
+    b.page(b.stream(_text_ops(b"Keep", 1) + b"/X0 Do\n"), {"/X0": ref})
+    data = b.bytes()
+    expected = "".join(
+        page.extract_text() + "\n" for page in PdfReader(io.BytesIO(data)).pages
+    )
+    assert "Keep" in expected
+    assert extract_text(data, "pdf") == expected
+
+
+def _traceback_frames(exc: BaseException) -> int:
+    frames, seen, node = 0, set(), exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        tb = node.__traceback__
+        while tb is not None:
+            frames, tb = frames + 1, tb.tb_next
+        node = node.__cause__ or node.__context__
+    return frames
+
+
+def test_memoized_decode_failure_does_not_accumulate_tracebacks():
+    # Every invocation of a tolerated failing form re-raises the memoized
+    # error; the frames must not pile up on that one instance.
+    b = _Builder()
+    form = _bogus(b, form_resources=DictionaryObject())
+    b.page(b.stream(b"/X0 Do\n" * 2000), {"/X0": form})
+    page = PdfReader(io.BytesIO(b.bytes())).pages[0]
+
+    budget = PdfExtractionBudget(1, "tb.pdf")
+    budget.check_page_contents([page])
+    budget.finish_page(page.extract_text(**budget.visitors(page)))
+
+    failures = [r for _, r in budget._decoded.values() if isinstance(r, Exception)]
+    assert len(failures) == 1
+    assert _traceback_frames(failures[0]) < 10

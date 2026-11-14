@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pypdf.generic import NameObject
+from pypdf.generic import DictionaryObject, NameObject, StreamObject
 
 from lightrag.constants import (
     DEFAULT_PDF_CONTENT_RATIO_FLOOR_BYTES,
@@ -56,6 +56,21 @@ def _resolve(obj: Any) -> Any:
     return get_object() if get_object is not None else obj
 
 
+def _detached(exc: Exception) -> Exception:
+    """``exc`` with no traceback on it or on the exceptions it chains.
+
+    A decoder's frames hold its buffers, and re-raising one instance appends
+    frames on every raise; a memoized failure must keep neither.
+    """
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        node.__traceback__ = None
+        node = node.__cause__ or node.__context__
+    return exc
+
+
 def _page_resources(page: Any) -> Any:
     """``/Resources`` of ``page``, inherited through ``/Parent`` like pypdf.
 
@@ -64,7 +79,7 @@ def _page_resources(page: Any) -> Any:
     """
     node = page
     for _ in range(_MAX_PARENT_DEPTH):
-        if node is None:
+        if not isinstance(node, DictionaryObject):
             return None
         if "/Resources" in node:
             return _resolve(node["/Resources"])
@@ -160,7 +175,7 @@ class PdfExtractionBudget:
             self._decoded[key] = (stream, result)
         result = self._decoded[key][1]
         if isinstance(result, Exception):
-            raise result
+            raise _detached(result)
         return result
 
     def check_page_contents(self, pages: Any) -> None:
@@ -234,7 +249,8 @@ class PdfExtractionBudget:
         except Exception:
             xform = None
         if (
-            xform is None
+            # pypdf skips anything that is not a stream, inside its own catch.
+            not isinstance(xform, StreamObject)
             or xform.get("/Subtype") == "/Image"
             or "/Resources" not in xform
         ):
