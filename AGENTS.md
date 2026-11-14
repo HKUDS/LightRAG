@@ -104,7 +104,7 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 
 ### Configuration storage contract
 
-**Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` or where the JSON configuration snapshots live, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here.
+**Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` or where the JSON configuration snapshots live, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here. [docs/design/ConfigurationStorageDesign.md](docs/design/ConfigurationStorageDesign.md) is the design overview: the components, the reasons behind them, the departures from the original plan and the known gaps -- start there before redesigning anything.
 
 ### Relation weight contract
 

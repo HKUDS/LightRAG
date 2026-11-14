@@ -9,7 +9,7 @@ the *Acceptance scenarios* at the end.
 | code | `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages()` / `finalize_storages()`, the `config` namespace branch in each admitted KV backend |
 | tools | `lightrag-rebuild-vdb`, `lightrag-clear-storage`, `lightrag-migrate-config`, and the setup wizard (`make env-storage`, `make env-validate`) |
 | tests | `tests/config_store/`, beside each backend under `tests/kg/<backend>_impl/`, `tests/tools/`, `tests/workspace/test_anchor_lock.py`, `tests/setup/test_config_anchor.py` |
-| read with | `VectorSpaceProvenance.md` (the verdict rules and the blind spots the baselines close) and `ServerInstanceContract.md` (several servers on one host) |
+| read with | `VectorSpaceProvenance.md` (the verdict rules and the blind spots the baselines close), `ServerInstanceContract.md` (several servers on one host) and `ConfigurationStorageDesign.md` (the design overview: why the parts are shaped this way, where the implementation departs from the original plan, known gaps) |
 
 Read this before touching any of:
 - `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py` or `lightrag/kg/anchor_lock.py`;
@@ -237,7 +237,10 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   and a server-scope owner row `$meta/json_shard` =
   `{"workspace": w}`. `inspect_shard_rows` validates a snapshot before any
   baseline is read: the owner must equal the workspace its location names
-  (`""` at the root, the child's exact name below it), checked first so a
+  (`""` at the root, the child's exact name below it -- or, where a
+  decomposing filesystem lists the child in another Unicode normalization,
+  the owner's stored spelling when it resolves to that same directory and
+  is not listed itself; nothing is renormalized), checked first so a
   copied or moved snapshot is named as such; any other workspace's row, an
   unregistered key or a foreign server-scope row refuses. Classification is
   by key; the content of a registered per-workspace row is judged by that
@@ -363,7 +366,9 @@ exclusive lock cannot be enforced.
 **Maintenance tools never register.** The rebuild and clear tools derive
 one workspace's snapshot, verify owner, UUID and membership, and refuse an
 unanchored or unregistered JSON workspace with `member_unregistered` and the
-advice to start the server once, stop it and rerun. Registration comes
+advice to start the server once, stop it and rerun -- or, for a name the
+server would rewrite (an exact SDK name `--workspace` selects), to register
+it with a library start, since the server can never register it. Registration comes
 before the embedding checks, so a later model or probe refusal does not stop
 a rebuild. A registered but damaged snapshot needs restoring, not that
 advice. Database backends keep their unanchored behavior.
