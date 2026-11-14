@@ -38,11 +38,17 @@ A third file, ``.lightrag_anchor_bind.lock``, is taken exclusively by a start
 that finds no anchor or, on JSON, a workspace not yet listed in the anchor's
 members (``anchor_bind_lock``): servers sharing one ``working_dir`` with
 different workspaces bind the same identity and append to the same member
-list, and the in-tree keyed lock cannot see each other. A held bind lock is
-waited for, never bypassed. Where POSIX reports that locking is unsupported
-it fails open with a warning (a lost member append is then detected by the
-migration's cross-check, see the contract); Windows' ``msvcrt`` cannot tell
-"unsupported" from "held", so every failure there is treated as contention.
+list, and the in-tree keyed lock cannot see each other. **Identified
+contention is never bypassed**: a held bind lock is waited for, up to its
+timeout. Every OTHER way the lock cannot be taken fails open with a warning
+-- on POSIX any ``flock`` error but ``EWOULDBLOCK`` (``ENOLCK`` on NFS
+without lockd, ``EOPNOTSUPP``, an I/O error), and on every platform a lock
+file that cannot be opened -- because no errno list tells "unsupported"
+apart reliably across NFS and SMB, and refusing would stop a single server
+that runs there today; a lost member append is then detected by the
+migration's cross-check (see the contract). Windows' ``msvcrt`` reports a
+held lock and an unsupported filesystem with the same error, so every
+locking failure there is treated as contention.
 
 A local directory lock does not cover a deployment using another
 ``working_dir`` against the same remote configuration container; those must
@@ -292,9 +298,11 @@ async def anchor_bind_lock(
     entry. Taken when there is no anchor or the workspace is not a member --
     a registered start never waits here -- and the caller re-reads the
     anchor inside it. Waits (polling, never blocking the event loop) up to
-    ``timeout`` and then raises ``ConfigurationAnchorLockError``. Fails OPEN
-    with a warning only where POSIX says locking is unsupported; on Windows
-    every ``msvcrt`` failure reads as contention (see the module rules).
+    ``timeout`` and then raises ``ConfigurationAnchorLockError``. Never
+    bypasses identified contention (``EWOULDBLOCK``; on Windows every
+    ``msvcrt`` failure); fails OPEN with a warning on every other way the
+    lock cannot be taken, a lock file that cannot be opened included (see
+    the module rules).
     """
     path = anchor_bind_lock_path(working_dir)
     fcntl = _fcntl()

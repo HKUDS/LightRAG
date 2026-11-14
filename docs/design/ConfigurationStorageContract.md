@@ -348,10 +348,14 @@ its owner. Directories without a snapshot are not members.
 
 **Locking.** Registration is a read-modify-write of the member list, so it
 runs under the exclusive bind lock (a held lock is waited for, up to its
-timeout, never bypassed). Where POSIX reports that locking is unsupported,
-the bind lock **fails open with a warning**, so a single JSON server (the
-unset-Redis default included) still starts on such a volume; serialize first
-starts there. Windows' `msvcrt.locking` cannot tell "unsupported" from
+timeout, never bypassed). Every other way the lock cannot be taken -- on
+POSIX any `flock` error but `EWOULDBLOCK` (`ENOLCK` on NFS without lockd,
+`EOPNOTSUPP`, an I/O error), and on every platform a lock file that cannot
+be opened -- makes the bind lock **fail open with a warning**, so a single
+JSON server (the unset-Redis default included) still starts on such a
+volume; serialize first starts there. No errno list tells "unsupported"
+apart reliably across NFS and SMB, so the rule is "identified contention is
+never bypassed", not "only unsupported locking fails open". Windows' `msvcrt.locking` cannot tell "unsupported" from
 "held", so every failure there reads as contention and a genuinely
 unsupported filesystem times out and refuses, even for one instance. *Residue
 of failing open:* two concurrent appends can lose a member even though both
@@ -562,8 +566,8 @@ The order is: the anchor lock, the snapshot claim, then the bind lock inside
 step 1b. Where locking is unavailable (a filesystem without locks, a
 read-only directory, or Windows, whose `msvcrt.locking` has no shared mode),
 the shared anchor lock and the claim fail open with a warning; the bind lock
-fails open only where POSIX reports locking unsupported, and on Windows
-treats every failure as contention (*JSON configuration shards*). The
+fails open on everything but identified contention, and on Windows treats
+every locking failure as contention (*JSON configuration shards*). The
 migration refuses unless the operator passes `--assume-exclusive`.
 
 #### The claim goes back last, and only after the teardown

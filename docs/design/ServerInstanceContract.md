@@ -47,8 +47,9 @@ and share one `WORKING_DIR`** (and one `INPUT_DIR`) when all five hold:
    bind lock (`WORKING_DIR/.lightrag_anchor_bind.lock`) so that only one
    instance creates the container identity; so does a JSON start whose
    workspace is not yet a member, so that member appends do not overwrite
-   each other. Where POSIX reports that the lock cannot be taken (a
-   filesystem without locks) it fails open with a warning. Two instances
+   each other. Where the lock cannot be taken for any reason other than
+   another holder (a filesystem without locks, a lock file that cannot be
+   opened) it fails open with a warning; a held lock is always waited for. Two instances
    starting at once there can then write different identities -- the
    identity row is an upsert and only the anchor publish is no-clobber, so
    the anchor can end up naming a UUID the container no longer holds and

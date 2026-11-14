@@ -995,3 +995,83 @@ async def test_a_windows_bind_lock_failure_is_contention_never_fail_open(
             entered = True
     assert not entered
     assert fake.calls > 1
+
+
+class _FakeFcntl:
+    LOCK_EX = 2
+    LOCK_NB = 4
+    LOCK_UN = 8
+
+    def __init__(self, error: BaseException):
+        self.error = error
+        self.calls = 0
+
+    def flock(self, fd, op):
+        if op & self.LOCK_UN:
+            return
+        self.calls += 1
+        raise self.error
+
+
+async def test_posix_contention_is_waited_for_never_bypassed(tmp_path, monkeypatch):
+    """``EWOULDBLOCK`` is the one answer that names another holder: waited
+    for up to the timeout, then refused -- never a bind without the lock."""
+    fake = _FakeFcntl(BlockingIOError(11, "Resource temporarily unavailable"))
+    monkeypatch.setattr(al, "_fcntl", lambda: fake)
+    entered = False
+    with pytest.raises(ConfigurationAnchorLockError, match="bind lock"):
+        async with al.anchor_bind_lock(str(tmp_path), timeout=0.2):
+            entered = True
+    assert not entered
+    assert fake.calls > 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(37, "No locks available"),  # ENOLCK: NFS without lockd
+        OSError(95, "Operation not supported"),  # EOPNOTSUPP
+        OSError(5, "Input/output error"),  # EIO
+    ],
+    ids=["ENOLCK", "EOPNOTSUPP", "EIO"],
+)
+async def test_every_other_posix_lock_failure_fails_open_with_a_warning(
+    tmp_path, monkeypatch, lightrag_log_records, error
+):
+    """No errno list tells "unsupported" apart reliably across NFS and SMB;
+    refusing would stop a single server that runs there today. Anything but
+    identified contention binds without the lock, announced."""
+    fake = _FakeFcntl(error)
+    monkeypatch.setattr(al, "_fcntl", lambda: fake)
+    entered = False
+    async with al.anchor_bind_lock(str(tmp_path), timeout=5):
+        entered = True
+    assert entered
+    assert fake.calls == 1
+    assert any(
+        "binding without it" in record.getMessage() for record in lightrag_log_records
+    )
+
+
+@pytest.mark.parametrize("platform", ["posix", "windows"])
+async def test_a_bind_lock_file_that_cannot_be_opened_fails_open(
+    tmp_path, monkeypatch, lightrag_log_records, platform
+):
+    """Without a lock file there is no lock to wait for, on any platform: the
+    bind proceeds with a warning (and a bind that must then write fails
+    loudly on its own if the directory is not writable)."""
+    if platform == "windows":
+        monkeypatch.setattr(al, "_fcntl", lambda: None)
+        monkeypatch.setattr(al, "_msvcrt", lambda: _FakeMsvcrt())
+
+    def _refuse(path):
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(al, "_open_lock_file", _refuse)
+    entered = False
+    async with al.anchor_bind_lock(str(tmp_path), timeout=5):
+        entered = True
+    assert entered
+    assert any(
+        "binding without it" in record.getMessage() for record in lightrag_log_records
+    )
