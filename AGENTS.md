@@ -100,6 +100,17 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 - A change to what `normalize_entity_name` produces may only **merge** names that used to differ, never split names that used to be equal: a rebuild re-parses cached LLM output with the current rules, and a split leaves some of a stored object's records unmatched, so their facts are dropped. [Entity name normalization changes](docs/design/PurgeRecoveryContract.md#entity-name-normalization-changes) has the reasoning and the consequences in the current rules.
 
+### Runtime configuration propagation contract
+
+**Full contract: [docs/design/RuntimeConfigPropagationContract.md](docs/design/RuntimeConfigPropagationContract.md) — read it before touching `lightrag/addon_params.py`, `lightrag/llm_roles.py`, `lightrag/kg/shared_storage.py`, or runtime configuration hot-swap paths.**
+
+- Runtime configuration uses independent versioned namespaces: `runtime_addon_params` is scoped to `rag.workspace`, while `runtime_llm_config` uses `workspace=""` for process-wide role LLM configuration and `max_async`.
+- Publishing is explicit. Concurrent publishers serialize under the namespace lock, and workers apply only monotonically newer committed versions.
+- Update flags accelerate convergence, while bounded version audits recover missed notifications. Apply failures retain the complete previous configuration and retry without advancing the applied version.
+- `get_global_concurrency_limit()` and slot acquisition remain worker-local and IPC-free. Wrappers created while unlimited must observe a later limited configuration.
+- Entity prompt content is published with its SHA-256 identity; applying workers never treat the path hint as authoritative.
+- Secret-marked fields are rejected before any shared write. Propagation tests use a real Manager through `initialize_share_data(2)` and two real `LightRAG` instances.
+
 ### Relation weight contract
 
 **Full contract: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#relation-weight-contract)** — keep it synchronized with the core API docstrings, REST graph documentation, and custom-KG examples whenever relation write behavior changes.
