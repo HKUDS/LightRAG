@@ -3,12 +3,11 @@ Configs for the LightRAG API.
 """
 
 import os
-import re
 import argparse
 import logging
 from dotenv import load_dotenv
 from lightrag import ROLES
-from lightrag.utils import get_env_value, logger
+from lightrag.utils import get_env_value, logger, normalize_server_workspace
 from lightrag.llm.binding_options import (
     BedrockLLMOptions,
     GeminiEmbeddingOptions,
@@ -23,6 +22,8 @@ import sys
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
+    DEFAULT_WORKING_DIR,
+    DEFAULT_INPUT_DIR,
     DEFAULT_TIMEOUT,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
@@ -392,13 +393,13 @@ def parse_args() -> argparse.Namespace:
     # Directory configuration
     parser.add_argument(
         "--working-dir",
-        default=get_env_value("WORKING_DIR", "./rag_storage"),
-        help="Working directory for RAG storage (default: from env or ./rag_storage)",
+        default=get_env_value("WORKING_DIR", DEFAULT_WORKING_DIR),
+        help=f"Working directory for RAG storage (default: from env or {DEFAULT_WORKING_DIR})",
     )
     parser.add_argument(
         "--input-dir",
-        default=get_env_value("INPUT_DIR", "./inputs"),
-        help="Directory containing input documents (default: from env or ./inputs)",
+        default=get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR),
+        help=f"Directory containing input documents (default: from env or {DEFAULT_INPUT_DIR})",
     )
 
     parser.add_argument(
@@ -655,6 +656,12 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
+    # The configuration storage is its own category. Passed through
+    # UNRESOLVED: empty means "follow kv_storage", and LightRAG resolves it
+    # once so there is a single answer to report. The JSON backend's
+    # location is derived from WORKING_DIR and the workspace; no setting
+    # moves it.
+    args.config_storage = get_env_value("LIGHTRAG_CONFIG_STORAGE", "")
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(
@@ -998,16 +1005,12 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
-    # Sanitize workspace: only alphanumeric characters and underscores are allowed
-    if args.workspace:
-        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
-        if sanitized != args.workspace:
-            logging.warning(
-                f"Workspace name '{args.workspace}' contains invalid characters. "
-                f"It has been sanitized to '{sanitized}'. "
-                "Only alphanumeric characters and underscores are allowed."
-            )
-            args.workspace = sanitized
+    try:
+        args.workspace = normalize_server_workspace(args.workspace)
+    except ValueError as e:
+        # A configuration refusal, reported like the others in this parser:
+        # one line naming the setting, no traceback.
+        raise SystemExit(f"WORKSPACE: {e}") from None
 
     validate_auth_configuration(args)
     validate_bedrock_auth_configuration(args)

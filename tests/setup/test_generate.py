@@ -1850,6 +1850,48 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     assert "milvus-minio" in generated_compose
 
 
+@pytest.mark.parametrize(
+    ("graph_storage", "image"),
+    [
+        ("PGTableGraphStorage", "pgvector/pgvector:pg18-trixie"),
+        ("Neo4JStorage", "pgvector/pgvector:pg18-trixie"),
+        ("PGGraphStorage", "gzdaniel/postgres-for-rag:pg18-age-pgvector"),
+    ],
+)
+def test_generate_docker_compose_postgres_image_follows_graph_storage(
+    tmp_path: Path, graph_storage: str, image: str
+) -> None:
+    """PostgreSQL gets the pgvector image, except for a deployment kept on
+    PGGraphStorage, which needs Apache AGE in it."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            f"LIGHTRAG_GRAPH_STORAGE={graph_storage}",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+add_docker_service postgres
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    images = [
+        line.split("image:", 1)[1].strip()
+        for line in result.splitlines()
+        if "image:" in line and ("pgvector" in line or "postgres-for-rag" in line)
+    ]
+    assert images == [image]
+
+
 def test_generate_docker_compose_uses_template_images_even_with_old_env_overrides(
     tmp_path: Path,
 ) -> None:
@@ -1876,7 +1918,7 @@ add_docker_service vllm-embed
 generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:pg18-age-pgvector" in result
+    assert "image: pgvector/pgvector:pg18-trixie" in result
     assert "image: vllm/vllm-openai-cpu:latest" in result
     assert "registry.example.com/postgres-for-rag:patched" not in result
     assert "vllm/vllm-openai-cpu:patched" not in result

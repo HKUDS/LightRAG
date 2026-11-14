@@ -1,6 +1,11 @@
-name: Offline Unit Tests
+name: Backend Offline Unit Tests
 
 on:
+  # No paths filter on either trigger: the suite reads files from all over the
+  # tree (docs, WebUI source, compose and k8s presets), and an allowlist of
+  # them drifts silently as tests are added. Every PR runs the full backend
+  # suite (AGENTS.md, Testing), and so does every push, which is what catches
+  # two PRs that pass separately but break together.
   push:
     branches: [ main, dev, 'dev-*' ]
   pull_request:
