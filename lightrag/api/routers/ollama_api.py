@@ -393,8 +393,12 @@ class OllamaAPI:
         self.setup_routes()
 
     def setup_routes(self):
-        # Create combined auth dependency for Ollama API routes
-        combined_auth = get_combined_auth_dependency(self.api_key)
+        # Ollama clients send the API key as a bearer token, so accept it there.
+        # Whether these routes need credentials at all is WHITELIST_PATHS'
+        # decision, whose default follows LIGHTRAG_API_KEY (see config.py).
+        combined_auth = get_combined_auth_dependency(
+            self.api_key, accept_bearer_api_key=True
+        )
 
         @self.router.get("/version", dependencies=[Depends(combined_auth)])
         async def get_version():

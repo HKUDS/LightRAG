@@ -95,8 +95,7 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 ```bash
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'   # 用单引号：哈希里有 $
 TOKEN_SECRET=<openssl rand -hex 32>         # 配了 AUTH_ACCOUNTS 就必须设置
-LIGHTRAG_API_KEY=<一串足够长的随机字符>
-WHITELIST_PATHS=/health                     # Ollama 兼容的 /api/* 也要求认证
+LIGHTRAG_API_KEY=<一串足够长的随机字符>       # 同时保护 Ollama 兼容的 /api/*
 ```
 
 密码建议存 bcrypt 哈希，不要存明文。用环境里已经装好的 `bcrypt` 包生成：
@@ -105,7 +104,7 @@ WHITELIST_PATHS=/health                     # Ollama 兼容的 /api/* 也要求�
 python -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
 ```
 
-配置了 `AUTH_ACCOUNTS` 却没有设置非默认的 `TOKEN_SECRET`，服务会拒绝启动。`WHITELIST_PATHS` 的默认值让 `/api/*` 保持开放，这样 Ollama 客户端不用改就能用；服务一旦能从网络访问，就应该收窄成 `/health`。
+配置了 `AUTH_ACCOUNTS` 却没有设置非默认的 `TOKEN_SECRET`，服务会拒绝启动。设置了 `LIGHTRAG_API_KEY` 时，`WHITELIST_PATHS` 的默认值是 `/health`，Ollama 兼容的 `/api/*` 也要求这个 key；Ollama 客户端以 `Authorization: Bearer <key>` 发送它（在连接设置里填为 API key）。没有设置 key 时，默认值让 `/api/*` 保持开放，即使配置了 `AUTH_ACCOUNTS` 也一样，因为 Ollama 客户端无法登录。
 
 **验证：**
 
@@ -339,7 +338,6 @@ POSTGRES_MAX_CONNECTIONS=40
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'
 TOKEN_SECRET=...
 LIGHTRAG_API_KEY=...
-WHITELIST_PATHS=/health
 
 # 第 3 步 — 角色 LLM
 LLM_MODEL=gpt-6-luna
