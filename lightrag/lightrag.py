@@ -184,6 +184,7 @@ from lightrag.config_store import (
     claim_embedding_baseline,
     configured_baseline,
     create_configuration_storage,
+    default_configuration_storage,
     describe_configuration_container,
     flush_configuration_storage,
     precheck_embedding_baselines,
@@ -193,7 +194,7 @@ from lightrag.config_store import (
     resolve_configuration_storage,
     warn_about_unrecorded_baselines,
 )
-from lightrag.config_shards import validate_config_workspace
+from lightrag.config_shards import validate_deployment_workspace
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
@@ -1799,11 +1800,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         # Refused here, before any storage is built, so the message names the
         # rule rather than whichever backend happened to construct first:
-        # path traversal, and the five names of the deployment-wide files
-        # directly under ``working_dir`` (``config_shards``) -- a workspace
-        # directory so named would collide with one of them, whatever the
-        # backends.
-        validate_config_workspace(self.workspace)
+        # path traversal and the reserved ``$`` prefix always, and -- when a
+        # storage keeps a workspace directory under ``working_dir`` -- the
+        # names that directory cannot take (``config_shards``).
+        validate_deployment_workspace(
+            self.workspace,
+            storages=(
+                self.kv_storage,
+                self.vector_storage,
+                self.graph_storage,
+                self.doc_status_storage,
+                self.config_storage or default_configuration_storage(self.kv_storage),
+            ),
+        )
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
         # behaviour); a negative value is a misconfiguration, fail fast.

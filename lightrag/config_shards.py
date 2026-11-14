@@ -17,9 +17,11 @@ Full contract: *JSON configuration shards* in
   Windows' trailing dot / space stripping maps onto them, as well as a name of only dots and spaces (Windows strips it to
   ``WORKING_DIR`` itself) and a drive-qualified name such as ``C:`` (Windows
   joins it outside ``WORKING_DIR``), on every platform so data stays
-  portable; it is applied to every workspace a start, an
-  anchor member list, a discovered snapshot or a migration scope names.
-  Names are never rewritten.
+  portable; it is applied to every workspace an anchor member list, a
+  discovered snapshot or a migration scope names, and to a start's workspace
+  whenever one of its storages keeps a workspace directory under
+  ``WORKING_DIR`` (``validate_deployment_workspace``). Names are never
+  rewritten.
 
 * **The scan is bounded.** ``discover_shards`` probes the root snapshot and
   one file in each direct child directory -- a symlinked child included, as
@@ -136,6 +138,26 @@ def validate_config_workspace(workspace: str) -> str:
             f"so its directory would collide with that file. Choose another name."
         )
     return workspace
+
+
+def validate_deployment_workspace(workspace: str, *, storages) -> str:
+    """The workspace check for one deployment's storage selection.
+
+    ``validate_workspace`` (path traversal, the reserved ``$`` prefix) holds
+    for every backend. The directory rules of ``validate_config_workspace``
+    -- drive-qualified names, dot/space-only names, the five reserved root
+    names -- exist because a workspace directory is created under
+    ``WORKING_DIR``, so they apply only when one of ``storages`` (the
+    configured backend names, configuration storage included) keeps its
+    data there. A deployment entirely on database backends creates no such
+    directory and keeps every name it could use before. Raises
+    ``ValueError``; returns the name unchanged.
+    """
+    from lightrag.kg.working_dir_lock import uses_working_dir
+
+    if uses_working_dir(*storages):
+        return validate_config_workspace(workspace)
+    return validate_workspace(workspace)
 
 
 def json_config_dir(working_dir: str, workspace: str) -> str:

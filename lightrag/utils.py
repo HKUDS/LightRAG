@@ -8297,11 +8297,13 @@ def validate_workspace(workspace: str) -> str:
 
     Names starting with ``$`` are reserved for internal configuration keys.
     A tenant may still be called ``_lightrag_config`` and
-    still shares nothing with the configuration container. ``LightRAG``
-    additionally applies ``config_shards.validate_config_workspace``, which
-    refuses the five names of the deployment-wide files directly under
-    ``working_dir`` (a workspace directory so named would collide with one of
-    them). See docs/design/ConfigurationStorageContract.md.
+    still shares nothing with the configuration container. Where a storage
+    keeps a workspace directory under ``working_dir``, ``LightRAG``
+    additionally applies ``config_shards.validate_config_workspace``
+    (through ``validate_deployment_workspace``), which refuses the five names
+    of the deployment-wide files directly under ``working_dir`` (a workspace
+    directory so named would collide with one of them). See
+    docs/design/ConfigurationStorageContract.md.
 
     Args:
         workspace: Workspace name from configuration or environment variables.

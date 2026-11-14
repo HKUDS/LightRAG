@@ -42,7 +42,6 @@ def test_cli_passes_exact_workspace(monkeypatch, argv, expected):
     "workspace, reason",
     [
         ("../other", "path separators"),
-        ("config_storage_anchor.json", "deployment-wide file"),
         ("$meta", "reserved"),
         ("$default", "reserved"),
     ],
@@ -60,6 +59,47 @@ def test_cli_refuses_invalid_workspace_before_run(
     # argparse prints an ArgumentTypeError's text; a bare ValueError would
     # reduce the reason to "invalid ... value".
     assert reason in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "storages, refused",
+    [
+        pytest.param(
+            {"kv": "JsonKVStorage", "config": "JsonKVStorage"}, True, id="file-backed"
+        ),
+        pytest.param(
+            {
+                "graph": "PGGraphStorage",
+                "vector": "PGVectorStorage",
+                "kv": "PGKVStorage",
+                "config": "PGKVStorage",
+            },
+            False,
+            id="database-only",
+        ),
+    ],
+)
+async def test_directory_rules_follow_the_storage_selection(
+    monkeypatch, capsys, storages, refused
+):
+    """A reserved root file name is refused only where a storage would create
+    that directory under WORKING_DIR, as the library refuses it."""
+    tool = rb.RebuildTool(workspace="config_storage_anchor.json")
+    monkeypatch.setattr(tool, "resolve_storage_names", lambda: storages)
+
+    class _Stop(Exception):
+        pass
+
+    def _past_the_check():
+        raise _Stop
+
+    monkeypatch.setattr(tool, "resolve_config_dir", _past_the_check)
+    if refused:
+        assert await tool.setup_storages() is False
+        assert "deployment-wide file" in capsys.readouterr().out
+    else:
+        with pytest.raises(_Stop):
+            await tool.setup_storages()
 
 
 async def test_a_reserved_workspace_from_the_environment_is_a_clean_refusal(

@@ -95,7 +95,7 @@ from lightrag.config_store import (
     resolve_configuration_storage,
     verify_configuration_identity,
 )
-from lightrag.config_shards import validate_config_workspace
+from lightrag.config_shards import validate_deployment_workspace
 from lightrag.exceptions import (
     ConfigurationAnchorLockError,
     ConfigurationStorageError,
@@ -126,6 +126,7 @@ from lightrag.utils import (
     normalize_server_workspace,
     safe_vdb_operation_with_exception,
     setup_logger,
+    validate_workspace,
 )
 
 # NOTE: .env loading and logger setup are deferred to main() so that importing
@@ -930,7 +931,9 @@ class RebuildTool:
                 if self._workspace_override is not None
                 else normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
             )
-            validate_config_workspace(self.workspace)
+            validate_deployment_workspace(
+                self.workspace, storages=self.storage_names.values()
+            )
             self.config_dir = self.resolve_config_dir()
         except ValueError as e:
             print(f"\n✗ {e}")
@@ -1702,11 +1705,13 @@ async def async_main(*, workspace: str | None = None) -> bool:
 
 
 def _workspace_argument(value: str) -> str:
-    """``--workspace``, checked by ``validate_config_workspace``. argparse
+    """``--workspace``, checked by ``validate_workspace``: the rules that hold
+    for every backend. The directory rules wait for ``setup_storages``,
+    which knows whether a storage keeps a workspace directory. argparse
     reports only an ``ArgumentTypeError``'s text; a bare ``ValueError``
     would reach the operator as "invalid value" without the reason."""
     try:
-        return validate_config_workspace(value)
+        return validate_workspace(value)
     except ValueError as e:
         raise argparse.ArgumentTypeError(str(e)) from None
 

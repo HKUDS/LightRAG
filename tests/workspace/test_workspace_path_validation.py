@@ -210,3 +210,73 @@ def test_server_rejects_reserved_workspace_from_environment(monkeypatch, workspa
     # A setting refusal: one SystemExit line, never a ValueError traceback.
     with pytest.raises(SystemExit, match="reserved"):
         parse_args()
+
+
+def _sdk(working_dir, workspace, **storages):
+    import numpy as np
+
+    from lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    async def embed(texts, **kwargs):
+        return np.zeros((len(texts), 8), dtype=np.float32)
+
+    async def llm(*args, **kwargs):  # pragma: no cover - never called here
+        return ""
+
+    return LightRAG(
+        working_dir=str(working_dir),
+        workspace=workspace,
+        llm_model_func=llm,
+        embedding_func=EmbeddingFunc(embedding_dim=8, func=embed, model_name="m"),
+        **storages,
+    )
+
+
+_DATABASE_ONLY = {
+    "kv_storage": "PGKVStorage",
+    "vector_storage": "PGVectorStorage",
+    "graph_storage": "PGGraphStorage",
+    "doc_status_storage": "PGDocStatusStorage",
+}
+
+
+@pytest.mark.parametrize(
+    "workspace", ["t:prod", "...", "config_storage_anchor.json"], ids=repr
+)
+def test_directory_rules_apply_only_where_a_workspace_directory_is_created(
+    tmp_path, monkeypatch, workspace
+):
+    """Drive-qualified, dot-only and reserved-file names are refused because
+    a file-backed storage would create that directory under WORKING_DIR. A
+    deployment entirely on database backends creates none, so it keeps the
+    names it could use before."""
+    for name in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+    ):
+        monkeypatch.setenv(name, "5432" if name.endswith("PORT") else "x")
+
+    with pytest.raises(ValueError, match="Invalid workspace name"):
+        _sdk(tmp_path / "file", workspace)
+    assert _sdk(tmp_path / "db", workspace, **_DATABASE_ONLY).workspace == workspace
+
+
+@pytest.mark.parametrize("workspace", ["$meta", "../other"])
+def test_a_database_deployment_still_refuses_what_every_backend_must(
+    tmp_path, monkeypatch, workspace
+):
+    for name in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+    ):
+        monkeypatch.setenv(name, "5432" if name.endswith("PORT") else "x")
+
+    with pytest.raises(ValueError, match="Invalid workspace name"):
+        _sdk(tmp_path, workspace, **_DATABASE_ONLY)

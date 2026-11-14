@@ -213,8 +213,13 @@ and `verify_configuration_identity`, and `JsonShardGroup` in
   named `kv_workspace_config.json`, `config_storage_anchor.json`,
   `.lightrag_storage.lock`, `.lightrag_anchor.lock` or
   `.lightrag_anchor_bind.lock`, in `LightRAG.__post_init__` before any
-  directory exists, whatever the backends: such a workspace directory would
-  collide with a root-level file. So are their filesystem aliases -- another
+  directory exists, whenever a configured storage -- the configuration
+  storage included -- keeps a workspace directory under `working_dir`
+  (`validate_deployment_workspace`): such a workspace directory would
+  collide with a root-level file. A deployment entirely on database
+  backends creates no workspace directory and is held to
+  `validate_workspace` alone (path traversal, the `$` prefix). So are their
+  filesystem aliases -- another
   letter case or Unicode normalization (macOS, Windows; Unicode canonical
   caseless matching, `caseless_alias`) or trailing dots and spaces (which
   Windows strips). A name of only dots and spaces is refused too: Windows
