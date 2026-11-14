@@ -60,7 +60,9 @@ from lightrag.config_anchor import (
 from lightrag.config_shards import (
     caseless_alias,
     json_config_dir,
+    json_config_path,
     physical_directory_aliases,
+    read_shard_file,
     validate_config_workspace,
 )
 from lightrag.constants import DEFAULT_WORKING_DIR
@@ -660,21 +662,47 @@ class JsonShardGroup:
         ]
 
     async def verify_layout(self, storage_uuid: str) -> None:
-        """Every member snapshot carries ``storage_uuid`` and names its own
-        workspace as owner."""
+        """Every member snapshot, read back FROM DISK after the strict flush,
+        carries ``storage_uuid``, names its own workspace as owner, and holds
+        exactly the rows the open storage holds.
+
+        The open storage's reads are served from the shared memory, which a
+        flush that did not land would not reveal; the anchor must never name
+        a snapshot whose rows are not in the file. A start's registration
+        checks the file the same way.
+        """
         for workspace in await self.committed_members():
             shard = self._shards[workspace]
+            path = json_config_path(self.working_dir, workspace)
+            on_disk = read_shard_file(path)
+            if on_disk is None:
+                raise MigrationFailed(
+                    f"the JSON snapshot of workspace {workspace!r} is not on "
+                    f"disk at {path} after a successful flush"
+                )
             contents = cs.inspect_shard_rows(
-                await cs.read_shard_rows(shard),
-                workspace=workspace,
-                location=json_config_dir(self.working_dir, workspace),
+                on_disk, workspace=workspace, location=path
             )
             if contents.storage_uuid != storage_uuid or contents.owner != workspace:
                 raise MigrationFailed(
                     f"the JSON snapshot of workspace {workspace!r} reads back "
                     f"identity {contents.storage_uuid!r} and owner "
-                    f"{contents.owner!r}, not {storage_uuid!r} / {workspace!r}"
+                    f"{contents.owner!r} from {path}, not {storage_uuid!r} / "
+                    f"{workspace!r}"
                 )
+            in_memory = await cs.read_shard_rows(shard)
+            if _fingerprints(on_disk) != _fingerprints(in_memory):
+                raise MigrationFailed(
+                    f"the JSON snapshot of workspace {workspace!r} at {path} "
+                    f"does not hold the rows that were flushed to it"
+                )
+
+
+def _fingerprints(rows: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        key: row_digest(row_payload(row)) if isinstance(row, dict) else repr(row)
+        for key, row in rows.items()
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -271,6 +271,34 @@ class TestDatabaseToJson:
         # The migrated snapshot serves a normal start.
         await _start_and_stop(tmp_path, "teamalpha")
 
+    async def test_a_flush_that_did_not_reach_the_file_never_switches_the_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        """The open storage answers from shared memory, so a flush that
+        reported success without writing the file would verify there. The
+        commit check reads every committed snapshot back from disk."""
+        from lightrag.kg import json_kv_impl
+
+        storage_uuid = ca.new_storage_uuid()
+        ca.publish_anchor(
+            str(tmp_path), ca.StorageAnchor("PGKVStorage", storage_uuid), replace=False
+        )
+        database = Database(
+            {
+                IDENTITY_KEY: _identity_row(storage_uuid),
+                cs.embedding_baseline_key("teamalpha", "entities"): _baseline_row(
+                    "teamalpha"
+                ),
+            }
+        )
+        monkeypatch.setattr(json_kv_impl, "write_json", lambda data, path: False)
+
+        with pytest.raises(mc.MigrationFailed, match="not on disk"):
+            await _migrate(
+                tmp_path, source=database, target="json", target_backend="JsonKVStorage"
+            )
+        assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
+
     async def test_a_foreign_snapshot_on_disk_refuses_before_any_write(self, tmp_path):
         foreign = tmp_path / "elsewhere"
         await _start_and_stop(foreign, "teambeta")
