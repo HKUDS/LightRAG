@@ -3,14 +3,13 @@
 A backend type that differs from the anchor refuses the MASTER, instead of
 surfacing as every worker failing while the master respawns them. The master
 also takes the shared anchor lock so its workers inherit it, and gives it back
-in ``on_exit`` after the ``config_dir`` claim. See *The anchor and the
-container identity* in docs/design/ConfigurationStorageContract.md.
+in ``on_exit`` after the JSON configuration snapshot claim. See *The anchor and
+the container identity* in docs/design/ConfigurationStorageContract.md.
 """
 
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import sys
 
@@ -25,9 +24,14 @@ pytestmark = pytest.mark.offline
 @pytest.fixture
 def gunicorn_config(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-gunicorn"])
+    # ``resolved_workspace`` imports ``lightrag.api.config``, whose import
+    # runs ``load_dotenv(override=False)``: imported lazily there, it would
+    # refill the variables ``_env`` removed from a local ``.env``.
+    importlib.import_module("lightrag.api.config")
     module = importlib.import_module("lightrag.api.gunicorn_config")
     monkeypatch.setattr(module, "workers", 4, raising=False)
     monkeypatch.setattr(module, "working_dir", None, raising=False)
+    monkeypatch.setattr(module, "workspace", None, raising=False)
     return module
 
 
@@ -53,7 +57,7 @@ def _clean_locks():
 
 def _env(monkeypatch, tmp_path, **overrides):
     monkeypatch.setenv("WORKING_DIR", str(tmp_path))
-    for name in ("LIGHTRAG_CONFIG_STORAGE", "LIGHTRAG_CONFIG_DIR"):
+    for name in ("LIGHTRAG_CONFIG_STORAGE", "WORKSPACE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
     for key, value in overrides.items():
@@ -61,17 +65,16 @@ def _env(monkeypatch, tmp_path, **overrides):
 
 
 def _anchor(tmp_path, backend):
-    path = ca.anchor_path(str(tmp_path))
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(
-            {
-                "schema_version": 1,
-                "backend": backend,
-                "storage_uuid": ca.new_storage_uuid(),
-            },
-            f,
-        )
+    os.makedirs(ca.anchor_dir(str(tmp_path)), exist_ok=True)
+    ca.publish_anchor(
+        str(tmp_path),
+        ca.StorageAnchor(
+            backend=backend,
+            storage_uuid=ca.new_storage_uuid(),
+            members=() if backend == "JsonKVStorage" else None,
+        ),
+        replace=False,
+    )
 
 
 def test_the_master_refuses_a_type_mismatch_before_forking(
@@ -90,7 +93,7 @@ def test_the_master_refuses_a_type_mismatch_before_forking(
     assert excinfo.value.cause == ca.IDENTITY_BACKEND_MISMATCH
     assert "forking workers" not in capsys.readouterr().out
     assert holds_anchor_lock(str(tmp_path)) is False
-    assert holds_working_dir_lock(str(tmp_path / "_lightrag_config")) is False
+    assert holds_working_dir_lock(str(tmp_path)) is False
 
 
 def test_an_explicit_selection_of_the_anchored_backend_passes(
@@ -135,7 +138,7 @@ def test_an_unreadable_anchor_refuses_the_master(
     gunicorn_config, monkeypatch, tmp_path, capsys
 ):
     path = ca.anchor_path(str(tmp_path))
-    os.makedirs(os.path.dirname(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("{")
     _env(monkeypatch, tmp_path)

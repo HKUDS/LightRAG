@@ -14,10 +14,13 @@ from lightrag.api.startup_errors import (
     StartupErrorMiddleware,
 )
 from lightrag.exceptions import (
+    ConfigurationAnchorLockError,
+    ConfigurationIdentityError,
     CorruptStorageSnapshotError,
     EmbeddingBaselineMismatchError,
     VectorSpaceMismatchError,
     VectorStorageEmptyError,
+    WorkingDirectoryInUseError,
 )
 
 pytestmark = pytest.mark.offline
@@ -401,3 +404,75 @@ async def test_a_baseline_refusal_reports_every_target_with_its_own_values(
     assert "Mismatched targets (2)" in messages
     assert "entities: recorded model 'model-a' dim 768" in messages
     assert "chunks: recorded model 'model-b' dim 3072" in messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            ConfigurationIdentityError(
+                "Refusing to start: the anchor binds this deployment to "
+                "PGKVStorage. Fix: set LIGHTRAG_CONFIG_STORAGE=PGKVStorage.",
+                cause="backend_mismatch",
+            ),
+            id="identity",
+        ),
+        pytest.param(
+            ConfigurationAnchorLockError(
+                "the configuration migration holds the anchor lock"
+            ),
+            id="anchor-lock",
+        ),
+        pytest.param(
+            WorkingDirectoryInUseError(
+                "working directory '/data' is already in use by another "
+                "LightRAG process."
+            ),
+            id="working-dir",
+        ),
+    ],
+)
+async def test_a_configuration_refusal_is_concise_and_keeps_its_own_advice(
+    monkeypatch, logs, error
+):
+    """An anchor, lock or directory-claim refusal is an expected stop whose
+    message already says what to do; a traceback only buries it, and the
+    vector recovery lines would point the operator at the wrong tools."""
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+    cleaned = []
+    life = driver(make_app(error, cleaned))
+    await life.startup()
+    messages = _lifespan_messages(logs)
+    assert life.should_exit and life.startup_failed
+    assert cleaned == [True]
+    assert f"Startup blocked: {error}" in messages
+    assert "space1" in messages
+    assert "Traceback" not in messages
+    assert "lightrag-rebuild-vdb" not in messages
+    assert "FaissVectorDBStorage" not in messages
+
+
+@pytest.mark.asyncio
+async def test_a_configuration_refusal_keeps_the_io_error_it_was_raised_from(
+    monkeypatch, logs
+):
+    """The anchor-unreadable causes are raised FROM an ``OSError``; without a
+    traceback that errno would be lost, so the diagnostic names it."""
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+    try:
+        try:
+            raise PermissionError(13, "Permission denied", "/data/anchor.json")
+        except PermissionError as exc:
+            raise ConfigurationIdentityError(
+                "Refusing to start: the anchor cannot be read.",
+                cause="anchor_unreadable",
+            ) from exc
+    except ConfigurationIdentityError as chained:
+        error = chained
+    life = driver(make_app(error, []))
+    await life.startup()
+    messages = _lifespan_messages(logs)
+    assert "Cause: PermissionError:" in messages
+    assert "Permission denied" in messages
+    assert "Traceback" not in messages

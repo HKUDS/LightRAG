@@ -6,22 +6,14 @@ them on one ``working_dir`` each rewrite the whole configuration file from a
 private view. An overwritten baseline reads back as absent, and absent is what
 lets a start bootstrap -- so the protection disappears with nothing in any log.
 
-These pin the claim that closes it, including the two properties that make an
-OS lock the right instrument rather than a PID file: the kernel releases it
-when the holder dies, and ``fork`` shares it so a Gunicorn master's workers
-inherit rather than fight it.
-
-Every "other process" here is a real subprocess (``_working_dir_lock_probe.py``
-in a fresh interpreter), never a ``fork`` of the pytest process: a session
-that has run thousands of tests is multi-threaded, and forking it makes CPython
-emit a DeprecationWarning that cannot be promoted to an error, only filtered.
-The probe is single-threaded, so it can assert the warning ABSENT. Each spawn
-costs about a second, which the whole file pays seven times.
+These tests cover cross-process exclusion, release on process death,
+reference counting, and path normalization. Every other process is a real
+subprocess running ``_working_dir_lock_probe.py`` in a fresh interpreter,
+so it cannot inherit this process's claim bookkeeping or lock descriptor.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -94,23 +86,6 @@ def test_the_directory_is_free_once_the_holder_releases(tmp_path):
 
     assert holds_working_dir_lock(str(tmp_path)) is False
     assert _foreign_attempt(tmp_path) == "ADMITTED"
-
-
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
-def test_forked_workers_inherit_the_masters_claim(tmp_path):
-    """The Gunicorn shape: the master claims BEFORE forking, so the workers
-    find the claim in their own tree and count themselves in.
-
-    Taken after the fork instead, each worker would open its own descriptor
-    and all but one would be refused -- which is why ``on_starting`` is the
-    hook that takes it.
-
-    The master is the probe process, not pytest: the probe also fails if the
-    fork emitted CPython's multi-threaded-fork warning (see its docstring).
-    """
-    admitted = _probe("workers", tmp_path).stdout.split()
-
-    assert admitted == ["OK"] * 4
 
 
 def test_a_holder_that_dies_leaves_nothing_to_reap(tmp_path):

@@ -7,12 +7,25 @@ import sys
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from lightrag.exceptions import (
+    ConfigurationAnchorLockError,
+    ConfigurationIdentityError,
     CorruptStorageSnapshotError,
     EmbeddingBaselineMismatchError,
     VectorSpaceMismatchError,
     VectorStorageEmptyError,
+    WorkingDirectoryInUseError,
 )
 from lightrag.utils import logger
+
+# Refusals of the configuration binding or of a claim another process holds.
+# Their messages are self-contained -- each names its cause and its own way
+# out -- and neither vector recovery applies, so they get neither the storage
+# header nor ``_RECOVERY_LINES``.
+_SELF_DESCRIBING_REFUSALS = (
+    ConfigurationIdentityError,
+    ConfigurationAnchorLockError,
+    WorkingDirectoryInUseError,
+)
 
 # The two ways out of every refusal below, in the order an operator should
 # consider them. A rebuild keeps the data; the clear is for data nobody needs,
@@ -29,13 +42,14 @@ _RECOVERY_LINES = (
 def describe_startup_refusal(
     exc: BaseException, *, workspace: str, vector_storage: str
 ) -> str | None:
-    """The concise message for an expected vector refusal, or ``None``.
+    """The concise message for an expected startup refusal, or ``None``.
 
-    Classified on the exception's TYPE, never on its text. Every message
-    ends with the same two recovery paths, because every one of these
-    refusals is cleared by either: a rebuild re-embeds from the sources, a
+    Classified on the exception's TYPE, never on its text. Every vector
+    refusal ends with the same two recovery paths, because every one of
+    them is cleared by either: a rebuild re-embeds from the sources, a
     clear drops the workspace, and both remove the condition the server
-    refused on.
+    refused on. A configuration-binding or claim refusal carries its own
+    advice in its message and keeps only the chained cause, if any.
 
     The ORDER of the checks below is load-bearing:
     ``EmbeddingBaselineMismatchError`` subclasses ``VectorSpaceMismatchError``
@@ -43,6 +57,12 @@ def describe_startup_refusal(
     which names one container and one pair of values where the baseline
     refusal has one line per mismatched target. Do not sort these branches.
     """
+    if isinstance(exc, _SELF_DESCRIBING_REFUSALS):
+        cause = exc.__cause__
+        detail = f"\n  Cause: {type(cause).__name__}: {cause}" if cause else ""
+        return (
+            f"Startup blocked: {exc}\n  Workspace: {workspace or '(default)'}{detail}"
+        )
     if isinstance(exc, VectorStorageEmptyError) and exc.workspace is not None:
         # Backend overrides can move storage off the server's workspace.
         workspace = exc.workspace

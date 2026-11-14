@@ -40,9 +40,10 @@ def _shared():
     finalize_share_data()
 
 
-# A business KV namespace, not ``config``: the configuration container is no
-# longer addressed by a workspace (it lives in ``config_dir``), and these tests
-# drive the claim protocol itself, which every namespace shares.
+# A business KV namespace, not ``config``: the configuration snapshot keys its
+# shared-namespace bookkeeping by its physical file rather than by the
+# workspace, and these tests drive the claim protocol itself, which every
+# namespace shares.
 BACKENDS = [
     pytest.param(JsonKVStorage, json_kv_impl, "full_docs", id="kv"),
     pytest.param(

@@ -8,11 +8,11 @@ from lightrag.base import (
     BaseKVStorage,
 )
 from lightrag.file_atomic import reap_orphan_tmp_files
+from lightrag.config_shards import json_config_dir, probe_snapshot
 from lightrag.namespace import (
     CONFIG_CONTAINER_TAG,
     CONFIG_JSON_FILE_NAME,
     NameSpace,
-    default_config_dir,
 )
 from lightrag.utils import (
     _cooperative_yield,
@@ -81,22 +81,26 @@ class JsonKVStorage(BaseKVStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         if self.namespace == NameSpace.KV_STORE_CONFIG:
-            # The configuration container is a DIRECTORY named in code, never
-            # ``working_dir/<workspace>``: the configuration storage is its
-            # own category and no workspace addresses it. ``config_dir``
-            # defaults to ``working_dir/_lightrag_config``, which is exactly
-            # where the reserved workspace used to put this file -- point it
-            # anywhere else and an existing deployment's baselines read as
-            # ABSENT, which is what lets a start bootstrap.
-            # See docs/design/ConfigurationStorageContract.md.
-            workspace_dir = (
-                self.global_config.get("config_dir") or ""
-            ).strip() or default_config_dir(working_dir)
-            # Not a workspace: only the shared-namespace bookkeeping below
-            # (the init claim, the namespace lock, the orphan sweep) reads it,
-            # and it must be the same constant in every process.
+            # The configuration snapshot of ONE workspace, at the fixed path
+            # ``config_shards.json_config_dir`` derives from ``working_dir``
+            # and the instance's own workspace (``global_config["workspace"]``);
+            # no setting moves it. ``self.workspace`` stays the container tag
+            # the category requires (``create_configuration_storage``); it
+            # addresses nothing.
+            # See *JSON configuration shards* in
+            # docs/design/ConfigurationStorageContract.md.
+            workspace_dir = json_config_dir(
+                working_dir, self.global_config.get("workspace") or ""
+            )
             self.workspace = CONFIG_CONTAINER_TAG
             file_name = CONFIG_JSON_FILE_NAME
+            # The shared-namespace bookkeeping (init claim, namespace lock,
+            # update flags, cleanup) is keyed by the PHYSICAL file: several
+            # workspaces' snapshots may be open in one process tree, and a
+            # constant key would alias them into one namespace.
+            self._shared_workspace = (
+                f"{CONFIG_CONTAINER_TAG}@{os.path.realpath(workspace_dir)}"
+            )
         else:
             # Reject path traversal before using workspace in a file path
             validate_workspace(self.workspace)
@@ -108,6 +112,7 @@ class JsonKVStorage(BaseKVStorage):
                 workspace_dir = working_dir
                 self.workspace = ""
             file_name = f"kv_store_{self.namespace}.json"
+            self._shared_workspace = self.workspace
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, file_name)
@@ -143,19 +148,25 @@ class JsonKVStorage(BaseKVStorage):
             if self._holds_namespace:
                 return
             self._storage_lock = get_namespace_lock(
-                self.namespace, workspace=self.workspace
+                self.namespace, workspace=self._shared_workspace
             )
             self.storage_updated = await get_update_flag(
-                self.namespace, workspace=self.workspace
+                self.namespace, workspace=self._shared_workspace
             )
             # check need_init must before get_namespace_data
             async with namespace_init_claim(
-                self.namespace, workspace=self.workspace, backing=self._file_name
+                self.namespace,
+                workspace=self._shared_workspace,
+                backing=self._file_name,
             ) as need_init:
                 self._data = await get_namespace_data(
-                    self.namespace, workspace=self.workspace
+                    self.namespace, workspace=self._shared_workspace
                 )
                 if need_init:
+                    if self.namespace == NameSpace.KV_STORE_CONFIG:
+                        # Before the open: a FIFO or other non-regular file
+                        # at the snapshot path would block the read forever.
+                        probe_snapshot(self._file_name)
                     loaded_data = load_json(self._file_name) or {}
                     async with self._storage_lock:
                         # Migrate legacy cache structure if needed
@@ -274,7 +285,7 @@ class JsonKVStorage(BaseKVStorage):
                                 raise
 
                     await clear_all_update_flags(
-                        self.namespace, workspace=self.workspace
+                        self.namespace, workspace=self._shared_workspace
                     )
 
                 try:
@@ -356,6 +367,18 @@ class JsonKVStorage(BaseKVStorage):
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonKVStorage")
         return await self.get_by_id(id)
+
+    async def list_keys(self) -> list[str]:
+        """Every key, without reading a value (one Manager RPC under the lock).
+
+        For the configuration snapshot's validation, which must classify
+        every key even when a value is damaged: ``iter_rows`` raises at the
+        first non-mapping payload.
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
+        async with self._storage_lock:
+            return list(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._storage_lock:
@@ -461,7 +484,7 @@ class JsonKVStorage(BaseKVStorage):
                 await _cooperative_yield(i)
 
             self._data.update(data)
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
+            await set_all_update_flags(self.namespace, workspace=self._shared_workspace)
 
     async def delete(self, ids: list[str]) -> None:
         """Remove records from shared memory; mark all processes dirty if any deleted.
@@ -485,7 +508,9 @@ class JsonKVStorage(BaseKVStorage):
                     any_deleted = True
 
             if any_deleted:
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                await set_all_update_flags(
+                    self.namespace, workspace=self._shared_workspace
+                )
 
     async def is_empty(self) -> bool:
         """Check if the storage is empty
@@ -563,7 +588,9 @@ class JsonKVStorage(BaseKVStorage):
         try:
             async with self._storage_lock:
                 self._data.clear()
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                await set_all_update_flags(
+                    self.namespace, workspace=self._shared_workspace
+                )
 
             await self.index_done_callback()
             logger.info(
@@ -662,4 +689,6 @@ class JsonKVStorage(BaseKVStorage):
             # process. Losing the cache is the lesser of the two.
             if self._holds_namespace:
                 self._holds_namespace = False
-                await leave_namespace_init(self.namespace, workspace=self.workspace)
+                await leave_namespace_init(
+                    self.namespace, workspace=self._shared_workspace
+                )

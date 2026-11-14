@@ -198,9 +198,12 @@ directory by hand and re-run.
   pipeline's destructive reservation, and that reservation lives in one
   process's shared memory, so no separate process can take it. What this tool
   substitutes is partial by design, and the difference is the configuration
-  storage. **File-backed** (the default `JsonKVStorage`): the tool claims
-  `config_dir` for the run (`lightrag/kg/working_dir_lock.py`), so a server
-  still holding it makes the tool refuse before it opens anything.
+  storage. **File-backed** (the default `JsonKVStorage`): the tool claims the
+  workspace's configuration snapshot for the run
+  (`lightrag/kg/working_dir_lock.py`), so a server still serving that
+  workspace makes the tool refuse before it opens anything. A JSON workspace
+  no server has registered yet refuses too: start the server once, stop it,
+  and rerun the tool.
   **Server-backed** (PostgreSQL, MongoDB, OpenSearch): nothing is claimed —
   `uses_working_dir` is false — and the only thing between a live server and a
   cleared workspace is the "Has the LightRAG Server been shut down?" prompt.

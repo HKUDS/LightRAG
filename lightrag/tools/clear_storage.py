@@ -401,7 +401,8 @@ class ClearTool:
             "vector_storage": self.storage_names["vector"],
             "graph_storage": self.storage_names["graph"],
             "doc_status_storage": self.storage_names["doc_status"],
-            "config_dir": self.config_dir,
+            # The JSON configuration backend picks this workspace's snapshot.
+            "workspace": self.workspace,
             "embedding_batch_num": get_env_value(
                 "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
             ),
@@ -528,7 +529,15 @@ class ClearTool:
                 return False
         self.workspace = args.workspace or ""
         self.working_dir = args.working_dir
-        self.config_dir = resolve_config_dir(args.config_dir, args.working_dir)
+        try:
+            self.config_dir = resolve_config_dir(
+                self.storage_names["config"],
+                working_dir=args.working_dir,
+                workspace=self.workspace,
+            )
+        except ValueError as e:
+            print(f"\n✗ {e}")
+            return False
         self.input_dir = self.resolve_input_dir(args.input_dir)
 
         # The anchor first (steps 0a-0c, as a start runs them), before the
@@ -538,10 +547,10 @@ class ClearTool:
         if not self.preflight_anchor():
             return False
 
-        # Claim the configuration directory FIRST, for the reason
-        # ``lightrag-rebuild-vdb`` does: a server on the same directory keeps
-        # its own copy of a file-backed configuration namespace and would
-        # republish the records this tool deletes.
+        # Claim the workspace's JSON configuration directory FIRST, for the
+        # reason ``lightrag-rebuild-vdb`` does: a server on the same workspace
+        # keeps its own copy of the snapshot and would republish the records
+        # this tool deletes.
         self._holds_working_dir = uses_working_dir(self.storage_names["config"])
         if self._holds_working_dir:
             try:
@@ -648,6 +657,7 @@ class ClearTool:
                 working_dir=self.working_dir,
                 backend=self.storage_names["config"],
                 container=self._container(),
+                workspace=self.workspace,
             )
         except ConfigurationStorageError as e:
             print(f"✗ {e}")

@@ -33,7 +33,7 @@ pytestmark = pytest.mark.offline
 fcntl = pytest.importorskip("fcntl")
 
 UUID_A = "3f2b8c1e-6a4d-4e2f-9b7a-1c2d3e4f5a6b"
-IDENTITY_KEY = "_lightrag_server/storage_identity"
+IDENTITY_KEY = "$meta/storage_identity"
 CONTAINER = "PGKVStorage (_lightrag_config)"
 _PROBE = Path(__file__).with_name("_bind_probe.py")
 

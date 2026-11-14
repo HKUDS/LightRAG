@@ -26,7 +26,7 @@ import pytest
 
 import lightrag.tools.clear_storage as clear_storage
 from lightrag.base import DocStatus
-from lightrag.namespace import CONFIG_CONTAINER_TAG
+from lightrag.config_shards import json_config_dir, json_config_path
 from lightrag.tools.clear_storage import (
     CONFIRMATION_PHRASE,
     DATA_STORAGE_LABELS,
@@ -189,7 +189,6 @@ def fake_server_args(**overrides):
             "LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage"
         ),
         config_storage=os.getenv("LIGHTRAG_CONFIG_STORAGE", ""),
-        config_dir=os.getenv("LIGHTRAG_CONFIG_DIR", ""),
         embedding_binding="openai",
     )
     for key, value in overrides.items():
@@ -1226,11 +1225,16 @@ class TestClear:
 # ---------------------------------------------------------------------------
 
 
-def setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, *, names=None):
-    """Point ``setup_storages`` at ``fakes`` (label -> storage or exception)."""
+def setup_tool_on_fakes(
+    tool, tmp_path, monkeypatch, fakes, *, names=None, workspace="clearws"
+):
+    """Point ``setup_storages`` at ``fakes`` (label -> storage or exception).
+
+    A JSON configuration is registered for ``workspace`` first, as a server
+    start would have left it."""
     names = dict(names or FILE_BACKED_NAMES)
     args = fake_server_args(
-        workspace="clearws",
+        workspace=workspace,
         working_dir=str(tmp_path),
         input_dir=str(tmp_path / "inputs"),
         kv_storage=names["kv"],
@@ -1252,10 +1256,35 @@ def setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes, *, names=None):
     monkeypatch.setattr(tool, "build_embedding_func", lambda: fixed_embedding_func())
     config = make_storage("config")
     config.initialize = AsyncMock()
+    if names["config"] == "JsonKVStorage":
+        register_json_workspace_on_fake(config, str(tmp_path), args.workspace)
     monkeypatch.setattr(
         clear_storage, "create_configuration_storage", lambda *a, **k: config
     )
     return config
+
+
+def register_json_workspace_on_fake(config, working_dir: str, workspace: str):
+    """Put ``working_dir`` in the state a server start leaves a JSON
+    configuration in: an anchor listing ``workspace`` as a member, and a
+    snapshot (here the fake ``config``) holding the group's identity and
+    ``workspace``'s owner row. A tool never registers a workspace itself, so
+    without this every JSON-configured setup refuses as unregistered."""
+    from lightrag import config_anchor as ca
+    from lightrag.config_store import json_shard_metadata_rows
+
+    storage_uuid = ca.new_storage_uuid()
+    os.makedirs(working_dir, exist_ok=True)
+    ca.publish_anchor(
+        working_dir,
+        ca.StorageAnchor(
+            backend="JsonKVStorage", storage_uuid=storage_uuid, members=(workspace,)
+        ),
+        replace=False,
+    )
+    rows = json_shard_metadata_rows(workspace, storage_uuid, updated_by="test")
+    config.iter_rows = rows_stream([{**row, "_id": key} for key, row in rows.items()])
+    return storage_uuid
 
 
 def openable_fakes():
@@ -1466,7 +1495,10 @@ class TestSetup:
         monkeypatch.setenv("WORKSPACE", "customer-prod")
         fakes = openable_fakes()
         tool = ClearTool()
-        setup_tool_on_fakes(tool, tmp_path, monkeypatch, fakes)
+        # Registered under the SANITIZED name, as the server registered it.
+        setup_tool_on_fakes(
+            tool, tmp_path, monkeypatch, fakes, workspace="customer_prod"
+        )
         # What the real parser hands back for that environment.
         args = fake_server_args(
             working_dir=str(tmp_path), input_dir=str(tmp_path / "in")
@@ -1541,7 +1573,7 @@ class TestSetup:
         assert "configuration storage could not be opened" in capsys.readouterr().out
         assert tool.storages == {}
 
-    async def test_setup_refuses_while_another_process_tree_holds_the_config_dir(
+    async def test_setup_refuses_while_another_process_tree_holds_the_snapshot_dir(
         self, tmp_path, monkeypatch, capsys
     ):
         """Same second-process-tree hazard ``lightrag-rebuild-vdb`` guards:
@@ -1558,7 +1590,8 @@ class TestSetup:
         monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
         monkeypatch.setenv("WORKSPACE", "clearws")
 
-        config_dir = str(tmp_path / CONFIG_CONTAINER_TAG)
+        # The workspace's JSON snapshot directory, which a server on it holds.
+        config_dir = json_config_dir(str(tmp_path), "clearws")
         wdl.acquire_working_dir_lock(config_dir)
         holder = dict(wdl._claims)
         wdl._claims.clear()  # the tool must look like a different tree
@@ -1568,7 +1601,7 @@ class TestSetup:
             ok = await tool.setup_storages()
 
             assert ok is False
-            assert "already in use" in capsys.readouterr().out
+            assert "already claimed" in capsys.readouterr().out
             assert tool.storages == {}, "no storage was opened despite the refusal"
             assert tool.configuration_storage is None
             assert tool._holds_working_dir is False
@@ -1582,13 +1615,77 @@ class TestSetup:
 # ---------------------------------------------------------------------------
 
 
+async def register_json_workspace(working_dir, workspace: str) -> str:
+    """Register ``workspace`` in the JSON configuration group under
+    ``working_dir`` exactly as a server start does (``bind_configuration_identity``
+    on the real ``JsonKVStorage`` snapshot), then close it. Returns the UUID.
+
+    The tool never registers a workspace itself: an unregistered JSON
+    workspace refuses with the start-the-server-once advice."""
+    from lightrag import config_anchor as ca
+    from lightrag.config_store import (
+        bind_configuration_identity,
+        create_configuration_storage,
+    )
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+    from lightrag.kg.shared_storage import (
+        finalize_share_data,
+        initialize_share_data,
+    )
+
+    initialize_share_data(workers=1)
+    try:
+        config = create_configuration_storage(
+            JsonKVStorage,
+            global_config={"working_dir": str(working_dir), "workspace": workspace},
+            embedding_func=None,
+        )
+        await config.initialize()
+        try:
+            binding = await bind_configuration_identity(
+                config,
+                working_dir=str(working_dir),
+                backend="JsonKVStorage",
+                container="json",
+                workspace=workspace,
+            )
+        finally:
+            await config.finalize()
+    finally:
+        finalize_share_data()
+    assert workspace in ca.read_anchor(str(working_dir)).members
+    return binding.storage_uuid
+
+
+def json_metadata_keys() -> set[str]:
+    """The identity and owner rows a registered snapshot keeps for good."""
+    from lightrag.config_store import json_shard_owner_key, storage_identity_key
+
+    return {storage_identity_key(), json_shard_owner_key()}
+
+
+def use_json_backends(monkeypatch, working_dir, inputs):
+    monkeypatch.setenv("WORKING_DIR", str(working_dir))
+    monkeypatch.setenv("INPUT_DIR", str(inputs))
+    monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
+    monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
+    monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
+    monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
+    monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
+    monkeypatch.setenv("WORKSPACE", "e2e")
+
+
 class TestEndToEndOnJsonBackends:
     async def test_a_seeded_workspace_is_summarized_then_emptied(
         self, tmp_path, monkeypatch, capsys, stub_server_api
     ):
         """The real JSON storages, seeded through the tool's own construction:
         the summary reports the seeded rows, the phrase empties them, the
-        LLM cache file is never created, __parsed__ survives."""
+        LLM cache file is never created, __parsed__ survives, and the
+        workspace stays a registered member (identity and owner retained)."""
+        import json
+
+        from lightrag import config_anchor as ca
         from lightrag.kg.shared_storage import (
             finalize_share_data,
             initialize_share_data,
@@ -1603,14 +1700,8 @@ class TestEndToEndOnJsonBackends:
         (inputs / "__parsed__" / "a.md").write_text("parsed")
         # The DEFAULT workspace's upload, one level up: not this run's to delete.
         (base_inputs / "default-ws.txt").write_text("keep")
-        monkeypatch.setenv("WORKING_DIR", str(working_dir))
-        monkeypatch.setenv("INPUT_DIR", str(base_inputs))
-        monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
-        monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
-        monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
-        monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
-        monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
-        monkeypatch.setenv("WORKSPACE", "e2e")
+        use_json_backends(monkeypatch, working_dir, base_inputs)
+        storage_uuid = await register_json_workspace(working_dir, "e2e")
 
         # Seed through a first tool instance, then release everything it held.
         initialize_share_data(workers=1)
@@ -1647,6 +1738,7 @@ class TestEndToEndOnJsonBackends:
             await storage.finalize()
         finalize_share_data()
         release_working_dir_lock(seeder.config_dir)
+        seeder.release_anchor_lock()
 
         answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
         tool = ClearTool()
@@ -1670,36 +1762,55 @@ class TestEndToEndOnJsonBackends:
         assert (base_inputs / "default-ws.txt").exists(), (
             "the default workspace's upload one level up was deleted"
         )
+        # Clear retains membership: identity, owner and the anchor entry.
+        snapshot = json.loads(open(json_config_path(str(working_dir), "e2e")).read())
+        assert set(snapshot) == json_metadata_keys()
+        anchor = ca.read_anchor(str(working_dir))
+        assert anchor.storage_uuid == storage_uuid
+        assert "e2e" in anchor.members
+
+    async def test_an_unregistered_workspace_refuses_with_the_start_advice(
+        self, tmp_path, monkeypatch, capsys, stub_server_api
+    ):
+        """A JSON workspace no server ever registered: the tool never binds
+        or registers one itself, so it refuses before opening or deleting
+        anything, and tells the operator how to register it."""
+        working_dir = tmp_path / "wd"
+        workspace_dir = working_dir / "e2e"
+        workspace_dir.mkdir(parents=True)
+        (workspace_dir / "kv_store_text_chunks.json").write_text(
+            '{"chunk-1": {"content": "c"}}'
+        )
+        use_json_backends(monkeypatch, working_dir, tmp_path / "inputs")
+        answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
+
+        ok = await ClearTool().run()
+        out = capsys.readouterr().out
+
+        assert ok is False
+        assert "Start the server once to register this workspace" in out
+        assert "Workspace cleared" not in out
+        assert (workspace_dir / "kv_store_text_chunks.json").read_text() == (
+            '{"chunk-1": {"content": "c"}}'
+        )
+        assert not os.path.exists(json_config_path(str(working_dir), "e2e")), (
+            "the tool created a snapshot for an unregistered workspace"
+        )
 
     async def test_corrupt_local_files_are_shown_unreadable_and_still_cleared(
         self, tmp_path, monkeypatch, capsys, stub_server_api
     ):
         """Fix-proof for the kind rule on the real JSON backends: a corrupt
-        ``text_chunks`` file and a baseline row that does not parse used to
-        abort the run with nothing deleted. Both are data the operator is
-        deleting, so the summary shows them UNREADABLE and the clear rewrites
-        the file empty and removes the row."""
+        ``text_chunks`` file used to abort the run with nothing deleted. It is
+        data the operator is deleting, so the summary shows it UNREADABLE and
+        the clear rewrites the file empty."""
         import json
 
         working_dir = tmp_path / "wd"
         workspace_dir = working_dir / "e2e"
-        config_dir = working_dir / CONFIG_CONTAINER_TAG
-        workspace_dir.mkdir(parents=True)
-        config_dir.mkdir(parents=True)
+        use_json_backends(monkeypatch, working_dir, tmp_path / "inputs")
+        await register_json_workspace(working_dir, "e2e")
         (workspace_dir / "kv_store_text_chunks.json").write_text('{"chunk-1": ')
-        (config_dir / "kv_server_config.json").write_text(
-            json.dumps(
-                {"e2e/embedding/chunks": {"value": "not-a-dict", "workspace": "e2e"}}
-            )
-        )
-        monkeypatch.setenv("WORKING_DIR", str(working_dir))
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
-        monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
-        monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
-        monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
-        monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
-        monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
-        monkeypatch.setenv("WORKSPACE", "e2e")
         answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
 
         ok = await ClearTool().run()
@@ -1708,53 +1819,52 @@ class TestEndToEndOnJsonBackends:
         assert ok is True
         assert "text_chunks (JsonKVStorage) could not be opened" in out
         assert "UNREADABLE" in out
-        assert "chunks embedding baseline" in out
         assert "Workspace cleared" in out
         assert (workspace_dir / "kv_store_text_chunks.json").read_text() == "{}"
-        assert json.loads((config_dir / "kv_server_config.json").read_text()) == {}
+        snapshot = json.loads(open(json_config_path(str(working_dir), "e2e")).read())
+        assert set(snapshot) == json_metadata_keys()
 
-    async def test_a_baseline_record_that_is_not_a_row_still_clears(
-        self, tmp_path, monkeypatch, capsys, stub_server_api
+    @pytest.mark.parametrize(
+        "damaged_row",
+        [
+            pytest.param({"value": "not-a-dict", "workspace": "e2e"}, id="inner"),
+            pytest.param("garbage", id="outer"),
+        ],
+    )
+    async def test_a_damaged_baseline_in_a_registered_snapshot_still_clears(
+        self, tmp_path, monkeypatch, capsys, stub_server_api, damaged_row
     ):
-        """The outer-depth damage, end to end on the real JSON backend --
-        where the sibling test's inner-depth damage never reaches.
-
-        ``JsonKVStorage`` normalises every row it returns, so a key mapped to
-        a STRING used to raise ``AttributeError`` from inside the backend;
-        ``read_config_row_strict`` wrapped that as "could not read
-        configuration record", the tool read it as the configuration store not
-        serving, and refused the run with nothing deleted -- on a workspace
-        whose corrupt configuration is precisely why the operator reached for
-        this tool. The record is deleted by key, so it is shown and removed.
-        """
+        """A baseline record that does not parse -- inner depth (a value that
+        is not a mapping) or outer depth (a key mapped to a string, which used
+        to surface as an ``AttributeError`` inside the backend) -- is data the
+        operator is deleting. The snapshot's validation classifies records by
+        key only, and deletion is by key, so the record is shown and removed;
+        the snapshot's identity, its owner and the membership survive."""
         import json
 
         working_dir = tmp_path / "wd"
-        workspace_dir = working_dir / "e2e"
-        config_dir = working_dir / CONFIG_CONTAINER_TAG
-        workspace_dir.mkdir(parents=True)
-        config_dir.mkdir(parents=True)
-        (config_dir / "kv_server_config.json").write_text(
-            json.dumps({"e2e/embedding/chunks": "garbage"})
-        )
-        monkeypatch.setenv("WORKING_DIR", str(working_dir))
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path / "inputs"))
-        monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
-        monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
-        monkeypatch.setenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage")
-        monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage")
-        monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "")
-        monkeypatch.setenv("WORKSPACE", "e2e")
+        use_json_backends(monkeypatch, working_dir, tmp_path / "inputs")
+        await register_json_workspace(working_dir, "e2e")
+        snapshot_path = json_config_path(str(working_dir), "e2e")
+        rows = json.loads(open(snapshot_path).read())
+        rows["e2e/embedding/chunks"] = damaged_row
+        with open(snapshot_path, "w") as f:
+            json.dump(rows, f)
         answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE)
 
         ok = await ClearTool().run()
         out = capsys.readouterr().out
 
-        assert ok is True
-        assert "is not a mapping" in out
+        assert ok is True, out
         assert "chunks embedding baseline" in out
+        if damaged_row == "garbage":
+            assert "is not a mapping" in out
         assert "Workspace cleared" in out
-        assert json.loads((config_dir / "kv_server_config.json").read_text()) == {}
+        snapshot = json.loads(open(snapshot_path).read())
+        assert set(snapshot) == json_metadata_keys()
+        from lightrag import config_anchor as ca
+
+        assert "e2e" in ca.read_anchor(str(working_dir)).members
 
 
 class TestCommandLine:

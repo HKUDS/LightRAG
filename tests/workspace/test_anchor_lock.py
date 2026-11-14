@@ -47,13 +47,21 @@ def _foreign(tmp_path, mode):
     return handle
 
 
-def test_the_lock_file_is_distinct_from_the_config_dir_claim(tmp_path):
+def test_the_lock_file_is_distinct_from_the_snapshot_claim(tmp_path):
+    """The anchor lock sits directly under ``working_dir`` -- the same
+    directory as the empty workspace's JSON snapshot claim -- under its own
+    name, so the two never collide."""
+    from lightrag.config_shards import json_config_dir
     from lightrag.kg.working_dir_lock import LOCK_FILENAME
 
     path = al.anchor_lock_path(str(tmp_path))
     assert os.path.basename(path) == ".lightrag_anchor.lock"
     assert os.path.basename(path) != LOCK_FILENAME
-    assert os.path.dirname(path) == os.path.realpath(tmp_path / "_lightrag_config")
+    assert os.path.dirname(path) == os.path.realpath(tmp_path)
+    assert path != os.path.join(json_config_dir(str(tmp_path), ""), LOCK_FILENAME)
+    bind = al.anchor_bind_lock_path(str(tmp_path))
+    assert os.path.basename(bind) == ".lightrag_anchor_bind.lock"
+    assert os.path.dirname(bind) == os.path.dirname(path)
 
 
 def test_starters_share_it(tmp_path):

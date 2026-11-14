@@ -63,6 +63,7 @@ function is constructed through the same factory the server uses, so rebuilt
 vectors live in exactly the same embedding space.
 """
 
+import argparse
 import asyncio
 import os
 import sys
@@ -94,6 +95,7 @@ from lightrag.config_store import (
     resolve_configuration_storage,
     verify_configuration_identity,
 )
+from lightrag.config_shards import validate_deployment_workspace
 from lightrag.exceptions import (
     ConfigurationAnchorLockError,
     ConfigurationStorageError,
@@ -121,8 +123,10 @@ from lightrag.utils import (
     get_env_value,
     logger,
     make_relation_vdb_ids,
+    normalize_server_workspace,
     safe_vdb_operation_with_exception,
     setup_logger,
+    validate_workspace,
 )
 
 # NOTE: .env loading and logger setup are deferred to main() so that importing
@@ -769,7 +773,8 @@ async def check_vdb_consistency(
 class RebuildTool:
     """Interactive CLI for the offline VDB rebuild."""
 
-    def __init__(self):
+    def __init__(self, *, workspace: str | None = None):
+        self._workspace_override = workspace
         self.graph = None
         self.entities_vdb = None
         self.relationships_vdb = None
@@ -821,9 +826,12 @@ class RebuildTool:
         }
 
     def resolve_config_dir(self) -> str:
+        """The workspace's JSON configuration directory ("" for a database
+        backend), derived exactly as the server derives it."""
         return resolve_config_dir(
-            os.getenv("LIGHTRAG_CONFIG_DIR", ""),
-            os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+            self.storage_names["config"],
+            working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+            workspace=self.workspace,
         )
 
     def check_env_vars(self, storage_name: str) -> None:
@@ -883,8 +891,9 @@ class RebuildTool:
             "vector_storage": self.storage_names["vector"],
             "graph_storage": self.storage_names["graph"],
             # Read by the JSON backend when it opens the configuration
-            # container; ignored by the server backends.
-            "config_dir": self.config_dir,
+            # container (it picks this workspace's snapshot); ignored by the
+            # server backends.
+            "workspace": self.workspace,
             "embedding_batch_num": embedding_batch_num,
             "vector_db_storage_cls_kwargs": {
                 "cosine_better_than_threshold": get_env_value(
@@ -914,8 +923,21 @@ class RebuildTool:
         from lightrag.kg.factory import get_storage_class
 
         self.storage_names = self.resolve_storage_names()
-        self.config_dir = self.resolve_config_dir()
-        self.workspace = os.getenv("WORKSPACE", "")
+        # Environment defaults follow the server; an explicit override names
+        # an existing SDK workspace exactly, including the empty workspace.
+        try:
+            self.workspace = (
+                self._workspace_override
+                if self._workspace_override is not None
+                else normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
+            )
+            validate_deployment_workspace(
+                self.workspace, storages=self.storage_names.values()
+            )
+            self.config_dir = self.resolve_config_dir()
+        except ValueError as e:
+            print(f"\n✗ {e}")
+            return False
 
         # The anchor first (steps 0a-0c, as a start runs them): the shared
         # lock, a strict read, and a refusal when it binds another backend
@@ -1124,6 +1146,7 @@ class RebuildTool:
                 container=describe_configuration_container(
                     self.storage_names["config"], self.config_dir
                 ),
+                workspace=self.workspace,
             )
         except ConfigurationStorageError as e:
             print(f"✗ {e}")
@@ -1675,23 +1698,46 @@ class RebuildTool:
             self.release_anchor_lock()
 
 
-async def async_main() -> bool:
+async def async_main(*, workspace: str | None = None) -> bool:
     """Async main entry point. Returns True on success, False on failure."""
-    tool = RebuildTool()
+    tool = RebuildTool(workspace=workspace)
     return await tool.run()
 
 
-def main():
+def _workspace_argument(value: str) -> str:
+    """``--workspace``, checked by ``validate_workspace``: the rules that hold
+    for every backend. The directory rules wait for ``setup_storages``,
+    which knows whether a storage keeps a workspace directory. argparse
+    reports only an ``ArgumentTypeError``'s text; a bare ``ValueError``
+    would reach the operator as "invalid value" without the reason."""
+    try:
+        return validate_workspace(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def main(argv: list[str] | None = None):
     """Synchronous entry point for CLI command.
 
     Exits non-zero on failure (storage-init failure, unhandled error,
     interruption, or a rebuild that finished with errors) so automation and
     operators do not mistake a partial/failed recovery for a clean one.
     """
+    parser = argparse.ArgumentParser(
+        description="Check or rebuild workspace vector storages."
+    )
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        type=_workspace_argument,
+        help="Exact workspace name (no character replacement); use an empty string "
+        "for the default workspace. If omitted, WORKSPACE is normalized as by the server.",
+    )
+    args = parser.parse_args(argv)
     # Load environment and configure logging only when run as a tool, never on import.
     load_dotenv(dotenv_path=".env", override=False)
     setup_logger("lightrag", level="INFO")
-    success = asyncio.run(async_main())
+    success = asyncio.run(async_main(workspace=args.workspace))
     if not success:
         raise SystemExit(1)
 

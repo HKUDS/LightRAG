@@ -590,8 +590,9 @@ The on-disk file at `working_dir/[workspace/]kv_store_<namespace>.json` exists
 for durability only. It is the source of truth at startup and the target of
 `index_done_callback` flushes, but is **not** part of the steady-state
 read/write path. The configuration namespace is the one exception to that
-path: its file is `config_dir/kv_server_config.json` (`CONFIG_JSON_FILE_NAME`),
-outside every workspace — see
+path: its file is `working_dir/[workspace/]kv_workspace_config.json`
+(`CONFIG_JSON_FILE_NAME`), one snapshot per workspace beside that
+workspace's data — see *JSON configuration shards* in
 [ConfigurationStorageContract.md](ConfigurationStorageContract.md).
 
 ### First-time load (`initialize`)
@@ -627,18 +628,18 @@ The key is `workspace:namespace`. It says nothing about which FILE backs it,
 and for the JSON pair the container's identity *is* the file — so two
 `working_dir` roots in one process tree meet on one in-memory copy. Ordinary
 namespaces hide this behind the workspace (two tenants under different names
-never collide), but the `config` namespace is pinned to one fixed container
-tag, so every instance lands on the same key however its tenants are named —
-and its file is chosen by `config_dir`, not by the workspace, so two roots in
-one process tree really do meet there.
+never collide). The `config` namespace keeps a fixed container tag as its
+`workspace`, so `JsonKVStorage` keys its bookkeeping for that namespace by the
+snapshot's real path instead (`<tag>@<realpath of its directory>`): several
+workspaces' configuration snapshots, or two roots, open in one process tree
+each get their own key.
 
-What that cost, before the claim asserted it: the second instance skipped the
-load, read its own file's rows as **absent**, and then published the union into
-whichever file flushed first — the other never being written at all. Absence is
-the one answer that lets a start bootstrap, so for a baseline this is the
-configured model recorded over vectors nobody probed. No lock fixes it, because
-nothing here is a race: serialize the two perfectly and they still share one
-dict.
+What sharing a key costs, and what the claim asserts against: the second
+instance skipped the load, read its own file's rows as **absent**, and then
+published the union into whichever file flushed first — the other never being
+written at all. For a baseline that loses the recorded decision (a new one
+then needs fresh evidence). No lock fixes it, because nothing here is a race:
+serialize the two perfectly and they still share one dict.
 
 So the claim carries the file (`backing=`), and a second, DIFFERENT file while
 the first is still held is refused with

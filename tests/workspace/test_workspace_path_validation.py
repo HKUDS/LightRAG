@@ -168,3 +168,115 @@ class TestUploadPath:
         upload_subdir = dm.input_dir.relative_to(inputs)
         storage_subdir = Path(kv._file_name).parent.relative_to(working)
         assert upload_subdir == storage_subdir
+
+
+@pytest.mark.parametrize("workspace", ["$", "$meta", "$default", "$custom"])
+def test_reserved_prefix_rejected_before_server_normalization(workspace):
+    from lightrag.utils import normalize_server_workspace, validate_workspace_override
+
+    with pytest.raises(ValueError, match="reserved"):
+        validate_workspace(workspace)
+    with pytest.raises(ValueError, match="reserved"):
+        normalize_server_workspace(workspace)
+    with pytest.raises(ValueError, match="reserved"):
+        validate_workspace_override("POSTGRES_WORKSPACE", workspace)
+
+
+@pytest.mark.parametrize("workspace", ["", "meta", "default", "_lightrag_server"])
+def test_ordinary_names_and_empty_workspace_remain_valid(workspace):
+    from lightrag.utils import normalize_server_workspace
+
+    assert validate_workspace(workspace) == workspace
+    assert normalize_server_workspace(workspace) == workspace
+
+
+@pytest.mark.parametrize("workspace", ["$meta", "$default"])
+def test_sdk_rejects_reserved_workspace_before_creating_storage(tmp_path, workspace):
+    from lightrag import LightRAG
+
+    working_dir = tmp_path / "not-created"
+    with pytest.raises(ValueError, match="reserved"):
+        LightRAG(working_dir=str(working_dir), workspace=workspace)
+    assert not working_dir.exists()
+
+
+@pytest.mark.parametrize("workspace", ["$meta", "$default"])
+def test_server_rejects_reserved_workspace_from_environment(monkeypatch, workspace):
+    import sys
+    from lightrag.api.config import parse_args
+
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("WORKSPACE", workspace)
+    # A setting refusal: one SystemExit line, never a ValueError traceback.
+    with pytest.raises(SystemExit, match="reserved"):
+        parse_args()
+
+
+def _sdk(working_dir, workspace, **storages):
+    import numpy as np
+
+    from lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    async def embed(texts, **kwargs):
+        return np.zeros((len(texts), 8), dtype=np.float32)
+
+    async def llm(*args, **kwargs):  # pragma: no cover - never called here
+        return ""
+
+    return LightRAG(
+        working_dir=str(working_dir),
+        workspace=workspace,
+        llm_model_func=llm,
+        embedding_func=EmbeddingFunc(embedding_dim=8, func=embed, model_name="m"),
+        **storages,
+    )
+
+
+_DATABASE_ONLY = {
+    "kv_storage": "PGKVStorage",
+    "vector_storage": "PGVectorStorage",
+    "graph_storage": "PGGraphStorage",
+    "doc_status_storage": "PGDocStatusStorage",
+}
+
+
+@pytest.mark.parametrize(
+    "workspace", ["t:prod", "...", "config_storage_anchor.json"], ids=repr
+)
+def test_directory_rules_apply_only_where_a_workspace_directory_is_created(
+    tmp_path, monkeypatch, workspace
+):
+    """Drive-qualified, dot-only and reserved-file names are refused because
+    a file-backed storage would create that directory under WORKING_DIR. A
+    deployment entirely on database backends creates none, so it keeps the
+    names it could use before."""
+    for name in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+    ):
+        monkeypatch.setenv(name, "5432" if name.endswith("PORT") else "x")
+
+    with pytest.raises(ValueError, match="Invalid workspace name"):
+        _sdk(tmp_path / "file", workspace)
+    assert _sdk(tmp_path / "db", workspace, **_DATABASE_ONLY).workspace == workspace
+
+
+@pytest.mark.parametrize("workspace", ["$meta", "../other"])
+def test_a_database_deployment_still_refuses_what_every_backend_must(
+    tmp_path, monkeypatch, workspace
+):
+    for name in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+    ):
+        monkeypatch.setenv(name, "5432" if name.endswith("PORT") else "x")
+
+    with pytest.raises(ValueError, match="Invalid workspace name"):
+        _sdk(tmp_path, workspace, **_DATABASE_ONLY)

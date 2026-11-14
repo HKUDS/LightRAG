@@ -191,19 +191,30 @@ class TestEnvironmentRemapDoesNotReachTheConfigurationContainer:
             finalize_share_data()
 
     def test_json(self, tmp_path):
-        """The JSON backend honors no override at all; what it must not do is
-        follow the workspace into ``working_dir/<workspace>``."""
+        """The JSON backend honors no override at all. Its snapshot follows
+        the INSTANCE's workspace (``global_config["workspace"]``) to the fixed
+        ``working_dir/<workspace>/kv_workspace_config.json`` -- never the
+        workspace argument a caller hands the storage."""
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
-        storage = JsonKVStorage(
-            namespace="config",
-            workspace="tenant",
-            global_config={"working_dir": str(tmp_path)},
-            embedding_func=None,
-        )
-        assert storage._file_name == str(
-            tmp_path / CONFIG_CONTAINER_TAG / "kv_server_config.json"
-        )
+        def _open(argument, instance_workspace):
+            return JsonKVStorage(
+                namespace="config",
+                workspace=argument,
+                global_config={
+                    "working_dir": str(tmp_path),
+                    "workspace": instance_workspace,
+                },
+                embedding_func=None,
+            )
+
+        root = _open("tenant", "")
+        assert root._file_name == str(tmp_path / "kv_workspace_config.json")
+        assert root.workspace == CONFIG_CONTAINER_TAG
+        alpha = _open("tenant", "alpha")
+        assert alpha._file_name == str(tmp_path / "alpha" / "kv_workspace_config.json")
+        assert alpha.workspace == CONFIG_CONTAINER_TAG
+        assert not (tmp_path / "tenant").exists()
 
 
 class TestTheOverrideValidatorStillValidates:

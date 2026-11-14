@@ -32,6 +32,9 @@ keyfile = None
 # ``--working-dir`` overrides it for the workers, so a master that read the
 # environment here would claim a directory nobody asks for (see on_starting).
 working_dir = None
+# The PARSED, normalized workspace, for the same reason: the master claims
+# that workspace's JSON configuration directory before forking.
+workspace = None
 
 # Enable preload_app option
 preload_app = True
@@ -115,6 +118,20 @@ def resolved_working_dir() -> str:
     return get_env_value("WORKING_DIR", DEFAULT_WORKING_DIR)
 
 
+def resolved_workspace() -> str:
+    """The workspace the WORKERS will serve, normalized as the server does.
+
+    Set by ``run_with_gunicorn`` from the parsed arguments, like
+    ``working_dir``; the environment, normalized through the server's own
+    rule, is only the fallback for a master started another way.
+    """
+    if workspace is not None:
+        return workspace
+    from lightrag.utils import normalize_server_workspace
+
+    return normalize_server_workspace(get_env_value("WORKSPACE", "")) or ""
+
+
 def on_starting(server):
     """
     Executed when Gunicorn starts, before forking the first worker processes
@@ -182,6 +199,7 @@ def on_starting(server):
     config_storage, config_dir = configuration_selection_from_env(
         kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
         working_dir=master_working_dir,
+        workspace=resolved_workspace(),
     )
     acquire_anchor_lock_shared(master_working_dir)
     try:
@@ -229,6 +247,7 @@ def on_exit(server):
         config_storage, config_dir = configuration_selection_from_env(
             kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
             working_dir=master_working_dir,
+            workspace=resolved_workspace(),
         )
     except ValueError:
         # An unusable selection refused in ``on_starting``, so nothing was

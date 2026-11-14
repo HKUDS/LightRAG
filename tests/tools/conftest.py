@@ -42,18 +42,17 @@ def _hermetic_workspace_env(monkeypatch):
 def _hermetic_working_dir(monkeypatch, tmp_path):
     """Point every tool at a private ``WORKING_DIR`` and hand back its claims.
 
-    ``RebuildTool.setup_storages()`` and the clear-storage tool resolve their
-    configuration directory from ``WORKING_DIR`` / ``LIGHTRAG_CONFIG_DIR`` and
-    take the single-server ``flock`` on it before anything else. Left at the
+    ``RebuildTool.setup_storages()`` and the clear-storage tool derive the
+    workspace's JSON configuration directory from ``WORKING_DIR`` and take the
+    single-server ``flock`` on it before anything else. Left at the
     default that is the developer's own ``./rag_storage``: a ``lightrag-server``
     or ``lightrag-clear-storage`` running beside the test run holds that lock,
     and every test that drives the real ``setup_storages()`` is refused with
-    "already in use" -- a failure caused by a process the test never started.
+    "already claimed" -- a failure caused by a process the test never started.
     Two pytest workers collide on it the same way.
 
     ``setenv`` rather than ``delenv`` for the ``load_dotenv(override=False)``
-    reason documented on ``_hermetic_workspace_env``; the empty
-    ``LIGHTRAG_CONFIG_DIR`` is the "use the default under WORKING_DIR" spelling.
+    reason documented on ``_hermetic_workspace_env``.
 
     The claim is per process tree and released only by the tools' own
     ``run()``, which these tests bypass, so any claim a test leaves behind is
@@ -65,7 +64,6 @@ def _hermetic_working_dir(monkeypatch, tmp_path):
     from lightrag.kg import working_dir_lock as wdl
 
     monkeypatch.setenv("WORKING_DIR", str(tmp_path / "rag_storage"))
-    monkeypatch.setenv("LIGHTRAG_CONFIG_DIR", "")
 
     before = set(wdl._claims)
     # The shared anchor lock the tools take before the claim, likewise.
