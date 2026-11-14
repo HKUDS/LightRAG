@@ -42,13 +42,10 @@ class InvalidResponseError(Exception):
     pass
 
 
-# Core Anthropic completion function with retry
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError, InvalidResponseError)
-    ),
+    retry=retry_if_exception_type(InvalidResponseError),
 )
 async def anthropic_complete_if_cache(
     model: str,
@@ -63,6 +60,9 @@ async def anthropic_complete_if_cache(
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    The SDK handles transport/status retries. Exhausted SDK errors propagate
+    unchanged; the adapter only retries its own ``InvalidResponseError``.
 
     Structured output note:
     - This adapter does not support OpenAI-style ``response_format`` JSON mode.
