@@ -34,7 +34,10 @@ sys.argv = _original_argv
 pytestmark = pytest.mark.offline
 
 _SECRET = "Upstream failure at https://internal-llm.corp.example:8443/v1 deployment=secret-deploy-123"
-_NEEDLES = ("internal-llm.corp.example", "8443", "secret-deploy-123", _SECRET)
+# Every needle must contain a character outside [0-9a-f]: the response carries
+# a random hex correlation id, and a bare all-hex needle such as "8443" would
+# match inside it now and then.
+_NEEDLES = ("internal-llm.corp.example", ":8443/v1", "secret-deploy-123", _SECRET)
 _SAFE_MESSAGE = re.compile(r"^Internal server error \(error_id: ([0-9a-f]{12})\)$")
 
 
