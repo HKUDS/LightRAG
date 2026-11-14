@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import ast
 import io
+import os
 import random
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -42,6 +44,7 @@ _ENV = (
     "PDF_MAX_CPU_SECONDS",
     "PDF_MAX_MEMORY_MB",
     "PDF_EXTRACT_IN_SUBPROCESS",
+    "MAX_PARALLEL_PARSE_NATIVE",
 )
 
 
@@ -686,3 +689,84 @@ def test_random_broken_pdfs_match_pypdf(in_process):
             assert got is None, f"seed {seed}: pypdf fails, extraction did not"
         else:
             assert got == expected, f"seed {seed}"
+
+
+# --- Concurrency -----------------------------------------------------------------
+
+
+def test_never_more_children_than_the_parse_pool(tmp_path, monkeypatch):
+    # The cap is per process, not per caller: eight threads, two slots.
+    markers = tmp_path / "running"
+    markers.mkdir()
+    _fake_worker(
+        tmp_path,
+        monkeypatch,
+        "import os, sys, time\n"
+        "sys.stdin.buffer.read()\n"
+        f"d = {str(markers)!r}\n"
+        "mine = os.path.join(d, str(os.getpid()))\n"
+        "open(mine, 'w').close()\n"
+        "time.sleep(0.3)\n"
+        "os.write(1, str(len(os.listdir(d))).encode())\n"
+        "os.remove(mine)\n"
+        'os.write(2, b\'{"kind": "ok"}\\n\')\n',
+    )
+    _set(monkeypatch, MAX_PARALLEL_PARSE_NATIVE=2)
+    seen: list[int] = []
+
+    def run() -> None:
+        seen.append(int(extract_text(b"%PDF-1.7", "pdf")))
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert len(seen) == 8
+    assert max(seen) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs POSIX reparenting")
+def test_child_exits_when_its_parent_dies(tmp_path):
+    # A server restart during a parse must not leave the child running.
+    pdf = tmp_path / "slow.pdf"
+    pdf.write_bytes(_cmap_font_pdf(pages=2000))
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import json, os, subprocess, sys\n"
+        "worker, pdf = sys.argv[1:3]\n"
+        "child = subprocess.Popen([sys.executable, '-P', worker],\n"
+        "    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL)\n"
+        "header = {'path': sys.path, 'parent_pid': os.getpid(), 'limits': {}}\n"
+        "child.stdin.write(json.dumps(header).encode() + b'\\n')\n"
+        "child.stdin.write(open(pdf, 'rb').read())\n"
+        "child.stdin.close()\n"
+        "print(child.pid, flush=True)\n"
+        "os._exit(0)\n",
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        [sys.executable, str(launcher), pdf_budget._WORKER_PATH, str(pdf)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    child_pid = int(done.stdout.strip())
+
+    def alive() -> bool:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(child_pid)],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        return bool(state) and not state.startswith("Z")
+
+    deadline = time.monotonic() + 10
+    while alive() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    try:
+        assert not alive(), "the orphaned PDF worker is still running"
+    finally:
+        if alive():
+            os.kill(child_pid, 9)

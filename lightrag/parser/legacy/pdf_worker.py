@@ -197,15 +197,24 @@ def _memory_in_use(inherited_peak: int) -> int | None:
 
 
 def _watchdog(
-    cpu_seconds: float, memory_bytes: int, name: str, inherited_peak: int
+    cpu_seconds: float,
+    memory_bytes: int,
+    name: str,
+    inherited_peak: int,
+    parent_pid: int,
 ) -> None:
     """Stop the process once it has used its CPU time or memory.
 
     A thread, so it works on every platform and can say why it stopped. It
     cannot run while a C call holds the GIL; the rlimits set in
     :func:`_apply_rlimits` and the parent's wall-clock timeout cover that.
+    On POSIX it also ends the process when the parent has died.
     """
     while True:
+        if parent_pid and os.name == "posix" and os.getppid() != parent_pid:
+            # The server is gone: nobody will read the result. Without this,
+            # every restart during a parse would leave children running.
+            os._exit(4)
         time.sleep(_WATCHDOG_INTERVAL_SECONDS)
         if cpu_seconds > 0 and time.process_time() > cpu_seconds:
             _finish(
@@ -261,8 +270,9 @@ def main() -> None:
     """Read ``header-line + PDF`` from stdin; write text to stdout, status to fd 2.
 
     The header is one JSON line: ``path`` (the parent's ``sys.path``),
-    ``name``, ``password``, ``limits`` (see :func:`extract`) and the process
-    limits ``cpu_seconds``, ``memory_bytes`` and ``output_bytes``. The status
+    ``name``, ``password``, ``limits`` (see :func:`extract`), ``parent_pid``
+    and the process limits ``cpu_seconds``, ``memory_bytes`` and
+    ``output_bytes``. The status
     is the last line on fd 2: ``{"kind": "ok"}`` or a kind with a message.
     """
     import logging
@@ -283,6 +293,7 @@ def main() -> None:
             int(header.get("memory_bytes") or 0),
             name,
             _peak_rss_bytes() or 0,
+            int(header.get("parent_pid") or 0),
         ),
         daemon=True,
     ).start()

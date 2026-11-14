@@ -17,6 +17,8 @@ Rules for callers:
 * Limits come from the environment at call time: ``PDF_MAX_CPU_SECONDS``,
   ``PDF_MAX_MEMORY_MB``, ``PDF_MAX_CONTENT_BYTES``, ``PDF_MAX_CONTENT_RATIO``
   and ``PDF_MAX_EXTRACTED_CHARS``. A non-positive value disables that limit.
+* At most ``MAX_PARALLEL_PARSE_NATIVE`` children (read from the environment)
+  run at once per process; further calls wait in their thread.
 * ``PDF_EXTRACT_IN_SUBPROCESS=false`` runs pypdf in-process. Only the content
   and character limits apply then. It exists for environments that cannot
   start a Python child process, not as a performance option.
@@ -27,13 +29,18 @@ Design, protocol and accepted limits: docs/design/PdfExtractionBudget.md.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from lightrag.constants import (
+    DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
     DEFAULT_PDF_CONTENT_RATIO_FLOOR_BYTES,
     DEFAULT_PDF_MAX_CONTENT_BYTES,
     DEFAULT_PDF_MAX_CONTENT_RATIO,
@@ -53,6 +60,12 @@ _WALL_CLOCK_FACTOR = 4
 _WALL_CLOCK_SLACK_SECONDS = 30
 _MAX_STATUS_BYTES = 64 * 1024
 _OUTPUT_SLACK_BYTES = 1024 * 1024
+
+
+# Children running right now, across every thread and LightRAG instance of this
+# process. See _child_slot.
+_slot_available = threading.Condition()
+_active_children = 0
 
 
 class PdfExtractionBudgetError(LegacyExtractionError):
@@ -80,6 +93,36 @@ def _content_limit(file_size: int) -> tuple[int, str]:
         )
         gates.append((allowance, "PDF_MAX_CONTENT_RATIO"))
     return min(gates) if gates else (0, "")
+
+
+@contextmanager
+def _child_slot() -> Iterator[None]:
+    """Hold one of this process's child-process slots, waiting for a free one.
+
+    The pipeline's parse pool already runs at most
+    ``MAX_PARALLEL_PARSE_NATIVE`` documents at a time, but only per pipeline
+    run. This cap holds for the whole process, whoever calls: several LightRAG
+    instances, a caller's own threads, or children that outlive a cancelled
+    run. Each child may use a full core and ``PDF_MAX_MEMORY_MB``, so their
+    number is what bounds the host's exposure.
+    """
+    global _active_children
+    limit = max(
+        1,
+        get_env_value(
+            "MAX_PARALLEL_PARSE_NATIVE", DEFAULT_MAX_PARALLEL_PARSE_NATIVE, int
+        ),
+    )
+    with _slot_available:
+        while _active_children >= limit:
+            _slot_available.wait()
+        _active_children += 1
+    try:
+        yield
+    finally:
+        with _slot_available:
+            _active_children -= 1
+            _slot_available.notify()
 
 
 def _raise_refusal(kind: str, message: str) -> None:
@@ -111,6 +154,7 @@ def extract_pdf_text(
     header = {
         "path": [str(entry) for entry in sys.path],
         "name": file_path,
+        "parent_pid": os.getpid(),
         "password": password,
         "limits": limits,
         "cpu_seconds": max(0.0, cpu_seconds),
@@ -123,7 +167,8 @@ def extract_pdf_text(
         if cpu_seconds > 0
         else None
     )
-    return _run_worker(file_bytes, header, wall_seconds, file_path)
+    with _child_slot():
+        return _run_worker(file_bytes, header, wall_seconds, file_path)
 
 
 def _extract_in_process(

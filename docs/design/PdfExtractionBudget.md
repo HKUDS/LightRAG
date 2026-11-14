@@ -78,6 +78,33 @@ child process, and the limits apply to the process.
 
 Starting the child costs about 0.2 s per PDF.
 
+## Concurrency
+
+Each extraction holds one thread of the caller (`LegacyParser` uses
+`asyncio.to_thread`) and one child process for as long as it runs.
+
+- **How many children.** At most `MAX_PARALLEL_PARSE_NATIVE` (default 5) per
+  server process. The pipeline's native parse pool, which the legacy engine
+  shares, already runs that many documents at a time, but only per pipeline
+  run. `_child_slot` in `pdf_budget.py` enforces the same number for the whole
+  process, read from the environment: several LightRAG instances, a caller's
+  own threads and children left over from a cancelled run all count against
+  it. A call that finds no free slot waits in its thread. Measured on a real
+  server: 20 PDFs uploaded at once ran in 5 children at a time.
+- **What changes for the host.** In-process, concurrent PDF parses shared one
+  GIL, so together they used about one core and slowed every request of the
+  server. As children they can use one core each, and the event loop stays
+  responsive because the waiting threads hold no GIL. The worst case is
+  therefore `MAX_PARALLEL_PARSE_NATIVE` cores and that many times
+  `PDF_MAX_MEMORY_MB`. Lower either knob on a small host.
+- **Cancellation.** A thread cannot be cancelled. When a pipeline run is
+  cancelled, an extraction that already started keeps its thread, its child
+  and its slot until the child finishes or reaches a limit. It cannot pile up
+  beyond the slot count.
+- **Parent death.** On POSIX the child's watchdog compares `os.getppid()` with
+  the pid in the header and exits when they differ, within one watchdog
+  interval. A restart during a parse leaves no child behind.
+
 ## Limits
 
 Process limits hold whatever pypdf does:
@@ -150,8 +177,8 @@ automatically: silently dropping the limits would hide the exposure.
   first.
 - **Cost per upload.** A hostile PDF can still use up to the CPU limit in one
   parse slot. The limit bounds that cost; it does not remove it.
-- **Orphaned child.** If the server process dies, a running child continues
-  until its own limits stop it.
+- **Orphaned child on Windows.** There the child cannot tell that its parent
+  died, so it runs on until its own limits stop it.
 - **`MemoryError` inside pypdf.** pypdf catches broad exceptions in a few
   places. A `MemoryError` raised there by `RLIMIT_AS` can be swallowed and
   cost a form its text. The watchdog normally stops the process first, at
