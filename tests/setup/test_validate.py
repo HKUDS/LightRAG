@@ -74,9 +74,9 @@ printf 'DB=%s\\n' "${{STORAGE_DB_TYPES[PGTableGraphStorage]:-}}"
     assert values["DB"] == "postgresql"
 
 
-def test_age_graph_storage_is_not_offered_but_still_understood() -> None:
-    """The wizard no longer offers PGGraphStorage (Apache AGE), but an
-    existing .env naming it must still resolve to PostgreSQL."""
+def test_age_graph_storage_is_not_offered_to_new_deployments() -> None:
+    """PGGraphStorage (Apache AGE) is not in the offered list, but an existing
+    .env naming it must still resolve to PostgreSQL."""
     output = run_bash(f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -90,35 +90,32 @@ printf 'DB=%s\\n' "${{STORAGE_DB_TYPES[PGGraphStorage]:-}}"
     assert values["DB"] == "postgresql"
 
 
-def test_existing_age_graph_storage_has_no_default_in_the_prompt() -> None:
-    """An existing PGGraphStorage must not be kept, nor silently replaced, by
-    pressing Enter: the prompt has no default and asks again."""
-    result = run_bash_process(
-        f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-choice="$(prompt_choice "Graph storage" "PGGraphStorage" "${{GRAPH_STORAGE_OPTIONS[@]}}")"
-printf 'CHOSEN=%s\\n' "$choice"
-""",
-        stdin="\n2",
-    )
-    assert result.returncode == 0, result.stderr
-    assert parse_lines(result.stdout) == {"CHOSEN": "PGTableGraphStorage"}
-    assert "default:" not in result.stderr
-    assert "Invalid selection" in result.stderr
-
-
-def test_storage_selection_warns_about_existing_age_graph_storage() -> None:
+@pytest.mark.parametrize(
+    ("existing_graph", "offered"),
+    [
+        ("PGGraphStorage", True),
+        ("PGTableGraphStorage", False),
+        ("NetworkXStorage", False),
+        ("", False),
+    ],
+)
+def test_age_graph_storage_is_offered_only_to_a_deployment_that_uses_it(
+    existing_graph: str, offered: bool
+) -> None:
+    """An existing PGGraphStorage deployment can keep it: it is offered and it
+    is the default, so Enter keeps it. Nobody else is offered it."""
     result = run_bash_process(f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]=PGGraphStorage
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="{existing_graph}"
 prompt_choice() {{
-  if [[ "$1" == "Graph storage" ]]; then
-    printf 'GRAPH_PROMPT_DEFAULT=[%s]\\n' "$2" >&2
-    printf 'PGTableGraphStorage'
-  else
-    printf '%s' "$2"
+  local prompt="$1" default="$2"
+  shift 2
+  if [[ "$prompt" == "Graph storage" ]]; then
+    printf 'GRAPH_OPTIONS=%s\\n' "$*" >&2
+    printf 'GRAPH_DEFAULT=%s\\n' "$default" >&2
   fi
+  printf '%s' "$default"
 }}
 check_storage_compatibility() {{ return 0; }}
 select_config_storage() {{ SELECTED_CONFIG_STORAGE=JsonKVStorage; }}
@@ -126,30 +123,14 @@ select_storage_backends development
 printf 'GRAPH=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
 """)
     assert result.returncode == 0, result.stderr
-    assert parse_lines(result.stdout)["GRAPH"] == "PGTableGraphStorage"
+    seen = parse_lines(result.stderr)
+    assert ("PGGraphStorage" in seen["GRAPH_OPTIONS"].split()) is offered
+    expected = existing_graph or "NetworkXStorage"
+    assert seen["GRAPH_DEFAULT"] == expected
+    assert parse_lines(result.stdout)["GRAPH"] == expected
     output = result.stdout + result.stderr
-    assert "GRAPH_PROMPT_DEFAULT=[PGGraphStorage]" in output
-    assert "PGGraphStorage (Apache AGE), which this wizard no longer offers" in output
-    assert "lightrag.tools.migrate_graph_storage --apply" in output
-
-
-@pytest.mark.parametrize(
-    ("graph_storage", "warns"),
-    [("PGGraphStorage", True), ("PGTableGraphStorage", False), ("", False)],
-)
-def test_kept_age_graph_storage_is_reported(graph_storage: str, warns: bool) -> None:
-    """env-base / env-server keep the selection they find; an AGE one is
-    reported, because the generated PostgreSQL service has no AGE."""
-    result = run_bash_process(f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="{graph_storage}"
-report_age_graph_storage
-""")
-    assert result.returncode == 0, result.stderr
-    output = result.stdout + result.stderr
-    assert ("PGGraphStorage needs Apache AGE" in output) is warns
-    assert ("migrate_graph_storage --apply" in output) is warns
+    assert ("This deployment uses PGGraphStorage (Apache AGE)" in output) is offered
+    assert ("lightrag.tools.migrate_graph_storage --apply" in output) is offered
 
 
 def test_validate_env_file_rejects_container_ssl_paths_for_host_target(

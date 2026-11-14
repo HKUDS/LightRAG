@@ -1362,6 +1362,14 @@ generate_docker_compose() {
     fi
 
     template_file="$TEMPLATES_DIR/${service}.yml"
+    if [[ "$service" == "postgres" ]]; then
+      # A deployment kept on PGGraphStorage needs Apache AGE in its PostgreSQL.
+      if [[ "${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}" == "PGGraphStorage" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-age.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-age.yml"
+        fi
+      fi
+    fi
     if [[ "$service" == "milvus" ]]; then
       if [[ "${ENV_VALUES[MILVUS_DEVICE]:-cpu}" == "cuda" ]]; then
         if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then

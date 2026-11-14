@@ -2156,7 +2156,7 @@ confirm_required_yes_no() {{ return 0; }}
 env_storage_flow
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: pgvector/pgvector:pg18-trixie" in result
+    assert "image: gzdaniel/postgres-for-rag:pg18-age-pgvector" in result
     assert 'POSTGRES_USER: "updated-user"' in result
 
 

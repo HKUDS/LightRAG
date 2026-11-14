@@ -1150,23 +1150,24 @@ select_storage_backends() {
   graph_default="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-$graph_default}"
   doc_default="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-$doc_default}"
 
+  # PGGraphStorage (Apache AGE) is offered only to a deployment that already
+  # uses it: it can be kept (it stays the default), but nobody is led into it.
+  local graph_options=("${GRAPH_STORAGE_OPTIONS[@]}")
   if [[ "$graph_default" == "PGGraphStorage" ]]; then
-    # Not in GRAPH_STORAGE_OPTIONS any more, so the prompt below has no default
-    # and the operator has to pick a replacement on purpose.
-    log_warn "This deployment uses PGGraphStorage (Apache AGE), which this wizard no" \
-      "longer offers; the PostgreSQL service it generates ships pgvector only." \
-      "Choose another graph storage."
-    log_warn "PGTableGraphStorage keeps the graph in PostgreSQL. Move the existing" \
-      "graph into it with 'python -m lightrag.tools.migrate_graph_storage --apply'" \
-      "while the AGE-enabled PostgreSQL is still running and LightRAG is stopped;" \
-      "otherwise the documents have to be indexed again."
+    graph_options+=("PGGraphStorage")
+    log_info "This deployment uses PGGraphStorage (Apache AGE). It stays available" \
+      "here so you can keep it; new deployments are offered PGTableGraphStorage," \
+      "which keeps the graph in plain PostgreSQL tables and needs no extension."
+    log_info "To move to PGTableGraphStorage without indexing the documents again," \
+      "stop LightRAG and run 'python -m lightrag.tools.migrate_graph_storage --apply'" \
+      "while the AGE-enabled PostgreSQL is still running, then choose it here."
   fi
 
   while true; do
     kv_storage="$(prompt_choice "KV storage" "$kv_default" "${KV_STORAGE_OPTIONS[@]}")"
     doc_storage="$(prompt_choice "Doc status storage" "$doc_default" "${DOC_STATUS_STORAGE_OPTIONS[@]}")"
     vector_storage="$(prompt_choice "Vector storage" "$vector_default" "${VECTOR_STORAGE_OPTIONS[@]}")"
-    graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${GRAPH_STORAGE_OPTIONS[@]}")"
+    graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${graph_options[@]}")"
 
     if check_storage_compatibility "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; then
       break
@@ -1540,20 +1541,6 @@ report_config_anchor() {
     "with every server stopped before starting. This wizard never writes or" \
     "moves the anchor."
   return 0
-}
-
-report_age_graph_storage() {
-  # env-base and env-server keep the storage selection they find, so an
-  # existing PGGraphStorage survives them. Say what that now implies.
-  if [[ "${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}" != "PGGraphStorage" ]]; then
-    return 0
-  fi
-  log_warn "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage needs Apache AGE, which this wizard" \
-    "no longer sets up: the PostgreSQL service it generates ships pgvector only." \
-    "PGGraphStorage only works against a PostgreSQL you provide with AGE installed."
-  log_warn "To move to PGTableGraphStorage without re-indexing, stop LightRAG and run" \
-    "'python -m lightrag.tools.migrate_graph_storage --apply' while that PostgreSQL" \
-    "is still running, then choose PGTableGraphStorage with 'make env-storage'."
 }
 
 report_config_anchor_for_output() {
@@ -3196,7 +3183,6 @@ finalize_base_setup() {
   fi
 
   report_config_anchor_for_output "$runtime_target"
-  report_age_graph_storage
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -3379,7 +3365,6 @@ finalize_storage_setup() {
   fi
 
   report_config_anchor_for_output "$runtime_target"
-  report_age_graph_storage
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -3506,7 +3491,6 @@ finalize_server_setup() {
     show_host_start_hint
 
   report_config_anchor_for_output "$runtime_target"
-  report_age_graph_storage
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
