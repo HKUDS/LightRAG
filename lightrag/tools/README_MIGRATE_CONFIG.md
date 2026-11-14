@@ -54,7 +54,10 @@ invoking workspace's alone, so stop every instance on the `WORKING_DIR`:
   snapshots already on disk with the same identity -- the sources a previous
   JSON-to-database migration left behind -- are converged to the current
   source. A workspace with no rows left in the source keeps an identity-and-
-  owner-only snapshot and stays registered. A snapshot of another deployment
+  owner-only snapshot and stays registered. Converging a target that already
+  holds this identity replaces differing rows completely and deletes rows the
+  source does not hold, a malformed row included: the target is this
+  migration's own residue and the source stays authoritative. A snapshot of another deployment
   refuses before anything is written. New workspaces register on their first
   start afterwards.
 

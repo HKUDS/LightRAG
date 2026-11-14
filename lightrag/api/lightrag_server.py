@@ -3140,7 +3140,11 @@ def create_app(args):
                         # follows kv_storage, and an operator checking where
                         # the baselines live wants the answer, not the input.
                         "config_storage": getattr(rag, "config_storage", None),
-                        "config_dir": getattr(rag, "config_dir", None),
+                        # Derived, never configured: the directory of this
+                        # workspace's JSON configuration snapshot ("" for a
+                        # database backend). Not named after the removed
+                        # LIGHTRAG_CONFIG_DIR setting.
+                        "config_snapshot_dir": getattr(rag, "config_dir", None),
                         "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                         "enable_llm_cache": args.enable_llm_cache,
                         "vlm_process_enable": args.vlm_process_enable,

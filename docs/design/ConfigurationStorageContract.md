@@ -968,6 +968,13 @@ start the server once, stop it and rerun the tool.
   writes it and drops it from every read. Any other field, including an `id`
   equal to its key or a row's own `__mirrored_id`, is envelope content: it is
   copied and verified, never silently dropped from both sides.
+- **A malformed row in this migration's own target is deleted, not
+  refused.** A row the target enumerates but that is not a well-formed
+  configuration row is removed with the stale rows in step 5: the target
+  holds this identity, so the row is an earlier attempt's residue, it could
+  never verify, and the source stays authoritative. On a JSON target this
+  covers a registered row whose content is damaged: the snapshot validation
+  before the claim judges keys and owners, not row content.
 - **A damaged record in this migration's own target is not converged
   automatically.** The enumeration dies at that record, so there is no
   complete listing to converge from. The refusal says the target is this
