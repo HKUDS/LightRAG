@@ -8250,6 +8250,14 @@ def warn_about_workspace_overrides() -> list[str]:
     return in_effect
 
 
+def server_workspace_spelling(workspace: str) -> str:
+    """The name the server would serve ``workspace`` under, without
+    validating or logging: every character outside ``[A-Za-z0-9_]`` becomes
+    ``_``. The rule ``normalize_server_workspace`` applies; use that one for
+    a ``WORKSPACE`` a start actually serves."""
+    return re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+
+
 def normalize_server_workspace(workspace: str | None) -> str | None:
     """The workspace the server serves: only alphanumeric characters and
     underscores survive, every other character becomes ``_``.
@@ -8264,7 +8272,7 @@ def normalize_server_workspace(workspace: str | None) -> str | None:
         return workspace
     if workspace.startswith("$"):
         validate_workspace(workspace)
-    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+    sanitized = server_workspace_spelling(workspace)
     if sanitized != workspace:
         logging.warning(
             f"Workspace name '{workspace}' contains invalid characters. "

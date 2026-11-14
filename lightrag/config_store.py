@@ -1811,6 +1811,31 @@ async def _write_json_shard_metadata(
         )
 
 
+def _registration_advice(workspace: str) -> str:
+    """How to register ``workspace`` with a start, since a tool never does.
+
+    The server rewrites ``WORKSPACE`` (``normalize_server_workspace``), so it
+    can register only a name that rewriting leaves unchanged. Any other name
+    -- an exact SDK name such as ``team-a``, which ``--workspace`` selects --
+    is registered by a library start, which keeps the name as given.
+    """
+    from lightrag.utils import server_workspace_spelling
+
+    served = server_workspace_spelling(workspace)
+    if served == workspace:
+        return (
+            "Start the server once to register this workspace, then stop it "
+            "and rerun this tool."
+        )
+    return (
+        f"The server would serve this name as {served!r}, so it cannot "
+        f"register {workspace!r}: register it with a library start instead "
+        f"-- LightRAG(working_dir=..., workspace={workspace!r}) with this "
+        f"deployment's configuration, initialize_storages(), then "
+        f"finalize_storages() -- and rerun this tool."
+    )
+
+
 async def verify_configuration_identity(
     config: Any,
     anchor: StorageAnchor | None,
@@ -1827,7 +1852,8 @@ async def verify_configuration_identity(
     caller says so; only a server or SDK start binds. JSON: the workspace
     must be a registered member with a valid snapshot -- a tool never binds,
     rebinds or registers, so an unanchored or unregistered workspace refuses
-    with the advice to start the server once.
+    with the advice to start the server -- or, for a name the server would
+    rewrite, a library instance -- once.
     """
     if backend == JSON_CONFIG_BACKEND:
         # As at a start: a tool must not serve or flush a snapshot that
@@ -1845,10 +1871,9 @@ async def verify_configuration_identity(
                 f"configuration group"
             )
             raise ConfigurationIdentityError(
-                f"Refusing: {what} ({anchor_path(working_dir)}). Start the "
-                f"server once to register this workspace, then stop it and "
-                f"rerun this tool. The tool never binds or registers a "
-                f"workspace itself.",
+                f"Refusing: {what} ({anchor_path(working_dir)}). "
+                f"{_registration_advice(workspace)} The tool never binds or "
+                f"registers a workspace itself.",
                 cause=IDENTITY_MEMBER_UNREGISTERED,
                 anchor_path=anchor_path(working_dir),
             )

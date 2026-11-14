@@ -734,6 +734,20 @@ class TestToolVerification:
         assert _anchor(tmp_path).members == ("teamalpha",)
         assert not Path(json_config_path(str(tmp_path), "teambeta")).exists()
 
+    async def test_a_name_the_server_rewrites_gets_the_library_start_advice(
+        self, tmp_path
+    ):
+        """The server serves ``team-a`` as ``team_a`` and can never register
+        the exact name, so the advice must not send the operator there."""
+        await _start_and_stop(tmp_path, "teamalpha")
+        with pytest.raises(ConfigurationIdentityError) as info:
+            await self._verify(tmp_path, "team-a")
+        message = str(info.value)
+        assert "Start the server once" not in message
+        assert "'team_a'" in message
+        assert "LightRAG(working_dir=..., workspace='team-a')" in message
+        assert not Path(json_config_path(str(tmp_path), "teambeta")).exists()
+
     async def test_no_anchor_is_refused_for_json_and_nothing_is_bound(self, tmp_path):
         with pytest.raises(ConfigurationIdentityError) as info:
             await self._verify(tmp_path, "teamalpha")

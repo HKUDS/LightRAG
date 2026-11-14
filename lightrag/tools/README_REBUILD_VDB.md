@@ -92,7 +92,13 @@ The explicit name is validated but never rewritten; `--workspace ""` selects the
 empty/default workspace even when `WORKSPACE` is set. The selected name applies
 to every source, vector target, configuration baseline and directory claim. With
 JSON configuration storage the workspace must already be registered: start
-the server once for a new workspace, stop it, then run the tool.
+the server once for a new workspace, stop it, then run the tool. The server
+can register only a name its normalization leaves unchanged; an exact SDK name
+such as `team-a` is registered by a library start instead (`LightRAG(...,
+workspace="team-a")`, `initialize_storages()`, `finalize_storages()`).
+`--workspace` is the tool's only option: every other setting, the embedding
+configuration included, comes from `.env` / the environment, and any other
+flag is refused.
 
 Menu options:
 
