@@ -295,12 +295,8 @@ class TestIntegerStringificationLimit:
         )
 
 
-# `enum.StrEnum` is 3.11+, and this package declares
-# `requires-python = ">=3.10"`. At module level that would fail
-# collection and silently disable every test in the file, and CI only
-# runs 3.12/3.14 so it would not be caught here. `(str, Enum)` has the
-# property these tests need on every supported version: an exact type
-# that is not `str`, with `isinstance(x, str)` true.
+# `(str, Enum)` has the property these tests need: an exact type that is
+# not `str`, with `isinstance(x, str)` true.
 class _Colour(str, enum.Enum):
     RED = "red"
 

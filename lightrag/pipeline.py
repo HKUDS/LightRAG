@@ -127,6 +127,7 @@ from lightrag.utils import (
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
     TokenLimitTruncationTally,
+    cancel_and_drain_tasks,
     tolerant_load_json_dict,
     validate_file_path_security,
 )
@@ -6973,6 +6974,7 @@ class _PipelineMixin:
         # metadata, not just the server log. Created BEFORE the try so the
         # every-exit hand-off in its finally can always read it.
         mm_truncation_tally = TokenLimitTruncationTally()
+        task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()
             if not lines:
@@ -6996,6 +6998,7 @@ class _PipelineMixin:
             from lightrag.constants import (
                 DEFAULT_MM_ANALYSIS_PRIORITY,
                 DEFAULT_SUMMARY_LANGUAGE,
+                MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
             )
 
             global_config = self._build_global_config()
@@ -7727,6 +7730,11 @@ class _PipelineMixin:
                     logger.debug(f"Analyzing  {kind}/{item_id}: skipped")
                 return result
 
+            async def _run_item_bounded(slots: asyncio.Semaphore, item_factory):
+                """Run one item's analysis while holding a sidecar concurrency slot."""
+                async with slots:
+                    return await item_factory()
+
             base_name = str(block_file)
             if base_name.endswith(".blocks.jsonl"):
                 base_name = base_name[: -len(".blocks.jsonl")]
@@ -7788,18 +7796,33 @@ class _PipelineMixin:
                         pipeline_status, pipeline_status_lock
                     )
 
-                task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
+                item_slots = asyncio.Semaphore(
+                    max(
+                        1,
+                        self._get_effective_role_llm_max_async(
+                            "vlm" if kind == "drawing" else "extract"
+                        )
+                        * MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR,
+                    )
+                )
+                task_meta = {}
                 for item_id, item in items.items():
                     if not isinstance(item, dict):
                         continue
                     if kind == "drawing":
-                        inner_coro = _analyze_drawing(
-                            item_id, item, sidecar_path.parent
+                        item_factory = partial(
+                            _analyze_drawing, item_id, item, sidecar_path.parent
                         )
                     else:
-                        inner_coro = _analyze_text_modality(kind, item_id, item)
+                        item_factory = partial(
+                            _analyze_text_modality, kind, item_id, item
+                        )
                     task = asyncio.create_task(
-                        _run_with_progress_log(inner_coro, kind, item_id)
+                        _run_with_progress_log(
+                            _run_item_bounded(item_slots, item_factory),
+                            kind,
+                            item_id,
+                        )
                     )
                     task_meta[task] = (item_id, item)
 
@@ -7823,50 +7846,86 @@ class _PipelineMixin:
                 # preventing FIRST_EXCEPTION from ever returning.
                 pending: set[asyncio.Task] = set(task_meta.keys())
                 fail_fast_exc: BaseException | None = None
+                fail_fast_item_id: str | None = None
                 POLL_INTERVAL_SECONDS = 0.5
-                while pending:
-                    if (
-                        pipeline_status is not None
-                        and pipeline_status_lock is not None
-                        and await self._cancellation_requested(
-                            pipeline_status, pipeline_status_lock
-                        )
-                    ):
-                        fail_fast_exc = PipelineCancelledException(
-                            "User cancelled during analyze"
-                        )
-                        break
-
-                    done_now, pending = await asyncio.wait(
-                        pending,
-                        timeout=POLL_INTERVAL_SECONDS,
-                        return_when=asyncio.FIRST_EXCEPTION,
-                    )
-                    for t in done_now:
-                        if t.cancelled():
-                            continue
-                        texc = t.exception()
-                        if texc is not None:
-                            # Preserve original exception type so the
-                            # _analyze_worker except dispatch can distinguish
-                            # PipelineCancelledException from
-                            # MultimodalAnalysisError.
-                            fail_fast_exc = texc
+                try:
+                    while pending:
+                        if (
+                            pipeline_status is not None
+                            and pipeline_status_lock is not None
+                            and await self._cancellation_requested(
+                                pipeline_status, pipeline_status_lock
+                            )
+                        ):
+                            fail_fast_exc = PipelineCancelledException(
+                                "User cancelled during analyze"
+                            )
                             break
-                    if fail_fast_exc is not None:
-                        break
 
-                # If we broke early, cancel the still-running tasks.
-                for t in pending:
-                    t.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
+                        done_now, pending = await asyncio.wait(
+                            pending,
+                            timeout=POLL_INTERVAL_SECONDS,
+                            return_when=asyncio.FIRST_EXCEPTION,
+                        )
+                        for t in done_now:
+                            if t.cancelled():
+                                continue
+                            texc = t.exception()
+                            if texc is not None:
+                                # Preserve original exception type so the
+                                # _analyze_worker except dispatch can distinguish
+                                # PipelineCancelledException from
+                                # MultimodalAnalysisError.
+                                fail_fast_exc = texc
+                                fail_fast_item_id = task_meta[t][0]
+                                break
+                        if fail_fast_exc is not None:
+                            break
+
+                    # If we broke early, cancel the still-running tasks.
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                except (Exception, asyncio.CancelledError):
+                    # asyncio.wait never cancels the tasks it waits on. Without
+                    # this, an external cancellation of the analyze stage
+                    # (server shutdown, the worker being cancelled) leaves the
+                    # item tasks running: still calling the VLM for a document
+                    # already abandoned, and writing results nobody collects.
+                    # Same rule as wait_tasks_with_drain: cancel what still
+                    # runs and collect every outcome before unwinding.
+                    for t in task_meta:
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(*task_meta, return_exceptions=True)
+                    raise
+
+                # Name the failing item the way its own errors do
+                # (``drawings/<id>``, ``table/<id>``, ``equation/<id>``), so the
+                # sibling markers and the wrapped error below match the
+                # item's own failure message.
+                fail_fast_subject = (
+                    f"drawings/{fail_fast_item_id}"
+                    if kind == "drawing"
+                    else f"{kind}/{fail_fast_item_id}"
+                )
+                if fail_fast_item_id is not None and not isinstance(
+                    fail_fast_exc, PipelineCancelledException
+                ):
+                    sibling_cancel_message = (
+                        f"cancelled (sibling {fail_fast_subject} failed)"
+                    )
+                else:
+                    sibling_cancel_message = "cancelled"
 
                 # Collect results — preserve completed successes so reprocess
                 # can hit the LLM cache instead of re-running the VLM.
                 for t, (item_id, item) in task_meta.items():
                     if t.cancelled():
-                        item["llm_analyze_result"] = _failure_result("cancelled")
+                        item["llm_analyze_result"] = _failure_result(
+                            sibling_cancel_message
+                        )
                         continue
                     texc = t.exception()
                     if texc is None:
@@ -7903,6 +7962,14 @@ class _PipelineMixin:
                         stage_label="multimodal analyze fail-fast",
                         doc_id=doc_id,
                     )
+                    if not isinstance(
+                        fail_fast_exc,
+                        (PipelineCancelledException, MultimodalAnalysisError),
+                    ):
+                        raise MultimodalAnalysisError(
+                            f"{fail_fast_subject}: unexpected error: "
+                            f"{type(fail_fast_exc).__name__}: {fail_fast_exc}"
+                        ) from fail_fast_exc
                     raise fail_fast_exc
 
             # Successful multimodal cache rows used to wait until the much
@@ -7937,6 +8004,13 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         finally:
+            # The polling loop's asyncio.wait never cancels the item tasks, so
+            # an external cancellation (worker shutdown) landing on it, or on
+            # the fail-fast drain, would leave them running -- still calling
+            # the model for an abandoned document. Stop and collect them
+            # before this method exits. On a normal exit every task is done
+            # and this is a no-op.
+            await cancel_and_drain_tasks(task_meta)
             # Analyze→process hand-off of the truncation record, on EVERY
             # exit — not just success. Ride the hand-off dict rather than
             # doc_status: LLM_TRUNCATION_METADATA_KEY is per-attempt (not

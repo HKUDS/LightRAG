@@ -22,6 +22,8 @@ from unittest.mock import MagicMock, patch
 from lightrag.kg.postgres_impl import PGGraphStorage
 
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ file fails the parse stage instead of silently yielding an empty document.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from io import BytesIO
 
 
@@ -38,11 +39,131 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
     return content
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DOCX_BLOCK_TAGS = frozenset({_W + "p", _W + "tbl"})
+# A content control keeps its paragraphs, tables, rows or cells in
+# w:sdtContent, and custom XML markup wraps them directly. Cover pages, the
+# fields of a form template, whole template sections and repeating table rows
+# are such controls.
+_DOCX_BLOCK_WRAPPERS = frozenset({_W + "sdt", _W + "sdtContent", _W + "customXml"})
+_MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+# Content below these is not text of its paragraph: deleted and moved-away
+# revisions, the pronunciation guide of ruby text, and text boxes.
+_DOCX_SKIPPED_INLINE = frozenset(
+    {_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent"}
+)
+# The children of a w:r that python-docx's run text is made of.
+_DOCX_RUN_TEXT_TAGS = frozenset(
+    _W + tag for tag in ("t", "tab", "br", "cr", "noBreakHyphen", "ptab")
+)
+
+
+def _is_skipped_docx_control(sdt) -> bool:
+    """True for a ``w:sdt`` whose content is not document text.
+
+    That is the control Word puts its built-in table of contents in, whose
+    lines repeat the headings with page numbers, and a control still showing
+    its placeholder ("Click or tap here to enter text."). Neither was ever
+    read by this extractor.
+    """
+    sdt_pr = sdt.find(_W + "sdtPr")
+    if sdt_pr is None:
+        return False
+    gallery = sdt_pr.find(f"{_W}docPartObj/{_W}docPartGallery")
+    if gallery is not None and gallery.get(_W + "val") == "Table of Contents":
+        return True
+    placeholder = sdt_pr.find(_W + "showingPlcHdr")
+    return placeholder is not None and placeholder.get(_W + "val") not in (
+        "0",
+        "false",
+        "off",
+    )
+
+
+def _iter_docx_children(container, tags=_DOCX_BLOCK_TAGS):
+    """Yield the children of ``container`` whose tag is in ``tags``, in order.
+
+    Unlike a loop over the container's own children, this includes the ones
+    inside content controls and custom XML markup, except the controls
+    :func:`_is_skipped_docx_control` names.
+    """
+    for child in container:
+        if child.tag in tags:
+            yield child
+        elif child.tag in _DOCX_BLOCK_WRAPPERS and not (
+            child.tag == _W + "sdt" and _is_skipped_docx_control(child)
+        ):
+            yield from _iter_docx_children(child, tags)
+
+
+def _iter_docx_row_cells(container, hidden: bool = False):
+    """Yield ``(w:tc, hidden)`` for each cell of a ``w:tr``, in order.
+
+    Looks through the same wrappers as :func:`_iter_docx_children`, but a cell
+    inside a control that :func:`_is_skipped_docx_control` names is still
+    yielded, with ``hidden`` set: it takes its grid columns, so the cells after
+    it keep theirs, and only its text is left out.
+    """
+    for child in container:
+        if child.tag == _W + "tc":
+            yield child, hidden
+        elif child.tag in _DOCX_BLOCK_WRAPPERS:
+            yield from _iter_docx_row_cells(
+                child,
+                hidden or (child.tag == _W + "sdt" and _is_skipped_docx_control(child)),
+            )
+
+
+def _docx_paragraph_text(paragraph) -> str:
+    """Text of a ``w:p`` element, including runs nested below the paragraph.
+
+    ``Paragraph.text`` reads only direct runs and hyperlinks, so the text of an
+    inline content control, a tracked insertion, a simple field's result or a
+    smart tag is missing from it. Deleted text, and the controls
+    :func:`_is_skipped_docx_control` names, stay out.
+
+    Text comes out in document order, also when a run holds ruby text between
+    its own pieces. Of an ``mc:AlternateContent``, only the branch a reader
+    shows is read: the first ``mc:Choice``, or the ``mc:Fallback`` without one.
+    """
+    parts: list[str] = []
+    _collect_docx_inline_text(paragraph, parts)
+    return "".join(parts)
+
+
+def _collect_docx_inline_text(element, parts: list[str]) -> None:
+    for child in element:
+        tag = child.tag
+        if tag in _DOCX_RUN_TEXT_TAGS:
+            # A w:tab outside a run is a tab stop of the paragraph properties.
+            if element.tag == _W + "r":
+                parts.append(str(child))
+        elif tag == _MC + "AlternateContent":
+            branch = child.find(_MC + "Choice")
+            if branch is None:
+                branch = child.find(_MC + "Fallback")
+            if branch is not None:
+                _collect_docx_inline_text(branch, parts)
+        elif tag in _DOCX_SKIPPED_INLINE or (
+            tag == _W + "sdt" and _is_skipped_docx_control(child)
+        ):
+            continue
+        else:
+            _collect_docx_inline_text(child, parts)
+
+
+def _docx_cell_text(tc) -> str:
+    """Text of a ``w:tc`` element, one line per paragraph, like ``_Cell.text``."""
+    return "\n".join(
+        _docx_paragraph_text(paragraph)
+        for paragraph in _iter_docx_children(tc, frozenset({_W + "p"}))
+    )
+
+
 def _extract_docx(file_bytes: bytes) -> str:
     """Extract DOCX content including tables in document order (synchronous)."""
     from docx import Document  # type: ignore
     from docx.table import Table  # type: ignore
-    from docx.text.paragraph import Paragraph  # type: ignore
 
     docx_file = BytesIO(file_bytes)
     doc = Document(docx_file)
@@ -61,29 +182,83 @@ def _extract_docx(file_bytes: bytes) -> str:
 
     content_parts = []
     in_table = False
-    for element in doc.element.body:
+    for element in _iter_docx_children(doc.element.body):
         if element.tag.endswith("p"):
             if in_table:
                 content_parts.append("")
                 in_table = False
-            paragraph = Paragraph(element, doc)
-            content_parts.append(paragraph.text)
+            content_parts.append(_docx_paragraph_text(element))
         elif element.tag.endswith("tbl"):
             if content_parts and not in_table:
                 content_parts.append("")
             in_table = True
-            table = Table(element, doc)
-            for row in table.rows:
-                row_text = [escape_cell(cell.text) for cell in row.cells]
+            for row in _docx_table_grid_rows(Table(element, doc)):
+                row_text = [escape_cell(cell) for cell in row]
                 if any(cell for cell in row_text):
                     content_parts.append("\t".join(row_text))
     return "\n".join(content_parts)
 
 
+def _docx_grid_skip(tr, tag: str) -> int:
+    """Return the ``w:gridBefore`` / ``w:gridAfter`` count of a ``w:tr``."""
+    from docx.oxml.ns import qn  # type: ignore
+
+    tr_pr = tr.find(qn("w:trPr"))
+    node = tr_pr.find(qn(tag)) if tr_pr is not None else None
+    if node is None:
+        return 0
+    try:
+        return max(int(node.get(qn("w:val"), "0")), 0)
+    except ValueError:
+        return 0
+
+
+def _docx_table_grid_rows(table) -> Iterator[list[str]]:
+    """Yield each row of a DOCX table as one text slot per layout-grid column.
+
+    - A row that starts or ends late (``w:gridBefore`` / ``w:gridAfter``)
+      gets an empty slot for each skipped grid column, so its cells stay
+      under the columns they are drawn in.
+    - A horizontally merged cell (``w:gridSpan``) puts its text in its first
+      column and leaves the other spanned columns empty.
+    - A vertically merged cell repeats the text of the row above at the same
+      grid column; with no cell there, the slot is empty.
+    - Rows and cells inside a content control or custom XML markup (a
+      repeating section) count like direct ones. A cell inside a table of
+      contents or placeholder control keeps its grid columns but no text.
+
+    The two merge rules are the native table extractor's.
+
+    Walks the ``w:tr`` / ``w:tc`` XML instead of ``python-docx``'s
+    ``row.cells``: that omits the ``w:gridBefore`` / ``w:gridAfter`` columns,
+    and it raises ``ValueError`` on a vertical-merge continuation with no
+    cell at the same grid column above, which would fail the whole document.
+    """
+    from docx.oxml.ns import qn  # type: ignore
+
+    above: dict[int, str] = {}
+    for tr in _iter_docx_children(table._tbl, frozenset({qn("w:tr")})):
+        row = [""] * _docx_grid_skip(tr, "w:gridBefore")
+        current: dict[int, str] = {}
+        for tc, hidden in _iter_docx_row_cells(tr):
+            column = len(row)
+            if hidden:
+                text = ""
+            elif tc.vMerge == "continue":
+                text = above.get(column, "")
+            else:
+                text = _docx_cell_text(tc)
+            span = max(tc.grid_span, 1)
+            row.append(text)
+            row.extend([""] * (span - 1))
+            current[column] = text
+        row.extend([""] * _docx_grid_skip(tr, "w:gridAfter"))
+        above = current
+        yield row
+
+
 def _extract_pptx(file_bytes: bytes) -> str:
     """Extract PPTX text, including nested groups, in shape order (synchronous)."""
-    from collections.abc import Iterator
-
     from pptx import Presentation  # type: ignore
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     from pptx.shapes.shapetree import GroupShapes, SlideShapes
@@ -133,6 +308,23 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     def escape_sheet_title(title: str) -> str:
         return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
 
+    def formula_fallback(formula_value: object) -> str | None:
+        """Formula text to index for a cell that carries no cached value.
+
+        Only reached when the values view is empty, so ``formula_value`` is
+        ``None``, a formula string, or an openpyxl formula object. openpyxl
+        >= 3.1 reads array formulas as ``ArrayFormula`` (text in ``.text``) and
+        data-table formulas as ``DataTableFormula`` (no text at all); older
+        versions return strings, a data-table master being a bare ``"="``.
+        Anything that is not formula text becomes an empty cell, so an object
+        repr -- which embeds a memory address and would make the dedup content
+        hash differ on every parse -- never reaches the index.
+        """
+        text = getattr(formula_value, "text", formula_value)
+        if not isinstance(text, str) or text == "=":
+            return None
+        return text
+
     content_parts: list[str] = []
     sheet_separator = "=" * 20
 
@@ -155,7 +347,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
             row_has_content = False
             for cell_value, formula_value in zip(value_row, formula_row):
                 if cell_value is None:
-                    cell_value = formula_value
+                    cell_value = formula_fallback(formula_value)
                 cell_text = escape_cell(cell_value)
                 row_parts.append(cell_text)
                 if cell_text:

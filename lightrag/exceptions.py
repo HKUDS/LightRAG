@@ -680,6 +680,37 @@ class ChunkBlockMatchError(ValueError):
         self.blocks_path = blocks_path
 
 
+class BlocksSidecarCorruptError(ValueError):
+    """Raised when a ``*.blocks.jsonl`` sidecar exists but cannot be decoded.
+
+    A row that is not valid JSON, or bytes that are not valid UTF-8, mean the
+    parse-time structure of the document is damaged. Paragraph-semantic chunking
+    raises this instead of chunking the rows that still parse (which loses the
+    damaged row's text) or degrading to another strategy (which is recorded
+    nowhere). The pipeline marks the document FAILED.
+
+    Retrying does not help: a ``lightrag``-format document reuses its existing
+    sidecar instead of parsing again. The document must be deleted and uploaded
+    again so the parser regenerates the sidecar.
+    """
+
+    def __init__(
+        self,
+        blocks_path: str,
+        reason: str,
+        line_number: int | None = None,
+    ) -> None:
+        line_note = f" at line {line_number}" if line_number is not None else ""
+        super().__init__(
+            f"blocks.jsonl at {blocks_path} is corrupt{line_note}: {reason}. "
+            "Paragraph-semantic chunking cannot use a damaged sidecar; delete "
+            "the document and upload it again to regenerate it."
+        )
+        self.blocks_path = blocks_path
+        self.reason = reason
+        self.line_number = line_number
+
+
 class DataMigrationError(Exception):
     """Raised when data migration from legacy collection/table fails."""
 

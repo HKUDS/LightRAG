@@ -9,9 +9,12 @@ from typing import Any
 import pytest
 
 from lightrag.llm._vision_utils import (
+    _JPEG_MAX_SCAN_STEPS,
+    _dimensions_from_bytes,
     image_audit_metadata,
     image_cache_metadata,
     normalize_image_inputs,
+    read_image_dimensions,
 )
 
 
@@ -69,6 +72,121 @@ def test_normalize_accepts_dict_with_metadata():
 def test_normalize_empty_returns_empty_list():
     assert normalize_image_inputs(None) == []
     assert normalize_image_inputs([]) == []
+
+
+@pytest.mark.parametrize("metadata_segments", [0, 1, 2])
+@pytest.mark.parametrize("frame_marker", [b"\xff\xc0", b"\xff\xc2"])
+def test_jpeg_dimensions_after_metadata(tmp_path, metadata_segments, frame_marker):
+    comment = b"\xff\xfe\xff\xff" + b"x" * 65533
+    frame = frame_marker + b"\x00\x0b\x08\x00\x10\x00\x20\x01\x01\x11\x00"
+    raw = b"\xff\xd8" + comment * metadata_segments + frame + b"\xff\xd9"
+    path = tmp_path / "image.jpg"
+    path.write_bytes(raw)
+
+    assert read_image_dimensions(path) == (32, 16)
+    [image] = normalize_image_inputs([_b64(raw)])
+    assert (image.width, image.height) == (32, 16)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"\xff\xd8\xff",
+        b"\xff\xd8\xff\xe1\x00",
+        b"\xff\xd8\xff\xe1\x00\x01",
+        b"\xff\xd8\xff\xe1\x00\x10abc",
+        b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x10\x00\x20",
+    ],
+)
+def test_incomplete_jpeg_dimensions_are_unknown(tmp_path, raw):
+    path = tmp_path / "incomplete.jpg"
+    path.write_bytes(raw)
+    assert read_image_dimensions(path) is None
+
+
+@pytest.mark.parametrize("end_marker", [b"\xff\xd9", b"\xff\xda\x00\x02"])
+def test_jpeg_dimensions_stop_before_image_data(tmp_path, end_marker):
+    frame = b"\xff\xc0\x00\x0b\x08\x00\x10\x00\x20\x01\x01\x11\x00"
+    raw = b"\xff\xd8" + end_marker + frame
+    path = tmp_path / "no-frame.jpg"
+    path.write_bytes(raw)
+    assert read_image_dimensions(path) is None
+    [image] = normalize_image_inputs([_b64(raw)])
+    assert (image.width, image.height) == (None, None)
+
+
+_JPEG_FRAME_32x16 = b"\xff\xc0\x00\x0b\x08\x00\x10\x00\x20\x01\x01\x11\x00"
+
+
+@pytest.mark.parametrize(
+    "padding",
+    [
+        pytest.param(b"\xff\xe1\x00\x02" * (_JPEG_MAX_SCAN_STEPS + 1), id="segments"),
+        pytest.param(b"\xff" * (_JPEG_MAX_SCAN_STEPS + 1), id="fill-bytes"),
+    ],
+)
+def test_jpeg_scan_is_bounded(tmp_path, padding):
+    # A crafted header must not make the probe scan proportional to file
+    # size: past the step budget the dimensions are unknown, even though a
+    # frame header follows.
+    raw = b"\xff\xd8" + padding + _JPEG_FRAME_32x16 + b"\xff\xd9"
+    path = tmp_path / "crafted.jpg"
+    path.write_bytes(raw)
+    assert read_image_dimensions(path) is None
+    assert _dimensions_from_bytes(raw) is None
+
+
+def test_jpeg_scan_budget_admits_many_real_segments(tmp_path):
+    # Stability control: a segment-heavy but realistic header (each segment
+    # costs one step, its body is seeked past) still resolves.
+    segment = b"\xff\xe2\x10\x00" + b"i" * 0x0FFE
+    raw = b"\xff\xd8" + segment * 512 + _JPEG_FRAME_32x16 + b"\xff\xd9"
+    path = tmp_path / "many-segments.jpg"
+    path.write_bytes(raw)
+    assert read_image_dimensions(path) == (32, 16)
+
+
+@pytest.mark.parametrize("wrap", [bytes, bytearray, memoryview])
+def test_jpeg_dimensions_accept_bytes_like(wrap):
+    raw = b"\xff\xd8" + _JPEG_FRAME_32x16 + b"\xff\xd9"
+    assert _dimensions_from_bytes(wrap(raw)) == (32, 16)
+
+
+def _webp(chunk: bytes, payload: bytes) -> bytes:
+    body = b"WEBP" + chunk + len(payload).to_bytes(4, "little") + payload
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(PNG_BYTES, (1, 1), id="png"),
+        pytest.param(b"GIF89a\x20\x00\x10\x00" + b"\x00" * 8, (32, 16), id="gif"),
+        pytest.param(
+            _webp(b"VP8 ", b"\x00" * 3 + b"\x9d\x01\x2a\x20\x00\x10\x00"),
+            (32, 16),
+            id="webp-vp8",
+        ),
+        pytest.param(
+            # 14-bit (width-1) / (height-1) fields: 31 and 15.
+            _webp(b"VP8L", b"\x2f\x1f\xc0\x03\x00"),
+            (32, 16),
+            id="webp-vp8l",
+        ),
+        pytest.param(
+            _webp(b"VP8X", b"\x00" * 4 + b"\x1f\x00\x00\x0f\x00\x00"),
+            (32, 16),
+            id="webp-vp8x",
+        ),
+    ],
+)
+def test_non_jpeg_dimensions_from_file_header(tmp_path, raw, expected):
+    # The file entry point decodes these from a short probe; it must cover
+    # the furthest offset each reader touches.
+    path = tmp_path / "image.bin"
+    path.write_bytes(raw + b"\x00" * 64)
+    assert read_image_dimensions(path) == expected
 
 
 def test_normalize_rejects_invalid_base64():
