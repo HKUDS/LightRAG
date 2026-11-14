@@ -24,36 +24,14 @@ def _extract_pdf_pypdf(
 ) -> str:
     """Extract PDF content using pypdf (synchronous).
 
-    Raises :class:`~lightrag.parser.legacy.pdf_budget.PdfExtractionBudgetError`
-    when the document needs more content parsing or yields more text than the
-    ``PDF_MAX_*`` budget allows. pypdf's own limits are per stream, so this
-    document-wide budget must wrap every page extraction here.
+    pypdf runs in a resource-limited child process, never here: see
+    :mod:`lightrag.parser.legacy.pdf_budget`. Raises its
+    ``PdfExtractionBudgetError`` when the document exceeds a ``PDF_MAX_*``
+    limit, and ``LegacyExtractionError`` for any other failure.
     """
-    from pypdf import PdfReader  # type: ignore
+    from lightrag.parser.legacy.pdf_budget import extract_pdf_text
 
-    from lightrag.parser.legacy.pdf_budget import PdfExtractionBudget
-
-    pdf_file = BytesIO(file_bytes)
-    reader = PdfReader(pdf_file)
-
-    if reader.is_encrypted:
-        # Try empty password first (covers permission-only encrypted PDFs)
-        decrypt_result = reader.decrypt(password or "")
-        if decrypt_result == 0:
-            if password:
-                raise Exception("Incorrect PDF password")
-            else:
-                raise Exception("PDF is encrypted but no password provided")
-
-    budget = PdfExtractionBudget(len(file_bytes), file_path)
-    pages = list(reader.pages)
-    budget.check_page_contents(pages)
-    parts: list[str] = []
-    for page in pages:
-        text = page.extract_text(**budget.visitors(page))
-        budget.finish_page(text)
-        parts.append(text + "\n")
-    return "".join(parts)
+    return extract_pdf_text(file_bytes, password, file_path)
 
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"

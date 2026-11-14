@@ -197,18 +197,21 @@ DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 # note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
 
-# Document-wide extraction budget for the legacy PDF extractor (pypdf). pypdf
-# caps every stream it decodes (75 MB) but nothing caps the DOCUMENT: pages can
-# share one content stream and a page can invoke one form XObject thousands of
-# times, so a 60 KB PDF made pypdf parse 80 MB of content and return 82 million
-# characters. Content bytes are the decoded bytes of every content stream pypdf
-# parses (each page's /Contents, and a form XObject's stream at every
-# invocation); the cap is min(PDF_MAX_CONTENT_BYTES, max(the floor below,
-# PDF_MAX_CONTENT_RATIO * file size)), so a small upload cannot buy the absolute
-# ceiling. Extracted characters bound the text kept in memory. A non-positive
-# value disables that gate. Env: PDF_MAX_CONTENT_BYTES / PDF_MAX_CONTENT_RATIO /
-# PDF_MAX_EXTRACTED_CHARS, read live at parse time. Mechanism and its limits:
-# docs/design/PdfExtractionBudget.md.
+# Limits for the legacy PDF extractor (pypdf). pypdf caps every object it reads
+# but not the document, and repeats work for each page and each form XObject
+# invocation, so a PDF of a few kilobytes could cost hours of CPU. pypdf
+# therefore runs in a child process with the two process limits below. They
+# hold whatever pypdf does. Env: PDF_MAX_CPU_SECONDS / PDF_MAX_MEMORY_MB.
+DEFAULT_PDF_MAX_CPU_SECONDS = 120
+DEFAULT_PDF_MAX_MEMORY_MB = 1024
+# Two cheap deterministic gates run first inside that process, and are the only
+# limits when PDF_EXTRACT_IN_SUBPROCESS=false. Content bytes are the decoded
+# bytes of all pages' /Contents, measured before any page is parsed; the cap is
+# min(PDF_MAX_CONTENT_BYTES, max(the floor below, PDF_MAX_CONTENT_RATIO * file
+# size)), so a small upload cannot buy the absolute ceiling. Extracted
+# characters bound the text returned. A non-positive value disables a limit.
+# Env: PDF_MAX_CONTENT_BYTES / PDF_MAX_CONTENT_RATIO / PDF_MAX_EXTRACTED_CHARS.
+# All five are read at parse time. Design: docs/design/PdfExtractionBudget.md.
 DEFAULT_PDF_MAX_CONTENT_BYTES = 256 * 1024 * 1024
 DEFAULT_PDF_MAX_CONTENT_RATIO = 100
 # Not a gate: the content allowance every PDF gets regardless of its size.
