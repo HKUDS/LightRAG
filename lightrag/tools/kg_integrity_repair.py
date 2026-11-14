@@ -9,7 +9,7 @@ objects behind.
 
 This tool enumerates the whole graph (expensive — deliberately OFFLINE-only;
 the ingestion/retry/delete/scan hot paths never do this), maps every node and
-edge back to its owning documents via chunk ``source_id`` → ``text_chunks`` →
+edge back to its owning documents via its chunk provenance → ``text_chunks`` →
 ``full_doc_id``, and:
 
 - reports per-document anchor gaps (graph contributions missing from
@@ -44,12 +44,67 @@ from typing import Any
 
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
-from lightrag.utils import logger
+from lightrag.utils import has_chunk_tracking_row, logger, make_relation_chunk_key
 
 
 def _split_sources(record: dict[str, Any] | None) -> list[str]:
     raw = (record or {}).get("source_id") or ""
     return [chunk_id for chunk_id in raw.split(GRAPH_FIELD_SEP) if chunk_id]
+
+
+def _union_ids(tracked: list[str] | None, graph_sources: list[str]) -> list[str]:
+    """Order-preserving union of a tracking row and a graph ``source_id`` list.
+
+    Both inputs are already flat id lists — the graph half was just split on
+    ``GRAPH_FIELD_SEP`` by :func:`_split_sources`, the tracking half is a
+    stored list — so this does not re-run the write-path normalization
+    (``merge_source_ids``), which re-splits every element with a regex and
+    costs several times the whole audit on a large graph. A joined element is
+    still split, so a legacy or hand-written row cannot smuggle one in.
+    """
+    merged: dict[str, None] = {}
+    for source in (tracked or (), graph_sources):
+        for chunk_id in source:
+            if not isinstance(chunk_id, str):
+                continue
+            parts = (
+                chunk_id.split(GRAPH_FIELD_SEP)
+                if GRAPH_FIELD_SEP in chunk_id
+                else (chunk_id,)
+            )
+            for part in parts:
+                part = part.strip()
+                if part:
+                    merged[part] = None
+    return list(merged)
+
+
+async def _read_chunk_tracking(
+    storage, keys: list[str], batch_size: int
+) -> dict[str, list[str]]:
+    """Read a chunk-tracking namespace for ``keys``, keyed as given.
+
+    Returns only rows that are present and structurally usable per
+    :func:`has_chunk_tracking_row`; an absent or malformed row is omitted,
+    leaving the caller with the graph ``source_id`` alone for that object.
+    An unconfigured namespace yields an empty mapping.
+    """
+    if storage is None or not keys:
+        return {}
+
+    tracked: dict[str, list[str]] = {}
+    for start in range(0, len(keys), batch_size):
+        batch = keys[start : start + batch_size]
+        rows = await storage.get_by_ids(batch)
+        if len(rows) != len(batch):
+            raise RuntimeError(
+                f"chunk-tracking read returned {len(rows)} rows for "
+                f"{len(batch)} keys; refusing to misattribute provenance"
+            )
+        for key, row in zip(batch, rows):
+            if has_chunk_tracking_row(row):
+                tracked[key] = row["chunk_ids"]
+    return tracked
 
 
 async def _map_chunks_to_docs(
@@ -96,39 +151,81 @@ async def audit_kg_integrity(
     rebuild from and the document would be permanently undeletable.
 
     This audit is the one place that CAN settle it. It enumerates the whole
-    graph — something the hot paths deliberately never do — so a document
-    absent from both ``doc_entities`` and ``doc_relations`` is not merely
-    unproven but *proven empty*. With ``apply=True`` those documents get
-    written empty anchor rows, which is simply the truth about them and
-    restores the normal ``anchors`` proof.
+    graph — something the hot paths deliberately never do — and resolves each
+    object's provenance from its chunk-tracking row unioned with the graph
+    ``source_id``, so the scan sees the authoritative chunk list rather than
+    the capped view. A document absent from both ``doc_entities`` and
+    ``doc_relations`` is therefore not merely unproven but *proven empty*.
+    With ``apply=True`` those documents get written empty anchor rows, which
+    is simply the truth about them and restores the normal ``anchors`` proof.
     """
     graph = rag.chunk_entity_relation_graph
 
     all_nodes = await graph.get_all_nodes()
     all_edges = await graph.get_all_edges()
 
-    # Node/edge -> owning docs via source chunks.
-    referenced_chunks: set[str] = set()
-    node_sources: dict[str, list[str]] = {}
+    # Node/edge -> owning docs via their chunk provenance.
+    #
+    # Chunk tracking outranks the graph ``source_id``: the latter is capped by
+    # ``apply_source_ids_limit``, so on any object that accumulated more source
+    # chunks than the cap it names a subset. A document whose chunks all fall
+    # outside that window would then be absent from the scan and certified as
+    # owning nothing, which is the one conclusion this audit must never reach
+    # wrongly.
+    #
+    # UNION rather than the purge's tracking-first-then-fallback: a purge must
+    # not act on stale ids, but an audit only reports, and here a miss is the
+    # expensive error. The union is a superset of what resolving from
+    # ``source_id`` alone produced, so it cannot attribute less than before,
+    # and an id no longer resolvable through ``text_chunks`` costs nothing —
+    # it is dropped by the chunk-to-doc mapping.
+    graph_node_sources: dict[str, list[str]] = {}
     for node in all_nodes:
         name = node.get("entity_id") or node.get("id")
         if not name:
             continue
-        sources = _split_sources(node)
-        node_sources[name] = sources
-        referenced_chunks.update(sources)
+        graph_node_sources[name] = _split_sources(node)
 
-    edge_sources: dict[tuple[str, str], list[str]] = {}
+    graph_edge_sources: dict[tuple[str, str], list[str]] = {}
     for edge in all_edges:
         src, tgt = edge.get("source"), edge.get("target")
         if not src or not tgt:
             continue
         pair = tuple(sorted((src, tgt)))
-        if pair in edge_sources:
+        if pair in graph_edge_sources:
             continue  # some backends report undirected edges twice
-        sources = _split_sources(edge)
+        graph_edge_sources[pair] = _split_sources(edge)
+
+    tracked_entities = await _read_chunk_tracking(
+        getattr(rag, "entity_chunks", None), sorted(graph_node_sources), batch_size
+    )
+    # Keyed BY PAIR, never the reverse: two distinct pairs can share one
+    # relation chunk key (an entity name may contain the separator), and a
+    # key-to-pair dict would drop one of those edges from the scan entirely.
+    edge_keys = {pair: make_relation_chunk_key(*pair) for pair in graph_edge_sources}
+    tracked_relations = await _read_chunk_tracking(
+        getattr(rag, "relation_chunks", None),
+        sorted(set(edge_keys.values())),
+        batch_size,
+    )
+
+    referenced_chunks: set[str] = set()
+    node_sources: dict[str, list[str]] = {}
+    for name, graph_sources in graph_node_sources.items():
+        sources = _union_ids(tracked_entities.get(name), graph_sources)
+        node_sources[name] = sources
+        referenced_chunks.update(sources)
+
+    edge_sources: dict[tuple[str, str], list[str]] = {}
+    for pair, graph_sources in graph_edge_sources.items():
+        sources = _union_ids(tracked_relations.get(edge_keys[pair]), graph_sources)
         edge_sources[pair] = sources
         referenced_chunks.update(sources)
+
+    # The merged lists are what the rest of the audit reads; the tracking rows
+    # are the unbounded half, so releasing them here keeps peak memory at or
+    # below what resolving from ``source_id`` alone used.
+    del tracked_entities, tracked_relations, graph_node_sources, graph_edge_sources
 
     chunk_to_doc = await _map_chunks_to_docs(rag, referenced_chunks, batch_size)
 
