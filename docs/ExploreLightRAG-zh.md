@@ -82,7 +82,7 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 
 切换存储不会搬运数据。把已经导入的内容带过来，最省钱的办法是先迁移抽取缓存，再把文档重新上传一遍：
 
-1. PostgreSQL 启动后（1.1），在重启服务之前运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要和多模态分析的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
+1. PostgreSQL 启动后（1.1），在重启服务之前运行 `python -m lightrag.tools.migrate_llm_cache`。源选 `JsonKVStorage`，目标选 `PGKVStorage`，然后确认。它会迁移抽取、摘要、多模态分析和智能标题判定的缓存（参见 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)）。
 2. 重启服务，切换到 PostgreSQL。
 3. 重新上传原始文件。实体抽取会命中迁移过来的缓存。
 
@@ -95,8 +95,7 @@ POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC
 ```bash
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'   # 用单引号：哈希里有 $
 TOKEN_SECRET=<openssl rand -hex 32>         # 配了 AUTH_ACCOUNTS 就必须设置
-LIGHTRAG_API_KEY=<一串足够长的随机字符>
-WHITELIST_PATHS=/health                     # Ollama 兼容的 /api/* 也要求认证
+LIGHTRAG_API_KEY=<一串足够长的随机字符>       # 同时保护 Ollama 兼容的 /api/*
 ```
 
 密码建议存 bcrypt 哈希，不要存明文。用环境里已经装好的 `bcrypt` 包生成：
@@ -105,7 +104,7 @@ WHITELIST_PATHS=/health                     # Ollama 兼容的 /api/* 也要求�
 python -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
 ```
 
-配置了 `AUTH_ACCOUNTS` 却没有设置非默认的 `TOKEN_SECRET`，服务会拒绝启动。`WHITELIST_PATHS` 的默认值让 `/api/*` 保持开放，这样 Ollama 客户端不用改就能用；服务一旦能从网络访问，就应该收窄成 `/health`。
+配置了 `AUTH_ACCOUNTS` 却没有设置非默认的 `TOKEN_SECRET`，服务会拒绝启动。设置了 `LIGHTRAG_API_KEY` 时，`WHITELIST_PATHS` 的默认值是 `/health`，Ollama 兼容的 `/api/*` 也要求这个 key；Ollama 客户端以 `Authorization: Bearer <key>` 发送它（在连接设置里填为 API key）。没有设置 key 时，默认值让 `/api/*` 保持开放，即使配置了 `AUTH_ACCOUNTS` 也一样，因为 Ollama 客户端无法登录。
 
 **验证：**
 
@@ -207,7 +206,7 @@ VLM_PROCESS_ENABLE=true
 | Markdown 里的远程 `http(s)` 图片 | 会下载（禁止访问内网地址）；下载失败时保留链接并记一条警告 |
 | Markdown 里的**本地**图片，如 `./doc.assets/a.png` | **只有打包成 `.textpack` 才行**，即把 `.md` 和图片一起打成 zip。单独上传 `.md` 时图片文件不会一起传上去，解析器会记录 `skipping image (file reference outside .textpack)` |
 
-本地图片路径里有空格时，必须写成 `![alt](<./my doc.assets/a.png>)`。不加尖括号，它根本不算 Markdown 图片语法，会被当作普通文本保留，也不会有任何警告。Typora 等编辑器生成的这类路径就不带尖括号。
+本地图片路径里有空格时，Typora 等编辑器会直接写成 `![alt](./my doc.assets/a.png)`，不加尖括号。这不是标准 Markdown，但只要路径以图片扩展名（`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`）结尾，LightRAG 仍会把它识别为图片。其他情况请用标准写法 `![alt](<./my doc.assets/a.png>)`，或把空格写成 `%20`；否则它不算图片，会被当作普通文本保留，也不会有任何警告。
 
 宽或高小于 `VLM_MIN_IMAGE_PIXEL`（64 像素）的图片会被当作装饰图标跳过。
 
@@ -339,7 +338,6 @@ POSTGRES_MAX_CONNECTIONS=40
 AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$...'
 TOKEN_SECRET=...
 LIGHTRAG_API_KEY=...
-WHITELIST_PATHS=/health
 
 # 第 3 步 — 角色 LLM
 LLM_MODEL=gpt-6-luna
@@ -375,7 +373,7 @@ VLM_MAX_ASYNC_LLM=12
 | 现象 | 原因 | 解决办法 |
 |---|---|---|
 | 切换到 PostgreSQL 后向量索引建不出来，或服务拒绝启动 | 嵌入超过 2000 维却用了 `HNSW` / `IVFFlat` | `POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC` |
-| Markdown 里的图片没有被分析 | 单独上传 `.md` 时本地图片不会一起上传；或路径含空格却没加 `<...>` | 改传 `.textpack`；写成 `![](<含空格的路径>)` |
+| Markdown 里的图片没有被分析 | 单独上传 `.md` 时本地图片不会一起上传；或路径含空格、又不以图片扩展名结尾，却没加 `<...>` | 改传 `.textpack`；写成 `![](<含空格的路径>)` |
 | 带图片的文档处理失败（`FAILED`） | 处理选项带 `i`，但 `VLM_PROCESS_ENABLE=false` | 两者一起打开 |
 | `DOCX_SMART_HEADING=true` 没有效果 | 文档正文短于 `DOCX_SMART_MIN_TOKENS` | 查看 `smart_audit.json`；用更长的文档测试 |
 | MinerU 解析失败，HTTP 401 `A0202` | MinerU 拒绝了这个 token | 用第 7 步的 `curl` 测试 token，再调用 `POST /documents/reprocess_failed` |

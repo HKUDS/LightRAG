@@ -51,4 +51,12 @@ async def test_json_migration_includes_multimodal_analysis_caches():
     ]
     assert counted == 3
     assert [key for batch in streamed for key in batch] == list(loaded)
-    assert type_counts == {"extract": 1, "summary": 1, "analysis": 1}
+    # Every supported default type is reported, present or not (that is what
+    # makes an omitted type visible in the operator's count line); a type the
+    # tool does not migrate -- the ``default:unknown`` row above -- never is.
+    assert type_counts == {
+        "extract": 1,
+        "summary": 1,
+        "analysis": 1,
+        "smartheading": 0,
+    }

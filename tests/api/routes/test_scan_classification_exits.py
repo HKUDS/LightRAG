@@ -166,6 +166,31 @@ def test_absent_is_claimed_new():
     asyncio.run(_run())
 
 
+def test_deleting_keeps_source_and_alias_without_resuming(tmp_path, monkeypatch):
+    async def _run():
+        rag = _ClassifyRag({"report.txt": _unique("doc-x", DocStatus.DELETING)})
+        doc_manager, batched = _scan_rig(tmp_path, monkeypatch, rag)
+        source = doc_manager.input_dir / "report.txt"
+        alias = doc_manager.input_dir / "report.[native].txt"
+        source.write_text("body", encoding="utf-8")
+        alias.write_text("body", encoding="utf-8")
+        warnings = []
+
+        async def capture_warning(_rag, message):
+            warnings.append(message)
+
+        monkeypatch.setattr(_document_routes, "record_scan_warning", capture_warning)
+        await run_scanning_process(rag, doc_manager, "track-deleting")
+        assert batched == []
+        assert rag.doc_status.deleted_ids == []
+        assert source.exists() and alias.exists()
+        assert len(warnings) == 2
+        assert all("re-run deletion first" in message for message in warnings)
+        assert rag.doc_status.hydrated == []
+
+    asyncio.run(_run())
+
+
 def test_conflict_reports_bounded_candidate_sample():
     async def _run():
         rag = _ClassifyRag(

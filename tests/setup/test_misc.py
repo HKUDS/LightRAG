@@ -1868,12 +1868,8 @@ security_check_env_file
     assert "AUTH_ACCOUNTS uses a predictable password prefix." in result.stdout
 
 
-def test_security_check_reports_api_key_only_with_default_whitelist(
-    tmp_path: Path,
-) -> None:
-    """API-key-only deployment with unset WHITELIST_PATHS inherits /api/* and must be flagged."""
-    write_text_lines(tmp_path / ".env", ["LIGHTRAG_API_KEY=my-secret-key"])
-    result = subprocess.run(
+def _security_check(tmp_path: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
             "bash",
             "--norc",
@@ -1890,8 +1886,51 @@ security_check_env_file
         text=True,
         check=False,
     )
+
+
+def test_security_check_passes_for_api_key_only_with_default_whitelist(
+    tmp_path: Path,
+) -> None:
+    """With LIGHTRAG_API_KEY set, an unset WHITELIST_PATHS defaults to /health.
+
+    The server's default follows the key (config.default_whitelist_paths), so
+    the audit must not report /api as exposed: it is protected by the key.
+    """
+    write_text_lines(tmp_path / ".env", ["LIGHTRAG_API_KEY=my-secret-key"])
+    result = _security_check(tmp_path)
+    assert result.returncode == 0
+    assert "WHITELIST_PATHS exposes /api routes" not in result.stdout
+
+
+def test_security_check_passes_for_accounts_and_api_key_with_default_whitelist(
+    tmp_path: Path,
+) -> None:
+    """AUTH_ACCOUNTS plus a key: the key-following default keeps /api protected."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=reader:a-strong-secret",
+            "TOKEN_SECRET=jwt-secret",
+            "LIGHTRAG_API_KEY=my-secret-key",
+        ],
+    )
+    result = _security_check(tmp_path)
+    assert "WHITELIST_PATHS exposes /api routes" not in result.stdout
+
+
+def test_security_check_reports_accounts_only_with_default_whitelist(
+    tmp_path: Path,
+) -> None:
+    """AUTH_ACCOUNTS without a key: the default still exempts /api, and the remedy
+    the audit names is the key, the only credential an Ollama client can send."""
+    write_text_lines(
+        tmp_path / ".env",
+        ["AUTH_ACCOUNTS=reader:a-strong-secret", "TOKEN_SECRET=jwt-secret"],
+    )
+    result = _security_check(tmp_path)
     assert result.returncode == 1
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
+    assert "Set LIGHTRAG_API_KEY" in result.stdout
 
 
 def test_security_check_reports_api_key_only_with_explicit_api_wildcard_whitelist(

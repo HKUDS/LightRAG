@@ -375,6 +375,35 @@ def test_textpack_file_reference_resolved(tmp_path: Path):
     assert not warnings
 
 
+def test_textpack_file_reference_with_spaces_resolved(tmp_path: Path):
+    """Typora-style path: spaces and parentheses, no angle brackets."""
+    pack = tmp_path / "note.textpack"
+    _write_textpack(
+        pack,
+        text="# Note\n\n![pic](assets/my shot (1).png)\n",
+        assets={"my shot (1).png": _PNG_BYTES},
+    )
+    p = _make_parser()
+    blocks, warnings, meta = p.extract(
+        pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="note"
+    )
+    (asset,) = meta["md_assets"].values()
+    assert asset["data"] == _PNG_BYTES
+    assert asset["suggested_name"] == "my shot (1).png"
+    assert not warnings
+
+
+def test_standalone_md_relative_image_with_spaces_is_skipped():
+    # Recognised as an image now, so it takes the same warned skip as any
+    # other file reference outside a .textpack instead of staying as text.
+    p = _make_parser()
+    blocks, warnings, meta = p._extract_text(
+        "# H\n\n![x](my assets/pic.png)\n", bundle_root=None
+    )
+    assert meta["md_drawings"] == {}
+    assert warnings.get("images_skipped") == 1
+
+
 def test_textpack_image_outside_assets_dir_is_resolved(tmp_path: Path):
     # Compatibility: a reference may point anywhere under the bundle root, not
     # only ``assets/`` — here ``media/pic.png`` and a root-level ``cover.png``.

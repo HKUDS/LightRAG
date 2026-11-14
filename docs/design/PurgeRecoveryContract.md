@@ -1,6 +1,6 @@
 # Purge Recovery Contract
 
-Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, or the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
+Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`, or what `normalize_entity_name` produces (see [Entity name normalization changes](#entity-name-normalization-changes)). Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
 
 The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
 
@@ -28,6 +28,37 @@ Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less 
 A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) skips extraction and the merge, so no anchor rows are ever written. Post-change those documents carry `pre_graph` and delete normally; older ones have neither proof, and anchor repair has nothing to rebuild from.
 
 The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
+
+## Visible deletion recovery
+
+Whole-document deletion passes `stamp_deleting=True` to the purge primitive. Its first journal write persists `DocStatus.DELETING` in the same targeted write as `prepared`, before any destructive mutation. A retry with an existing journal also stamps the status before resuming, which covers journals written by older code and an ingestion purge's journal that a later deletion takes over (`test_retry_with_existing_journal_stamps_deleting`). The stamp refreshes `updated_at` in the same write. Ingestion's stale-extraction reset and explicit-candidate patch rollback leave the flag disabled: their documents remain ingestion work.
+
+After the checkpoint, a failed or interrupted deletion retains `DELETING` and the purge journal. Diagnostic metadata records failures; retrying deletion uses the journal, never the status, to decide what remains. A refusal before a valid recovery proof or a cache-collection failure before the checkpoint leaves the previous status because no destructive purge began. Successful deletion removes the row. There is no transition from `DELETING` back to ingestion.
+
+The status exists because the old behavior was worse than invisible. `adelete_by_doc_id` also accepts PENDING, PROCESSING and FAILED rows, and a failure after the checkpoint used to leave that status in place: PENDING / PROCESSING are auto-resumed and FAILED is manually retryable, so the scheduler could turn a half-finished deletion back into ingestion work. `DELETING` is scheduling-neutral because no scheduler allowlist names it.
+
+Automatic and manual ingestion scheduling exclude this status. Scan leaves its source files and aliases untouched with a warning, while enqueue refuses a matching identity with instructions to re-run deletion. Status counts, pagination, and the WebUI's Deleting filter expose the row so users can select and delete it again. This does not defer rebuilds: each document still uses the existing purge.
+
+**Downgrade:** complete pending deletions before rolling back to a version without `DocStatus.DELETING`; older versions cannot parse rows whose status is `deleting`.
+
+### Deletion status consumer audit
+
+| Consumer | Behavior and regression coverage |
+|---|---|
+| Automatic ingestion / manual FAILED retry | Positive status allowlists exclude `DELETING`; `tests/pipeline/test_deleting_status.py` drives both scheduling paths against a real row. |
+| Scan classification | Checks deletion before source-file/alias classification, keeps both files, records a warning; `test_deleting_keeps_source_and_alias_without_resuming`. |
+| Enqueue dedup | Existing ID, canonical source, and content hash remain duplicates; diagnostic asks the user to re-run deletion. `test_failed_delete_remains_visible_and_retry_completes` covers refusal without replacing the original row. |
+| Custom-chunk insertion | Refuses `DELETING` before checking a resumable patch journal, so patch recovery cannot overwrite deletion state; `test_custom_chunks_refuse_deleting_row_with_patch_journal` pins the case the generic status check would not reach. |
+| Delete entry points | No ingestion-status allowlist; the journal remains authoritative. The lifecycle test deletes the `DELETING` row successfully on retry. |
+| Custom-chunk rollback sweep / `audit_kg_integrity` anchorless scan | Enumerate FAILED / PROCESSING and PROCESSED / FAILED, so they skip `DELETING`. The deletion purge already unions the patch journal's candidates, and a `DELETING` row carries a purge journal rather than missing anchors. |
+| Clear | Drops namespaces rather than selecting statuses; existing `tests/api/routes/test_clear_documents_*` coverage applies unchanged. |
+| Counts and pagination | Enum-derived/default counts and raw grouped status values include deletion. Lifecycle and API pagination tests pin the public projection. |
+| PostgreSQL | Public pagination binds `deleting` through the existing `status = ANY($2)` parameter; scheduling pages retain one equality branch per status. `tests/kg/postgres_impl/test_pg_scheduling_pages.py` pins both SQL shapes. No index or schema change. |
+| Redis | `_status_value` derives status ZSET keys; the transition test in `tests/kg/redis_impl/test_redis_scheduling_pages.py` checks removal from processed, insertion into deleting, count and page reads. |
+| Health scheduling view | `_build_scheduling_status` projects reservation/mailbox fields, not document status buckets; deletion does not become scheduled ingestion. |
+| WebUI | Typed status, badge, filter, per-filter page memory and all locale labels; rendered `DocumentManager.test.tsx` verifies badge, selection and filter request. |
+
+The PostgreSQL checks above verify generated SQL, not a live database planner. Backend integration tests can additionally exercise real service indexes.
 
 ## Chunk tracking authority
 
@@ -190,6 +221,7 @@ Both paths therefore flush the migrated rows before the first commit that publis
 3. **The new key is written before the old key is deleted** (f86ef93c). An orphaned new-key row is dead bookkeeping a retry overwrites; a row under neither key loses the curated list outright.
 4. **The removal, its commit and the retirement are one cancellation-deferring region** (`_finish_deferring_cancellation`), starting *before* `delete_node`: on an immediate-write graph backend (Neo4j, Memgraph, MongoDB, PostgreSQL — their graph `index_done_callback` is a no-op) the removal is durable as it returns, so a region that began at the commit would already be too late.
 5. **A failure after a durable graph mutation is raised as `VectorStorageConsistencyError`.** `_edit_entity_impl`'s `allow_merge` branch re-raises only that type and folds everything else into a partial-success summary answering HTTP 200 with `final_entity` set to the source — a source the commit has just removed. A landed merge must never be reported as one that did not happen.
+6. **The removed side is addressed by its stored name only** (`_require_stored_entity_name`). That covers the sources of `amerge_entities` and the entity an `aedit_entity` call renames. Retrying is how the residues below heal, and a client may resend a request that had succeeded. A source name resolved to its normalized spelling would make the second call unsafe: the first one removed the exact legacy node, so the same spelling now resolves to the normalized node, which can be a different live entity, and the retry merges it away. A refusal is the right answer to a retry whose source is already gone. The target side is not removed, so it keeps resolving. `adelete_by_entity` follows the same rule.
 
 ### Accepted residues
 
@@ -208,3 +240,32 @@ Both paths therefore flush the migrated rows before the first commit that publis
 - **A persistent journal** of the staged cleanup. Removed from this series on purpose in 0258af56, which kept the cancellation region and dropped the journal.
 - **An in-memory undo log** restoring the previous rows on a failed first commit. It covers only the process-survives path — the one that already heals on retry — and does nothing for a crash.
 - **Treating a call's return as durability evidence.** `delete_node` returning normally means nothing on a deferred backend; only a confirmed `index_done_callback` does, which is what `_commit_graph_or_raise` checks (an explicit `False` is a decline; backends returning `None` are unaffected).
+
+## Entity name normalization changes
+
+Read this before changing what `normalize_entity_name` (and with it the single-line mode of `normalize_extracted_info`) produces for any input.
+
+A rebuild takes the names it rebuilds from the stored objects, but their content from somewhere else: `rebuild_knowledge_from_chunks` re-parses each surviving chunk's **cached LLM output** with the normalizer of the running code, and `_rebuild_single_entity` / `_rebuild_single_relationship` keep only the records whose re-parsed name equals the stored key. Stored names, by contrast, were produced by the normalizer of whatever version extracted them, and nothing migrates them. A change to the rules therefore decides, for every stored object, which of its cached records the next rebuild still finds.
+
+### The rule
+
+> **A change may only merge names that used to differ, never split names that used to be equal.** Equivalently: the new result must be a function of the old result.
+
+| Direction | Example | What the next rebuild of a stored object sees |
+|---|---|---|
+| split | `<br>` becoming a space: `AcmeCorp` and `Acme<br>Corp` were both stored as `AcmeCorp`, and now normalize to `AcmeCorp` and `Acme Corp` | **Some** records still match. The object is rebuilt from those alone, the no-data fallback never runs, and the facts of the other records are dropped from its description. **Data is lost.** |
+| merge | collapsing whitespace: `Acme\nCorp` and `Acme  Corp` were two stored names, and now both normalize to `Acme Corp` | Each old object matches **all** of its records or **none** of them, because every raw spelling that produced its name moves to the same new name. "None" takes the existing no-data path (`structural_fallback` keeps the stored semantic fields under the rollback policy; otherwise the entity is re-summarized from its relations). |
+
+A split also breaks the agreement between extraction paths in a fresh graph: an entity and a relation endpoint that spelled the same name differently land on different nodes. That was the case when whitespace was collapsed *before* the non-breaking space conversion, so `Acme&nbsp;&nbsp;Corp` kept two spaces while `Acme  Corp` got one; the collapse now runs after it.
+
+### Consequences in the current rules
+
+- Paragraph and line break tags are **removed** from a single-line value (`Acme<br>Corp` → `AcmeCorp`), not replaced with a space, although a space would read better.
+- Vertical tab and form feed stay **deleted** by `sanitize_text_for_encoding` in a single-line value, for the same reason. Descriptions convert them to a line break first.
+- The whitespace collapse (spaces, tabs, `\n`, `\r`, U+0085, U+2028, U+2029 into one space) runs **after** the rules that produce the value, so it can only merge.
+- The rules that remove the space between Chinese characters, and between Chinese and Latin text, run **a second time on the final result** of a single-line value whose inner quotes are removed (names, relation endpoints, types, keywords). Removing a quote next to a Chinese character can leave such a space behind (`Apple "苹果"` → `Apple 苹果`), which the first run was too early to see, while the unquoted spelling gives `Apple苹果`. The second run comes after the collapse, the strip and the numeric filters, so it is a function of the previous result and can only merge. The extraction parsers cut a name to `DEFAULT_ENTITY_NAME_MAX_LENGTH` characters and `DEFAULT_ENTITY_NAME_MAX_BYTES` bytes, and the stored key is the cut name, so they run the second pass **after the cut** (`_finalize_extracted_identifier`, with `normalize_entity_name(..., final_space_pass=False)` before it). Run before the cut, a pass that shortens a name lets two spellings that used to be cut to one key be cut to two: with `p = "A" * 255`, `p + " B"` and `p + ' "苹果"'` were both stored as `p + " "`, and the second would become `p + "苹"`. A future rule that changes a name's length has the same problem: run before the cut, it can split names even when it only merges uncut ones.
+- Descriptions are not identifiers and are free to change: there, tags and line break characters become `\n`.
+
+### Accepted residue
+
+An object stored under a name the current rules no longer produce (`Acme\nCorp`, `Acme  Corp`) is not migrated: a new extraction of the same entity lands on the merged name, a second node next to the old one. Harmless in direction (an extra node, nothing deleted). Manual edits and merges still reach the old node because `aedit_entity` / `amerge_entities` try the exact spelling before the normalized one, which is also the way to fold the two together.

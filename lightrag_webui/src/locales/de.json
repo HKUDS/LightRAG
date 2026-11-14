@@ -153,6 +153,7 @@
         "parse": "Parsing",
         "analyze": "Analyse",
         "process": "Extraktion",
+        "deleting": "Wird gelöscht",
         "failed": "Fehler"
       },
       "status": {
@@ -163,6 +164,7 @@
         "analyzing": "Analyse",
         "processing": "Extraktion",
         "pending": "Ausstehend",
+        "deleting": "Wird gelöscht",
         "failed": "Fehler"
       },
       "errors": {

@@ -242,8 +242,9 @@ def _make_db(monkeypatch, connection, *, attempts: int = 3) -> PostgreSQLDB:
     pool = _FakePool(connection)
 
     async def _ensure_pool() -> None:
-        # _before_sleep calls _reset_pool(), which clears self.pool; restore it so a
-        # retried attempt has a pool to acquire from, as reconnecting would in reality.
+        # A failed attempt makes _run_with_retry() reset the pool it used, which
+        # clears self.pool; restore it so a retried attempt has a pool to acquire
+        # from, as reconnecting would in reality.
         db.pool = pool
 
     monkeypatch.setattr(db, "_ensure_pool", _ensure_pool)

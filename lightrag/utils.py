@@ -19,6 +19,7 @@ import time
 import uuid
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -1236,7 +1237,18 @@ def priority_limit_async_func_call(
 
     Returns:
         Decorator function
+
+    Raises:
+        ValueError: ``max_size`` is below 1. Exactly ``max_size`` workers are
+            dispatched, so a non-positive limit would leave every wrapped
+            call queued forever.
     """
+    if max_size < 1:
+        raise ValueError(
+            f"{queue_name}: max_size must be >= 1 (a non-positive limit "
+            "dispatches no workers, so the wrapped calls would never run); "
+            f"got {max_size}"
+        )
 
     def final_dec(func):
         # Ensure func is callable
@@ -1286,6 +1298,7 @@ def priority_limit_async_func_call(
         publish_stats = False
         shared = None  # lazily imported lightrag.kg.shared_storage module
         work_available = asyncio.Event()
+        queue_waiters: deque[asyncio.Future] = deque()
         admission_cond = asyncio.Condition()
         # Logical queued count: live tasks waiting in the queue (excludes
         # running tasks and cancelled zombies) — same capacity semantics as
@@ -1548,6 +1561,91 @@ def priority_limit_async_func_call(
             if publish_stats:
                 await _publish_stats(force=True)
 
+        async def _execute_call(
+            task_state: TaskState, args: tuple, kwargs: dict, ctx: contextvars.Context
+        ):
+            # Execute the call under the enqueuer's captured
+            # context, not the worker's creation-time context
+            # (asyncio.Task snapshots contextvars once, at
+            # create_task() time, and this worker task is
+            # long-lived — reused across many unrelated
+            # calls). ctx.run(asyncio.ensure_future, ...)
+            # schedules the coroutine as a fresh Task whose
+            # own context is copied from ctx (works on
+            # Python 3.10, unlike create_task's context=
+            # kwarg which needs 3.11+).
+            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
+
+            # A running call has three cancellation sources: the caller
+            # abandoning it, the execution timeout, and the worker being
+            # cancelled by a forced shutdown. All three go through
+            # cancel_once, so the call is cancelled once: a second cancel
+            # would land in the cleanup the first one started (an async
+            # finally / __aexit__ closing the provider client) and abort it.
+            # This is why the timeout is a timer owned here rather than
+            # asyncio.wait_for, and why the await below is shielded: both
+            # would otherwise cancel the call without consulting the guard.
+            # The one exception is a worker cancelled while the call is
+            # already unwinding: it waits cleanup_timeout, then forces.
+            cancel_sent = False
+            timed_out = False
+
+            def cancel_once() -> bool:
+                nonlocal cancel_sent
+                if cancel_sent or exec_task.done():
+                    return False
+                cancel_sent = True
+                exec_task.cancel()
+                return True
+
+            def cancel_execution(future):
+                if future.cancelled():
+                    cancel_once()
+
+            def expire_execution():
+                nonlocal timed_out
+                timed_out = cancel_once()
+
+            # The caller awaits a separate result future, not the execution task.
+            task_state.future.add_done_callback(cancel_execution)
+            timeout_handle = None
+            if max_execution_timeout is not None:
+                timeout_handle = asyncio.get_running_loop().call_later(
+                    max_execution_timeout, expire_execution
+                )
+            try:
+                return await asyncio.shield(exec_task)
+            except asyncio.CancelledError:
+                if not exec_task.done():
+                    # The call is still running, so this is the worker
+                    # itself being cancelled (a forced shutdown).
+                    if not cancel_once():
+                        # Already unwinding from an earlier cancel: let the
+                        # cleanup finish, and force it only if it overruns.
+                        await asyncio.wait({exec_task}, timeout=cleanup_timeout)
+                        if not exec_task.done():
+                            exec_task.cancel()
+                    # The worker holds the call's slot until the call is gone.
+                    await asyncio.wait({exec_task})
+                    if not exec_task.cancelled():
+                        exec_task.exception()  # mark retrieved
+                    raise
+                # Report the timeout only when it is what cancelled the call.
+                if timed_out and exec_task.cancelled():
+                    raise asyncio.TimeoutError from None
+                raise
+            finally:
+                if timeout_handle is not None:
+                    timeout_handle.cancel()
+                task_state.future.remove_done_callback(cancel_execution)
+
+        def _wake_next_submitter():
+            while queue_waiters:
+                waiter = queue_waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(None)
+                    break
+
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
@@ -1565,6 +1663,8 @@ def priority_limit_async_func_call(
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
+
+                        _wake_next_submitter()
 
                         # Get task state and mark worker as started
                         async with task_states_lock:
@@ -1589,25 +1689,7 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute the call under the enqueuer's captured
-                            # context, not the worker's creation-time context
-                            # (asyncio.Task snapshots contextvars once, at
-                            # create_task() time, and this worker task is
-                            # long-lived — reused across many unrelated
-                            # calls). ctx.run(asyncio.ensure_future, ...)
-                            # schedules the coroutine as a fresh Task whose
-                            # own context is copied from ctx (works on
-                            # Python 3.10, unlike create_task's context=
-                            # kwarg which needs 3.11+).
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task, timeout=max_execution_timeout
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1849,19 +1931,7 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
-                            # Run under the enqueuer's captured context, not
-                            # this long-lived worker's creation-time context
-                            # — see the matching comment in worker().
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task,
-                                    timeout=max_execution_timeout,
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -2167,6 +2237,8 @@ def priority_limit_async_func_call(
                     admission_cond.notify_all()
             else:
                 accepting_new_tasks = False
+                while queue_waiters:
+                    _wake_next_submitter()
 
             drain_timed_out = False
             if graceful and queue is not None:
@@ -2347,6 +2419,7 @@ def priority_limit_async_func_call(
             # From here the reservation belongs to the exactly-once rule
             # (worker_started transfer, or the finally cleanup below).
 
+            submitted = False
             try:
                 active_futures.add(future)
 
@@ -2366,6 +2439,7 @@ def priority_limit_async_func_call(
                 # (priority, count, ...) tuple keeps heap ordering intact.
                 queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
+                submitted = True
                 work_available.set()
                 await _publish_stats()
 
@@ -2414,7 +2488,17 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
+                    cancelled_total += 1
+                raise
             finally:
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 notify_needed = False
                 async with task_states_lock:
@@ -2437,7 +2521,12 @@ def priority_limit_async_func_call(
             **kwargs,
         ):
             """
-            Execute function with enhanced priority-based concurrency control and timeout handling
+            Execute function with enhanced priority-based concurrency control and timeout handling.
+
+            Caller cancellation and _timeout are propagated to the running coroutine.
+            Cancellation is cooperative: capacity is released when that coroutine
+            exits, which can be before synchronous SDK work in a background thread
+            or an already accepted remote request stops.
 
             Args:
                 *args: Positional arguments passed to the function
@@ -2452,6 +2541,7 @@ def priority_limit_async_func_call(
             Raises:
                 TimeoutError: If the function call times out at any level
                 QueueFullError: If the queue is full and waiting times out
+                RuntimeError: If shutdown closes admission, including while waiting for queue capacity
                 Any exception raised by the decorated function
             """
             nonlocal submitted_total, completed_total, cancelled_total, failed_total
@@ -2478,6 +2568,7 @@ def priority_limit_async_func_call(
                 future=future, start_time=asyncio.get_running_loop().time()
             )
 
+            submitted = False
             try:
                 # Register task state
                 async with task_states_lock:
@@ -2499,32 +2590,52 @@ def priority_limit_async_func_call(
                 # limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
-                # Queue the task with timeout handling
-                try:
+                async def enqueue():
+                    nonlocal rejected_total
+                    # Queue.shutdown() only exists from Python 3.13, so before
+                    # that nothing can wake a blocked bounded Queue.put() when
+                    # shutdown starts. Wait for capacity or closure, then admit
+                    # without yielding so shutdown cannot race the final check.
+                    while queue.full() and accepting_new_tasks:
+                        waiter = asyncio.get_running_loop().create_future()
+                        queue_waiters.append(waiter)
+                        try:
+                            await waiter
+                        except BaseException:
+                            waiter.cancel()
+                            try:
+                                queue_waiters.remove(waiter)
+                            except ValueError:
+                                pass
+                            # A selected submitter can be cancelled before
+                            # using its slot. Pass it on, as Queue.put() does.
+                            if not queue.full() and not waiter.cancelled():
+                                _wake_next_submitter()
+                            raise
                     if not accepting_new_tasks:
                         rejected_total += 1
                         raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                    queue.put_nowait(
+                        (_priority, current_count, task_id, args, kwargs, ctx)
+                    )
+
+                # Queue the task with timeout handling
+                try:
                     if _queue_timeout is not None:
-                        await asyncio.wait_for(
-                            queue.put(
-                                (_priority, current_count, task_id, args, kwargs, ctx)
-                            ),
-                            timeout=_queue_timeout,
-                        )
+                        await asyncio.wait_for(enqueue(), timeout=_queue_timeout)
                     else:
-                        await queue.put(
-                            (_priority, current_count, task_id, args, kwargs, ctx)
-                        )
+                        await enqueue()
                     submitted_total += 1
+                    submitted = True
                     await _publish_stats()
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
                     )
-                except Exception as e:
-                    # Clean up on queue error
+                except Exception:
+                    # Admission failed: no worker will consume this future.
                     if not future.done():
-                        future.set_exception(e)
+                        future.cancel()
                     raise
 
                 # Wait for result with timeout handling
@@ -2575,8 +2686,18 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
+                    cancelled_total += 1
+                raise
             finally:
                 # Ensure cleanup
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 async with task_states_lock:
                     task_states.pop(task_id, None)
@@ -4583,6 +4704,33 @@ async def _cooperative_yield(iteration: int, every: int = 64) -> None:
         await asyncio.sleep(0)
 
 
+async def cancel_and_drain_tasks(tasks: Iterable[asyncio.Task]) -> None:
+    """Cancel every unfinished task in *tasks* and wait until all have ended.
+
+    Use it on the exit path of any coroutine that owns child tasks and waits
+    on them with ``asyncio.wait`` (or has not started waiting yet): neither
+    stops the children, so without this a cancelled or failed parent leaves
+    them running after it has returned. Every child's outcome is retrieved,
+    so none is reported as "Task exception was never retrieved".
+
+    Never raises for a child's failure or cancellation. It awaits only when a
+    child was still running, so on an exit where every child has finished it
+    adds no await point -- safe in a ``finally`` that must not open a fresh
+    cancellation window on the success path. A cancellation of the caller
+    while it does wait propagates as usual (``gather`` then cancels the
+    children it was still waiting on).
+    """
+    tasks = list(tasks)
+    running = [task for task in tasks if not task.done()]
+    for task in running:
+        task.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+    for task in tasks:
+        if not task.cancelled():
+            task.exception()  # mark retrieved; never raises for a done task
+
+
 async def wait_tasks_with_drain(
     tasks: list[asyncio.Task],
     *,
@@ -4660,9 +4808,7 @@ async def wait_tasks_with_drain(
         # propagating so no task keeps writing in the background. Per-task
         # CancelledError stored in a task's own result is caught by the
         # inner handler and does NOT take this path.
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await cancel_and_drain_tasks(tasks)
         raise
 
     if first_exception is not None:
@@ -5810,8 +5956,41 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
+def remove_spaces_next_to_chinese(text: str, *, multiline: bool = False) -> str:
+    """Remove the spaces between Chinese characters, and between Chinese and
+    Latin text (letters, digits and ``()[]@#$%!&*-=+_``).
+
+    These are the space rules of :func:`normalize_extracted_info`, which runs
+    them itself. In free text (``multiline``) only horizontal whitespace is a
+    space, so a line break between two Chinese characters stays.
+    """
+    space = r"[^\S\n]+" if multiline else r"\s+"
+    # Use regex to remove spaces between Chinese characters
+    # Regex explanation:
+    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
+    # {space}: One or more whitespace characters
+    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
+    text = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", text)
+
+    # Remove spaces between Chinese and English/numbers/symbols
+    text = re.sub(
+        rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])",
+        "",
+        text,
+    )
+    return re.sub(
+        rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])",
+        "",
+        text,
+    )
+
+
 def sanitize_and_normalize_extracted_text(
-    input_text: str, remove_inner_quotes=False
+    input_text: str,
+    remove_inner_quotes=False,
+    *,
+    multiline: bool = False,
+    final_space_pass: bool = True,
 ) -> str:
     """Sanitize and normalize extracted text
 
@@ -5822,27 +6001,65 @@ def sanitize_and_normalize_extracted_text(
             normalize non-breaking spaces. Matching outer quotation marks are
             removed independently of this option only when the enclosed text
             contains no corresponding quote characters.
+        multiline: ``True`` for free text (descriptions), whose line breaks
+            are kept; ``False`` (default) for single-line values such as
+            names, types and keywords. See :func:`normalize_extracted_info`.
+        final_space_pass: see :func:`normalize_extracted_info`.
 
     Returns:
         Sanitized and normalized text string
     """
+    if multiline and input_text:
+        # Vertical tab (a soft line break in a PowerPoint text box) and form
+        # feed are control characters the sanitizer deletes. In free text they
+        # are line breaks, so convert them first. In a single-line value they
+        # stay deleted: turning them into a space would split a name the
+        # current rule already merges (see normalize_extracted_info).
+        input_text = input_text.replace("\v", "\n").replace("\f", "\n")
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
         normalized_text = normalize_extracted_info(
-            safe_input_text, remove_inner_quotes=remove_inner_quotes
+            safe_input_text,
+            remove_inner_quotes=remove_inner_quotes,
+            multiline=multiline,
+            final_space_pass=final_space_pass,
         )
         return normalized_text
     return ""
 
 
-def normalize_entity_name(input_text: str) -> str:
-    """Normalize an entity identifier using the extraction naming contract."""
-    return sanitize_and_normalize_extracted_text(input_text, remove_inner_quotes=True)
+def normalize_entity_name(input_text: str, *, final_space_pass: bool = True) -> str:
+    """Normalize an entity identifier using the extraction naming contract.
+
+    A caller that caps the identifier's length must pass
+    ``final_space_pass=False`` and run :func:`remove_spaces_next_to_chinese`
+    on the capped result, as the extraction parsers in ``lightrag.operate`` do
+    (see :func:`normalize_extracted_info`).
+    """
+    return sanitize_and_normalize_extracted_text(
+        input_text, remove_inner_quotes=True, final_space_pass=final_space_pass
+    )
 
 
-def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
+def normalize_extracted_info(
+    name: str,
+    remove_inner_quotes=False,
+    *,
+    multiline: bool = False,
+    final_space_pass: bool = True,
+) -> str:
     """Normalize entity/relation names and description with the following rules:
-    - Clean HTML tags (paragraph and line break tags)
+    - Paragraph and line break tags (``<p>``, ``</p>``, ``<br>``, ``<br/>``,
+      ``<br />`` ...): removed in a single-line value, a line break when
+      ``multiline`` is set
+    - multiline = False (names, types, keywords): once the rules below have
+      rewritten the value, and before the numeric filters and the final space
+      pass, collapse every run of spaces, tabs and line breaks (``\\n``,
+      ``\\r``, U+0085, U+2028, U+2029) into one space, so a value never carries
+      a line break
+    - multiline = True (descriptions): those line breaks, vertical tab and
+      form feed become ``\\n``; spaces and tabs around a line break are
+      dropped, and at most one blank line is kept in a row
     - Convert Chinese symbols to English symbols
     - Remove spaces between Chinese characters
     - Remove spaces between Chinese characters and English letters/numbers
@@ -5857,6 +6074,9 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
         - Remove English quotation marks adjacent to Chinese characters
         - Convert non-breaking spaces to regular spaces
         - Convert narrow non-breaking spaces after non-digits to regular spaces
+        - Last, in a single-line value: remove the spaces this leaves between
+          Chinese characters and between Chinese and Latin text
+          (``Apple "苹果"`` gives ``Apple苹果``, as ``Apple 苹果`` does)
 
     Args:
         name: Entity name to normalize
@@ -5864,13 +6084,35 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             non-breaking-space rules above. Matching outer quotation marks are
             removed independently of this option only when the enclosed text
             contains no corresponding quote characters.
+        multiline: whether the value is free text whose line breaks are
+            kept (descriptions) or a single-line value (the default).
+        final_space_pass: ``False`` leaves out the last rule above (the
+            second run of the space rules). A caller that cuts the value to a
+            length limit passes ``False`` and runs
+            :func:`remove_spaces_next_to_chinese` on the cut value: the pass
+            shortens a value, so running it before the cut lets two spellings
+            that used to be cut to the same key be cut to different ones.
 
     Returns:
         Normalized entity name
+
+    A change to what a single-line value normalizes to may only MERGE names
+    that used to differ, never split names that used to be equal: rebuilding
+    an entity after a document deletion re-parses the cached LLM output with
+    the current rules and matches it by the stored name, so a split drops the
+    facts of the records that no longer match. See "Entity name normalization
+    changes" in docs/design/PurgeRecoveryContract.md.
     """
-    # Clean HTML tags - remove paragraph and line break tags
-    name = re.sub(r"</p\s*>|<p\s*>|<p/>", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"</br\s*>|<br\s*>|<br/>", "", name, flags=re.IGNORECASE)
+    # Paragraph and line break tags stand for a line break: the delimited
+    # extraction format is one record per line, so an LLM cannot emit a real
+    # one. In free text they become one. In a single-line value they are
+    # removed, which glues "Acme<br>Corp" into "AcmeCorp": a space would read
+    # better, but it would split "Acme<br>Corp" from a stored "AcmeCorp" (see
+    # the merge-only rule in the docstring). A self-closing tag may have a
+    # space before its slash (<br />, <p />).
+    tag_replacement = "\n" if multiline else ""
+    name = re.sub(r"</p\s*>|<p\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
 
     # Chinese full-width letters to half-width (A-Z, a-z)
     name = name.translate(
@@ -5898,20 +6140,20 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     # Chinese full-width space to regular space (after other replacements)
     name = name.replace("　", " ")
 
-    # Use regex to remove spaces between Chinese characters
-    # Regex explanation:
-    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
-    # \s+: One or more whitespace characters
-    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
-    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", name)
+    # Free text: one spelling for every line break, no spaces around one, at
+    # most one blank line in a row. Strip here, so the outer-quote removal
+    # below still sees a quote a tag sat next to. Single-line values are
+    # collapsed further down instead, after the quote and non-breaking space
+    # rules, which keeps the merge-only rule.
+    if multiline:
+        name = re.sub(r"\r\n?|[\v\f\x85\u2028\u2029]", "\n", name)
+        name = re.sub(r"[ \t]*\n[ \t]*", "\n", name)
+        name = re.sub(r"\n{3,}", "\n\n", name)
+        name = name.strip()
 
-    # Remove spaces between Chinese and English/numbers/symbols
-    name = re.sub(
-        r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
-    )
-    name = re.sub(
-        r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
-    )
+    # In free text only horizontal whitespace is a "space" to remove: a line
+    # break between two Chinese characters is content and stays.
+    name = remove_spaces_next_to_chinese(name, multiline=multiline)
 
     # Remove outer quotes
     if len(name) >= 2:
@@ -5943,16 +6185,28 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             if "《" not in inner_content and "》" not in inner_content:
                 name = inner_content
 
+    removed_inner_quotes = False
     if remove_inner_quotes:
+        before_quote_removal = name
         # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # Remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+        removed_inner_quotes = name != before_quote_removal
         # Convert non-breaking space to regular space
         name = name.replace("\u00a0", " ")
         # Convert narrow non-breaking space to regular space when after non-digits
         name = re.sub(r"(?<=[^\d])\u202F", " ", name)
+
+    # Single-line value: collapse spaces, tabs and line breaks into one space.
+    # This runs after the non-breaking space conversions, so its result
+    # is a function of what the previous rules produced: it only merges names,
+    # and running the collapse again finds no whitespace left to change.
+    # U+00A0 / U+202F are left to the rules above (a U+202F after a digit is
+    # kept on purpose).
+    if not multiline:
+        name = re.sub(r"[ \t\n\r\x85\u2028\u2029]+", " ", name)
 
     # Remove spaces from the beginning and end of the text
     name = name.strip()
@@ -5971,6 +6225,20 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     if len(name) < 6 and should_filter_by_dots(name):
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
+
+    # Removing the inner quotes can leave a space the rules above ran too early
+    # to see: 'Apple "苹果"' became "Apple 苹果", while "Apple 苹果" gives
+    # "Apple苹果". Run them once more on the final single-line result. This
+    # comes after everything else, so it is a function of the previous result
+    # and only merges names (see the merge-only rule in the docstring).
+    # Only a removed inner quote can expose such a space: the other rules
+    # either keep the characters on both sides of a space, or (the outer
+    # quotes) leave it at an edge for the strip. So the pass is skipped when
+    # no inner quote was removed, which gives the same result. A caller that
+    # cuts the value to a length limit runs the pass after the cut instead
+    # (final_space_pass=False), so the merge-only rule holds for the cut key.
+    if final_space_pass and removed_inner_quotes and not multiline:
+        name = remove_spaces_next_to_chinese(name)
 
     return name
 

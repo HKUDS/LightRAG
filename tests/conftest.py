@@ -52,6 +52,34 @@ def lightrag_log_records():
         logger.removeHandler(handler)
 
 
+@pytest.fixture
+def emulate_windows_newlines(monkeypatch):
+    """Make ``Path.write_text`` translate newlines the way it does on Windows.
+
+    Without ``newline=``, ``Path.write_text`` turns every ``\\n`` into
+    ``os.linesep``: CRLF on Windows, a no-op on Linux and macOS. CI runs on
+    Linux only, so a test that merely asserts "no CRLF in the file" passes
+    there whether or not the code under test pins ``newline="\\n"``. Under
+    this fixture a write that leaves ``newline`` unset (or ``None``) writes
+    CRLF on every platform, so such a test goes red on Linux too. An explicit
+    ``newline`` is passed through untouched.
+    """
+    import pathlib
+
+    original = pathlib.Path.write_text
+
+    def write_text(self, data, encoding=None, errors=None, newline=None):
+        return original(
+            self,
+            data,
+            encoding=encoding,
+            errors=errors,
+            newline="\r\n" if newline is None else newline,
+        )
+
+    monkeypatch.setattr(pathlib.Path, "write_text", write_text)
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_mineru_env(monkeypatch):
     """Make every test start with parser-routing env vars in their unset state.

@@ -102,7 +102,7 @@
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 > [!WARNING]
-> **Secure the server before you start it on a shared network.** `lightrag-server` binds to all interfaces (`HOST=0.0.0.0`) and ships with authentication off, so on a cloud host every endpoint is public — and spends your LLM quota. Before the first start, either bind to a private address in `.env` (`HOST=127.0.0.1`, or a VPN / tunnel address), or configure authentication: `LIGHTRAG_API_KEY`, or `AUTH_ACCOUNTS` together with `TOKEN_SECRET` (generate one with `openssl rand -hex 32`). The Ollama-compatible `/api/*` routes stay open by default for client compatibility; set `WHITELIST_PATHS=/health` to require auth on them too. This applies to every installation method below.
+> **Secure the server before you start it on a shared network.** `lightrag-server` binds to all interfaces (`HOST=0.0.0.0`) and ships with authentication off, so on a cloud host every endpoint is public — and spends your LLM quota. Before the first start, either bind to a private address in `.env` (`HOST=127.0.0.1`, or a VPN / tunnel address), or configure authentication: `LIGHTRAG_API_KEY`, or `AUTH_ACCOUNTS` together with `TOKEN_SECRET` (generate one with `openssl rand -hex 32`). Once `LIGHTRAG_API_KEY` is set, the Ollama-compatible `/api/*` routes require it too (Ollama clients send it as `Authorization: Bearer <key>`); without a key they stay open for client compatibility. This applies to every installation method below.
 
 ### Install from PyPI
 
@@ -181,6 +181,19 @@ lightrag-server
 ```
 
 Open `http://localhost:9621/webui` for the WebUI. The interactive REST API docs are at `http://localhost:9621/docs`. Replace the host and port if you changed `HOST` / `PORT`.
+
+**Updating after `git pull`.** Re-sync with the extras you installed in Step 2, plus `--locked --inexact`. For Option B:
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # Option A: --locked --inexact --extra api
+```
+
+- **Same extras every time.** A package that only an omitted extra needs stops being kept at its locked version, and a sync without `--inexact` uninstalls it.
+- **`--locked`** installs exactly what `uv.lock` pins. If `uv.lock` is out of date with `pyproject.toml`, it stops with an error instead of rewriting `uv.lock`.
+- **`--inexact`** keeps packages that are not in `uv.lock`, such as the spaCy models from `lightrag-download-cache --spacy-install`. A plain `uv sync` removes them.
+
+If the pull changed `lightrag_webui/`, repeat Step 3 as well.
 
 ### Launch with Docker Compose
 
@@ -570,7 +583,7 @@ Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
-Migrates default-mode caches (extraction, summary, multimodal analysis) between KV storage backends, preserving workspace isolation.
+Migrates default-mode caches (extraction, summary, multimodal analysis, smart-heading) between KV storage backends, preserving workspace isolation.
 
 **`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
 

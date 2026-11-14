@@ -752,7 +752,7 @@ async def test_a_cancelled_shutdown_still_gives_the_directory_back(tmp_path):
 
 
 async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path):
-    """``_shutdown_model_queues`` can legitimately block while it drains.
+    """``_shutdown_llm_and_rerank_queues`` can legitimately block while it drains.
 
     A cancel delivered there sits ABOVE everything the teardown does, so a
     guard that starts after it protects nothing: no storage is finalized and
@@ -771,7 +771,7 @@ async def test_a_cancel_before_the_first_teardown_await_still_releases(tmp_path)
     await rag.initialize_storages()
     assert holds_working_dir_lock(str(_config_dir(tmp_path))) is True
 
-    _Spy(rag, "_shutdown_model_queues", raise_with=asyncio.CancelledError())
+    _Spy(rag, "_shutdown_llm_and_rerank_queues", raise_with=asyncio.CancelledError())
     config_finalize = _Spy(rag.configuration_storage, "finalize")
     chunks_finalize = _Spy(rag.text_chunks, "finalize")
 

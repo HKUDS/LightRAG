@@ -39,6 +39,7 @@ class _FakeDocStatusStorage:
             "processed-doc": _doc(DocStatus.PROCESSED, "processed"),
             "parsing-doc": _doc(DocStatus.PARSING, "parsing"),
             "analyzing-doc": _doc(DocStatus.ANALYZING, "analyzing"),
+            "deleting-doc": _doc(DocStatus.DELETING, "deleting"),
         }
 
     async def get_docs_paginated(
@@ -62,7 +63,7 @@ class _FakeDocStatusStorage:
         return documents[:page_size], len(documents)
 
     async def get_all_status_counts(self):
-        return {"processed": 1, "parsing": 1, "analyzing": 1}
+        return {"processed": 1, "parsing": 1, "analyzing": 1, "deleting": 1}
 
 
 _fake_doc_status = _FakeDocStatusStorage()
@@ -95,6 +96,19 @@ def test_documents_paginated_accepts_status_filter():
     payload = response.json()
     assert payload["pagination"]["total_count"] == 1
     assert [doc["id"] for doc in payload["documents"]] == ["processed-doc"]
+
+
+def test_documents_paginated_exposes_deleting_status_and_counts():
+    response = _client.post(
+        "/documents/paginated",
+        headers=_headers,
+        json={"status_filter": "deleting", "page": 1, "page_size": 10},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert [doc["id"] for doc in payload["documents"]] == ["deleting-doc"]
+    assert payload["documents"][0]["status"] == "deleting"
+    assert payload["status_counts"]["deleting"] == 1
 
 
 def test_documents_paginated_status_filters_override_status_filter():
