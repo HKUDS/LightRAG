@@ -33,10 +33,12 @@ Full contract: *JSON configuration shards* in
   refused by path, never skipped, and so is one snapshot reachable under two
   names (one physical directory holds one workspace; a start refuses to
   create that layout via ``check_snapshot_location``; both apply
-  ``physical_directory_aliases``). A directory a decomposing filesystem
-  (HFS+) lists only in NFD is named by its NFC spelling when that spelling
-  is the same directory. It reports what survives -- it cannot tell a
-  never-created snapshot from a deleted one.
+  ``physical_directory_aliases``). Spellings are never renormalized: a
+  listing that differs from a requested workspace or from its snapshot's
+  owner only in Unicode normalization, and resolves to the same directory,
+  is that workspace's own directory as a decomposing filesystem (HFS+)
+  lists it. It reports what survives -- it cannot tell a never-created
+  snapshot from a deleted one.
 
 * **Offline reads are strict.** ``read_shard_file`` returns ``None`` only
   for a file that does not exist; undecodable content or a payload that is
@@ -248,53 +250,104 @@ def _child_directories(root: str) -> list[os.DirEntry]:
     return children
 
 
-def _named_child_directories(root: str) -> list[tuple[str, os.DirEntry]]:
-    """``_child_directories`` with the workspace name each one stands for.
+def _differ_only_in_normalization(a: str, b: str) -> bool:
+    return a != b and unicodedata.normalize("NFC", a) == unicodedata.normalize("NFC", b)
 
-    A filesystem that stores names decomposed (HFS+) lists a directory
-    created under an NFC name in NFD, as its ONLY entry. When no other entry
-    carries the NFC spelling and that spelling resolves to the very same
-    directory, the NFC spelling is the name, so a workspace is never taken
-    for a second name of its own directory. A second entry -- a symlink
-    named in another normalization on a filesystem that keeps both -- keeps
-    its listed name and stays an alias. Filesystems that preserve names
-    (ext4, APFS, NTFS) list them as created and are not affected.
+
+def _snapshot_owner(directory: str) -> str | None:
+    """The workspace the snapshot in ``directory`` names as its owner;
+    ``None`` when there is no snapshot or it names none readably.
+
+    Used only to tell which spelling a listing that differs by Unicode
+    normalization alone stands for. Never raises: the snapshot is validated
+    in full where it is opened, and probed first so a FIFO is never read.
     """
-    entries = _child_directories(root)
-    listed = {entry.name for entry in entries}
-    named: list[tuple[str, os.DirEntry]] = []
-    for entry in entries:
-        name = entry.name
-        composed = unicodedata.normalize("NFC", name)
-        if (
-            composed != name
-            and composed not in listed
-            and _physical_id(os.path.join(root, composed)) == _physical_id(entry.path)
-        ):
-            name = composed
-        named.append((name, entry))
-    return named
+    from lightrag.config_store import json_shard_owner_key
+
+    path = os.path.join(directory, CONFIG_JSON_FILE_NAME)
+    try:
+        if not probe_snapshot(path):
+            return None
+        rows = read_shard_file(path) or {}
+    except ConfigurationIdentityError:
+        return None
+    row = rows.get(json_shard_owner_key())
+    value = row.get("value") if isinstance(row, dict) else None
+    owner = value.get("workspace") if isinstance(value, dict) else None
+    return owner if isinstance(owner, str) else None
 
 
 def physical_directory_aliases(working_dir: str, names) -> list[list[str]]:
     """Every group of two or more names that is ONE physical directory.
 
-    The names considered are ``names``, ``WORKING_DIR`` itself (as ``""``,
-    the empty workspace's directory) and every existing direct child
-    directory; a name whose directory does not exist yet is skipped. Each
-    group and the list are sorted. The one rule a start
-    (``check_snapshot_location``) and the migration apply, so they cannot
-    disagree about which spellings share a directory.
+    The names considered are ``names`` (the workspaces asked for),
+    ``WORKING_DIR`` itself (as ``""``, the empty workspace's directory) and
+    every existing direct child directory as listed; a name whose directory
+    does not exist yet is skipped. Each group and the list are sorted. The
+    one rule a start (``check_snapshot_location``) and the migration apply,
+    so they cannot disagree about which spellings share a directory.
+
+    A listed name is not a second name of a requested one when it differs
+    from it only in Unicode normalization, the requested spelling is not
+    listed itself, and the directory's snapshot names the requested
+    workspace or no owner at all: that is how a decomposing filesystem
+    (HFS+) lists the requested workspace's own directory. A snapshot owned
+    by the listed spelling is another workspace that a normalization-
+    insensitive filesystem (APFS) resolves both spellings to -- an alias. So
+    is a second listed entry, such as a symlink named in the other
+    normalization on a filesystem that keeps both. Every spelling is kept
+    as given; nothing is renormalized.
     """
     root = os.path.abspath(working_dir)
-    candidates = set(names) | {""}
-    candidates.update(name for name, _ in _named_child_directories(root))
-    physical: dict[tuple[int, int], list[str]] = {}
+    entries = {entry.name: entry.path for entry in _child_directories(root)}
+    requested = set(names)
+    candidates = requested | {""} | set(entries)
+    physical: dict[tuple[int, int], set[str]] = {}
     for name in candidates:
         identity = _physical_id(os.path.join(root, name) if name else root)
         if identity is not None:
-            physical.setdefault(identity, []).append(name)
-    return sorted(sorted(group) for group in physical.values() if len(group) > 1)
+            physical.setdefault(identity, set()).add(name)
+    groups: list[list[str]] = []
+    for group in physical.values():
+        kept = {
+            name
+            for name in group
+            if not (
+                name in entries
+                and name not in requested
+                and any(
+                    other in group
+                    and other not in entries
+                    and _differ_only_in_normalization(name, other)
+                    and _snapshot_owner(entries[name]) in (None, other)
+                    for other in requested
+                )
+            )
+        }
+        if len(kept) > 1:
+            groups.append(sorted(kept))
+    return sorted(groups)
+
+
+def _discovered_name(root: str, entry: os.DirEntry, listed: set[str]) -> str:
+    """The workspace a listed child directory holding a snapshot stands for:
+    its listed name, unless the snapshot's owner differs from it only in
+    Unicode normalization, is not listed itself, and resolves to this very
+    directory -- a decomposing filesystem (HFS+) listing the owner's
+    directory in another form. The owner's spelling is then kept as stored,
+    so discovery reports the name the anchor's members carry."""
+    name = entry.name
+    if unicodedata.normalize("NFC", name) == unicodedata.normalize("NFD", name):
+        return name  # Nothing normalization could change, e.g. pure ASCII.
+    owner = _snapshot_owner(entry.path)
+    if (
+        owner is not None
+        and owner not in listed
+        and _differ_only_in_normalization(name, owner)
+        and _physical_id(os.path.join(root, owner)) == _physical_id(entry.path)
+    ):
+        return owner
+    return name
 
 
 def _one_directory_error(path: str, names: list[str]) -> ConfigurationIdentityError:
@@ -335,12 +388,15 @@ def discover_shards(working_dir: str) -> list[DiscoveredShard]:
     if probe_snapshot(root_file):
         found.append(DiscoveredShard(workspace="", path=root_file))
         seen[_physical_id(root)] = ""
-    for name, entry in _named_child_directories(root):
+    children = _child_directories(root)
+    listed = {entry.name for entry in children}
+    for entry in children:
         # Only the one snapshot file inside is probed, so a link loop cannot
         # recurse.
         path = os.path.join(entry.path, CONFIG_JSON_FILE_NAME)
         if not probe_snapshot(path):
             continue
+        name = _discovered_name(root, entry, listed)
         try:
             validate_config_workspace(name)
         except ValueError as e:

@@ -715,9 +715,36 @@ class TestRebinding:
         with pytest.raises(ConfigurationIdentityError, match="'alias', 'real'"):
             discover_shards(str(tmp_path))
 
+    def _resolve_any_normalization(self, monkeypatch):
+        """Emulate a normalization-insensitive lookup (APFS, HFS+): a path
+        spelled in either normalization reaches the one directory."""
+        import unicodedata
+
+        from lightrag import config_shards
+
+        real = config_shards._physical_id
+
+        def insensitive(path):
+            found = real(path)
+            if found is not None:
+                return found
+            parent, base = os.path.split(path)
+            try:
+                siblings = os.listdir(parent)
+            except OSError:
+                return None
+            for sibling in siblings:
+                if unicodedata.normalize("NFC", sibling) == unicodedata.normalize(
+                    "NFC", base
+                ):
+                    return real(os.path.join(parent, sibling))
+            return None
+
+        monkeypatch.setattr(config_shards, "_physical_id", insensitive)
+
     def _list_decomposed(self, monkeypatch, root):
-        """Emulate HFS+, which lists a directory created under an NFC name in
-        NFD (its only entry) and resolves either spelling to it."""
+        """Emulate HFS+ listing: a directory created under an NFC name is
+        listed in NFD, as its only entry."""
         import unicodedata
 
         from lightrag import config_shards
@@ -735,21 +762,50 @@ class TestRebinding:
             lambda r: [_Entry(e) for e in real(r)] if r == str(root) else real(r),
         )
 
-    def test_a_decomposed_listing_is_not_a_second_name_of_the_workspace(
+    async def test_a_decomposed_listing_is_not_a_second_name_of_the_workspace(
         self, tmp_path, monkeypatch
     ):
-        """On HFS+ the NFC workspace 'café' is listed as NFD: one directory,
-        one name. It must neither refuse the start nor surface under a name
-        the anchor's members do not carry."""
+        """HFS+: the NFC workspace 'café' is listed as NFD. One directory, one
+        workspace: the start passes and discovery reports the owner's
+        spelling, the one the anchor's members carry."""
         from lightrag.config_shards import check_snapshot_location
 
         workspace = "caf\u00e9"
-        (tmp_path / workspace).mkdir()
-        (tmp_path / workspace / "kv_workspace_config.json").write_text("{}")
+        await _bind(tmp_path, workspace)
+        self._resolve_any_normalization(monkeypatch)
         self._list_decomposed(monkeypatch, tmp_path)
 
         check_snapshot_location(str(tmp_path), workspace)
         assert [s.workspace for s in discover_shards(str(tmp_path))] == [workspace]
+        assert cs.surviving_json_group(str(tmp_path))[1] == (workspace,)
+
+    async def test_a_decomposed_workspace_name_keeps_its_own_spelling(
+        self, tmp_path, monkeypatch
+    ):
+        """APFS keeps the NFD name 'cafe\u0301' as created and resolves the NFC
+        spelling to it too. The NFD workspace must not be relabelled NFC and
+        then taken for two workspaces sharing its directory."""
+        from lightrag.config_shards import check_snapshot_location
+
+        workspace = "cafe\u0301"
+        await _bind(tmp_path, workspace)
+        self._resolve_any_normalization(monkeypatch)
+
+        check_snapshot_location(str(tmp_path), workspace)
+        assert [s.workspace for s in discover_shards(str(tmp_path))] == [workspace]
+
+    async def test_the_other_spelling_of_an_owned_directory_is_an_alias(
+        self, tmp_path, monkeypatch
+    ):
+        """APFS: the NFC 'café' resolves to the directory the NFD workspace
+        owns. Two workspaces would share one directory: refused."""
+        from lightrag.config_shards import check_snapshot_location
+
+        await _bind(tmp_path, "cafe\u0301")
+        self._resolve_any_normalization(monkeypatch)
+
+        with pytest.raises(ConfigurationIdentityError, match="one physical directory"):
+            check_snapshot_location(str(tmp_path), "caf\u00e9")
 
     @pytest.mark.skipif(sys.platform == "win32", reason="needs symlinks")
     def test_a_link_named_in_another_normalization_is_still_an_alias(self, tmp_path):
