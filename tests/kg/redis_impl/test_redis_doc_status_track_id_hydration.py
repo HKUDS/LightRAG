@@ -60,7 +60,11 @@ def redis_doc_status(monkeypatch):
         embedding_func=_DummyEmbeddingFunc(),
         workspace="test",
     )
-    storage._initialized = True  # skip the real ping in initialize()
+    # The constructor no longer connects, so stand in for initialize():
+    # attach the fake client and mark the storage ready (skips the real ping).
+    storage._pool = MagicMock(name="fake_pool")
+    storage._redis = fake
+    storage._initialized = True
     return storage
 
 

@@ -68,11 +68,12 @@ Notes:
 | **Parameter** | **Type** | **Explanation** | **Default** |
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `./rag_storage` |
-| **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
+| **workspace** | str | Workspace name for data isolation between different LightRAG Instances; names starting with `$` are reserved and rejected | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
 | **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`PGTableGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
+| **config_storage** | `str` | Storage type for the server's own configuration — the per-workspace embedding baselines, in one container named in code rather than by a workspace. Supported types: `JsonKVStorage`,`PGKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage`; anything else is refused at construction, by name. **Left unset it follows `kv_storage`**, which is where an existing deployment's records already are — except that a `RedisKVStorage` deployment defaults to `JsonKVStorage` with a warning, since Redis is not admitted here. Explicitly selecting Redis is still refused. The JSON backend keeps one snapshot per workspace at the fixed path `working_dir/<workspace>/kv_workspace_config.json` (`working_dir/kv_workspace_config.json` for the empty workspace); no parameter moves it, and a workspace registers itself in the group on its first start. Historical Redis configuration records are not migrated; missing baselines require a positive adoption probe or confirmed-empty data. The first `initialize_storages()` **binds** the deployment to the container it opened. The binding is recorded in `working_dir/config_storage_anchor.json` (backend type plus the container's UUID, and for JSON the registered workspaces; a fixed path). Every later start refuses another type or another UUID with a `ConfigurationIdentityError`, so changing `kv_storage` while this is unset is refused if it selects a different configuration container. Select the anchored backend explicitly, or move the container with `lightrag-migrate-config`. Deleting the anchor file is the sanctioned rebind, with every process using this `working_dir` (servers and SDK instances) stopped first: a running one never rereads the anchor, so a later start or worker respawn would bind the new selection while it keeps the old container. `working_dir` must persist whichever backends are selected. | follows `kv_storage`; JSON for Redis |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **embedding_chunk_overlap_token_size** | `int` | Overlap token size the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `chunk_overlap_token_size` (some chunking strategies, e.g. V, deliberately zero that one out for unrelated reasons); `0` disables the fallback's overlap; negative values raise `ValueError` at construction. Configured by env var `EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE`. | `100` |
@@ -896,7 +897,7 @@ OpenSearchKVStorage  OpenSearch
 ```
 NetworkXStorage          NetworkX (default)
 Neo4JStorage             Neo4J
-PGGraphStorage           PostgreSQL with AGE plugin
+PGGraphStorage           PostgreSQL with AGE plugin (deprecated)
 PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
@@ -908,7 +909,9 @@ OpenSearchGraphStorage   OpenSearch
 > JSONB, so it runs on any stock PostgreSQL 14+ — including managed instances
 > (RDS, Cloud SQL, Supabase, Neon) where the AGE extension cannot be installed.
 > It shares the same `POSTGRES_*` configuration and connection pool as the other
-> PG storages. Choose `PGGraphStorage` only if you specifically need AGE/Cypher.
+> PG storages. `PGGraphStorage` is deprecated and will be removed in a future
+> release; `python -m lightrag.tools.migrate_graph_storage --apply` moves an
+> existing AGE graph to `PGTableGraphStorage` without re-indexing.
 
 **VECTOR_STORAGE**
 ```
@@ -1054,7 +1057,7 @@ PostgreSQL can provide a one-stop solution as KV store, VectorDB (pgvector), and
 
 - PostgreSQL is lightweight; the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
 - If you prefer Docker and graph storage is `PGTableGraphStorage` (the recommended choice, which needs no Apache AGE), the official pgvector image `pgvector/pgvector:pg18` is all you need.
-- Only `PGGraphStorage` requires an AGE-bundled image; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
+- Only the deprecated `PGGraphStorage` requires an AGE-bundled image, which the setup wizard generates only for a deployment that already uses `PGGraphStorage`; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
 - How to start: see [examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
 - For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 

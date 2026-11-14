@@ -281,15 +281,20 @@ the bundle format and the full deployment guide.
 
 ### PostgreSQL image
 
-The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:pg18-age-pgvector`. This image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup. The published tag is a multi-architecture manifest covering `linux/amd64` and `linux/arm64`.
+The interactive setup defaults PostgreSQL to the official pgvector image, `pgvector/pgvector:pg18-trixie`. pgvector is the only extension the PostgreSQL storages need: `PGVectorStorage` uses it, and `PGTableGraphStorage`, the PostgreSQL graph storage, keeps the entity-relation graph in ordinary indexed tables. The tag is a multi-architecture manifest covering `linux/amd64` and `linux/arm64`.
 
-The image no longer ships fixed credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables. The setup wizard prompts for these values (defaulting to `rag` / `rag` / `lightrag`) and injects them into the generated `docker-compose.final.yml`, so you can choose any user, password, and database name.
+On first start the image creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables. The setup wizard prompts for these values (defaulting to `rag` / `rag` / `lightrag`) and injects them into the generated `docker-compose.final.yml`, so you can choose any user, password, and database name.
 
-**Prefer the official pgvector image when you don't need AGE**: Apache AGE is required only by `PGGraphStorage`. The recommended PostgreSQL graph storage is `PGTableGraphStorage`, which keeps the entity-relation graph in ordinary indexed tables and needs no extension at all — so if graph storage is `PGTableGraphStorage` (or lives on another backend such as Neo4j entirely), replace the image above with the latest official pgvector image `pgvector/pgvector:pg18`. Only `PGGraphStorage` still requires the AGE-bundled image. Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
+**Deployments on `PGGraphStorage`.** `PGGraphStorage` is deprecated and will be removed in a future release. It needs Apache AGE, which the pgvector image does not have. The wizard offers `PGGraphStorage` only to a deployment whose `.env` already selects it. Such a deployment can keep it: the wizard then generates the PostgreSQL service with `gzdaniel/postgres-for-rag:pg18-age-pgvector`, the image earlier versions used for everyone, and a rerun keeps the image of a PostgreSQL service it already manages. To leave AGE behind:
 
-#### Build the PostgreSQL image
+- Move the graph to `PGTableGraphStorage` first, while the AGE image is still running: stop LightRAG and run `python -m lightrag.tools.migrate_graph_storage --apply` (see [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)). The graph is copied without re-indexing the documents. Without AGE, `PGGraphStorage` cannot start and the tool cannot read the old graph.
+- Then choose `PGTableGraphStorage` with `make env-storage` and set `postgres.image` to `pgvector/pgvector:pg18-trixie`. That tag has the same Debian base as the AGE image, so the existing data volume opens as it is. The plain `pgvector/pgvector:pg18` tag is built on an older Debian, and PostgreSQL then warns about a collation version mismatch on every connection to a database the AGE image created.
 
-The default PostgreSQL image can be rebuilt from the repository root with `Dockerfile.postgres`. The Dockerfile starts from `pgvector/pgvector:pg18-trixie`, builds Apache AGE for PostgreSQL 18, and installs an init script that creates both the `vector` and `age` extensions for new databases.
+Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
+
+#### Build the AGE-enabled PostgreSQL image
+
+Only `PGGraphStorage` needs Apache AGE. An AGE-enabled image can be built from the repository root with `Dockerfile.postgres`. The Dockerfile starts from `pgvector/pgvector:pg18-trixie`, builds Apache AGE for PostgreSQL 18, and installs an init script that creates both the `vector` and `age` extensions for new databases.
 
 For local development or single-host deployment:
 

@@ -14,7 +14,13 @@ from ..base import BaseVectorStorage
 from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
-from ..utils import _cooperative_yield, compute_mdhash_id, logger, validate_workspace
+from ..utils import (
+    _cooperative_yield,
+    compute_mdhash_id,
+    logger,
+    validate_workspace,
+    validate_workspace_override,
+)
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
@@ -522,7 +528,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
         if qdrant_workspace and qdrant_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = qdrant_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "QDRANT_WORKSPACE", qdrant_workspace
+            )
             logger.info(
                 f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -1134,6 +1142,41 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 logger.debug(
                     f"[{self.workspace}] No relations found for entity {entity_name}"
                 )
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+
+        # Scoped by the workspace payload filter, not just the collection:
+        # Qdrant partitions workspaces inside ONE collection, so an unfiltered
+        # read would report a sibling workspace's rows as this one's.
+        # `scroll(limit=1)` rather than `count`: existence is all that is
+        # asked, and an approximate count can answer 0 for a populated
+        # collection.
+        points, _ = self._client.scroll(
+            collection_name=self.final_namespace,
+            scroll_filter=models.Filter(
+                must=[workspace_filter_condition(self.effective_workspace)]
+            ),
+            with_payload=False,
+            with_vectors=False,
+            limit=1,
+        )
+        return not points
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer."""

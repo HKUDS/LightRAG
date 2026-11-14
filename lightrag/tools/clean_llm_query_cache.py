@@ -31,6 +31,7 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
+from lightrag.constants import DEFAULT_WORKING_DIR
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.kg.shared_storage import set_all_update_flags
 from lightrag.namespace import NameSpace
@@ -265,7 +266,7 @@ class CleanupTool:
 
         # Create global config
         global_config = {
-            "working_dir": os.getenv("WORKING_DIR", "./rag_storage"),
+            "working_dir": os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
             "embedding_batch_num": 10,
         }
 

@@ -10,7 +10,12 @@ import pytest
 
 from lightrag import LightRAG, utils_graph
 from lightrag.constants import GRAPH_FIELD_SEP
-from lightrag.utils import EmbeddingFunc, Tokenizer, make_relation_chunk_key
+from lightrag.utils import (
+    EmbeddingFunc,
+    Tokenizer,
+    compute_mdhash_id,
+    make_relation_chunk_key,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -299,18 +304,47 @@ async def test_sdk_creation_migrates_legacy_tracking_first(
     rag = creation_rag
     graph = rag.chunk_entity_relation_graph
     # Model an upgraded working directory: graph provenance exists on disk,
-    # but neither tracking namespace has been seeded yet.
+    # but neither tracking namespace has been seeded yet. The entity VECTORS
+    # are seeded alongside the nodes because every real writer produces both --
+    # a graph entity with no vector and no document behind it is the shape the
+    # startup gate reads as "this workspace lost its vectors", so a fixture
+    # that omitted them would be modelling a state the product never reaches.
     for name in ("LegacyA", "LegacyB"):
         await graph.upsert_node(
             name,
             {"entity_id": name, "description": name, "source_id": "legacy-chunk"},
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(name, prefix="ent-"): {
+                    "entity_name": name,
+                    "source_id": "legacy-chunk",
+                    "content": name,
+                }
+            }
         )
     await graph.upsert_edge(
         "LegacyA",
         "LegacyB",
         {"description": "legacy", "source_id": "legacy-chunk", "weight": 1.0},
     )
+    # ...and the relation vector alongside the edge, for the same reason: every
+    # real edge writer (merge_nodes_and_edges, acreate_relation,
+    # ainsert_custom_kg) writes both, so an edge with no relation vector is the
+    # shape the startup gate reads as a lost vector store.
+    await rag.relationships_vdb.upsert(
+        {
+            compute_mdhash_id("LegacyA" + "LegacyB", prefix="rel-"): {
+                "src_id": "LegacyA",
+                "tgt_id": "LegacyB",
+                "source_id": "legacy-chunk",
+                "content": "legacy",
+            }
+        }
+    )
     await graph.index_done_callback()
+    await rag.entities_vdb.index_done_callback()
+    await rag.relationships_vdb.index_done_callback()
     assert await rag.entity_chunks.is_empty()
     assert await rag.relation_chunks.is_empty()
 
@@ -326,6 +360,15 @@ async def test_sdk_creation_migrates_legacy_tracking_first(
         await graph.upsert_node(
             "ManualTarget",
             {"entity_id": "ManualTarget", "description": "target", "source_id": ""},
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id("ManualTarget", prefix="ent-"): {
+                    "entity_name": "ManualTarget",
+                    "source_id": "",
+                    "content": "ManualTarget",
+                }
+            }
         )
         await graph.index_done_callback()
 

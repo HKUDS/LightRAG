@@ -50,6 +50,15 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
         issues.append(
             f"Storages not initialized (status: {rag_instance._storages_status.name})"
         )
+    elif getattr(rag_instance, "_startup_refusal", None) is not None:
+        # The storages ARE up -- which is why the status says so and why
+        # finalize_storages() can tear them down -- but initialize_storages()
+        # refused (an embedding-space verdict, or a configuration step). Reporting that instance as ready is
+        # the one thing this diagnostic must not do.
+        issues.append(
+            f"Storages are initialized but refused to serve: "
+            f"{rag_instance._startup_refusal}"
+        )
     else:
         print("✅ Storage status: INITIALIZED")
 
@@ -89,7 +98,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
     try:
         from lightrag.kg.shared_storage import get_namespace_data
 
-        get_namespace_data("pipeline_status", workspace=rag_instance.workspace)
+        await get_namespace_data("pipeline_status", workspace=rag_instance.workspace)
         print("✅ Pipeline status: INITIALIZED")
     except KeyError:
         issues.append(

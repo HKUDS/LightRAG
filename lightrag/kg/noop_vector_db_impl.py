@@ -56,6 +56,23 @@ class NoopVectorDBStorage(BaseVectorStorage):
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         return {}
 
+    async def is_empty(self) -> bool:
+        """Refuse the question rather than answer the literal truth.
+
+        This container really does hold nothing, so ``True`` would be
+        accurate -- and it is the one answer that lets the startup gate refuse
+        a deployment. Graph-only ingestion is a supported configuration whose
+        vector stores are empty by design, so an accurate answer here is a
+        false outage waiting for the day a caller forgets to check
+        ``persists_vectors`` first. The gate does check it; this makes the
+        mistake impossible rather than merely absent.
+        """
+        raise StorageCapabilityError(
+            "NoopVectorDBStorage holds no vectors by design, so its emptiness "
+            "is not evidence about any embedding space. Check "
+            "`persists_vectors` before asking."
+        )
+
     async def index_done_callback(self) -> None:
         return None
 

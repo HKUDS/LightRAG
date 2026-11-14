@@ -28,6 +28,7 @@ from lightrag.base import (
 )
 from lightrag.constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    DEFAULT_INPUT_DIR,
     DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH,
     DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
@@ -1011,7 +1012,7 @@ def compute_file_content_hash(path_str: str) -> str | None:
 
 def configured_input_dir() -> Path:
     input_dir = os.getenv("INPUT_DIR", "").strip()
-    return Path(input_dir) if input_dir else Path.cwd() / "inputs"
+    return Path(input_dir) if input_dir else Path.cwd() / DEFAULT_INPUT_DIR
 
 
 async def resolve_existing_doc_source(

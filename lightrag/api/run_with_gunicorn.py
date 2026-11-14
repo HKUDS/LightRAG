@@ -192,6 +192,15 @@ def main():
             # Import and configure the gunicorn_config module
             from lightrag.api import gunicorn_config
 
+            # The directory the workers will actually use. The master claims
+            # it before forking, so it has to be THIS value and not whatever
+            # ``WORKING_DIR`` says: ``--working-dir`` overrides the
+            # environment for the workers and is never written back to it.
+            gunicorn_config.working_dir = global_args.working_dir
+            # Likewise the normalized workspace: the master claims ITS JSON
+            # configuration directory, which is the one every worker asks for.
+            gunicorn_config.workspace = global_args.workspace or ""
+
             # Set configuration variables in gunicorn_config, prioritizing command line arguments
             gunicorn_config.workers = (
                 global_args.workers

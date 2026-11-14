@@ -45,6 +45,46 @@ STORAGE_IMPLEMENTATIONS = {
         ],
         "required_methods": ["get_docs_by_statuses"],
     },
+    # The configuration storage is its OWN category, selected independently of
+    # the four business ones. Four backends, and the list is closed:
+    #
+    # * ``RedisKVStorage`` is deliberately absent. Redis is being retired from
+    #   business storage, and the configuration path must not be the reason
+    #   its enumeration surface is kept alive.
+    # * **No vector storage may serve here.** None appears in any KV list
+    #   today, and this records it as a rule: a vector container's name is
+    #   derived from the embedding configuration, which is exactly the
+    #   assertion the baselines exist to be independent of -- and the
+    #   configuration storage has to be readable BEFORE any vector storage
+    #   initializes (step 3 of the startup sequence).
+    #
+    # See docs/design/ConfigurationStorageContract.md.
+    "CONFIG_STORAGE": {
+        "implementations": [
+            "JsonKVStorage",
+            "MongoKVStorage",
+            "PGKVStorage",
+            "OpenSearchKVStorage",
+        ],
+        "required_methods": ["get_by_id_strict", "upsert", "iter_rows"],
+    },
+}
+
+# Backends still accepted but scheduled for removal, mapped to the recommended
+# replacement. Selecting one works unchanged; startup only warns about it.
+DEPRECATED_STORAGES: dict[str, str] = {
+    "RedisKVStorage": "PGKVStorage",
+    "RedisDocStatusStorage": "PGDocStatusStorage",
+    "PGGraphStorage": "PGTableGraphStorage",
+}
+
+# How to get to the replacement, where a tool does it without re-indexing.
+# The notice appends this; every key must also be in DEPRECATED_STORAGES.
+DEPRECATED_STORAGE_MIGRATION_HINTS: dict[str, str] = {
+    "PGGraphStorage": (
+        "`python -m lightrag.tools.migrate_graph_storage --apply` moves the "
+        "graph without re-indexing the documents."
+    ),
 }
 
 # Storage implementation environment variable without default value
@@ -169,3 +209,21 @@ def verify_storage_implementation(storage_type: str, storage_name: str) -> None:
             f"Storage implementation '{storage_name}' is not compatible with {storage_type}. "
             f"Compatible implementations are: {', '.join(storage_info['implementations'])}"
         )
+
+
+def deprecated_storage_message(storage_name: str) -> str | None:
+    """Return the deprecation notice for a storage backend.
+
+    Returns None when the backend is not deprecated. The core startup warning
+    and the server splash screen both print this text, so the wording lives
+    in one place.
+    """
+    replacement = DEPRECATED_STORAGES.get(storage_name)
+    if replacement is None:
+        return None
+    message = (
+        f"{storage_name} is deprecated and will be removed in a future release; "
+        f"migrate to {replacement} (PostgreSQL)."
+    )
+    hint = DEPRECATED_STORAGE_MIGRATION_HINTS.get(storage_name)
+    return f"{message} {hint}" if hint else message

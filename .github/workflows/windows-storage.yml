@@ -1,0 +1,84 @@
+name: Windows Storage Tests
+
+on:
+  push:
+    branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'lightrag/private_file.py'
+      - 'tests/test_private_file.py'
+      - 'lightrag/tools/rebuild_vdb.py'
+      - 'lightrag/kg/nano_vector_db_impl.py'
+      - 'lightrag/kg/faiss_impl.py'
+      - 'tests/kg/test_vector_drop_errors.py'
+      - 'tests/kg/nano_impl/test_nano_drop.py'
+      - 'tests/kg/faiss_impl/test_faiss_drop.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/windows-storage.yml'
+  pull_request:
+    branches: [ main, dev, 'dev-*' ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'lightrag/private_file.py'
+      - 'tests/test_private_file.py'
+      - 'lightrag/tools/rebuild_vdb.py'
+      - 'lightrag/kg/nano_vector_db_impl.py'
+      - 'lightrag/kg/faiss_impl.py'
+      - 'tests/kg/test_vector_drop_errors.py'
+      - 'tests/kg/nano_impl/test_nano_drop.py'
+      - 'tests/kg/faiss_impl/test_faiss_drop.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/windows-storage.yml'
+
+jobs:
+  storage-tests:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install locked test dependencies
+        # offline-storage carries faiss-cpu; installing it through the frozen
+        # sync pins it to uv.lock (nano-vectordb is a core dependency).
+        run: uv sync --frozen --python 3.12 --extra pytest --extra offline-storage
+      - name: Run private-file and deletion tests
+        # Run serially: native tests hold handles and change file permissions.
+        run: >-
+          uv run --no-sync pytest tests/test_private_file.py
+          tests/kg/test_vector_drop_errors.py
+          tests/kg/nano_impl/test_nano_drop.py tests/kg/faiss_impl/test_faiss_drop.py
+          --junitxml=windows-storage.xml -v --tb=short -p no:cacheprovider
+      - name: Require native Windows cases
+        if: always()
+        shell: pwsh
+        # Missing, skipped or failed native cases must never produce a green job.
+        run: |
+          [xml]$report = Get-Content windows-storage.xml -ErrorAction Stop
+          $required = @(
+            'test_a_wide_parent_directory_does_not_widen_the_file',
+            'test_no_second_handle_can_be_opened_while_the_copy_is_in_flight',
+            'test_the_owner_can_still_read_and_archive_it_afterwards',
+            'test_the_restriction_persists_after_the_handle_closes',
+            'test_a_refusal_removes_the_file_it_had_already_created',
+            'test_windows_occupied_data_file_refuses_then_retries[nano]',
+            'test_windows_occupied_data_file_refuses_then_retries[faiss]',
+            'test_windows_readonly_data_file_refuses_then_retries[nano]',
+            'test_windows_readonly_data_file_refuses_then_retries[faiss]',
+            'test_windows_faiss_partial_drop_and_marker_cleanup[faiss]'
+          )
+          foreach ($name in $required) {
+            $cases = @($report.SelectNodes('//testcase') | Where-Object { $_.name -eq $name })
+            if ($cases.Count -ne 1) { throw "Missing or duplicate native test: $name" }
+            if ($cases[0].SelectSingleNode('skipped|failure|error')) {
+              throw "Native test did not pass: $name"
+            }
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-storage-report
+          path: windows-storage.xml
+          retention-days: 7

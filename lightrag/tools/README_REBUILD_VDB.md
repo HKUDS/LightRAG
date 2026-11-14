@@ -66,6 +66,11 @@ restart the process after changing the vector backend. Do not start the server
 until the rebuild succeeds; there is currently no persisted vector-index
 readiness marker.
 
+If the workspace's data is disposable -- a test corpus, a workspace being
+decommissioned -- a rebuild is wasted embedding cost. `lightrag-clear-storage`
+(see `README_CLEAR_STORAGE.md`) drops the workspace instead, which also clears
+the startup refusal.
+
 ## Usage
 
 ```bash
@@ -80,7 +85,20 @@ The tool reads the same `.env` / environment configuration as the server
 `WORKSPACE`, `WORKING_DIR`, `EMBEDDING_*`, backend connection settings) and
 builds its embedding function through the exact factory the server uses —
 run it with the same `.env` so rebuilt vectors live in the same embedding
-space the server queries against.
+space the server queries against. Without `--workspace`, `WORKSPACE` is normalized
+as the server normalizes it (every character outside `[A-Za-z0-9_]` becomes `_`).
+To select an SDK workspace exactly, use `lightrag-rebuild-vdb --workspace team-a`.
+The explicit name is validated but never rewritten; `--workspace ""` selects the
+empty/default workspace even when `WORKSPACE` is set. The selected name applies
+to every source, vector target, configuration baseline and directory claim. With
+JSON configuration storage the workspace must already be registered: start
+the server once for a new workspace, stop it, then run the tool. The server
+can register only a name its normalization leaves unchanged; an exact SDK name
+such as `team-a` is registered by a library start instead (`LightRAG(...,
+workspace="team-a")`, `initialize_storages()`, `finalize_storages()`).
+`--workspace` is the tool's only option: every other setting, the embedding
+configuration included, comes from `.env` / the environment, and any other
+flag is refused.
 
 Menu options:
 

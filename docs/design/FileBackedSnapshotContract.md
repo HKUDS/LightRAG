@@ -60,6 +60,137 @@ auto-repaired, so orphan vectors remain in the loaded index, unreachable through
 custom-id lookups. Repair semantics (truncate index vs rebuild meta) are
 deliberately left to a follow-up.
 
+### Unreadable state is fail-loud (Nano and Faiss)
+
+State that exists but cannot be read back — truncated or overwritten by a
+crashed, killed, or disk-full writer — is a **fail-loud** condition in both
+vector storages: `_build_client` / `_load_faiss_index` raise
+`CorruptStorageSnapshotError` (chaining the underlying error) at startup and
+on every reader reload, and never drop or rebuild the files themselves.
+
+The bar is reconstituting the payload, not parsing one layer of it. Nano
+refuses a damaged base64 matrix and a matrix whose length no longer divides
+the row width exactly as it refuses malformed JSON; Faiss refuses whatever
+`faiss.read_index` rejects, an unparseable `.meta.json`, and a `.meta.json`
+that is ABSENT beside a present index (the metadata is the pair's commit
+marker, so its absence contradicts the index that is there). It also refuses a
+`.space.json` provenance marker that is present but not JSON: reading that one
+as "not recorded" is the single answer that lets a same-dimension model swap
+through, on the very file kept to catch it. What is not corruption: no index
+at all (a first start), an ABSENT `.space.json` or a marker payload this
+version cannot interpret (absent evidence never refuses, or every pre-upgrade
+store is refused), an embedding-space mismatch (its own typed refusal), and an
+I/O or permission failure, which propagates as itself — the recovery below
+destroys a container, and data that was merely unreachable for a moment must
+not be destroyed.
+
+Telling those last two apart cannot be done on exception type alone. Nano
+reads through Python, so a permission failure arrives as `PermissionError`
+and falls outside its caught set by construction. `faiss.read_index` runs in
+C++ and reports EVERY failure as a bare `RuntimeError` — a truncated index
+and one the OS refused to open are the same type with different text — so
+that path re-asks the question in Python (`_raise_if_unreadable`) before it
+labels anything corrupt. Residue: the probe runs after the failure, so a
+fault that clears in between reads as corruption; that direction still costs
+only a confirmed, backed-up rebuild, while the reverse silently destroys an
+intact index.
+
+A backup holds the same documents and metadata as the store it copies and is
+kept indefinitely, so it must never be more readable than what it copies —
+and not "eventually": from the instant the file exists. `lightrag/private_file.py`
+owns that, and its rule is that the restriction goes IN to the creation call
+rather than being applied to a file that already exists. A backup that cannot
+be created private, or cannot be proven private, removes itself and aborts the
+recovery with the originals intact (`PrivateFileError`).
+
+On POSIX the mechanism is the mode: `os.open` with 0600, which the umask can
+only narrow, verified from the open descriptor.
+
+On Windows the mode carries none of this — `os.open` there sets the read-only
+ATTRIBUTE and writes no ACL, so the file would appear carrying the parent
+directory's inherited entries. Tightening afterwards does not repair that,
+and this is the part worth remembering: **Windows checks access when a handle
+is OPENED**, so a process that opened the file during the window keeps reading
+through that handle after any later tightening succeeds, including rows
+written after it. Creating the file empty does not help either, and `O_EXCL`
+refuses to create over an existing file without granting exclusive ACCESS to
+the one it creates. So the Windows path uses `CreateFileW` with a
+`SECURITY_ATTRIBUTES` descriptor built from `O:<sid>D:P(A;;FA;;;<sid>)` — the
+SID read from the process's own access token, never from `USERNAME` — and
+`dwShareMode=0`, then reads the DACL back off that same handle before handing
+it to Python via `msvcrt.open_osfhandle`. The two settings cover different
+windows and neither substitutes for the other: the DACL governs every open
+after this one, including long after the handle closes, while the share mode
+stops a second handle being opened while the copy is in flight. A filesystem
+that does not persist ACLs fails the read-back and is refused rather than
+silently storing the data unprotected. Three details there are load-bearing and each
+was got wrong once. The SID comes from the thread token and falls back to the
+process token ONLY on `ERROR_NO_TOKEN` — any other failure would grant the
+file to a different identity than the one that owns it. A failed
+`CreateFileW` is recognised by comparing against `c_void_p(-1).value` rather
+than `-1`: a pointer restype returns the unsigned bit pattern, so the literal
+comparison reads every failure as a success and the cleanup that follows
+deletes whatever file was already at that path. And the SID in the DACL read
+back is compared by VALUE (`ConvertStringSidToSidW` + `EqualSid`), never as
+text: Windows abbreviates any account with a well-known alias on the way out,
+so a file created by the built-in Administrator is written as
+`S-1-5-21-…-500` and read back as `LA`. Text comparison refuses every file
+that account creates while passing for an ordinary user whose SID has no
+alias — green locally, red on the runner.
+
+Which source files exist is decided by OPENING them and catching
+`FileNotFoundError` from that one call, never by a prior `exists()`. Only that
+one exception means "this half of a torn pair is missing"; a permission fault
+or a vanished directory names a file whose rows still exist and are not being
+preserved, so it aborts. A failure partway through leaves every source
+untouched, the backups that completed durable, and no stub for the one that
+did not.
+
+Because the mode carries none of this on Windows, a `0600` assertion proves
+nothing there and `chmod(0)` does not revoke read access, so the tests relying
+on either are POSIX-only. The native behaviour runs alongside the vector deletion tests in
+`.github/workflows/windows-storage.yml` on `windows-latest`. Both groups share
+one dependency setup and run serially. The job also fails if a required
+Windows-only case is missing, skipped or failed in the combined JUnit report.
+
+**A refusal's `artifacts` must cover every file that storage's `drop()`
+removes.** That is the whole protocol in one line: the tool backs up
+`artifacts` and then calls `drop()`, so a file in the second set and not the
+first is destroyed with nothing holding it. `artifacts` is therefore stated by
+each raiser, never derived from `container` — the two answer different
+questions, and Faiss refusing on its marker names one file as the container
+and three as the scope. The field has no default for that reason: a storage
+that grows a sidecar must say so rather than inherit a guess that was only
+ever right for a single-file store. The other half of that separation is
+that `container` must name the file that actually failed, which a multi-file
+store cannot work out after the fact: `json.JSONDecodeError` carries no
+`filename`, so the Faiss load path remembers which file it is reading rather
+than defaulting to the `.index` it opened first — a garbled `.meta.json`
+otherwise sends the operator to inspect an intact index. `RuntimeError` is the
+one thing attributed by type instead, because only faiss raises it.
+
+A backup failure aborts without deleting anything. A refusal that names NO
+local file is refused recovery outright: nothing can be preserved, so nothing may be destroyed. Backups
+survive failed and successful rebuilds; operators decide when they can be
+removed. An accessible source is not proof that it contains every original
+row. Keep every writer stopped throughout; restart only after the rebuilt
+data and its embedding baseline are committed. No manual file move or
+preliminary server restart is required.
+
+Accepted residues:
+
+* A failed backup may leave a partial backup sibling, while the originals stay
+  intact. A member that does not exist is skipped, not fabricated.
+* A failure after a successful backup/drop may leave an empty or partially
+  rebuilt vector target; its backups are retained, its baseline is not
+  advanced on failure, and rerunning the offline rebuild converges.
+* Faiss's reload path resets `_index` to an empty index *before* it loads, so
+  a refusal there leaves that empty index in the field. It is never served:
+  the refusal happens before the fingerprint is adopted and before the
+  `storage_updated` flag is consumed, so every later access re-enters the
+  reload and raises again. Normal startup and reader reloads never perform the
+  recovery above.
+
 ### Concurrency invariants
 
 The code is correct *only* while all three hold.
@@ -170,6 +301,21 @@ nothing, and a genuinely newer row under the same id is declined by
 Consequently the flush-failure propagation `NetworkXStorage` needs — a declined
 commit must not be acknowledged as durable, see `LightRAG._flush_storages` — has
 no counterpart here.
+
+**`NanoVectorDBStorage.adopt_vector_space` is a write path and follows the same
+rule**, which is easy to miss because it looks like metadata. Nano keeps the
+embedding-space marker in the *same JSON object as the rows*, so stamping it
+rewrites the whole namespace; and it is called immediately after an embedding
+probe allowed to take 30 seconds, which is an unusually wide window for a peer
+to commit into. It therefore reloads and replays under the lock before saving,
+exactly like `index_done_callback`, and sets certification *after* the reload —
+`_reload_client_from_disk_locked` re-derives certification from the snapshot it
+loads, so setting it first would have the reload discard the probe's verdict.
+
+`FaissVectorDBStorage.adopt_vector_space` has no such hazard and deliberately
+does not reconcile: its marker is a separate sidecar that is not part of the
+fenced `.index` / `.meta.json` publication, so adopting leaves the pair and its
+fingerprint untouched and there is nothing a peer could lose.
 
 The reason the graph store cannot do the same is recorded in
 [its contract](NetworkXSingleWriterContract.md#why-not-reload-then-replay-as-the-vector-backends-do):
@@ -368,6 +514,29 @@ in-memory state may be stale relative to disk. What a replay deliberately does
 *not* restore is a row another writer has since superseded with a strictly newer
 one.
 
+### Deleting vector snapshots
+
+Nano and Faiss attempt each removal directly and ignore only
+`FileNotFoundError`. An `exists()` preflight is not a deletion verdict: a
+permission failure during its stat can look like absence and would skip the
+removal while reporting a successful drop. All other removal errors keep the
+existing failure path, without clearing buffers or publishing a successful
+reset. This includes Windows sharing violations and read-only attributes;
+release the conflicting handle or correct the attribute, then retry.
+
+Faiss still deletes the index before the metadata. Failure on the second file
+is a partial deletion, reported as an error, not rolled back. Marker cleanup
+is best-effort after both data files are gone: an orphan marker produces a
+warning without changing the completed data deletion to a failure. A later
+successful drop retries its removal. Post-deletion notification failures retain
+the existing success semantics documented by each backend's `drop()`.
+
+`tests/kg/test_vector_drop_errors.py` covers hidden existence errors and retry
+semantics. `.github/workflows/windows-storage.yml` additionally exercises
+real Windows handles without `FILE_SHARE_DELETE`, read-only files and Faiss
+partial deletion. The native tests require no second account or assumed ACL
+layout, and their JUnit report must contain the named cases without skips.
+
 ### Non-pipeline write paths
 
 The pipeline's `busy` gate serializes `upsert` / `delete` /
@@ -398,7 +567,7 @@ reloads.
 
 `JsonDocStatusStorage` does not inherit from `JsonKVStorage` — it reimplements
 the same protocol against the same `shared_storage` primitives
-(`get_namespace_data`, `try_initialize_namespace`, `set_all_update_flags`,
+(`get_namespace_data`, `namespace_init_claim`, `set_all_update_flags`,
 `clear_all_update_flags`). Everything below therefore describes both, and a
 change to one of them is almost always a change the other needs too. Where they
 deliberately diverge is called out where it arises: the flush trigger in
@@ -420,14 +589,81 @@ there is no reload needed.
 The on-disk file at `working_dir/[workspace/]kv_store_<namespace>.json` exists
 for durability only. It is the source of truth at startup and the target of
 `index_done_callback` flushes, but is **not** part of the steady-state
-read/write path.
+read/write path. The configuration namespace is the one exception to that
+path: its file is `working_dir/[workspace/]kv_workspace_config.json`
+(`CONFIG_JSON_FILE_NAME`), one snapshot per workspace beside that
+workspace's data — see *JSON configuration shards* in
+[ConfigurationStorageContract.md](ConfigurationStorageContract.md).
 
 ### First-time load (`initialize`)
 
-`try_initialize_namespace` is a global init lock that returns `True` to exactly
-one process per `(namespace, workspace)`. That process reads the JSON file and
+`namespace_init_claim` is a global init lock that yields `True` to exactly one
+process per `(namespace, workspace)`. That process reads the JSON file and
 populates `self._data` under `_storage_lock`. Other processes skip the load —
 they will see the data through the same shared proxy.
+
+**The load must stay inside the claim.** The flag behind it says "loaded" from
+the moment it is taken, not once the data is in the shared dict, so a load that
+fails would otherwise leave the namespace marked loaded and EMPTY for the life
+of the process tree: the instance that hit the failure raises, and every
+instance after it reads absence where the file has rows — then overwrites those
+rows on the next commit, because a commit publishes the whole namespace.
+Leaving the claim by exception, cancellation included, hands it back so the
+next instance reads the file again. A transient read failure is recoverable; a
+persistent one fails again, loudly, in the next claimer.
+
+`try_initialize_namespace` still exists as the primitive the claim is built on,
+and a caller that uses it directly owes the same release
+(`release_namespace_init`).
+
+Each instance owns at most one claim: repeated `initialize()` calls, including
+concurrent calls and reinitialization after `drop()`, do not acquire extra
+holds. The held-state check and successful acquisition are serialized by the
+initialization lock. After `finalize()` releases the hold, that instance may
+initialize again.
+
+### One file per namespace per process tree
+
+The key is `workspace:namespace`. It says nothing about which FILE backs it,
+and for the JSON pair the container's identity *is* the file — so two
+`working_dir` roots in one process tree meet on one in-memory copy. Ordinary
+namespaces hide this behind the workspace (two tenants under different names
+never collide). The `config` namespace keeps a fixed container tag as its
+`workspace`, so `JsonKVStorage` keys its bookkeeping for that namespace by the
+snapshot's real path instead (`<tag>@<realpath of its directory>`): several
+workspaces' configuration snapshots, or two roots, open in one process tree
+each get their own key.
+
+What sharing a key costs, and what the claim asserts against: the second
+instance skipped the load, read its own file's rows as **absent**, and then
+published the union into whichever file flushed first — the other never being
+written at all. For a baseline that loses the recorded decision (a new one
+then needs fresh evidence). No lock fixes it, because nothing here is a race:
+serialize the two perfectly and they still share one dict.
+
+So the claim carries the file (`backing=`), and a second, DIFFERENT file while
+the first is still held is refused with
+`SharedNamespaceBackingConflictError`. Two rules follow:
+
+- **Refused at once, allowed in turn.** The hold is given back by `finalize()`,
+  and it is *counted*: a process tree's workers each hold the same namespace
+  and finalize independently, so only the last one out releases it. A caller
+  whose startup fails AFTER `INITIALIZED` still owes that teardown — the
+  refusal is sticky, but the resources are open.
+- **The flag and the data are released together.** The flag means "this
+  namespace carries a file's contents", so dropping one without the other
+  leaves the next instance either re-reading into rows that are already there
+  (the load is `update`, not a replace) or trusting rows nobody loaded. The
+  dict is emptied **in place**, never replaced: `get_namespace_data` caches the
+  object per process and documents it as stable for the life of the shared
+  data.
+
+This is a process-tree guard, and only that. Two separate process trees on one
+`working_dir` AND one workspace are still unsupported and still undetected here
+(different workspaces use different files and are supported; see
+`ServerInstanceContract.md`) — that needs a
+lock on the directory itself, which is a different mechanism for a different
+failure.
 
 ### Reversed flag semantics
 

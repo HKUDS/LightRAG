@@ -68,13 +68,15 @@ LightRAG writes to independent stores — graph, KV, vector, doc-status — with
 
 **Full contracts: [docs/design/NetworkXSingleWriterContract.md](docs/design/NetworkXSingleWriterContract.md) — read it before touching `lightrag/kg/networkx_impl.py` or any caller of `index_done_callback` on the graph store; [docs/design/FileBackedSnapshotContract.md](docs/design/FileBackedSnapshotContract.md) — read it before touching `lightrag/kg/nano_vector_db_impl.py`, `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`, `lightrag/kg/json_doc_status_impl.py` or `lightrag/kg/file_fingerprint.py`.**
 
-Five storages keep their data in memory and publish it by rewriting a whole file, and **they do not share one model** — `JsonKVStorage` and `JsonDocStatusStorage` are the odd ones out and the contracts say so at length. Read the right one before assuming.
+Five storages keep their data in memory and publish it by rewriting a whole file. They are supported for **small-scale testing and validation only** (no change may be justified by write throughput), and **they do not share one model** — read the right contract before assuming:
 
-- **All five**: a commit publishes the WHOLE namespace, so any writer's flush also publishes every other writer's pending mutation there, half-finished ones included. All five are supported for **small-scale testing and validation only**; no change to them may be justified by write throughput.
-- **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`** keep one in-memory copy per process and reconcile by reloading the file. Visibility rests on a **two-channel fence**: the file's own `(st_mtime_ns, st_size)` (authoritative, state) OR-ed with the `storage_updated` flag (accelerator, a consumable event). Both are permanent — their blind spots do not overlap.
-- Those three diverge on a write conflict, and the reason is in the contracts: the graph store **declines** the commit (it has no buffer to replay, and graph payloads are accumulate-over-read), the vector stores **reload and replay** their pending buffers and redo logs. Do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
-- **`JsonKVStorage` and `JsonDocStatusStorage` use none of that.** Their data is a `Manager().dict()` every worker shares, so a mutation is visible everywhere immediately and there is nothing to reload — adding a `_get_*` entry method would be wrong. Their `storage_updated` flag means the OPPOSITE of the other three's: `True` is "dirty data still to flush", never "fresher data on disk to reload". Do not read it as a peer notification. `JsonDocStatusStorage` reimplements this protocol rather than inheriting it, so a change to one of the pair is almost always a change the other needs too; where they diverge is the flush trigger — doc-status writes that change scheduling state flush synchronously because doc-status is the pipeline's recovery anchor.
-- `NetworkXStorage` is the only storage that declares `requires_single_writer`, which is what puts the admin flows under `LightRAG._admin_write_gate`.
+- **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`**: one in-memory copy per process, reconciled by reloading the file through the **two-channel fence** (file fingerprint OR `storage_updated`). On a write conflict the graph store **declines** the commit, the vector stores **reload and replay**; do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
+- **`JsonKVStorage`, `JsonDocStatusStorage`**: one `Manager().dict()` shared by every worker, so there is nothing to reload and `storage_updated` means the OPPOSITE ("dirty, still to flush"). Their load claim (`namespace_init_claim`) must be handed back on a failed or cancelled load, and `JsonDocStatusStorage` reimplements the protocol rather than inheriting it — a change to one of the pair almost always needs the other.
+- A file-backed **configuration** storage additionally claims its workspace's snapshot directory (`lightrag/kg/working_dir_lock.py`) — see *Configuration storage contract* below. `NetworkXStorage` alone declares `requires_single_writer`, which puts the admin flows under `LightRAG._admin_write_gate`.
+
+### Server instance contract
+
+**Full contract: [docs/design/ServerInstanceContract.md](docs/design/ServerInstanceContract.md) — read it before changing anything one server could share with another on the same host (files under `WORKING_DIR` / `INPUT_DIR`, anything keyed without the workspace, locks taken at startup).** In short: several servers may share one `WORKING_DIR` on one host when each serves its own workspace, all use the same configuration container (a database backend, or `JsonKVStorage`'s per-workspace snapshots under one anchor), and each has its own port; first starts are serialized by the anchor bind lock, so on a filesystem without locks start one instance alone until every JSON workspace has registered. A new server-wide record needs a guard the instances share.
 
 ### Pipeline concurrency contract
 
@@ -99,6 +101,10 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 - LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 - A change to what `normalize_entity_name` produces may only **merge** names that used to differ, never split names that used to be equal: a rebuild re-parses cached LLM output with the current rules, and a split leaves some of a stored object's records unmatched, so their facts are dropped. [Entity name normalization changes](docs/design/PurgeRecoveryContract.md#entity-name-normalization-changes) has the reasoning and the consequences in the current rules.
+
+### Configuration storage contract
+
+**Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` or where the JSON configuration snapshots live, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here. [docs/design/ConfigurationStorageDesign.md](docs/design/ConfigurationStorageDesign.md) is the design overview: the components, the reasons behind them, the departures from the original plan and the known gaps -- start there before redesigning anything.
 
 ### Relation weight contract
 
@@ -396,6 +402,16 @@ A third test requires every `docs/**.md` path named in the package to resolve; n
 - 2-space indentation, single quotes (enforced by `@stylistic` rules)
 - Tailwind utility-first styling
 - ESLint stack: TypeScript-ESLint + React Hooks plugin + Prettier; `@typescript-eslint/no-explicit-any` is disabled (allowed)
+
+## PR Review Guidelines
+
+These apply to every review finding, automated reviews included.
+
+- **Verify before prescribing.** A finding names its trigger, reachable call path, affected behavior and evidence; check dependency behavior, platform semantics and real trust boundaries in source rather than assuming them. An unverified hypothesis is a question, not a defect.
+- **Justify the change, not just the failure.** Showing the current design can fail is not enough: compare it with the smallest sufficient fix and the proposal on likelihood, impact, complexity, compatibility and new failure modes. No abstractions, options or authorization machinery for hypothetical needs; guarding against accidental misuse is not guarding against an adversary.
+- **Respect documented decisions.** A residue or rejected alternative recorded in a contract (see *Consistency without transactions* and `docs/design/`) is a decision; its known limitation is not a new finding. Reopening it needs new evidence that its rationale no longer holds.
+- **Classify honestly.** Only demonstrated correctness problems are findings, and they may block on their impact. Preferences, optional hardening and extensions are non-blocking suggestions, never inflated in severity.
+- **Major redesigns need the author's agreement.** Changes to public APIs, storage formats, lifecycle, concurrency or permission models, or cross-module structure are proposed with evidence, alternatives and costs, and are not implemented in the PR or made a merge condition without the author's explicit agreement.
 
 ## Commit and Pull Request Guidance
 

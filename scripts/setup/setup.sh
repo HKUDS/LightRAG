@@ -15,6 +15,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
+# Whether a .env was loaded at startup. Distinct from "ORIGINAL_ENV_VALUES is
+# non-empty": a deployment whose .env carries only comments still ran a server
+# on the DEFAULTS, and those defaults decide where its records are.
+EXISTING_ENV_LOADED=0
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
@@ -103,6 +107,7 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
+  EXISTING_ENV_LOADED=0
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
   COMPOSE_SERVICE_IMAGE_OVERRIDES=()
@@ -179,6 +184,7 @@ load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
   if [[ -f "$env_file" ]]; then
+    EXISTING_ENV_LOADED=1
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
@@ -1130,7 +1136,7 @@ select_storage_backends() {
   local vector_default="NanoVectorDBStorage"
   local graph_default="NetworkXStorage"
   local doc_default="JsonDocStatusStorage"
-  local kv_storage vector_storage graph_storage doc_storage
+  local kv_storage vector_storage graph_storage doc_storage config_storage
 
   if [[ "$deployment_type" == "production" ]]; then
     kv_default="PGKVStorage"
@@ -1144,11 +1150,25 @@ select_storage_backends() {
   graph_default="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-$graph_default}"
   doc_default="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-$doc_default}"
 
+  # PGGraphStorage (Apache AGE) is offered only to a deployment that already
+  # uses it: it can be kept (it stays the default), but nobody is led into it.
+  local graph_options=("${GRAPH_STORAGE_OPTIONS[@]}")
+  if [[ "$graph_default" == "PGGraphStorage" ]]; then
+    graph_options+=("PGGraphStorage")
+    log_info "This deployment uses PGGraphStorage (Apache AGE), which is deprecated" \
+      "and will be removed in a future release. It stays available here so you can" \
+      "keep it for now; new deployments are offered PGTableGraphStorage, which" \
+      "keeps the graph in plain PostgreSQL tables and needs no extension."
+    log_info "To move to PGTableGraphStorage without indexing the documents again," \
+      "stop LightRAG and run 'python -m lightrag.tools.migrate_graph_storage --apply'" \
+      "while the AGE-enabled PostgreSQL is still running, then choose it here."
+  fi
+
   while true; do
     kv_storage="$(prompt_choice "KV storage" "$kv_default" "${KV_STORAGE_OPTIONS[@]}")"
     doc_storage="$(prompt_choice "Doc status storage" "$doc_default" "${DOC_STATUS_STORAGE_OPTIONS[@]}")"
     vector_storage="$(prompt_choice "Vector storage" "$vector_default" "${VECTOR_STORAGE_OPTIONS[@]}")"
-    graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${GRAPH_STORAGE_OPTIONS[@]}")"
+    graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${graph_options[@]}")"
 
     if check_storage_compatibility "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; then
       break
@@ -1164,11 +1184,544 @@ select_storage_backends() {
   ENV_VALUES["LIGHTRAG_GRAPH_STORAGE"]="$graph_storage"
   ENV_VALUES["LIGHTRAG_DOC_STATUS_STORAGE"]="$doc_storage"
 
-  for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; do
+  # NOT a command substitution: ``select_config_storage`` writes to
+  # ``ENV_VALUES``, and a subshell would discard that -- the generated .env
+  # would come out without the key the whole function exists to add.
+  select_config_storage "$kv_storage"
+  config_storage="$SELECTED_CONFIG_STORAGE"
+  # The anchor is reported by finalize_storage_setup, not here: where it
+  # lives depends on the runtime target, which is only settled there.
+
+  for storage in "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage" \
+    "$config_storage"; do
     if [[ -n "${STORAGE_DB_TYPES[$storage]:-}" ]]; then
       REQUIRED_DB_TYPES["${STORAGE_DB_TYPES[$storage]}"]=1
     fi
   done
+}
+
+config_storage_is_admitted() {
+  local candidate="$1" option
+  for option in "${CONFIG_STORAGE_OPTIONS[@]}"; do
+    [[ "$option" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
+resolve_config_storage_selection() {
+  # Match the runtime resolver: only an unset Redis selection defaults to JSON.
+  local selected="$1" kv="$2"
+  if [[ -n "$selected" ]]; then
+    printf '%s' "$selected"
+  elif [[ "$kv" == "RedisKVStorage" ]]; then
+    printf '%s' "JsonKVStorage"
+  else
+    printf '%s' "$kv"
+  fi
+}
+
+config_storage_records_in() {
+  # Where the baselines are NOW, as far as the previous .env can say: the
+  # explicit selection it carried, or the resolved default (JSON for Redis).
+  # Empty on a first run or an unsupported selection. An implicit Redis
+  # deployment may already hold JSON records, so keep that container reachable.
+  #
+  # A previous .env that names no KV backend is not a deployment without one:
+  # the server has been running on its default, and the records are in THAT
+  # container. Treating the omission as "nothing to strand" moved them on the
+  # first rerun that picked an admitted backend.
+  local previous_config="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local previous_kv="${ORIGINAL_ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+
+  if [[ -z "$previous_kv" && "$EXISTING_ENV_LOADED" == "1" ]]; then
+    previous_kv="$DEFAULT_KV_STORAGE"
+  fi
+
+  if [[ -n "$previous_config" ]]; then
+    config_storage_is_admitted "$previous_config" && printf '%s' "$previous_config"
+  elif [[ -n "$previous_kv" ]]; then
+    local resolved
+    resolved="$(resolve_config_storage_selection "" "$previous_kv")"
+    config_storage_is_admitted "$resolved" && printf '%s' "$resolved"
+  fi
+  # Never fail: the caller reads this in a command substitution under `set -e`,
+  # and "no admitted backend holds records" is an answer, not an error.
+  return 0
+}
+
+resolve_host_working_dir() {
+  # The WORKING_DIR the server will use, as a path on THIS host, in
+  # RESOLVED_WORKING_DIR; ``$1`` is the runtime target when the caller has
+  # settled one that ``.env`` does not carry yet. Called directly, not in a
+  # command substitution, so a failure can leave its reason in
+  # RESOLVE_WORKING_DIR_FAILURE.
+  #
+  # Compose: the ``./data/rag_storage`` mount the generated compose file
+  # makes (see prepare_compose_data_path_overrides). An operator's own edits
+  # to that file are kept by regeneration but not interpreted here: they are
+  # the operator's to keep consistent. Host: WORKING_DIR against the
+  # repository root, where the server is started from.
+  #
+  # Fails rather than guesses for a ``${...}`` that python-dotenv expands.
+  local runtime_target="${1:-${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}}"
+  local dir
+
+  RESOLVED_WORKING_DIR=""
+  RESOLVE_WORKING_DIR_FAILURE=""
+  if [[ "$runtime_target" == "compose" ]]; then
+    dir="./data/rag_storage"
+  else
+    # ``-`` not ``:-``: ``WORKING_DIR=`` is kept as the empty string by the
+    # server, and os.path.abspath("") is the directory it starts in.
+    dir="${ENV_VALUES[WORKING_DIR]-./rag_storage}"
+    if [[ "$dir" == *'${'* ]]; then
+      RESOLVE_WORKING_DIR_FAILURE="WORKING_DIR=${ENV_VALUES[WORKING_DIR]} uses \${...} interpolation, which this wizard does not expand"
+      return 1
+    fi
+  fi
+  if [[ "$dir" != /* ]]; then
+    dir="${REPO_ROOT}${dir:+/${dir#./}}"
+  fi
+  RESOLVED_WORKING_DIR="$(normalize_path_lexically "$dir")"
+}
+
+normalize_path_lexically() {
+  # os.path.normpath for an absolute POSIX path, which the server applies
+  # (through abspath) before it opens the anchor: ``.`` and empty
+  # components drop, ``..`` removes the one before it WITHOUT consulting the
+  # filesystem, so ``./missing/../actual`` is ``./actual`` even though
+  # ``missing`` does not exist. POSIX keeps exactly two leading slashes.
+  local path="$1" part lead="/" out=""
+  local -a parts=() kept=()
+
+  [[ "$path" == //* && "$path" != ///* ]] && lead="//"
+  IFS='/' read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ""|.) ;;
+      ..) ((${#kept[@]})) && unset 'kept[${#kept[@]}-1]' ;;
+      *) kept+=("$part") ;;
+    esac
+  done
+  for part in "${kept[@]}"; do
+    out+="${out:+/}$part"
+  done
+  printf '%s%s' "$lead" "$out"
+}
+
+config_anchor_migrate_command() {
+  # The recovery command for ``$1`` as the operator runs it on this host.
+  # The tool resolves WORKING_DIR from the host .env, which a Compose
+  # deployment does not point at its mount, so the command names the
+  # directory the anchor was read from whenever the two differ.
+  local target="$1" anchor_dir="$CONFIG_ANCHOR_DIR"
+  local prefix=""
+
+  if ! resolve_host_working_dir host || [[ "$RESOLVED_WORKING_DIR" != "$anchor_dir" ]]; then
+    prefix="WORKING_DIR=$(printf '%q' "$anchor_dir") "
+  fi
+  printf '%slightrag-migrate-config --target-backend %s' "$prefix" "$target"
+}
+
+path_is_confirmed_absent() {
+  # Whether a lookup of ``$1`` that found nothing proves it does not exist.
+  # ``-e`` is also false when an ancestor cannot be searched or is not a
+  # directory; the server's open() then fails with EACCES / ENOTDIR and
+  # refuses, so only a missing entry below a searchable directory is absence.
+  local parent="$1"
+
+  while [[ "$parent" == */* ]]; do
+    parent="${parent%/*}"
+    [[ -z "$parent" ]] && parent="/"
+    # A symlink that does not resolve may be dangling (ENOENT) or a loop
+    # (ELOOP, which the server refuses); telling them apart portably is more
+    # than this needs, so it is not proof of absence either way.
+    [[ -L "$parent" && ! -e "$parent" ]] && return 1
+    if [[ -e "$parent" ]]; then
+      [[ -d "$parent" && -x "$parent" ]]
+      return
+    fi
+    [[ "$parent" == "/" ]] && break
+  done
+  return 1
+}
+
+read_config_anchor() {
+  # Reads <WORKING_DIR>/config_storage_anchor.json, the binding the server
+  # checks before it opens the configuration storage (see *The anchor and the
+  # container identity* in docs/design/ConfigurationStorageContract.md).
+  # The wizard only ever READS it -- it never writes, moves or deletes it.
+  # ``$1`` is passed through to resolve_host_working_dir.
+  #
+  # Sets CONFIG_ANCHOR_STATE to "absent", "readable", "unreadable" or
+  # "unresolved" (the anchor's location could not be resolved here;
+  # CONFIG_ANCHOR_UNRESOLVED_REASON says why), and
+  # CONFIG_ANCHOR_PATH / CONFIG_ANCHOR_DIR (the WORKING_DIR it is under) /
+  # CONFIG_ANCHOR_BACKEND / CONFIG_ANCHOR_UUID.
+  #
+  # Values come from .env alone, read as load_env_file reads the KEY=value
+  # lines the wizard itself writes. Hand-written dotenv forms beyond that
+  # (``export``, multi-line values, ...) are not modelled; see *The setup
+  # wizard* in docs/design/ConfigurationStorageContract.md.
+  #
+  # "readable" requires the WHOLE file to be one JSON object that the
+  # server's parse_anchor_payload accepts, read the way Python's json reads
+  # it: exactly the three members (five for JsonKVStorage: plus "layout" and
+  # the "members" string array), and a repeated key keeps its LAST value.
+  # Anything outside the narrow grammar below is "unreadable", never
+  # "absent" -- a looser match would pass a file the server refuses. Member
+  # names are compared literally, so each must have ONE spelling: a \u
+  # escape of an ASCII character, a \u escape with an upper-case hex digit
+  # and a raw non-ASCII byte are refused (the server writes none of them:
+  # json.dumps escapes only non-ASCII, as lower-case \u), which leaves every
+  # name spelled as the server spells it. Then a separator, "." / "..", a
+  # reserved root file name -- in any letter case (ASCII, or through the few
+  # non-ASCII characters whose case fold is ASCII), with trailing dots or
+  # spaces, as the server refuses it --, a name of only dots and spaces, a
+  # drive-qualified name (second character ':'), or a repeat is refused.
+  local dir content rest value last name folded
+  local LC_ALL=C
+  local ws=$'[ \t\n\r]*'
+  local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  local str_re='"(\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\[:cntrl:]])*"'
+  local array_re="\\[${ws}(${str_re}(${ws},${ws}${str_re})*)?${ws}\\]"
+  local member_re="^${ws}\"([a-z_]+)\"${ws}:${ws}(1|\"[A-Za-z_]+\"|\"${uuid_re}\"|${array_re})${ws}([,}])"
+  local -A members=()
+  local -A seen=()
+
+  CONFIG_ANCHOR_PATH=""
+  CONFIG_ANCHOR_DIR=""
+  CONFIG_ANCHOR_BACKEND=""
+  CONFIG_ANCHOR_UUID=""
+  CONFIG_ANCHOR_STATE="unresolved"
+  CONFIG_ANCHOR_UNRESOLVED_REASON=""
+  if ! resolve_host_working_dir "${1:-}"; then
+    CONFIG_ANCHOR_UNRESOLVED_REASON="$RESOLVE_WORKING_DIR_FAILURE"
+    return 0
+  fi
+  dir="$RESOLVED_WORKING_DIR"
+  # Kept as resolved: stripping the suffix off the path would turn "/" into
+  # "" (the start directory to the migration tool) and "//" into "/".
+  CONFIG_ANCHOR_DIR="$dir"
+  # Joined as os.path.join does: no second slash after a root that already
+  # ends in one ("/" or the POSIX-distinct "//").
+  CONFIG_ANCHOR_PATH="${dir%/}/config_storage_anchor.json"
+  [[ "$dir" == "//" ]] && CONFIG_ANCHOR_PATH="//config_storage_anchor.json"
+  CONFIG_ANCHOR_STATE="unreadable"
+
+  if [[ ! -e "$CONFIG_ANCHOR_PATH" && ! -L "$CONFIG_ANCHOR_PATH" ]]; then
+    path_is_confirmed_absent "$CONFIG_ANCHOR_PATH" && CONFIG_ANCHOR_STATE="absent"
+    return 0
+  fi
+  # A symlink is unreadable, as the server refuses it: its next atomic
+  # publish would replace the link and leave the target stale.
+  if [[ -L "$CONFIG_ANCHOR_PATH" || ! -f "$CONFIG_ANCHOR_PATH" || ! -r "$CONFIG_ANCHOR_PATH" ]]; then
+    return 0
+  fi
+  # The trailing "x" keeps trailing newlines; comparing the length with the
+  # file size catches a NUL byte, which bash would silently drop.
+  content="$(cat "$CONFIG_ANCHOR_PATH" 2>/dev/null; printf x)" || return 0
+  content="${content%x}"
+  [[ "${#content}" -eq "$(wc -c < "$CONFIG_ANCHOR_PATH")" ]] || return 0
+
+  [[ "$content" =~ ^${ws}\{ ]] || return 0
+  rest="${content:${#BASH_REMATCH[0]}}"
+  last=""
+  while [[ "$rest" =~ $member_re ]]; do
+    members["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+    rest="${rest:${#BASH_REMATCH[0]}}"
+    last="${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+    [[ "$last" == "}" ]] && break
+  done
+  [[ "$last" == "}" && "$rest" =~ ^${ws}$ ]] || return 0
+  [[ "${members[schema_version]:-}" == "1" ]] || return 0
+  [[ "${members[backend]:-}" =~ ^\"([A-Za-z]+)\"$ ]] || return 0
+  CONFIG_ANCHOR_BACKEND="${BASH_REMATCH[1]}"
+  [[ "${members[storage_uuid]:-}" =~ ^\"($uuid_re)\"$ ]] || return 0
+  CONFIG_ANCHOR_UUID="${BASH_REMATCH[1]}"
+  if [[ "$CONFIG_ANCHOR_BACKEND" == "JsonKVStorage" ]]; then
+    [[ "${#members[@]}" -eq 5 ]] || return 0
+    [[ "${members[layout]:-}" == '"json_shards"' ]] || return 0
+    value="${members[members]:-}"
+    [[ "$value" =~ ^\[ ]] || return 0
+    value="${value#[}"
+    while [[ "$value" =~ ^${ws},?${ws}(${str_re}) ]]; do
+      name="${BASH_REMATCH[1]}"
+      value="${value:${#BASH_REMATCH[0]}}"
+      [[ "$name" == *[$'\200'-$'\377']* ]] && return 0
+      [[ "$name" =~ \\u[0-9a-f]{0,3}[A-F] ]] && return 0
+      # A leading dollar sign is reserved for configuration key prefixes.
+      [[ "$name" == '"$'* ]] && return 0
+      case "$name" in
+        *'/'* | *'\\'* | *'\/'* | *'\u00'[0-7][0-9a-f]* | '"."' | '".."')
+          return 0
+          ;;
+      esac
+      # Drive-qualified (the decoded second character is ':'), as the server
+      # refuses it: ntpath joins such a name outside WORKING_DIR.
+      [[ "$name" =~ ^\"(\\ud[89ab][0-9a-f]{2}\\ud[c-f][0-9a-f]{2}|\\u[0-9a-f]{4}|\\[\"bfnrt]|[^\\\"]): ]] && return 0
+      folded="${name#\"}"
+      folded="${folded%\"}"
+      while [[ "$folded" == *[' .'] ]]; do folded="${folded%?}"; done
+      [[ -z "$folded" && "$name" != '""' ]] && return 0
+      # The only non-ASCII characters Unicode case folding maps to ASCII
+      # (config_shards._ASCII_FOLDING_NON_ASCII), so a reserved name spelled
+      # through one of them is refused as the server refuses it.
+      folded="${folded//\\u00df/ss}"
+      folded="${folded//\\u017f/s}"
+      folded="${folded//\\u037e/;}"
+      folded="${folded//\\u1e9e/ss}"
+      folded="${folded//\\u1fef/\`}"
+      folded="${folded//\\u212a/k}"
+      folded="${folded//\\ufb00/ff}"
+      folded="${folded//\\ufb01/fi}"
+      folded="${folded//\\ufb02/fl}"
+      folded="${folded//\\ufb03/ffi}"
+      folded="${folded//\\ufb04/ffl}"
+      folded="${folded//\\ufb05/st}"
+      folded="${folded//\\ufb06/st}"
+      case "${folded,,}" in
+        kv_workspace_config.json | config_storage_anchor.json | \
+          .lightrag_storage.lock | .lightrag_anchor.lock | \
+          .lightrag_anchor_bind.lock)
+          return 0
+          ;;
+      esac
+      [[ -z "${seen[$name]:-}" ]] || return 0
+      seen["$name"]=1
+    done
+    [[ "$value" =~ ^${ws}\]$ ]] || return 0
+  else
+    [[ "${#members[@]}" -eq 3 ]] || return 0
+  fi
+  config_storage_is_admitted "$CONFIG_ANCHOR_BACKEND" || return 0
+  CONFIG_ANCHOR_STATE="readable"
+  return 0
+}
+
+report_config_anchor() {
+  # For `make env-storage`: say which configuration container this
+  # deployment is bound to, and warn when the selection just made resolves
+  # to another backend TYPE -- the server refuses such a start. Keeping the
+  # old backend or migrating is the operator's choice; nothing is changed.
+  # ``$2`` is the runtime target the .env being written will carry.
+  local candidate="$1"
+
+  read_config_anchor "${2:-}"
+  case "$CONFIG_ANCHOR_STATE" in
+    absent)
+      return 0
+      ;;
+    unresolved)
+      log_warn "$CONFIG_ANCHOR_UNRESOLVED_REASON, so the configuration" \
+        "storage anchor was not checked. The server refuses to start if the" \
+        "anchor binds a backend other than the one it resolves."
+      return 0
+      ;;
+    unreadable)
+      log_warn "The configuration storage anchor $CONFIG_ANCHOR_PATH exists" \
+        "but could not be read here. The server never treats it as absent:" \
+        "repair or restore it, or -- with EVERY server on this WORKING_DIR" \
+        "stopped first -- delete it to rebind on the next start. A running" \
+        "server never rereads it, so a delete under live servers splits the" \
+        "deployment."
+      return 0
+      ;;
+  esac
+
+  if [[ "$CONFIG_ANCHOR_BACKEND" == "$candidate" ]]; then
+    log_info "Configuration storage anchor: $CONFIG_ANCHOR_BACKEND" \
+      "(identity $CONFIG_ANCHOR_UUID) at $CONFIG_ANCHOR_PATH"
+    return 0
+  fi
+  log_warn "This deployment's configuration storage anchor ($CONFIG_ANCHOR_PATH)" \
+    "binds it to $CONFIG_ANCHOR_BACKEND, but the configuration storage now" \
+    "resolves to $candidate, so the server will REFUSE to start."
+  log_warn "Either set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND (no" \
+    "migration needed), or run '$(config_anchor_migrate_command "$candidate")'" \
+    "with every server stopped before starting. This wizard never writes or" \
+    "moves the anchor."
+  return 0
+}
+
+report_config_anchor_for_output() {
+  # Every finalizer calls this once its runtime target is settled: env-base
+  # and env-server can switch between host and Compose (and env-server can
+  # change WORKING_DIR) just as env-storage can, and the switch decides which
+  # directory the next server reads the anchor from. ``$1`` is that target.
+  # An unset KV backend is the server's default; a configuration backend the
+  # category does not admit is reported by the admitted check instead.
+  local candidate="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}")"
+
+  config_storage_is_admitted "$candidate" || return 0
+  report_config_anchor "$candidate" "$1"
+}
+
+config_storage_needs_no_new_settings() {
+  # Whether this backend can be chosen without collecting anything: it
+  # requires no connection variables (the file-backed one), or every variable
+  # it requires is already set in the .env being written.
+  local candidate="$1" var
+  for var in ${STORAGE_ENV_REQUIREMENTS[$candidate]:-}; do
+    [[ -n "${ENV_VALUES[$var]:-}" ]] || return 1
+  done
+  return 0
+}
+
+ensure_config_storage_is_startable() {
+  # For the flows that do NOT own storage -- env-base and env-server. They
+  # preserve the storage settings they find and then WRITE the file, and a
+  # file the server refuses at construction is not a successful rewrite: an
+  # .env carrying an unadmitted configuration backend (explicitly, or by an
+  # unset selection following LIGHTRAG_KV_STORAGE) cannot start, so leaving it
+  # untouched hands the operator a deployment that goes down on the next
+  # restart with nothing in the wizard's output to say why.
+  #
+  # It asks ONLY in that case. A sound file -- an admitted backend, or no KV
+  # backend named at all -- writes nothing and is left exactly as it was, so
+  # these flows keep their promise not to touch storage everywhere it holds.
+  local kv="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+  local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local resolved="$(resolve_config_storage_selection "$existing" "$kv")"
+  local records_in default_choice="JsonKVStorage" option
+  local offered=()
+
+  [[ -z "$resolved" ]] && return 0
+  config_storage_is_admitted "$resolved" && return 0
+
+  # Only backends that need NOTHING collected. Neither of these flows has a
+  # database-configuration step, so offering a backend whose credentials are
+  # missing would swap one unstartable .env for another -- refused a step
+  # later, by `check_storage_env_vars` instead of by the category. The
+  # file-backed one always qualifies; a server backend qualifies when this
+  # deployment is already configured for it, which is exactly the case where
+  # the records are likely to be in it already.
+  for option in "${CONFIG_STORAGE_OPTIONS[@]}"; do
+    config_storage_needs_no_new_settings "$option" && offered+=("$option")
+  done
+
+  records_in="$(config_storage_records_in)"
+  if [[ -n "$records_in" ]] && config_storage_needs_no_new_settings "$records_in"; then
+    default_choice="$records_in"
+  fi
+
+  if [[ -n "$existing" ]]; then
+    log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
+      "storage backend, so the server refuses this .env at startup;" \
+      "choose one of: ${offered[*]}"
+  else
+    log_warn "LIGHTRAG_KV_STORAGE=$kv cannot hold the configuration storage" \
+      "(the embedding baselines), and an unset LIGHTRAG_CONFIG_STORAGE" \
+      "follows it, so the server refuses this .env at startup; choose one" \
+      "of: ${offered[*]}"
+  fi
+  log_warn "This wizard changes nothing else about storage; it asks because" \
+    "writing the file without an answer would hand you one that cannot start."
+  if ((${#offered[@]} < ${#CONFIG_STORAGE_OPTIONS[@]})); then
+    log_warn "Only backends this .env is already configured for are offered;" \
+      "run 'make env-storage' to choose one that needs new connection" \
+      "settings."
+  fi
+  if [[ -n "$records_in" ]]; then
+    log_warn "The baselines are in $records_in and are NOT migrated; keeping" \
+      "that backend leaves them readable."
+  fi
+  ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$(prompt_choice "Configuration storage" \
+    "$default_choice" "${offered[@]}")"
+  return 0
+}
+
+select_config_storage() {
+  # The configuration storage is its own category, and this function exists to
+  # answer ONE question: is the container about to move, and does the operator
+  # know? Moving it without migrating the baseline rows leaves them where
+  # nothing reads them -- they then read as ABSENT, which is the one answer
+  # that lets a start bootstrap over vectors nobody probed.
+  #
+  # There are three ways a rerun can move it -- dropping an explicit
+  # selection, following a KV backend that changed, and falling through to the
+  # generic prompt when the new KV backend is not admitted -- so the answer is
+  # computed ONCE, as ``records_in``, and every branch below reads it rather
+  # than re-deriving it. See docs/design/ConfigurationStorageContract.md.
+  #
+  # The answer comes back in ``SELECTED_CONFIG_STORAGE`` rather than on stdout
+  # so the caller does not need a command substitution: this function also
+  # writes ``ENV_VALUES``, and a subshell would throw that away.
+  local kv_storage="$1"
+  local runtime_target="${2:-}"
+  local existing="${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}"
+  local records_in default_choice="JsonKVStorage"
+
+  # A readable anchor names the container this deployment is already bound to.
+  # Keep it explicit so changing the business KV backend cannot move config.
+  SELECTED_CONFIG_ANCHOR_PATH=""
+  read_config_anchor "$runtime_target"
+  if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+    SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
+    SELECTED_CONFIG_STORAGE="$CONFIG_ANCHOR_BACKEND"
+    if [[ "$(resolve_config_storage_selection "$existing" "$kv_storage")" != "$SELECTED_CONFIG_STORAGE" ]]; then
+      log_info "Keeping configuration storage at the anchored backend" \
+        "$SELECTED_CONFIG_STORAGE ($CONFIG_ANCHOR_PATH)"
+    fi
+    ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
+    return 0
+  fi
+
+  records_in="$(config_storage_records_in)"
+  [[ -n "$records_in" ]] && default_choice="$records_in"
+
+  # An EXPLICIT selection already in .env is kept, even when the KV backend
+  # would be admitted: changing it is an explicit edit, not a side effect of
+  # re-running this wizard.
+  if [[ -n "$existing" ]] && config_storage_is_admitted "$existing"; then
+    SELECTED_CONFIG_STORAGE="$existing"
+    if [[ "$existing" != "$kv_storage" ]]; then
+      log_info "Keeping LIGHTRAG_CONFIG_STORAGE=$existing (configuration is" \
+        "its own category; edit .env to move it, and rebuild afterwards --" \
+        "the baseline rows are not migrated)"
+    fi
+    return 0
+  fi
+
+  local implicit
+  implicit="$(resolve_config_storage_selection "" "$kv_storage")"
+  if [[ -z "$existing" ]] && config_storage_is_admitted "$implicit"; then
+    if [[ -n "$records_in" && "$records_in" != "$implicit" ]]; then
+      # Keep existing records reachable when the resolved default changes.
+      log_warn "The implicit configuration storage is changing to $implicit." \
+        "The embedding baselines are in" \
+        "$records_in and are NOT migrated; leaving them there keeps them" \
+        "readable, and moving them makes the next start re-establish them" \
+        "from evidence."
+      SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
+        "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
+      return 0
+    fi
+    # First run, or the resolved default already holds the records.
+    # Leave the setting unset, including the Redis-to-JSON default.
+    SELECTED_CONFIG_STORAGE="$implicit"
+    return 0
+  fi
+
+  # The new KV backend cannot hold configuration, or the explicit selection
+  # is not one the category admits. Either way the operator has to name one --
+  # and the default is still the backend the records are in, because a KV
+  # backend that is leaving the category does not take them with it.
+  if [[ -n "$existing" ]]; then
+    log_warn "LIGHTRAG_CONFIG_STORAGE=$existing is not a configuration" \
+      "storage backend; choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  else
+    log_warn "$kv_storage cannot hold the configuration storage (the embedding" \
+      "baselines); choose one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+  fi
+  if [[ -n "$records_in" ]]; then
+    log_warn "The baselines are in $records_in and are NOT migrated; keeping" \
+      "that backend leaves them readable."
+  fi
+  SELECTED_CONFIG_STORAGE="$(prompt_choice "Configuration storage" \
+    "$default_choice" "${CONFIG_STORAGE_OPTIONS[@]}")"
+  ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$SELECTED_CONFIG_STORAGE"
 }
 
 initialize_default_storage_backends() {
@@ -2562,6 +3115,8 @@ env_base_flow() {
   fi
   echo ""
 
+  ensure_config_storage_is_startable
+
   finalize_base_setup
 }
 
@@ -2628,6 +3183,8 @@ finalize_base_setup() {
       show_host_start_hint
   fi
 
+  report_config_anchor_for_output "$runtime_target"
+
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
@@ -2688,7 +3245,7 @@ env_storage_flow() {
 
   log_step "Storage backend selection"
   select_storage_backends "custom"
-  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-} config=${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-(follows kv; JSON for Redis)}"
   clear_unused_storage_deployment_markers
 
   log_step "Database configuration"
@@ -2709,6 +3266,7 @@ finalize_storage_setup() {
   local compose_action="write_env_only"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local show_host_start_hint="no"
+  local config_storage config_db_type
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -2740,6 +3298,66 @@ finalize_storage_setup() {
     return 1
   fi
 
+  existing_compose="$(find_generated_compose_file)"
+  compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
+  restore_vllm_docker_services_from_env
+  resolve_compose_output_action \
+    "$existing_compose" \
+    compose_action \
+    runtime_target \
+    show_host_start_hint
+
+  # Docker choices may change the runtime target after backend selection.
+  # A newly required configuration database can itself add a Docker service,
+  # changing a host choice to Compose; repeat against that final anchor.
+  while true; do
+    read_config_anchor "$runtime_target"
+    if [[ "$CONFIG_ANCHOR_STATE" == "readable" ]]; then
+      SELECTED_CONFIG_ANCHOR_PATH="$CONFIG_ANCHOR_PATH"
+      if [[ "$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$DEFAULT_KV_STORAGE}")" != "$CONFIG_ANCHOR_BACKEND" ]]; then
+        log_info "Keeping configuration storage at the anchored backend" \
+          "$CONFIG_ANCHOR_BACKEND ($CONFIG_ANCHOR_PATH)"
+      fi
+      ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="$CONFIG_ANCHOR_BACKEND"
+    elif [[ -n "${SELECTED_CONFIG_ANCHOR_PATH:-}" && \
+      "$CONFIG_ANCHOR_PATH" != "$SELECTED_CONFIG_ANCHOR_PATH" ]]; then
+      # The initial selection followed an anchor in another runtime directory.
+      # Restore the original .env choice and select for the final directory.
+      if [[ -n "${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+        ENV_VALUES["LIGHTRAG_CONFIG_STORAGE"]="${ORIGINAL_ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]}"
+      else
+        unset 'ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]'
+      fi
+      select_config_storage "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" "$runtime_target"
+    fi
+
+    # Keep database/Docker choices already collected in this run, even if
+    # config no longer needs them. Removing their service can reverse the
+    # runtime switch and select the old anchor again. The summary exposes
+    # this residue; the next run recalculates requirements from the final
+    # runtime. See *The setup wizard* in docs/design/ConfigurationStorageContract.md.
+    config_storage="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}")"
+    config_db_type="${STORAGE_DB_TYPES[$config_storage]:-}"
+    if [[ -n "$config_db_type" && -z "${REQUIRED_DB_TYPES[$config_db_type]+set}" ]]; then
+      REQUIRED_DB_TYPES["$config_db_type"]=1
+      log_step "Database configuration for $config_storage"
+      collect_database_config "$config_db_type" \
+        "$(storage_default_docker_for_db_type "$config_db_type")"
+      if [[ "$runtime_target" != "compose" && ${#DOCKER_SERVICES[@]} -gt 0 ]]; then
+        compose_action="rewrite_compose"
+        runtime_target="compose"
+        show_host_start_hint="no"
+        continue
+      fi
+    fi
+    validate_required_variables "$config_storage" || return 1
+    break
+  done
+
+  configure_storage_compose_rewrites
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
+
   show_summary
 
   if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
@@ -2747,17 +3365,7 @@ finalize_storage_setup() {
     return 1
   fi
 
-  existing_compose="$(find_generated_compose_file)"
-  compose_file="${REPO_ROOT}/docker-compose.final.yml"
-  record_existing_managed_root_services "$existing_compose"
-  restore_vllm_docker_services_from_env
-  configure_storage_compose_rewrites
-  configure_mongodb_compose_migration_rewrite "$existing_compose"
-  resolve_compose_output_action \
-    "$existing_compose" \
-    compose_action \
-    runtime_target \
-    show_host_start_hint
+  report_config_anchor_for_output "$runtime_target"
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2826,6 +3434,8 @@ env_server_flow() {
   collect_ssl_config
   echo ""
 
+  ensure_config_storage_is_startable
+
   finalize_server_setup
 }
 
@@ -2880,6 +3490,8 @@ finalize_server_setup() {
     compose_action \
     runtime_target \
     show_host_start_hint
+
+  report_config_anchor_for_output "$runtime_target"
 
   if [[ "$compose_action" == "rewrite_compose" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2965,6 +3577,11 @@ load_env_file() {
         value="${value//\\\\/\\}"
       elif [[ "$value" =~ ^\'.*\'$ ]]; then
         value="${value:1:${#value}-2}"
+        # python-dotenv decodes ``\\`` inside single quotes, and
+        # format_env_value writes a value with whitespace, ``$``, ``#`` or
+        # ``"`` single-quoted as it is -- so a doubled backslash in the
+        # wizard's own output reads back as one on the server.
+        value="${value//\\\\/\\}"
       fi
       ENV_VALUES["$key"]="$value"
     fi
@@ -2992,7 +3609,7 @@ validate_ssl_runtime_path() {
 validate_env_file() {
   local env_file="${REPO_ROOT}/.env"
   local errors=0
-  local kv vector graph doc_status
+  local kv vector graph doc_status config_storage
   local runtime_target
   local storage db_type
   local -A referenced_db_types=()
@@ -3007,9 +3624,12 @@ validate_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  # Unset, configuration follows KV (JSON for Redis); that default is
+  # what keeps an existing deployment's records where they already are.
+  config_storage="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "$kv")"
   runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
 
-  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+  for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
     if [[ -z "$storage" ]]; then
       continue
     fi
@@ -3028,6 +3648,39 @@ validate_env_file() {
     return 1
   fi
 
+  # The configuration storage is its own category, and the server refuses a
+  # selection outside it BY NAME at startup. Validation that passes such a
+  # file is worse than no validation: it tells the operator the environment
+  # is good and the server then refuses it.
+  if ! config_storage_is_admitted "$config_storage"; then
+    if [[ -n "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" ]]; then
+      format_error \
+        "LIGHTRAG_CONFIG_STORAGE=$config_storage is not a configuration storage backend" \
+        "Set it to one of: ${CONFIG_STORAGE_OPTIONS[*]}"
+    else
+      format_error \
+        "LIGHTRAG_CONFIG_STORAGE is unset, so it follows LIGHTRAG_KV_STORAGE=$kv, which cannot hold the configuration storage" \
+        "Set LIGHTRAG_CONFIG_STORAGE to one of: ${CONFIG_STORAGE_OPTIONS[*]} (the records already in $kv are not migrated)"
+    fi
+    errors=1
+  else
+    # The anchor: the server refuses a configuration backend TYPE other than
+    # the one this deployment is bound to, so validation must too. An anchor
+    # this parser cannot confirm is only a warning -- the server reads it
+    # strictly and will say why.
+    read_config_anchor
+    if [[ "$CONFIG_ANCHOR_STATE" == "readable" && "$CONFIG_ANCHOR_BACKEND" != "$config_storage" ]]; then
+      format_error \
+        "The configuration storage anchor $CONFIG_ANCHOR_PATH binds this deployment to $CONFIG_ANCHOR_BACKEND, but the configuration storage resolves to $config_storage, so the server refuses this .env at startup" \
+        "Set LIGHTRAG_CONFIG_STORAGE=$CONFIG_ANCHOR_BACKEND, or move the container with '$(config_anchor_migrate_command "$config_storage")' first"
+      errors=1
+    elif [[ "$CONFIG_ANCHOR_STATE" == "unreadable" ]]; then
+      echo "Warning: the configuration storage anchor $CONFIG_ANCHOR_PATH could not be read here; the server reads it strictly and refuses to start unless it is a valid anchor, so check it (repair or restore it, or delete it with every server on this WORKING_DIR stopped first: a running server never rereads it)." >&2
+    elif [[ "$CONFIG_ANCHOR_STATE" == "unresolved" ]]; then
+      echo "Warning: $CONFIG_ANCHOR_UNRESOLVED_REASON, so the configuration storage anchor was not checked; the server refuses to start if it binds a backend other than the one it resolves." >&2
+    fi
+  fi
+
   if ! validate_mongo_vector_storage_config \
     "$vector" \
     "${ENV_VALUES[MONGO_URI]:-}" \
@@ -3035,7 +3688,8 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
+  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status" \
+    "$config_storage"; then
     errors=1
   fi
 
@@ -3132,6 +3786,7 @@ security_check_env_file() {
   local vector=""
   local graph=""
   local doc_status=""
+  local config_storage=""
   local storage=""
   local db_type=""
   local opensearch_in_use="no"
@@ -3152,12 +3807,13 @@ security_check_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  config_storage="$(resolve_config_storage_selection "${ENV_VALUES[LIGHTRAG_CONFIG_STORAGE]:-}" "$kv")"
   if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
     whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
     whitelist_is_set="yes"
   fi
 
-  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+  for storage in "$kv" "$vector" "$graph" "$doc_status" "$config_storage"; do
     if [[ -z "$storage" ]]; then
       continue
     fi
