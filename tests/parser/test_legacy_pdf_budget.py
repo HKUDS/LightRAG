@@ -417,3 +417,87 @@ def test_memoized_decode_failure_does_not_accumulate_tracebacks():
     failures = [r for _, r in budget._decoded.values() if isinstance(r, Exception)]
     assert len(failures) == 1
     assert _traceback_frames(failures[0]) < 10
+
+
+# --- Objects that fail to resolve ------------------------------------------
+# The budget resolves objects inside pypdf's visitor callbacks, where an error
+# escapes pypdf's own catch. Whatever pypdf does with a corrupt object, the
+# budgeted extraction must do the same.
+
+
+def _corrupt_object(data: bytes, marker: bytes) -> bytes:
+    """Overwrite the body of the indirect object holding ``marker``."""
+    out = bytearray(data)
+    at = out.index(marker)
+    start = out.rindex(b" obj", 0, at) + len(b" obj")
+    end = at + len(marker)
+    out[start:end] = b")" + b"\0" * (end - start - 1)
+    return bytes(out)
+
+
+def _unbudgeted(data: bytes):
+    try:
+        return "".join(
+            page.extract_text() + "\n" for page in PdfReader(io.BytesIO(data)).pages
+        )
+    except Exception as exc:
+        return type(exc)
+
+
+def _assert_same_as_pypdf(data: bytes) -> None:
+    expected = _unbudgeted(data)
+    if isinstance(expected, type):
+        # Same outcome, not necessarily the same type: once one resolution of
+        # a corrupt object has failed, pypdf's reader reports a retry as a
+        # self-reference loop instead.
+        with pytest.raises(Exception) as raised:
+            extract_text(data, "pdf")
+        assert not isinstance(raised.value, PdfExtractionBudgetError)
+    else:
+        assert extract_text(data, "pdf") == expected
+
+
+def _marked_resources(b: _Builder):
+    res = b.resources()
+    res[NameObject("/Marker")] = NameObject("/CorruptMe")
+    return b.writer._add_object(res)
+
+
+def test_form_with_corrupt_indirect_resources_is_skipped_like_pypdf():
+    b = _Builder()
+    s = DecodedStreamObject()
+    s.set_data(_text_ops(b"Form", 1))
+    s.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Form"),
+            NameObject("/Resources"): _marked_resources(b),
+        }
+    )
+    form = b.writer._add_object(s)
+    b.page(b.stream(_text_ops(b"Keep", 1) + b"/X0 Do\n"), {"/X0": form})
+    data = _corrupt_object(b.bytes(), b"/Marker /CorruptMe")
+
+    assert "Keep" in _unbudgeted(data)
+    _assert_same_as_pypdf(data)
+
+
+def test_page_with_corrupt_indirect_resources_matches_pypdf():
+    b = _Builder()
+    b.page(b.stream(_text_ops(b"Other", 1)))
+    page = b.writer.add_blank_page(width=612, height=792)
+    page[NameObject("/Resources")] = _marked_resources(b)
+    page[NameObject("/Contents")] = b.stream(_text_ops(b"Gone", 1))
+    _assert_same_as_pypdf(_corrupt_object(b.bytes(), b"/Marker /CorruptMe"))
+
+
+def test_corrupt_contents_of_page_with_empty_resources_matches_pypdf():
+    b = _Builder()
+    b.page(b.stream(_text_ops(b"Other", 1)))
+    page = b.writer.add_blank_page(width=612, height=792)
+    page[NameObject("/Resources")] = DictionaryObject()
+    marked = b.writer._add_object(
+        DictionaryObject({NameObject("/Marker"): NameObject("/CorruptMe")})
+    )
+    page[NameObject("/Contents")] = marked
+    _assert_same_as_pypdf(_corrupt_object(b.bytes(), b"/Marker /CorruptMe"))

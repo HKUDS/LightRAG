@@ -75,16 +75,47 @@ def _page_resources(page: Any) -> Any:
     """``/Resources`` of ``page``, inherited through ``/Parent`` like pypdf.
 
     ``None`` when no node declares it, the one case every supported pypdf
-    release treats as "nothing to parse" for the page.
+    release treats as "nothing to parse" for the page, and also when the
+    lookup itself fails: pypdf then fails or skips the page on its own, and
+    either way parses nothing.
     """
-    node = page
-    for _ in range(_MAX_PARENT_DEPTH):
-        if not isinstance(node, DictionaryObject):
-            return None
-        if "/Resources" in node:
-            return _resolve(node["/Resources"])
-        node = _resolve(node.get("/Parent"))
+    try:
+        node = page
+        for _ in range(_MAX_PARENT_DEPTH):
+            if not isinstance(node, DictionaryObject):
+                return None
+            if "/Resources" in node:
+                return _resolve(node["/Resources"])
+            node = _resolve(node.get("/Parent"))
+    except MemoryError:
+        raise
+    except Exception:
+        return None
     return None
+
+
+def _lookup_form(resources: Any, operands: Any) -> tuple[Any, Any] | None:
+    """``(form, its /Resources)`` for a ``Do``, or ``None`` if pypdf parses nothing.
+
+    Never raises (except ``MemoryError``): it runs in a visitor callback,
+    outside pypdf's own catch, so an error here would fail a page that pypdf
+    extracts. Images, non-streams, forms without ``/Resources`` and anything
+    that fails to resolve are all "nothing", as they are for pypdf.
+    """
+    try:
+        xobjects = _resolve(resources.get("/XObject")) if resources else None
+        if not xobjects or not operands:
+            return None
+        form = _resolve(xobjects.get(operands[0]))
+        if not isinstance(form, StreamObject) or form.get("/Subtype") == "/Image":
+            return None
+        if "/Resources" not in form:
+            return None
+        return form, _resolve(form["/Resources"])
+    except MemoryError:
+        raise
+    except Exception:
+        return None
 
 
 class PdfExtractionBudget:
@@ -188,20 +219,23 @@ class PdfExtractionBudget:
             resources = _page_resources(page)
             if resources is None:
                 continue
-            contents = _resolve(page.get("/Contents"))
-            streams = contents if isinstance(contents, list) else [contents]
-            for stream in streams:
-                try:
-                    length = self._decoded_length(stream)
-                except (AttributeError, KeyError):
-                    # pypdf returns no text for such a page.
-                    length = 0
-                except Exception:
-                    if resources:
-                        raise
-                    # Empty /Resources: recent pypdf skips the page.
-                    length = 0
-                self._add_content(length, f"page {number}")
+            try:
+                contents = _resolve(page.get("/Contents"))
+                streams = contents if isinstance(contents, list) else [contents]
+                for stream in streams:
+                    self._add_content(self._decoded_length(stream), f"page {number}")
+            except PdfExtractionBudgetError:
+                raise
+            except (AttributeError, KeyError):
+                # pypdf returns no text for such a page.
+                continue
+            except MemoryError:
+                raise
+            except Exception:
+                if resources:
+                    raise
+                # Empty /Resources: recent pypdf skips the page.
+                continue
 
     def visitors(self, page: Any) -> dict[str, Any]:
         """Keyword arguments for ``page.extract_text``."""
@@ -223,7 +257,14 @@ class PdfExtractionBudget:
     def _before(self, operator: bytes, operands: Any, *_: Any) -> None:
         self._check()
         if operator in _TEXT_OPERATORS:
-            self._page_chars += _shown_text_length(operator, operands)
+            try:
+                shown = _shown_text_length(operator, operands)
+            except MemoryError:
+                raise
+            except Exception:
+                # Never raise from a visitor except to stop the budget.
+                shown = 0
+            self._page_chars += shown
             self._check_chars()
         elif operator == b"Do":
             self._enter_xobject(operands)
@@ -239,26 +280,12 @@ class PdfExtractionBudget:
         trips the budget, in which case pypdf never calls ``_after`` for it.
         """
         current = self._resources[-1] if self._resources else None
-        xform = None
-        try:
-            xobjects = _resolve(current.get("/XObject")) if current else None
-            if xobjects and operands:
-                xform = _resolve(xobjects.get(operands[0]))
-        except MemoryError:
-            raise
-        except Exception:
-            xform = None
-        if (
-            # pypdf skips anything that is not a stream, inside its own catch.
-            not isinstance(xform, StreamObject)
-            or xform.get("/Subtype") == "/Image"
-            or "/Resources" not in xform
-        ):
-            # pypdf parses neither an image nor a form without /Resources.
+        found = _lookup_form(current, operands)
+        if found is None:
             self._resources.append(None)
             return
+        xform, own = found
         name = operands[0]
-        own = _resolve(xform["/Resources"])
         try:
             length = self._decoded_length(xform)
         except MemoryError:

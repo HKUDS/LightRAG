@@ -67,8 +67,18 @@ It does this the way pypdf does:
 - An image XObject, a form without `/Resources`, an entry that is not a
   stream (`null`, a name, a plain dictionary), or a name that does not resolve
   pushes `None` and costs nothing. pypdf parses none of them, and it skips a
-  non-stream entry inside its own `try`. The budget must not raise there,
-  because an error from a visitor escapes that `try` and fails the page.
+  non-stream entry inside its own `try`. So does a form whose `/Resources` is
+  an indirect reference to a corrupt object.
+
+The rule behind those cases: **a visitor callback raises nothing but the
+budget's own error.** An error from a visitor escapes pypdf's `try` around the
+form and fails a page that pypdf extracts. Every lookup, resolution and
+inspection in a callback therefore treats a failure as "nothing here". This
+covers `_lookup_form` and the text-operand count. Outside the callbacks,
+`_page_resources` and the preflight's `/Contents` resolution follow the same
+error rule as decoding (see below). A failed resolution leaves pypdf's reader
+reporting a retry of that object as a self-reference loop, so pypdf's error
+for such a page can change type. Whether the page fails does not change.
 
 The stack stays balanced when an error unwinds a nested form. The level that
 raised never gets `_after` for the `Do` it was charging, because the charge
