@@ -4,6 +4,10 @@ import { getStatusRequestFilters } from '@/features/documentStatusFilters'
 
 describe('documentStatusFilters', () => {
   test('builds exact single-status request filters for each tab', () => {
+    expect(getStatusRequestFilters('deleting')).toEqual({
+      status_filter: 'deleting',
+      status_filters: null
+    })
     expect(getStatusRequestFilters('completed')).toEqual({
       status_filter: 'processed',
       status_filters: null

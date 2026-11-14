@@ -29,6 +29,37 @@ A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) ski
 
 The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
 
+## Visible deletion recovery
+
+Whole-document deletion passes `stamp_deleting=True` to the purge primitive. Its first journal write persists `DocStatus.DELETING` in the same targeted write as `prepared`, before any destructive mutation. A retry with an existing journal also stamps the status before resuming, which covers journals written by older code and an ingestion purge's journal that a later deletion takes over (`test_retry_with_existing_journal_stamps_deleting`). The stamp refreshes `updated_at` in the same write. Ingestion's stale-extraction reset and explicit-candidate patch rollback leave the flag disabled: their documents remain ingestion work.
+
+After the checkpoint, a failed or interrupted deletion retains `DELETING` and the purge journal. Diagnostic metadata records failures; retrying deletion uses the journal, never the status, to decide what remains. A refusal before a valid recovery proof or a cache-collection failure before the checkpoint leaves the previous status because no destructive purge began. Successful deletion removes the row. There is no transition from `DELETING` back to ingestion.
+
+The status exists because the old behavior was worse than invisible. `adelete_by_doc_id` also accepts PENDING, PROCESSING and FAILED rows, and a failure after the checkpoint used to leave that status in place: PENDING / PROCESSING are auto-resumed and FAILED is manually retryable, so the scheduler could turn a half-finished deletion back into ingestion work. `DELETING` is scheduling-neutral because no scheduler allowlist names it.
+
+Automatic and manual ingestion scheduling exclude this status. Scan leaves its source files and aliases untouched with a warning, while enqueue refuses a matching identity with instructions to re-run deletion. Status counts, pagination, and the WebUI's Deleting filter expose the row so users can select and delete it again. This does not defer rebuilds: each document still uses the existing purge.
+
+**Downgrade:** complete pending deletions before rolling back to a version without `DocStatus.DELETING`; older versions cannot parse rows whose status is `deleting`.
+
+### Deletion status consumer audit
+
+| Consumer | Behavior and regression coverage |
+|---|---|
+| Automatic ingestion / manual FAILED retry | Positive status allowlists exclude `DELETING`; `tests/pipeline/test_deleting_status.py` drives both scheduling paths against a real row. |
+| Scan classification | Checks deletion before source-file/alias classification, keeps both files, records a warning; `test_deleting_keeps_source_and_alias_without_resuming`. |
+| Enqueue dedup | Existing ID, canonical source, and content hash remain duplicates; diagnostic asks the user to re-run deletion. `test_failed_delete_remains_visible_and_retry_completes` covers refusal without replacing the original row. |
+| Custom-chunk insertion | Refuses `DELETING` before checking a resumable patch journal, so patch recovery cannot overwrite deletion state; `test_custom_chunks_refuse_deleting_row_with_patch_journal` pins the case the generic status check would not reach. |
+| Delete entry points | No ingestion-status allowlist; the journal remains authoritative. The lifecycle test deletes the `DELETING` row successfully on retry. |
+| Custom-chunk rollback sweep / `audit_kg_integrity` anchorless scan | Enumerate FAILED / PROCESSING and PROCESSED / FAILED, so they skip `DELETING`. The deletion purge already unions the patch journal's candidates, and a `DELETING` row carries a purge journal rather than missing anchors. |
+| Clear | Drops namespaces rather than selecting statuses; existing `tests/api/routes/test_clear_documents_*` coverage applies unchanged. |
+| Counts and pagination | Enum-derived/default counts and raw grouped status values include deletion. Lifecycle and API pagination tests pin the public projection. |
+| PostgreSQL | Public pagination binds `deleting` through the existing `status = ANY($2)` parameter; scheduling pages retain one equality branch per status. `tests/kg/postgres_impl/test_pg_scheduling_pages.py` pins both SQL shapes. No index or schema change. |
+| Redis | `_status_value` derives status ZSET keys; the transition test in `tests/kg/redis_impl/test_redis_scheduling_pages.py` checks removal from processed, insertion into deleting, count and page reads. |
+| Health scheduling view | `_build_scheduling_status` projects reservation/mailbox fields, not document status buckets; deletion does not become scheduled ingestion. |
+| WebUI | Typed status, badge, filter, per-filter page memory and all locale labels; rendered `DocumentManager.test.tsx` verifies badge, selection and filter request. |
+
+The PostgreSQL checks above verify generated SQL, not a live database planner. Backend integration tests can additionally exercise real service indexes.
+
 ## Chunk tracking authority
 
 **Chunk tracking outranks graph `source_id`.** Within a surviving entity or relation, the `entity_chunks` / `relation_chunks` row is the authoritative chunk list; the graph node's `source_id` is only a truncated view of it (`apply_source_ids_limit`) and may legitimately still name chunks a previous purge already pruned — `_purge_kg_contributions` reads tracking first, falls back to `source_id` only when the row is absent, and its `graph_references_deleted_chunks` branch exists to repair exactly that lag. So code that folds a `source_id` delta back into tracking must append genuine additions only: restoring an ID that is in the graph but not in tracking writes stale attribution into the authoritative store, and a later purge would rebuild or retain KG objects from chunks that no longer exist. `compute_incremental_chunk_ids` carries this rule and `tests/utils/test_compute_incremental_chunk_ids.py` pins it. Genuinely missing attribution is repaired by `audit_kg_integrity`, never by the incremental path.
