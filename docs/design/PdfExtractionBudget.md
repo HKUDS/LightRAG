@@ -35,7 +35,8 @@ lifetime.
 - Every page's `/Contents` (a stream or an array of streams) is measured
   before any page is parsed. This costs decompression only. An array that
   repeats one stream is charged once per entry, because pypdf concatenates and
-  parses each entry.
+  parses each entry. A page that declares no `/Resources`, directly or
+  through `/Parent`, is skipped: no pypdf release parses such a page.
 - A form XObject is charged at every `Do` that invokes it, from
   `visitor_operand_before`, before pypdf parses it.
 - The cap is `min(PDF_MAX_CONTENT_BYTES, max(floor, PDF_MAX_CONTENT_RATIO *
@@ -61,16 +62,37 @@ It does this the way pypdf does:
 - A resource stack starts with the page's `/Resources`, inherited through
   `/Parent`.
 - On `Do`, the name is looked up in the top entry's `/XObject` dictionary. The
-  form is charged and its own `/Resources` is pushed. A form without
-  `/Resources` gets the caller's resources pushed instead.
+  form is charged and its own `/Resources` is pushed.
 - `visitor_operand_after` pops the entry for that `Do`.
-- An image XObject, or a name that does not resolve, pushes `None` and costs
-  nothing; pypdf does not parse either.
+- An image XObject, a form without `/Resources`, or a name that does not
+  resolve pushes `None` and costs nothing. pypdf parses none of them.
 
 The stack stays balanced when an error unwinds a nested form. The level that
 raised never gets `_after` for the `Do` it was charging, because the charge
 raised before anything was pushed. Every outer level still gets `_after`,
 because pypdf calls it after its own `try` around the form.
+
+## Streams that fail to decode
+
+pypdf caches a successful decode on the stream object but not a failed one.
+Decoding a stream that fails, for example by reaching pypdf's per-stream
+output limit, therefore repeats the whole decompression every time. The budget
+decodes on its own, so it must not turn that into a cost per page or per
+invocation:
+
+- Every decode the budget makes is memoized per object, failures included.
+- **Page contents.** A decode error propagates from `check_page_contents` when
+  pypdf would parse the page, meaning its `/Resources` is not empty. pypdf's
+  own error would have ended the extraction at that page anyway, so the
+  document fails the same way, only earlier. `AttributeError` and `KeyError`
+  count as an empty page, as they do in pypdf. A page with empty `/Resources`
+  is charged 0 for a failing stream, because recent pypdf skips that page.
+- **Form XObjects.** pypdf swallows a failing form's error and decodes it
+  again at the next invocation. That was already a cost per invocation before
+  this budget existed. The first failure of each form is tolerated, so a
+  document with one broken form still extracts. Invoking a form that is known
+  to fail again trips the budget. A form with empty `/Resources` never trips,
+  because recent pypdf does not decode it.
 
 ## How the abort reaches the caller
 
@@ -98,9 +120,18 @@ invocation is charged before pypdf parses it.
   before its first callback, so the budget can be overrun by at most one
   stream's worth. A per-operator text expansion through `/ToUnicode` is
   bounded by pypdf's CMap string limits.
-- **Conservative counting.** Forms that pypdf skips (a cycle, its per-page
-  invocation cap, or a form without resources) are still charged. This can
-  only refuse earlier, never later.
+- **Conservative counting.** Forms that pypdf skips because of a cycle or its
+  per-page invocation cap are still charged. So are pages and forms with
+  empty `/Resources`, which pypdf 6.1.0 still parses but recent pypdf does
+  not. This can only refuse earlier, never later.
+- **Failing streams that are each distinct.** Each one costs at most two
+  decompressions, one by the budget and one by pypdf, and needs its own bytes
+  in the file. That work is bounded by the file size times zlib's maximum
+  ratio, with no parsing involved. Distinct failing streams are not charged.
+- **pypdf 6.1.0 and failing forms with empty `/Resources`.** That release
+  decodes such a form at every invocation, and the budget does not trip on it,
+  because recent pypdf never decodes it. This is unchanged from the behavior
+  before the budget existed.
 - **Page count is not capped.** A page with tiny content costs work in
   proportion to its bytes in the file, which `MAX_UPLOAD_SIZE` already bounds.
   There is no amplification for a page cap to remove.

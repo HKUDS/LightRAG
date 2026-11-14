@@ -16,6 +16,7 @@ from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
+    EncodedStreamObject,
     FloatObject,
     NameObject,
 )
@@ -237,3 +238,136 @@ def test_text_budget_is_document_wide(monkeypatch):
 
     monkeypatch.setenv("PDF_MAX_EXTRACTED_CHARS", "6000")
     assert extract_text(data, "pdf").count("C" * 100) == 50
+
+
+# --- Streams pypdf cannot decode -------------------------------------------
+# pypdf caches a successful decode but not a failed one, so a budget that
+# decodes on its own must not make a failing stream cost once per page or per
+# invocation. An unknown filter makes the failure cheap and deterministic.
+
+
+def _bogus(b: _Builder, form_resources=None):
+    s = EncodedStreamObject()
+    s._data = b"x" * 64
+    s[NameObject("/Filter")] = NameObject("/BogusDecode")
+    if form_resources is not None:
+        s.update(
+            {
+                NameObject("/Type"): NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Form"),
+                NameObject("/Resources"): form_resources,
+            }
+        )
+    return b.writer._add_object(s)
+
+
+def _count_decodes(monkeypatch) -> list[int]:
+    calls: list[int] = []
+    original = EncodedStreamObject.get_data
+
+    def spy(self, *args, **kwargs):
+        if self.get("/Filter") == "/BogusDecode":
+            calls.append(id(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(EncodedStreamObject, "get_data", spy)
+    return calls
+
+
+def test_failing_shared_page_stream_fails_once_like_pypdf(monkeypatch):
+    b = _Builder()
+    bogus = _bogus(b)
+    for _ in range(30):
+        b.page(bogus)
+    data = b.bytes()
+    with pytest.raises(Exception) as unbudgeted:
+        PdfReader(io.BytesIO(data)).pages[0].extract_text()
+
+    calls = _count_decodes(monkeypatch)
+    with pytest.raises(type(unbudgeted.value)):
+        extract_text(data, "pdf")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("resources", ["missing", "empty"])
+def test_failing_contents_of_pages_pypdf_skips_do_not_fail(monkeypatch, resources):
+    # Without /Resources no pypdf release parses the page; with empty ones
+    # recent pypdf does not either. The budget may decode such a stream once.
+    b = _Builder()
+    bogus = _bogus(b)
+    for _ in range(30):
+        page = b.writer.add_blank_page(width=612, height=792)
+        page[NameObject("/Contents")] = bogus
+        if resources == "missing":
+            del page["/Resources"]
+        else:
+            page[NameObject("/Resources")] = DictionaryObject()
+    data = b.bytes()
+    try:
+        expected = "".join(
+            page.extract_text() + "\n" for page in PdfReader(io.BytesIO(data)).pages
+        )
+    except Exception as exc:  # pypdf 6.1.0 parses a page with empty resources
+        expected = exc
+
+    calls = _count_decodes(monkeypatch)
+    if isinstance(expected, Exception):
+        with pytest.raises(type(expected)):
+            extract_text(data, "pdf")
+        assert len(calls) <= 2
+    else:
+        assert extract_text(data, "pdf") == expected == "\n" * 30
+        assert len(calls) == (0 if resources == "missing" else 1)
+
+
+def _form_page(b: _Builder, form, invocations: int) -> None:
+    b.page(
+        b.stream(_text_ops(b"Body", 1) + b"/X0 Do\n" * invocations),
+        {"/X0": form},
+    )
+
+
+def test_failing_form_invoked_again_is_refused(monkeypatch):
+    b = _Builder()
+    _form_page(b, _bogus(b, form_resources=b.resources()), 20)
+    calls = _count_decodes(monkeypatch)
+    with pytest.raises(PdfExtractionBudgetError, match="cannot be decoded"):
+        extract_text(b.bytes(), "pdf")
+    # Ours once, pypdf's swallowed attempt once, then the refusal.
+    assert len(calls) <= 2
+
+
+def test_failing_form_invoked_once_still_extracts(monkeypatch):
+    b = _Builder()
+    _form_page(b, _bogus(b, form_resources=b.resources()), 1)
+    assert "Body" in extract_text(b.bytes(), "pdf")
+
+
+def test_failing_form_with_empty_resources_is_not_refused(monkeypatch):
+    # Recent pypdf never decodes a form whose /Resources is empty.
+    b = _Builder()
+    _form_page(b, _bogus(b, form_resources=DictionaryObject()), 20)
+    calls = _count_decodes(monkeypatch)
+    assert "Body" in extract_text(b.bytes(), "pdf")
+    assert len(set(calls)) <= 1 and len(calls) <= 21
+
+
+def test_form_without_resources_is_not_charged():
+    b = _Builder()
+    s = DecodedStreamObject()
+    s.set_data(_text_ops(b"N" * 100, 100))
+    s.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Form"),
+        }
+    )
+    form = b.writer._add_object(s.flate_encode())
+    page_data = b"/X0 Do\n" * 50
+    b.page(b.stream(page_data), {"/X0": form})
+    page = PdfReader(io.BytesIO(b.bytes())).pages[0]
+
+    budget = PdfExtractionBudget(1, "noresources.pdf")
+    budget.check_page_contents([page])
+    budget.finish_page(page.extract_text(**budget.visitors(page)))
+    assert budget.content_bytes == len(page_data)

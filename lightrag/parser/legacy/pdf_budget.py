@@ -56,26 +56,12 @@ def _resolve(obj: Any) -> Any:
     return get_object() if get_object is not None else obj
 
 
-def _decoded_length(stream: Any) -> int:
-    """Decoded size of ``stream``, or 0 when it is not a readable stream.
-
-    A stream pypdf cannot decode is left for pypdf to report or skip, exactly
-    as before this budget existed; it costs pypdf no parsing either way.
-    """
-    stream = _resolve(stream)
-    get_data = getattr(stream, "get_data", None)
-    if get_data is None:
-        return 0
-    try:
-        return len(get_data())
-    except MemoryError:
-        raise
-    except Exception:
-        return 0
-
-
 def _page_resources(page: Any) -> Any:
-    """``/Resources`` of ``page``, inherited through ``/Parent`` like pypdf."""
+    """``/Resources`` of ``page``, inherited through ``/Parent`` like pypdf.
+
+    ``None`` when no node declares it, the one case every supported pypdf
+    release treats as "nothing to parse" for the page.
+    """
     node = page
     for _ in range(_MAX_PARENT_DEPTH):
         if node is None:
@@ -105,6 +91,9 @@ class PdfExtractionBudget:
         self._page_chars = 0
         self._resources: list[Any] = []
         self._tripped: str | None = None
+        # Keyed by id(); the object is kept so the id cannot be reused.
+        self._decoded: dict[int, tuple[Any, int | Exception]] = {}
+        self._failed_forms: set[int] = set()
 
     @staticmethod
     def _content_limit(file_size: int) -> tuple[int, str]:
@@ -149,13 +138,55 @@ class PdfExtractionBudget:
                 "(env PDF_MAX_EXTRACTED_CHARS)"
             )
 
+    def _decoded_length(self, stream: Any) -> int:
+        """Decoded size of ``stream``; 0 when it is not a stream.
+
+        Raises the decode error. Memoized per object, failures included:
+        pypdf caches a successful decode but not a failed one, and a shared
+        stream must not be decompressed again for every page that names it.
+        """
+        stream = _resolve(stream)
+        get_data = getattr(stream, "get_data", None)
+        if get_data is None:
+            return 0
+        key = id(stream)
+        if key not in self._decoded:
+            try:
+                result: int | Exception = len(get_data())
+            except MemoryError:
+                raise
+            except Exception as exc:
+                result = exc
+            self._decoded[key] = (stream, result)
+        result = self._decoded[key][1]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
     def check_page_contents(self, pages: Any) -> None:
-        """Measure every page's ``/Contents`` before anything is parsed."""
+        """Measure every page's ``/Contents`` before anything is parsed.
+
+        A decode error propagates for a page pypdf would parse, as pypdf's own
+        error would have at that page.
+        """
         for number, page in enumerate(pages, start=1):
+            resources = _page_resources(page)
+            if resources is None:
+                continue
             contents = _resolve(page.get("/Contents"))
             streams = contents if isinstance(contents, list) else [contents]
             for stream in streams:
-                self._add_content(_decoded_length(stream), f"page {number}")
+                try:
+                    length = self._decoded_length(stream)
+                except (AttributeError, KeyError):
+                    # pypdf returns no text for such a page.
+                    length = 0
+                except Exception:
+                    if resources:
+                        raise
+                    # Empty /Resources: recent pypdf skips the page.
+                    length = 0
+                self._add_content(length, f"page {number}")
 
     def visitors(self, page: Any) -> dict[str, Any]:
         """Keyword arguments for ``page.extract_text``."""
@@ -202,14 +233,33 @@ class PdfExtractionBudget:
             raise
         except Exception:
             xform = None
-        if xform is None or xform.get("/Subtype") == "/Image":
+        if (
+            xform is None
+            or xform.get("/Subtype") == "/Image"
+            or "/Resources" not in xform
+        ):
+            # pypdf parses neither an image nor a form without /Resources.
             self._resources.append(None)
             return
-        self._add_content(_decoded_length(xform), f"form XObject {operands[0]}")
-        # A form without its own /Resources is charged anyway (pypdf skips
-        # it) and runs with the caller's, a superset of what pypdf resolves.
-        own = _resolve(xform.get("/Resources"))
-        self._resources.append(own if own else current)
+        name = operands[0]
+        own = _resolve(xform["/Resources"])
+        try:
+            length = self._decoded_length(xform)
+        except MemoryError:
+            raise
+        except Exception:
+            # pypdf swallows the failure and decodes the form again at the
+            # next invocation; one failure per form is the most it may cost.
+            # Recent pypdf does not decode a form with empty /Resources at
+            # all, so only a form it would decode can trip here.
+            if own and id(xform) in self._failed_forms:
+                self._trip(
+                    f"form XObject {name} cannot be decoded and is invoked again"
+                )
+            self._failed_forms.add(id(xform))
+            length = 0
+        self._add_content(length, f"form XObject {name}")
+        self._resources.append(own)
 
 
 def _shown_text_length(operator: bytes, operands: Any) -> int:
