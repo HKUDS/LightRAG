@@ -505,6 +505,49 @@ def test_placeholder_row_is_left_out() -> None:
     ]
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize("with_numbering", [False, True])
+def test_placeholder_cell_content_is_not_extracted(
+    monkeypatch, with_numbering: bool
+) -> None:
+    """Nothing in a hidden cell is extracted: no image export, no list count."""
+    import lightrag.parser.docx.table_extractor as table_extractor
+
+    document = Document()
+    table = _filled_table(document, 1, 2)
+    hidden_tc = table.rows[0]._tr.tc_lst[1]
+    hidden_tc.find(qn("w:p")).set(qn("w14:paraId"), "0000000C")
+    _wrap_in_placeholder(hidden_tc)
+
+    touched: list[str] = []
+    real_extract = table_extractor.extract_paragraph_content_table
+
+    def recording_extract(para_elem, *args, **kwargs):
+        text = real_extract(para_elem, *args, **kwargs)
+        touched.append(text)
+        return text
+
+    class RecordingResolver:
+        def reset_tracking_state(self) -> None:
+            pass
+
+        def get_label(self, para_elem) -> str:
+            touched.append("label:" + real_extract(para_elem, qn))
+            return ""
+
+    monkeypatch.setattr(
+        table_extractor, "extract_paragraph_content_table", recording_extract
+    )
+    result = _saved_table_metadata(
+        document, numbering_resolver=RecordingResolver() if with_numbering else None
+    )
+
+    assert result["rows"] == [["r0c0", ""]]
+    assert result["para_ids"][0][1] == "0000000C"
+    assert all("r0c1" not in entry for entry in touched)
+    assert any("r0c0" in entry for entry in touched)
+
+
 # --- end-to-end: every heading becomes its own block ----------------------
 
 

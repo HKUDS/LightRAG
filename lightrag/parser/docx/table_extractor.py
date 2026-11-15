@@ -333,8 +333,9 @@ class TableExtractor:
           columns empty, so its cells stay under the columns they are drawn in
         - Rows and cells inside a content control or custom XML markup count
           like direct ones. A cell inside a table of contents or placeholder
-          control keeps its grid columns but no text; a row inside one is
-          left out
+          control keeps its grid columns and paraIds but no text (nothing in
+          it is extracted, so its images are not exported); a row inside one
+          is left out
 
         Args:
             table: python-docx Table object
@@ -449,7 +450,19 @@ class TableExtractor:
                 if is_vmerge_restart or is_normal_cell:
                     # Extract content for restart or normal cells
                     # Get cell text with numbering support and format preservation
-                    if numbering_resolver is not None:
+                    if hidden:
+                        # Only the paraIds: extracting would still export its
+                        # images (against the shared image budget) and count
+                        # its list items.
+                        for para_elem in tc.findall(qn("w:p")):
+                            para_id_attr = para_elem.get(
+                                "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
+                            )
+                            if para_id_attr:
+                                if cell_para_id is None:
+                                    cell_para_id = para_id_attr
+                                cell_para_id_end = para_id_attr
+                    elif numbering_resolver is not None:
                         # Extract text with numbering labels and superscript/subscript markup
                         cell_paragraphs = []
                         for para_elem in tc.findall(qn("w:p")):
@@ -510,9 +523,6 @@ class TableExtractor:
                             if para_text:
                                 para_texts.append(para_text.strip())
                         cell_text = "\n".join(para_texts).replace("\x07", "")
-
-                    if hidden:
-                        cell_text = ""
 
                     # Store content and paraIds for vMerge restart
                     if is_vmerge_restart:
