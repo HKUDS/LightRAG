@@ -2154,7 +2154,9 @@ def chunking_by_paragraph_semantic(
         drop_references: When ``True``, drop reference blocks (e.g. blocks
             headed "References" / "参考文献") before splitting/merging. A block
             is removed when its heading matches a reference prefix and it is
-            inside the configured content-block window. This is the only
+            inside the configured content-block window, or wherever it is when
+            the parser marked it ``session_type="references"`` (a Word
+            bibliography control, whatever its heading). This is the only
             reference knob that is snapshotted into ``chunk_options`` (it may
             come from a per-file hint) and recorded in
             ``doc_status.metadata['chunk_opts']``.
@@ -2284,8 +2286,9 @@ def chunking_by_paragraph_semantic(
         kept: list[dict[str, Any]] = []
         dropped_headings: list[str] = []
         for idx, row in enumerate(rows):
-            if idx >= start and _is_reference_heading(
-                row.get("heading", "") or "", prefixes
+            if row.get("session_type") == "references" or (
+                idx >= start
+                and _is_reference_heading(row.get("heading", "") or "", prefixes)
             ):
                 dropped_headings.append((row.get("heading") or "").strip())
             else:
