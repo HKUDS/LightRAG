@@ -18,6 +18,7 @@ from io import BytesIO
 
 import pytest
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from lxml import etree
@@ -27,7 +28,10 @@ from lightrag.parser.docx.parse_document import (
     extract_docx_blocks,
     extract_paragraph_content,
 )
-from lightrag.parser.docx.table_extractor import extract_paragraph_content_table
+from lightrag.parser.docx.table_extractor import (
+    TableExtractor,
+    extract_paragraph_content_table,
+)
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 PARAGRAPH_NS = {
@@ -40,6 +44,98 @@ PARAGRAPH_NS = {
 def _p(inner_xml: str):
     """Build a ``<w:p>`` lxml element from inner OOXML."""
     return etree.fromstring(f'<w:p xmlns:w="{W_NS}">{inner_xml}</w:p>'.encode("utf-8"))
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("in_table", [False, True])
+def test_direct_list_level_with_style_inherited_numid(tmp_path, in_table) -> None:
+    doc = Document()
+    style = doc.styles.add_style("InheritedList", WD_STYLE_TYPE.PARAGRAPH)
+    style.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:numId w:val="42"/></w:numPr>')
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:abstractNum xmlns:w="{W_NS}" w:abstractNumId="42">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/>'
+            '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>'
+            '<w:pStyle w:val="InheritedList"/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/>'
+            '<w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/>'
+            "</w:lvl></w:abstractNum>"
+        )
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:num xmlns:w="{W_NS}" w:numId="42">'
+            '<w:abstractNumId w:val="42"/></w:num>'
+        )
+    )
+    container = doc.add_table(rows=1, cols=1).cell(0, 0) if in_table else doc
+    for text, level in [("nested", 1), ("next nested", 1), ("top", None)]:
+        para = container.add_paragraph(text, style="InheritedList")
+        if level is not None:
+            para._p.get_or_add_pPr().append(
+                etree.fromstring(
+                    f'<w:numPr xmlns:w="{W_NS}"><w:ilvl w:val="{level}"/></w:numPr>'
+                )
+            )
+    path = tmp_path / "inherited-list.docx"
+    doc.save(path)
+
+    content = "\n".join(block["content"] for block in extract_docx_blocks(str(path)))
+    assert "a) nested" in content
+    assert "b) next nested" in content
+    assert "2. top" in content
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("in_table", [False, True])
+def test_style_list_level_with_numid_from_base_style(tmp_path, in_table) -> None:
+    # A child style writes only w:ilvl and inherits w:numId from its base style;
+    # Word renders "1. a) b) 2." for this layout.
+    doc = Document()
+    base = doc.styles.add_style("ListBase", WD_STYLE_TYPE.PARAGRAPH)
+    base.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:numId w:val="43"/></w:numPr>')
+    )
+    child = doc.styles.add_style("ListChild", WD_STYLE_TYPE.PARAGRAPH)
+    child.base_style = base
+    child.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:ilvl w:val="1"/></w:numPr>')
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:abstractNum xmlns:w="{W_NS}" w:abstractNumId="43">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/>'
+            '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/>'
+            '<w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/>'
+            "</w:lvl></w:abstractNum>"
+        )
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:num xmlns:w="{W_NS}" w:numId="43">'
+            '<w:abstractNumId w:val="43"/></w:num>'
+        )
+    )
+    container = doc.add_table(rows=1, cols=1).cell(0, 0) if in_table else doc
+    for text, style in [
+        ("parent", "ListBase"),
+        ("child", "ListChild"),
+        ("next child", "ListChild"),
+        ("next parent", "ListBase"),
+    ]:
+        container.add_paragraph(text, style=style)
+    path = tmp_path / "style-level-list.docx"
+    doc.save(path)
+
+    content = "\n".join(block["content"] for block in extract_docx_blocks(str(path)))
+    assert "1. parent" in content
+    assert "a) child" in content
+    assert "b) next child" in content
+    assert "2. next parent" in content
 
 
 # --- paragraph walker (parse_document.extract_paragraph_content) -----------
@@ -176,6 +272,43 @@ def _build_docx_with_three_tables() -> BytesIO:
     doc.save(buf)
     buf.seek(0)
     return buf
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("continuation", [None, "continue"])
+def test_empty_table_cell_ends_vertical_merge(continuation: str | None) -> None:
+    document = Document()
+    table = document.add_table(rows=3, cols=2)
+    merged = table.cell(0, 0).merge(table.cell(1, 0))
+    _populate_cell(merged, "Operations")
+    _populate_cell(table.cell(0, 1), "Chair")
+    _populate_cell(table.cell(1, 1), "Desk")
+    _populate_cell(table.cell(2, 1), "Unassigned clipboard")
+
+    restart, continued, independent = (row.tc_lst[0] for row in table._tbl.tr_lst)
+    merge_marker = continued.tcPr.find(qn("w:vMerge"))
+    if continuation is not None:
+        merge_marker.set(qn("w:val"), continuation)
+    para_ids = ("00000001", "00000002", "00000003")
+    for cell, para_id in zip((restart, continued, independent), para_ids):
+        cell.find(qn("w:p")).set(qn("w14:paraId"), para_id)
+
+    source = BytesIO()
+    document.save(source)
+    source.seek(0)
+    result = TableExtractor.extract_with_metadata(Document(source).tables[0])
+
+    assert result["rows"] == [
+        ["Operations", "Chair"],
+        ["Operations", "Desk"],
+        ["", "Unassigned clipboard"],
+    ]
+    assert [row[0] for row in result["para_ids"]] == [
+        para_ids[0],
+        para_ids[0],
+        para_ids[2],
+    ]
+    assert [row[0] for row in result["para_ids_end"]] == list(para_ids)
 
 
 # --- end-to-end: every heading becomes its own block ----------------------

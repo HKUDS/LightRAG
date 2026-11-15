@@ -1,4 +1,5 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
+import asyncio
 import os
 import logging
 import warnings
@@ -37,6 +38,7 @@ from lightrag.utils import (
 
 from lightrag.api import __api_version__
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.tiktoken_cache import load_tiktoken_encoding
 from lightrag.llm._error_utils import is_permanent_rate_limit_error
 
 import numpy as np
@@ -117,13 +119,14 @@ def _is_transient_status_error(error: BaseException) -> bool:
 def _is_retryable_rate_limit_error(error: BaseException) -> bool:
     """tenacity predicate: retry 429s, except permanent spend stops.
 
-    Used instead of ``retry_if_exception_type(RateLimitError)`` so the original
-    RateLimitError still propagates to callers unchanged (upstream
-    ``except RateLimitError`` / ``isinstance`` checks keep working, and the
-    doc-status failure summary carries the provider's own message -- the
-    LiteLLM budget figures, or OpenAI's billing pointer -- instead of an opaque
-    RetryError). See :mod:`lightrag.llm._error_utils` for what counts as
-    permanent.
+    Used instead of ``retry_if_exception_type(RateLimitError)`` so a permanent
+    spend stop fails on the first attempt instead of paying the full backoff
+    window. Either way the caller receives the original RateLimitError (the
+    decorators set ``reraise=True``), so upstream ``except RateLimitError`` /
+    ``isinstance`` checks keep working and the doc-status failure summary
+    carries the provider's own message -- the LiteLLM budget figures, or
+    OpenAI's billing pointer. See :mod:`lightrag.llm._error_utils` for what
+    counts as permanent.
     """
     return isinstance(error, RateLimitError) and not is_permanent_rate_limit_error(
         error
@@ -165,12 +168,16 @@ def _get_tiktoken_encoding_for_model(model: str) -> Any:
     """
     if model not in _TIKTOKEN_ENCODING_CACHE:
         try:
-            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.encoding_for_model(model)
+            _TIKTOKEN_ENCODING_CACHE[model] = load_tiktoken_encoding(
+                lambda: tiktoken.encoding_for_model(model)
+            )
         except KeyError:
             logger.debug(
                 f"Encoding for model '{model}' not found, falling back to cl100k_base"
             )
-            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.get_encoding("cl100k_base")
+            _TIKTOKEN_ENCODING_CACHE[model] = load_tiktoken_encoding(
+                lambda: tiktoken.get_encoding("cl100k_base")
+            )
     return _TIKTOKEN_ENCODING_CACHE[model]
 
 
@@ -301,6 +308,11 @@ def create_openai_async_client(
         # Retry transient "could not parse JSON body" 400s (see handler below).
         | retry_if_exception_type(TransientBadRequestError)
     ),
+    # Once retries are exhausted, raise the last attempt's own exception
+    # (APIConnectionError, InternalServerError, ...) instead of a
+    # tenacity.RetryError that hides the provider's message from callers and
+    # from the doc-status error_msg.
+    reraise=True,
 )
 async def openai_complete_if_cache(
     model: str,
@@ -505,6 +517,12 @@ async def openai_complete_if_cache(
         response = await openai_async_client.chat.completions.create(
             model=api_model, messages=messages, **kwargs
         )
+    except asyncio.CancelledError:
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
+        raise
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         try:
@@ -581,7 +599,10 @@ async def openai_complete_if_cache(
             cot_active = False
             cot_started = False
             initial_content_seen = False
-            closing_via_generator_exit = False
+            # Set on GeneratorExit and CancelledError: the finally block must
+            # not yield on either, or cleanup is suspended before the stream
+            # and client are closed.
+            closing_without_yield = False
 
             try:
                 iteration_started = True
@@ -681,7 +702,16 @@ async def openai_complete_if_cache(
                 # Consumer disconnect mid-COT: tell the finally block below to
                 # skip its yield, which would otherwise abort cleanup with
                 # "async generator ignored GeneratorExit".
-                closing_via_generator_exit = True
+                closing_without_yield = True
+                raise
+            except asyncio.CancelledError:
+                # A cancelled read (request timeout, client gone) mid-COT.
+                # CancelledError is a BaseException, so neither neighbouring
+                # handler sees it; without this clause the finally block hands
+                # "</think>" to the cancelled read in place of the
+                # cancellation, and cleanup stays suspended at that yield --
+                # a later aclose() then skips the stream and client close.
+                closing_without_yield = True
                 raise
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
@@ -698,7 +728,7 @@ async def openai_complete_if_cache(
                         # aclose() raises "async generator ignored
                         # GeneratorExit", and the frame is abandoned before
                         # the stream and the client are ever closed.
-                        closing_via_generator_exit = True
+                        closing_without_yield = True
                         raise
                     except Exception as close_error:
                         logger.warning(
@@ -729,8 +759,8 @@ async def openai_complete_if_cache(
                 raise
             finally:
                 # Final safety check for unclosed COT tags, skipped while
-                # closing via GeneratorExit (see the except clause above).
-                if enable_cot and cot_active and not closing_via_generator_exit:
+                # closing via GeneratorExit or CancelledError (see above).
+                if enable_cot and cot_active and not closing_without_yield:
                     try:
                         yield "</think>"
                         cot_active = False
@@ -850,7 +880,7 @@ async def openai_complete_if_cache(
                 # Validate final content
                 if not final_content or final_content.strip() == "":
                     # Distinguish the empty-content failure modes so the retry
-                    # ERROR lines (and the final RetryError) carry the root
+                    # ERROR lines (and the final re-raised error) carry the root
                     # cause: reasoning models swallowing output vs token-limit
                     # truncation vs a genuinely empty response.
                     finish_reason = getattr(response.choices[0], "finish_reason", None)
@@ -1050,6 +1080,9 @@ async def nvidia_openai_complete(
         # Retry transient HTTP 5xx (OpenAI 500 / proxy upstream errors).
         | retry_if_exception_type(InternalServerError)
     ),
+    # Same as openai_complete_if_cache: surface the last attempt's own error,
+    # not a tenacity.RetryError.
+    reraise=True,
 )
 async def openai_embed(
     texts: list[str],

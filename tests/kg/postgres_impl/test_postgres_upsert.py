@@ -21,6 +21,8 @@ from lightrag.namespace import NameSpace
 from lightrag.utils import EmbeddingFunc
 
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

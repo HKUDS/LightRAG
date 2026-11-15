@@ -3027,8 +3027,18 @@ def run_smart_heading(
     doc_fs = document_fs_base(records, body_indices)
     _log_physical_feature_summary(records, body_indices, doc_fs)
 
-    if _estimate_record_tokens(records, body_indices) < min_tokens:
-        return None  # CB4 whole-document gate — smart never ran
+    body_tokens = _estimate_record_tokens(records, body_indices)
+    if body_tokens < min_tokens:
+        # CB4 whole-document gate — smart never ran. Said in the log because
+        # the only other trace is the smart_audit.json sidecar, and the output
+        # is otherwise indistinguishable from smart_heading being off.
+        logger.info(
+            "[smart_heading] skipped: document body is ~%d tokens, below "
+            "DOCX_SMART_MIN_TOKENS=%d; headings come from the Word outline only",
+            body_tokens,
+            min_tokens,
+        )
+        return None
 
     # Counted AFTER the CB4 gate: a skipped short document ran no smart rules,
     # so it must not report smart warnings.

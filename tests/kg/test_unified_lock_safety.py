@@ -28,6 +28,9 @@ from lightrag.kg.shared_storage import (
 )
 
 
+pytestmark = pytest.mark.offline
+
+
 class TestUnifiedLockSafety:
     """Test suite for UnifiedLock None safety checks."""
 

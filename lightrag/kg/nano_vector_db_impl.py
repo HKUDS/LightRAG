@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, CorruptStorageSnapshotError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -240,12 +240,47 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         Absent evidence never refuses: a file written before the marker existed
         records no model and still loads.
+
+        A file whose CONTENT cannot be read back as this storage's format
+        raises ``CorruptStorageSnapshotError`` instead of the library's bare
+        error: the refusal must name the file and its recovery path, and tools
+        must be able to tell it apart from the dimension refusal above. The
+        corrupt file is never dropped here -- see the exception's docstring
+        for why the drop stays manual.
+
+        The caught set is every way ``load_storage`` can fail to reconstitute
+        the payload, not just the JSON layer: a truncated file raises
+        ``json.JSONDecodeError``, a damaged base64 matrix ``binascii.Error``,
+        a matrix whose length no longer divides the row width a reshape
+        ``ValueError`` (all three are ``ValueError``), a payload that is not
+        this format's object shape at all ``TypeError`` / ``KeyError``, and a
+        document nested past the interpreter's limit ``RecursionError``.
+        A dimension mismatch is an ``AssertionError`` and is NOT in this set,
+        so the branch below still owns it.
+
+        ``RecursionError`` is in the set although it is a ``RuntimeError``
+        subclass, and it is the only one that is: what the set admits is a
+        statement about the BYTES, and a document too deep to parse is one.
+        A ``MemoryError`` is not -- it says this process could not allocate,
+        which a healthy snapshot on a small container also produces -- so it
+        stays out and propagates, because this exception is what
+        ``lightrag-rebuild-vdb`` reads as permission to back up and drop.
         """
         try:
             client = NanoVectorDB(
                 self.embedding_func.embedding_dim,
                 storage_file=self._client_file_name,
             )
+        except (ValueError, TypeError, KeyError, RecursionError) as e:
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=self._client_file_name,
+                detail=f"{type(e).__name__}: {e}",
+                # This storage's whole state is one file, and it is the only
+                # one ``drop()`` removes -- the provenance marker rides inside
+                # the same JSON. Stated, not inherited: see the exception.
+                artifacts=(self._client_file_name,),
+            ) from e
         except AssertionError as e:
             assert_vector_space_matches(
                 backend=type(self).__name__,
@@ -916,6 +951,32 @@ class NanoVectorDBStorage(BaseVectorStorage):
         client = await self._get_client()
         return getattr(client, "_NanoVectorDB__storage")
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        Cannot raise for the reason the contract is written around -- the data
+        is in this process, so there is no transport to fail. What it still has
+        to get right is the buffer: a pending upsert makes the container
+        non-empty even though nothing is materialized yet, and answering
+        ``True`` there would let the startup gate refuse a store that is
+        mid-ingest.
+
+        ``_pending_deletes`` is deliberately NOT subtracted. Doing so would
+        answer ``True`` for a store whose every row is queued for removal but
+        still on disk, and ``True`` is the only answer this method has that can
+        refuse a deployment. Reporting such a store as non-empty costs a check
+        that would have found nothing; the reverse costs a startup.
+
+        ``_reload_client_from_disk_locked`` is called directly rather than
+        through ``_get_client``: ``_storage_lock`` is non-reentrant.
+        """
+        async with self._storage_lock:
+            if self._pending_upserts:
+                return False
+            self._reload_client_from_disk_locked()
+            storage = getattr(self._client, "_NanoVectorDB__storage")
+            return not storage.get("data")
+
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs.
 
@@ -1232,6 +1293,88 @@ class NanoVectorDBStorage(BaseVectorStorage):
             await self._save_to_disk_locked(_committed)
             return True
 
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this file holds rows whose embedding model is unrecorded.
+
+        Read straight off ``_vector_space_certified``, which ``_build_client``
+        already derived from the snapshot it loaded: it is ``False`` exactly
+        when the file had rows AND named no model, which is the transitional
+        state the adoption probe exists to resolve. An empty file certifies
+        itself, so it never reports pending -- there are no rows to
+        misdescribe, and the next save stamps it without any evidence.
+        """
+        return (
+            self._client is not None
+            and not self._vector_space_certified
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model over the loaded snapshot.
+
+        Certification is flipped and the file rewritten immediately rather than
+        left to the next ordinary save, because a reader-only deployment may
+        never take one -- and because ``_reload_client_from_disk_locked``
+        re-derives certification from whatever snapshot it loads, so an
+        un-persisted verdict does not survive the first peer commit.
+
+        **This is a write path, so it reloads and replays like every other
+        one.** The marker lives in the same JSON object as the rows, so
+        stamping it rewrites the WHOLE namespace -- and this call arrives right
+        after an embedding probe that is allowed to take 30 seconds, which is
+        an unusually wide window for a peer to have committed into. Saving
+        ``self._client`` without reconciling would publish a snapshot from
+        before that commit and silently drop it. *Why these backends never
+        decline a stale write* in the file-backed contract is the rule being
+        followed here: reload the peer's snapshot, replay the pending buffer
+        and the redo logs on top, then publish.
+
+        Certification is set AFTER the reload on purpose:
+        ``_reload_client_from_disk_locked`` re-derives it from whatever
+        snapshot it loads, so setting it first would have the reload throw the
+        verdict away.
+
+        Never raises, per the base contract. A reconcile or save this process
+        cannot complete leaves the file unmarked and certification unset, and
+        the next start probes again.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+
+        async def _committed() -> None:
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
+            self.storage_updated.value = False
+            # Same ordering rule as index_done_callback: retired only PAST the
+            # publication, because the redo logs are the only copy that can
+            # rescue rows from an unnotified peer saving over them.
+            self._unsaved_deletes.clear()
+            self._unsaved_upserts.clear()
+            self._client_dirty = False
+
+        async with self._storage_lock:
+            try:
+                self._reload_client_from_disk_locked(for_write=True)
+                await self._flush_pending_locked()
+            except Exception as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not reconcile "
+                    f"'{self._client_file_name}' before recording the "
+                    f"embedding-space marker: {e}"
+                )
+                return False
+
+            self._vector_space_certified = True
+            try:
+                await self._save_to_disk_locked(_committed)
+            except Exception as e:
+                self._vector_space_certified = False
+                logger.warning(
+                    f"[{self.workspace}] Could not record the embedding-space "
+                    f"marker in '{self._client_file_name}': {e}"
+                )
+                return False
+        return True
+
     @staticmethod
     def _format_record(dp: dict[str, Any]) -> dict[str, Any]:
         """Shape a stored/pending record into the public read result."""
@@ -1543,9 +1686,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
 
         def _delete_file() -> None:
-            # delete _client_file_name
-            if os.path.exists(self._client_file_name):
+            # exists() can hide a stat permission error as absence. Only the
+            # deletion itself can confirm that the snapshot is gone.
+            try:
                 os.remove(self._client_file_name)
+            except FileNotFoundError:
+                pass
 
         async def _committed() -> None:
             # Discard buffered (unflushed) upserts and queued deletes
