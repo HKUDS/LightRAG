@@ -8,12 +8,28 @@ graph must still be the one the storage opens.
 """
 
 import os
+import uuid
 
 import pytest
 
 from lightrag.kg.shared_storage import initialize_share_data
 
 asyncpg = pytest.importorskip("asyncpg")
+
+
+# Every test drops the graphs it used, so no workspace may name a graph that was
+# already in the database. The token leads each name, where the 63-byte clip of
+# a long graph name keeps it.
+_RUN = "t" + uuid.uuid4().hex[:10]
+
+_ROUND_TRIP_WORKSPACES = {
+    "short": f"{_RUN}_tenant_a",
+    # 41 characters + "_chunk_entity_relation" is exactly 63 bytes.
+    "fits_exactly": _RUN.ljust(41, "w"),
+    "one_byte_over": _RUN.ljust(42, "w"),
+    "long": f"{_RUN}_acme_corp_customer_support_knowledge_base_production_eu",
+    "digit_leading": f"2026{_RUN}",
+}
 
 
 async def _noop_embedding(texts):
@@ -103,17 +119,9 @@ async def _drop_graph(graph_name):
 
 @pytest.mark.integration
 @pytest.mark.requires_db
-@pytest.mark.parametrize(
-    "workspace",
-    [
-        "tenant_a",
-        "w" * 41,
-        "w" * 42,
-        "acme_corp_customer_support_knowledge_base_production_eu",
-        "2026kb",
-    ],
-)
-async def test_initialize_and_round_trip_for_workspace(workspace):
+@pytest.mark.parametrize("kind", list(_ROUND_TRIP_WORKSPACES))
+async def test_initialize_and_round_trip_for_workspace(kind):
+    workspace = _ROUND_TRIP_WORKSPACES[kind]
     await _skip_unless_age_is_usable()
     initialize_share_data()
     storage = _make_storage(workspace)
@@ -135,7 +143,7 @@ async def test_existing_clipped_graph_is_still_used(monkeypatch):
     """Data written under the clipped name (AGE 1.5 or earlier) stays visible."""
     await _skip_unless_age_is_usable()
     initialize_share_data()
-    workspace = "legacy_" + "x" * 50
+    workspace = f"{_RUN}_legacy_" + "x" * 50
     old = _make_storage(workspace)
     clipped = old._get_legacy_clipped_graph_name()
     assert clipped is not None
@@ -160,7 +168,7 @@ async def test_hashed_graph_is_kept_when_a_clipped_graph_appears_later(monkeypat
     """An older release run after this one must not take the workspace's data."""
     await _skip_unless_age_is_usable()
     initialize_share_data()
-    workspace = "rollback_" + "x" * 50
+    workspace = f"{_RUN}_rollback_" + "x" * 50
     first = _make_storage(workspace)
     clipped = first._get_legacy_clipped_graph_name()
     hashed = first._get_workspace_graph_name()
@@ -194,7 +202,7 @@ async def test_clipped_graph_left_by_a_failed_startup_is_not_reused():
     """On AGE 1.6+ a failed startup leaves an empty clipped graph without labels."""
     await _skip_unless_age_is_usable()
     initialize_share_data()
-    workspace = "leftover_" + "x" * 50
+    workspace = f"{_RUN}_leftover_" + "x" * 50
     storage = _make_storage(workspace)
     clipped = storage._get_legacy_clipped_graph_name()
     assert clipped is not None
