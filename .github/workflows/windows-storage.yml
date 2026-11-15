@@ -12,6 +12,8 @@ on:
       - 'tests/kg/test_vector_drop_errors.py'
       - 'tests/kg/nano_impl/test_nano_drop.py'
       - 'tests/kg/faiss_impl/test_faiss_drop.py'
+      - 'lightrag/utils_pipeline.py'
+      - 'tests/sidecar/test_sidecar_uri.py'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/windows-storage.yml'
@@ -27,6 +29,8 @@ on:
       - 'tests/kg/test_vector_drop_errors.py'
       - 'tests/kg/nano_impl/test_nano_drop.py'
       - 'tests/kg/faiss_impl/test_faiss_drop.py'
+      - 'lightrag/utils_pipeline.py'
+      - 'tests/sidecar/test_sidecar_uri.py'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/windows-storage.yml'
@@ -44,12 +48,13 @@ jobs:
         # offline-storage carries faiss-cpu; installing it through the frozen
         # sync pins it to uv.lock (nano-vectordb is a core dependency).
         run: uv sync --frozen --python 3.12 --extra pytest --extra offline-storage
-      - name: Run private-file and deletion tests
+      - name: Run private-file, deletion and sidecar URI tests
         # Run serially: native tests hold handles and change file permissions.
         run: >-
           uv run --no-sync pytest tests/test_private_file.py
           tests/kg/test_vector_drop_errors.py
           tests/kg/nano_impl/test_nano_drop.py tests/kg/faiss_impl/test_faiss_drop.py
+          tests/sidecar/test_sidecar_uri.py
           --junitxml=windows-storage.xml -v --tb=short -p no:cacheprovider
       - name: Require native Windows cases
         if: always()
@@ -67,7 +72,12 @@ jobs:
             'test_windows_occupied_data_file_refuses_then_retries[faiss]',
             'test_windows_readonly_data_file_refuses_then_retries[nano]',
             'test_windows_readonly_data_file_refuses_then_retries[faiss]',
-            'test_windows_faiss_partial_drop_and_marker_cleanup[faiss]'
+            'test_windows_faiss_partial_drop_and_marker_cleanup[faiss]',
+            'test_windows_reader_recovers_drive_letter',
+            'test_windows_reader_reads_legacy_authority_form',
+            'test_windows_reader_decodes_literal_escape_exactly_once',
+            'test_windows_reader_rejects_unc_host',
+            'test_windows_drive_paths_round_trip[C:/data/a%25b.parsed]'
           )
           foreach ($name in $required) {
             $cases = @($report.SelectNodes('//testcase') | Where-Object { $_.name -eq $name })

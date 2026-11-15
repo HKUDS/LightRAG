@@ -13,11 +13,12 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
 from lightrag.base import (
@@ -1233,9 +1234,18 @@ def parsed_artifact_dir_for(
 #
 # Sidecar URI scheme conventions:
 #   - Local:  ``file:///abs/path/to/abc.parsed/``   (trailing slash required)
+#             On Windows: ``file:///C:/path/to/abc.parsed/``. UNC paths
+#             (``\\server\share\...``) are not supported: the resolver
+#             returns None for a URI with a host, so readers skip the sidecar.
+#   - Legacy Windows form, read but never written: the writer before the
+#             canonical form percent-encoded the whole native path into the
+#             authority (``file://C%3A%5Cpath%5Cabc.parsed/``). Rows persisted
+#             in that form resolve without a migration.
 #   - Remote: ``s3://bucket/workspace/abc.parsed/`` (future; resolver returns
 #             None today so local readers gracefully skip)
 #   - Unknown sentinel: literal string ``"unknown_source"``
+
+_LEGACY_WINDOWS_AUTHORITY_RE = re.compile(r"[A-Za-z]:\\")
 
 
 def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
@@ -1243,42 +1253,58 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
 
     The result always ends with ``/`` so a reader can distinguish a directory
     from a file at the URI level. Non-ASCII characters are percent-encoded.
-    The writer uses the platform URI form, so a Windows drive path is stored
-    as ``file:///C:/...`` rather than with the drive letter in the authority.
+    Built with ``Path.as_uri()``: on POSIX that is byte-identical to the
+    previous hand-built form, on Windows it keeps the drive in the path
+    (``file:///C:/...``) instead of the authority.
     """
     p = Path(parsed_artifact_dir).resolve()
     uri = p.as_uri()
     return uri if uri.endswith("/") else uri + "/"
 
 
+def _windows_sidecar_path(netloc: str, path: str) -> str | None:
+    """Map the authority and path of a ``file:`` URI to a Windows path string."""
+    if netloc and netloc.lower() != "localhost":
+        legacy = unquote(netloc)
+        if path == "/" and _LEGACY_WINDOWS_AUTHORITY_RE.match(legacy):
+            return legacy
+        return None  # A UNC host: not supported, see the conventions above.
+    try:
+        # Decodes exactly once and drops the slash before the drive letter.
+        return url2pathname(path)
+    except OSError as exc:  # CPython < 3.14 rejects a misplaced ':' this way.
+        logger.warning(f"Unresolvable sidecar URI path {path!r}: {exc}")
+        return None
+
+
 def resolve_sidecar_uri(uri: str | None) -> Path | None:
     """Decode a sidecar URI into a local filesystem Path.
 
-    Returns None for the unknown sentinel, empty input, or any non-``file://``
-    scheme (remote schemes will get their own resolvers). The reader decodes
-    the path exactly once: the platform converter already percent-decodes,
-    so a second decode would corrupt names containing literal escape-like
-    text. A leading drive letter is recovered both from the canonical
-    ``file:///C:/...`` form and from URIs written by the previous writer,
-    which stored the whole drive path in the authority.
+    Returns None for the unknown sentinel, empty input, any non-``file://``
+    scheme (remote schemes will get their own resolvers), and, on Windows, a
+    URI naming a UNC host or a path the platform converter rejects.
+
+    The path is percent-decoded exactly once: a second decode would turn a
+    literal ``%20`` in a directory name into a space. On POSIX the reader is
+    a plain ``unquote`` in the filesystem encoding, deliberately not
+    ``url2pathname``, which on Python 3.14 raises for a path starting with
+    ``//``. On Windows it also reads the legacy authority form.
     """
     if not uri or uri == SIDECAR_LOCATION_UNKNOWN:
         return None
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    if parts.netloc:
-        host = url2pathname(parts.netloc)
-        if re.match(r"^[A-Za-z]:[\\/]", host):
-            return Path(host)
-    path_str = url2pathname(parts.path)
-    if (
-        len(path_str) >= 3
-        and path_str[0] == "/"
-        and path_str[1].isalpha()
-        and path_str[2] == ":"
-    ):
-        path_str = path_str[1:]
+    if os.name == "nt":
+        path_str = _windows_sidecar_path(parts.netloc, parts.path)
+        if path_str is None:
+            return None
+    else:
+        path_str = unquote(
+            parts.path,
+            encoding=sys.getfilesystemencoding(),
+            errors=sys.getfilesystemencodeerrors(),
+        )
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
     return Path(path_str)
