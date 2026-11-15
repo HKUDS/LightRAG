@@ -16,32 +16,8 @@ from tenacity import (
     wait_exponential,
     retry_if_exception,
 )
+from lightrag.llm._aiohttp_retry import is_transient_aiohttp_error
 from lightrag.utils import wrap_embedding_func_with_attrs, logger
-
-
-# 408 / 409 / 429: the client-error statuses a later attempt can succeed at.
-# Same set as the zhipu binding; the openai binding retries 408 / 409 next to
-# its RateLimitError handling.
-_TRANSIENT_STATUS_CODES = frozenset({408, 409, 429})
-
-
-def _is_transient_jina_error(exc: BaseException) -> bool:
-    """tenacity predicate: retry connection failures and transient statuses.
-
-    ``fetch_data`` raises ``aiohttp.ClientResponseError`` for every non-200
-    Jina response alike, so the status decides: 408 / 409 / 429 and 5xx are
-    retried, every other status (bad API key, exhausted balance, malformed or
-    oversized request) fails on the first attempt.
-
-    ``aiohttp.ClientError`` is too broad a fallback for the non-response
-    case: it also covers permanent, local failures like ``InvalidURL`` (a
-    malformed ``base_url``), which no retry can ever fix. Only the
-    connection-level and payload-level subclasses below represent a failure
-    a later attempt could plausibly succeed at.
-    """
-    if isinstance(exc, aiohttp.ClientResponseError):
-        return exc.status in _TRANSIENT_STATUS_CODES or exc.status >= 500
-    return isinstance(exc, (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError))
 
 
 async def fetch_data(url, headers, data):
@@ -92,7 +68,7 @@ async def fetch_data(url, headers, data):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception(_is_transient_jina_error),
+    retry=retry_if_exception(is_transient_aiohttp_error),
     # Surface the last attempt's own exception rather than tenacity.RetryError,
     # so the document's error_msg carries Jina's message and callers can still
     # catch aiohttp.ClientResponseError.
