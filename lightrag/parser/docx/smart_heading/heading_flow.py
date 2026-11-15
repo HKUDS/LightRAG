@@ -1954,6 +1954,14 @@ def merge_split_headings(
                 break  # a numbered heading only ever starts a merge
             if nxt.level != cur.level or nxt.font_size_pt != cur.font_size_pt:
                 break
+            # A bibliography control's edge is a hard boundary: its blocks are
+            # marked for drop_references, so a merge across it would carry
+            # outside text into (or out of) the droppable block.
+            if (
+                records[nxt.record_index].in_references
+                != records[cur.record_index].in_references
+            ):
+                break
             # Adjacency: between the two records only empty paragraphs, at
             # most one.
             between = records[merged_members[-1] + 1 : nxt.record_index]
@@ -3087,7 +3095,11 @@ def run_smart_heading(
         numbering_veto=numbering_veto,
         imprint_excluded=imprint_excluded,
         imprint_boundary_indices=imprint_boundary_indices,
-        skip_indices=toc_indices,
+        # A bibliography record is never cover material and, like a TOC
+        # line, ends any window it would sit in: a title block straddling
+        # the bibliography's edge would be dropped with it (drop_references).
+        skip_indices=toc_indices
+        | {i for i, r in enumerate(records) if getattr(r, "in_references", False)},
         suppressed_events=suppressed_windows,
     )
     if suppressed_windows:

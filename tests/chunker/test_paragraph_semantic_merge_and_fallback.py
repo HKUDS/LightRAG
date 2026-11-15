@@ -464,6 +464,48 @@ def test_paragraph_semantic_fails_when_blocks_jsonl_is_not_utf8(tmp_path):
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "content_fields",
+    [{}, *({"content": value} for value in (None, False, 0, [], {}, 42, ["text"]))],
+    ids=[
+        "missing",
+        "null",
+        "false",
+        "zero",
+        "empty-list",
+        "empty-object",
+        "number",
+        "list",
+    ],
+)
+@pytest.mark.parametrize("partial", [False, True])
+def test_paragraph_semantic_rejects_invalid_content_row(
+    tmp_path, content_fields, partial, lightrag_log_records
+):
+    rows = [{"type": "meta"}]
+    if partial:
+        rows.append({"type": "content", "content": "Alpha section."})
+    rows.append({"type": "content", **content_fields})
+    if partial:
+        rows.append({"type": "content", "content": "Gamma section."})
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+
+    with pytest.raises(BlocksSidecarCorruptError, match="content.*string") as excinfo:
+        chunking_by_paragraph_semantic(
+            _make_tokenizer(),
+            "Alpha section.\n\nBeta section.\n\nGamma section.",
+            100,
+            blocks_path=str(blocks_path),
+        )
+
+    assert excinfo.value.blocks_path == str(blocks_path)
+    assert excinfo.value.line_number == (3 if partial else 2)
+    assert "upload it again" in str(excinfo.value)
+    assert not [r for r in lightrag_log_records if "falling back" in r.getMessage()]
+
+
+@pytest.mark.offline
 @pytest.mark.parametrize("corrupt_row", [0, 1, 2])
 def test_paragraph_semantic_fails_for_partially_malformed_jsonl(
     tmp_path, corrupt_row, lightrag_log_records
@@ -529,6 +571,8 @@ def test_valid_jsonl_keeps_structured_chunks_with_blank_and_metadata_rows(tmp_pa
     blocks_path.write_text(
         json.dumps({"type": "meta", "doc_title": "Document"})
         + "\n\n"
+        + json.dumps({"type": "content", "content": ""})
+        + "\n"
         + json.dumps(row)
         + "\n \t\n",
         encoding="utf-8",

@@ -12,6 +12,7 @@ import json
 import logging
 import logging.handlers
 import math
+import configparser
 import os
 import re
 import time
@@ -8146,6 +8147,141 @@ def _truncate_chunks_for_unified_context(
     return approx[:k]
 
 
+def validate_workspace_override(env_var: str, value: str | None) -> str | None:
+    """The workspace a ``*_WORKSPACE`` environment variable remaps TENANT data
+    to, stripped and validated, or ``None`` / the empty value when it sets
+    nothing.
+
+    The override is applied INSIDE a backend's constructor, after
+    ``validate_workspace()`` has already passed the constructor argument, so
+    the value a variable supplies would otherwise never be validated at all.
+    It is held to the same rules as a constructor argument here.
+
+    Nothing about the configuration container depends on this any more: its
+    container is named in code rather than by a workspace, and no backend in
+    the category consults an override for it. See
+    docs/design/ConfigurationStorageContract.md.
+
+    Raises:
+        ValueError: the override is not a legal workspace name.
+    """
+    if value is None:
+        return None
+    effective = str(value).strip()
+    if not effective:
+        return effective
+    try:
+        return validate_workspace(effective)
+    except ValueError as e:
+        raise ValueError(f"{env_var}: {e}") from None
+
+
+# Every ``*_WORKSPACE`` override, with the ``config.ini`` section that can set
+# it instead where one exists. Beside ``validate_workspace_override`` so a new
+# backend's override gets added to both at once.
+WORKSPACE_OVERRIDE_SOURCES: tuple[tuple[str, str | None], ...] = (
+    ("POSTGRES_WORKSPACE", "postgres"),
+    ("NEO4J_WORKSPACE", "neo4j"),
+    ("MEMGRAPH_WORKSPACE", None),
+    ("MILVUS_WORKSPACE", None),
+    ("MONGODB_WORKSPACE", None),
+    ("OPENSEARCH_WORKSPACE", None),
+    ("QDRANT_WORKSPACE", None),
+    ("REDIS_WORKSPACE", None),
+)
+
+_workspace_override_warning_emitted = False
+
+
+def warn_about_workspace_overrides() -> list[str]:
+    """Warn ONCE per process about every ``*_WORKSPACE`` override in effect.
+
+    These variables exist to keep LEGACY data reachable, and nothing above the
+    storage layer knows one is set: a backend applies it inside its own
+    constructor, so the workspace a caller asked for and the container its data
+    lands in can differ, and every record keyed by the caller's workspace --
+    the embedding baselines among them -- stays under the name the caller gave.
+
+    That is tolerable while the override never moves. Using one to MOVE data --
+    setting, changing or clearing it on a deployment that already has some --
+    points the same instance at a different container while those records stay
+    behind, and no check below can tell that apart from an ordinary start. So
+    the rule is stated where an operator will see it rather than enforced:
+    a storage's workspace follows the server's, and switching data location by
+    editing one of these is unsupported.
+
+    Called from the APPLICATION's startup, not from ``LightRAG``: the uvicorn
+    entry point (``lightrag_server.main``) and the Gunicorn master's
+    ``on_starting`` hook, which runs before it forks. That is once per server
+    start rather than once per worker or once per instance, which is what an
+    operator-facing deprecation wants. The once-per-process guard below only
+    keeps a second call quiet; it is not what makes the count right.
+
+    Returns the variables it warned about, so a caller can report them.
+    """
+    global _workspace_override_warning_emitted
+
+    file_config = configparser.ConfigParser()
+    try:
+        file_config.read("config.ini", "utf-8")
+    except (OSError, configparser.Error):  # pragma: no cover - unreadable file
+        pass
+
+    in_effect: list[str] = []
+    for env_var, section in WORKSPACE_OVERRIDE_SOURCES:
+        value = os.environ.get(env_var)
+        if (value is None or not value.strip()) and section is not None:
+            value = file_config.get(section, "workspace", fallback=None)
+        if value is not None and value.strip():
+            in_effect.append(env_var)
+
+    if in_effect and not _workspace_override_warning_emitted:
+        _workspace_override_warning_emitted = True
+        logger.warning(
+            f"Workspace override(s) in effect: {', '.join(in_effect)}. These "
+            f"exist only to keep legacy data reachable and are deprecated: a "
+            f"storage's workspace should follow the server's. They are applied "
+            f"inside the storage layer, so nothing above it sees one -- do NOT "
+            f"set, change or clear one to move an existing deployment's data. "
+            f"Doing so points this instance at a different container while the "
+            f"records keyed by the server's workspace, including the recorded "
+            f"embedding baselines, stay where they are."
+        )
+    return in_effect
+
+
+def server_workspace_spelling(workspace: str) -> str:
+    """The name the server would serve ``workspace`` under, without
+    validating or logging: every character outside ``[A-Za-z0-9_]`` becomes
+    ``_``. The rule ``normalize_server_workspace`` applies; use that one for
+    a ``WORKSPACE`` a start actually serves."""
+    return re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+
+
+def normalize_server_workspace(workspace: str | None) -> str | None:
+    """The workspace the server serves: only alphanumeric characters and
+    underscores survive, every other character becomes ``_``.
+    A leading ``$`` is reserved and rejected before normalization.
+
+    The one rule the server, the Gunicorn master (which claims the
+    workspace's JSON configuration directory before forking) and
+    ``lightrag-rebuild-vdb`` all apply to ``WORKSPACE``, so they resolve the
+    same workspace and the same directory.
+    """
+    if not workspace:
+        return workspace
+    if workspace.startswith("$"):
+        validate_workspace(workspace)
+    sanitized = server_workspace_spelling(workspace)
+    if sanitized != workspace:
+        logging.warning(
+            f"Workspace name '{workspace}' contains invalid characters. "
+            f"It has been sanitized to '{sanitized}'. "
+            "Only alphanumeric characters and underscores are allowed."
+        )
+    return sanitized
+
+
 def validate_workspace(workspace: str) -> str:
     """Validate a workspace name used to build per-workspace directories.
 
@@ -8159,6 +8295,16 @@ def validate_workspace(workspace: str) -> str:
     while unsafe names are rejected so the caller fails fast instead of
     silently reading or writing outside the intended directory.
 
+    Names starting with ``$`` are reserved for internal configuration keys.
+    A tenant may still be called ``_lightrag_config`` and
+    still shares nothing with the configuration container. Where a storage
+    keeps a workspace directory under ``working_dir``, ``LightRAG``
+    additionally applies ``config_shards.validate_config_workspace``
+    (through ``validate_deployment_workspace``), which refuses the five names
+    of the deployment-wide files directly under ``working_dir`` (a workspace
+    directory so named would collide with one of them). See
+    docs/design/ConfigurationStorageContract.md.
+
     Args:
         workspace: Workspace name from configuration or environment variables.
 
@@ -8166,8 +8312,8 @@ def validate_workspace(workspace: str) -> str:
         The workspace name unchanged when it is valid.
 
     Raises:
-        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."`` or
-            ``".."``.
+        ValueError: If the workspace starts with ``$``, contains ``/`` or
+            ``\\``, or is ``"."`` or ``".."``.
 
     Examples:
         >>> validate_workspace("my_workspace")
@@ -8179,6 +8325,11 @@ def validate_workspace(workspace: str) -> str:
             ...
         ValueError: Invalid workspace name '../../../etc': must not contain path separators ('/', '\\') or be a relative path reference ('.', '..')
     """
+    if workspace.startswith("$"):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: names starting with '$' "
+            "are reserved for internal configuration keys"
+        )
     if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: must not contain path "

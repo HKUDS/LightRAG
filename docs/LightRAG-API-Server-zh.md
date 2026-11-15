@@ -226,7 +226,7 @@ lightrag-gunicorn --workers 4
 - `--log-level`：日志级别（默认：INFO）
 - `--working-dir`：数据库持久化目录（默认：./rag_storage）
 - `--input-dir`：上传文件存放目录（默认：./inputs）
-- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）
+- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）。以 `$` 开头的名称为系统保留，规范化前即拒绝使用。
 - `--api-prefix`：对浏览器暴露的反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置
 - `--rerank-binding`：Rerank provider（`null`、`cohere`、`jina` 或 `aliyun`）
 
@@ -913,9 +913,11 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
+> **已废弃：** `RedisKVStorage`、`RedisDocStatusStorage` 与 `PGGraphStorage` 已被标记为废弃，将在未来版本中移除。目前仍可正常使用，但启动时会输出警告，Server 启动画面也会标注。请迁移到 `PGKVStorage` / `PGDocStatusStorage` / `PGTableGraphStorage`（PostgreSQL）。图的迁移方法见下文“从 Apache AGE 迁移图数据到 PostgreSQL 表”。
+
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL（推荐）、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
-**PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
+**PostgreSQL 图存储使用 `PGTableGraphStorage`：** `PGTableGraphStorage` 是 PostgreSQL 上的 `GRAPH_STORAGE` 实现，用于替代已废弃的 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
 
 * **无需安装扩展。** `PGGraphStorage` 依赖 Apache AGE 扩展，而多数托管 PostgreSQL 服务（Amazon RDS、Cloud SQL、Supabase、Neon）并不提供该扩展，导致图存储往往无法与其余三类存储共用同一个数据库。`PGTableGraphStorage` 可运行在任意原生 PostgreSQL 14 及以上版本，所需的表在 `initialize()` 阶段自动创建。在 Docker 部署中，这也意味着使用官方镜像 `pgvector/pgvector:pg18` 即可；内置 AGE 的 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 镜像仅 `PGGraphStorage` 需要。
 * **性能大幅提升。** 查询是带索引的普通 SQL，而非基于 `agtype` 的 Cypher；`get_knowledge_graph` 采用受 `max_nodes` 约束的前沿限幅 BFS。根据 [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) 随附的实测数据（PostgreSQL 18，8k 节点 / 约 40k 边的图，两个后端在测量前均已执行 `VACUUM ANALYZE`）：`get_knowledge_graph` p50 为 **39 ms 对 1,099 ms（约 28 倍）**，图数据批量装载 **3.0 s 对 434 s**，混合负载吞吐 **1,431 对 73 RPS**。

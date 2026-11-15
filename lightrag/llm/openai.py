@@ -85,6 +85,27 @@ class InvalidResponseError(Exception):
     pass
 
 
+_INVALID_RESPONSE_SNIPPET_CHARS = 200
+
+
+def _describe_invalid_response(response: Any) -> str:
+    """Return the detail appended to the invalid-response error message.
+
+    Empty for a completion object (or ``None``): "no usable choices" has
+    nothing more to show. For anything else -- an OpenAI-compatible gateway
+    answering HTTP 200 with an HTML or plain-text error page, which the SDK
+    hands back as a ``str`` -- name the type and quote the start of the body,
+    so the log and the document's error message show what the gateway said.
+    """
+    if response is None or hasattr(response, "choices"):
+        return ""
+    text = response if isinstance(response, str) else repr(response)
+    snippet = " ".join(text.split())
+    if len(snippet) > _INVALID_RESPONSE_SNIPPET_CHARS:
+        snippet = snippet[:_INVALID_RESPONSE_SNIPPET_CHARS] + "..."
+    return f": expected a chat completion, got {type(response).__name__}: {snippet!r}"
+
+
 class TransientBadRequestError(Exception):
     """Wrapper to trigger retry on transient HTTP 400 errors.
 
@@ -818,17 +839,24 @@ async def openai_complete_if_cache(
                 }
                 token_tracker.add_usage(token_counts)
 
+            # Compatible gateways can return non-JSON bodies that the SDK
+            # exposes as strings rather than completion objects.
             if (
                 not response
+                or not hasattr(response, "choices")
                 or not response.choices
                 or not hasattr(response.choices[0], "message")
             ):
-                logger.error("Invalid response from OpenAI API")
+                error_message = (
+                    "Invalid response from OpenAI API"
+                    + _describe_invalid_response(response)
+                )
+                logger.error(error_message)
                 try:
                     await openai_async_client.close()
                 except Exception as close_error:
                     logger.warning(f"Failed to close OpenAI client: {close_error}")
-                raise InvalidResponseError("Invalid response from OpenAI API")
+                raise InvalidResponseError(error_message)
 
             message = response.choices[0].message
 

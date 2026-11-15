@@ -7,7 +7,17 @@ import re
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, ClassVar, Sequence, TypeVar, Union, final
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    ClassVar,
+    Sequence,
+    TypeVar,
+    Union,
+    final,
+)
 import numpy as np
 import configparser
 import ssl
@@ -56,7 +66,7 @@ from ..exceptions import (
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
 )
-from ..namespace import NameSpace, is_namespace
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace, is_namespace
 from ..utils import (
     logger,
     compute_mdhash_id,
@@ -64,6 +74,7 @@ from ..utils import (
     get_env_value,
     performance_timing_log,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -511,6 +522,31 @@ def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
 _PG_NAME_MAX_BYTES = 63
 
 
+def _is_valid_age_graph_name(name: str) -> bool:
+    """Whether every Apache AGE version accepts ``name`` as a graph name.
+
+    From AGE 1.6, create_vlabel() / create_elabel() take the graph name as
+    cstring and reject one over 63 bytes with "graph name is invalid"; earlier
+    versions take `name`, which PostgreSQL clips. AGE also rejects a name
+    starting with a digit. AGE's minimum length (3) and full identifier pattern
+    are not checked: the only caller passes names reduced to [A-Za-z0-9_] that
+    end in the namespace, which satisfy both.
+    """
+    return len(name.encode("utf-8")) <= _PG_NAME_MAX_BYTES and not name[:1].isdigit()
+
+
+# Which of the candidate graphs initialize() has already set up, i.e. given the
+# "base" label. A clipped graph only holds legacy data if it has that label,
+# which AGE 1.6+ rejects for the unclipped name: a failed startup there still
+# leaves the empty clipped graph behind, without it. Every candidate must
+# already fit in 63 bytes; a longer bind parameter cast to name raises 42622.
+_INITIALIZED_GRAPHS_LOOKUP = (
+    "SELECT g.name::text AS name FROM ag_catalog.ag_label l "
+    "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
+    "WHERE g.name = ANY($1::name[]) AND l.name = 'base'"
+)
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -518,7 +554,13 @@ class PostgreSQLDB:
         self.user = config["user"]
         self.password = config["password"]
         self.database = config["database"]
-        self.workspace = config["workspace"]
+        # One check for every PostgreSQL storage: they all take the
+        # override from this shared client. POSTGRES_WORKSPACE (or the
+        # config.ini value) may remap tenant data, never into the reserved
+        # family the configuration container lives in.
+        self.workspace = validate_workspace_override(
+            "POSTGRES_WORKSPACE", config["workspace"]
+        )
         self.max = int(config["max_connections"])
         self.increment = 1
         self.pool: Pool | None = None
@@ -3373,6 +3415,40 @@ class ClientManager:
                         await db.pool.close()
 
 
+_CONFIG_ROW_COLUMNS = frozenset({"_id", "create_time", "update_time"})
+
+
+def _config_row_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """The part of a configuration KV row that goes into the JSONB column.
+
+    The storage-managed timestamps and the ``_id`` mirror are columns on
+    ``LIGHTRAG_CONFIG``; everything else (``schema_version``, ``workspace``,
+    ``updated_at``, ``updated_by``, ``value``) is the payload, kept whole so a
+    key added to the row shape later needs no DDL.
+    """
+    return {k: v for k, v in row.items() if k not in _CONFIG_ROW_COLUMNS}
+
+
+def _config_row_from_pg(row: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the KV row a caller expects from a ``LIGHTRAG_CONFIG`` result."""
+    payload = row.get("value")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    create_time = row.get("create_time", 0) or 0
+    update_time = row.get("update_time", 0) or 0
+    rebuilt = dict(payload)
+    rebuilt["id"] = row.get("id")
+    rebuilt["_id"] = row.get("id")
+    rebuilt["create_time"] = create_time
+    rebuilt["update_time"] = create_time if update_time == 0 else update_time
+    return rebuilt
+
+
 @final
 @dataclass
 class PGKVStorage(BaseKVStorage):
@@ -3381,7 +3457,17 @@ class PGKVStorage(BaseKVStorage):
     supports_strict_point_reads: ClassVar[bool] = True
 
     def __post_init__(self):
-        validate_workspace(self.workspace)
+        if self.namespace == NameSpace.KV_STORE_CONFIG:
+            # The configuration container is named in CODE. On PostgreSQL that
+            # name is the table ``LIGHTRAG_CONFIG`` plus a fixed value in its
+            # partition column -- which is called ``workspace`` for the DDL's
+            # sake and is NOT one: nothing validates it, no caller chooses it,
+            # and POSTGRES_WORKSPACE does not reach it (see ``initialize``).
+            # Two deployments sharing one database are told apart by the row
+            # KEY, whose scope is the business workspace the row is about.
+            self.workspace = CONFIG_CONTAINER_TAG
+        else:
+            validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
         (
             self._max_upsert_payload_bytes,
@@ -3397,7 +3483,11 @@ class PGKVStorage(BaseKVStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
+            if self.namespace == NameSpace.KV_STORE_CONFIG:
+                # Fixed in __post_init__ and not configurable: POSTGRES_WORKSPACE
+                # remaps tenant data, never the configuration container.
+                pass
+            elif self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
                 logger.info(
                     f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
@@ -3557,6 +3647,9 @@ class PGKVStorage(BaseKVStorage):
             update_time = response.get("update_time", 0)
             response["create_time"] = create_time
             response["update_time"] = create_time if update_time == 0 else update_time
+
+        if response and is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            response = _config_row_from_pg(response)
 
         return response if response else None
 
@@ -3740,6 +3833,9 @@ class PGKVStorage(BaseKVStorage):
                 update_time = result.get("update_time", 0)
                 result["create_time"] = create_time
                 result["update_time"] = create_time if update_time == 0 else update_time
+
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            results = [_config_row_from_pg(row) if row else row for row in results]
 
         return _order_results(results)
 
@@ -3929,6 +4025,16 @@ class PGKVStorage(BaseKVStorage):
                     )
                 )
                 await _cooperative_yield(i)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            upsert_sql = SQL_TEMPLATES["upsert_config"]
+            for i, (k, v) in enumerate(data.items(), start=1):
+                # Tuple order must match SQL: (workspace, id, value). The row
+                # payload travels whole in the JSONB column; the storage-managed
+                # timestamps and the ``_id`` mirror are columns, not payload.
+                batch_values.append(
+                    (self.workspace, k, json.dumps(_config_row_payload(v)))
+                )
+                await _cooperative_yield(i)
         else:
             logger.error(f"Unknown namespace: {self.namespace}")
             raise ValueError(f"Unknown namespace: {self.namespace}")
@@ -4029,6 +4135,36 @@ class PGKVStorage(BaseKVStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) by keyset-paging the ids and
+        reading each page through ``get_by_ids``, so every namespace's rows
+        come out with the same per-namespace shaping a point read applies.
+        Two round trips per page, and never a whole-table read."""
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+        page_size = max(1, int(page_size))
+        page_sql = (
+            f"SELECT id FROM {table_name} WHERE workspace=$1 "
+            f"AND ($2::text IS NULL OR id > $2::text) ORDER BY id LIMIT $3"
+        )
+        last_id: str | None = None
+        while True:
+            id_rows = await self.db.query(
+                page_sql, [self.workspace, last_id, page_size], multirows=True
+            )
+            if not id_rows:
+                return
+            ids = [str(r["id"]) for r in id_rows if r and r.get("id") is not None]
+            for row_id, row in zip(ids, await self.get_by_ids(ids)):
+                if row is None:
+                    continue
+                row.setdefault("_id", row_id)
+                yield row
+            if len(id_rows) < page_size:
+                return
+            last_id = ids[-1]
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -5492,6 +5628,45 @@ class PGVectorStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error deleting relations for entity {entity_name}: {e}"
             )
             raise
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        Scoped by ``workspace``, not just by table: PostgreSQL isolates
+        workspaces with a column, so an unfiltered read would report a sibling
+        workspace's rows as this one's. The table name already carries the
+        embedding model and dimension, which is exactly why this backend needs
+        the check -- a model change lands in a different, empty table.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+
+        query = (
+            f"SELECT EXISTS(SELECT 1 FROM {self.table_name} WHERE workspace=$1) "
+            f"AS has_data"
+        )
+        result = await self.db.query(query, [self.workspace])
+        if not result or "has_data" not in result:
+            # `SELECT EXISTS(...)` always produces exactly one row, so no row
+            # means the read did not do what it claims. Raising keeps that out
+            # of the "empty" answer, which is the only one that can refuse.
+            raise RuntimeError(
+                f"[{self.workspace}] emptiness check on {self.table_name} "
+                f"returned no row"
+            )
+        return not result["has_data"]
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
@@ -7647,18 +7822,9 @@ class PGGraphStorage(BaseGraphStorage):
             self._max_delete_records_per_batch,
         ) = _resolve_pg_batch_limits()
 
-    def _get_workspace_graph_name(self) -> str:
-        """
-        Generate graph name based on workspace and namespace for data isolation.
-        Rules:
-        - If workspace is empty or "default": graph_name = namespace
-        - If workspace has other value: graph_name = workspace_namespace
-
-        Args:
-            None
-
-        Returns:
-            str: The graph name for the current workspace
+    def _get_unclipped_graph_name(self) -> str:
+        """workspace_namespace reduced to [A-Za-z0-9_], or the namespace alone
+        for an empty or "default" workspace. AGE may reject it as a graph name.
         """
         workspace = self.workspace
         namespace = self.namespace
@@ -7671,6 +7837,49 @@ class PGGraphStorage(BaseGraphStorage):
         else:
             # When the workspace is "default", use the namespace directly (for backward compatibility with legacy implementations)
             return re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
+
+    def _get_workspace_graph_name(self) -> str:
+        """
+        Generate graph name based on workspace and namespace for data isolation.
+        Rules:
+        - If workspace is empty or "default": graph_name = namespace
+        - If workspace has other value: graph_name = workspace_namespace
+        - If that is not a valid AGE graph name (over 63 bytes, or starting
+          with a digit): graph_name = ws_<hash of workspace_namespace>_namespace.
+          For a long workspace that has no such graph yet, initialize() keeps
+          an existing graph that AGE 1.5 or earlier created under the clipped
+          name instead; see _get_legacy_clipped_graph_name().
+
+        Args:
+            None
+
+        Returns:
+            str: The graph name for the current workspace
+        """
+        graph_name = self._get_unclipped_graph_name()
+        if _is_valid_age_graph_name(graph_name):
+            return graph_name
+        # Hash rather than clip, so two long workspaces sharing a 63-byte prefix
+        # get separate graphs.
+        name_hash = hashlib.md5(graph_name.encode("utf-8")).hexdigest()
+        safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", self.namespace)
+        return f"ws_{name_hash[:12]}_{safe_namespace}"
+
+    def _get_legacy_clipped_graph_name(self) -> str | None:
+        """The graph name AGE 1.5 or earlier used for a workspace too long for AGE.
+
+        Up to AGE 1.5, create_graph(), create_vlabel() and cypher() all take the
+        graph name as `name`, which PostgreSQL clips to 63 bytes, so such a
+        workspace worked and may hold data under the clipped name. Returns None
+        when the name fits, or starts with a digit (never usable on any AGE).
+        """
+        graph_name = self._get_unclipped_graph_name()
+        if (
+            len(graph_name.encode("utf-8")) <= _PG_NAME_MAX_BYTES
+            or graph_name[:1].isdigit()
+        ):
+            return None
+        return graph_name[:_PG_NAME_MAX_BYTES]
 
     @staticmethod
     def _normalize_node_id(node_id: str) -> str:
@@ -7723,11 +7932,6 @@ class PGGraphStorage(BaseGraphStorage):
             # Dynamically generate graph name based on workspace
             self.graph_name = self._get_workspace_graph_name()
 
-            # Log the graph initialization for debugging
-            logger.info(
-                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
-            )
-
             # Create AGE extension and configure graph environment once at initialization
             # Use _run_with_retry so transient connection errors are retried and pool=None
             # is handled safely (unlike a bare pool.acquire() call).
@@ -7737,6 +7941,48 @@ class PGGraphStorage(BaseGraphStorage):
                 await PostgreSQLDB.configure_age_extension(connection)
 
             await self.db._run_with_retry(_do_configure_age_extension)
+
+            # A workspace too long for AGE has two candidate graphs: the hashed
+            # one and the clipped one AGE 1.5 or earlier used. This must run
+            # before the first with_age=True call below, which has
+            # PostgreSQLDB._ensure_age_graph() create self.graph_name.
+            #
+            # - Hashed graph already set up: stay on it. This code only creates
+            #   it when no clipped graph existed, so a clipped graph that shows
+            #   up later (an older release run against this database, by this
+            #   workspace or one sharing its 63-byte prefix) must not take over.
+            #   Accepted residue: anything that older release wrote stays in
+            #   the clipped graph, unused; the warning names both graphs.
+            # - Otherwise an existing clipped graph is the legacy data: keep it.
+            # - Neither: a new graph gets the hashed name.
+            legacy_graph_name = self._get_legacy_clipped_graph_name()
+            if legacy_graph_name:
+                rows = await self.db.query(
+                    _INITIALIZED_GRAPHS_LOOKUP,
+                    [[self.graph_name, legacy_graph_name]],
+                    multirows=True,
+                )
+                initialized = {row["name"] for row in rows or []}
+                if self.graph_name in initialized:
+                    if legacy_graph_name in initialized:
+                        logger.warning(
+                            f"[{self.workspace}] Using the AGE graph '{self.graph_name}'. "
+                            f"The graph '{legacy_graph_name}' also exists and is not used: "
+                            "it was created by an older LightRAG release for this workspace "
+                            "or for one whose graph name has the same first 63 bytes."
+                        )
+                elif legacy_graph_name in initialized:
+                    logger.warning(
+                        f"[{self.workspace}] Using the existing AGE graph '{legacy_graph_name}', "
+                        "whose name PostgreSQL clipped to 63 bytes. It may be shared with "
+                        "any other workspace whose graph name has the same first 63 bytes."
+                    )
+                    self.graph_name = legacy_graph_name
+
+            # Log the graph initialization for debugging
+            logger.info(
+                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
+            )
 
             # Only create the labels that are actually missing. create_vlabel /
             # create_elabel have no IF NOT EXISTS form, so calling them for an
@@ -9948,6 +10194,7 @@ NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_ENTITY_CHUNKS: "LIGHTRAG_ENTITY_CHUNKS",
     NameSpace.KV_STORE_RELATION_CHUNKS: "LIGHTRAG_RELATION_CHUNKS",
     NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LIGHTRAG_LLM_CACHE",
+    NameSpace.KV_STORE_CONFIG: "LIGHTRAG_CONFIG",
     NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_VDB_CHUNKS",
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
     NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_VDB_RELATION",
@@ -10059,6 +10306,22 @@ TABLES = {
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    # The configuration store. ``workspace`` here is NOT a workspace: it is a
+    # fixed partition constant (``CONFIG_CONTAINER_TAG``) that gives the table
+    # the same shape as every other one. The workspace a row is ABOUT is a
+    # field inside ``value``, and ``id`` is TEXT because it carries that
+    # workspace name too -- which is what keeps two deployments sharing one
+    # database on disjoint rows. See docs/design/ConfigurationStorageContract.md.
+    "LIGHTRAG_CONFIG": {
+        "ddl": """CREATE TABLE LIGHTRAG_CONFIG (
+	                workspace varchar(255) NOT NULL,
+	                id TEXT NOT NULL,
+                    value JSONB NOT NULL,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	                CONSTRAINT LIGHTRAG_CONFIG_PK PRIMARY KEY (workspace, id)
                     )"""
     },
     "LIGHTRAG_DOC_STATUS": {
@@ -10221,6 +10484,16 @@ SQL_TEMPLATES = {
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
+    "get_by_id_config": """SELECT id, value,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_CONFIG WHERE workspace=$1 AND id=$2
+                            """,
+    "get_by_ids_config": """SELECT id, value,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_CONFIG WHERE workspace=$1 AND id = ANY($2)
+                            """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     # Pipeline-derived columns (sidecar_location / parse_format / content_hash /
     # process_options / chunk_options / parse_engine) are guarded with COALESCE
@@ -10291,6 +10564,12 @@ SQL_TEMPLATES = {
                       heading=EXCLUDED.heading,
                       sidecar=EXCLUDED.sidecar,
                       update_time = EXCLUDED.update_time
+                     """,
+    "upsert_config": """INSERT INTO LIGHTRAG_CONFIG (workspace, id, value)
+                      VALUES ($1, $2, $3)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET value=EXCLUDED.value,
+                      update_time = CURRENT_TIMESTAMP
                      """,
     "upsert_full_entities": """INSERT INTO LIGHTRAG_FULL_ENTITIES (workspace, id, entity_names, count,
                       create_time, update_time)
