@@ -1,0 +1,181 @@
+"""Native DOCX parsing of content controls (w:sdt) and custom XML markup.
+
+Locks in the rules of ``lightrag/parser/docx/content_controls.py``: wrapped
+content is read at every level, except a table of contents or a control still
+showing its placeholder.
+"""
+
+from __future__ import annotations
+
+from io import BytesIO
+
+import pytest
+from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+
+from lightrag.parser.docx.parse_document import extract_docx_blocks
+from lightrag.parser.docx.smart_heading.features import (
+    StyleAttributes,
+    extract_paragraph_physical_features,
+)
+from lightrag.parser.docx.table_extractor import TableExtractor
+
+pytestmark = pytest.mark.offline
+
+
+def _wrap(
+    element, wrapper: str = "sdt", *, gallery: str | None = None, placeholder=False
+):
+    """Move ``element`` into a content control or a custom XML element."""
+    parent = element.getparent()
+    index = parent.index(element)
+    if wrapper == "sdt":
+        outer = OxmlElement("w:sdt")
+        sdt_pr = OxmlElement("w:sdtPr")
+        if gallery is not None:
+            doc_part = OxmlElement("w:docPartObj")
+            gallery_node = OxmlElement("w:docPartGallery")
+            gallery_node.set(qn("w:val"), gallery)
+            doc_part.append(gallery_node)
+            sdt_pr.append(doc_part)
+        if placeholder:
+            sdt_pr.append(OxmlElement("w:showingPlcHdr"))
+        outer.append(sdt_pr)
+        inner = OxmlElement("w:sdtContent")
+        outer.append(inner)
+    else:
+        outer = inner = OxmlElement("w:customXml")
+        outer.set(qn("w:element"), "item")
+    parent.remove(element)
+    inner.append(element)
+    parent.insert(index, outer)
+
+
+def _text(document, tmp_path) -> str:
+    path = tmp_path / "doc.docx"
+    document.save(path)
+    return "\n".join(block["content"] for block in extract_docx_blocks(str(path)))
+
+
+def _table_rows(document) -> list:
+    source = BytesIO()
+    document.save(source)
+    source.seek(0)
+    return TableExtractor.extract_with_metadata(Document(source).tables[0])["rows"]
+
+
+def test_wrapped_body_blocks_are_read_in_order(tmp_path) -> None:
+    document = Document()
+    document.add_paragraph("Before")
+    _wrap(document.add_paragraph("Clause in a control")._p)
+    _wrap(document.add_paragraph("Tagged paragraph")._p, "customXml")
+    table = document.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Cell of a wrapped table"
+    _wrap(table._tbl)
+    _wrap(document.add_paragraph("Cover title")._p, gallery="Cover Pages")
+    document.add_paragraph("After")
+
+    text = _text(document, tmp_path)
+
+    order = [
+        "Before",
+        "Clause in a control",
+        "Tagged paragraph",
+        "Cell of a wrapped table",
+        "Cover title",
+        "After",
+    ]
+    positions = [text.find(item) for item in order]
+    assert -1 not in positions, text
+    assert positions == sorted(positions)
+
+
+def test_toc_and_placeholder_block_controls_are_left_out(tmp_path) -> None:
+    document = Document()
+    document.add_paragraph("Before")
+    _wrap(
+        document.add_paragraph("Chapter 1 Introduction\t3")._p,
+        gallery="Table of Contents",
+    )
+    _wrap(
+        document.add_paragraph("Click or tap here to enter text.")._p, placeholder=True
+    )
+    document.add_paragraph("After")
+
+    text = _text(document, tmp_path)
+
+    assert "Before" in text and "After" in text
+    assert "Chapter 1" not in text
+    assert "Click or tap" not in text
+
+
+def _paragraph_with_inline_control(document, *, placeholder: bool, gallery=None):
+    paragraph = document.add_paragraph("Name: ")
+    run = paragraph.add_run("Ada" if not placeholder else "Click here")
+    paragraph.add_run(" (end)")
+    _wrap(run._r, placeholder=placeholder, gallery=gallery)
+    return paragraph
+
+
+@pytest.mark.parametrize("placeholder", [False, True])
+def test_inline_control_text_is_read_unless_placeholder(tmp_path, placeholder) -> None:
+    document = Document()
+    _paragraph_with_inline_control(document, placeholder=placeholder)
+
+    text = _text(document, tmp_path)
+
+    assert "Name:" in text and "(end)" in text
+    assert ("Ada" in text) is not placeholder
+    assert "Click here" not in text
+
+
+def test_inline_toc_control_is_still_read(tmp_path) -> None:
+    # The smart-heading pass takes it as TOC evidence and decides what to keep.
+    document = Document()
+    _paragraph_with_inline_control(
+        document, placeholder=False, gallery="Table of Contents"
+    )
+
+    assert "Ada" in _text(document, tmp_path)
+
+
+@pytest.mark.parametrize("placeholder", [False, True])
+def test_inline_placeholder_in_table_cell(placeholder) -> None:
+    document = Document()
+    table = document.add_table(rows=1, cols=1)
+    paragraph = table.cell(0, 0).paragraphs[0]
+    paragraph.add_run("Name: ")
+    run = paragraph.add_run("Click here" if placeholder else "Ada")
+    _wrap(run._r, placeholder=placeholder)
+
+    assert _table_rows(document) == [["Name:" if placeholder else "Name: Ada"]]
+
+
+@pytest.mark.parametrize(
+    ("wrap_kwargs", "expected"),
+    [
+        ({}, "Wrapped field"),
+        ({"wrapper": "customXml"}, "Wrapped field"),
+        ({"placeholder": True}, ""),
+    ],
+)
+def test_cell_paragraph_in_block_control(wrap_kwargs, expected) -> None:
+    document = Document()
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Label"
+    table.cell(0, 1).text = "Wrapped field"
+    _wrap(table.cell(0, 1).paragraphs[0]._p, **wrap_kwargs)
+
+    assert _table_rows(document) == [["Label", expected]]
+
+
+def test_placeholder_run_is_not_a_smart_heading_feature() -> None:
+    document = Document()
+    paragraph = _paragraph_with_inline_control(document, placeholder=True)
+
+    features = extract_paragraph_physical_features(paragraph._p, StyleAttributes())
+
+    text = "".join(rf.text for rf in features.run_features)
+    assert "Click here" not in text
+    assert "Name:" in text

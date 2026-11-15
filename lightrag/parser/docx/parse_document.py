@@ -26,6 +26,7 @@ from lightrag.parser._markdown import (
 )
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
+from .content_controls import is_hidden_inline_control, iter_blocks
 from .table_extractor import TableExtractor
 from .drawing_image_extractor import (
     DrawingExtractionContext,
@@ -47,6 +48,10 @@ _SKIP_COMMENT_TAGS = frozenset(
     {"commentRangeStart", "commentRangeEnd", "commentReference", "annotationRef"}
 )
 _SKIP_PARAGRAPH_TAGS = _SKIP_REVISION_TAGS | _SKIP_COMMENT_TAGS
+_BODY_BLOCK_TAGS = frozenset(
+    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}" + tag
+    for tag in ("p", "tbl", "sectPr")
+)
 
 
 class DocxContentError(ValueError):
@@ -509,7 +514,8 @@ def extract_paragraph_content(
 
     Handles w:r (text runs), m:oMath (inline equations), and m:oMathPara
     (block equations). Recurses into container elements (e.g., w:hyperlink,
-    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content.
+    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content, except
+    a content control still showing its placeholder (see content_controls).
 
     Args:
         element: lxml paragraph element (w:p)
@@ -525,7 +531,7 @@ def extract_paragraph_content(
         # Drop tracked-change deletions (w:del/w:moveFrom) and comment markers
         # (w:commentRangeStart/End, w:commentReference, w:annotationRef) so the
         # output only contains the final revised text without annotation glyphs.
-        if tag in _SKIP_PARAGRAPH_TAGS:
+        if tag in _SKIP_PARAGRAPH_TAGS or is_hidden_inline_control(node):
             return
         if tag == "r":
             parts.append(
@@ -724,7 +730,10 @@ def _read_document_records(
 
     body = doc._element.body
 
-    for element in body:
+    # Blocks inside content controls and custom XML markup count like direct
+    # ones, except a table of contents or placeholder control (see
+    # content_controls).
+    for element in iter_blocks(body, _BODY_BLOCK_TAGS):
         tag = element.tag.split("}")[-1]  # Remove namespace
 
         if tag == "sectPr":  # Document-level section break

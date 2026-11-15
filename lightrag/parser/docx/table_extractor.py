@@ -10,6 +10,7 @@ from docx.table import Table
 from docx.oxml.ns import qn
 from typing import List
 
+from .content_controls import is_hidden_inline_control, iter_blocks, iter_cells
 from .drawing_image_extractor import (
     DrawingExtractionContext,
     extract_drawing_placeholder_from_element,
@@ -105,7 +106,8 @@ def extract_paragraph_content_table(
 
     Handles w:r (text runs), m:oMath (inline equations), and m:oMathPara
     (block equations). Recurses into container elements (e.g., w:hyperlink,
-    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content.
+    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content, except
+    a content control still showing its placeholder (see content_controls).
 
     Args:
         para_elem: lxml paragraph element (w:p)
@@ -121,7 +123,7 @@ def extract_paragraph_content_table(
         # Drop tracked-change deletions (w:del/w:moveFrom) and comment markers
         # (w:commentRangeStart/End, w:commentReference, w:annotationRef) so the
         # output only contains the final revised text without annotation glyphs.
-        if tag in _SKIP_PARAGRAPH_TAGS:
+        if tag in _SKIP_PARAGRAPH_TAGS or is_hidden_inline_control(node):
             return
         if tag == "r":
             parts.append(
@@ -161,8 +163,9 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     """Physical-cell features for the smart title-block table channel.
 
     Returns ``(text, effective_size_pt, has_outline)`` computed from the
-    cell's OWN ``w:p`` children (direct children only — nested tables are
-    excluded; vMerge-continue cells report their own, usually empty, text):
+    cell's OWN ``w:p`` children (direct or inside a content control, see
+    ``content_controls`` — nested tables are excluded; vMerge-continue cells
+    report their own, usually empty, text):
 
     - ``text``: visible source characters (``w:t`` via ``run_features``), so
       drawing/equation placeholders and auto-numbering labels never inflate
@@ -184,7 +187,7 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     texts = []
     max_size = None
     has_outline = False
-    for para_elem in tc.findall(qn_func("w:p")):
+    for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
         phys = extract_paragraph_physical_features(para_elem, style_attributes)
         text = "".join(rf.text for rf in phys.run_features).strip()
         if text:
@@ -202,61 +205,8 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     return ("\n".join(texts), max_size, has_outline)
 
 
-# Content controls and custom XML markup may wrap whole rows (a repeating
-# section) or single cells; the rows and cells inside count like direct ones.
-_ROW_CELL_WRAPPERS = frozenset({qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")})
-
-
-def _is_hidden_control(sdt) -> bool:
-    """True for a ``w:sdt`` whose content is not document text.
-
-    A table of contents, or a control still showing its placeholder ("Click
-    or tap here to enter text."). Same rule as the legacy extractor's
-    ``_is_skipped_docx_control``.
-    """
-    sdt_pr = sdt.find(qn("w:sdtPr"))
-    if sdt_pr is None:
-        return False
-    gallery = sdt_pr.find(f"{qn('w:docPartObj')}/{qn('w:docPartGallery')}")
-    if gallery is not None and gallery.get(qn("w:val")) == "Table of Contents":
-        return True
-    placeholder = sdt_pr.find(qn("w:showingPlcHdr"))
-    return placeholder is not None and placeholder.get(qn("w:val")) not in (
-        "0",
-        "false",
-        "off",
-    )
-
-
-def _iter_rows(tbl):
-    """Yield the ``w:tr`` of a table, including wrapped ones.
-
-    A row inside a control :func:`_is_hidden_control` names is left out.
-    """
-    for child in tbl:
-        if child.tag == qn("w:tr"):
-            yield child
-        elif child.tag in _ROW_CELL_WRAPPERS and not (
-            child.tag == qn("w:sdt") and _is_hidden_control(child)
-        ):
-            yield from _iter_rows(child)
-
-
-def _iter_cells(tr, hidden: bool = False):
-    """Yield ``(w:tc, hidden)`` for each cell of a ``w:tr``, including wrapped ones.
-
-    A cell inside a control :func:`_is_hidden_control` names is still
-    yielded, with ``hidden`` set: it takes its grid columns, so the cells
-    after it keep theirs, and only its text is left out.
-    """
-    for child in tr:
-        if child.tag == qn("w:tc"):
-            yield child, hidden
-        elif child.tag in _ROW_CELL_WRAPPERS:
-            yield from _iter_cells(
-                child,
-                hidden or (child.tag == qn("w:sdt") and _is_hidden_control(child)),
-            )
+_ROW_TAGS = frozenset({qn("w:tr")})
+_PARAGRAPH_TAGS = frozenset({qn("w:p")})
 
 
 def _grid_before(tr) -> int:
@@ -332,10 +282,11 @@ class TableExtractor:
         - A row that starts late (``w:gridBefore``) leaves its first grid
           columns empty, so its cells stay under the columns they are drawn in
         - Rows and cells inside a content control or custom XML markup count
-          like direct ones. A cell inside a table of contents or placeholder
-          control keeps its grid columns and paraIds but no text (nothing in
-          it is extracted, so its images are not exported); a row inside one
-          is left out
+          like direct ones, and so do paragraphs a cell wraps in one (see
+          ``content_controls``). A cell inside a table of contents or
+          placeholder control keeps its grid columns and paraIds but no text
+          (nothing in it is extracted, so its images are not exported); a row
+          inside one is left out
 
         Args:
             table: python-docx Table object
@@ -379,7 +330,7 @@ class TableExtractor:
 
         # Detect header rows using w:tblHeader attribute
         header_indices = []
-        for idx, tr in enumerate(_iter_rows(tbl)):
+        for idx, tr in enumerate(iter_blocks(tbl, _ROW_TAGS)):
             trPr = tr.find(qn("w:trPr"))
             if trPr is not None:
                 tbl_header = trPr.find(qn("w:tblHeader"))
@@ -393,7 +344,7 @@ class TableExtractor:
         cell_features_grid = [] if collect_features else None
         vmerge_content = {}  # Track vertical merge by column: {col: {'text': str, 'para_id': str, 'para_id_end': str}}
 
-        for tr in _iter_rows(tbl):
+        for tr in iter_blocks(tbl, _ROW_TAGS):
             row_data = [""] * num_cols  # Pre-fill with empty strings
             row_para_ids = [None] * num_cols  # Pre-fill with None
             row_para_ids_end = [None] * num_cols  # Pre-fill with None for last paraId
@@ -402,7 +353,7 @@ class TableExtractor:
             merged_cols = set()  # columns whose vertical merge reaches this row
 
             # Iterate actual <w:tc> elements (each physical cell appears once)
-            for tc, hidden in _iter_cells(tr):
+            for tc, hidden in iter_cells(tr):
                 if collect_features:
                     row_cell_features.append(
                         ("", None, False)
@@ -454,7 +405,7 @@ class TableExtractor:
                         # Only the paraIds: extracting would still export its
                         # images (against the shared image budget) and count
                         # its list items.
-                        for para_elem in tc.findall(qn("w:p")):
+                        for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
                             para_id_attr = para_elem.get(
                                 "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
                             )
@@ -465,7 +416,7 @@ class TableExtractor:
                     elif numbering_resolver is not None:
                         # Extract text with numbering labels and superscript/subscript markup
                         cell_paragraphs = []
-                        for para_elem in tc.findall(qn("w:p")):
+                        for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
                             # Capture paraId from each paragraph
                             para_id_attr = para_elem.get(
                                 "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
@@ -501,7 +452,7 @@ class TableExtractor:
                         # Fallback to simple text extraction with format preservation
                         # Cannot use cell.text here, must extract from XML
                         para_texts = []
-                        for para_elem in tc.findall(qn("w:p")):
+                        for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
                             # Capture paraId from each paragraph
                             para_id_attr = para_elem.get(
                                 "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
@@ -536,7 +487,7 @@ class TableExtractor:
                 elif is_vmerge_continue:
                     # The continuation's own paraIds bound the range (uuid_end),
                     # whether or not a merge still reaches it.
-                    for para_elem in tc.findall(qn("w:p")):
+                    for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
                         para_id_attr = para_elem.get(
                             "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
                         )

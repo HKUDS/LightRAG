@@ -25,6 +25,7 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from lightrag.parser.docx.content_controls import is_hidden_inline_control
 from lightrag.utils import logger
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -746,7 +747,7 @@ def extract_paragraph_physical_features(
         nonlocal has_page_break_run, has_leading_page_break_run
         nonlocal has_nonleading_page_break_run, text_seen
         tag = node.tag
-        if tag in _PRUNE_SUBTREE_TAGS:
+        if tag in _PRUNE_SUBTREE_TAGS or is_hidden_inline_control(node):
             return
         if tag == _w("r"):
             # Skip the paragraph-mark rPr context: w:pPr/w:rPr is not a run.
