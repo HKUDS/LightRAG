@@ -4201,11 +4201,11 @@ def test_smart_assembly_gives_bibliography_its_own_references_block(monkeypatch)
 
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
     records = _body(20) + [
-        _para("1 Conclusion", size=16.0, outline_level=0),
+        _para("1 结论", size=16.0, outline_level=0),
         *_body(3),
-        _para("[1] Foo.", in_references=True),
-        _para("[2] Bar.", in_references=True),
-        _para("Closing remark."),
+        _para("[1] 张三：知识图谱综述", in_references=True),
+        _para("[2] 李四：检索增强生成", in_references=True),
+        _para("以上为全文结束语。"),
     ]
 
     result = run_smart_heading(records, llm_judge=_no_title_llm, warnings={})
@@ -4214,7 +4214,7 @@ def test_smart_assembly_gives_bibliography_its_own_references_block(monkeypatch)
 
     refs = [b for b in blocks if b.get("session_type") == "references"]
     assert len(refs) == 1
-    assert refs[0]["content"] == "[1] Foo.\n[2] Bar."
-    assert refs[0]["heading"] == "1 Conclusion"
-    closing = next(b for b in blocks if "Closing remark." in b["content"])
+    assert refs[0]["content"] == "[1] 张三：知识图谱综述\n[2] 李四：检索增强生成"
+    assert refs[0]["heading"] == "1 结论"
+    closing = next(b for b in blocks if "以上为全文结束语。" in b["content"])
     assert "session_type" not in closing
