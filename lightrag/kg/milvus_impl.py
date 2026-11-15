@@ -342,6 +342,29 @@ MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
 # — so quota errors fail fast instead.
 MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = ("received message larger than max",)
 
+# Consistency level for every point read (`query()` by id or by filter).
+# Collections are created without a level, so the server default -- Bounded --
+# applies to any request that does not name one. Bounded serves a snapshot up to
+# `common.gracefulTime` (5 s by default) old, so a row upserted or deleted by
+# the flush that just emptied `_pending_vector_docs` / `_pending_vector_deletes`
+# can be missing from, or still present in, the next read. The write buffer
+# gives read-your-writes only until that flush. Reads whose answer drives a
+# decision or is shown back to the caller -- `delete_entity_relation`'s
+# victim lookup, `is_empty`, `get_by_id(s)`, `get_vectors_by_ids` -- therefore
+# ask for Strong, which waits for the server's time tick (`timeTickInterval`,
+# 200 ms by default) instead of reading a stale snapshot. Passed per request
+# rather than set at creation, so collections created before this change get it
+# too.
+#
+# Accepted residue: vector search (`MilvusVectorDBStorage.query()`, which calls
+# `client.search`) stays on the collection default. A search that misses
+# vectors written moments ago is ordinary retrieval lag, healed by the next
+# search, and Strong would add a time-tick wait to every query. The schema
+# migration's `query_iterator` is also left on its default: it runs inside
+# `initialize()`, before this instance has written anything, so it copies rows
+# an earlier run flushed.
+MILVUS_POINT_READ_CONSISTENCY_LEVEL = "Strong"
+
 # Schema-migration resilience. A transient Milvus outage during the long
 # iterator-based migration must not kill worker startup: when pymilvus'
 # internal reconnect fails it closes the gRPC channel for good, so every later
@@ -2760,7 +2783,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         Note: buffered-but-unflushed upserts are NOT visible to this method —
         they exist only in `_pending_vector_docs` until `index_done_callback()`
         embeds and writes them. Callers that need read-after-write visibility
-        for similarity search must run an explicit flush first.
+        for similarity search must run an explicit flush first, and even then
+        a search issued right after the flush can still miss those rows: it
+        reads at the collection's default Bounded consistency (see
+        ``MILVUS_POINT_READ_CONSISTENCY_LEVEL`` for why it stays there).
         """
         # Ensure collection is loaded before querying. MilvusClient is a
         # synchronous SDK (blocking gRPC calls) -- run it off the event loop
@@ -3111,7 +3137,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pending overwrite is dropped — i.e. the final state can diverge
         from the eager-flush ordering (upsert → flush → delete). Callers
         that require eager-equivalent semantics should call
-        ``index_done_callback()`` before ``delete_entity_relation``.
+        ``index_done_callback()`` before ``delete_entity_relation``. That
+        flush is enough only because the victim lookup reads with
+        ``MILVUS_POINT_READ_CONSISTENCY_LEVEL`` (Strong): under the
+        collection's default Bounded level it could miss the rows the flush
+        just wrote.
         """
 
         def _prune_pending() -> None:
@@ -3139,6 +3169,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 filter=expr,
                 output_fields=["id"],
+                consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
             )
 
             if not results:
@@ -3278,6 +3309,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             filter='id != ""',
             output_fields=["id"],
             limit=1,
+            consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
         )
         return not rows
 
@@ -3320,6 +3352,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     collection_name=self.final_namespace,
                     filter=filter_expr,
                     output_fields=output_fields,
+                    consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
                 )
             except Exception as e:
                 if len(page) == 1 or not self._is_response_too_large_error(e):
@@ -3368,6 +3401,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 filter=f'id == "{_escape_milvus_str(id)}"',
                 output_fields=output_fields,
+                consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
             )
 
             if not result or len(result) == 0:
