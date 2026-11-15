@@ -202,6 +202,18 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     return ("\n".join(texts), max_size, has_outline)
 
 
+def _grid_before(tr) -> int:
+    """Return how many leading grid columns a ``w:tr`` leaves without a cell."""
+    tr_pr = tr.find(qn("w:trPr"))
+    node = tr_pr.find(qn("w:gridBefore")) if tr_pr is not None else None
+    if node is None:
+        return 0
+    try:
+        return max(int(node.get(qn("w:val"), "0")), 0)
+    except ValueError:
+        return 0
+
+
 class TableExtractor:
     """
     Extract table content handling merged cells correctly.
@@ -253,6 +265,12 @@ class TableExtractor:
         Vertical merge behavior:
         - All rows in a vertically merged region share the same content
         - All rows use the paraId from the merge start cell (for precise edit targeting)
+        - A merge continues only from the row directly above: a row with no
+          restart or continuation cell at that grid column ends it
+
+        Grid alignment:
+        - A row that starts late (``w:gridBefore``) leaves its first grid
+          columns empty, so its cells stay under the columns they are drawn in
 
         Args:
             table: python-docx Table object
@@ -315,7 +333,8 @@ class TableExtractor:
             row_para_ids = [None] * num_cols  # Pre-fill with None
             row_para_ids_end = [None] * num_cols  # Pre-fill with None for last paraId
             row_cell_features = [] if collect_features else None
-            grid_col = 0
+            grid_col = _grid_before(tr)
+            merged_cols = set()  # columns whose vertical merge reaches this row
 
             # Iterate actual <w:tc> elements (each physical cell appears once)
             for tc in tr.findall(qn("w:tc")):
@@ -431,14 +450,13 @@ class TableExtractor:
                             "para_id": cell_para_id,
                             "para_id_end": cell_para_id_end,
                         }
-                    elif is_normal_cell:
-                        # A cell without w:vMerge ends the group even if it is empty.
-                        vmerge_content.pop(grid_col, None)
+                        merged_cols.add(grid_col)
 
                 elif is_vmerge_continue:
                     # Copy content and para_id from previous merge start
                     # But extract actual para_id_end from this continue cell for range boundary
                     if grid_col in vmerge_content:
+                        merged_cols.add(grid_col)
                         cell_text = vmerge_content[grid_col]["text"]
                         cell_para_id = vmerge_content[grid_col][
                             "para_id"
@@ -462,6 +480,11 @@ class TableExtractor:
 
                 # Move grid position by gridSpan
                 grid_col += grid_span
+
+            # A normal cell, or no cell at all (gridBefore / gridAfter, a
+            # short row), ends the merge in its column, even when empty.
+            for col in [col for col in vmerge_content if col not in merged_cols]:
+                del vmerge_content[col]
 
             grid.append(row_data)
             para_ids_grid.append(row_para_ids)

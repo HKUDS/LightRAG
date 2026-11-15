@@ -311,6 +311,87 @@ def test_empty_table_cell_ends_vertical_merge(continuation: str | None) -> None:
     assert [row[0] for row in result["para_ids_end"]] == list(para_ids)
 
 
+def _filled_table(document, rows: int, cols: int):
+    table = document.add_table(rows=rows, cols=cols)
+    for row in range(rows):
+        for column in range(cols):
+            _populate_cell(table.cell(row, column), f"r{row}c{column}")
+    return table
+
+
+def _skip_grid_columns(row, *, before: int = 0, after: int = 0) -> None:
+    """Drop cells from a row's ends and record them as gridBefore/gridAfter."""
+    tr = row._tr
+    for _ in range(before):
+        tr.remove(tr.tc_lst[0])
+    for _ in range(after):
+        tr.remove(tr.tc_lst[-1])
+    tr_pr = tr.get_or_add_trPr()
+    for tag, count in (("w:gridBefore", before), ("w:gridAfter", after)):
+        if count:
+            node = OxmlElement(tag)
+            node.set(qn("w:val"), str(count))
+            tr_pr.append(node)
+
+
+def _saved_table_metadata(document) -> dict:
+    source = BytesIO()
+    document.save(source)
+    source.seek(0)
+    return TableExtractor.extract_with_metadata(Document(source).tables[0])
+
+
+@pytest.mark.offline
+def test_grid_before_row_keeps_cells_in_their_columns() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 3)
+    _skip_grid_columns(table.rows[1], before=1)
+    _skip_grid_columns(table.rows[2], after=2)
+    skipped_row = table.rows[1]._tr
+    for tc, para_id in zip(skipped_row.tc_lst, ("00000011", "00000012")):
+        tc.find(qn("w:p")).set(qn("w14:paraId"), para_id)
+
+    result = _saved_table_metadata(document)
+
+    assert result["rows"] == [
+        ["r0c0", "r0c1", "r0c2"],
+        ["", "r1c1", "r1c2"],
+        ["r2c0", "", ""],
+    ]
+    assert result["para_ids"][1] == [None, "00000011", "00000012"]
+
+
+@pytest.mark.offline
+def test_vertical_merge_below_grid_before_row() -> None:
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    table.cell(0, 2).merge(table.cell(1, 2)).text = "Total"
+    _skip_grid_columns(table.rows[0], before=1)
+
+    # The continuation in row 2 sits under grid column 2, which row 1
+    # reaches only after its skipped first column.
+    assert _saved_table_metadata(document)["rows"] == [
+        ["", "r0c1", "Total"],
+        ["r1c0", "r1c1", "Total"],
+    ]
+
+
+@pytest.mark.offline
+def test_column_without_cell_ends_vertical_merge() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, 0).merge(table.cell(2, 0)).text = "Total"
+    # Row 2 loses its continuation cell: grid column 0 has no cell there.
+    _skip_grid_columns(table.rows[1], before=1)
+
+    # Row 3's continuation has no merge directly above it to repeat.
+    assert _saved_table_metadata(document)["rows"] == [
+        ["Total", "r0c1"],
+        ["", "r1c1"],
+        ["", "r2c1"],
+    ]
+
+
 # --- end-to-end: every heading becomes its own block ----------------------
 
 
