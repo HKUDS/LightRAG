@@ -283,7 +283,7 @@ class TableExtractor:
           restart or continuation cell at that grid column ends it. A
           continuation below such a row repeats nothing; Word draws it as a
           separate empty cell, whether a normal cell or no cell (gridBefore)
-          broke the merge
+          broke the merge. It keeps its own paraIds
 
         Grid alignment:
         - A row that starts late (``w:gridBefore``) leaves its first grid
@@ -472,24 +472,23 @@ class TableExtractor:
                         merged_cols.add(grid_col)
 
                 elif is_vmerge_continue:
-                    # Copy content and para_id from previous merge start
-                    # But extract actual para_id_end from this continue cell for range boundary
+                    # The continuation's own paraIds bound the range (uuid_end),
+                    # whether or not a merge still reaches it.
+                    for para_elem in tc.findall(qn("w:p")):
+                        para_id_attr = para_elem.get(
+                            "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
+                        )
+                        if para_id_attr:
+                            if cell_para_id is None:
+                                cell_para_id = para_id_attr
+                            cell_para_id_end = para_id_attr
                     if grid_col in vmerge_content:
+                        # Copy content and the restart's paraId (edit target)
                         merged_cols.add(grid_col)
                         cell_text = vmerge_content[grid_col]["text"]
-                        cell_para_id = vmerge_content[grid_col][
-                            "para_id"
-                        ]  # Use restart's paraId for edit targeting
-
-                        # Extract actual paraId from this continue cell for uuid_end (range boundary)
-                        for para_elem in tc.findall(qn("w:p")):
-                            para_id_attr = para_elem.get(
-                                "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
-                            )
-                            if para_id_attr:
-                                cell_para_id_end = (
-                                    para_id_attr  # Use actual paraId for range boundary
-                                )
+                        cell_para_id = vmerge_content[grid_col]["para_id"]
+                    # Otherwise no merge reaches it: Word draws a separate
+                    # empty cell, so it keeps no text and its own paraIds.
 
                 # Place content at starting grid position only
                 if grid_col < num_cols:

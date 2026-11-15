@@ -392,6 +392,33 @@ def test_column_without_cell_ends_vertical_merge() -> None:
     ]
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize("breaker", ["gridAfter", "normal cell"])
+def test_orphaned_continuation_keeps_its_own_para_ids(breaker: str) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, 1).merge(table.cell(2, 1)).text = "Total"
+    if breaker == "gridAfter":
+        _skip_grid_columns(table.rows[1], after=1)
+    else:
+        tc_pr = table.rows[1]._tr.tc_lst[1].tcPr
+        tc_pr.remove(tc_pr.find(qn("w:vMerge")))
+    orphan = table.rows[2]._tr.tc_lst[1]
+    paragraphs = orphan.findall(qn("w:p"))
+    if len(paragraphs) == 1:
+        orphan.append(OxmlElement("w:p"))
+        paragraphs = orphan.findall(qn("w:p"))
+    paragraphs[0].set(qn("w14:paraId"), "0000000A")
+    paragraphs[-1].set(qn("w14:paraId"), "0000000B")
+
+    result = _saved_table_metadata(document)
+
+    # No merge reaches row 3: no text, but its paraIds still bound the range.
+    assert [row[1] for row in result["rows"]] == ["Total", "", ""]
+    assert result["para_ids"][2][1] == "0000000A"
+    assert result["para_ids_end"][2][1] == "0000000B"
+
+
 def _wrap(element, wrapper: str) -> None:
     """Move ``element`` into a content control or custom XML element."""
     parent = element.getparent()
