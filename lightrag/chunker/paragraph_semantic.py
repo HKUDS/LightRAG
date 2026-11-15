@@ -194,9 +194,10 @@ def _block_to_paragraphs(content: str) -> list[dict[str, Any]]:
 def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
     """Read ``type == "content"`` rows from a blocks.jsonl file in order.
 
-    Raises :class:`BlocksSidecarCorruptError` on a row that is not valid JSON
-    or on invalid UTF-8. A damaged row is never skipped: the rows that still
-    parse do not cover the document, so chunking them drops text.
+    Raises :class:`BlocksSidecarCorruptError` on invalid JSON or UTF-8, or a
+    content row without a string ``content`` field. A damaged row is never
+    skipped: the remaining rows do not cover the document, so chunking them
+    drops text.
     """
     rows: list[dict[str, Any]] = []
     line_number = 0
@@ -217,6 +218,12 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
                         line_number,
                     ) from exc
                 if isinstance(obj, dict) and obj.get("type") == "content":
+                    if not isinstance(obj.get("content"), str):
+                        raise BlocksSidecarCorruptError(
+                            blocks_path,
+                            "content row must have a string 'content' field",
+                            line_number,
+                        )
                     rows.append(obj)
     except UnicodeDecodeError as exc:
         # Raised by the read that follows the last row decoded successfully.
@@ -2132,7 +2139,8 @@ def chunking_by_paragraph_semantic(
             missing, or without content rows, this function falls back to
             :func:`chunking_by_recursive_character` on ``content``
             (per ``docs/FileProcessingPipeline.md``). A sidecar that
-            exists but holds malformed JSON or invalid UTF-8 raises
+            exists but holds malformed JSON, invalid UTF-8, or a content row
+            without a string ``content`` field raises
             :class:`~lightrag.exceptions.BlocksSidecarCorruptError`
             instead; it never falls back.
             That fallback hard-requires ``langchain-text-splitters``;
