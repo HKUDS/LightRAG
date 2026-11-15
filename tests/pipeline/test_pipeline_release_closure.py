@@ -3387,7 +3387,13 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         assert full_doc["content"].startswith("{{LRdoc}}")
         assert full_doc["sidecar_location"].startswith("file://")
         assert full_doc["sidecar_location"].endswith("/")
-        assert str(blocks_path.parent.resolve()) in full_doc["sidecar_location"]
+        # Round-trip rather than substring: the URI is percent-encoded and uses
+        # ``/``, so the native path string is not a substring of it on Windows.
+        from lightrag.utils_pipeline import resolve_sidecar_uri
+
+        assert resolve_sidecar_uri(full_doc["sidecar_location"]) == (
+            blocks_path.parent.resolve()
+        )
 
         await rag.finalize_storages()
 
