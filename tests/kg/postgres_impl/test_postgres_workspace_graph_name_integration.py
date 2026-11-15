@@ -72,6 +72,23 @@ async def _write_a_to_b(storage):
     await storage.upsert_edge("A", "B", {"weight": 1.0})
 
 
+async def _write_under_the_clipped_name(monkeypatch, storage, clipped, write=True):
+    """Open ``storage`` the way AGE 1.5 and earlier did: under the clipped name."""
+    from lightrag.kg.postgres_impl import PGGraphStorage
+
+    with monkeypatch.context() as patch:
+        patch.setattr(PGGraphStorage, "_get_workspace_graph_name", lambda self: clipped)
+        patch.setattr(
+            PGGraphStorage, "_get_legacy_clipped_graph_name", lambda self: None
+        )
+        await _initialize(storage)
+    try:
+        if write:
+            await _write_a_to_b(storage)
+    finally:
+        await storage.finalize()
+
+
 async def _drop_graph(graph_name):
     conn = await _connect()
     try:
@@ -116,8 +133,6 @@ async def test_initialize_and_round_trip_for_workspace(workspace):
 @pytest.mark.requires_db
 async def test_existing_clipped_graph_is_still_used(monkeypatch):
     """Data written under the clipped name (AGE 1.5 or earlier) stays visible."""
-    from lightrag.kg.postgres_impl import PGGraphStorage
-
     await _skip_unless_age_is_usable()
     initialize_share_data()
     workspace = "legacy_" + "x" * 50
@@ -125,22 +140,50 @@ async def test_existing_clipped_graph_is_still_used(monkeypatch):
     clipped = old._get_legacy_clipped_graph_name()
     assert clipped is not None
 
-    # Write the way AGE 1.5 and earlier did: every statement used the clipped name.
-    monkeypatch.setattr(
-        PGGraphStorage, "_get_workspace_graph_name", lambda self: clipped
-    )
-    await _initialize(old)
-    await _write_a_to_b(old)
-    await old.finalize()
-    monkeypatch.undo()
-
     storage = _make_storage(workspace)
-    await _initialize(storage)
     try:
+        await _write_under_the_clipped_name(monkeypatch, old, clipped)
+
+        await _initialize(storage)
         assert storage.graph_name == clipped
         assert sorted(await storage.get_all_labels()) == ["A", "B"]
         assert await storage.has_edge("A", "B")
     finally:
+        await _drop_graph(clipped)
+        await _drop_graph(storage._get_workspace_graph_name())
+        await storage.finalize()
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
+async def test_hashed_graph_is_kept_when_a_clipped_graph_appears_later(monkeypatch):
+    """An older release run after this one must not take the workspace's data."""
+    await _skip_unless_age_is_usable()
+    initialize_share_data()
+    workspace = "rollback_" + "x" * 50
+    first = _make_storage(workspace)
+    clipped = first._get_legacy_clipped_graph_name()
+    hashed = first._get_workspace_graph_name()
+    assert clipped is not None
+
+    storage = _make_storage(workspace)
+    try:
+        await _initialize(first)
+        assert first.graph_name == hashed
+        await _write_a_to_b(first)
+        await first.finalize()
+
+        # The older release: it sets up the clipped graph and finds it empty.
+        await _write_under_the_clipped_name(
+            monkeypatch, _make_storage(workspace), clipped, write=False
+        )
+
+        await _initialize(storage)
+        assert storage.graph_name == hashed
+        assert sorted(await storage.get_all_labels()) == ["A", "B"]
+        assert await storage.has_edge("A", "B")
+    finally:
+        await _drop_graph(hashed)
         await _drop_graph(clipped)
         await storage.finalize()
 

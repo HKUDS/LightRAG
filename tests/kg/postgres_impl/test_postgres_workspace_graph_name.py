@@ -4,7 +4,8 @@ The graph name is ``<workspace>_<namespace>`` reduced to ``[A-Za-z0-9_]``. AGE
 rejects it when it starts with a digit (every version) or, from AGE 1.6, when it
 is longer than 63 bytes (create_vlabel() raises "graph name is invalid"). Those
 names fall back to ``ws_<hash>_<namespace>``. Up to AGE 1.5 a long name worked,
-clipped to 63 bytes, so initialize() keeps using such an existing clipped graph.
+clipped to 63 bytes, so initialize() keeps using such an existing clipped graph,
+unless the workspace already has its hashed graph.
 """
 
 from unittest.mock import AsyncMock, Mock
@@ -12,7 +13,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from lightrag.kg.postgres_impl import (
-    _LEGACY_CLIPPED_GRAPH_LOOKUP,
+    _INITIALIZED_GRAPHS_LOOKUP,
     PGGraphStorage,
     _is_valid_age_graph_name,
 )
@@ -20,7 +21,7 @@ from lightrag.kg.postgres_impl import (
 pytestmark = pytest.mark.offline
 
 NAMESPACE = "chunk_entity_relation"
-LEGACY_LOOKUP = _LEGACY_CLIPPED_GRAPH_LOOKUP
+GRAPHS_LOOKUP = _INITIALIZED_GRAPHS_LOOKUP
 
 
 def _storage(workspace: str) -> PGGraphStorage:
@@ -129,7 +130,8 @@ class _NullLock:
         return False
 
 
-def _initializable_storage(monkeypatch, workspace: str, legacy_graph_exists: bool):
+def _initializable_storage(monkeypatch, workspace: str, initialized_graphs=()):
+    """A storage whose database reports ``initialized_graphs`` as set up."""
     monkeypatch.setattr(
         "lightrag.kg.postgres_impl.get_data_init_lock", lambda: _NullLock()
     )
@@ -146,8 +148,9 @@ def _initializable_storage(monkeypatch, workspace: str, legacy_graph_exists: boo
                 "graph_name": kwargs.get("graph_name"),
             }
         )
-        if sql == LEGACY_LOOKUP:
-            return {"?column?": 1} if legacy_graph_exists else None
+        if sql == GRAPHS_LOOKUP:
+            (candidates,) = params
+            return [{"name": n} for n in initialized_graphs if n in candidates]
         return [{"name": "base"}, {"name": "DIRECTED"}]
 
     db = AsyncMock()
@@ -164,18 +167,18 @@ async def test_initialize_keeps_an_existing_clipped_graph(monkeypatch):
     """Upgrading from AGE 1.5 or earlier must not move the data to a new graph."""
     warning = Mock()
     monkeypatch.setattr("lightrag.kg.postgres_impl.logger.warning", warning)
-    storage, calls = _initializable_storage(monkeypatch, "w" * 42, True)
     clipped = ("w" * 42 + "_chunk_entity_relation")[:63]
+    storage, calls = _initializable_storage(monkeypatch, "w" * 42, [clipped])
 
     await storage.initialize()
 
     assert storage.graph_name == clipped
     warning.assert_called_once()
     # Resolved before the first with_age=True call, which would create the graph.
-    lookup = next(i for i, c in enumerate(calls) if c["sql"] == LEGACY_LOOKUP)
+    lookup = next(i for i, c in enumerate(calls) if c["sql"] == GRAPHS_LOOKUP)
     first_age = next(i for i, c in enumerate(calls) if c["with_age"])
     assert lookup < first_age
-    assert calls[lookup]["params"] == [clipped]
+    assert calls[lookup]["params"] == [[_graph_name("w" * 42), clipped]]
     assert calls[first_age]["graph_name"] == clipped
 
 
@@ -183,13 +186,51 @@ async def test_initialize_keeps_an_existing_clipped_graph(monkeypatch):
 async def test_initialize_uses_the_hashed_name_when_no_clipped_graph_exists(
     monkeypatch,
 ):
-    storage, calls = _initializable_storage(monkeypatch, "w" * 42, False)
+    warning = Mock()
+    monkeypatch.setattr("lightrag.kg.postgres_impl.logger.warning", warning)
+    storage, calls = _initializable_storage(monkeypatch, "w" * 42)
 
     await storage.initialize()
 
     assert storage.graph_name == _graph_name("w" * 42)
     assert storage.graph_name.startswith("ws_")
-    assert [c for c in calls if c["sql"] == LEGACY_LOOKUP]
+    assert [c for c in calls if c["sql"] == GRAPHS_LOOKUP]
+    warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_initialize_stays_on_the_hashed_graph_when_a_clipped_one_appears(
+    monkeypatch,
+):
+    """An older release run later creates the clipped graph; the data is hashed."""
+    warning = Mock()
+    monkeypatch.setattr("lightrag.kg.postgres_impl.logger.warning", warning)
+    hashed = _graph_name("w" * 42)
+    clipped = ("w" * 42 + "_chunk_entity_relation")[:63]
+    storage, calls = _initializable_storage(monkeypatch, "w" * 42, [hashed, clipped])
+
+    await storage.initialize()
+
+    assert storage.graph_name == hashed
+    first_age = next(c for c in calls if c["with_age"])
+    assert first_age["graph_name"] == hashed
+    # The unused graph is named, so its data can be found.
+    warning.assert_called_once()
+    assert hashed in warning.call_args.args[0]
+    assert clipped in warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_initialize_reopens_its_hashed_graph_without_a_warning(monkeypatch):
+    warning = Mock()
+    monkeypatch.setattr("lightrag.kg.postgres_impl.logger.warning", warning)
+    hashed = _graph_name("w" * 42)
+    storage, _ = _initializable_storage(monkeypatch, "w" * 42, [hashed])
+
+    await storage.initialize()
+
+    assert storage.graph_name == hashed
+    warning.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -197,9 +238,9 @@ async def test_initialize_uses_the_hashed_name_when_no_clipped_graph_exists(
 async def test_initialize_skips_the_lookup_when_no_clipped_name_applies(
     monkeypatch, workspace
 ):
-    storage, calls = _initializable_storage(monkeypatch, workspace, True)
+    storage, calls = _initializable_storage(monkeypatch, workspace)
 
     await storage.initialize()
 
     assert storage.graph_name == _graph_name(workspace)
-    assert not [c for c in calls if c["sql"] == LEGACY_LOOKUP]
+    assert not [c for c in calls if c["sql"] == GRAPHS_LOOKUP]

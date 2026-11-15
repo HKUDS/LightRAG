@@ -524,13 +524,15 @@ def _is_valid_age_graph_name(name: str) -> bool:
     return len(name.encode("utf-8")) <= _PG_NAME_MAX_BYTES and not name[:1].isdigit()
 
 
-# A clipped graph only holds legacy data if initialize() got as far as creating
-# its "base" label, which AGE 1.6+ rejects for the unclipped name. A failed
-# startup there still leaves the empty clipped graph behind, without that label.
-_LEGACY_CLIPPED_GRAPH_LOOKUP = (
-    "SELECT 1 FROM ag_catalog.ag_label l "
+# Which of the candidate graphs initialize() has already set up, i.e. given the
+# "base" label. A clipped graph only holds legacy data if it has that label,
+# which AGE 1.6+ rejects for the unclipped name: a failed startup there still
+# leaves the empty clipped graph behind, without it. Every candidate must
+# already fit in 63 bytes; a longer bind parameter cast to name raises 42622.
+_INITIALIZED_GRAPHS_LOOKUP = (
+    "SELECT g.name::text AS name FROM ag_catalog.ag_label l "
     "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
-    "WHERE g.name = $1::name AND l.name = 'base'"
+    "WHERE g.name = ANY($1::name[]) AND l.name = 'base'"
 )
 
 
@@ -7694,9 +7696,9 @@ class PGGraphStorage(BaseGraphStorage):
         - If workspace has other value: graph_name = workspace_namespace
         - If that is not a valid AGE graph name (over 63 bytes, or starting
           with a digit): graph_name = ws_<hash of workspace_namespace>_namespace.
-          initialize() keeps an existing graph that AGE 1.5 or earlier created
-          for a long workspace under its clipped name instead; see
-          _get_legacy_clipped_graph_name().
+          For a long workspace that has no such graph yet, initialize() keeps
+          an existing graph that AGE 1.5 or earlier created under the clipped
+          name instead; see _get_legacy_clipped_graph_name().
 
         Args:
             None
@@ -7790,19 +7792,42 @@ class PGGraphStorage(BaseGraphStorage):
 
             await self.db._run_with_retry(_do_configure_age_extension)
 
-            # Keep a graph AGE 1.5 or earlier created under the clipped name. This
-            # must run before the first with_age=True call below, which has
+            # A workspace too long for AGE has two candidate graphs: the hashed
+            # one and the clipped one AGE 1.5 or earlier used. This must run
+            # before the first with_age=True call below, which has
             # PostgreSQLDB._ensure_age_graph() create self.graph_name.
+            #
+            # - Hashed graph already set up: stay on it. This code only creates
+            #   it when no clipped graph existed, so a clipped graph that shows
+            #   up later (an older release run against this database, by this
+            #   workspace or one sharing its 63-byte prefix) must not take over.
+            #   Accepted residue: anything that older release wrote stays in
+            #   the clipped graph, unused; the warning names both graphs.
+            # - Otherwise an existing clipped graph is the legacy data: keep it.
+            # - Neither: a new graph gets the hashed name.
             legacy_graph_name = self._get_legacy_clipped_graph_name()
-            if legacy_graph_name and await self.db.query(
-                _LEGACY_CLIPPED_GRAPH_LOOKUP, [legacy_graph_name]
-            ):
-                logger.warning(
-                    f"[{self.workspace}] Using the existing AGE graph '{legacy_graph_name}', "
-                    "whose name PostgreSQL clipped to 63 bytes. It may be shared with "
-                    "any other workspace whose graph name has the same first 63 bytes."
+            if legacy_graph_name:
+                rows = await self.db.query(
+                    _INITIALIZED_GRAPHS_LOOKUP,
+                    [[self.graph_name, legacy_graph_name]],
+                    multirows=True,
                 )
-                self.graph_name = legacy_graph_name
+                initialized = {row["name"] for row in rows or []}
+                if self.graph_name in initialized:
+                    if legacy_graph_name in initialized:
+                        logger.warning(
+                            f"[{self.workspace}] Using the AGE graph '{self.graph_name}'. "
+                            f"The graph '{legacy_graph_name}' also exists and is not used: "
+                            "it was created by an older LightRAG release for this workspace "
+                            "or for one whose graph name has the same first 63 bytes."
+                        )
+                elif legacy_graph_name in initialized:
+                    logger.warning(
+                        f"[{self.workspace}] Using the existing AGE graph '{legacy_graph_name}', "
+                        "whose name PostgreSQL clipped to 63 bytes. It may be shared with "
+                        "any other workspace whose graph name has the same first 63 bytes."
+                    )
+                    self.graph_name = legacy_graph_name
 
             # Log the graph initialization for debugging
             logger.info(
