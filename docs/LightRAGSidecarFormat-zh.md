@@ -118,7 +118,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `heading` | content所在章节的最高层级标题；heading真实存在时，应该以 markdown 渲染后的标题行出现在content的开头。**每个被识别出的标题都独立成块**：若标题后紧跟正文，正文与该标题合并进同一个块（content = markdown 渲染后的标题行 + 正文）；若标题后没有正文（例如其后紧接下一个层级的标题），该标题仍单独成块、content 仅为 markdown 渲染后的标题行。这样可保证所有 Block 的 content 字段拼接后仍能完整、无重叠地还原原文。 |
 | `parent_headings` | 字符串数组: 自顶向下的祖先标题列表，不含当前 `heading` |
 | `level` | 整数: `heading` 在文档大纲中的层级（`1` = H1 / 一级标题，0表示无标题） |
-| `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix` |
+| `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix`。目前各引擎都写 `body`，只有 native DOCX 引擎对读自 Word 参考文献控件的块写 `references`；P 分块的 `drop_references` 会丢弃这类块，不论其标题 |
 | `table_slice` | 可选保留字段；表示Block是否仅包括表格片段。目前分析引擎不会拆分长表格。因此本字段固定为 `"none"`（表示表格不会被分片） |
 | `table_header` | 可选保留字段；在当前块位表格片段的时候，保存识别出来的表格头。目前不存在 |
 | `positions` | `position` 对象数组：标识文本块的版面位置；文本块来与版面的多个位置的时候，则会出现多个`position` 对象。参见[§八](#八positions) |

@@ -23,6 +23,7 @@ Covers the contract introduced by the LR2 multimodal rewrite:
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import logging
 import struct
@@ -39,11 +40,6 @@ from lightrag.utils import (
     LLM_TRUNCATION_METADATA_KEY,
     Tokenizer,
 )
-
-
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 pytestmark = pytest.mark.offline
@@ -67,6 +63,11 @@ def _png_bytes(width: int, height: int) -> bytes:
 
 PNG_BYTES = _png_bytes(64, 64)
 TINY_PNG_BYTES = _png_bytes(8, 8)
+TINY_JPEG_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8U"
+    "HRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAAIAAgBAREA"
+    "/8QAFAABAAAAAAAAAAAAAAAAAAAAB//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8Af3//2Q=="
+)
 
 
 class _SimpleTokenizerImpl:
@@ -173,7 +174,7 @@ def _write_sidecar_fixtures(tmp_path: Path) -> tuple[str, dict, Path]:
 
 @pytest.mark.asyncio
 async def test_vlm_process_enable_false_hard_fails_for_images(
-    tmp_path, caplog, _propagate_lightrag_logger
+    tmp_path, caplog, lightrag_caplog
 ):
     """With i opted-in but VLM disabled, analyze_multimodal must hard-fail
     the document rather than silently skipping."""
@@ -433,7 +434,13 @@ async def test_unsupported_vector_format_writes_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
+@pytest.mark.parametrize(
+    ("extension", "metadata_segments"),
+    [("png", 0), ("jpg", 0), ("jpg", 1), ("jpg", 2)],
+)
+async def test_tiny_image_writes_skipped_without_vlm_call(
+    tmp_path, extension, metadata_segments
+):
     """Image smaller than VLM_MIN_IMAGE_PIXEL (32px) is decorative; skip
     without calling VLM."""
     call_log: list[dict] = []
@@ -444,8 +451,15 @@ async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
     try:
         parsed_dir = tmp_path / "parsed"
         parsed_dir.mkdir()
-        img_path = parsed_dir / "tiny.png"
-        img_path.write_bytes(TINY_PNG_BYTES)
+        img_path = parsed_dir / f"tiny.{extension}"
+        image_bytes = TINY_PNG_BYTES if extension == "png" else TINY_JPEG_BYTES
+        if metadata_segments:
+            # Legal JPEG comments can put the frame header beyond the first 64 KiB.
+            comment = b"\xff\xfe\xff\xff" + b"x" * 65533
+            image_bytes = (
+                image_bytes[:20] + comment * metadata_segments + image_bytes[20:]
+            )
+        img_path.write_bytes(image_bytes)
 
         blocks_path = parsed_dir / "doc.blocks.jsonl"
         blocks_path.write_text(
@@ -875,7 +889,7 @@ def _write_equation_fixture(tmp_path: Path, latex: str) -> tuple[str, dict, Path
 
 @pytest.mark.asyncio
 async def test_equation_omitted_field_falls_back_to_sidecar_latex(
-    tmp_path, caplog, _propagate_lightrag_logger
+    tmp_path, caplog, lightrag_caplog
 ):
     """Regression #3502: when the model omits the `equation` field entirely,
     the analysis must fall back to the sidecar's authoritative LaTeX instead
@@ -936,9 +950,7 @@ async def test_equation_omitted_field_falls_back_to_sidecar_latex(
 
 
 @pytest.mark.asyncio
-async def test_equation_equ_alias_accepted(
-    tmp_path, caplog, _propagate_lightrag_logger
-):
+async def test_equation_equ_alias_accepted(tmp_path, caplog, lightrag_caplog):
     """Regression #3502: when the model returns the equation under a
     semantically equivalent key such as `equ`, it must be accepted (and
     logged — an accepted alias shadows the sidecar's authoritative LaTeX)."""
@@ -1268,7 +1280,7 @@ async def test_oversized_table_content_truncated_to_extract_budget(tmp_path):
 
 @pytest.mark.asyncio
 async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
-    tmp_path, caplog, _propagate_lightrag_logger, monkeypatch
+    tmp_path, caplog, lightrag_caplog, monkeypatch
 ):
     """``MAX_EXTRACT_INPUT_TOKENS`` env var overrides the compile-time
     default, and any truncation emits a WARNING-level log line so
@@ -1506,7 +1518,7 @@ async def test_content_budget_below_floor_fails_item_without_llm_call(
         await rag.finalize_storages()
 
 
-def test_structurally_starved_config_warns_once(caplog, _propagate_lightrag_logger):
+def test_structurally_starved_config_warns_once(caplog, lightrag_caplog):
     """``_warn_content_budget_structurally_starved`` emits a single WARNING
     per unique config, and stays silent for a comfortable config."""
     from lightrag.pipeline import _warn_content_budget_structurally_starved
@@ -1548,7 +1560,7 @@ def test_structurally_starved_config_warns_once(caplog, _propagate_lightrag_logg
 
 @pytest.mark.asyncio
 async def test_cap_disabled_skips_starvation_warning_and_analyzes(
-    tmp_path, caplog, _propagate_lightrag_logger, monkeypatch
+    tmp_path, caplog, lightrag_caplog, monkeypatch
 ):
     """``MAX_EXTRACT_INPUT_TOKENS=0`` opts out of the input cap: enforcement is
     bypassed, so the structural-starvation warning must NOT fire (it would be
@@ -1931,6 +1943,57 @@ async def test_fail_fast_exit_still_hands_over_the_truncation_record(tmp_path):
         await rag.finalize_storages()
 
 
+async def test_external_cancellation_cancels_the_running_item_tasks(tmp_path):
+    """The analyze stage fans its items out as tasks and waits on them with
+    ``asyncio.wait``, which never cancels what it waits on. Cancelling the
+    stage from outside (server shutdown) therefore used to leave the item
+    tasks running: the VLM call carried on for a document already abandoned.
+    The stage must cancel them, and wait for them, before it unwinds."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    outcome = {"cancelled": 0, "finished": 0}
+
+    async def parked_vlm(prompt, **kwargs):
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            outcome["cancelled"] += 1
+            raise
+        outcome["finished"] += 1
+        return json.dumps(
+            {"name": "fig-1", "type": "Chart", "description": "late description"}
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=parked_vlm)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, _ = _write_sidecar_fixtures(tmp_path)
+        analyze = asyncio.create_task(
+            rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="i",
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+        analyze.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await analyze
+
+        # Already true when analyze_multimodal returns: nothing is left behind.
+        assert outcome == {"cancelled": 1, "finished": 0}
+        # An item task still running would finish its VLM call now.
+        release.set()
+        await asyncio.sleep(0.05)
+        assert outcome == {"cancelled": 1, "finished": 0}
+    finally:
+        release.set()
+        await rag.finalize_storages()
+
+
 def _make_worker_ctx():
     import asyncio
     from lightrag.pipeline import _BatchRunContext
@@ -2040,5 +2103,464 @@ async def test_analyze_worker_stamps_truncation_on_the_failed_row(tmp_path, rais
             "record handed over by analyze_multimodal"
         )
         assert ctx.q_process.empty()
+    finally:
+        await rag.finalize_storages()
+
+
+class _FakeCacheBackendError(RuntimeError):
+    """Stand-in for a storage-backend failure raised by a multimodal cache
+    read — e.g. redis-py ``MaxConnectionsError`` surfacing through a retry
+    wrapper. Deliberately NOT a :class:`MultimodalAnalysisError`, so it
+    exercises the fail-fast pass's wrapping of an unexpected item error rather
+    than the existing hard-failure contract for model-contract violations."""
+
+
+async def _explode_on_cache_read(*_args, **_kwargs):
+    raise _FakeCacheBackendError(
+        "Too many connections against the LLM response cache backend"
+    )
+
+
+@pytest.mark.asyncio
+async def test_analyze_worker_fails_document_with_original_cache_error(
+    tmp_path, monkeypatch
+):
+    """End-to-end worker view of the same defect: the document must be failed
+    with the *original* backend error and must not be handed to the process
+    stage, rather than advancing to extraction and reporting a cancelled
+    sibling."""
+    import asyncio
+    from dataclasses import asdict
+
+    import lightrag.pipeline as pipeline_mod
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-cache-fail-1"
+        _, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+        file_path = "demo.pdf"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path=file_path,
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+        # analyze_multimodal reads the per-document modality opt-ins from
+        # full_docs when the caller passes no explicit process_options — the
+        # parse worker is what normally writes this record.
+        await rag.full_docs.upsert(
+            {doc_id: {"content": "body", "process_options": "i"}}
+        )
+
+        monkeypatch.setattr(pipeline_mod, "handle_cache", _explode_on_cache_read)
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, dict(parsed_data)))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] == DocStatus.FAILED
+        error_msg = refreshed.get("error_msg") or ""
+        assert "Too many connections" in error_msg, (
+            f"the analyze-stage FAILED transition lost the original backend "
+            f"error; error_msg={error_msg!r}"
+        )
+        # The worker logs no traceback, so error_msg is all an operator gets:
+        # it must name the failing item and the exception type, not only the
+        # bare message (a tenacity RetryError or a KeyError says almost
+        # nothing on its own).
+        assert "drawings/im-001" in error_msg, error_msg
+        assert "_FakeCacheBackendError" in error_msg, error_msg
+        assert "cancelled" not in error_msg.lower(), (
+            "the reported error still names a cancelled sibling instead of "
+            "the backend failure that actually occurred"
+        )
+        assert ctx.q_process.empty()
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_generic_cache_failure_among_siblings_records_origin(
+    tmp_path, monkeypatch
+):
+    """A generic cache-read failure, with one sibling already done and one
+    still blocked, must fail the document with the ORIGINATING error.
+
+    Ported from #4244. The other read-failure tests either use a single-item
+    fixture or stop at ``analyze_multimodal``, and the multi-item fail-fast
+    test in ``test_pipeline_cancellation.py`` raises
+    ``MultimodalAnalysisError`` itself -- so the wrapping of an unexpected
+    item error had never been exercised through the worker alongside a
+    completed result and a blocked sibling, which is the shape #4243 reports.
+
+    Ordering note: ``handle_cache`` receives no item identifier, so the three
+    behaviours are assigned by call order rather than by item id. The
+    assertions below therefore check the *set* of outcomes, never which item
+    got which role.
+    """
+    import asyncio
+    from dataclasses import asdict
+
+    import lightrag.pipeline as pipeline_mod
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    # Three drawings so the fail-fast loop has something to cancel.
+    parsed_dir = tmp_path / "parsed"
+    parsed_dir.mkdir()
+    for letter in ("A", "B", "C"):
+        (parsed_dir / f"im-{letter}.png").write_bytes(PNG_BYTES)
+    blocks_path = parsed_dir / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+        encoding="utf-8",
+    )
+    sidecar_path = parsed_dir / "doc.drawings.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "drawings": {
+                    f"im-{letter}": {
+                        "caption": letter,
+                        "path": str(parsed_dir / f"im-{letter}.png"),
+                    }
+                    for letter in ("A", "B", "C")
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    parsed_data = {"blocks_path": str(blocks_path)}
+
+    call_count = {"n": 0}
+    call_lock = asyncio.Lock()
+    # How long the failing read waits for the two preconditions before giving
+    # up. Generous on purpose: this is a deadlock guard, not a synchronisation
+    # mechanism -- the ordering itself is enforced by the events, not by time.
+    precondition_timeout = 5.0
+    release_blocked = asyncio.Event()
+    successful_done = asyncio.Event()
+    blocked_entered = asyncio.Event()
+    blocked_exited = asyncio.Event()
+    blocked_completed = asyncio.Event()
+
+    async def _ordered_cache_read(*_args, **_kwargs):
+        """Call 1 misses and lets its item finish; call 2 fails for a backend
+        reason (an unexpected, non-model error); call 3 blocks until
+        cancellation."""
+        async with call_lock:
+            call_count["n"] += 1
+            seq = call_count["n"]
+        if seq == 1:
+            return None
+        if seq == 2:
+            # Wait for both preconditions rather than sleeping: the document
+            # must contain a completed sibling AND a still-blocked one when the
+            # failure lands. Ordering is enforced here, not by a clock, so the
+            # test cannot flake on a slow machine nor pass on a fast one.
+            await asyncio.wait_for(blocked_entered.wait(), timeout=precondition_timeout)
+            await asyncio.wait_for(successful_done.wait(), timeout=precondition_timeout)
+            raise _FakeCacheBackendError(
+                "Too many connections against the LLM response cache backend"
+            )
+        # blocked_entered: the sibling is now inside its read and cannot finish.
+        # blocked_exited: it left this frame, whether by completion or by the
+        # cancellation under test -- which is what makes teardown observable.
+        # blocked_completed: normal completion only, and the test asserts it is
+        # NOT set, so a `finally` here would invert the assertion.
+        blocked_entered.set()
+        try:
+            await release_blocked.wait()
+            blocked_completed.set()
+        finally:
+            blocked_exited.set()
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+
+    # The successful item's task is finished once its cache write returns --
+    # that is the last awaited storage call before it hands back its result.
+    # Signalling from the VLM call instead would fire while the item was still
+    # working, and fail-fast would cancel it before it recorded a success.
+    _real_save_to_cache = pipeline_mod.save_to_cache
+    write_count = {"n": 0}
+
+    async def _save_tracking_completion(*args, **kwargs):
+        result = await _real_save_to_cache(*args, **kwargs)
+        write_count["n"] += 1
+        if write_count["n"] == 1:
+            successful_done.set()
+        return result
+
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-mixed-siblings-1"
+        file_path = "demo.pdf"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path=file_path,
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+        await rag.full_docs.upsert(
+            {doc_id: {"content": "body", "process_options": "i"}}
+        )
+
+        monkeypatch.setattr(pipeline_mod, "handle_cache", _ordered_cache_read)
+        monkeypatch.setattr(pipeline_mod, "save_to_cache", _save_tracking_completion)
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, dict(parsed_data)))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        # (1) The blocked sibling was cancelled and drained rather than waited
+        # on: the worker returned at all, and the mock never ran to completion.
+        assert not blocked_completed.is_set(), (
+            "the blocked sibling ran to completion; fail-fast must cancel it "
+            "instead of waiting for it"
+        )
+        # Teardown is directly observable: the blocked read left its frame by the
+        # time join returned, rather than the worker merely moving on.
+        assert blocked_exited.is_set(), (
+            "the blocked cache read never exited; fail-fast must cancel and "
+            "drain the pending sibling"
+        )
+        assert call_count["n"] == 3, (
+            f"expected all three items to start, saw {call_count['n']} cache reads"
+        )
+
+        # (3) + (4) The document carries the originating error and never reaches
+        # the process stage.
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] == DocStatus.FAILED
+        error_msg = refreshed.get("error_msg") or ""
+        assert "Too many connections" in error_msg, (
+            f"the originating backend error was lost; error_msg={error_msg!r}"
+        )
+        assert "cancelled" not in error_msg.lower(), (
+            "the reported error names a cancelled sibling instead of the "
+            "failure that actually occurred"
+        )
+        assert ctx.q_process.empty()
+
+        # (2) The sibling that finished before the failure keeps its result.
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        results = {
+            item_id: item.get("llm_analyze_result") or {}
+            for item_id, item in sidecar["drawings"].items()
+        }
+        # A cancelled sibling also reports status="failure", so the message is
+        # what distinguishes it from the failing item. Which item got which
+        # role is call-order dependent, so assert on the set of roles, never
+        # on a hard-coded item id.
+        succeeded = [k for k, v in results.items() if v.get("status") == "success"]
+        cancelled = [
+            k
+            for k, v in results.items()
+            if str(v.get("message", "")).startswith("cancelled")
+        ]
+        failed = [
+            k
+            for k, v in results.items()
+            if "Too many connections" in str(v.get("message"))
+        ]
+        assert succeeded, f"no sibling kept its successful result: {results}"
+        assert cancelled, f"no sibling was recorded as cancelled: {results}"
+        assert len(failed) == 1, f"expected one originating failure: {results}"
+        assert len(succeeded) + len(cancelled) + len(failed) == len(results), (
+            f"every item must fall into exactly one role: {results}"
+        )
+        # The document error and every cancelled sibling name the item whose
+        # failure actually stopped the analysis.
+        assert f"drawings/{failed[0]}" in error_msg, error_msg
+        for item_id in cancelled:
+            assert (
+                f"sibling drawings/{failed[0]} failed" in results[item_id]["message"]
+            ), results[item_id]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_truncated_blocks_file_does_not_fail_document(tmp_path):
+    """A blocks file left half-written by a killed parse run is tolerated the
+    same way an empty one already is: analysis is skipped, the document is not
+    failed. Pins that propagating item-task failures does not also turn a
+    recoverable blocks-file problem into a document failure."""
+    import asyncio
+    from dataclasses import asdict
+
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    _doc_id, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+    blocks_path = parsed_data["blocks_path"]
+    Path(blocks_path).write_text('{"type": "meta", "doc_id"', encoding="utf-8")
+
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-truncated-blocks-1"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path="demo.pdf",
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+        await rag.full_docs.upsert(
+            {doc_id: {"content": "body", "process_options": "i"}}
+        )
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, dict(parsed_data)))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] != DocStatus.FAILED, (
+            "a truncated blocks file must not fail the document; "
+            f"error_msg={refreshed.get('error_msg')!r}"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_analyze_rewrite_keeps_lf_line_endings(
+    tmp_path, emulate_windows_newlines
+):
+    """Rewriting a modality sidecar must not use the platform line ending.
+
+    ``analyze_multimodal`` re-serializes the sidecar with ``indent=2`` after
+    every run, so each interior line break is a byte it can translate:
+    ``Path.write_text`` writes CRLF on Windows unless ``newline`` is passed.
+    The sidecar format's canonical bytes are LF (the golden fixtures under
+    ``tests/parser/docx/golden/`` are compared byte-for-byte), so a rewrite
+    that used the platform ending would make the artifact platform-dependent
+    again right after the writer had produced it correctly.
+    ``emulate_windows_newlines`` applies that translation on Linux as well,
+    so this test goes red in CI if the pin is dropped.
+    """
+    call_log: list[dict] = []
+    rag = _build_rag(tmp_path, vlm_func=_make_vlm_mock(call_log))
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert call_log, "the rewrite only follows a real analysis"
+
+        raw = sidecar_path.read_bytes()
+        assert b"llm_analyze_result" in raw  # the rewrite really happened
+        assert b"\n" in raw
+        assert b"\r\n" not in raw, "analyze rewrote the sidecar with CRLF"
     finally:
         await rag.finalize_storages()
