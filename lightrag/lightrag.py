@@ -6004,8 +6004,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             await self._query_done()
 
-            # Check if query_result is None
-            if query_result is None:
+            # A result without raw_data is the canned fail_response that
+            # kg_query and naive_query return before any retrieval runs (e.g.
+            # no keywords could be extracted); report it like an empty result,
+            # the same way aquery_data does.
+            if query_result is None or not query_result.raw_data:
                 return {
                     "status": "failure",
                     "message": "Query returned no results",
@@ -6024,7 +6027,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 }
 
             # Extract structured data from query result
-            raw_data = query_result.raw_data or {}
+            raw_data = query_result.raw_data
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming

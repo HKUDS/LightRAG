@@ -1,4 +1,4 @@
-"""aquery_data must answer "no keywords" with its documented failure shape.
+"""aquery_data and aquery_llm must answer "no keywords" with the failure shape.
 
 When keyword extraction yields neither high- nor low-level keywords for a
 query of 50+ characters, ``kg_query`` returns the canned ``fail_response``
@@ -6,7 +6,8 @@ without ``raw_data``. ``aquery_data`` documents "Both high-level and low-level
 keywords are empty" as a failure case answered with
 ``{"status": "failure", "message": ..., "data": {}}``; ``/query/data`` builds
 ``QueryDataResponse(**result)`` from that dict, so an empty dict turns the
-no-result case into an HTTP 500 (first described in #3727).
+no-result case into an HTTP 500 (first described in #3727). ``aquery_llm``
+returns the same failure shape, with the canned text as its ``llm_response``.
 """
 
 import importlib
@@ -18,6 +19,7 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.base import QueryParam
+from lightrag.prompt import PROMPTS
 
 # query_routes parses the server's command line on import.
 _original_argv = sys.argv[:]
@@ -80,3 +82,28 @@ async def test_aquery_data_reports_failure_when_no_keywords_are_extracted(
     # The /query/data route builds QueryDataResponse(**result) from this dict;
     # a missing required field is a ValidationError there, i.e. an HTTP 500.
     _query_routes.QueryDataResponse(**result)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("keyword_reply", _KEYWORD_REPLIES)
+@pytest.mark.parametrize("mode", ["local", "global", "hybrid", "mix"])
+async def test_aquery_llm_reports_failure_when_no_keywords_are_extracted(
+    monkeypatch, mode, keyword_reply, stream
+):
+    rag, search = _rag(monkeypatch, keyword_reply)
+
+    result = await LightRAG.aquery_llm(
+        rag, _VAGUE_QUERY, param=QueryParam(mode=mode, stream=stream)
+    )
+
+    search.assert_not_awaited()
+    assert result.get("status") == "failure", result
+    assert result.get("data") == {}
+    assert result["metadata"] == {"failure_reason": "no_results", "mode": mode}
+    # /query and /query/stream serve llm_response; it stays the canned text.
+    assert result["llm_response"] == {
+        "content": PROMPTS["fail_response"],
+        "response_iterator": None,
+        "is_streaming": False,
+        "llm_generated": False,
+    }
