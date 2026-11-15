@@ -148,6 +148,104 @@ def test_direct_ilvl_without_any_numid_does_not_create_numbering() -> None:
     assert _resolver().get_label(_para(ilvl=2)) == ""
 
 
+def _resolver_with_level_only_styles() -> NumberingResolver:
+    """``_resolver()`` plus styles whose numPr writes only w:ilvl.
+
+    LvlOnly   ilvl=1 only → basedOn H1 (numId=100, ilvl=0)
+    LvlNoNum  ilvl=2 only → basedOn Normal (no numId anywhere)
+    Mid       ilvl=1 only → basedOn H1
+    Leaf      ilvl=2 only → basedOn Mid
+    LeafBare  no numPr    → basedOn Mid
+    BadLvl    malformed ilvl (stored as _INVALID_ILVL) → basedOn H1
+    """
+    r = _resolver()
+    r.style_numpr.update(
+        {
+            "LvlOnly": {"numId": None, "ilvl": 1},
+            "LvlNoNum": {"numId": None, "ilvl": 2},
+            "Mid": {"numId": None, "ilvl": 1},
+            "Leaf": {"numId": None, "ilvl": 2},
+            "BadLvl": {"numId": None, "ilvl": -1},
+        }
+    )
+    r.style_based_on.update(
+        {
+            "LvlOnly": "H1",
+            "LvlNoNum": "Normal",
+            "Mid": "H1",
+            "Leaf": "Mid",
+            "LeafBare": "Mid",
+            "BadLvl": "H1",
+        }
+    )
+    return r
+
+
+@pytest.mark.parametrize(
+    ("styles", "expected"),
+    [
+        # Level-only child style keeps the parent's numId (Word: 1. a) b) 2.).
+        (["H1", "LvlOnly", "LvlOnly", "H1"], ["1", "1.1", "1.2", "2"]),
+        # Nearest explicit ilvl wins down a chain; a bare leaf inherits Mid's.
+        (["H1", "Mid", "Leaf", "LeafBare"], ["1", "1.1", "1.1.1", "1.2"]),
+    ],
+)
+def test_style_level_without_numid_inherits_parent_numid(styles, expected) -> None:
+    r = _resolver_with_level_only_styles()
+    assert [r.get_label(_para(style=s)) for s in styles] == expected
+
+
+def test_style_level_without_numid_applies_to_direct_numid() -> None:
+    r = _resolver_with_level_only_styles()
+    assert r.get_label(_para(style="LvlNoNum", num_id="100")) == "1.1.1"
+
+
+def test_style_level_without_any_numid_does_not_create_numbering() -> None:
+    assert _resolver_with_level_only_styles().get_label(_para(style="LvlNoNum")) == ""
+
+
+def test_direct_ilvl_overrides_level_only_style() -> None:
+    r = _resolver_with_level_only_styles()
+    assert r.get_label(_para(style="Mid", ilvl=0)) == "1"
+
+
+def test_malformed_style_ilvl_yields_no_label_unless_paragraph_sets_level() -> None:
+    r = _resolver_with_level_only_styles()
+    # The parent's ilvl=0 must not show through the malformed child's level.
+    assert r.get_label(_para(style="BadLvl")) == ""
+    assert r.get_label(_para(style="BadLvl", ilvl=1)) == "1.1"
+
+
+def test_styles_xml_records_level_only_numpr_and_survives_malformed_ilvl(
+    tmp_path,
+) -> None:
+    from docx import Document
+    from docx.enum.style import WD_STYLE_TYPE
+
+    from lightrag.parser.docx.numbering_resolver import _INVALID_ILVL
+
+    def numpr(inner: str):
+        return etree.fromstring(f'<w:numPr xmlns:w="{W}">{inner}</w:numPr>')
+
+    doc = Document()
+    # Order matters: the malformed style comes first, so a parse that aborted
+    # on it would lose every style after it.
+    for sid, inner in [
+        ("BadLvl", '<w:ilvl w:val="x"/>'),
+        ("LvlOnly", '<w:ilvl w:val="1"/>'),
+        ("WithNum", '<w:numId w:val="7"/>'),
+    ]:
+        style = doc.styles.add_style(sid, WD_STYLE_TYPE.PARAGRAPH)
+        style.element.get_or_add_pPr().append(numpr(inner))
+    path = tmp_path / "styles.docx"
+    doc.save(str(path))
+
+    numpr_by_style = NumberingResolver(str(path)).style_numpr
+    assert numpr_by_style["BadLvl"] == {"numId": None, "ilvl": _INVALID_ILVL}
+    assert numpr_by_style["LvlOnly"] == {"numId": None, "ilvl": 1}
+    assert numpr_by_style["WithNum"] == {"numId": "7", "ilvl": None}
+
+
 def test_get_numbering_from_style_merges_numid_and_explicit_ilvl() -> None:
     # numId from the nearest ancestor defining it, ilvl from the nearest with an
     # EXPLICIT ilvl — inherited independently down the basedOn chain.

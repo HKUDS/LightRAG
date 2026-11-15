@@ -86,6 +86,55 @@ def test_direct_list_level_with_style_inherited_numid(tmp_path, in_table) -> Non
     assert "2. top" in content
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize("in_table", [False, True])
+def test_style_list_level_with_numid_from_base_style(tmp_path, in_table) -> None:
+    # A child style writes only w:ilvl and inherits w:numId from its base style;
+    # Word renders "1. a) b) 2." for this layout.
+    doc = Document()
+    base = doc.styles.add_style("ListBase", WD_STYLE_TYPE.PARAGRAPH)
+    base.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:numId w:val="43"/></w:numPr>')
+    )
+    child = doc.styles.add_style("ListChild", WD_STYLE_TYPE.PARAGRAPH)
+    child.base_style = base
+    child.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:ilvl w:val="1"/></w:numPr>')
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:abstractNum xmlns:w="{W_NS}" w:abstractNumId="43">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/>'
+            '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/>'
+            '<w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/>'
+            "</w:lvl></w:abstractNum>"
+        )
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:num xmlns:w="{W_NS}" w:numId="43">'
+            '<w:abstractNumId w:val="43"/></w:num>'
+        )
+    )
+    container = doc.add_table(rows=1, cols=1).cell(0, 0) if in_table else doc
+    for text, style in [
+        ("parent", "ListBase"),
+        ("child", "ListChild"),
+        ("next child", "ListChild"),
+        ("next parent", "ListBase"),
+    ]:
+        container.add_paragraph(text, style=style)
+    path = tmp_path / "style-level-list.docx"
+    doc.save(path)
+
+    content = "\n".join(block["content"] for block in extract_docx_blocks(str(path)))
+    assert "1. parent" in content
+    assert "a) child" in content
+    assert "b) next child" in content
+    assert "2. next parent" in content
+
+
 # --- paragraph walker (parse_document.extract_paragraph_content) -----------
 
 
