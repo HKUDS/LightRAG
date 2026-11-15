@@ -1389,6 +1389,18 @@ def _assemble_blocks_smart(
             current_paragraphs = []
 
     for i, rec in enumerate(records):
+        # Bibliography content gets its own block (session_type="references"),
+        # keeping the current heading when the bibliography brings none.
+        # Checked first, so it also governs retained TOC lines; a title-block
+        # member is never bibliography (heading_flow skips such records).
+        if (
+            rec.kind in ("para", "table")
+            and i not in title_member_skip
+            and rec.in_references != current_is_references
+        ):
+            _flush()
+            current_is_references = rec.in_references
+            current_is_title_block = False
         if i in toc_indices:
             # TOC retention: a TOC line is KEPT (first visible lines as
             # body), the ellipsis anchor also emits one ``……``, and the rest
@@ -1413,12 +1425,6 @@ def _assemble_blocks_smart(
         if d is not None and d.absorbed:
             continue  # text already merged into a preceding heading
 
-        # Bibliography content gets its own block (session_type="references"),
-        # keeping the current heading when the bibliography brings none.
-        if rec.in_references != current_is_references:
-            _flush()
-            current_is_references = rec.in_references
-            current_is_title_block = False
         # The title-block lead branch must run BEFORE the plain-table branch:
         # a TABLE-channel lead is itself a table record — emitting it
         # as body content would discard the composed heading and drop every

@@ -3095,7 +3095,11 @@ def run_smart_heading(
         numbering_veto=numbering_veto,
         imprint_excluded=imprint_excluded,
         imprint_boundary_indices=imprint_boundary_indices,
-        skip_indices=toc_indices,
+        # A bibliography record is never cover material and, like a TOC
+        # line, ends any window it would sit in: a title block straddling
+        # the bibliography's edge would be dropped with it (drop_references).
+        skip_indices=toc_indices
+        | {i for i, r in enumerate(records) if getattr(r, "in_references", False)},
         suppressed_events=suppressed_windows,
     )
     if suppressed_windows:
