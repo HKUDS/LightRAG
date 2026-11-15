@@ -269,7 +269,7 @@ class TableExtractor:
             - para_ids: 2D list of paraIds (first paraId in each cell, or None)
                         For vertically merged cells, all rows share the start cell's paraId
             - para_ids_end: 2D list of paraIds (last paraId in each cell, or None)
-                            For vertically merged cells, all rows share the start cell's paraId
+                            Continuations use the last paraId of their own cell
             - header_indices: List of row indices marked as table headers
             - cell_features: per-row lists of PHYSICAL cells as
               ``(text, effective_size_pt, has_outline)`` tuples (one entry per
@@ -432,16 +432,8 @@ class TableExtractor:
                             "para_id_end": cell_para_id_end,
                         }
                     elif is_normal_cell:
-                        # For normal cells: if empty and we have active vMerge, copy all from start
-                        # If non-empty, this ends the vMerge region
-                        if not cell_text and grid_col in vmerge_content:
-                            # Empty cell in vMerge region - copy content and paraIds from start
-                            cell_text = vmerge_content[grid_col]["text"]
-                            cell_para_id = vmerge_content[grid_col]["para_id"]
-                            cell_para_id_end = vmerge_content[grid_col]["para_id_end"]
-                        elif cell_text:
-                            # Non-empty cell - this ends the vMerge for this column
-                            vmerge_content.pop(grid_col, None)
+                        # A cell without w:vMerge ends the group even if it is empty.
+                        vmerge_content.pop(grid_col, None)
 
                 elif is_vmerge_continue:
                     # Copy content and para_id from previous merge start
