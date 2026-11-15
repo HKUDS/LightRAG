@@ -1,15 +1,16 @@
 """Real-SDK regressions for non-completion responses from compatible gateways."""
 
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from openai import AsyncOpenAI
-from tenacity import RetryError, wait_none
+from tenacity import wait_none
 
 import lightrag.llm.openai as openai_module
 
-pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
+pytestmark = pytest.mark.offline
 
 
 def _completion() -> httpx.Response:
@@ -119,16 +120,51 @@ async def test_persistent_html_response_exhausts_existing_retry_limit(
         ],
     )
 
-    with pytest.raises(RetryError) as caught:
+    # The retry decorator sets reraise=True: once the attempts are exhausted
+    # the caller gets the last InvalidResponseError, not a tenacity.RetryError.
+    with pytest.raises(openai_module.InvalidResponseError) as caught:
         await openai_module.openai_complete_if_cache(
             model="synthetic-model", prompt="Synthetic chunk"
         )
 
-    assert isinstance(
-        caught.value.last_attempt.exception(), openai_module.InvalidResponseError
-    )
+    # The message names what the gateway sent instead of a completion.
+    assert "got str" in str(caught.value)
+    assert "<html>Unavailable</html>" in str(caught.value)
     assert len(requests) == 3
     assert all(client.is_closed() for client in clients)
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        pytest.param(None, "", id="none"),
+        pytest.param(SimpleNamespace(choices=[]), "", id="completion-no-choices"),
+        pytest.param(
+            "<html>\n  <body>Bad   gateway</body>\n</html>",
+            ": expected a chat completion, got str: "
+            "'<html> <body>Bad gateway</body> </html>'",
+            id="html-whitespace-collapsed",
+        ),
+        pytest.param(
+            ["unexpected", "array"],
+            ": expected a chat completion, got list: \"['unexpected', 'array']\"",
+            id="json-array",
+        ),
+        pytest.param(
+            "", ": expected a chat completion, got str: ''", id="empty-string"
+        ),
+    ],
+)
+def test_describe_invalid_response(response: object, expected: str) -> None:
+    assert openai_module._describe_invalid_response(response) == expected
+
+
+def test_describe_invalid_response_truncates_long_bodies() -> None:
+    limit = openai_module._INVALID_RESPONSE_SNIPPET_CHARS
+
+    detail = openai_module._describe_invalid_response("x" * (limit * 10))
+
+    assert detail.endswith("'" + "x" * limit + "...'")
 
 
 async def test_valid_completion_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
