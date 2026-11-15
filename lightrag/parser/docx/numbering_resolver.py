@@ -408,6 +408,23 @@ class NumberingResolver:
         paragraph; subsequent paragraphs that carry only pStyle fall back to
         the style's numPr declared in styles.xml.
 
+        These rules match Microsoft Word's rendering (checked by opening probe
+        documents in Word); keep them when changing this method:
+
+        - numId and ilvl are independent overrides: a paragraph that writes
+          only ``w:ilvl`` keeps the numId of its style and renders at its own
+          level (style list ``1.``/``a)``, paragraph ilvl=1 -> ``a)``).
+        - A list may start below level 0. The skipped parent levels take their
+          start value and count as used, so the next parent-level item shows
+          the following number: ``a) b)`` then ``2.``, and ``1.1.1.`` then
+          ``2.`` then ``2.1.``. Do not "fix" this to restart at ``1.``.
+        - A deeper level restarts after any item at a higher level
+          (``a) b) 2. a)``).
+
+        By design, not from Word: a direct ilvl that is not an integer or lies
+        outside 0-8 yields no label. It does not fall back to the style's
+        level, which would show a number the document never asked for.
+
         Args:
             para_element: lxml Element for <w:p>
 
@@ -513,7 +530,8 @@ class NumberingResolver:
             if num_id not in self.counters:
                 self.counters[num_id] = {}
 
-            # Initialize all parent levels if not present (for deep nested numbering)
+            # Initialize all parent levels if not present (for deep nested
+            # numbering). They count as used, as in Word: see the docstring.
             for i in range(ilvl):
                 if i not in self.counters[num_id] and i in levels:
                     # Use startOverride if exists, otherwise use abstractNum's start value

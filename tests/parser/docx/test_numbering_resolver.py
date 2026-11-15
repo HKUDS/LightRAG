@@ -198,6 +198,13 @@ def test_out_of_range_ilvl_values_are_rejected(ilvl, num_id) -> None:
     assert r.get_label(_para(style="H1", num_id=num_id, ilvl=ilvl)) == ""
 
 
+@pytest.mark.parametrize("num_id", ["100", None])
+def test_malformed_direct_ilvl_yields_no_label(num_id) -> None:
+    # By design: an unusable direct ilvl must not fall back to the style's level
+    # (H1 alone would render "1").
+    assert _resolver().get_label(_para(style="H1", num_id=num_id, ilvl="x")) == ""
+
+
 def test_boundary_ilvl_eight_still_renders() -> None:
     r = _resolver()
     r.abstract_nums["10"][8] = {
