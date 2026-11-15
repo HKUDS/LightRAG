@@ -20,9 +20,9 @@ A bibliography control (``w:bibliography``, or ``docPartGallery``
 "Bibliographies") is read too, but its blocks are marked
 ``session_type="references"`` so the chunker's ``drop_references`` option
 can drop them whatever their heading says. A table is marked only when all
-its text lies in bibliography controls (:func:`is_bibliography_table`): a
-table that mixes a bibliography cell with other text stays body, keeping the
-bibliography text rather than dropping the rest.
+its content lies in bibliography controls (:func:`is_bibliography_table`): a
+table that mixes a bibliography cell with other content stays body, keeping
+the bibliography text rather than dropping the rest.
 """
 
 from docx.oxml.ns import qn
@@ -33,7 +33,18 @@ WRAPPERS = frozenset({qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")})
 
 _SDT = qn("w:sdt")
 _P = qn("w:p")
-_T = qn("w:t")
+# Paragraph children that hold no content of their own.
+_NON_CONTENT = frozenset(
+    qn(f"w:{tag}")
+    for tag in (
+        "pPr",
+        "bookmarkStart",
+        "bookmarkEnd",
+        "proofErr",
+        "permStart",
+        "permEnd",
+    )
+)
 
 
 def is_toc_control(sdt) -> bool:
@@ -80,10 +91,15 @@ def in_bibliography(element) -> bool:
 
 
 def is_bibliography_table(tbl) -> bool:
-    """True for a ``w:tbl`` whose every paragraph with text is bibliography."""
+    """True for a ``w:tbl`` whose every paragraph with content is bibliography.
+
+    Any child other than paragraph properties and position markers counts as
+    content (text, equations, drawings, even an empty run), so a doubtful
+    table stays body: misjudging it keeps a bibliography, never drops a cell.
+    """
     found = False
     for paragraph in tbl.iter(_P):
-        if not "".join(t.text or "" for t in paragraph.iter(_T)).strip():
+        if all(child.tag in _NON_CONTENT for child in paragraph):
             continue
         if not in_bibliography(paragraph):
             return False

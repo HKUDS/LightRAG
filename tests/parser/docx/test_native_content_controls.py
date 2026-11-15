@@ -280,8 +280,12 @@ def test_references_session_type_reaches_the_ir() -> None:
     assert [b.session_type for b in ir.blocks] == ["body", "references"]
 
 
-def _table_with_bibliography_cell(document, other_text: str | None):
-    table = document.add_table(rows=1, cols=2 if other_text is not None else 1)
+_M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+def _table_with_bibliography_cell(document, other: str | None):
+    """A table whose last cell is a bibliography; ``other`` fills the first."""
+    table = document.add_table(rows=1, cols=2 if other is not None else 1)
     bib_cell = table.cell(0, table._column_count - 1)
     bib_cell.text = "[1] Foo."
     paragraph = bib_cell.paragraphs[0]._p
@@ -289,15 +293,23 @@ def _table_with_bibliography_cell(document, other_text: str | None):
     paragraph.getparent().getparent().find(qn("w:sdtPr")).append(
         OxmlElement("w:bibliography")
     )
-    if other_text is not None:
-        table.cell(0, 0).text = other_text
+    if other == "text":
+        table.cell(0, 0).text = "Budget: 100"
+    elif other == "equation":
+        from lxml import etree
+
+        table.cell(0, 0).paragraphs[0]._p.append(
+            etree.fromstring(
+                f'<m:oMath xmlns:m="{_M_NS}"><m:r><m:t>E=mc^2</m:t></m:r></m:oMath>'
+            )
+        )
 
 
 def test_table_holding_only_a_bibliography_is_a_references_block(tmp_path) -> None:
     document = Document()
     document.add_heading("Conclusion", level=1)
     document.add_paragraph("We conclude.")
-    _table_with_bibliography_cell(document, other_text=None)
+    _table_with_bibliography_cell(document, other=None)
 
     blocks = _blocks(document, tmp_path)
 
@@ -306,17 +318,22 @@ def test_table_holding_only_a_bibliography_is_a_references_block(tmp_path) -> No
     assert "We conclude." not in refs[0]["content"]
 
 
-def test_table_mixing_bibliography_and_other_text_stays_body(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("other", "marker"), [("text", "Budget: 100"), ("equation", "E=mc")]
+)
+def test_table_mixing_bibliography_and_other_content_stays_body(
+    tmp_path, other, marker
+) -> None:
     # Keeping the bibliography text beats dropping the other cells with it.
     document = Document()
     document.add_heading("Conclusion", level=1)
-    _table_with_bibliography_cell(document, other_text="Budget: 100")
+    _table_with_bibliography_cell(document, other=other)
 
     blocks = _blocks(document, tmp_path)
 
     assert all(b.get("session_type") is None for b in blocks)
     content = "\n".join(b["content"] for b in blocks)
-    assert "Budget: 100" in content and "[1] Foo." in content
+    assert marker in content and "[1] Foo." in content
 
 
 def test_placeholder_does_not_mask_leading_padding() -> None:
