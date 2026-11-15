@@ -19,7 +19,10 @@ same rules, except that it also drops a TOC control inside a paragraph.
 A bibliography control (``w:bibliography``, or ``docPartGallery``
 "Bibliographies") is read too, but its blocks are marked
 ``session_type="references"`` so the chunker's ``drop_references`` option
-can drop them whatever their heading says.
+can drop them whatever their heading says. A table is marked only when all
+its text lies in bibliography controls (:func:`is_bibliography_table`): a
+table that mixes a bibliography cell with other text stays body, keeping the
+bibliography text rather than dropping the rest.
 """
 
 from docx.oxml.ns import qn
@@ -29,6 +32,8 @@ from docx.oxml.ns import qn
 WRAPPERS = frozenset({qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")})
 
 _SDT = qn("w:sdt")
+_P = qn("w:p")
+_T = qn("w:t")
 
 
 def is_toc_control(sdt) -> bool:
@@ -72,6 +77,18 @@ def in_bibliography(element) -> bool:
             return True
         parent = parent.getparent()
     return False
+
+
+def is_bibliography_table(tbl) -> bool:
+    """True for a ``w:tbl`` whose every paragraph with text is bibliography."""
+    found = False
+    for paragraph in tbl.iter(_P):
+        if not "".join(t.text or "" for t in paragraph.iter(_T)).strip():
+            continue
+        if not in_bibliography(paragraph):
+            return False
+        found = True
+    return found
 
 
 def is_hidden_control(sdt) -> bool:

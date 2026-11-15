@@ -278,3 +278,55 @@ def test_references_session_type_reaches_the_ir() -> None:
     )
 
     assert [b.session_type for b in ir.blocks] == ["body", "references"]
+
+
+def _table_with_bibliography_cell(document, other_text: str | None):
+    table = document.add_table(rows=1, cols=2 if other_text is not None else 1)
+    bib_cell = table.cell(0, table._column_count - 1)
+    bib_cell.text = "[1] Foo."
+    paragraph = bib_cell.paragraphs[0]._p
+    _wrap(paragraph)
+    paragraph.getparent().getparent().find(qn("w:sdtPr")).append(
+        OxmlElement("w:bibliography")
+    )
+    if other_text is not None:
+        table.cell(0, 0).text = other_text
+
+
+def test_table_holding_only_a_bibliography_is_a_references_block(tmp_path) -> None:
+    document = Document()
+    document.add_heading("Conclusion", level=1)
+    document.add_paragraph("We conclude.")
+    _table_with_bibliography_cell(document, other_text=None)
+
+    blocks = _blocks(document, tmp_path)
+
+    refs = [b for b in blocks if b.get("session_type") == "references"]
+    assert len(refs) == 1 and "[1] Foo." in refs[0]["content"]
+    assert "We conclude." not in refs[0]["content"]
+
+
+def test_table_mixing_bibliography_and_other_text_stays_body(tmp_path) -> None:
+    # Keeping the bibliography text beats dropping the other cells with it.
+    document = Document()
+    document.add_heading("Conclusion", level=1)
+    _table_with_bibliography_cell(document, other_text="Budget: 100")
+
+    blocks = _blocks(document, tmp_path)
+
+    assert all(b.get("session_type") is None for b in blocks)
+    content = "\n".join(b["content"] for b in blocks)
+    assert "Budget: 100" in content and "[1] Foo." in content
+
+
+def test_placeholder_does_not_mask_leading_padding() -> None:
+    from lightrag.parser.docx.smart_heading.features import leading_pad_em
+
+    document = Document()
+    padded = document.add_paragraph(" " * 28 + "签名")
+    masked = document.add_paragraph()
+    run = masked.add_run("Click here")
+    masked.add_run(" " * 28 + "签名")
+    _wrap(run._r, placeholder=True)
+
+    assert leading_pad_em(masked._p) == leading_pad_em(padded._p) > 0

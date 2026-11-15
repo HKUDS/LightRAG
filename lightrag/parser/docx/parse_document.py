@@ -26,7 +26,12 @@ from lightrag.parser._markdown import (
 )
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
-from .content_controls import in_bibliography, is_hidden_inline_control, iter_blocks
+from .content_controls import (
+    in_bibliography,
+    is_bibliography_table,
+    is_hidden_inline_control,
+    iter_blocks,
+)
 from .table_extractor import TableExtractor
 from .drawing_image_extractor import (
     DrawingExtractionContext,
@@ -744,7 +749,10 @@ def _read_document_records(
     references_from = None
     for element in iter_blocks(body, _BODY_BLOCK_TAGS):
         _mark_references(records, references_from)
-        references_from = len(records) if in_bibliography(element) else None
+        is_references = in_bibliography(element) or (
+            element.tag.endswith("}tbl") and is_bibliography_table(element)
+        )
+        references_from = len(records) if is_references else None
         tag = element.tag.split("}")[-1]  # Remove namespace
 
         if tag == "sectPr":  # Document-level section break

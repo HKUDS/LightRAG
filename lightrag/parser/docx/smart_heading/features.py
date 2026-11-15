@@ -517,7 +517,8 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
 
     - ``_SKIP_REVISION_SUBTREES`` (``w:del`` / ``w:moveFrom`` / comment markers)
       are skipped whole. Content the author deleted is not on the page, so it can
-      neither supply padding nor mask the real leading content.
+      neither supply padding nor mask the real leading content. A content
+      control still showing its placeholder is skipped the same way.
     - a drawing / picture / OLE object / OMML equation reached before the first
       visible character sets the flag (see :func:`leading_pad_em`);
     - ``w:t`` text and ``w:tab`` build the line; a soft ``w:br`` ends it (page /
@@ -537,7 +538,7 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
     def visit(node) -> None:
         nonlocal nontext_leads, line_done
         tag = node.tag
-        if tag in _SKIP_REVISION_SUBTREES:
+        if tag in _SKIP_REVISION_SUBTREES or is_hidden_inline_control(node):
             return
         if tag in _PRUNE_SUBTREE_TAGS or tag in _OMML_TAGS:
             if not _has_visible_char("".join(parts)):
