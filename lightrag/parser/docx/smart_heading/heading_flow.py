@@ -1954,6 +1954,14 @@ def merge_split_headings(
                 break  # a numbered heading only ever starts a merge
             if nxt.level != cur.level or nxt.font_size_pt != cur.font_size_pt:
                 break
+            # A bibliography control's edge is a hard boundary: its blocks are
+            # marked for drop_references, so a merge across it would carry
+            # outside text into (or out of) the droppable block.
+            if (
+                records[nxt.record_index].in_references
+                != records[cur.record_index].in_references
+            ):
+                break
             # Adjacency: between the two records only empty paragraphs, at
             # most one.
             between = records[merged_members[-1] + 1 : nxt.record_index]
