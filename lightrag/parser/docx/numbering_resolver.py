@@ -430,8 +430,9 @@ class NumberingResolver:
           level (style list ``1.``/``a)``, paragraph ilvl=1 -> ``a)``). The
           same holds down the style's basedOn chain: each of the two comes
           from the nearest style that writes it, so a style that writes only
-          ilvl lends its level to an inherited or direct numId. With no numId
-          anywhere there is no label.
+          ilvl lends its level to an inherited or direct numId (base style
+          numId, child style ilvl=1: base, child, child, base -> ``1. a) b)
+          2.``). With no numId anywhere there is no label.
         - A list may start below level 0. The skipped parent levels take their
           start value and count as used, so the next parent-level item shows
           the following number: ``a) b)`` then ``2.``, and ``1.1.1.`` then
@@ -441,7 +442,10 @@ class NumberingResolver:
 
         By design, not from Word: a direct ilvl that is not an integer or lies
         outside 0-8 yields no label. It does not fall back to the style's
-        level, which would show a number the document never asked for.
+        level, which would show a number the document never asked for. A
+        style's ilvl is treated the same way: an unusable one yields no label
+        for that style's paragraphs (not its parent's level), unless the
+        paragraph writes a valid ilvl of its own.
 
         Args:
             para_element: lxml Element for <w:p>
