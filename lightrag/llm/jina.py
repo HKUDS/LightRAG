@@ -27,10 +27,16 @@ def _is_transient_jina_error(exc: BaseException) -> bool:
     permanent failure (bad API key, malformed request) exactly as eagerly as
     a transient one (rate limit, server overload) -- three requests plus
     exponential backoff before the caller ever saw the real error.
+
+    ``aiohttp.ClientError`` is too broad a fallback for the non-response
+    case: it also covers permanent, local failures like ``InvalidURL`` (a
+    malformed ``base_url``), which no retry can ever fix. Only the
+    connection-level and payload-level subclasses below represent a failure
+    a later attempt could plausibly succeed at.
     """
     if isinstance(exc, aiohttp.ClientResponseError):
         return exc.status == 429 or exc.status >= 500
-    return isinstance(exc, aiohttp.ClientError)
+    return isinstance(exc, (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError))
 
 
 async def fetch_data(url, headers, data):

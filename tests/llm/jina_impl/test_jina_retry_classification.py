@@ -30,7 +30,9 @@ async def test_permanent_401_is_not_retried(monkeypatch):
     """A 401 (bad API key) must fail on the first attempt, not be retried 3x."""
     monkeypatch.setenv("JINA_API_KEY", "irrelevant")
     # Keep the test fast regardless of outcome; only call count is asserted.
-    jina_embed.func.retry.wait = wait_none()
+    # monkeypatch.setattr reverts this automatically, so later tests still
+    # see the real exponential backoff instead of inheriting wait_none().
+    monkeypatch.setattr(jina_embed.func.retry, "wait", wait_none())
 
     call_count = 0
 
@@ -55,7 +57,7 @@ async def test_permanent_401_is_not_retried(monkeypatch):
 async def test_transient_503_is_retried(monkeypatch):
     """A 503 (transient overload) should still be retried up to 3 attempts."""
     monkeypatch.setenv("JINA_API_KEY", "irrelevant")
-    jina_embed.func.retry.wait = wait_none()
+    monkeypatch.setattr(jina_embed.func.retry, "wait", wait_none())
 
     call_count = 0
 
@@ -69,3 +71,45 @@ async def test_transient_503_is_retried(monkeypatch):
             await jina_embed.func(texts=["hello"], api_key="bad-key", embedding_dim=3)
 
     assert call_count == 3, "a transient 503 should be retried to the stop limit"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_invalid_url_is_not_retried(monkeypatch):
+    """A malformed base_url raises InvalidURL, which no retry can fix."""
+    monkeypatch.setenv("JINA_API_KEY", "irrelevant")
+    monkeypatch.setattr(jina_embed.func.retry, "wait", wait_none())
+
+    call_count = 0
+
+    async def fake_fetch_data(url, headers, data):
+        nonlocal call_count
+        call_count += 1
+        raise aiohttp.InvalidURL("not-a-valid-url")
+
+    with patch("lightrag.llm.jina.fetch_data", fake_fetch_data):
+        with pytest.raises((aiohttp.InvalidURL, RetryError)):
+            await jina_embed.func(texts=["hello"], api_key="bad-key", embedding_dim=3)
+
+    assert call_count == 1, "InvalidURL is permanent and must not be retried"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_connection_error_is_retried(monkeypatch):
+    """A dropped connection is transient and should be retried to the limit."""
+    monkeypatch.setenv("JINA_API_KEY", "irrelevant")
+    monkeypatch.setattr(jina_embed.func.retry, "wait", wait_none())
+
+    call_count = 0
+
+    async def fake_fetch_data(url, headers, data):
+        nonlocal call_count
+        call_count += 1
+        raise aiohttp.ClientConnectionError("connection reset")
+
+    with patch("lightrag.llm.jina.fetch_data", fake_fetch_data):
+        with pytest.raises(RetryError):
+            await jina_embed.func(texts=["hello"], api_key="bad-key", embedding_dim=3)
+
+    assert call_count == 3, "a dropped connection should be retried to the stop limit"
