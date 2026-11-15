@@ -820,6 +820,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         Args:
             ids: List of vector IDs to be deleted
+
+        Raises:
+            Exception: whatever queuing the ids raised, re-raised after being
+                logged. A caller that treats a non-raising return as proof the
+                ids are queued for removal must not be told that when none of
+                them were.
         """
         try:
             # Cancelling the pending upsert and queueing the id are one
@@ -840,6 +846,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
             )
+            raise
 
     async def delete_entity(self, entity_name: str) -> None:
         """Delete the vector associated with a single entity name.
