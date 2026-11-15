@@ -9,7 +9,6 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic._base_client as anthropic_base_client
-import httpx2
 import pytest
 from anthropic import APIConnectionError, APIStatusError, AsyncAnthropic
 from tenacity import RetryError
@@ -17,6 +16,12 @@ from tenacity import RetryError
 from lightrag.llm import anthropic as anthropic_binding
 
 pytestmark = pytest.mark.offline
+
+# The SDK only accepts an HTTP client from the package it is built on: httpx2
+# in current releases (the locked 2.6.0), httpx in older ones such as 0.50.0.
+# pyproject.toml still allows those, so take the package from the SDK instead
+# of importing one.
+http = getattr(anthropic_base_client, "httpx2", None) or anthropic_base_client.httpx
 
 # One initial request plus the binding's default SDK retry budget.
 DEFAULT_ATTEMPTS = anthropic_binding._DEFAULT_MAX_RETRIES + 1
@@ -33,7 +38,7 @@ def mock_anthropic_http(monkeypatch):
     def install(handler):
         def create_client(**kwargs):
             client = AsyncAnthropic(
-                http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+                http_client=http.AsyncClient(transport=http.MockTransport(handler)),
                 **kwargs,
             )
             clients.append(client)
@@ -46,7 +51,7 @@ def mock_anthropic_http(monkeypatch):
 
 
 def _error_response(status, headers=None):
-    return httpx2.Response(
+    return http.Response(
         status,
         headers=headers or {},
         json={
@@ -97,7 +102,7 @@ async def test_http_error_has_one_sdk_retry_budget(
     assert all(client.is_closed() for client in clients)
 
 
-@pytest.mark.parametrize("error_type", [httpx2.ConnectError, httpx2.ReadTimeout])
+@pytest.mark.parametrize("error_type", ["ConnectError", "ReadTimeout"])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_transport_failure_does_not_restart_sdk_retries(
     mock_anthropic_http, error_type, stream
@@ -106,7 +111,7 @@ async def test_transport_failure_does_not_restart_sdk_retries(
 
     def respond(request):
         requests.append(request)
-        raise error_type("synthetic connection failure", request=request)
+        raise getattr(http, error_type)("synthetic connection failure", request=request)
 
     clients = mock_anthropic_http(respond)
     with pytest.raises((APIConnectionError, RetryError)) as caught:
@@ -196,7 +201,7 @@ async def test_transient_rate_limit_recovers_within_sdk_budget(
     def respond(request):
         requests.append(request)
         if len(requests) < DEFAULT_ATTEMPTS:
-            return httpx2.Response(
+            return http.Response(
                 429,
                 headers={"retry-after-ms": "1"},
                 json={
@@ -205,7 +210,7 @@ async def test_transient_rate_limit_recovers_within_sdk_budget(
                 },
             )
         if not stream:
-            return httpx2.Response(200, json=message)
+            return http.Response(200, json=message)
         events = [
             {
                 "type": "content_block_delta",
@@ -217,7 +222,7 @@ async def test_transient_rate_limit_recovers_within_sdk_budget(
         body = "".join(
             f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
         )
-        return httpx2.Response(
+        return http.Response(
             200, headers={"content-type": "text/event-stream"}, content=body
         )
 
