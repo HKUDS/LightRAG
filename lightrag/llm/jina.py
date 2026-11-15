@@ -19,14 +19,19 @@ from tenacity import (
 from lightrag.utils import wrap_embedding_func_with_attrs, logger
 
 
+# 408 / 409 / 429: the client-error statuses a later attempt can succeed at.
+# Same set as the zhipu binding; the openai binding retries 408 / 409 next to
+# its RateLimitError handling.
+_TRANSIENT_STATUS_CODES = frozenset({408, 409, 429})
+
+
 def _is_transient_jina_error(exc: BaseException) -> bool:
-    """tenacity predicate: retry connection failures and 429/5xx, not other 4xx.
+    """tenacity predicate: retry connection failures and transient statuses.
 
     ``fetch_data`` raises ``aiohttp.ClientResponseError`` for every non-200
-    Jina response alike, so retrying on the exception type alone retried a
-    permanent failure (bad API key, malformed request) exactly as eagerly as
-    a transient one (rate limit, server overload) -- three requests plus
-    exponential backoff before the caller ever saw the real error.
+    Jina response alike, so the status decides: 408 / 409 / 429 and 5xx are
+    retried, every other status (bad API key, exhausted balance, malformed or
+    oversized request) fails on the first attempt.
 
     ``aiohttp.ClientError`` is too broad a fallback for the non-response
     case: it also covers permanent, local failures like ``InvalidURL`` (a
@@ -35,7 +40,7 @@ def _is_transient_jina_error(exc: BaseException) -> bool:
     a later attempt could plausibly succeed at.
     """
     if isinstance(exc, aiohttp.ClientResponseError):
-        return exc.status == 429 or exc.status >= 500
+        return exc.status in _TRANSIENT_STATUS_CODES or exc.status >= 500
     return isinstance(exc, (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError))
 
 
@@ -88,6 +93,10 @@ async def fetch_data(url, headers, data):
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
     retry=retry_if_exception(_is_transient_jina_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Jina's message and callers can still
+    # catch aiohttp.ClientResponseError.
+    reraise=True,
 )
 async def jina_embed(
     texts: list[str],
@@ -132,6 +141,9 @@ async def jina_embed(
     Raises:
         aiohttp.ClientError: If there is a connection error with the Jina API.
         aiohttp.ClientResponseError: If the Jina API returns an error response.
+            Connection failures and 408 / 409 / 429 / 5xx responses are retried
+            up to three attempts first; the last attempt's exception is raised
+            as-is, never wrapped in ``tenacity.RetryError``.
     """
     effective_api_key = api_key or os.getenv("JINA_API_KEY")
     if not effective_api_key:
