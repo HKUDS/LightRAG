@@ -207,13 +207,56 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
 _ROW_CELL_WRAPPERS = frozenset({qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")})
 
 
-def _iter_wrapped(container, tag: str):
-    """Yield the ``tag`` children of ``container``, including wrapped ones."""
-    for child in container:
-        if child.tag == tag:
+def _is_hidden_control(sdt) -> bool:
+    """True for a ``w:sdt`` whose content is not document text.
+
+    A table of contents, or a control still showing its placeholder ("Click
+    or tap here to enter text."). Same rule as the legacy extractor's
+    ``_is_skipped_docx_control``.
+    """
+    sdt_pr = sdt.find(qn("w:sdtPr"))
+    if sdt_pr is None:
+        return False
+    gallery = sdt_pr.find(f"{qn('w:docPartObj')}/{qn('w:docPartGallery')}")
+    if gallery is not None and gallery.get(qn("w:val")) == "Table of Contents":
+        return True
+    placeholder = sdt_pr.find(qn("w:showingPlcHdr"))
+    return placeholder is not None and placeholder.get(qn("w:val")) not in (
+        "0",
+        "false",
+        "off",
+    )
+
+
+def _iter_rows(tbl):
+    """Yield the ``w:tr`` of a table, including wrapped ones.
+
+    A row inside a control :func:`_is_hidden_control` names is left out.
+    """
+    for child in tbl:
+        if child.tag == qn("w:tr"):
             yield child
+        elif child.tag in _ROW_CELL_WRAPPERS and not (
+            child.tag == qn("w:sdt") and _is_hidden_control(child)
+        ):
+            yield from _iter_rows(child)
+
+
+def _iter_cells(tr, hidden: bool = False):
+    """Yield ``(w:tc, hidden)`` for each cell of a ``w:tr``, including wrapped ones.
+
+    A cell inside a control :func:`_is_hidden_control` names is still
+    yielded, with ``hidden`` set: it takes its grid columns, so the cells
+    after it keep theirs, and only its text is left out.
+    """
+    for child in tr:
+        if child.tag == qn("w:tc"):
+            yield child, hidden
         elif child.tag in _ROW_CELL_WRAPPERS:
-            yield from _iter_wrapped(child, tag)
+            yield from _iter_cells(
+                child,
+                hidden or (child.tag == qn("w:sdt") and _is_hidden_control(child)),
+            )
 
 
 def _grid_before(tr) -> int:
@@ -289,7 +332,9 @@ class TableExtractor:
         - A row that starts late (``w:gridBefore``) leaves its first grid
           columns empty, so its cells stay under the columns they are drawn in
         - Rows and cells inside a content control or custom XML markup count
-          like direct ones
+          like direct ones. A cell inside a table of contents or placeholder
+          control keeps its grid columns but no text; a row inside one is
+          left out
 
         Args:
             table: python-docx Table object
@@ -333,7 +378,7 @@ class TableExtractor:
 
         # Detect header rows using w:tblHeader attribute
         header_indices = []
-        for idx, tr in enumerate(_iter_wrapped(tbl, qn("w:tr"))):
+        for idx, tr in enumerate(_iter_rows(tbl)):
             trPr = tr.find(qn("w:trPr"))
             if trPr is not None:
                 tbl_header = trPr.find(qn("w:tblHeader"))
@@ -347,7 +392,7 @@ class TableExtractor:
         cell_features_grid = [] if collect_features else None
         vmerge_content = {}  # Track vertical merge by column: {col: {'text': str, 'para_id': str, 'para_id_end': str}}
 
-        for tr in _iter_wrapped(tbl, qn("w:tr")):
+        for tr in _iter_rows(tbl):
             row_data = [""] * num_cols  # Pre-fill with empty strings
             row_para_ids = [None] * num_cols  # Pre-fill with None
             row_para_ids_end = [None] * num_cols  # Pre-fill with None for last paraId
@@ -356,10 +401,14 @@ class TableExtractor:
             merged_cols = set()  # columns whose vertical merge reaches this row
 
             # Iterate actual <w:tc> elements (each physical cell appears once)
-            for tc in _iter_wrapped(tr, qn("w:tc")):
+            for tc, hidden in _iter_cells(tr):
                 if collect_features:
                     row_cell_features.append(
-                        _extract_cell_features(tc, qn, style_attributes, styles_outline)
+                        ("", None, False)
+                        if hidden
+                        else _extract_cell_features(
+                            tc, qn, style_attributes, styles_outline
+                        )
                     )
                 # Reset numbering state when cell changes to prevent incorrect continuation
                 if numbering_resolver is not None:
@@ -462,6 +511,9 @@ class TableExtractor:
                                 para_texts.append(para_text.strip())
                         cell_text = "\n".join(para_texts).replace("\x07", "")
 
+                    if hidden:
+                        cell_text = ""
+
                     # Store content and paraIds for vMerge restart
                     if is_vmerge_restart:
                         vmerge_content[grid_col] = {
@@ -489,6 +541,9 @@ class TableExtractor:
                         cell_para_id = vmerge_content[grid_col]["para_id"]
                     # Otherwise no merge reaches it: Word draws a separate
                     # empty cell, so it keeps no text and its own paraIds.
+
+                if hidden:
+                    cell_text = ""
 
                 # Place content at starting grid position only
                 if grid_col < num_cols:

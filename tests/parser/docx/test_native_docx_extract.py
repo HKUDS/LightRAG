@@ -28,6 +28,7 @@ from lightrag.parser.docx.parse_document import (
     extract_docx_blocks,
     extract_paragraph_content,
 )
+from lightrag.parser.docx.smart_heading.features import StyleAttributes
 from lightrag.parser.docx.table_extractor import (
     TableExtractor,
     extract_paragraph_content_table,
@@ -334,11 +335,11 @@ def _skip_grid_columns(row, *, before: int = 0, after: int = 0) -> None:
             tr_pr.append(node)
 
 
-def _saved_table_metadata(document) -> dict:
+def _saved_table_metadata(document, **kwargs) -> dict:
     source = BytesIO()
     document.save(source)
     source.seek(0)
-    return TableExtractor.extract_with_metadata(Document(source).tables[0])
+    return TableExtractor.extract_with_metadata(Document(source).tables[0], **kwargs)
 
 
 @pytest.mark.offline
@@ -470,6 +471,38 @@ def test_wrapped_row_counts_like_a_direct_row(wrapper: str) -> None:
         ["r2c0", "r2c1"],
     ]
     assert result["header_indices"] == [2]
+
+
+def _wrap_in_placeholder(element) -> None:
+    """Wrap ``element`` in a content control still showing its placeholder."""
+    _wrap(element, "sdt")
+    element.getparent().getparent().find(qn("w:sdtPr")).append(
+        OxmlElement("w:showingPlcHdr")
+    )
+
+
+@pytest.mark.offline
+def test_placeholder_cell_keeps_its_column_without_text() -> None:
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    _wrap_in_placeholder(table.rows[0]._tr.tc_lst[1])
+
+    result = _saved_table_metadata(document, style_attributes=StyleAttributes())
+
+    assert result["rows"] == [["r0c0", "", "r0c2"], ["r1c0", "r1c1", "r1c2"]]
+    assert result["cell_features"][0][1] == ("", None, False)
+
+
+@pytest.mark.offline
+def test_placeholder_row_is_left_out() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    _wrap_in_placeholder(table.rows[1]._tr)
+
+    assert _saved_table_metadata(document)["rows"] == [
+        ["r0c0", "r0c1"],
+        ["r2c0", "r2c1"],
+    ]
 
 
 # --- end-to-end: every heading becomes its own block ----------------------
