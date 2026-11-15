@@ -512,13 +512,26 @@ _PG_NAME_MAX_BYTES = 63
 
 
 def _is_valid_age_graph_name(name: str) -> bool:
-    """Whether Apache AGE accepts ``name`` as a graph name.
+    """Whether every Apache AGE version accepts ``name`` as a graph name.
 
-    create_graph() and cypher() take the name as a literal that PostgreSQL clips
-    to 63 bytes, but create_vlabel() / create_elabel() reject anything longer
-    with "graph name is invalid". AGE also rejects a name starting with a digit.
+    From AGE 1.6, create_vlabel() / create_elabel() take the graph name as
+    cstring and reject one over 63 bytes with "graph name is invalid"; earlier
+    versions take `name`, which PostgreSQL clips. AGE also rejects a name
+    starting with a digit. AGE's minimum length (3) and full identifier pattern
+    are not checked: the only caller passes names reduced to [A-Za-z0-9_] that
+    end in the namespace, which satisfy both.
     """
     return len(name.encode("utf-8")) <= _PG_NAME_MAX_BYTES and not name[:1].isdigit()
+
+
+# A clipped graph only holds legacy data if initialize() got as far as creating
+# its "base" label, which AGE 1.6+ rejects for the unclipped name. A failed
+# startup there still leaves the empty clipped graph behind, without that label.
+_LEGACY_CLIPPED_GRAPH_LOOKUP = (
+    "SELECT 1 FROM ag_catalog.ag_label l "
+    "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
+    "WHERE g.name = $1::name AND l.name = 'base'"
+)
 
 
 class PostgreSQLDB:
@@ -7657,22 +7670,9 @@ class PGGraphStorage(BaseGraphStorage):
             self._max_delete_records_per_batch,
         ) = _resolve_pg_batch_limits()
 
-    def _get_workspace_graph_name(self) -> str:
-        """
-        Generate graph name based on workspace and namespace for data isolation.
-        Rules:
-        - If workspace is empty or "default": graph_name = namespace
-        - If workspace has other value: graph_name = workspace_namespace
-        - If that is not a valid AGE graph name (over 63 bytes, or starting
-          with a digit): graph_name = ws_<hash of workspace>_namespace.
-          Such workspaces always failed to initialize before, so no existing
-          graph is renamed.
-
-        Args:
-            None
-
-        Returns:
-            str: The graph name for the current workspace
+    def _get_unclipped_graph_name(self) -> str:
+        """workspace_namespace reduced to [A-Za-z0-9_], or the namespace alone
+        for an empty or "default" workspace. AGE may reject it as a graph name.
         """
         workspace = self.workspace
         namespace = self.namespace
@@ -7681,16 +7681,53 @@ class PGGraphStorage(BaseGraphStorage):
             # Ensure names comply with PostgreSQL identifier specifications
             safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", workspace.strip())
             safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
-            graph_name = f"{safe_workspace}_{safe_namespace}"
-            if _is_valid_age_graph_name(graph_name):
-                return graph_name
-            # Hash the workspace rather than clipping it, so two long workspaces
-            # sharing a 63-byte prefix still get separate graphs.
-            workspace_hash = hashlib.md5(workspace.strip().encode("utf-8")).hexdigest()
-            return f"ws_{workspace_hash[:12]}_{safe_namespace}"
+            return f"{safe_workspace}_{safe_namespace}"
         else:
             # When the workspace is "default", use the namespace directly (for backward compatibility with legacy implementations)
             return re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
+
+    def _get_workspace_graph_name(self) -> str:
+        """
+        Generate graph name based on workspace and namespace for data isolation.
+        Rules:
+        - If workspace is empty or "default": graph_name = namespace
+        - If workspace has other value: graph_name = workspace_namespace
+        - If that is not a valid AGE graph name (over 63 bytes, or starting
+          with a digit): graph_name = ws_<hash of workspace_namespace>_namespace.
+          initialize() keeps an existing graph that AGE 1.5 or earlier created
+          for a long workspace under its clipped name instead; see
+          _get_legacy_clipped_graph_name().
+
+        Args:
+            None
+
+        Returns:
+            str: The graph name for the current workspace
+        """
+        graph_name = self._get_unclipped_graph_name()
+        if _is_valid_age_graph_name(graph_name):
+            return graph_name
+        # Hash rather than clip, so two long workspaces sharing a 63-byte prefix
+        # get separate graphs.
+        name_hash = hashlib.md5(graph_name.encode("utf-8")).hexdigest()
+        safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", self.namespace)
+        return f"ws_{name_hash[:12]}_{safe_namespace}"
+
+    def _get_legacy_clipped_graph_name(self) -> str | None:
+        """The graph name AGE 1.5 or earlier used for a workspace too long for AGE.
+
+        Up to AGE 1.5, create_graph(), create_vlabel() and cypher() all take the
+        graph name as `name`, which PostgreSQL clips to 63 bytes, so such a
+        workspace worked and may hold data under the clipped name. Returns None
+        when the name fits, or starts with a digit (never usable on any AGE).
+        """
+        graph_name = self._get_unclipped_graph_name()
+        if (
+            len(graph_name.encode("utf-8")) <= _PG_NAME_MAX_BYTES
+            or graph_name[:1].isdigit()
+        ):
+            return None
+        return graph_name[:_PG_NAME_MAX_BYTES]
 
     @staticmethod
     def _normalize_node_id(node_id: str) -> str:
@@ -7743,11 +7780,6 @@ class PGGraphStorage(BaseGraphStorage):
             # Dynamically generate graph name based on workspace
             self.graph_name = self._get_workspace_graph_name()
 
-            # Log the graph initialization for debugging
-            logger.info(
-                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
-            )
-
             # Create AGE extension and configure graph environment once at initialization
             # Use _run_with_retry so transient connection errors are retried and pool=None
             # is handled safely (unlike a bare pool.acquire() call).
@@ -7757,6 +7789,25 @@ class PGGraphStorage(BaseGraphStorage):
                 await PostgreSQLDB.configure_age_extension(connection)
 
             await self.db._run_with_retry(_do_configure_age_extension)
+
+            # Keep a graph AGE 1.5 or earlier created under the clipped name. This
+            # must run before the first with_age=True call below, which has
+            # PostgreSQLDB._ensure_age_graph() create self.graph_name.
+            legacy_graph_name = self._get_legacy_clipped_graph_name()
+            if legacy_graph_name and await self.db.query(
+                _LEGACY_CLIPPED_GRAPH_LOOKUP, [legacy_graph_name]
+            ):
+                logger.warning(
+                    f"[{self.workspace}] Using the existing AGE graph '{legacy_graph_name}', "
+                    "whose name PostgreSQL clipped to 63 bytes. It may be shared with "
+                    "any other workspace whose graph name has the same first 63 bytes."
+                )
+                self.graph_name = legacy_graph_name
+
+            # Log the graph initialization for debugging
+            logger.info(
+                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
+            )
 
             # Only create the labels that are actually missing. create_vlabel /
             # create_elabel have no IF NOT EXISTS form, so calling them for an

@@ -575,9 +575,10 @@ async def test_initialize_label_lookup_casts_the_parameter(monkeypatch):
 
     sql = db.query.await_args.args[0]
     assert "g.name = left($1, 63)::name" in sql
-    # A workspace this long no longer yields LONG_GRAPH_NAME: AGE's
-    # create_vlabel() rejects names over 63 bytes, so the workspace part is
-    # hashed instead (see test_postgres_workspace_graph_name.py).
+    # A workspace this long no longer passes LONG_GRAPH_NAME itself: AGE 1.6+
+    # rejects names over 63 bytes in create_vlabel(), so initialize() resolves
+    # it to an existing clipped graph or a hashed name first (see
+    # test_postgres_workspace_graph_name.py).
     assert db.query.await_args.args[1] == [storage.graph_name]
     assert len(storage.graph_name.encode("utf-8")) <= 63
     # And with both labels reported present, neither is recreated.

@@ -1,27 +1,37 @@
 """PGGraphStorage must derive a graph name Apache AGE accepts.
 
 The graph name is ``<workspace>_<namespace>`` reduced to ``[A-Za-z0-9_]``. AGE
-rejects that name when it is longer than 63 bytes (create_vlabel() raises
-"graph name is invalid") or starts with a digit (create_graph() raises the same
-error), so a workspace longer than 41 characters, or one starting with a digit,
-could never initialize. Those names now fall back to ``ws_<hash>_<namespace>``;
-every name that already worked is left unchanged so no existing graph moves.
+rejects it when it starts with a digit (every version) or, from AGE 1.6, when it
+is longer than 63 bytes (create_vlabel() raises "graph name is invalid"). Those
+names fall back to ``ws_<hash>_<namespace>``. Up to AGE 1.5 a long name worked,
+clipped to 63 bytes, so initialize() keeps using such an existing clipped graph.
 """
+
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from lightrag.kg.postgres_impl import PGGraphStorage, _is_valid_age_graph_name
+from lightrag.kg.postgres_impl import (
+    _LEGACY_CLIPPED_GRAPH_LOOKUP,
+    PGGraphStorage,
+    _is_valid_age_graph_name,
+)
 
 pytestmark = pytest.mark.offline
 
 NAMESPACE = "chunk_entity_relation"
+LEGACY_LOOKUP = _LEGACY_CLIPPED_GRAPH_LOOKUP
 
 
-def _graph_name(workspace: str) -> str:
+def _storage(workspace: str) -> PGGraphStorage:
     storage = PGGraphStorage.__new__(PGGraphStorage)
     storage.workspace = workspace
     storage.namespace = NAMESPACE
-    return storage._get_workspace_graph_name()
+    return storage
+
+
+def _graph_name(workspace: str) -> str:
+    return _storage(workspace)._get_workspace_graph_name()
 
 
 @pytest.mark.parametrize(
@@ -70,6 +80,28 @@ def test_digit_workspace_does_not_take_the_graph_of_a_ws_prefixed_one():
     assert _graph_name("2026kb") != _graph_name("ws_2026kb")
 
 
+def test_hashed_names_follow_the_same_sanitizing_rule_as_short_names():
+    """v1.0 and v1_0 share a graph; their long counterparts must too."""
+    assert _graph_name("v1.0") == _graph_name("v1_0")
+    assert _graph_name("v1.0" + "x" * 50) == _graph_name("v1_0" + "x" * 50)
+
+
+@pytest.mark.parametrize(
+    "workspace, expected",
+    [
+        ("w" * 42, ("w" * 42 + "_chunk_entity_relation")[:63]),
+        ("w" * 41, None),  # fits in 63 bytes
+        ("space1", None),
+        ("2026kb", None),  # digit-leading never worked on any AGE version
+        ("1" + "x" * 60, None),
+        ("", None),
+        ("default", None),
+    ],
+)
+def test_legacy_clipped_graph_name(workspace, expected):
+    assert _storage(workspace)._get_legacy_clipped_graph_name() == expected
+
+
 @pytest.mark.parametrize(
     "name, valid",
     [
@@ -82,3 +114,92 @@ def test_digit_workspace_does_not_take_the_graph_of_a_ws_prefixed_one():
 )
 def test_is_valid_age_graph_name(name, valid):
     assert _is_valid_age_graph_name(name) is valid
+
+
+# ---------------------------------------------------------------------------
+# initialize(): resolve a legacy clipped graph before the graph is created
+# ---------------------------------------------------------------------------
+
+
+class _NullLock:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _initializable_storage(monkeypatch, workspace: str, legacy_graph_exists: bool):
+    monkeypatch.setattr(
+        "lightrag.kg.postgres_impl.get_data_init_lock", lambda: _NullLock()
+    )
+    storage = _storage(workspace)
+    storage.global_config = {"vector_storage": "PGVectorStorage"}
+    calls: list[dict] = []
+
+    async def query(sql, params=None, multirows=False, with_age=False, **kwargs):
+        calls.append(
+            {
+                "sql": sql,
+                "params": params,
+                "with_age": with_age,
+                "graph_name": kwargs.get("graph_name"),
+            }
+        )
+        if sql == LEGACY_LOOKUP:
+            return {"?column?": 1} if legacy_graph_exists else None
+        return [{"name": "base"}, {"name": "DIRECTED"}]
+
+    db = AsyncMock()
+    db.workspace = None
+    db.query = AsyncMock(side_effect=query)
+    db.execute = AsyncMock()
+    db._run_with_retry = AsyncMock()
+    storage.db = db
+    return storage, calls
+
+
+@pytest.mark.asyncio
+async def test_initialize_keeps_an_existing_clipped_graph(monkeypatch):
+    """Upgrading from AGE 1.5 or earlier must not move the data to a new graph."""
+    warning = Mock()
+    monkeypatch.setattr("lightrag.kg.postgres_impl.logger.warning", warning)
+    storage, calls = _initializable_storage(monkeypatch, "w" * 42, True)
+    clipped = ("w" * 42 + "_chunk_entity_relation")[:63]
+
+    await storage.initialize()
+
+    assert storage.graph_name == clipped
+    warning.assert_called_once()
+    # Resolved before the first with_age=True call, which would create the graph.
+    lookup = next(i for i, c in enumerate(calls) if c["sql"] == LEGACY_LOOKUP)
+    first_age = next(i for i, c in enumerate(calls) if c["with_age"])
+    assert lookup < first_age
+    assert calls[lookup]["params"] == [clipped]
+    assert calls[first_age]["graph_name"] == clipped
+
+
+@pytest.mark.asyncio
+async def test_initialize_uses_the_hashed_name_when_no_clipped_graph_exists(
+    monkeypatch,
+):
+    storage, calls = _initializable_storage(monkeypatch, "w" * 42, False)
+
+    await storage.initialize()
+
+    assert storage.graph_name == _graph_name("w" * 42)
+    assert storage.graph_name.startswith("ws_")
+    assert [c for c in calls if c["sql"] == LEGACY_LOOKUP]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", ["space1", "w" * 41, "2026kb"])
+async def test_initialize_skips_the_lookup_when_no_clipped_name_applies(
+    monkeypatch, workspace
+):
+    storage, calls = _initializable_storage(monkeypatch, workspace, True)
+
+    await storage.initialize()
+
+    assert storage.graph_name == _graph_name(workspace)
+    assert not [c for c in calls if c["sql"] == LEGACY_LOOKUP]
