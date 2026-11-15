@@ -106,6 +106,7 @@ def _v2_answer_cache_key(
     cfg: dict,
     *,
     keywords: tuple[str, str] | None = None,
+    policy_version: str = "query-answer-cache-v2",
 ) -> str:
     """Frozen snapshot of the v2 answer-cache key.
 
@@ -117,9 +118,13 @@ def _v2_answer_cache_key(
     The KG snapshot includes the chunk-selection fields added in PR #3877;
     the naive snapshot does not. Defaults stay literal so later changes cannot
     silently update the historical key.
+
+    ``policy_version`` lets a test compose the same historical argument list
+    under the current version, to pin that a later key component is appended
+    only when it applies (see ``test_query_cache_keyword_fallback.py``).
     """
     args = [
-        "query-answer-cache-v2",
+        policy_version,
         param.mode,
         QUERY,
         param.response_type,

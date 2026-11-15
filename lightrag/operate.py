@@ -4983,8 +4983,9 @@ async def kg_query(
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         # Present only when the search swaps keyword lists between stores. An
         # answer cached before that routing existed was written from another
-        # store's context, so it must miss; every other entry keeps hitting,
-        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        # store's context, so it must miss; every other request keeps the key
+        # it would have without this component, so the fallback by itself
+        # does not require a cache-policy bump.
         *(("\n<kg_keyword_fallback>\n", keyword_fallback) if keyword_fallback else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
