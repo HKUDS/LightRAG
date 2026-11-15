@@ -688,7 +688,7 @@ class GeminiLLMOptions(BindingOptions):
         "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
         "seed": "Random seed for reproducible generation (leave empty for random)",
         "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
-        "safety_settings": "JSON object with Gemini safety settings overrides",
+        "safety_settings": 'Safety settings as a JSON object mapping category to threshold (e.g., \'{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}\')',
     }
 
 

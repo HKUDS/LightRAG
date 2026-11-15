@@ -199,6 +199,26 @@ def test_gemini_safety_settings_list_shape_passes_through_unchanged(
 
 
 @pytest.mark.offline
+def test_gemini_safety_settings_single_sdk_entry_is_wrapped_not_unpacked(
+    monkeypatch, request
+):
+    """A single SDK entry written as a dict must become a one-item list.
+    Read as a category-to-threshold mapping it would turn into the bogus
+    categories "category" and "threshold", which the SDK only warns about,
+    so the misconfiguration would reach the API instead of failing here."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    entry = {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}
+    config = gemini_module._build_generation_config(
+        base_config={"safety_settings": entry},
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == [entry]
+
+
+@pytest.mark.offline
 def test_gemini_rejects_typed_response_format(monkeypatch, request):
     gemini_module = _load_gemini_module(monkeypatch, request)
 

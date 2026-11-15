@@ -219,10 +219,15 @@ def _normalize_gemini_safety_settings(safety_settings: Any) -> Any:
     ``types.GenerateContentConfig.safety_settings`` only accepts a list of
     ``{"category": ..., "threshold": ...}`` entries and rejects a bare dict.
     A value that is already a list (the SDK's own shape) passes through
-    unchanged.
+    unchanged, and a single SDK entry (a dict with a ``category`` key) is
+    wrapped in a list rather than read as a mapping. No harm category is
+    named ``category``, so the two dict shapes cannot collide.
     """
     if not isinstance(safety_settings, dict):
         return safety_settings
+
+    if "category" in safety_settings:
+        return [safety_settings]
 
     return [
         {"category": category, "threshold": threshold}
