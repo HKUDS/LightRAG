@@ -179,3 +179,102 @@ def test_placeholder_run_is_not_a_smart_heading_feature() -> None:
     text = "".join(rf.text for rf in features.run_features)
     assert "Click here" not in text
     assert "Name:" in text
+
+
+# --- bibliography controls: read, but marked for drop_references -----------
+
+
+def _bibliography(document, entries, *, heading: str | None):
+    """Append Word's bibliography building block: gallery + w:bibliography."""
+    paragraphs = []
+    if heading is not None:
+        paragraphs.append(document.add_heading(heading, level=1)._p)
+    entry_ps = [document.add_paragraph(entry)._p for entry in entries]
+    for p in entry_ps:
+        _wrap(p)
+    # Merge the entries into ONE w:bibliography control, as Word writes it.
+    first = entry_ps[0].getparent().getparent()
+    content = first.find(qn("w:sdtContent"))
+    first.find(qn("w:sdtPr")).append(OxmlElement("w:bibliography"))
+    for p in entry_ps[1:]:
+        sdt = p.getparent().getparent()
+        content.append(p)
+        sdt.getparent().remove(sdt)
+    paragraphs.append(first)
+    if heading is not None:
+        # The gallery wrapper holds the heading and the bibliography control.
+        _wrap(paragraphs[0], gallery="Bibliographies")
+        gallery = paragraphs[0].getparent()
+        gallery.append(first)
+
+
+def _blocks(document, tmp_path) -> list:
+    path = tmp_path / "doc.docx"
+    document.save(path)
+    return extract_docx_blocks(str(path))
+
+
+def test_bibliography_with_heading_is_one_references_block(tmp_path) -> None:
+    document = Document()
+    document.add_heading("Conclusion", level=1)
+    document.add_paragraph("We conclude.")
+    _bibliography(document, ["[1] Foo.", "[2] Bar."], heading="Works Cited")
+    document.add_heading("Appendix", level=1)
+    document.add_paragraph("Extra.")
+
+    blocks = _blocks(document, tmp_path)
+
+    by_heading = {b["heading"]: b for b in blocks}
+    assert by_heading["Works Cited"].get("session_type") == "references"
+    assert "[1] Foo." in by_heading["Works Cited"]["content"]
+    assert "[2] Bar." in by_heading["Works Cited"]["content"]
+    assert "session_type" not in by_heading["Conclusion"]
+    assert "session_type" not in by_heading["Appendix"]
+
+
+def test_bibliography_without_heading_gets_its_own_block(tmp_path) -> None:
+    document = Document()
+    document.add_heading("Conclusion", level=1)
+    document.add_paragraph("We conclude.")
+    _bibliography(document, ["[1] Foo."], heading=None)
+    document.add_paragraph("Closing remark.")
+
+    blocks = _blocks(document, tmp_path)
+
+    assert [(b["heading"], b.get("session_type")) for b in blocks] == [
+        ("Conclusion", None),
+        ("Conclusion", "references"),
+        ("Conclusion", None),
+    ]
+    assert blocks[1]["content"] == "[1] Foo."
+    assert "Closing remark." in blocks[2]["content"]
+
+
+def test_references_session_type_reaches_the_ir() -> None:
+    from lightrag.parser.docx.ir_builder import NativeDocxIRBuilder
+
+    rows = [
+        {
+            "uuid": "p1",
+            "uuid_end": "p1",
+            "heading": "Body",
+            "content": "Text.",
+            "parent_headings": [],
+            "level": 1,
+        },
+        {
+            "uuid": "p2",
+            "uuid_end": "p2",
+            "heading": "Body",
+            "content": "[1] Foo.",
+            "parent_headings": [],
+            "level": 1,
+            "session_type": "references",
+        },
+    ]
+
+    ir = NativeDocxIRBuilder().normalize(
+        rows, document_name="doc.docx", asset_dir_name="doc.blocks.assets"
+    )
+
+    assert [b.session_type for b in ir.blocks] == ["body", "references"]

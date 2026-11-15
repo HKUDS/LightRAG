@@ -4191,3 +4191,30 @@ def test_run_smart_heading_rejects_invalid_max_chars_env(monkeypatch) -> None:
     monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "abc")
     with pytest.raises(ValueError, match="DOCX_SMART_HEADING_MAX_CHARS"):
         run_smart_heading([], llm_judge=None, warnings={})
+
+
+def test_smart_assembly_gives_bibliography_its_own_references_block(monkeypatch):
+    """Records inside a bibliography control form a session_type=references
+    block in the smart assembler too, keeping the heading they continue."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = _body(20) + [
+        _para("1 Conclusion", size=16.0, outline_level=0),
+        *_body(3),
+        _para("[1] Foo.", in_references=True),
+        _para("[2] Bar.", in_references=True),
+        _para("Closing remark."),
+    ]
+
+    result = run_smart_heading(records, llm_judge=_no_title_llm, warnings={})
+    assert result is not None
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+
+    refs = [b for b in blocks if b.get("session_type") == "references"]
+    assert len(refs) == 1
+    assert refs[0]["content"] == "[1] Foo.\n[2] Bar."
+    assert refs[0]["heading"] == "1 Conclusion"
+    closing = next(b for b in blocks if "Closing remark." in b["content"])
+    assert "session_type" not in closing

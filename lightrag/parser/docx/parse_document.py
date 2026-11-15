@@ -26,7 +26,7 @@ from lightrag.parser._markdown import (
 )
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
-from .content_controls import is_hidden_inline_control, iter_blocks
+from .content_controls import in_bibliography, is_hidden_inline_control, iter_blocks
 from .table_extractor import TableExtractor
 from .drawing_image_extractor import (
     DrawingExtractionContext,
@@ -585,6 +585,7 @@ def _build_unsplit_block(
     parent_headings: list,
     level: int,
     is_title_block: bool = False,
+    is_references: bool = False,
 ) -> dict:
     """Build a single block from paragraphs without size-based splitting."""
     last_para = paragraphs[-1]
@@ -599,6 +600,8 @@ def _build_unsplit_block(
     }
     if is_title_block:
         block["is_title_block"] = True
+    if is_references:
+        block["session_type"] = "references"
     table_headers = _collect_table_headers(paragraphs)
     if table_headers:
         block["table_headers"] = table_headers
@@ -612,6 +615,7 @@ def _flush_current_block(
     parent_headings: list,
     level: int,
     is_title_block: bool = False,
+    is_references: bool = False,
 ) -> None:
     """Flush accumulated paragraphs into a single heading-scoped block.
 
@@ -624,7 +628,7 @@ def _flush_current_block(
 
     blocks.append(
         _build_unsplit_block(
-            heading, paragraphs, parent_headings, level, is_title_block
+            heading, paragraphs, parent_headings, level, is_title_block, is_references
         )
     )
 
@@ -652,6 +656,9 @@ class ParagraphRecord:
     demoted_body_text: str | None = None  # oversize soft-break remainder
     table_header_rows: list | None = None
     ends_section: bool = False  # paragraph-level w:pPr/w:sectPr
+    # Inside a bibliography content control: the assemblers give such records
+    # their own block, marked session_type="references" (drop_references).
+    in_references: bool = False
     # --- smart-heading features (populated only when smart is enabled) ------
     full_text_raw: str | None = None  # pre-policy label+text (keeps "\n")
     label: str = ""  # auto-numbering label, if any
@@ -732,8 +739,12 @@ def _read_document_records(
 
     # Blocks inside content controls and custom XML markup count like direct
     # ones, except a table of contents or placeholder control (see
-    # content_controls).
+    # content_controls). The records of a block inside a bibliography control
+    # are marked once the next block starts (the branches below ``continue``).
+    references_from = None
     for element in iter_blocks(body, _BODY_BLOCK_TAGS):
+        _mark_references(records, references_from)
+        references_from = len(records) if in_bibliography(element) else None
         tag = element.tag.split("}")[-1]  # Remove namespace
 
         if tag == "sectPr":  # Document-level section break
@@ -947,7 +958,15 @@ def _read_document_records(
             # Reset numbering tracking after table (table end boundary)
             resolver.reset_tracking_state()
 
+    _mark_references(records, references_from)
     return records
+
+
+def _mark_references(records: list, start: int | None) -> None:
+    """Mark the records from ``start`` on as bibliography content."""
+    if start is not None:
+        for rec in records[start:]:
+            rec.in_references = True
 
 
 def _assemble_blocks_legacy(
@@ -967,6 +986,7 @@ def _assemble_blocks_legacy(
     current_heading_stack = {}  # {level: heading_text} - Use dict to correctly track heading hierarchy
     current_parent_headings = []  # Parent headings for current block
     current_paragraphs = []  # Track paragraphs with metadata for splitting
+    current_is_references = False
     first_heading_recorded = (
         False  # Track whether the document's first heading has been captured
     )
@@ -974,6 +994,20 @@ def _assemble_blocks_legacy(
     for rec in records:
         if rec.kind in ("empty_para", "empty_table", "section_break"):
             continue
+
+        # Bibliography content gets its own block (session_type="references"),
+        # keeping the current heading when the bibliography brings none.
+        if rec.in_references != current_is_references:
+            _flush_current_block(
+                blocks,
+                current_heading,
+                current_paragraphs,
+                current_parent_headings,
+                current_heading_level,
+                is_references=current_is_references,
+            )
+            current_paragraphs = []
+            current_is_references = rec.in_references
 
         if rec.kind == "table":
             current_paragraphs.append(
@@ -1018,6 +1052,7 @@ def _assemble_blocks_legacy(
                     current_paragraphs,
                     current_parent_headings,
                     current_heading_level,
+                    is_references=current_is_references,
                 )
 
                 # Reset for new block
@@ -1077,6 +1112,7 @@ def _assemble_blocks_legacy(
         current_paragraphs,
         current_parent_headings,
         current_heading_level,
+        is_references=current_is_references,
     )
 
     return blocks
@@ -1316,6 +1352,7 @@ def _assemble_blocks_smart(
     current_parent_headings: list = []
     current_paragraphs: list = []
     current_is_title_block = False
+    current_is_references = False
     first_heading_recorded = False
 
     if parse_metadata is not None:
@@ -1339,6 +1376,7 @@ def _assemble_blocks_smart(
                 current_parent_headings,
                 current_heading_level,
                 current_is_title_block,
+                current_is_references,
             )
             current_paragraphs = []
 
@@ -1366,6 +1404,13 @@ def _assemble_blocks_smart(
         d = decisions.get(i)
         if d is not None and d.absorbed:
             continue  # text already merged into a preceding heading
+
+        # Bibliography content gets its own block (session_type="references"),
+        # keeping the current heading when the bibliography brings none.
+        if rec.in_references != current_is_references:
+            _flush()
+            current_is_references = rec.in_references
+            current_is_title_block = False
         # The title-block lead branch must run BEFORE the plain-table branch:
         # a TABLE-channel lead is itself a table record — emitting it
         # as body content would discard the composed heading and drop every

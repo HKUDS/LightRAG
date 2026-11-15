@@ -15,6 +15,11 @@ Two kinds of control hold no document text and are left out:
 
 The legacy extractor (``lightrag/parser/legacy/extractors.py``) applies the
 same rules, except that it also drops a TOC control inside a paragraph.
+
+A bibliography control (``w:bibliography``, or ``docPartGallery``
+"Bibliographies") is read too, but its blocks are marked
+``session_type="references"`` so the chunker's ``drop_references`` option
+can drop them whatever their heading says.
 """
 
 from docx.oxml.ns import qn
@@ -46,6 +51,27 @@ def is_placeholder_control(sdt) -> bool:
         "false",
         "off",
     )
+
+
+def is_bibliography_control(sdt) -> bool:
+    """True for a ``w:sdt`` holding a bibliography (Word's References tab)."""
+    sdt_pr = sdt.find(qn("w:sdtPr"))
+    if sdt_pr is None:
+        return False
+    if sdt_pr.find(qn("w:bibliography")) is not None:
+        return True
+    gallery = sdt_pr.find(f"{qn('w:docPartObj')}/{qn('w:docPartGallery')}")
+    return gallery is not None and gallery.get(qn("w:val")) == "Bibliographies"
+
+
+def in_bibliography(element) -> bool:
+    """True when ``element`` sits inside a bibliography control."""
+    parent = element.getparent()
+    while parent is not None:
+        if parent.tag == _SDT and is_bibliography_control(parent):
+            return True
+        parent = parent.getparent()
+    return False
 
 
 def is_hidden_control(sdt) -> bool:

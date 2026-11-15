@@ -253,7 +253,7 @@ Server 部署可以通过 `CUSTOM_CHUNKER=<注册名>`（或 `--custom-chunker`�
 
 `doc_status.metadata.custom_chunker` 独立记录最近一次尝试的注册名/版本及 `authoritative: false`，不改变 `chunk_method` 与 `chunk_opts`。该观察值跨重试/重置保留，仅供诊断，不是执行指令；只有真正调用回调的尝试才写它，显式 F/R/V/P 的尝试保留原观察值而不清空。持久化文档在配置身份变化或移除后重处理，每次尝试告警一次并按**当前配置**继续；无 selector 文档与 `C` 文档同样适用，因为两者都调用回调。已有的逐次 fallback 告警独立保留；作者提供的版本号无法检测同名同版本背后的实现变化。
 
-> `drop_references` 检测调参 `CHUNK_P_REFERENCES_TAIL_N`（默认 `0`：扫描全部内容块；正数表示只扫描文末最后 N 块）/ `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔，默认 `References\|Bibliography\|参考文献`）仅经环境变量、运行时实时读取。drop_references可以通过环境变量 `CHUNK_P_DROP_REFERENCES` 设置为全局默认值.
+> `drop_references` 检测调参 `CHUNK_P_REFERENCES_TAIL_N`（默认 `0`：扫描全部内容块；正数表示只扫描文末最后 N 块）/ `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔，默认 `References\|Bibliography\|参考文献`）仅经环境变量、运行时实时读取。drop_references可以通过环境变量 `CHUNK_P_DROP_REFERENCES` 设置为全局默认值。解析器标记为 `session_type="references"` 的块无论标题和位置都会被丢弃；目前只有 native DOCX 引擎会这样标记 Word 参考文献控件（“引用”选项卡插入的书目）。
 
 ### 2.7 校验、优先级与回退
 
