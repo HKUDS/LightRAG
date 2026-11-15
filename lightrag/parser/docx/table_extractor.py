@@ -266,7 +266,10 @@ class TableExtractor:
         - All rows in a vertically merged region share the same content
         - All rows use the paraId from the merge start cell (for precise edit targeting)
         - A merge continues only from the row directly above: a row with no
-          restart or continuation cell at that grid column ends it
+          restart or continuation cell at that grid column ends it. A
+          continuation below such a row repeats nothing; Word draws it as a
+          separate empty cell, whether a normal cell or no cell (gridBefore)
+          broke the merge
 
         Grid alignment:
         - A row that starts late (``w:gridBefore``) leaves its first grid
