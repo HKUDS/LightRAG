@@ -12,6 +12,11 @@ from lightrag.utils import logger
 
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
+# Stored for a style whose w:ilvl is not an integer. It lies outside the OOXML
+# 0-8 range, so get_label rejects it like any other out-of-range level, and as
+# an explicit value it stops the basedOn chain from lending a parent's level.
+_INVALID_ILVL = -1
+
 
 class NumberingResolver:
     """
@@ -293,24 +298,31 @@ class NumberingResolver:
                         if parent_id:
                             self.style_based_on[style_id] = parent_id
 
-                    # Check for numPr in style's pPr
+                    # Check for numPr in style's pPr. numId and ilvl are
+                    # recorded independently: a style may write only one of
+                    # them and inherit the other down the basedOn chain. None
+                    # marks "absent" (distinct from an explicit ilvl=0).
                     pPr = style.find("w:pPr", NSMAP)
                     if pPr is not None:
                         numPr = pPr.find("w:numPr", NSMAP)
                         if numPr is not None:
                             num_id_elem = numPr.find("w:numId", NSMAP)
                             ilvl_elem = numPr.find("w:ilvl", NSMAP)
-
-                            if num_id_elem is not None:
-                                num_id = num_id_elem.get(f"{{{NSMAP['w']}}}val")
-                                # ilvl=None marks "absent" (distinct from an
-                                # explicit 0) so _get_numbering_from_style can
-                                # inherit an explicit ilvl from the basedOn chain.
-                                ilvl = (
-                                    int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
-                                    if ilvl_elem is not None
-                                    else None
-                                )
+                            num_id = (
+                                num_id_elem.get(f"{{{NSMAP['w']}}}val")
+                                if num_id_elem is not None
+                                else None
+                            )
+                            ilvl = None
+                            if ilvl_elem is not None:
+                                try:
+                                    ilvl = int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
+                                except (TypeError, ValueError):
+                                    # Treated like an out-of-range level: the
+                                    # style's paragraphs get no label, and the
+                                    # rest of styles.xml is still parsed.
+                                    ilvl = _INVALID_ILVL
+                            if num_id is not None or ilvl is not None:
                                 self.style_numpr[style_id] = {
                                     "numId": num_id,
                                     "ilvl": ilvl,
@@ -324,18 +336,20 @@ class NumberingResolver:
         Get numbering definition from style, following the basedOn chain.
 
         numId and ilvl are inherited INDEPENDENTLY (OOXML numPr child-level
-        merge): a derived style that overrides only numId still inherits the
-        parent's explicit ilvl. ``numId`` is taken from the nearest ancestor
-        (incl. self) that defines it; ``ilvl`` from the nearest ancestor that
-        defines it EXPLICITLY (styles that omit w:ilvl store ilvl=None).
+        merge), as Word renders it: a derived style that writes only numId
+        keeps the parent's ilvl, and one that writes only ilvl keeps the
+        parent's numId. ``numId`` is taken from the nearest ancestor (incl.
+        self) that defines it; ``ilvl`` from the nearest ancestor that defines
+        it EXPLICITLY (styles that omit w:ilvl store ilvl=None).
 
         Args:
             style_id: Style ID to look up
             visited: Set of visited style IDs (to prevent circular references)
 
         Returns:
-            dict with 'numId' and 'ilvl' (ilvl may be None), or None if no
-            style in the chain declares a numId.
+            dict with 'numId' and 'ilvl', either of which may be None (a chain
+            that writes only ilvl still lends it to a paragraph's direct
+            numId), or None if no style in the chain writes either.
         """
         if visited is None:
             visited = set()
@@ -355,7 +369,7 @@ class NumberingResolver:
                 break
             sid = self.style_based_on.get(sid)
 
-        if num_id is None:
+        if num_id is None and ilvl is None:
             return None
         return {"numId": num_id, "ilvl": ilvl}
 
@@ -413,7 +427,11 @@ class NumberingResolver:
 
         - numId and ilvl are independent overrides: a paragraph that writes
           only ``w:ilvl`` keeps the numId of its style and renders at its own
-          level (style list ``1.``/``a)``, paragraph ilvl=1 -> ``a)``).
+          level (style list ``1.``/``a)``, paragraph ilvl=1 -> ``a)``). The
+          same holds down the style's basedOn chain: each of the two comes
+          from the nearest style that writes it, so a style that writes only
+          ilvl lends its level to an inherited or direct numId. With no numId
+          anywhere there is no label.
         - A list may start below level 0. The skipped parent levels take their
           start value and count as used, so the next parent-level item shows
           the following number: ``a) b)`` then ``2.``, and ``1.1.1.`` then
