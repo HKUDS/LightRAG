@@ -9274,104 +9274,125 @@ class PGGraphStorage(BaseGraphStorage):
     async def get_edges_batch(
         self, pairs: list[dict[str, str]], batch_size: int = 500
     ) -> dict[tuple[str, str], dict]:
-        """
-        Retrieve edge properties for multiple (src, tgt) pairs in one query.
-        Get forward and backward edges separately and merge them before return
+        """Read either orientation of each pair, keyed by the input IDs.
 
-        Args:
-            pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
-            batch_size: Batch size for the query
-
-        Returns:
-            A dictionary mapping (src, tgt) tuples to their edge properties.
+        When both orientations exist, the reverse edge takes precedence.
+        Parallel edges within one orientation retain the Cypher reader's
+        behavior because that reader does not define a tie-breaker.
         """
         if not pairs:
             return {}
 
         seen = set()
-        uniq_pairs: list[dict[str, str]] = []
-        for p in pairs:
-            s = self._normalize_node_id(p["src"])
-            t = self._normalize_node_id(p["tgt"])
-            key = (s, t)
-            if s and t and key not in seen:
+        unique_pairs: list[dict[str, str]] = []
+        for pair in pairs:
+            source = self._normalize_node_id(pair["src"])
+            target = self._normalize_node_id(pair["tgt"])
+            key = (source, target)
+            if source and target and key not in seen:
                 seen.add(key)
-                uniq_pairs.append(p)
+                unique_pairs.append(pair)
 
-        edges_dict: dict[tuple[str, str], dict] = {}
+        schema = '"' + self.graph_name.replace('"', '""') + '"'
+        # Materialize the vertex IDs once per distinct entity ID in the batch.
+        # AGE's parent edge table includes all labels matched by Cypher's [r].
+        # Keep both endpoint equalities in each lookup to use the composite index.
+        sql = f"""
+            WITH pairs AS MATERIALIZED (
+                SELECT source, target, ord
+                FROM unnest($1::text[], $2::text[])
+                    WITH ORDINALITY AS pair(source, target, ord)
+            ),
+            names AS (
+                SELECT source AS name FROM pairs
+                UNION
+                SELECT target AS name FROM pairs
+            ),
+            vertices AS MATERIALIZED (
+                SELECT names.name, vertex.id
+                FROM names
+                CROSS JOIN LATERAL (
+                    SELECT v.id
+                    FROM {schema}.base AS v
+                    WHERE ag_catalog.agtype_access_operator(
+                        VARIADIC ARRAY[v.properties, '"entity_id"'::ag_catalog.agtype]
+                    ) = (to_json(names.name)::text)::ag_catalog.agtype
+                    OFFSET 0
+                ) AS vertex
+            )
+            SELECT pair.source, pair.target, direction.reverse,
+                   edge.properties::text AS edge_properties
+            FROM pairs AS pair
+            JOIN vertices AS a ON a.name = pair.source
+            JOIN vertices AS b ON b.name = pair.target
+            CROSS JOIN (VALUES (false), (true)) AS direction(reverse)
+            CROSS JOIN LATERAL (
+                SELECT r.properties
+                FROM {schema}."_ag_label_edge" AS r
+                WHERE r.start_id = CASE WHEN direction.reverse THEN b.id ELSE a.id END
+                  AND r.end_id = CASE WHEN direction.reverse THEN a.id ELSE b.id END
+                OFFSET 0
+            ) AS edge
+            ORDER BY direction.reverse, pair.ord
+        """
 
-        for i in range(0, len(uniq_pairs), batch_size):
-            batch = uniq_pairs[i : i + batch_size]
+        edges: dict[tuple[str, str], dict] = {}
+        for start in range(0, len(unique_pairs), batch_size):
+            batch = unique_pairs[start : start + batch_size]
+            sources = [pair["src"] for pair in batch]
+            targets = [pair["tgt"] for pair in batch]
+            if any("\x00" in node_id for node_id in sources + targets):
+                # PostgreSQL text binds cannot carry NUL. Preserve Cypher handling.
+                rows = await self._get_edge_rows_cypher(batch)
+            else:
+                rows = await self._query(
+                    sql, params={"sources": sources, "targets": targets}
+                )
+                directions = {
+                    (row["source"], row["target"], row["reverse"]) for row in rows
+                }
+                if len(directions) != len(rows):
+                    rows = await self._get_edge_rows_cypher(batch)
 
-            pairs = [{"src": p["src"], "tgt": p["tgt"]} for p in batch]
-
-            forward_cypher = """
-                         UNWIND $pairs AS p
-                         WITH p.src AS src_eid, p.tgt AS tgt_eid
-                         MATCH (a:base {entity_id: src_eid})
-                         MATCH (b:base {entity_id: tgt_eid})
-                         MATCH (a)-[r]->(b)
-                         RETURN src_eid AS source, tgt_eid AS target, properties(r) AS edge_properties"""
-            backward_cypher = """
-                         UNWIND $pairs AS p
-                         WITH p.src AS src_eid, p.tgt AS tgt_eid
-                         MATCH (a:base {entity_id: src_eid})
-                         MATCH (b:base {entity_id: tgt_eid})
-                         MATCH (a)<-[r]-(b)
-                         RETURN src_eid AS source, tgt_eid AS target, properties(r) AS edge_properties"""
-
-            sql_fwd = f"""
-            SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name,
-                                 {_dollar_quote(forward_cypher)}::cstring,
-                                 $1::agtype)
-              AS (source text, target text, edge_properties agtype)
-            """
-
-            sql_bwd = f"""
-            SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name,
-                                 {_dollar_quote(backward_cypher)}::cstring,
-                                 $1::agtype)
-              AS (source text, target text, edge_properties agtype)
-            """
-
-            pg_params = {"params": json.dumps({"pairs": pairs}, ensure_ascii=False)}
-
-            forward_results = await self._query(sql_fwd, params=pg_params)
-            backward_results = await self._query(sql_bwd, params=pg_params)
-
-            for result in forward_results:
-                if result["source"] and result["target"] and result["edge_properties"]:
-                    edge_props = result["edge_properties"]
-
-                    # Process string result, parse it to JSON dictionary
-                    if isinstance(edge_props, str):
+            for row in rows:
+                source, target = row["source"], row["target"]
+                properties = row["edge_properties"]
+                if source and target and properties:
+                    if isinstance(properties, str):
                         try:
-                            edge_props = json.loads(edge_props)
+                            properties = json.loads(properties)
                         except json.JSONDecodeError:
                             logger.warning(
-                                f"[{self.workspace}]Failed to parse edge properties string: {edge_props}"
+                                f"[{self.workspace}] Failed to parse edge properties string: {properties}"
                             )
                             continue
+                    edges[source, target] = properties
+        return edges
 
-                    edges_dict[(result["source"], result["target"])] = edge_props
-
-            for result in backward_results:
-                if result["source"] and result["target"] and result["edge_properties"]:
-                    edge_props = result["edge_properties"]
-
-                    # Process string result, parse it to JSON dictionary
-                    if isinstance(edge_props, str):
-                        try:
-                            edge_props = json.loads(edge_props)
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                f"[{self.workspace}] Failed to parse edge properties string: {edge_props}"
-                            )
-                            continue
-
-                    edges_dict[(result["source"], result["target"])] = edge_props
-
-        return edges_dict
+    async def _get_edge_rows_cypher(
+        self, batch: list[dict[str, str]]
+    ) -> list[dict[str, Any]]:
+        """Return legacy edge rows in forward-then-reverse order."""
+        pairs = [{"src": pair["src"], "tgt": pair["tgt"]} for pair in batch]
+        params = {"params": json.dumps({"pairs": pairs}, ensure_ascii=False)}
+        rows = []
+        for pattern in ("(a)-[r]->(b)", "(a)<-[r]-(b)"):
+            cypher = f"""
+                UNWIND $pairs AS p
+                WITH p.src AS src_eid, p.tgt AS tgt_eid
+                MATCH (a:base {{entity_id: src_eid}})
+                MATCH (b:base {{entity_id: tgt_eid}})
+                MATCH {pattern}
+                RETURN src_eid AS source, tgt_eid AS target, properties(r) AS edge_properties
+            """
+            sql = f"""
+                SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name,
+                                     {_dollar_quote(cypher)}::cstring,
+                                     $1::agtype)
+                  AS (source text, target text, edge_properties agtype)
+            """
+            rows.extend(await self._query(sql, params=params))
+        return rows
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str], batch_size: int = 500
