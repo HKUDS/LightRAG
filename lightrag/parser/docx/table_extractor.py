@@ -202,6 +202,20 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     return ("\n".join(texts), max_size, has_outline)
 
 
+# Content controls and custom XML markup may wrap whole rows (a repeating
+# section) or single cells; the rows and cells inside count like direct ones.
+_ROW_CELL_WRAPPERS = frozenset({qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")})
+
+
+def _iter_wrapped(container, tag: str):
+    """Yield the ``tag`` children of ``container``, including wrapped ones."""
+    for child in container:
+        if child.tag == tag:
+            yield child
+        elif child.tag in _ROW_CELL_WRAPPERS:
+            yield from _iter_wrapped(child, tag)
+
+
 def _grid_before(tr) -> int:
     """Return how many leading grid columns a ``w:tr`` leaves without a cell."""
     tr_pr = tr.find(qn("w:trPr"))
@@ -274,6 +288,8 @@ class TableExtractor:
         Grid alignment:
         - A row that starts late (``w:gridBefore``) leaves its first grid
           columns empty, so its cells stay under the columns they are drawn in
+        - Rows and cells inside a content control or custom XML markup count
+          like direct ones
 
         Args:
             table: python-docx Table object
@@ -317,7 +333,7 @@ class TableExtractor:
 
         # Detect header rows using w:tblHeader attribute
         header_indices = []
-        for idx, tr in enumerate(tbl.findall(qn("w:tr"))):
+        for idx, tr in enumerate(_iter_wrapped(tbl, qn("w:tr"))):
             trPr = tr.find(qn("w:trPr"))
             if trPr is not None:
                 tbl_header = trPr.find(qn("w:tblHeader"))
@@ -331,7 +347,7 @@ class TableExtractor:
         cell_features_grid = [] if collect_features else None
         vmerge_content = {}  # Track vertical merge by column: {col: {'text': str, 'para_id': str, 'para_id_end': str}}
 
-        for tr in tbl.findall(qn("w:tr")):
+        for tr in _iter_wrapped(tbl, qn("w:tr")):
             row_data = [""] * num_cols  # Pre-fill with empty strings
             row_para_ids = [None] * num_cols  # Pre-fill with None
             row_para_ids_end = [None] * num_cols  # Pre-fill with None for last paraId
@@ -340,7 +356,7 @@ class TableExtractor:
             merged_cols = set()  # columns whose vertical merge reaches this row
 
             # Iterate actual <w:tc> elements (each physical cell appears once)
-            for tc in tr.findall(qn("w:tc")):
+            for tc in _iter_wrapped(tr, qn("w:tc")):
                 if collect_features:
                     row_cell_features.append(
                         _extract_cell_features(tc, qn, style_attributes, styles_outline)

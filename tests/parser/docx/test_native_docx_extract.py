@@ -392,6 +392,59 @@ def test_column_without_cell_ends_vertical_merge() -> None:
     ]
 
 
+def _wrap(element, wrapper: str) -> None:
+    """Move ``element`` into a content control or custom XML element."""
+    parent = element.getparent()
+    index = parent.index(element)
+    if wrapper == "sdt":
+        outer = OxmlElement("w:sdt")
+        outer.append(OxmlElement("w:sdtPr"))
+        inner = OxmlElement("w:sdtContent")
+        outer.append(inner)
+    else:
+        outer = inner = OxmlElement("w:customXml")
+        outer.set(qn("w:element"), "item")
+    parent.remove(element)
+    inner.append(element)
+    parent.insert(index, outer)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("wrapper", ["sdt", "customXml"])
+@pytest.mark.parametrize("merged_col", [0, 1])
+def test_wrapped_continuation_cell_keeps_vertical_merge(
+    wrapper: str, merged_col: int
+) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, merged_col).merge(table.cell(2, merged_col)).text = "Total"
+    _wrap(table.rows[1]._tr.tc_lst[merged_col], wrapper)
+
+    rows = _saved_table_metadata(document)["rows"]
+
+    other = 1 - merged_col
+    assert [row[merged_col] for row in rows] == ["Total"] * 3
+    assert [row[other] for row in rows] == [f"r{i}c{other}" for i in range(3)]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("wrapper", ["sdt", "customXml"])
+def test_wrapped_row_counts_like_a_direct_row(wrapper: str) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.rows[2]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    _wrap(table.rows[1]._tr, wrapper)
+
+    result = _saved_table_metadata(document)
+
+    assert result["rows"] == [
+        ["r0c0", "r0c1"],
+        ["r1c0", "r1c1"],
+        ["r2c0", "r2c1"],
+    ]
+    assert result["header_indices"] == [2]
+
+
 # --- end-to-end: every heading becomes its own block ----------------------
 
 
