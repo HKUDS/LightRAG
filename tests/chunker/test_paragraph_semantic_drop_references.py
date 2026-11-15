@@ -351,3 +351,59 @@ def test_headings_read_live_from_env(tmp_path, monkeypatch):
         )
     )
     assert "LIT_MARKER" not in body
+
+
+# --------------------------------------------------------------------------- #
+# Parser-marked reference blocks (session_type="references")
+# --------------------------------------------------------------------------- #
+
+
+def _references_row(heading: str, content: str) -> dict:
+    row = _row(heading, content)
+    row["session_type"] = "references"
+    return row
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("drop", [False, True])
+def test_marked_reference_block_dropped_whatever_heading_and_window(tmp_path, drop):
+    # A Word bibliography control: "Works Cited" matches no prefix, and a
+    # heading-less bibliography keeps the heading of the section it follows.
+    tokenizer = _make_tokenizer()
+    rows = [
+        _row("Introduction", "INTRO_MARKER intro body"),
+        _references_row("Works Cited", "CITED_MARKER [1] Foo."),
+        _references_row("Introduction", "INLINE_REF_MARKER [2] Bar."),
+        _row("Appendix", "APPENDIX_MARKER appendix body"),
+    ]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    body = _all_content(
+        chunking_by_paragraph_semantic(
+            tokenizer,
+            "",
+            2000,
+            blocks_path=blocks_path,
+            drop_references=drop,
+            references_tail_n=1,  # the window covers only "Appendix"
+        )
+    )
+
+    assert ("CITED_MARKER" in body) is not drop
+    assert ("INLINE_REF_MARKER" in body) is not drop
+    assert "INTRO_MARKER" in body and "APPENDIX_MARKER" in body
+
+
+@pytest.mark.offline
+def test_marked_reference_only_document_is_kept(tmp_path):
+    tokenizer = _make_tokenizer()
+    rows = [_references_row("Bibliography", "REF_MARKER [1] Foo.")]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    body = _all_content(
+        chunking_by_paragraph_semantic(
+            tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
+        )
+    )
+
+    assert "REF_MARKER" in body

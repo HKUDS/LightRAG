@@ -2369,8 +2369,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
 @pytest.mark.parametrize(
     ("device", "expected_image"),
     [
-        ("cpu", "image: milvusdb/milvus:v2.6.11"),
-        ("cuda", "image: milvusdb/milvus:v2.6.11-gpu"),
+        ("cpu", "image: milvusdb/milvus:v2.6.27"),
+        ("cuda", "image: milvusdb/milvus:v2.6.27-gpu"),
     ],
 )
 def test_generate_docker_compose_selects_milvus_template_from_device(

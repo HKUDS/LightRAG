@@ -25,6 +25,7 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from lightrag.parser.docx.content_controls import is_hidden_inline_control
 from lightrag.utils import logger
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -516,7 +517,8 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
 
     - ``_SKIP_REVISION_SUBTREES`` (``w:del`` / ``w:moveFrom`` / comment markers)
       are skipped whole. Content the author deleted is not on the page, so it can
-      neither supply padding nor mask the real leading content.
+      neither supply padding nor mask the real leading content. A content
+      control still showing its placeholder is skipped the same way.
     - a drawing / picture / OLE object / OMML equation reached before the first
       visible character sets the flag (see :func:`leading_pad_em`);
     - ``w:t`` text and ``w:tab`` build the line; a soft ``w:br`` ends it (page /
@@ -536,7 +538,7 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
     def visit(node) -> None:
         nonlocal nontext_leads, line_done
         tag = node.tag
-        if tag in _SKIP_REVISION_SUBTREES:
+        if tag in _SKIP_REVISION_SUBTREES or is_hidden_inline_control(node):
             return
         if tag in _PRUNE_SUBTREE_TAGS or tag in _OMML_TAGS:
             if not _has_visible_char("".join(parts)):
@@ -746,7 +748,7 @@ def extract_paragraph_physical_features(
         nonlocal has_page_break_run, has_leading_page_break_run
         nonlocal has_nonleading_page_break_run, text_seen
         tag = node.tag
-        if tag in _PRUNE_SUBTREE_TAGS:
+        if tag in _PRUNE_SUBTREE_TAGS or is_hidden_inline_control(node):
             return
         if tag == _w("r"):
             # Skip the paragraph-mark rPr context: w:pPr/w:rPr is not a run.

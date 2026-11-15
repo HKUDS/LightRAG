@@ -19,9 +19,9 @@
 # Stack (all images verified to publish a linux/arm64 manifest):
 #   postgres      pgvector/pgvector:pg18                       (KV + doc status)
 #   neo4j         neo4j:5-community                            (graph)
-#   milvus        milvusdb/milvus:v2.6.11  (standalone, CPU)   (vector)
+#   milvus        milvusdb/milvus:v2.6.27  (standalone, CPU)   (vector)
 #   milvus-etcd   quay.io/coreos/etcd:v3.5.25                  (milvus metadata)
-#   milvus-minio  minio/minio:RELEASE.2025-09-07T16-13-09Z     (milvus object store)
+#   milvus-minio  milvusdb/minio:RELEASE.2024-12-18T13-15-44Z  (milvus object store)
 #   lightrag      ghcr.io/hkuds/lightrag:latest                (API server + WebUI)
 #
 # LLM + embeddings are reached over normal outbound HTTPS (e.g. OpenAI); no GPU
@@ -71,9 +71,9 @@ PLATFORM="linux/arm64"
 # by the earlier AGE-enabled default image; this stack always starts a new one.
 IMG_PG="${LIGHTRAG_AC_IMG_PG:-pgvector/pgvector:pg18}"
 IMG_NEO4J="${LIGHTRAG_AC_IMG_NEO4J:-neo4j:5-community}"
-IMG_MILVUS="${LIGHTRAG_AC_IMG_MILVUS:-milvusdb/milvus:v2.6.11}"
+IMG_MILVUS="${LIGHTRAG_AC_IMG_MILVUS:-milvusdb/milvus:v2.6.27}"
 IMG_ETCD="${LIGHTRAG_AC_IMG_ETCD:-quay.io/coreos/etcd:v3.5.25}"
-IMG_MINIO="${LIGHTRAG_AC_IMG_MINIO:-minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+IMG_MINIO="${LIGHTRAG_AC_IMG_MINIO:-milvusdb/minio:RELEASE.2024-12-18T13-15-44Z}"
 IMG_LIGHTRAG="${LIGHTRAG_AC_IMG_LIGHTRAG:-ghcr.io/hkuds/lightrag:latest}"
 
 # Memory budgets (per-container VM). Milvus and Neo4j are heavy.
