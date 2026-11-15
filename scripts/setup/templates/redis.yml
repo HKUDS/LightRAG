@@ -1,5 +1,5 @@
   redis:
-    image: redis:latest
+    image: redis:8
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     ports:
       - "6379:6379"
