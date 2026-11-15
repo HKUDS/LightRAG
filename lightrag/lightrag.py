@@ -5859,7 +5859,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         else:
             raise ValueError(f"Unknown mode {data_param.mode}")
 
-        if query_result is None:
+        # A result without raw_data is the canned fail_response that kg_query
+        # and naive_query return before any retrieval runs (e.g. no keywords
+        # could be extracted from the query); report it like an empty result.
+        if query_result is None or not query_result.raw_data:
             no_result_message = "Query returned no results"
             if data_param.mode == "naive":
                 no_result_message = "No relevant document chunks found."
@@ -5875,10 +5878,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.info("[aquery_data] Query returned no results.")
         else:
             # Extract raw_data from QueryResult
-            final_data = query_result.raw_data or {}
+            final_data = query_result.raw_data
 
             # Log final result counts - adapt to new data format from convert_to_user_format
-            if final_data and "data" in final_data:
+            if "data" in final_data:
                 data_section = final_data["data"]
                 entities_count = len(data_section.get("entities", []))
                 relationships_count = len(data_section.get("relationships", []))
