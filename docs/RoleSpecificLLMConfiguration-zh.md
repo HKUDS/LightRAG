@@ -36,7 +36,7 @@ MAX_ASYNC_LLM=4
 
 | 变量 | 说明 |
 | --- | --- |
-| `LLM_BINDING` | 基础 LLM provider。支持 `openai`、`ollama`、`lollms`、`azure_openai`、`bedrock`、`gemini`。 |
+| `LLM_BINDING` | 基础 LLM provider。支持 `openai`、`openai_responses`、`ollama`、`lollms`、`azure_openai`、`bedrock`、`gemini`。 |
 | `LLM_MODEL` | 基础模型名。对 Azure OpenAI 通常使用 deployment 名称。 |
 | `LLM_BINDING_HOST` | 基础 provider endpoint。对于 SDK 默认 endpoint，可使用对应 sentinel，例如 `DEFAULT_GEMINI_ENDPOINT` 或 `DEFAULT_BEDROCK_ENDPOINT`。 |
 | `LLM_BINDING_API_KEY` | 基础 API key。Bedrock 不使用这个字段。 |
@@ -101,6 +101,7 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 | Provider | 基础参数前缀 | 角色参数示例 |
 | --- | --- | --- |
 | `openai` / `azure_openai` | `OPENAI_LLM_*` | `QUERY_OPENAI_LLM_REASONING_EFFORT` |
+| `openai_responses` | `OPENAI_RESPONSES_LLM_*`（独立命名空间，`OPENAI_LLM_*` 不生效） | `QUERY_OPENAI_RESPONSES_LLM_REASONING_EFFORT` |
 | `ollama` | `OLLAMA_LLM_*` | `EXTRACT_OLLAMA_LLM_NUM_PREDICT` |
 | `lollms` | 使用 Ollama 兼容参数集合 | `QUERY_OLLAMA_LLM_TEMPERATURE` |
 | `bedrock` | `BEDROCK_LLM_*` | `EXTRACT_BEDROCK_LLM_MAX_TOKENS` |
@@ -194,6 +195,7 @@ EXTRACT_BEDROCK_LLM_MAX_TOKENS=2048
 | Provider | 角色级 host/base_url | 角色级 API key | 认证限制 |
 | --- | --- | --- | --- |
 | `openai` | 支持，通过 `{ROLE}_LLM_BINDING_HOST` 传给 OpenAI-compatible client。 | 支持 `{ROLE}_LLM_BINDING_API_KEY`，未设置时同 provider 继承基础 `LLM_BINDING_API_KEY`。 | 当前主要是 API key / Bearer 模式。 |
+| `openai_responses` | 同 `openai`；host 必须实现 `/v1/responses`。 | 同 `openai`。 | 同 `openai`。 |
 | `ollama` | 支持，通过 `{ROLE}_LLM_BINDING_HOST` 传给 Ollama client。 | 支持 `{ROLE}_LLM_BINDING_API_KEY`，未设置时同 provider 继承基础 key；底层未收到 key 时会再回退 `OLLAMA_API_KEY`。 | Bearer header。 |
 | `lollms` | 支持，通过 `{ROLE}_LLM_BINDING_HOST` 作为 `base_url`。 | 支持 `{ROLE}_LLM_BINDING_API_KEY`，未设置时同 provider 继承基础 key。 | Bearer header。 |
 | `azure_openai` | 支持，通过 `{ROLE}_LLM_BINDING_HOST` 作为 Azure endpoint。 | 支持 `{ROLE}_LLM_BINDING_API_KEY`，未设置时同 provider 继承基础 key，也可能回退 `AZURE_OPENAI_API_KEY`。 | `AZURE_OPENAI_API_VERSION` 是全局环境变量，不支持角色级覆盖。 |
@@ -351,7 +353,7 @@ VLM_LLM_TIMEOUT=240
 
 如果 VLM 使用同一个 provider 和 key，可以省略 `VLM_LLM_BINDING_HOST` 与 `VLM_LLM_BINDING_API_KEY`。
 
-`VLM_PROCESS_ENABLE` 是多模态分析的总开关：设为 `false` 时，pipeline 会对每个多模态 item 输出 warning 并跳过，不调用 VLM；设为 `true` 时，生效的 VLM binding（设置了 `VLM_LLM_BINDING` 时取该值，否则取 `LLM_BINDING`）必须支持图片输入。当前支持视觉输入的 provider 包括：`openai`、`azure_openai`、`gemini`、`bedrock`、`ollama`、`anthropic`。`lollms` 无法接收图片输入，会在启动时直接报错。
+`VLM_PROCESS_ENABLE` 是多模态分析的总开关：设为 `false` 时，pipeline 会对每个多模态 item 输出 warning 并跳过，不调用 VLM；设为 `true` 时，生效的 VLM binding（设置了 `VLM_LLM_BINDING` 时取该值，否则取 `LLM_BINDING`）必须支持图片输入。当前支持视觉输入的 provider 包括：`openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama`、`anthropic`。`lollms` 无法接收图片输入，会在启动时直接报错。
 
 ### 6. Bedrock 角色级 SigV4 凭证
 

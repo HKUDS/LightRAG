@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from html import unescape
 from html.parser import HTMLParser
 
 from lightrag.utils import logger
@@ -116,7 +117,7 @@ def extract_thead_html(html: str) -> str | None:
         return None
     thead = stripped[start : close + len("</thead>")]
     # Blank check: drop a header whose cells hold no non-whitespace text.
-    if not re.sub(r"<[^>]+>", "", thead).strip():
+    if not unescape(re.sub(r"<[^>]+>", "", thead)).strip():
         return None
     return thead
 
