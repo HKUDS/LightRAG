@@ -4208,7 +4208,14 @@ def test_smart_assembly_gives_bibliography_its_own_references_block(monkeypatch)
         _para("以上为全文结束语。"),
     ]
 
-    result = run_smart_heading(records, llm_judge=_no_title_llm, warnings={})
+    result = run_smart_heading(
+        records,
+        llm_judge=_no_title_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
     assert result is not None
     blocks = _assemble_blocks_smart(records, result, {}, {})
 
