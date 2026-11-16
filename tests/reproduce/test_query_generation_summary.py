@@ -44,3 +44,29 @@ def test_summary_retains_both_existing_offset_windows(count, budget, head, tail)
     expected = [str(i) for i in range(*head)] + [str(i) for i in range(*tail)]
     assert actual == expected
     assert len(actual) <= budget
+
+
+@pytest.mark.parametrize(
+    "count,budget,expected",
+    [
+        (0, 2000, (0, 0)),
+        (300, 2000, (0, 300)),
+        (1000, 2000, (0, 1000)),
+        (1500, 2000, (0, 1500)),
+        (3000, 2000, (0, 2000)),
+        (3999, 2000, (0, 2000)),
+        (2999, 1000, (0, 1000)),
+    ],
+)
+def test_short_context_is_sampled_from_the_start(count, budget, expected):
+    # Below 2 * (1000 + budget // 2) tokens the offset windows would be empty
+    # or overlap, which dropped or repeated text instead of summarizing it.
+    tokens = [str(i) for i in range(count)]
+    actual = load_get_summary()(" ".join(tokens), budget).split()
+    assert actual == [str(i) for i in range(*expected)]
+
+
+def test_windows_at_threshold_are_adjacent_and_disjoint():
+    tokens = [str(i) for i in range(4000)]
+    actual = load_get_summary()(" ".join(tokens), 2000).split()
+    assert actual == tokens[1000:3000]
