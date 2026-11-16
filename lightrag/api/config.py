@@ -579,16 +579,24 @@ def parse_args() -> argparse.Namespace:
     # This registers command line arguments (e.g., --openai-llm-temperature)
     # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
 
-    # Parse selectors separately so equals syntax and repeated options follow
-    # argparse's own rules without consuming --help before provider options exist.
-    binding_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    # Pre-parse the two selectors with argparse itself, so the provider options
+    # registered below follow the binding the final parse will report: equals
+    # syntax, the last of repeated options and abbreviations (``allow_abbrev``
+    # stays on, as on ``parser``) all resolve the same way. ``add_help=False``
+    # keeps --help for the final parse, which lists the provider options. A
+    # malformed selector (e.g. a missing value) falls back to the defaults and
+    # is reported by the final parse, with the full usage text.
+    binding_parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
     binding_parser.add_argument(
         "--llm-binding", default=parser.get_default("llm_binding")
     )
     binding_parser.add_argument(
         "--embedding-binding", default=parser.get_default("embedding_binding")
     )
-    binding_args, _ = binding_parser.parse_known_args()
+    try:
+        binding_args, _ = binding_parser.parse_known_args()
+    except argparse.ArgumentError:
+        binding_args = binding_parser.parse_known_args([])[0]
     llm_binding_value = binding_args.llm_binding
 
     # Add LLM binding options based on determined value
