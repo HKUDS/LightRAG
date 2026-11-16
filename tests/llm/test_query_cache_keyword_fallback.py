@@ -5,18 +5,22 @@ the other list in on the same store. Before that routing existed the same
 request read a different store (``local`` with no low-level keywords ran a
 relationship search), so an answer cached back then was written from another
 context and must not be served. The fallback name therefore joins the
-answer-cache key -- only when a fallback applies, so every other entry written
-before the change still hits.
+answer-cache key -- only when a fallback applies, so every other request keeps
+the key it would have without that component. The snapshot is composed under
+the current policy version: the version bump to v3 retires every older entry
+on its own (``test_query_cache_user_prompt_prefix.py``), which is a separate
+decision from the fallback component.
 """
 
 import pytest
 
 from lightrag.base import QueryParam
+from lightrag.operate import _ANSWER_CACHE_POLICY_VERSION
 
 from .test_query_cache_user_prompt_prefix import (
     _answer_cache_keys,
     _FakeKVStorage,
-    _preprefix_answer_cache_key,
+    _v2_answer_cache_key,
     _query_global_config,
     _RecordingModel,
     _run_kg,
@@ -34,17 +38,18 @@ def _param(mode: str, *, hl: list[str], ll: list[str]) -> QueryParam:
 
 
 async def _cache_key(param: QueryParam) -> tuple[str, str]:
-    """Return (key written by the current code, key the old code would use)."""
+    """Return (key written by the current code, key without the fallback)."""
     cache = _FakeKVStorage()
     cfg = _query_global_config(_RecordingModel())
 
     await _run_kg(param, cfg, cache)
 
     (written,) = _answer_cache_keys(cache)
-    old = _preprefix_answer_cache_key(
+    old = _v2_answer_cache_key(
         param,
         cfg,
         keywords=(", ".join(param.hl_keywords), ", ".join(param.ll_keywords)),
+        policy_version=_ANSWER_CACHE_POLICY_VERSION,
     )
     return written, old
 
