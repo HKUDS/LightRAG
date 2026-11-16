@@ -15,6 +15,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import numpy as np
 import pytest
 
 from lightrag.llm.nvidia_openai import nvidia_openai_embed
@@ -51,7 +52,7 @@ async def test_client_closed_after_success():
     with patch("lightrag.llm.nvidia_openai.AsyncOpenAI", return_value=fake):
         result = await nvidia_openai_embed.func.__wrapped__(texts=["hello"])
 
-    assert result.tolist() == [[0.1, 0.2, 0.3]]
+    np.testing.assert_array_equal(result, np.array([[0.1, 0.2, 0.3]], dtype=np.float32))
     fake.embeddings.create.assert_awaited_once()
     fake.close.assert_awaited()
 
