@@ -568,26 +568,30 @@ async def llm_model_func(
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model_name="gemini-2.0-flash",
+        model_name="gemini-flash-latest",
         **kwargs
     )
 
+# send_dimensions=True makes LightRAG pass embedding_dim to the wrapper, which
+# must accept it and forward it so Gemini returns vectors of that size.
 @wrap_embedding_func_with_attrs(
     embedding_dim=768,
+    send_dimensions=True,
     max_token_size=2048,
-    model_name="models/text-embedding-004"
+    model_name="gemini-embedding-001"
 )
-async def embedding_func(texts: list[str]) -> np.ndarray:
+async def embedding_func(texts: list[str], embedding_dim: int | None = None) -> np.ndarray:
     return await gemini_embed.func(
         texts,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model="models/text-embedding-004"
+        model="gemini-embedding-001",
+        embedding_dim=embedding_dim
     )
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
-    llm_model_name="gemini-2.0-flash",
+    llm_model_name="gemini-flash-latest",
     embedding_func=embedding_func
 )
 ```
