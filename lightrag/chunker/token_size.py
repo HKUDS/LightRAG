@@ -43,11 +43,17 @@ def _locate_window_in_content(
     covers only the intact text and is NOT a verbatim slice of the window.
 
     Returns ``(start, end, anchorable)`` or ``None`` when neither probe finds
-    the window. ``anchorable`` is False when the stripped text occurs more than
-    once in the search range (repetitive text such as an emoji run): the
-    occurrence nearest the predicted offset is returned as the span, but the
-    caller must not re-anchor on it, or an off-by-a-period pick would become
-    the base of every later prediction and drift past the ``find`` range.
+    the window. ``anchorable`` says whether ``start`` is a verified char offset
+    for the window's first token, and is False in two cases:
+
+    - The window began inside a character (leading U+FFFD stripped): the
+      match starts after that character, so the next delta decode would count
+      its remaining bytes as extra characters and every later prediction would
+      be shifted; in repetitive text the shifted exact-match check still passes.
+    - The stripped text occurs more than once in the search range (repetitive
+      text such as an emoji run): the occurrence nearest the predicted offset
+      is returned as the span, but an off-by-a-period pick must not become the
+      base of later predictions.
     """
     if content[start:end] == window:
         return start, end, True
@@ -62,8 +68,11 @@ def _locate_window_in_content(
     first = content.find(trimmed, lo, hi)
     if first < 0:
         return None
+    # A leading trim means ``start_token`` points inside a character while
+    # the match starts after it: not a (token, char) pair to anchor on.
+    leading_trim = window[0] == _REPLACEMENT_CHAR
     if content.find(trimmed, first + 1, hi) < 0:
-        return first, first + len(trimmed), True
+        return first, first + len(trimmed), not leading_trim
     # ``start`` predicts where ``trimmed`` begins: the split character's head
     # bytes decoded to U+FFFD at the end of the delta, so the prediction lands
     # just past that character.
@@ -123,10 +132,12 @@ def _token_window_source_span(
     A window whose boundary split a multi-byte character carries leading/trailing
     U+FFFD; it is located with those stripped (see
     :func:`_locate_window_in_content`), so its span is narrower than its content.
-    When that stripped text is ambiguous in the search range, the span is still
-    returned but the anchor is not moved: only a verified position may seed the
-    next prediction. A run of such windows decodes its delta from the last
-    verified anchor, which is O(run length) per window instead of one step.
+    Such a span is returned, but the anchor moves only when the window began on
+    a character boundary and the stripped text is unique in the search range:
+    only a verified ``(token, char)`` pair may seed the next prediction. A run
+    of windows that do not qualify decodes its delta from the last verified
+    anchor, which is O(run length) per window instead of one step -- the same
+    cost as a run of windows that cannot be located at all.
 
     Returns ``(span, new_anchor)``. On a window that cannot be located even with
     boundary U+FFFD stripped, the span is ``None`` and the anchor is returned

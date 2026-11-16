@@ -315,3 +315,132 @@ def test_repetitive_boundary_windows_do_not_drift_the_anchor(
     )
     backfill_chunk_sidecars(chunks, str(blocks_path))
     assert all(chunk.get("sidecar") for chunk in chunks)
+
+
+@pytest.mark.offline
+def test_leading_trimmed_window_does_not_shift_later_spans(tmp_path) -> None:
+    """A window that began inside a character is located after it, so its
+    match is not a verified (token, char) anchor. Anchoring on it shifted the
+    next prediction by the leftover bytes; over repeated text the shifted
+    exact-match check still passed and a clean chunk was attributed to the
+    wrong blocks."""
+    import json
+
+    from lightrag.sidecar.backfill import backfill_chunk_sidecars
+
+    blocks = [("b0", "abcde😀qr😀a")] + [(f"b{i}", "a" * 12) for i in range(1, 7)]
+    text = "\n\n".join(content for _, content in blocks)
+    chunks = chunking_by_fixed_token(
+        Tokenizer("bytes", _ByteTokenizer()),
+        text,
+        chunk_token_size=6,
+        chunk_overlap_token_size=0,
+        _emit_source_span=True,
+    )
+    for k, chunk in enumerate(chunks):
+        expected = _byte_window_char_span(text, k * 6, k * 6 + 6)
+        assert expected is not None
+        assert chunk.get("_source_span") == _source_span(text, *expected), k
+
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    rows = [json.dumps({"type": "meta", "format": "lightrag", "version": "1.0"})]
+    rows += [
+        json.dumps({"type": "content", "blockid": blockid, "content": content})
+        for blockid, content in blocks
+    ]
+    blocks_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    backfill_chunk_sidecars(chunks, str(blocks_path))
+    refs = [[r["id"] for r in chunk["sidecar"]["refs"]] for chunk in chunks]
+    # Shifted anchoring attributed chunk #7 to ["b1", "b2"] and every later
+    # chunk one block too early.
+    assert refs == [
+        ["b0"], ["b0"], ["b0"], ["b1"], ["b1"], ["b2"], ["b2"], ["b2", "b3"],
+        ["b3"], ["b3"], ["b4"], ["b4"], ["b5"], ["b5"], ["b5", "b6"], ["b6"], ["b6"],
+    ]  # fmt: skip
+
+
+_BYTE_AUDIT_ALPHABET = ["a", "a", "a", "b", " ", "😀", "中", "é", "\n", "x"]
+# Multi-character pieces so BPE merges produce tokens that end mid-character.
+_BPE_AUDIT_ALPHABET = _BYTE_AUDIT_ALPHABET + ["the ", "👨\u200d👩", "中文", "🇨🇳", "→"]
+
+
+def _random_boundary_text(rng, alphabet: list[str]) -> str:
+    parts = []
+    for _ in range(rng.randint(1, 6)):
+        if rng.random() < 0.4:  # a repeated run, where shifted matches hide
+            parts.append(rng.choice(alphabet) * rng.randint(1, 30))
+        else:
+            parts.append(
+                "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 20)))
+            )
+    return "".join(parts)
+
+
+@pytest.mark.offline
+def test_every_span_is_the_window_position_under_byte_tokenizer() -> None:
+    """Seeded differential audit against ground truth: with one token per
+    byte, the characters wholly inside each window's bytes are known exactly,
+    so every emitted span must equal that position -- not merely text that
+    happens to match somewhere else in repetitive input."""
+    import random
+
+    rng = random.Random(7)
+    tok = Tokenizer("bytes", _ByteTokenizer())
+    for case in range(400):
+        text = _random_boundary_text(rng, _BYTE_AUDIT_ALPHABET)
+        if not text.strip():
+            continue
+        size = rng.randint(2, 24)
+        overlap = rng.randint(0, size - 1)
+        chunks = chunking_by_fixed_token(
+            tok,
+            text,
+            chunk_token_size=size,
+            chunk_overlap_token_size=overlap,
+            _emit_source_span=True,
+        )
+        step = size - overlap
+        for k, chunk in enumerate(chunks):
+            expected = _byte_window_char_span(text, k * step, k * step + size)
+            want = _source_span(text, *expected) if expected else None
+            assert chunk.get("_source_span") == want, (case, k, text, size, overlap)
+
+
+@pytest.mark.offline
+def test_every_span_is_the_window_position_under_tiktoken() -> None:
+    """The same audit with a real byte-level BPE tokenizer; ground truth comes
+    from each token's byte length."""
+    pytest.importorskip("tiktoken")
+    import random
+
+    from lightrag.utils import TiktokenTokenizer
+
+    tok = TiktokenTokenizer()
+    encoding = tok.tokenizer
+    rng = random.Random(11)
+    for case in range(150):
+        text = _random_boundary_text(rng, _BPE_AUDIT_ALPHABET)
+        if not text.strip():
+            continue
+        tokens = encoding.encode(text)
+        byte_offsets = [0]
+        for token in tokens:
+            byte_offsets.append(
+                byte_offsets[-1] + len(encoding.decode_single_token_bytes(token))
+            )
+        size = rng.randint(2, 24)
+        overlap = rng.randint(0, size - 1)
+        chunks = chunking_by_fixed_token(
+            tok,
+            text,
+            chunk_token_size=size,
+            chunk_overlap_token_size=overlap,
+            _emit_source_span=True,
+        )
+        step = size - overlap
+        for k, chunk in enumerate(chunks):
+            b0 = byte_offsets[k * step]
+            b1 = byte_offsets[min(len(tokens), k * step + size)]
+            expected = _byte_window_char_span(text, b0, b1)
+            want = _source_span(text, *expected) if expected else None
+            assert chunk.get("_source_span") == want, (case, k, text, size, overlap)
