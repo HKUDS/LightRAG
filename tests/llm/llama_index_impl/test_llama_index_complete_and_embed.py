@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from lightrag.llm import llama_index_impl
 from lightrag.llm.llama_index_impl import llama_index_complete, llama_index_embed
 
 pytestmark = pytest.mark.offline
@@ -103,6 +104,30 @@ async def test_llama_index_complete_max_tokens_does_not_override_explicit_chat_k
     )
 
     assert llm.received_kwargs == {"max_tokens": 64, "temperature": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_llama_index_complete_ignores_settings(monkeypatch):
+    """settings is a documented no-op on llama_index_complete: the call runs
+    on llm_instance, so a Settings object must neither be applied through
+    configure_llama_index() (whose set_global call no longer exists on the
+    llama-index 0.14 Settings singleton, so applying it raised
+    AttributeError on every completion) nor leak into achat()."""
+    from llama_index.core.settings import Settings
+
+    configured = []
+    monkeypatch.setattr(
+        llama_index_impl,
+        "configure_llama_index",
+        lambda *args, **kwargs: configured.append((args, kwargs)),
+    )
+    llm = _FakeLLM(content="hello back")
+
+    result = await llama_index_complete("hi", llm_instance=llm, settings=Settings)
+
+    assert result == "hello back"
+    assert configured == []
+    assert llm.received_kwargs == {}
 
 
 class _FakeEmbedModel:
