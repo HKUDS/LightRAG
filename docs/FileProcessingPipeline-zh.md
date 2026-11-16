@@ -798,7 +798,7 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 - `/documents/scan` 同一次扫描中发现多个规范化后同名的文件时，**先取得 canonical claim 的文件获胜**（即目录流式遍历时先到达的那个）。可丢弃磁盘 spool 中的 scan-wide UNIQUE claim 会在任何候选落库前把后续变体归档并输出 warning。例如 `abc.docx` 和 `abc.[native].docx` 同时存在时只处理先被遍历到的那一个。hint 只决定引擎，不再提供调度优先级。
 - 扫描或解析过程中发现内容 hash 重复时，该输入文件同样会移动到 `__parsed__`；本次 `doc_status` 保留为 `FAILED duplicate` 以便追踪。
 - 移动文件只作用于当前输入文件，不会覆盖或移动既有文档源文件。若目标目录已存在同名文件，系统会自动追加 `_001`、`_002` 等编号，例如 `report.pdf` 会依次归档为 `report_001.pdf`、`report_002.pdf`。若分析结果目录名已被普通文件占用，也会追加编号，例如 `report.docx.parsed_001/`。
-- 因此当文档自身名称已以 `_NNN` 或 10 位以上时间戳结尾时，归档名是有歧义的：`__parsed__/report_001.pdf` 可能是 `report_001.pdf` 的首份归档，也可能是 `report.pdf` 的编号副本。`delete_file=true` 删除时按两种读法匹配，但只要另一种读法对应的源仍被某个文档引用，或该查询失败，就保留该文件（并在 pipeline 历史中记录 "Archived file kept"）。可接受的残留是多留下一个本可删除的文件；在用文档的归档源文件绝不会被删除。
+- 因此当文档自身名称已以 `_NNN` 或 10 位以上时间戳结尾时，归档名是有歧义的：`__parsed__/report_001.pdf` 可能是 `report_001.pdf` 的首份归档，也可能是 `report.pdf` 的编号副本。`delete_file=true` 删除时按两种读法匹配，但只要另一种读法对应的源仍被某个文档引用，或该查询失败，就保留该文件（并在 pipeline 历史中记录 "Archived file kept"）。可接受的残留是多留下一个本可删除的文件；在用文档的归档源文件绝不会被删除。被保留的文件会在另一种读法对应的源之后也以 `delete_file=true` 删除时一并清理；若仅因查询失败而保留、且另一种读法并无对应文档，则会一直保留，需手动删除。
 
 ### 6.3 原始产物包（`<base>.*_raw/`）
 
