@@ -42,21 +42,24 @@ def configure_llama_index(settings: Any = None, **kwargs):
     Configure LlamaIndex settings.
 
     Args:
-        settings: LlamaIndex Settings instance. If None, uses default settings.
+        settings: Settings object to configure in place. If None, uses the
+            LlamaIndex Settings singleton. Provided objects are not installed
+            as global settings.
         **kwargs: Additional settings to override/configure
     """
     if settings is None:
-        settings = LlamaIndexSettings()
+        settings = LlamaIndexSettings
 
-    # Update settings with any provided kwargs
+    # Update settings with any provided kwargs. Look the name up on the class,
+    # not the instance: hasattr() on the instance runs lazy property getters
+    # (Settings.llm, Settings.embed_model) that load a default OpenAI model and
+    # raise without OPENAI_API_KEY, before the caller's value is assigned.
     for key, value in kwargs.items():
-        if hasattr(settings, key):
+        if hasattr(type(settings), key) or key in getattr(settings, "__dict__", {}):
             setattr(settings, key, value)
         else:
             logger.warning(f"Unknown LlamaIndex setting: {key}")
 
-    # Set as global settings
-    LlamaIndexSettings.set_global(settings)
     return settings
 
 
