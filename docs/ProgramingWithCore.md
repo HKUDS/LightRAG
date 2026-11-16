@@ -461,11 +461,6 @@ For low-RAM GPUs (e.g. 6GB), select a small model and tune the context window. F
 
 LightRAG supports integration with LlamaIndex (`llm/llama_index_impl.py`):
 
-`llama_index_embed` honors the supplied model's `embed_batch_size` and
-`embeddings_cache` through its asynchronous batch API. LightRAG's
-`embedding_batch_num` controls how many texts reach the adapter; the model can
-split that batch further before calling its embedding service.
-
 ```python
 import asyncio
 from lightrag import LightRAG
@@ -490,6 +485,23 @@ async def initialize_rag():
     await rag.initialize_storages()
     return rag
 ```
+
+**Embedding batch sizes:** `llama_index_embed` calls the model's public
+`aget_text_embedding_batch`, so the model's `embed_batch_size` and
+`embeddings_cache` apply. The two batch sizes stack:
+
+- LightRAG's `embedding_batch_num` (`EMBEDDING_BATCH_NUM`) sets how many texts
+  one `embedding_func` call hands to the adapter, and `embedding_func_max_async`
+  (`EMBEDDING_FUNC_MAX_ASYNC`) caps how many of those calls run at once.
+- The model's `embed_batch_size` (LlamaIndex default: 10) splits each call into
+  sub-batches of at most that many texts, one embedding request each, and
+  LlamaIndex sends a call's sub-batches concurrently. Up to
+  `embedding_func_max_async × ceil(embedding_batch_num / embed_batch_size)`
+  requests can therefore be in flight; with `EMBEDDING_BATCH_NUM=32` and the
+  default `embed_batch_size`, each call becomes four concurrent requests.
+- Set `embed_batch_size` to the provider's per-request input limit. To keep one
+  request per call, set `embed_batch_size >= embedding_batch_num`; to lower the
+  overall request concurrency, lower `embedding_func_max_async`.
 
 **Further reading:**
 - [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)

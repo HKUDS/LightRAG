@@ -6,6 +6,7 @@ with the kwargs the role LLM wrapper forwards into them.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ from llama_index.core.storage.kvstore import SimpleKVStore
 from pydantic import Field
 
 from lightrag.llm.llama_index_impl import llama_index_complete, llama_index_embed
+from lightrag.utils import EmbeddingFunc
 
 pytestmark = pytest.mark.offline
 
@@ -153,6 +155,30 @@ async def test_llama_index_embed_respects_batch_size_and_order() -> None:
     result = await llama_index_embed.func(texts, embed_model=model)
 
     assert sorted(model.batches) == sorted([["c", "a"], ["b", "d"], ["e"]])
+    np.testing.assert_array_equal(
+        result, np.array([model.vectors[text] for text in texts])
+    )
+
+
+@pytest.mark.asyncio
+async def test_llama_index_embed_split_batches_pass_embedding_func_contract() -> None:
+    """Wired as the docs show, the re-assembled sub-batches still satisfy
+    EmbeddingFunc's one-row-per-text shape check, in input order."""
+    texts = ["c", "a", "b", "d", "e"]
+    model = _RecordingEmbedModel(
+        vectors={text: [float(i), 0.5] for i, text in enumerate(texts)},
+        embed_batch_size=2,
+    )
+    embedding_func = EmbeddingFunc(
+        embedding_dim=2,
+        max_token_size=64,
+        func=partial(llama_index_embed.func, embed_model=model),
+    )
+
+    result = await embedding_func(texts)
+
+    assert result.shape == (len(texts), 2)
+    assert sorted(len(batch) for batch in model.batches) == [1, 2, 2]
     np.testing.assert_array_equal(
         result, np.array([model.vectors[text] for text in texts])
     )
