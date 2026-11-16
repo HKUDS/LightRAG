@@ -167,9 +167,9 @@ def test_credential_and_milvus_defaults_when_env_source_lacks_values(tmp_path) -
 def test_image_tags_stay_in_sync_with_repo() -> None:
     """The script must mirror the repo's image tags so the two do not drift.
 
-    Postgres deliberately differs: the setup template's AGE image is amd64-only,
-    so the arm64 stack uses pgvector/pgvector:pg18 (which docker-compose-full.yml
-    also uses).
+    Postgres differs only by tag: the stack uses pgvector/pgvector:pg18 (as
+    docker-compose-full.yml does), while the setup template uses that image's
+    trixie build to stay compatible with volumes the earlier AGE image created.
     """
     script_text = SCRIPT.read_text()
     milvus_tpl = (
@@ -177,14 +177,14 @@ def test_image_tags_stay_in_sync_with_repo() -> None:
     ).read_text()
 
     # Tags shared verbatim with scripts/setup/templates/milvus.yml.
-    assert "milvusdb/milvus:v2.6.11" in script_text
-    assert "milvusdb/milvus:v2.6.11" in milvus_tpl
+    assert "milvusdb/milvus:v2.6.27" in script_text
+    assert "milvusdb/milvus:v2.6.27" in milvus_tpl
     assert "quay.io/coreos/etcd:v3.5.25" in script_text
-    assert "minio/minio:RELEASE.2025-09-07T16-13-09Z" in script_text
+    assert "milvusdb/minio:RELEASE.2024-12-18T13-15-44Z" in script_text
     assert "neo4j:5-community" in script_text
 
     # Never the GPU Milvus tag (amd64 + CUDA, unusable on Apple Silicon).
-    assert "milvus:v2.6.11-gpu" not in script_text
+    assert "milvus:v2.6.27-gpu" not in script_text
 
     # Postgres uses the multi-arch pgvector image, not the amd64-only AGE image
     # (the AGE image may still be named in comments explaining the deviation).
