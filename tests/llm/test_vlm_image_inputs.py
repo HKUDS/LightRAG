@@ -64,6 +64,21 @@ def test_data_url_syntax_is_ascii_case_insensitive(prefix):
     assert image_cache_metadata([image]) == image_cache_metadata([canonical])
 
 
+@pytest.mark.parametrize(
+    "item",
+    [
+        f"data:IMAGE/PNG;base64,{_b64(PNG_BYTES)}",
+        f"DATA:Image/Png;BASE64,{_b64(PNG_BYTES)}",
+        {"base64": _b64(PNG_BYTES), "mime_type": "Image/PNG"},
+    ],
+)
+def test_declared_mime_type_is_lowercased(item):
+    [image] = normalize_image_inputs([item])
+    [canonical] = normalize_image_inputs([f"data:image/png;base64,{_b64(PNG_BYTES)}"])
+    assert image.mime_type == "image/png"
+    assert image_cache_metadata([image]) == image_cache_metadata([canonical])
+
+
 @pytest.mark.parametrize("marker", ["base65", "baſe64"])
 def test_data_url_rejects_invalid_or_non_ascii_markers(marker):
     with pytest.raises(ValueError):

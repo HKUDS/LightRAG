@@ -32,6 +32,7 @@ PNG_B64 = base64.b64encode(PNG_BYTES).decode("ascii")
         f"data:image/png;BASE64,{PNG_B64}",
         f"DATA:image/png;base64,{PNG_B64}",
         f"DaTa:image/png;BaSe64,{PNG_B64}",
+        f"DATA:IMAGE/PNG;BASE64,{PNG_B64}",
     ],
 )
 @pytest.mark.asyncio

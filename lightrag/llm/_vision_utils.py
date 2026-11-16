@@ -10,6 +10,10 @@ element may be:
 - a dict with keys ``base64`` (required) and optional ``mime_type``,
   ``source_id``, ``source_file``, ``modality``, ``doc_id``.
 
+A declared MIME type (from a data URL or the dict's ``mime_type``) is
+lowercased, as MIME types are case-insensitive while provider APIs and the
+cache key expect the canonical lowercase form.
+
 The provider-specific binding code converts the normalized result to its own
 content-block format. The VLM pipeline uses :func:`image_cache_metadata` for
 cache-key inputs (deliberately excluding ``source_id`` / ``source_file`` so the
@@ -109,6 +113,8 @@ def normalize_image_inputs(
         if not raw_bytes:
             raise ValueError(f"image_inputs[{idx}] decoded to empty bytes")
         mime_type = item.get("mime_type") or _detect_mime(raw_bytes)
+        if isinstance(mime_type, str):
+            mime_type = mime_type.lower()
         sha = hashlib.sha256(raw_bytes).hexdigest()
         clean_b64 = base64.b64encode(raw_bytes).decode("ascii")
         dims = _dimensions_from_bytes(raw_bytes)
