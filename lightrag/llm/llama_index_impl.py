@@ -241,6 +241,12 @@ async def llama_index_embed(
     """
     Generate embeddings using LlamaIndex
 
+    The model's ``embed_batch_size`` and ``embeddings_cache`` apply: each call
+    is split into sub-batches of at most ``embed_batch_size`` texts, sent as
+    concurrent requests. Set ``embed_batch_size >= embedding_batch_num`` to
+    keep one request per call. See "Embedding batch sizes" in
+    docs/ProgramingWithCore.md.
+
     Args:
         texts: List of texts to embed
         embed_model: LlamaIndex embedding model
@@ -253,7 +259,6 @@ async def llama_index_embed(
     if embed_model is None:
         raise ValueError("embed_model must be provided")
 
-    # Use the async batch method -- the sync _get_text_embeddings would
-    # block the event loop for the whole embedding call.
-    embeddings = await embed_model._aget_text_embeddings(texts)
+    # Preserve the model's batching, cache, and callbacks on the async path.
+    embeddings = await embed_model.aget_text_embedding_batch(texts)
     return np.array(embeddings)
