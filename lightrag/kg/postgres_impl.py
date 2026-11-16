@@ -4174,6 +4174,12 @@ class PGKVStorage(BaseKVStorage):
 
         Returns:
             None
+
+        Raises:
+            The database error, after logging it. Never swallow it: the
+            document-deletion pipeline relies on the raise to keep the
+            document's retry record instead of reporting a delete that did
+            not happen.
         """
         if not ids:
             return
@@ -4221,6 +4227,7 @@ class PGKVStorage(BaseKVStorage):
             logger.error(
                 f"[{self.workspace}] Error while deleting records from {self.namespace}: {e}"
             )
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
@@ -7447,6 +7454,12 @@ class PGDocStatusStorage(DocStatusStorage):
 
         Returns:
             None
+
+        Raises:
+            The database error, after logging it. Never swallow it: the
+            document-deletion pipeline relies on the raise to keep the
+            document's retry record instead of reporting a delete that did
+            not happen.
         """
         if not ids:
             return
@@ -7494,6 +7507,7 @@ class PGDocStatusStorage(DocStatusStorage):
             logger.error(
                 f"[{self.workspace}] Error while deleting records from {self.namespace}: {e}"
             )
+            raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Update or insert document status
