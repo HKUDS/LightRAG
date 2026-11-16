@@ -82,6 +82,19 @@ def test_adjacent_same_level_headings_merge_across_one_blank() -> None:
     assert merged.member_indices == (0, 2)
 
 
+def test_merge_stops_at_a_bibliography_boundary() -> None:
+    """A heading inside a bibliography control never merges with one outside:
+    the merged heading would carry outside text into the droppable block."""
+    records = _records(3)
+    records[0].in_references = True
+    records[1].in_references = True
+    ds = [_d("参考文献", 2, idx=0), _d("[1] 张三", 2, idx=1), _d("附录", 2, idx=2)]
+
+    out = merge_split_headings(ds, records, strong_body=_stub_strong_body, warnings={})
+
+    assert [d.text for d in out] == ["参考文献 [1] 张三", "附录"]
+
+
 def test_merge_respects_four_line_cap() -> None:
     """G8-3: a 5-line "heading" chain stops merging at 4 lines."""
     records = _records(5)
