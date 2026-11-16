@@ -334,7 +334,11 @@ class TableExtractor:
             trPr = tr.find(qn("w:trPr"))
             if trPr is not None:
                 tbl_header = trPr.find(qn("w:tblHeader"))
-                if tbl_header is not None:
+                if tbl_header is not None and tbl_header.get(qn("w:val")) not in (
+                    "0",
+                    "false",
+                    "off",
+                ):
                     header_indices.append(idx)
 
         # Process each row by directly iterating <w:tr> elements
