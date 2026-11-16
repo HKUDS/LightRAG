@@ -189,7 +189,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 
 - Use mock-based tests for external services (Redis, httpx, etc.) — do not depend on live services in unit tests.
 - Add regression tests for every bug fix.
-- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~7800 offline tests: about 5 minutes serially, ~70 s with `-n auto` on an 8-core machine — still too slow for the edit loop. Every PR's CI runs the full offline suite (plus `tests/setup/` and, with the real RAGAS stack, `tests/evaluation/` when their inputs change) — proving nothing else broke is its job, not yours.
+- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~11500 offline tests: about 5 minutes serially, ~70 s with `-n auto` on an 8-core machine — still too slow for the edit loop. Every PR's CI runs the full offline suite (plus `tests/setup/` and, with the real RAGAS stack, `tests/evaluation/` when their inputs change) — proving nothing else broke is its job, not yours.
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - **`tests/setup/` is the setup wizard's suite and runs only when a wizard input changed**: `scripts/setup/**`, `env.example`, `docker-compose*.yml`, `Makefile`, or `tests/setup/` itself. It never imports `lightrag`, so a `lightrag/` change never needs it. `norecursedirs` in `pyproject.toml` already skips it in every recursive run (`pytest`, `pytest tests`, the full suite, CI's main job); run it by naming it: `./scripts/test.sh tests/setup`. The easy one to miss is `env.example`: adding a config knob for `lightrag` usually edits it, and the wizard parses it, so that change runs `tests/setup/` too.
 - Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits). **Run it with `-n auto --dist worksteal`** (pytest-xdist, in the `pytest` extra): on an 8-core machine it cuts ~5 min to ~1 min. CI does not use `-n` because hosted 4-vCPU runners showed no gain; it splits the suite by directory into parallel shard jobs instead (`.github/workflows/tests.yml`, where the shard lists live). Do not add `-n` to subset runs: every worker re-collects and re-imports the suite (~12 s), which costs more than a single directory saves. Drop `-n` when you need `pdb`/`-s` or ordered output.
@@ -206,7 +206,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 # Run specific test file
 ./scripts/test.sh tests/kg/test_graph_storage.py
 
-# Full suite — ~7800 offline tests; milestones and cross-cutting changes only.
+# Full suite — ~11500 offline tests; milestones and cross-cutting changes only.
 # Parallel via pytest-xdist: ~70 s on 8 cores (vs ~5 min serial).
 # tests/setup is skipped by default (norecursedirs); name it explicitly when
 # scripts/setup/, env.example, docker-compose*.yml or Makefile change.
