@@ -235,7 +235,20 @@ class NativeImageRawCache:
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            # An unreadable manifest is a cache miss, never a parse failure:
+            # the bundle is an optional download cache. Accepted residue: the
+            # bad file is removed only by this run's first put()
+            # (_ensure_writable_dir clears an invalid bundle) and replaced by
+            # flush(). A run that stores nothing (no external images,
+            # downloads disabled or all refused) leaves it on disk, and every
+            # later load() reads it as a miss again. That is harmless: it only
+            # costs re-downloading images the old bundle may still hold.
+            logger.debug(
+                "[native_md_cache] unreadable manifest, treating as a miss: %s (%s)",
+                path,
+                exc,
+            )
             return None
         if not isinstance(payload, dict):
             return None
