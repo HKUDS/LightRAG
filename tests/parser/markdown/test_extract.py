@@ -9,6 +9,8 @@ resolver.
 from __future__ import annotations
 
 import itertools
+import random
+import re
 import time
 import tracemalloc
 
@@ -77,28 +79,68 @@ def _reference_match(line: str, start: int) -> tuple[int, str] | None:
     return None if end is None else (end, line[source_start:source_end])
 
 
+_REFERENCE_CANDIDATE_RE = re.compile(r"`+|!\[")
+_REFERENCE_BACKTICKS_RE = re.compile(r"`+")
+
+
+def _reference_escaped(line: str, index: int) -> bool:
+    backslashes = len(line[:index]) - len(line[:index].rstrip("\\"))
+    return backslashes % 2 == 1
+
+
+def _reference_skip_backticks(line: str, run: re.Match[str]) -> int:
+    opener_start = run.start() + _reference_escaped(line, run.start())
+    length = run.end() - opener_start
+    if length:
+        for closer in _REFERENCE_BACKTICKS_RE.finditer(line, run.end()):
+            if closer.end() - closer.start() == length:
+                return closer.end()
+    return run.end()
+
+
+def _reference_alt_end_is_literal(line: str, start: int) -> bool:
+    alt_end = line.find("]", start + 2)
+    if alt_end < 0:
+        return False
+    if _reference_escaped(line, alt_end):
+        return True
+    scan = start + 2
+    while run := _REFERENCE_BACKTICKS_RE.search(line, scan, alt_end):
+        scan = _reference_skip_backticks(line, run)
+        if scan > alt_end:
+            return True
+    return False
+
+
 def _reference_replace_inline_images(line: str) -> str:
     """The strict image grammar, written naively (quadratic, no caches).
 
-    It is the oracle for the scanner's cached searches. It has no lenient
-    retry, so it is only valid for lines without an image file extension.
+    It is the oracle for the scanner's cached searches, code spans and
+    escapes included. It has no lenient retry, so it is only valid for lines
+    without an image file extension.
     """
     parts: list[str] = []
     position = 0
-    while True:
-        start = line.find("![", position)
-        if start < 0:
-            parts.append(line[position:])
-            return "".join(parts)
-        matched = _reference_match(line, start)
+    cursor = 0
+    while candidate := _REFERENCE_CANDIDATE_RE.search(line, cursor):
+        start = candidate.start()
+        if candidate.group() != "![":
+            cursor = _reference_skip_backticks(line, candidate)
+            continue
+        matched = None
+        if not _reference_escaped(line, start) and not (
+            _reference_alt_end_is_literal(line, start)
+        ):
+            matched = _reference_match(line, start)
         if matched is None:
-            parts.append(line[position : start + 2])
-            position = start + 2
+            cursor = start + 2
             continue
         end, src = matched
         parts.append(line[position:start])
         parts.append(f"<{src}>")
-        position = end
+        position = cursor = end
+    parts.append(line[position:])
+    return "".join(parts)
 
 
 class _StubResolver:
@@ -783,6 +825,11 @@ def test_parenthesised_source_is_limited_in_length():
         "![x](a(" + "()" * 500_000 + ")",
         "![x](a b" + ".png)" * 200_000,
         "![x](a (b" + ".png) " * 200_000,
+        # Code spans are skipped, never indexed: a whole-line list of backtick
+        # runs took 48 MiB for this line.
+        "![x](a.png) " + "`a" * 200_000,
+        "![x](a.png) " + "``a`" * 100_000,
+        "![x](a.png) " + "".join("`" * k + " " for k in range(1, 1_400)),
     ],
 )
 def test_inline_image_scanner_memory_stays_bounded(line):
@@ -838,6 +885,54 @@ def test_lenient_retry_scales_linearly_for_malformed_candidates(unit):
     assert _scan_time_ratio(unit * 1_024 + suffix, unit * 8_192 + suffix) < 16
 
 
+@pytest.mark.parametrize(
+    ("unit", "suffix"),
+    [
+        ("`a", ""),  # closed spans
+        ("``a`", ""),  # openers that never close
+        ("\\``a", ""),  # escaped openers
+        ("![", "`](x.png)`"),  # nested candidates, alt ends inside a span
+        ("![ `a` ", "`](x.png)`"),  # ... after spans closed in the alt text
+        ("![", "\\](x.png)"),  # nested candidates, escaped alt end
+    ],
+)
+def test_code_span_and_escape_checks_scale_linearly(unit, suffix):
+    def line_with(count: int) -> str:
+        return "![x](a.png) " + unit * count + suffix
+
+    assert _scan_time_ratio(line_with(1_024), line_with(8_192)) < 16
+
+
+def test_escape_check_on_a_shared_alt_end_scales_linearly():
+    # Every nested candidate ends its alt text at one ``]`` behind a long odd
+    # backslash run; counting that run once per candidate was quadratic.
+    def line_with(count: int) -> str:
+        return "![" * count + "\\" * (2 * count + 1) + "](x.png)"
+
+    assert _scan_time_ratio(line_with(1_024), line_with(8_192)) < 16
+
+
+class _CopyCountingLine(str):
+    """A line that counts the characters its slices copy."""
+
+    copied = 0
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            self.copied += len(range(*key.indices(len(self))))
+        return str.__getitem__(self, key)
+
+
+@pytest.mark.parametrize("alt_end", ["\\]", "`]", " `a` `]"])
+@pytest.mark.parametrize("source", ["<" + "a" * 4_096 + ">", "a" * 4_096])
+def test_rejected_alt_text_does_not_copy_the_source_per_candidate(alt_end, source):
+    # Nested candidates share one literal ``]`` and a long source. Matching
+    # the source before rejecting copied it once per candidate.
+    line = _CopyCountingLine("![" * 2_048 + alt_end + "(" + source + ") `")
+    assert _replace_inline_images(line, lambda src: "<>") == line
+    assert line.copied <= 2 * len(line)
+
+
 def test_inline_image_scanner_matches_reference_grammar_for_short_inputs():
     # The first case previously exposed a cache query that fell back to an
     # earlier start after a title search. The generated short corpora protect
@@ -857,6 +952,33 @@ def test_inline_image_scanner_matches_reference_grammar_for_short_inputs():
         ("".join(parts) for parts in itertools.product(paren_pieces, repeat=6)),
     )
     for line in corpus:
+        assert _replace_inline_images(
+            line, lambda src: f"<{src}>"
+        ) == _reference_replace_inline_images(line), line
+
+
+def test_code_spans_and_escapes_match_reference_for_short_inputs():
+    # The cached closing-run search once moved its per-length memory back to
+    # an earlier run, which hid a later closer from every following opener.
+    pieces = ("`", "``", "\\", "![a](", "![", "]", "(", ")", "x", " ")
+    corpus = itertools.chain(
+        (
+            "``x `a` `b ![i](i) ` `",
+            "``u `a` `in ``` t` ![r](r) ```",
+        ),
+        ("".join(parts) for parts in itertools.product(pieces, repeat=5)),
+    )
+    for line in corpus:
+        assert _replace_inline_images(
+            line, lambda src: f"<{src}>"
+        ) == _reference_replace_inline_images(line), line
+
+
+def test_code_spans_and_escapes_match_reference_for_random_lines():
+    pieces = ("`", "``", "```", "\\", "![a](b)", "![", "](c)", "]", " ", "x")
+    rng = random.Random(4133)
+    for _ in range(20_000):
+        line = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 24)))
         assert _replace_inline_images(
             line, lambda src: f"<{src}>"
         ) == _reference_replace_inline_images(line), line
