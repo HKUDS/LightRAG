@@ -207,9 +207,9 @@ def _source_span_matches_chunk_body(source_text: str, body: str) -> bool:
         return True
     if _normalize_text(source_text) == _normalize_text(body):
         return True
-    if "\ufffd" not in body:
+    cleaned = body.strip("\ufffd")
+    if cleaned == body:
         return False
-    cleaned = body.replace("\ufffd", "")
     if source_text == cleaned:
         return True
     return _normalize_text(source_text) == _normalize_text(cleaned)

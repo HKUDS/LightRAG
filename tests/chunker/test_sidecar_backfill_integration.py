@@ -289,10 +289,9 @@ def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
 def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> None:
     # Regression: tiktoken is byte-level, so a 4-byte UTF-8 char (emoji / rare CJK
     # extension) can have its bytes split across a token-window boundary. Decoding the
-    # partial window yields U+FFFD in BOTH the chunk content and its span probe, so the
-    # chunk is unlocatable by span or by text. Span-first backfill must skip provenance
-    # for the corrupt chunks while still attributing the clean ones, not FAIL the whole
-    # document.
+    # partial window yields U+FFFD at the edge of the chunk content. The chunker
+    # relocates such a window with the U+FFFD stripped; backfill attributes it when it
+    # has a span and skips it when it has none, and never FAILs the whole document.
     pytest.importorskip("tiktoken")
     from lightrag.utils import TiktokenTokenizer
 

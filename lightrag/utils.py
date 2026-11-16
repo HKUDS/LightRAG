@@ -4388,6 +4388,14 @@ def _map_child_span(
     return {"start": abs_start, "end": abs_end}
 
 
+# U+FFFD. A token window whose boundary splits a multi-byte UTF-8 character
+# (any non-ASCII char: 2-byte Latin/Greek, 3-byte CJK and symbols, 4-byte emoji)
+# decodes the partial bytes to this character. Shared by the fixed-token chunker,
+# this function and sidecar backfill so the three agree on what a boundary
+# artifact is.
+_REPLACEMENT_CHAR = "\ufffd"
+
+
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
@@ -4413,7 +4421,7 @@ def enforce_chunk_token_limit_before_embedding(
     ``ainsert_custom_chunks``); a parent that would need the projection in
     that case just loses its children's ``_source_span`` instead of raising,
     matching this function's pre-existing behavior for callers with no
-    provenance concept at all.     When ``source_content`` IS supplied but a
+    provenance concept at all. When ``source_content`` IS supplied but a
     parent's content has diverged from it beyond whitespace, the projection
     cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
     than silently emitting a wrong span — the same failure sidecar backfill
@@ -4421,8 +4429,11 @@ def enforce_chunk_token_limit_before_embedding(
     A span recovered by stripping boundary U+FFFD, or a parent with no span
     whose content still contains U+FFFD, is not that divergence: the children
     are marked ``_source_span_unavailable`` (popped before the chunk dict is
-    stored) so backfill degrades them instead of failing the document. A
-    literal U+FFFD that does not reconcile with the source slice still raises.
+    stored) so backfill degrades them instead of failing the document. The
+    recovered case is recognized by the content minus its leading/trailing
+    U+FFFD matching the source slice; interior U+FFFD that the source itself
+    contains does not disqualify it. Content that does not reconcile with the
+    source slice still raises.
 
     Known limitation -- ``sidecar`` is not re-scoped for pre-sidecar chunks:
     this function runs BEFORE :func:`lightrag.sidecar.backfill.backfill_chunk_sidecars`
@@ -4513,14 +4524,17 @@ def enforce_chunk_token_limit_before_embedding(
                 # verbatim slice of the chunk beside it. Child offsets cannot
                 # be projected (a ZWJ sequence makes the width gap unequal to
                 # the replacement count). Mark the children unavailable
-                # instead of raising. A literal U+FFFD that does not
-                # reconcile with the source slice is still a real divergence.
+                # instead of raising. Interior U+FFFD is allowed: the source
+                # comparison below proves it is the source's own character.
+                # Content that does not reconcile with the source slice is
+                # still a real divergence.
                 boundary_artifact = False
                 if source_content and (
-                    content.startswith("\ufffd") or content.endswith("\ufffd")
+                    content.startswith(_REPLACEMENT_CHAR)
+                    or content.endswith(_REPLACEMENT_CHAR)
                 ):
-                    stripped = content.strip("\ufffd")
-                    if stripped and "\ufffd" not in stripped:
+                    stripped = content.strip(_REPLACEMENT_CHAR)
+                    if stripped:
                         source_slice = source_content[parent_start:parent_end]
                         stripped_compact = "".join(stripped.split())
                         if source_slice == stripped or (
@@ -4548,7 +4562,7 @@ def enforce_chunk_token_limit_before_embedding(
                     # _map_child_span is never reached with an untrustworthy
                     # direct-arithmetic assumption).
                     parent_start = parent_end = None
-        if parent_start is None and "\ufffd" in content:
+        if parent_start is None and _REPLACEMENT_CHAR in content:
             # No usable parent span (probe failed, or a boundary-recovered
             # span we refused to project). Children that no longer contain
             # U+FFFD must degrade instead of failing backfill. A literal

@@ -26,10 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from lightrag.exceptions import ChunkTokenLimitExceededError
-from lightrag.utils import Tokenizer, logger
-
-# U+FFFD appears when a token window boundary splits a multi-byte UTF-8 character.
-_REPLACEMENT_CHAR = "\ufffd"
+from lightrag.utils import _REPLACEMENT_CHAR, Tokenizer, logger
 
 
 def _locate_window_in_content(
@@ -38,7 +35,14 @@ def _locate_window_in_content(
     start: int,
     end: int,
 ) -> tuple[int, int] | None:
-    """Map a decoded window back to char offsets in ``content``."""
+    """Map a decoded window back to char offsets in ``content``.
+
+    Tries the predicted offset, then a ``find`` near it. When the window
+    carries leading/trailing U+FFFD from a split multi-byte character, the
+    probe is retried with those characters stripped; the returned span then
+    covers only the intact text and is NOT a verbatim slice of the window.
+    Returns ``None`` when neither probe finds the window.
+    """
     if content[start:end] == window:
         return start, end
     lo = max(0, start - 32)
@@ -94,9 +98,13 @@ def _token_window_source_span(
     position each call keeps the error from accumulating. Net cost is O(N) total
     while the located span stays byte-exact.
 
-    Returns ``(span, new_anchor)``. On an unlocatable (U+FFFD) window the span is
-    ``None`` and the anchor is returned unchanged so the next window still predicts
-    from the last verified position.
+    A window whose boundary split a multi-byte character carries leading/trailing
+    U+FFFD; it is located with those stripped (see
+    :func:`_locate_window_in_content`), so its span is narrower than its content.
+
+    Returns ``(span, new_anchor)``. On a window that cannot be located even with
+    boundary U+FFFD stripped, the span is ``None`` and the anchor is returned
+    unchanged so the next window still predicts from the last verified position.
     """
     anchor_token, anchor_char = anchor
     window = tokenizer.decode(tokens[start_token:end_token])

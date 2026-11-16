@@ -386,6 +386,37 @@ def test_boundary_replacement_children_are_marked_unavailable_not_failed():
         assert "_source_span" not in record
 
 
+def test_boundary_recovered_parent_with_literal_fffd_is_marked_not_raised():
+    """A source that itself contains U+FFFD, under a boundary-recovered span.
+
+    The parent's content minus its edge U+FFFD equals the source slice, so the
+    interior U+FFFD is the source's own character and the parent is a boundary
+    artifact like any other: mark the children, do not raise."""
+    source = "hello \ufffd world this is a boundary chunk"
+    content = "\ufffd" + source + "\ufffd"
+    chunking_result = [
+        {
+            "content": content,
+            "tokens": len(content),
+            "chunk_order_index": 0,
+            "chunk_id": "c0",
+            "_source_span": {"start": 0, "end": len(source)},
+        }
+    ]
+
+    out = enforce_chunk_token_limit_before_embedding(
+        chunking_result,
+        _tok(),
+        max_tokens=5,
+        overlap_tokens=0,
+        source_content=source,
+    )
+
+    assert len(out) > 1
+    assert all(dp.get("_source_span_unavailable") is True for dp in out)
+    assert all("_source_span" not in dp for dp in out)
+
+
 def test_spanless_replacement_parent_marks_clean_children_unavailable():
     """Probe failure leaves no _source_span. Hard-split children that no
     longer contain U+FFFD must still be marked, or backfill fails them."""
