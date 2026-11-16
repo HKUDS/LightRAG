@@ -5,6 +5,14 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+
+# pymongo ships only with the offline-storage extra: skip this module rather
+# than fail collection of the whole tests/pipeline subset when it is absent.
+pytest.importorskip(
+    "pymongo",
+    reason="pymongo is required for Mongo storage tests",
+)
+
 from pymongo.errors import PyMongoError
 
 from lightrag.kg.mongo_impl import MongoKVStorage
