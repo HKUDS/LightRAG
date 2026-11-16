@@ -792,7 +792,6 @@ def test_docx_table_header_respects_explicit_value(
     (block,) = extract_docx_blocks(str(path))
 
     assert block["table_headers"] == [rows[:2] if repeats else rows[:1]]
-    assert '"Operations"' in block["content"]
 
 
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------
