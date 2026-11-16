@@ -404,10 +404,6 @@ def write_sidecar(
 # ---------------------------------------------------------------------------
 
 
-# Leading whitespace, or trailing whitespace and dots, in any mix.
-_ASSET_NAME_EDGE_RE = re.compile(r"^\s+|[\s.]+$")
-
-
 def _materialize_assets(
     assets: list[AssetSpec],
     assets_dir: Path,
@@ -519,9 +515,14 @@ def safe_asset_filename(suggested: str) -> str:
     have to change.
     """
     name = Path(str(suggested).replace("\\", "/")).name
-    name = "".join(c for c in name if ord(c) >= 32 and c != "\x7f")
-    name = _ASSET_NAME_EDGE_RE.sub("", name)
-    return name or "asset"
+    name = "".join(c for c in name if ord(c) >= 32 and c != "\x7f").lstrip()
+    # Trailing whitespace and dots in any mix. A plain scan, not a regex: an
+    # unanchored ``[\s.]+$`` retries every run start and is quadratic on a
+    # long run of dots that does not reach the end (``"." * n + "x.png"``).
+    end = len(name)
+    while end and (name[end - 1] == "." or name[end - 1].isspace()):
+        end -= 1
+    return name[:end] or "asset"
 
 
 def _render_block_content(

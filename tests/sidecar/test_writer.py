@@ -768,6 +768,21 @@ def test_safe_asset_filename_is_canonical(suggested: str, expected: str) -> None
 
 
 @pytest.mark.offline
+def test_safe_asset_filename_is_linear_on_long_dot_runs() -> None:
+    """A long run of dots that does not reach the end must not make the trim
+    quadratic: the name comes from an untrusted ZIP part, and a regex edge trim
+    took seconds on 20k dots while holding the GIL. On 50k dots the linear
+    trim takes a few milliseconds and the quadratic one about 15 seconds, so
+    the 1-second budget is loose for the first and decisive for the second."""
+    import time
+
+    name = "." * 50_000 + "x.png"
+    started = time.perf_counter()
+    assert safe_asset_filename(name) == name
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.offline
 def test_materialize_assets_refuses_non_canonical_in_place_name(
     tmp_path: Path, lightrag_log_records
 ) -> None:
