@@ -7424,6 +7424,20 @@ async def process_chunks_unified(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
         )
+        if not unique_chunks:
+            # Every candidate survived rerank and top-k, so only the token
+            # budget can have emptied the list: make that visible.
+            hint = (
+                "raise max_total_tokens"
+                if source_type == "vector"
+                else "raise max_total_tokens or lower max_entity_tokens / "
+                "max_relation_tokens so the graph context leaves room for chunks"
+            )
+            logger.warning(
+                f"Token budget left no room for any of {original_count} retrieved "
+                f"chunks (available for chunks: {chunk_token_limit} tokens, "
+                f"source: {source_type}); {hint}"
+            )
 
     # 5. add id field to each chunk
     final_chunks = []
