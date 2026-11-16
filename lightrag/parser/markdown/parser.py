@@ -81,6 +81,7 @@ from lightrag.parser.markdown.raw_cache import (
     native_md_options_signature,
 )
 from lightrag.parser.native_base import NativeExtractRuntime, NativeParserBase
+from lightrag.parser.text_decoding import decode_text_bytes
 from lightrag.utils import logger
 
 if TYPE_CHECKING:
@@ -1604,7 +1605,7 @@ class NativeMarkdownParser(NativeParserBase):
                 finally:
                     rmtree(tmp_dir, ignore_errors=True)
             else:
-                md_text = source.read_bytes().decode("utf-8-sig")
+                md_text = decode_text_bytes(source.read_bytes())
                 result = self._extract_text(
                     md_text,
                     bundle_root=None,
@@ -1651,7 +1652,7 @@ class NativeMarkdownParser(NativeParserBase):
             max_total_bytes=_TEXTPACK_MAX_TOTAL_BYTES,
         )
         text_file = self._find_text_file(tmp_dir, source.name)
-        return text_file.read_bytes().decode("utf-8-sig"), text_file.parent
+        return decode_text_bytes(text_file.read_bytes()), text_file.parent
 
     @staticmethod
     def _find_text_file(root: Path, source_name: str) -> Path:
