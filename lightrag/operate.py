@@ -4968,6 +4968,13 @@ async def kg_query(
         # store's context, so it must miss; every other entry keeps hitting,
         # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
         *(("\n<kg_keyword_fallback>\n", keyword_fallback) if keyword_fallback else ()),
+        # Present only when max_total_tokens dropped graph records or chunks.
+        # Before that enforcement the same request was answered from the
+        # untrimmed context, whose citations no longer match the regenerated
+        # reference list, so such an entry must miss; a request the budget
+        # leaves untouched builds the same context and keeps hitting, which
+        # is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        *(("\n<kg_total_budget_trim>\n",) if context_result.budget_trimmed else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -5800,6 +5807,7 @@ async def _apply_token_truncation(
         )
 
     budget_exhausted = False
+    budget_trimmed = False
     if query is not None:
         fitted = await run_in_tokenizer_executor(
             _fit_kg_context_to_total_budget,
@@ -5812,6 +5820,10 @@ async def _apply_token_truncation(
             system_prompt,
         )
         budget_exhausted = fitted is None
+        if fitted:
+            budget_trimmed = len(fitted[0]) < len(entities_context) or len(
+                fitted[1]
+            ) < len(relations_context)
         entities_context, relations_context = fitted[:2] if fitted else ([], [])
 
     logger.info(
@@ -5880,6 +5892,7 @@ async def _apply_token_truncation(
         "entity_id_to_original": filtered_entity_id_to_original,
         "relation_id_to_original": filtered_relation_id_to_original,
         "token_budget_exceeded": budget_exhausted,
+        "token_budget_trimmed": budget_trimmed,
     }
 
 
@@ -6220,6 +6233,9 @@ async def _build_context_str(
     )
     if fitted is None:
         return budget_failure()
+    budget_trimmed = len(fitted[0]) < len(entities_context) or len(fitted[1]) < len(
+        relations_context
+    )
     entities_context, relations_context = fitted[:2]
     if (
         had_graph_context
@@ -6344,6 +6360,7 @@ async def _build_context_str(
         and not retained_chunks
     ):
         return budget_failure()
+    budget_trimmed = budget_trimmed or len(retained_chunks) < len(truncated_chunks)
     truncated_chunks = retained_chunks
 
     logger.info(
@@ -6395,6 +6412,10 @@ async def _build_context_str(
         entity_id_to_original,
         relation_id_to_original,
     )
+    if budget_trimmed:
+        # Read (and removed) by _build_query_context to partition the answer
+        # cache; see the comment where kg_query builds its key.
+        final_data.setdefault("metadata", {})["token_budget_trimmed"] = True
     final_data_payload = final_data.get("data", {})
     logger.debug(
         f"[_build_context_str] Final data after conversion: {len(final_data_payload.get('entities', []))} entities, {len(final_data_payload.get('relationships', []))} relationships, {len(final_data_payload.get('chunks', []))} chunks"
@@ -6541,7 +6562,13 @@ async def _build_query_context(
         f"[_build_query_context] Raw data entities: {len(raw_data.get('data', {}).get('entities', []))}, relationships: {len(raw_data.get('data', {}).get('relationships', []))}, chunks: {len(raw_data.get('data', {}).get('chunks', []))}"
     )
 
-    return QueryContextResult(context=context, raw_data=raw_data)
+    budget_trimmed = bool(
+        raw_data["metadata"].pop("token_budget_trimmed", False)
+        or truncation_result["token_budget_trimmed"]
+    )
+    return QueryContextResult(
+        context=context, raw_data=raw_data, budget_trimmed=budget_trimmed
+    )
 
 
 async def _get_node_data(

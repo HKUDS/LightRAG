@@ -2256,10 +2256,13 @@ class QueryContextResult:
     Attributes:
         context: LLM context string
         raw_data: Complete structured data including reference_list
+        budget_trimmed: True when max_total_tokens dropped graph records or
+            chunks the per-source limits had kept; part of the answer-cache key
     """
 
     context: str
     raw_data: Dict[str, Any]
+    budget_trimmed: bool = False
 
     @property
     def reference_list(self) -> List[Dict[str, str]]:
