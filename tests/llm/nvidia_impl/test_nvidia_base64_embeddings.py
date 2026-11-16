@@ -64,7 +64,7 @@ async def test_embedding_encoding_preserves_numeric_vectors(
     result = await nvidia_openai.nvidia_openai_embed(texts, encode=encode)
 
     assert result.shape == (batch_size, 2048)
-    assert np.issubdtype(result.dtype, np.floating)
+    assert result.dtype == np.float32
     np.testing.assert_array_equal(result, expected)
     assert requests[0]["input"] == texts
     assert requests[0]["encoding_format"] == encode
