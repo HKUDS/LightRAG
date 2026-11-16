@@ -24,6 +24,8 @@ from lightrag.parser.docx.drawing_image_extractor import (
     extract_vml_image_placeholder_from_element,
     parse_drawing_attributes,
 )
+from lightrag.sidecar.ir import AssetSpec
+from lightrag.sidecar.writer import _materialize_assets
 
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
@@ -286,6 +288,46 @@ def test_temporary_file_cannot_delete_an_existing_dot_part_asset(
     assert (export_dir / ".foo.part").read_bytes() == b"FIRST"
     assert (export_dir / "foo").read_bytes() == b"SECOND"
     assert sorted(path.name for path in export_dir.iterdir()) == [".foo.part", "foo"]
+
+
+@pytest.mark.offline
+def test_exported_names_are_canonical_for_the_sidecar_writer(
+    tmp_path: Path,
+) -> None:
+    """Exported files carry the name the sidecar writer would give them.
+
+    The writer looks pre-extracted assets up by name and refuses one it would
+    have to rename. A ZIP part named ``img.png.`` used to be exported verbatim,
+    so the writer canonicalised it to ``img.png`` and rendered the drawing
+    with a sibling image of that name. Now the trailing dot goes at export,
+    the collision is resolved here, and both images reach the sidecar.
+    """
+    docx_path = tmp_path / "doc.docx"
+    with zipfile.ZipFile(docx_path, "w") as zf:
+        zf.writestr("word/media/img.png.", b"TRAILING")
+        zf.writestr("word/media/img.png", b"PLAIN")
+
+    export_dir = tmp_path / "assets"
+    export_dir.mkdir()
+    ctx = DrawingExtractionContext(
+        docx_path=docx_path,
+        export_dir_name="assets",
+        export_dir_path=export_dir,
+    )
+
+    first = ctx.export_embedded_image(_embedded_rel("rId1", "img.png."))
+    second = ctx.export_embedded_image(_embedded_rel("rId2", "img.png"))
+    assert first == "assets/img.png"
+    assert second == "assets/img_2.png"
+
+    names = [Path(first).name, Path(second).name]
+    out = _materialize_assets(
+        [AssetSpec(ref=name, suggested_name=name, source=None) for name in names],
+        export_dir,
+    )
+    assert out == {"img.png": "img.png", "img_2.png": "img_2.png"}
+    assert (export_dir / "img.png").read_bytes() == b"TRAILING"
+    assert (export_dir / "img_2.png").read_bytes() == b"PLAIN"
 
 
 @pytest.mark.offline
