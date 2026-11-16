@@ -118,10 +118,9 @@ class Neo4JStorage(BaseGraphStorage):
         """Return the actual Neo4j label name for this workspace (no escaping).
 
         This is the un-escaped label as it is stored on nodes. It is safe to
-        bind as a query parameter (for example, APOC ``labelFilter``), where
-        Neo4j handles the value without string interpolation and therefore
-        without any risk of Cypher injection. It must NOT be interpolated
-        directly into a query string.
+        bind as a query parameter, where Neo4j handles the value without string
+        interpolation and therefore without any risk of Cypher injection. It
+        must NOT be interpolated directly into a query string.
         """
         workspace = self.workspace.strip()
         return workspace if workspace else "base"
@@ -135,9 +134,8 @@ class Neo4JStorage(BaseGraphStorage):
         inside backticks (for example, MATCH (n:`{label}`)) and is not
         validated as a standalone unquoted identifier.
 
-        For string-literal contexts (such as the APOC ``labelFilter`` config),
-        do NOT interpolate this value; bind ``_get_raw_workspace_label()`` as a
-        query parameter instead.
+        For string-literal contexts, do NOT interpolate this value; bind
+        ``_get_raw_workspace_label()`` as a query parameter instead.
         """
         return self._get_raw_workspace_label().replace("`", "``")
 
@@ -1324,9 +1322,6 @@ class Neo4JStorage(BaseGraphStorage):
             max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
         workspace_label = self._get_workspace_label()
-        # Raw (un-escaped) label bound as a query parameter for APOC labelFilter,
-        # which lives inside a Cypher string literal and must not be interpolated.
-        workspace_label_raw = self._get_raw_workspace_label()
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
@@ -1386,14 +1381,18 @@ class Neo4JStorage(BaseGraphStorage):
 
                 else:
                     # return await self._robust_fallback(node_label, max_depth, max_nodes)
-                    # First try without limit to check if we need to truncate
+                    # First try without limit to check if we need to truncate.
+                    # The subgraph calls pass no APOC labelFilter: APOC parses it with
+                    # its own syntax (':', ',', '|', '+', '>' ...), so a workspace
+                    # name containing those characters filtered out its own nodes.
+                    # Edges are only created between nodes of the same workspace
+                    # (see upsert_edge), so the traversal cannot leave it anyway.
                     full_query = f"""
                     MATCH (start:`{workspace_label}`)
                     WHERE start.entity_id = $entity_id
                     WITH start
                     CALL apoc.path.subgraphAll(start, {{
                         relationshipFilter: '',
-                        labelFilter: $label_filter,
                         minLevel: 0,
                         maxLevel: $max_depth,
                         bfs: true
@@ -1413,7 +1412,6 @@ class Neo4JStorage(BaseGraphStorage):
                             {
                                 "entity_id": node_label,
                                 "max_depth": max_depth,
-                                "label_filter": workspace_label_raw,
                             },
                         )
                         full_record = await full_result.single()
@@ -1448,7 +1446,6 @@ class Neo4JStorage(BaseGraphStorage):
                             WITH start
                             CALL apoc.path.subgraphAll(start, {{
                                 relationshipFilter: '',
-                                labelFilter: $label_filter,
                                 minLevel: 0,
                                 maxLevel: $max_depth,
                                 limit: $max_nodes,
@@ -1467,7 +1464,6 @@ class Neo4JStorage(BaseGraphStorage):
                                         "entity_id": node_label,
                                         "max_depth": max_depth,
                                         "max_nodes": max_nodes,
-                                        "label_filter": workspace_label_raw,
                                     },
                                 )
                                 record = await result_set.single()

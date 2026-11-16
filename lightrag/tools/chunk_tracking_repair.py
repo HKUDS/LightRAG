@@ -34,7 +34,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from lightrag.base import CURSOR_END, CURSOR_START, DocStatus
-from lightrag.constants import RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.constants import DEFAULT_WORKING_DIR, RELATION_NO_EVIDENCE_SOURCE_IDS
 from lightrag.utils import (
     EmbeddingFunc,
     has_chunk_tracking_row,
@@ -1052,7 +1052,7 @@ async def _build_rag():
         raise RuntimeError("chunk_tracking_repair never embeds")
 
     return LightRAG(
-        working_dir=os.getenv("WORKING_DIR", "./rag_storage"),
+        working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
         workspace=os.getenv("WORKSPACE", ""),
         kv_storage=os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
         graph_storage=os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),

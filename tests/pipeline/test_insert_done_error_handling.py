@@ -16,7 +16,6 @@ backend flush is exercised — this is pure lightrag.py logic.
 from __future__ import annotations
 
 import asyncio
-import logging
 from uuid import uuid4
 
 import numpy as np
@@ -34,17 +33,9 @@ pytestmark = pytest.mark.offline
 
 
 @pytest.fixture(autouse=True)
-def _propagate_lightrag_logs():
-    """The ``lightrag`` logger sets ``propagate=False``, so caplog's root
-    handler would miss its records. Re-enable propagation for these tests so
-    ``caplog`` can capture the best-effort error logs we assert on."""
-    lg = logging.getLogger("lightrag")
-    old = lg.propagate
-    lg.propagate = True
-    try:
-        yield
-    finally:
-        lg.propagate = old
+def _lightrag_records_reach_caplog(lightrag_caplog):
+    """Tests here assert on ``lightrag`` records through caplog."""
+    yield
 
 
 class _SimpleTokenizerImpl:

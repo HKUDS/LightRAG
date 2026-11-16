@@ -8,11 +8,12 @@ import aiohttp
 from dotenv import load_dotenv
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
 
+from .llm._aiohttp_retry import is_transient_aiohttp_error
 from .utils import logger, normalize_rerank_result, run_in_tokenizer_executor
 
 # use the .env that is inside the current folder
@@ -232,10 +233,10 @@ def aggregate_chunk_scores(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=(
-        retry_if_exception_type(aiohttp.ClientError)
-        | retry_if_exception_type(aiohttp.ClientResponseError)
-    ),
+    retry=retry_if_exception(is_transient_aiohttp_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the "Error during reranking" log names the provider's message.
+    reraise=True,
 )
 async def generic_rerank_api(
     query: str,
@@ -270,6 +271,12 @@ async def generic_rerank_api(
 
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
+
+    Raises:
+        aiohttp.ClientResponseError: If the rerank API returns a non-200
+            response. Connection failures and 408 / 409 / 429 / 5xx responses
+            are retried up to three attempts first; the last attempt's
+            exception is raised as-is, never wrapped in ``tenacity.RetryError``.
     """
     if not base_url:
         raise ValueError("Base URL is required")

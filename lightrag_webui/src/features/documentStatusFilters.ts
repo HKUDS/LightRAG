@@ -1,6 +1,6 @@
 import type { DocStatus, DocumentsRequest } from '@/api/lightrag'
 
-export type StatusBucket = 'completed' | 'parse' | 'analyze' | 'process' | 'failed'
+export type StatusBucket = 'completed' | 'parse' | 'analyze' | 'process' | 'failed' | 'deleting'
 export type StatusFilter = StatusBucket | 'all'
 
 // Each filter bucket maps to exactly one DocStatus. `pending` and the deprecated
@@ -11,6 +11,7 @@ const BUCKET_TO_STATUS: Record<StatusBucket, DocStatus> = {
   parse: 'parsing',
   analyze: 'analyzing',
   process: 'processing',
+  deleting: 'deleting',
   failed: 'failed'
 }
 

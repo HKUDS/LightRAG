@@ -25,6 +25,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from lightrag.parser.docx.content_controls import is_hidden_inline_control
+from lightrag.parser.docx.ooxml import is_on
 from lightrag.utils import logger
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -128,14 +130,6 @@ class StyleAttributes:
         return self._resolved_alignment.get(style_id)
 
 
-def _parse_bool_attr(elem) -> bool:
-    """OOXML on/off value: absent val means on; "0"/"false"/"none" mean off."""
-    val = elem.get(_w("val"))
-    if val is None:
-        return True
-    return val not in ("0", "false", "none")
-
-
 def _grid_half_points(val: str | None) -> int | None:
     """Parse a w:sz/w:szCs val to the nearest 0.5pt-grid half-point, or None.
 
@@ -182,7 +176,7 @@ def _read_rpr(rpr, raw: _RawStyle) -> None:
                 setattr(raw, attr, size)
     b = rpr.find(_w("b"))
     if b is not None:
-        raw.bold = _parse_bool_attr(b)
+        raw.bold = is_on(b)
 
 
 def parse_styles_attributes(
@@ -239,7 +233,7 @@ def parse_styles_attributes(
                     continue
                 # Record the default paragraph style (``w:default`` is an
                 # attribute on ``<w:style>``, OOXML on/off semantics — not a
-                # child ``w:val``, so _parse_bool_attr does not apply).
+                # child ``w:val``, so is_on does not apply).
                 if style.get(_w("type")) == "paragraph" and style.get(
                     _w("default")
                 ) in ("1", "true", "on"):
@@ -403,7 +397,7 @@ def _element_direct_bold(rpr) -> bool | None:
     b = rpr.find(_w("b"))
     if b is None:
         return None
-    return _parse_bool_attr(b)
+    return is_on(b)
 
 
 def _run_visible_text(run) -> str:
@@ -516,7 +510,8 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
 
     - ``_SKIP_REVISION_SUBTREES`` (``w:del`` / ``w:moveFrom`` / comment markers)
       are skipped whole. Content the author deleted is not on the page, so it can
-      neither supply padding nor mask the real leading content.
+      neither supply padding nor mask the real leading content. A content
+      control still showing its placeholder is skipped the same way.
     - a drawing / picture / OLE object / OMML equation reached before the first
       visible character sets the flag (see :func:`leading_pad_em`);
     - ``w:t`` text and ``w:tab`` build the line; a soft ``w:br`` ends it (page /
@@ -536,7 +531,7 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
     def visit(node) -> None:
         nonlocal nontext_leads, line_done
         tag = node.tag
-        if tag in _SKIP_REVISION_SUBTREES:
+        if tag in _SKIP_REVISION_SUBTREES or is_hidden_inline_control(node):
             return
         if tag in _PRUNE_SUBTREE_TAGS or tag in _OMML_TAGS:
             if not _has_visible_char("".join(parts)):
@@ -678,7 +673,7 @@ def extract_paragraph_physical_features(
             para_style_id = pstyle.get(_w("val"))
         para_mark_rpr = ppr.find(_w("rPr"))
         pbb = ppr.find(_w("pageBreakBefore"))
-        if pbb is not None and _parse_bool_attr(pbb):
+        if pbb is not None and is_on(pbb):
             page_break_before = True
         jc = ppr.find(_w("jc"))
         if jc is not None:
@@ -746,7 +741,7 @@ def extract_paragraph_physical_features(
         nonlocal has_page_break_run, has_leading_page_break_run
         nonlocal has_nonleading_page_break_run, text_seen
         tag = node.tag
-        if tag in _PRUNE_SUBTREE_TAGS:
+        if tag in _PRUNE_SUBTREE_TAGS or is_hidden_inline_control(node):
             return
         if tag == _w("r"):
             # Skip the paragraph-mark rPr context: w:pPr/w:rPr is not a run.
