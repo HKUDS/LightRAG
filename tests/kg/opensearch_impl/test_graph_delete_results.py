@@ -37,6 +37,24 @@ async def test_graph_delete_item_results(monkeypatch, method, status):
     else:
         with pytest.raises(OpenSearchException, match="bulk deletion failed"):
             await getattr(storage, method)(values)
+    # A rejected item can follow deletes that already landed, so the search
+    # views are marked stale whatever the outcome.
+    assert storage._edges_dirty
+    assert storage._nodes_dirty == (method == "remove_nodes")
+
+
+@pytest.mark.asyncio
+async def test_delete_node_marks_views_dirty_when_node_delete_fails():
+    storage = OpenSearchGraphStorage("graph", {}, None, "test")
+    storage._indices_ready = True
+    storage.client = SimpleNamespace(
+        delete_by_query=AsyncMock(return_value={"deleted": 1, "failures": []}),
+        delete=AsyncMock(side_effect=OpenSearchException("unavailable")),
+    )
+    with pytest.raises(OpenSearchException, match="unavailable"):
+        await storage.delete_node("A")
+    assert storage._edges_dirty
+    assert storage._nodes_dirty
 
 
 @pytest.mark.asyncio
