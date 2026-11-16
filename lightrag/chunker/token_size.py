@@ -34,28 +34,50 @@ def _locate_window_in_content(
     window: str,
     start: int,
     end: int,
-) -> tuple[int, int] | None:
+) -> tuple[int, int, bool] | None:
     """Map a decoded window back to char offsets in ``content``.
 
     Tries the predicted offset, then a ``find`` near it. When the window
     carries leading/trailing U+FFFD from a split multi-byte character, the
     probe is retried with those characters stripped; the returned span then
     covers only the intact text and is NOT a verbatim slice of the window.
-    Returns ``None`` when neither probe finds the window.
+
+    Returns ``(start, end, anchorable)`` or ``None`` when neither probe finds
+    the window. ``anchorable`` is False when the stripped text occurs more than
+    once in the search range (repetitive text such as an emoji run): the
+    occurrence nearest the predicted offset is returned as the span, but the
+    caller must not re-anchor on it, or an off-by-a-period pick would become
+    the base of every later prediction and drift past the ``find`` range.
     """
     if content[start:end] == window:
-        return start, end
+        return start, end, True
     lo = max(0, start - 32)
     hi = min(len(content), end + 32 + len(window))
     found = content.find(window, lo, hi)
     if found >= 0:
-        return found, found + len(window)
+        return found, found + len(window), True
     trimmed = window.strip(_REPLACEMENT_CHAR)
-    if trimmed and trimmed != window:
-        found = content.find(trimmed, lo, hi)
-        if found >= 0:
-            return found, found + len(trimmed)
-    return None
+    if not trimmed or trimmed == window:
+        return None
+    first = content.find(trimmed, lo, hi)
+    if first < 0:
+        return None
+    if content.find(trimmed, first + 1, hi) < 0:
+        return first, first + len(trimmed), True
+    # ``start`` predicts where ``trimmed`` begins: the split character's head
+    # bytes decoded to U+FFFD at the end of the delta, so the prediction lands
+    # just past that character.
+    target = start
+    candidates = [
+        pos
+        for pos in (
+            content.rfind(trimmed, lo, min(hi, target + len(trimmed))),
+            content.find(trimmed, max(lo, target), hi),
+        )
+        if pos >= 0
+    ]
+    best = min(candidates, key=lambda pos: abs(pos - target))
+    return best, best + len(trimmed), False
 
 
 def _trimmed_span(content: str, start: int, end: int) -> tuple[int, int]:
@@ -101,6 +123,10 @@ def _token_window_source_span(
     A window whose boundary split a multi-byte character carries leading/trailing
     U+FFFD; it is located with those stripped (see
     :func:`_locate_window_in_content`), so its span is narrower than its content.
+    When that stripped text is ambiguous in the search range, the span is still
+    returned but the anchor is not moved: only a verified position may seed the
+    next prediction. A run of such windows decodes its delta from the last
+    verified anchor, which is O(run length) per window instead of one step.
 
     Returns ``(span, new_anchor)``. On a window that cannot be located even with
     boundary U+FFFD stripped, the span is ``None`` and the anchor is returned
@@ -116,8 +142,10 @@ def _token_window_source_span(
     located = _locate_window_in_content(content, window, start, end)
     if located is None:
         return None, anchor
-    start, end = located
-    return _source_span(content, start, end), (start_token, start)
+    start, end, anchorable = located
+    return _source_span(content, start, end), (
+        (start_token, start) if anchorable else anchor
+    )
 
 
 def _make_chunk(

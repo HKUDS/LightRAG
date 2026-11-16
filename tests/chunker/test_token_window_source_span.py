@@ -247,3 +247,71 @@ def test_emoji_heavy_fixed_token_windows_keep_source_span_coverage() -> None:
 
     uncovered = len(text) - sum(covered)
     assert uncovered / len(text) < 0.01
+
+
+class _ByteTokenizer(TokenizerInterface):
+    """One token per UTF-8 byte; decode replaces partial characters with U+FFFD."""
+
+    def encode(self, content: str) -> list[int]:
+        return list(content.encode("utf-8"))
+
+    def decode(self, tokens: list[int]) -> str:
+        return bytes(tokens).decode("utf-8", errors="replace")
+
+
+def _byte_window_char_span(text: str, b0: int, b1: int) -> tuple[int, int] | None:
+    """Char span of the characters lying wholly inside bytes ``[b0, b1)``."""
+    inside = []
+    pos = 0
+    for i, ch in enumerate(text):
+        width = len(ch.encode("utf-8"))
+        if pos >= b0 and pos + width <= b1:
+            inside.append(i)
+        pos += width
+    return (inside[0], inside[-1] + 1) if inside else None
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("text", "size", "overlap"),
+    [
+        ("😀" * 64 + " and then a unique ascii tail sentence here.", 9, 0),
+        ("x😀y" * 40 + " tail end", 9, 0),
+        ("é中😀" * 50, 7, 2),
+    ],
+)
+def test_repetitive_boundary_windows_do_not_drift_the_anchor(
+    text: str, size: int, overlap: int, tmp_path
+) -> None:
+    """A stripped probe that matches several places in repetitive text must
+    not become the anchor: the leftmost pick dragged every later prediction
+    backwards until clean windows lost their span and backfill failed the
+    document. Every span must be the window's own position."""
+    import json
+
+    from lightrag.sidecar.backfill import backfill_chunk_sidecars
+
+    chunks = chunking_by_fixed_token(
+        Tokenizer("bytes", _ByteTokenizer()),
+        text,
+        chunk_token_size=size,
+        chunk_overlap_token_size=overlap,
+        _emit_source_span=True,
+    )
+
+    step = size - overlap
+    for k, chunk in enumerate(chunks):
+        expected = _byte_window_char_span(text, k * step, k * step + size)
+        assert expected is not None
+        assert chunk.get("_source_span") == _source_span(text, *expected), k
+
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "format": "lightrag", "version": "1.0"})
+        + "\n"
+        + json.dumps({"type": "content", "blockid": "b1", "content": text})
+        + "\n",
+        encoding="utf-8",
+    )
+    backfill_chunk_sidecars(chunks, str(blocks_path))
+    assert all(chunk.get("sidecar") for chunk in chunks)
