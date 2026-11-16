@@ -306,7 +306,7 @@ def parse_styles_attributes(
 class RunFeature:
     """One run's visible text plus its effective formatting."""
 
-    text: str  # w:t content; soft line breaks contribute "\n"
+    text: str  # source run text; soft line breaks contribute "\n"
     size_half_points: int | None
     bold: bool
 
@@ -339,12 +339,12 @@ class ParagraphPhysicalFeatures:
 
     @property
     def visible_char_count(self) -> int:
-        """Visible source-text characters (w:t only), for FS_base weighting.
+        """Visible source-text characters, for FS_base weighting.
 
         FS_base must not be weighted by parser-generated text — auto-
         numbering labels, ``<sup>`` wrappers and ``<equation>``/``<drawing>``
         /``<table>`` placeholders. ``run_features`` already holds only source
-        ``w:t`` text (labels/placeholders never enter it), so the visible
+        run text (labels/placeholders never enter it), so the visible
         count is just the sum of per-run weights.
         """
         return sum(_weight(rf.text) for rf in self.run_features)
@@ -401,7 +401,14 @@ def _element_direct_bold(rpr) -> bool | None:
 
 
 def _run_visible_text(run) -> str:
-    """Visible text of one run: w:t contents, soft breaks as newline.
+    """Visible text of one run, read the way the body extractor reads it.
+
+    ``w:t`` contents; ``w:tab`` / ``w:ptab`` as ``"\\t"``; a soft ``w:br`` or a
+    ``w:cr`` as ``"\\n"``; ``w:noBreakHyphen`` as ``"-"``. These must stay the
+    characters ``parse_document.extract_text_from_run`` emits for the same
+    elements: the soft-break heading split partitions THAT text at its first
+    ``"\\n"``, and :func:`first_line_size_half_points` must clip these runs at
+    the same break.
 
     Counts only source OOXML text — numbering labels, ``<sup>`` wrappers and
     placeholder tokens the extractor synthesizes never appear here
@@ -412,12 +419,15 @@ def _run_visible_text(run) -> str:
         tag = child.tag
         if tag == _w("t"):
             parts.append(child.text or "")
-        elif tag == _w("br"):
-            # Page/column breaks are invisible; line breaks split lines.
+        elif tag in (_w("br"), _w("cr")):
+            # Page/column breaks are invisible; line breaks split lines. A
+            # w:cr carries no type, so it always splits.
             if child.get(_w("type")) in (None, "textWrapping"):
                 parts.append("\n")
-        elif tag == _w("tab"):
+        elif tag in (_w("tab"), _w("ptab")):
             parts.append("\t")
+        elif tag == _w("noBreakHyphen"):
+            parts.append("-")
     return "".join(parts)
 
 
@@ -514,8 +524,10 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
       control still showing its placeholder is skipped the same way.
     - a drawing / picture / OLE object / OMML equation reached before the first
       visible character sets the flag (see :func:`leading_pad_em`);
-    - ``w:t`` text and ``w:tab`` build the line; a soft ``w:br`` ends it (page /
-      column breaks are invisible and ignored).
+    - ``w:t`` text, ``w:tab`` / ``w:ptab`` and ``w:noBreakHyphen`` build the
+      line; a soft ``w:br`` or a ``w:cr`` ends it (page / column breaks are
+      invisible and ignored). Each maps to the character
+      :func:`_run_visible_text` gives it.
 
     Why this does NOT read ``run_features``: that list is built by the feature
     walk, which has no revision filtering and maps every ``w:tab`` it meets —
@@ -540,12 +552,16 @@ def _visible_first_line(para_element) -> tuple[bool, str]:
         if tag == _w("t"):
             parts.append(node.text or "")
             return
-        if tag == _w("tab"):
+        if tag in (_w("tab"), _w("ptab")):
             parts.append("\t")
             return
-        if tag == _w("br"):
+        if tag == _w("noBreakHyphen"):
+            parts.append("-")
+            return
+        if tag in (_w("br"), _w("cr")):
             # Only a soft (text-wrapping) break ends the line; page / column
             # breaks occupy no width and do not split the rendered line here.
+            # A w:cr carries no type, so it always ends the line.
             if node.get(_w("type")) in (None, "textWrapping"):
                 line_done = True
             return
@@ -769,7 +785,9 @@ def extract_paragraph_physical_features(
                         has_leading_page_break_run = True
                     else:
                         has_nonleading_page_break_run = True
-                elif child.tag == _w("t") and (child.text or "").strip():
+                elif (
+                    child.tag == _w("t") and (child.text or "").strip()
+                ) or child.tag == _w("noBreakHyphen"):
                     text_seen = True
             if text.strip():
                 text_seen = True
