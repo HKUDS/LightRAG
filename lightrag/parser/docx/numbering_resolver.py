@@ -10,6 +10,8 @@ from typing import Dict
 
 from lightrag.utils import logger
 
+from .ooxml import is_on
+
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 # Stored for a style whose w:ilvl is not an integer. It lies outside the OOXML
@@ -237,10 +239,7 @@ class NumberingResolver:
                         )
 
                         is_lgl_elem = lvl.find("w:isLgl", NSMAP)
-                        is_lgl = False
-                        if is_lgl_elem is not None:
-                            val = is_lgl_elem.get(f"{{{NSMAP['w']}}}val")
-                            is_lgl = val is None or val not in ("0", "false")
+                        is_lgl = is_lgl_elem is not None and is_on(is_lgl_elem)
 
                         levels[ilvl] = {
                             "start": start,

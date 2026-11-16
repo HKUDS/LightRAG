@@ -26,6 +26,7 @@ from lightrag.parser._markdown import (
 )
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
+from .ooxml import is_on
 from .content_controls import (
     in_bibliography,
     is_bibliography_table,
@@ -782,12 +783,7 @@ def _read_document_records(
                 pPr = element.find(f"{w_ns}pPr")
                 if pPr is not None:
                     pbb = pPr.find(f"{w_ns}pageBreakBefore")
-                    # OOXML on/off: absent val means on.
-                    if pbb is not None and pbb.get(f"{w_ns}val") not in (
-                        "0",
-                        "false",
-                        "none",
-                    ):
+                    if pbb is not None and is_on(pbb):
                         rec.page_break_before = True
                     if pPr.find(f"{w_ns}sectPr") is not None:
                         # Section boundary on a blank paragraph: same
