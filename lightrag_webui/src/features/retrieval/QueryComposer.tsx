@@ -4,6 +4,7 @@ import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { CircleAlertIcon, EraserIcon, SendIcon, SquareIcon, XIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { isImeComposing } from '@/lib/utils'
 
 /**
  * Shared input layer: single/multi-line switching, draft handling, clear,
@@ -109,6 +110,8 @@ export default function QueryComposer({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      // Enter confirms an IME candidate before it means send (or newline).
+      if (isImeComposing(e)) return
       if (e.key === 'Enter' && e.shiftKey) {
         // Shift+Enter: Insert newline
         e.preventDefault()
