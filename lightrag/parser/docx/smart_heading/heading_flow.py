@@ -1954,6 +1954,14 @@ def merge_split_headings(
                 break  # a numbered heading only ever starts a merge
             if nxt.level != cur.level or nxt.font_size_pt != cur.font_size_pt:
                 break
+            # A bibliography control's edge is a hard boundary: its blocks are
+            # marked for drop_references, so a merge across it would carry
+            # outside text into (or out of) the droppable block.
+            if (
+                records[nxt.record_index].in_references
+                != records[cur.record_index].in_references
+            ):
+                break
             # Adjacency: between the two records only empty paragraphs, at
             # most one.
             between = records[merged_members[-1] + 1 : nxt.record_index]
@@ -3027,8 +3035,18 @@ def run_smart_heading(
     doc_fs = document_fs_base(records, body_indices)
     _log_physical_feature_summary(records, body_indices, doc_fs)
 
-    if _estimate_record_tokens(records, body_indices) < min_tokens:
-        return None  # CB4 whole-document gate — smart never ran
+    body_tokens = _estimate_record_tokens(records, body_indices)
+    if body_tokens < min_tokens:
+        # CB4 whole-document gate — smart never ran. Said in the log because
+        # the only other trace is the smart_audit.json sidecar, and the output
+        # is otherwise indistinguishable from smart_heading being off.
+        logger.info(
+            "[smart_heading] skipped: document body is ~%d tokens, below "
+            "DOCX_SMART_MIN_TOKENS=%d; headings come from the Word outline only",
+            body_tokens,
+            min_tokens,
+        )
+        return None
 
     # Counted AFTER the CB4 gate: a skipped short document ran no smart rules,
     # so it must not report smart warnings.
@@ -3077,7 +3095,11 @@ def run_smart_heading(
         numbering_veto=numbering_veto,
         imprint_excluded=imprint_excluded,
         imprint_boundary_indices=imprint_boundary_indices,
-        skip_indices=toc_indices,
+        # A bibliography record is never cover material and, like a TOC
+        # line, ends any window it would sit in: a title block straddling
+        # the bibliography's edge would be dropped with it (drop_references).
+        skip_indices=toc_indices
+        | {i for i, r in enumerate(records) if getattr(r, "in_references", False)},
         suppressed_events=suppressed_windows,
     )
     if suppressed_windows:

@@ -68,11 +68,12 @@ Notes:
 | **Parameter** | **Type** | **Explanation** | **Default** |
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `./rag_storage` |
-| **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
+| **workspace** | str | Workspace name for data isolation between different LightRAG Instances; names starting with `$` are reserved and rejected | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
 | **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`PGTableGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
+| **config_storage** | `str` | Storage type for the server's own configuration — the per-workspace embedding baselines, in one container named in code rather than by a workspace. Supported types: `JsonKVStorage`,`PGKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage`; anything else is refused at construction, by name. **Left unset it follows `kv_storage`**, which is where an existing deployment's records already are — except that a `RedisKVStorage` deployment defaults to `JsonKVStorage` with a warning, since Redis is not admitted here. Explicitly selecting Redis is still refused. The JSON backend keeps one snapshot per workspace at the fixed path `working_dir/<workspace>/kv_workspace_config.json` (`working_dir/kv_workspace_config.json` for the empty workspace); no parameter moves it, and a workspace registers itself in the group on its first start. Historical Redis configuration records are not migrated; missing baselines require a positive adoption probe or confirmed-empty data. The first `initialize_storages()` **binds** the deployment to the container it opened. The binding is recorded in `working_dir/config_storage_anchor.json` (backend type plus the container's UUID, and for JSON the registered workspaces; a fixed path). Every later start refuses another type or another UUID with a `ConfigurationIdentityError`, so changing `kv_storage` while this is unset is refused if it selects a different configuration container. Select the anchored backend explicitly, or move the container with `lightrag-migrate-config`. Deleting the anchor file is the sanctioned rebind, with every process using this `working_dir` (servers and SDK instances) stopped first: a running one never rereads the anchor, so a later start or worker respawn would bind the new selection while it keeps the old container. `working_dir` must persist whichever backends are selected. | follows `kv_storage`; JSON for Redis |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **embedding_chunk_overlap_token_size** | `int` | Overlap token size the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `chunk_overlap_token_size` (some chunking strategies, e.g. V, deliberately zero that one out for unrelated reasons); `0` disables the fallback's overlap; negative values raise `ValueError` at construction. Configured by env var `EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE`. | `100` |
@@ -896,7 +897,7 @@ OpenSearchKVStorage  OpenSearch
 ```
 NetworkXStorage          NetworkX (default)
 Neo4JStorage             Neo4J
-PGGraphStorage           PostgreSQL with AGE plugin
+PGGraphStorage           PostgreSQL with AGE plugin (deprecated)
 PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
@@ -908,7 +909,9 @@ OpenSearchGraphStorage   OpenSearch
 > JSONB, so it runs on any stock PostgreSQL 14+ — including managed instances
 > (RDS, Cloud SQL, Supabase, Neon) where the AGE extension cannot be installed.
 > It shares the same `POSTGRES_*` configuration and connection pool as the other
-> PG storages. Choose `PGGraphStorage` only if you specifically need AGE/Cypher.
+> PG storages. `PGGraphStorage` is deprecated and will be removed in a future
+> release; `python -m lightrag.tools.migrate_graph_storage --apply` moves an
+> existing AGE graph to `PGTableGraphStorage` without re-indexing.
 
 **VECTOR_STORAGE**
 ```
@@ -1054,7 +1057,7 @@ PostgreSQL can provide a one-stop solution as KV store, VectorDB (pgvector), and
 
 - PostgreSQL is lightweight; the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
 - If you prefer Docker and graph storage is `PGTableGraphStorage` (the recommended choice, which needs no Apache AGE), the official pgvector image `pgvector/pgvector:pg18` is all you need.
-- Only `PGGraphStorage` requires an AGE-bundled image; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
+- Only the deprecated `PGGraphStorage` requires an AGE-bundled image, which the setup wizard generates only for a deployment that already uses `PGGraphStorage`; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
 - How to start: see [examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
 - For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 
@@ -1268,6 +1271,18 @@ Storage-specific workspace environment variables override the common `WORKSPACE`
 
 For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](../examples/lightrag_gemini_workspace_demo.py).
 
+### Startup Checks
+
+`initialize_storages()` verifies that the stored vectors match the configured embedding function and that the working directory is not shared in a way that loses data. Each check refuses with a typed exception from `lightrag.exceptions` instead of serving wrong results:
+
+- **A failed `initialize_storages()` is final for that instance.** Calling it again raises the same error. To retry (for example while waiting for a database), call `finalize_storages()` and create a new `LightRAG` instance.
+- **An instance is not usable after `finalize_storages()`.** The file-backed KV and document status storages raise `StorageNotInitializedError` from then on.
+- **One process tree per workspace on the default file storages.** A second process that opens the same `working_dir` and workspace is refused with `WorkingDirectoryInUseError`: each process would rewrite the whole file from its own copy. Use one process, or a server storage backend.
+- **One `working_dir` per workspace within a process.** Two live instances with the same workspace and different `working_dir` are refused with `SharedNamespaceBackingConflictError`. Give them different workspaces, or finalize the first one.
+- **A changed embedding model or dimension is refused** (`EmbeddingBaselineMismatchError`, `VectorSpaceMismatchError`). Rebuild the vectors with `lightrag-rebuild-vdb`, or clear the workspace with `lightrag-clear-storage`.
+- **A vector storage that lost its vectors while the graph or the text chunks kept their data is refused** (`VectorStorageEmptyError`), for example after deleting only the `vdb_*.json` files. Rebuild with `lightrag-rebuild-vdb`, or pass `rebuilding_vector_storage=True` when the program itself repopulates them.
+- **To start over by deleting files, delete the configuration files too**: `kv_workspace_config.json` in the workspace directory and `config_storage_anchor.json` in `working_dir`. They record the embedding model the deleted vectors were written with. With no other workspace in that `working_dir`, deleting the whole directory is simplest.
+
 
 ## Insert
 
@@ -1393,13 +1408,36 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 
 Entity names supplied to `create_entity` and new names supplied during
 `edit_entity` renames use the same normalization rules as extracted entity
-names. When editing an existing entity, LightRAG first preserves an exact
-legacy name match and otherwise falls back to the normalized name.
+names. When editing an existing entity without renaming it, LightRAG first
+preserves an exact legacy name match and otherwise falls back to the
+normalized name.
 `insert_custom_kg` applies the same rules to declared entity names and both
 endpoints of every relationship before writing any custom KG data.
-`merge_entities` resolves existing exact legacy source/target names first and
-otherwise uses normalized names. The target may be an existing entity or a
-new normalized name created by the merge.
+`merge_entities` resolves its target the same way: an existing exact legacy
+name first, otherwise the normalized name. The target may be an existing
+entity or a new normalized name created by the merge.
+`create_relation`, `edit_relation` and `delete_by_relation` resolve both
+endpoints the same way, and `get_entity_info`, `get_relation_info` and
+`GET /graph/entity/exists` resolve their names the same way too. A spelling
+`create_entity` accepted therefore addresses that entity, even though the
+stored name differs. Two spellings that resolve to one entity form a
+self-loop, which `create_relation` and `edit_relation` refuse.
+`delete_by_relation` does not refuse it, because deleting is how a self-loop
+left by an older release gets removed.
+
+Operations that remove the entity they address are the exception. They are
+`delete_by_entity`, the source entities of `merge_entities`, and the entity
+an `edit_entity` call renames, with or without `allow_merge`. Each accepts
+only the name the entity is stored under, so a retry of the same request
+always targets the same node. Suppose an exact legacy name and its normalized
+spelling are two different entities. If such an operation on the legacy one
+fails after removing the node, and the name were resolved, the retry would
+fall through to the other entity and delete it, merge it away or rename it.
+The same happens when a client resends a request that had succeeded. When
+the exact name is absent but its normalized spelling is stored, the refusal
+names the stored spelling: a `not_found` (404) from `delete_by_entity`, a
+`ValueError` (400 through the API) from the other two. Look a name up with
+`get_entity_info` to learn its stored spelling first.
 
 ### Relation Weight Contract
 

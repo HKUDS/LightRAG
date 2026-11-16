@@ -35,6 +35,38 @@ from lightrag.utils import TruncatedResponse, logger, wrap_embedding_func_with_a
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# transformers falls back to this sentinel (int(1e30), via its
+# VERY_LARGE_INTEGER constant) for tokenizer.model_max_length when a
+# tokenizer's own config never sets one. Anything anywhere near that size is
+# the "unset" marker, not a real position limit -- no real model's position
+# embeddings extend remotely that far.
+_UNSET_TOKENIZER_MAX_LENGTH = 10**7
+
+
+def _resolve_embedding_max_length(tokenizer, embed_model) -> int | None:
+    """Resolve the real token limit to truncate embedding inputs to.
+
+    truncation=True alone is a no-op when the tokenizer has no configured
+    max length -- it then reports the huge unset sentinel above instead of
+    raising, so nothing gets truncated and an oversized input crashes later
+    inside the model's forward pass (position embeddings have no room for
+    it). Callers must pass whatever this returns as `max_length` alongside
+    truncation=True rather than relying on truncation=True by itself.
+    """
+    model_max_length = getattr(tokenizer, "model_max_length", None)
+    if (
+        isinstance(model_max_length, int)
+        and 0 < model_max_length < _UNSET_TOKENIZER_MAX_LENGTH
+    ):
+        return model_max_length
+
+    config = getattr(embed_model, "config", None)
+    max_position_embeddings = getattr(config, "max_position_embeddings", None)
+    if isinstance(max_position_embeddings, int) and max_position_embeddings > 0:
+        return max_position_embeddings
+
+    return None
+
 
 @lru_cache(maxsize=1)
 def initialize_hf_model(model_name):
@@ -334,9 +366,18 @@ async def hf_embed(
     elif context == "document" and document_prefix:
         texts = [document_prefix + text for text in texts]
 
-    # Tokenize the input texts and move them to the same device
+    # Tokenize the input texts and move them to the same device.
+    # truncation=True alone only truncates to tokenizer.model_max_length,
+    # which is a huge sentinel (not a real limit) when unset -- so an
+    # explicit max_length is required to actually cap oversized inputs
+    # before they reach the model's position embeddings.
+    max_length = _resolve_embedding_max_length(tokenizer, embed_model)
     encoded_texts = tokenizer(
-        texts, return_tensors="pt", padding=True, truncation=True
+        texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
     ).to(device)
 
     # Perform inference. The forward pass is synchronous model compute that

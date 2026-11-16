@@ -153,6 +153,7 @@
         "parse": "文件解析",
         "analyze": "模态分析",
         "process": "图谱处理",
+        "deleting": "删除中",
         "failed": "失败"
       },
       "status": {
@@ -163,6 +164,7 @@
         "analyzing": "模态分析",
         "processing": "图谱处理",
         "pending": "等待中",
+        "deleting": "删除中",
         "failed": "失败"
       },
       "errors": {
