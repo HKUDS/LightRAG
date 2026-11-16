@@ -266,6 +266,13 @@ def _refuse_package_installs(config) -> None:
     Refusing the call gives every environment CI's outcome: the guard returns
     False and the module imports without the SDK, which the tests expect. The
     suite must never change the environment it runs in.
+
+    Boundary: only ``pipmaster.install`` in this process is refused, because
+    that is the one installing entry point ``lightrag/`` calls. pipmaster's
+    other installers (``install_multiple``, ``ensure_packages``,
+    ``PackageManager().install`` ...) are not, and neither is a Python
+    subprocess a test starts. A new call site of either kind must stub its
+    install itself.
     """
     import pipmaster
 

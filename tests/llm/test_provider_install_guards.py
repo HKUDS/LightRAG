@@ -194,8 +194,14 @@ def test_an_install_guard_run_under_pytest_never_reaches_pip(tmp_path, monkeypat
         return session_install(package, *args, **kwargs)
 
     ran: list[object] = []
+    real_run = subprocess.run
 
     def _record_run(command, *args, **kwargs):
+        # Only an install is the failure; anything else (a pipmaster version
+        # whose is_installed shells out, say) runs as usual.
+        parts = command if isinstance(command, (list, tuple)) else str(command).split()
+        if "install" not in map(str, parts):
+            return real_run(command, *args, **kwargs)
         ran.append(command)
         return subprocess.CompletedProcess(command, returncode=1)
 
@@ -209,4 +215,4 @@ def test_an_install_guard_run_under_pytest_never_reaches_pip(tmp_path, monkeypat
 
     # The guard must actually have fired, or the second assertion proves nothing.
     assert attempted == [absent]
-    assert ran == [], f"an install guard ran a subprocess under pytest: {ran}"
+    assert ran == [], f"an install guard ran pip install under pytest: {ran}"
