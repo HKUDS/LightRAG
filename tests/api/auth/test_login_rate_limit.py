@@ -39,6 +39,11 @@ def _make(max_attempts=3, window_seconds=60.0, **kwargs):
     return LoginRateLimiter(max_attempts, window_seconds, clock=clock, **kwargs), clock
 
 
+def _tracked(limiter, key) -> bool:
+    """Whether ``key`` holds a slot; the map is indexed by its digest."""
+    return limiter._slot(key) in limiter._entries
+
+
 def _fail(limiter, key):
     """One full failed-attempt lifecycle: reserve -> confirm failure -> release."""
     limiter.reserve_attempt(key)
@@ -89,7 +94,7 @@ def test_window_expiry_allows_again_and_prunes():
     clock.advance(61)  # every confirmed failure ages out of the window
     assert limiter.retry_after(key) is None
     # The key is dropped once nothing is in-window (bounded memory).
-    assert key not in limiter._entries
+    assert not _tracked(limiter, key)
 
 
 def test_retry_after_counts_down_as_window_passes():
@@ -191,7 +196,7 @@ def test_expired_keys_are_reclaimed_for_new_keys():
     clock.advance(61)  # "a" and "b" age out of the window
     _fail(limiter, "c")  # expired slot reclaimed -> "c" is tracked
 
-    assert "c" in limiter._entries
+    assert _tracked(limiter, "c")
     assert len(limiter._entries) <= 2
 
 
@@ -225,10 +230,10 @@ def test_successful_login_frees_its_slot(monkeypatch):
 
     _fail(limiter, "1.1.1.1:a")  # A: live lockout candidate (stays at the front)
     _succeed(limiter, "2.2.2.2:b")  # B: success -> entry removed, slot freed
-    assert "2.2.2.2:b" not in limiter._entries
+    assert not _tracked(limiter, "2.2.2.2:b")
 
     _fail(limiter, "3.3.3.3:c")  # C must still be trackable
-    assert "3.3.3.3:c" in limiter._entries
+    assert _tracked(limiter, "3.3.3.3:c")
     assert not any("table is full" in m for m in messages)
 
 
@@ -342,3 +347,50 @@ def test_lockout_alert_sanitizes_injected_username(monkeypatch):
     assert len(messages) == 1
     assert "\n" not in messages[0]  # newline neutralized -> no injected line
     assert "admin?CRITICAL" in messages[0]  # control char replaced with '?'
+
+
+def test_retained_key_size_is_independent_of_username_length():
+    """The submitted username must not be retained verbatim.
+
+    Regression: keys were stored as ``client_ip:username``, so every failed
+    login with a near-request-body-sized username kept that whole string, and
+    the key-count cap bounded nothing in bytes (anonymous memory exhaustion).
+    Expired entries also stay until the table is full, so the window does not
+    bound it either.
+    """
+    limiter, clock = _make(max_attempts=5, window_seconds=60)
+    long_keys = [f"1.2.3.4:{i:04d}" + "A" * 200_000 for i in range(20)]
+    for key in long_keys:
+        _fail(limiter, key)
+    clock.advance(10_000)  # far past the window; nothing reclaims below the cap
+    _fail(limiter, "1.2.3.4:short")
+
+    assert len(limiter._entries) == 21
+    assert {len(slot) for slot in limiter._entries} == {32}
+    # Per-key throttling is unchanged: distinct usernames, distinct buckets.
+    for _ in range(5):
+        _fail(limiter, long_keys[0])
+    assert limiter.retry_after(long_keys[0]) is not None
+    assert limiter.retry_after(long_keys[1]) is None
+
+
+def test_lockout_alert_logs_a_truncated_readable_key(monkeypatch):
+    """The alert still names the client/username, bounded by safe_log_value."""
+    messages = _capture_warnings(monkeypatch)
+    limiter, _clock = _make(max_attempts=2, window_seconds=60)
+    key = "1.2.3.4:admin" + "x" * 10_000
+    _fail(limiter, key)
+    _fail(limiter, key)
+
+    assert len(messages) == 1
+    assert "'1.2.3.4:admin" in messages[0]
+    assert "(truncated)" in messages[0]
+    assert len(messages[0]) < 1_000
+
+
+def test_unpaired_surrogate_username_is_tracked():
+    """A key that is not valid UTF-8 text must still hash, not raise."""
+    limiter, _clock = _make(max_attempts=1, window_seconds=60)
+    key = "1.2.3.4:\ud800"
+    _fail(limiter, key)
+    assert limiter.retry_after(key) is not None

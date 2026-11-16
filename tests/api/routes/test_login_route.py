@@ -297,3 +297,27 @@ async def test_login_concurrent_attempts_cannot_bypass_limit(monkeypatch):
     assert codes.count(401) <= 5
     assert codes.count(429) >= 35
     assert codes.count(401) + codes.count(429) == 40
+
+
+def test_failed_login_does_not_retain_the_submitted_username(monkeypatch):
+    """A failed login must not keep a request-body-sized username in memory.
+
+    Regression: the limiter stored ``client_ip:username`` verbatim, so an
+    anonymous caller could retain almost the whole request-body ceiling per
+    failed login, up to the key-count cap (memory exhaustion).
+    """
+    import inspect
+
+    _server, app = _build_server(monkeypatch)
+    monkeypatch.setattr(_server.auth_handler, "accounts", {"admin": "s3cret-plain"})
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/login")
+    limiter = inspect.getclosurevars(route.endpoint).nonlocals["login_rate_limiter"]
+    client = TestClient(app)
+
+    for i in range(3):
+        username = f"{i:04d}" + "A" * 500_000
+        resp = client.post("/login", data={"username": username, "password": "bad"})
+        assert resp.status_code == 401
+
+    assert len(limiter._entries) == 3
+    assert sum(len(slot) for slot in limiter._entries) == 3 * 32
