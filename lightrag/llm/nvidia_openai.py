@@ -1,3 +1,4 @@
+import base64
 import sys
 
 if sys.version_info < (3, 9):
@@ -82,4 +83,13 @@ async def nvidia_openai_embed(
             encoding_format=encode,
             extra_body={"input_type": input_type, "truncate": trunc},
         )
-        return np.array([dp.embedding for dp in response.data])
+        # The SDK leaves explicitly requested base64 responses encoded.
+        # Both encodings return float32, matching ``openai_embed``.
+        return np.array(
+            [
+                np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
+                if isinstance(dp.embedding, str)
+                else np.asarray(dp.embedding, dtype=np.float32)
+                for dp in response.data
+            ]
+        )

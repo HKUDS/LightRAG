@@ -16,6 +16,7 @@ executor submission.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -152,3 +153,71 @@ async def test_content_headings_are_preserved_in_the_final_render():
     text = render_chunks_context_text(rendered)
     parsed = [json.loads(line) for line in text.splitlines()]
     assert parsed[0]["content_headings"] == "Intro > Section 1"
+
+
+def _budget_warnings(records):
+    return [
+        record.getMessage()
+        for record in records
+        if record.levelno == logging.WARNING
+        and "Token budget left no room" in record.getMessage()
+    ]
+
+
+@pytest.mark.parametrize("source_type", ["vector", "mix"])
+async def test_budget_that_drops_every_chunk_is_logged(
+    lightrag_log_records, source_type
+):
+    chunks = [{"content": "x" * 200, "file_path": "a.md"}]
+    result = await process_chunks_unified(
+        query="",
+        unique_chunks=chunks,
+        query_param=QueryParam(enable_rerank=False, chunk_top_k=None),
+        global_config={"tokenizer": _tok()},
+        source_type=source_type,
+        chunk_token_limit=50,
+    )
+    assert result == []
+    warnings = _budget_warnings(lightrag_log_records)
+    assert len(warnings) == 1
+    assert "any of 1 retrieved chunks" in warnings[0]
+    assert ("max_entity_tokens" in warnings[0]) == (source_type != "vector")
+
+
+@pytest.mark.parametrize("limit", [-5, 0])
+async def test_non_positive_budget_is_logged(lightrag_log_records, limit):
+    assert await _run([{"content": "x", "file_path": "a.md"}], limit, _tok()) == []
+    assert len(_budget_warnings(lightrag_log_records)) == 1
+
+
+async def test_partial_truncation_logs_no_budget_warning(lightrag_log_records):
+    chunks = [
+        {"content": "a" * 20, "file_path": "a.md"},
+        {"content": "b" * 400, "file_path": "b.md"},
+    ]
+    result = await _run(chunks, 120, _tok())
+    assert len(result) == 1
+    assert _budget_warnings(lightrag_log_records) == []
+
+
+async def test_rerank_filter_emptying_the_list_is_not_a_budget_warning(
+    lightrag_log_records,
+):
+    chunks = [{"content": "x", "file_path": "a.md", "rerank_score": 0.1}]
+
+    async def _rerank(**kwargs):
+        return [{"index": 0, "relevance_score": 0.1}]
+
+    result = await process_chunks_unified(
+        query="q",
+        unique_chunks=chunks,
+        query_param=QueryParam(enable_rerank=True, chunk_top_k=None),
+        global_config={
+            "tokenizer": _tok(),
+            "rerank_model_func": _rerank,
+            "min_rerank_score": 0.5,
+        },
+        chunk_token_limit=1000,
+    )
+    assert result == []
+    assert _budget_warnings(lightrag_log_records) == []
