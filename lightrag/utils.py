@@ -494,9 +494,11 @@ def safe_log_value(value: str, max_length: int = 200) -> str:
     submitted username, and operator-supplied identifiers in audited admin
     actions (source-conflict repair).
     """
-    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
-    if len(sanitized) > max_length:
-        sanitized = sanitized[:max_length] + "…(truncated)"
+    # Truncate BEFORE the per-character pass: the value can be as large as a
+    # request body, and the replacement is one-for-one, so the result is the same.
+    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value[:max_length])
+    if len(value) > max_length:
+        sanitized += "…(truncated)"
     return sanitized
 
 
