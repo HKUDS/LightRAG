@@ -3456,7 +3456,7 @@ def configure_logging():
     log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
