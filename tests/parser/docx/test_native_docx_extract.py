@@ -461,7 +461,8 @@ def test_wrapped_continuation_cell_keeps_vertical_merge(
 def test_wrapped_row_counts_like_a_direct_row(wrapper: str) -> None:
     document = Document()
     table = _filled_table(document, 3, 2)
-    table.rows[2]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    for row in table.rows:
+        row._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
     _wrap(table.rows[1]._tr, wrapper)
 
     result = _saved_table_metadata(document)
@@ -471,7 +472,8 @@ def test_wrapped_row_counts_like_a_direct_row(wrapper: str) -> None:
         ["r1c0", "r1c1"],
         ["r2c0", "r2c1"],
     ]
-    assert result["header_indices"] == [2]
+    # Skipping the wrapped row would give [0, 1].
+    assert result["header_indices"] == [0, 1, 2]
 
 
 def _wrap_in_placeholder(element) -> None:
@@ -792,6 +794,48 @@ def test_docx_table_header_respects_explicit_value(
     (block,) = extract_docx_blocks(str(path))
 
     assert block["table_headers"] == [rows[:2] if repeats else rows[:1]]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("marked", "expected"),
+    [
+        ((0, 1), [0, 1]),
+        ((0, 2), [0]),
+        ((1,), []),
+        ((1, 2), []),
+    ],
+)
+def test_docx_table_header_rows_start_at_the_first_row(
+    marked: tuple[int, ...], expected: list[int]
+) -> None:
+    # Word repeats only the marked rows contiguous with the first row; a
+    # marked row below an unmarked one is ignored (ISO/IEC 29500-1 tblHeader).
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    for idx in marked:
+        table.rows[idx]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+
+    assert _saved_table_metadata(document)["header_indices"] == expected
+
+
+@pytest.mark.offline
+def test_docx_table_without_leading_header_row_has_no_table_headers(
+    tmp_path: Path,
+) -> None:
+    doc = Document()
+    table = doc.add_table(rows=3, cols=2)
+    rows = [["Department", "Amount"], ["Operations", "100"], ["Inventory", "200"]]
+    for row, values in zip(table.rows, rows):
+        for cell, text in zip(row.cells, values):
+            _populate_cell(cell, text)
+    table.rows[2]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    path = tmp_path / "late-header.docx"
+    doc.save(path)
+
+    (block,) = extract_docx_blocks(str(path))
+
+    assert block.get("table_headers", [None]) == [None]
 
 
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------
