@@ -25,9 +25,11 @@ the content string entirely.
 Supported subset (NOT full CommonMark/GFM, by design — see the parser plan):
 ATX headings, simple pipe tables (with a header row), block-level ``$$`` math,
 inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Escaped pipes
-(``\\|``) inside a table cell are unescaped into cell text. Reference-style
-images, nested tables, setext headings and list/quote-nested structures are
-left as verbatim text rather than misrecognised.
+(``\\|``) inside a table cell are unescaped into cell text. An escaped
+``\\![`` and an image inside a single-line inline code span stay literal
+text. Reference-style images, nested tables, setext headings and
+list/quote-nested structures are left as verbatim text rather than
+misrecognised.
 """
 
 from __future__ import annotations
@@ -213,6 +215,11 @@ _IMAGE_TAIL_RE = re.compile(r'\s*\)|\s+"[^"]*"\s*\)')
 
 _PAREN_RE = re.compile(r"[()]")
 
+# The inline scanner's candidates: an image prefix, or a backtick run that may
+# open a code span whose content stays verbatim.
+_IMAGE_OR_CODE_RE = re.compile(r"`+|!\[")
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
 # A bare image source that contains parentheses must close within this many
 # characters. Matching pairs needs an index of the parentheses, and the bound
 # keeps that index a fixed-size window however long the line is. Sources
@@ -290,9 +297,19 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     local paths that way. The strict grammar always wins, so the retry only
     ever turns text that was not an image into one.
 
+    Literal examples stay text, as in CommonMark: ``\\![`` is escaped, and a
+    code span (a backtick run closed by the next run of the same length on
+    the line) is copied verbatim. A backslash escapes only the first backtick
+    of a run. An image whose ``]`` is escaped, or lies inside a code span
+    opened in the alt text, is rejected, because escapes and spans bind
+    tighter. Unlike CommonMark, a code span never continues onto the next
+    line, and a rejected ``]`` is not skipped in search of a later one, so
+    such an image stays text.
+
     Extra memory stays bounded whatever the line holds: no per-line index is
-    built, and a bare source with parentheses is limited to
-    ``_PAREN_SOURCE_MAX_CHARS``.
+    built, the code-span search keeps one entry per distinct backtick run
+    length (fewer than 1,500 on a megabyte line), and a bare source with
+    parentheses is limited to ``_PAREN_SOURCE_MAX_CHARS``.
     """
 
     if "![" not in line:
@@ -520,48 +537,99 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
                     return tail.end(), line[source_start:source_end]
         return None
 
-    # Index matching backtick runs once. Searching the suffix again for every
-    # unmatched run would make malformed literal examples quadratic.
-    candidates = list(re.finditer(r"`+|!\[", line))
-    next_run: dict[int, int] = {}
-    code_ends: dict[int, int] = {}
-    for candidate in reversed(candidates):
-        if candidate.group().startswith("`"):
-            length = candidate.end() - candidate.start()
-            if length in next_run:
-                code_ends[candidate.start()] = next_run[length]
-            next_run[length] = candidate.end()
+    def _escaped(index: int) -> bool:
+        """Whether an odd run of backslashes directly precedes ``index``."""
+        run_start = index
+        while run_start > 0 and line[run_start - 1] == "\\":
+            run_start -= 1
+        return (index - run_start) % 2 == 1
+
+    # A closing backtick run is found the way cmark finds one: a forward scan
+    # that remembers, per run length, where the last run seen ended. Once a
+    # scan has reached the end of the line, an opener whose length was last
+    # seen before it has no closer, so only one search ever fails by scanning,
+    # and the memory kept is one entry per distinct run length.
+    last_run_end: dict[int, int] = {}
+    runs_exhausted = False
+
+    def _closing_run_end(search_from: int, length: int) -> int | None:
+        nonlocal runs_exhausted
+        if runs_exhausted and last_run_end.get(length, -1) <= search_from:
+            return None
+        for run in _BACKTICK_RUN_RE.finditer(line, search_from):
+            run_length = run.end() - run.start()
+            last_run_end[run_length] = run.end()
+            if run_length == length:
+                return run.end()
+        runs_exhausted = True
+        return None
+
+    def _skip_backtick_run(run: re.Match[str]) -> int:
+        """Return where scanning resumes after the backtick run ``run``: past
+        the code span it opens, or past the run itself when it opens none."""
+        opener_start = run.start()
+        if _escaped(opener_start):
+            # A backslash escapes one backtick; the rest may still open.
+            opener_start += 1
+        length = run.end() - opener_start
+        if length:
+            end = _closing_run_end(run.end(), length)
+            if end is not None:
+                return end
+        return run.end()
+
+    # The last ``]`` found literal, and the start below which every candidate
+    # sharing it reaches the same verdict. Nested candidates arrive one after
+    # the other, so this memo keeps their checks linear together.
+    literal_alt_end = -1
+    literal_before = -1
+
+    def _alt_end_is_literal(start: int) -> bool:
+        """Whether the ``]`` that ends the alt text is literal text.
+
+        It is when a backslash escapes it, or when a code span opened in the
+        alt text runs past it: code spans bind tighter than images.
+        """
+
+        nonlocal literal_alt_end, literal_before
+        alt_end = close_bracket.find(start + 2)
+        if alt_end is None:
+            return False
+        if alt_end == literal_alt_end and start < literal_before:
+            return True
+        if _escaped(alt_end):
+            literal_alt_end, literal_before = alt_end, alt_end
+            return True
+        scan = start + 2
+        while (run := _BACKTICK_RUN_RE.search(line, scan, alt_end)) is not None:
+            scan = _skip_backtick_run(run)
+            if scan > alt_end:
+                literal_alt_end, literal_before = alt_end, run.start()
+                return True
+        return False
 
     parts: list[str] = []
-    position = 0
-    for candidate in candidates:
+    position = 0  # line[:position] is already in ``parts``
+    cursor = 0  # the scan resumes here; skipped text is copied in one piece
+    while (candidate := _IMAGE_OR_CODE_RE.search(line, cursor)) is not None:
         start = candidate.start()
-        if start < position:
+        if candidate.group() != "![":
+            cursor = _skip_backtick_run(candidate)
             continue
-        backslash_start = start
-        while backslash_start > 0 and line[backslash_start - 1] == "\\":
-            backslash_start -= 1
-        if (start - backslash_start) % 2:
-            # An odd number of backslashes escapes this prefix, so it stays
-            # literal text rather than an image.
-            continue
-        if candidate.group().startswith("`"):
-            end = code_ends.get(start)
-            if end is not None:
-                parts.append(line[position:end])
-                position = end
+        if _escaped(start):
+            # ``\![`` is a literal ``!`` followed by ``[``, never an image.
+            cursor = start + 2
             continue
         matched = _match_end(start) or _lenient_match_end(start)
-        if matched is None:
-            # No match begins at this prefix.  Advance only past ``![`` so a
+        if matched is None or _alt_end_is_literal(start):
+            # No image begins at this prefix.  Advance only past ``![`` so a
             # nested, valid image remains visible to the next iteration.
-            parts.append(line[position : start + 2])
-            position = start + 2
+            cursor = start + 2
             continue
         end, src = matched
         parts.append(line[position:start])
         parts.append(replace(src))
-        position = end
+        position = cursor = end
     parts.append(line[position:])
     return "".join(parts)
 

@@ -783,6 +783,11 @@ def test_parenthesised_source_is_limited_in_length():
         "![x](a(" + "()" * 500_000 + ")",
         "![x](a b" + ".png)" * 200_000,
         "![x](a (b" + ".png) " * 200_000,
+        # Code spans are skipped, never indexed: a whole-line list of backtick
+        # runs took 48 MiB for this line.
+        "![x](a.png) " + "`a" * 200_000,
+        "![x](a.png) " + "``a`" * 100_000,
+        "![x](a.png) " + "".join("`" * k + " " for k in range(1, 1_400)),
     ],
 )
 def test_inline_image_scanner_memory_stays_bounded(line):
@@ -836,6 +841,33 @@ def test_lenient_retry_scales_linearly_for_malformed_candidates(unit):
     # ... which all share the source start after this suffix.
     suffix = "](a ( b.png)"
     assert _scan_time_ratio(unit * 1_024 + suffix, unit * 8_192 + suffix) < 16
+
+
+@pytest.mark.parametrize(
+    ("unit", "suffix"),
+    [
+        ("`a", ""),  # closed spans
+        ("``a`", ""),  # openers that never close
+        ("\\``a", ""),  # escaped openers
+        ("![", "`](x.png)`"),  # nested candidates, alt ends inside a span
+        ("![ `a` ", "`](x.png)`"),  # ... after spans closed in the alt text
+        ("![", "\\](x.png)"),  # nested candidates, escaped alt end
+    ],
+)
+def test_code_span_and_escape_checks_scale_linearly(unit, suffix):
+    def line_with(count: int) -> str:
+        return "![x](a.png) " + unit * count + suffix
+
+    assert _scan_time_ratio(line_with(1_024), line_with(8_192)) < 16
+
+
+def test_escape_check_on_a_shared_alt_end_scales_linearly():
+    # Every nested candidate ends its alt text at one ``]`` behind a long odd
+    # backslash run; counting that run once per candidate was quadratic.
+    def line_with(count: int) -> str:
+        return "![" * count + "\\" * (2 * count + 1) + "](x.png)"
+
+    assert _scan_time_ratio(line_with(1_024), line_with(8_192)) < 16
 
 
 def test_inline_image_scanner_matches_reference_grammar_for_short_inputs():
