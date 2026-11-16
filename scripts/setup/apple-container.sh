@@ -19,9 +19,9 @@
 # Stack (all images verified to publish a linux/arm64 manifest):
 #   postgres      pgvector/pgvector:pg18                       (KV + doc status)
 #   neo4j         neo4j:5-community                            (graph)
-#   milvus        milvusdb/milvus:v2.6.11  (standalone, CPU)   (vector)
+#   milvus        milvusdb/milvus:v2.6.27  (standalone, CPU)   (vector)
 #   milvus-etcd   quay.io/coreos/etcd:v3.5.25                  (milvus metadata)
-#   milvus-minio  minio/minio:RELEASE.2025-09-07T16-13-09Z     (milvus object store)
+#   milvus-minio  milvusdb/minio:RELEASE.2024-12-18T13-15-44Z  (milvus object store)
 #   lightrag      ghcr.io/hkuds/lightrag:latest                (API server + WebUI)
 #
 # LLM + embeddings are reached over normal outbound HTTPS (e.g. OpenAI); no GPU
@@ -65,16 +65,15 @@ ENV_GENERATED="$REPO_ROOT/.apple-container.env"
 PLATFORM="linux/arm64"
 
 # Images — keep in sync with scripts/setup/templates/*.yml and docker-compose-full.yml.
-# NOTE: postgres uses pgvector/pgvector:pg18 rather than the templates'
-# gzdaniel/postgres-for-rag:pg18-age-pgvector. Both publish a linux/arm64
-# manifest, so this is not an architecture constraint — the AGE graph extension
-# the template image adds is simply not needed here (graph storage is Neo4j,
-# vector storage is Milvus).
+# NOTE: postgres uses pgvector/pgvector:pg18, as docker-compose-full.yml does.
+# The setup template uses the same official image in its trixie build
+# (pgvector/pgvector:pg18-trixie), which only matters for a data volume created
+# by the earlier AGE-enabled default image; this stack always starts a new one.
 IMG_PG="${LIGHTRAG_AC_IMG_PG:-pgvector/pgvector:pg18}"
 IMG_NEO4J="${LIGHTRAG_AC_IMG_NEO4J:-neo4j:5-community}"
-IMG_MILVUS="${LIGHTRAG_AC_IMG_MILVUS:-milvusdb/milvus:v2.6.11}"
+IMG_MILVUS="${LIGHTRAG_AC_IMG_MILVUS:-milvusdb/milvus:v2.6.27}"
 IMG_ETCD="${LIGHTRAG_AC_IMG_ETCD:-quay.io/coreos/etcd:v3.5.25}"
-IMG_MINIO="${LIGHTRAG_AC_IMG_MINIO:-minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+IMG_MINIO="${LIGHTRAG_AC_IMG_MINIO:-milvusdb/minio:RELEASE.2024-12-18T13-15-44Z}"
 IMG_LIGHTRAG="${LIGHTRAG_AC_IMG_LIGHTRAG:-ghcr.io/hkuds/lightrag:latest}"
 
 # Memory budgets (per-container VM). Milvus and Neo4j are heavy.

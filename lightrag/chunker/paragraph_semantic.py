@@ -60,6 +60,7 @@ from lightrag.constants import (
     DEFAULT_P_REFERENCES_HEADINGS,
     DEFAULT_P_REFERENCES_TAIL_N,
 )
+from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.table_markup import (
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
@@ -191,19 +192,45 @@ def _block_to_paragraphs(content: str) -> list[dict[str, Any]]:
 
 
 def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
-    """Read ``type == "content"`` rows from a blocks.jsonl file in order."""
+    """Read ``type == "content"`` rows from a blocks.jsonl file in order.
+
+    Raises :class:`BlocksSidecarCorruptError` on invalid JSON or UTF-8, or a
+    content row without a string ``content`` field. A damaged row is never
+    skipped: the remaining rows do not cover the document, so chunking them
+    drops text.
+    """
     rows: list[dict[str, Any]] = []
-    with Path(blocks_path).open("r", encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict) and obj.get("type") == "content":
-                rows.append(obj)
+    line_number = 0
+    try:
+        with Path(blocks_path).open("r", encoding="utf-8") as fh:
+            for line_number, raw in enumerate(fh, start=1):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    # ``exc.lineno`` is always 1 here (rows are decoded one at
+                    # a time), so report the file's own line number instead.
+                    raise BlocksSidecarCorruptError(
+                        blocks_path,
+                        f"invalid JSON ({exc.msg}, column {exc.colno})",
+                        line_number,
+                    ) from exc
+                if isinstance(obj, dict) and obj.get("type") == "content":
+                    if not isinstance(obj.get("content"), str):
+                        raise BlocksSidecarCorruptError(
+                            blocks_path,
+                            "content row must have a string 'content' field",
+                            line_number,
+                        )
+                    rows.append(obj)
+    except UnicodeDecodeError as exc:
+        # Raised by the read that follows the last row decoded successfully.
+        raise BlocksSidecarCorruptError(
+            blocks_path,
+            f"invalid UTF-8 after line {line_number} ({exc.reason})",
+        ) from exc
     return rows
 
 
@@ -333,7 +360,7 @@ def _load_table_headers(blocks_path: str) -> dict[str, str]:
     try:
         with Path(path).open("r", encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     tables = data.get("tables") if isinstance(data, dict) else None
     if not isinstance(tables, dict):
@@ -2109,9 +2136,13 @@ def chunking_by_paragraph_semantic(
             above for the full mapping.
         blocks_path: Path to the document's ``.blocks.jsonl`` sidecar
             (typically ``parsed_data["blocks_path"]``). When ``None``,
-            unreadable, or empty, this function falls back to
+            missing, or without content rows, this function falls back to
             :func:`chunking_by_recursive_character` on ``content``
-            (per ``docs/FileProcessingPipeline.md``).
+            (per ``docs/FileProcessingPipeline.md``). A sidecar that
+            exists but holds malformed JSON, invalid UTF-8, or a content row
+            without a string ``content`` field raises
+            :class:`~lightrag.exceptions.BlocksSidecarCorruptError`
+            instead; it never falls back.
             That fallback hard-requires ``langchain-text-splitters``;
             an :class:`ImportError` is surfaced rather than silently
             degrading further.
@@ -2123,7 +2154,9 @@ def chunking_by_paragraph_semantic(
         drop_references: When ``True``, drop reference blocks (e.g. blocks
             headed "References" / "参考文献") before splitting/merging. A block
             is removed when its heading matches a reference prefix and it is
-            inside the configured content-block window. This is the only
+            inside the configured content-block window, or wherever it is when
+            the parser marked it ``session_type="references"`` (a Word
+            bibliography control, whatever its heading). This is the only
             reference knob that is snapshotted into ``chunk_options`` (it may
             come from a per-file hint) and recorded in
             ``doc_status.metadata['chunk_opts']``.
@@ -2196,6 +2229,9 @@ def chunking_by_paragraph_semantic(
         try:
             rows = _load_blocks_from_jsonl(blocks_path)
         except OSError as exc:
+            # Only an absent or unopenable sidecar falls back. One that opens
+            # but does not decode raises BlocksSidecarCorruptError and fails
+            # the document: see that exception for why it must not degrade.
             fallback_reason = f"cannot read blocks.jsonl at {blocks_path}: {exc}"
         else:
             if not rows:
@@ -2250,8 +2286,9 @@ def chunking_by_paragraph_semantic(
         kept: list[dict[str, Any]] = []
         dropped_headings: list[str] = []
         for idx, row in enumerate(rows):
-            if idx >= start and _is_reference_heading(
-                row.get("heading", "") or "", prefixes
+            if row.get("session_type") == "references" or (
+                idx >= start
+                and _is_reference_heading(row.get("heading", "") or "", prefixes)
             ):
                 dropped_headings.append((row.get("heading") or "").strip())
             else:
