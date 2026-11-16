@@ -27,7 +27,7 @@ from lightrag.sidecar import writer as _writer
 from lightrag.sidecar.writer import (
     _allocate_unique_name,
     _materialize_assets,
-    _safe_asset_filename,
+    safe_asset_filename,
 )
 
 
@@ -151,6 +151,46 @@ def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
     assert item["path"] == "d.blocks.assets/x.png"
     assert item["caption"] == "figure 1"
     assert item["format"] == "png"
+
+
+@pytest.mark.offline
+def test_writer_preserves_dot_prefixed_in_place_asset(tmp_path: Path) -> None:
+    """A dot-prefixed asset already on disk must survive ``source=None``.
+
+    The native DOCX adapter pre-extracts images into the assets directory and
+    passes ``AssetSpec(source=None)``. ``safe_asset_filename`` used to strip
+    every leading dot, so the writer looked for ``foo.part`` while the file was
+    ``.foo.part``: the asset was skipped and the drawing path became empty.
+    """
+    parsed = tmp_path / "d.parsed"
+    assets_dir = parsed / "d.blocks.assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / ".foo.part").write_bytes(b"IMAGEDATA")
+
+    ir = IRDoc(
+        document_name="d.docx",
+        document_format="docx",
+        doc_title="d",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{IMG:i1}}",
+                drawings=[IRDrawing(placeholder_key="i1", asset_ref=".foo.part")],
+            )
+        ],
+        assets=[AssetSpec(ref=".foo.part", suggested_name=".foo.part", source=None)],
+    )
+    write_sidecar(
+        ir,
+        parsed_dir=parsed,
+        doc_id="doc-cafebabe",
+        engine="native",
+        clean_parsed_dir=False,
+    )
+
+    _, rows = _load_jsonl(parsed / "d.blocks.jsonl")
+    assert 'path="d.blocks.assets/.foo.part"' in rows[0]["content"]
+    assert (assets_dir / ".foo.part").read_bytes() == b"IMAGEDATA"
 
 
 @pytest.mark.offline
@@ -672,7 +712,7 @@ def test_safe_asset_filename_collapses_to_basename(
     path separators they carry, so they can never steer the output path out of
     the assets dir. ``\\`` is normalised first so Windows-style payloads on a
     POSIX host still collapse rather than surviving as a single filename."""
-    assert _safe_asset_filename(suggested) == expected
+    assert safe_asset_filename(suggested) == expected
 
 
 @pytest.mark.offline
@@ -680,14 +720,94 @@ def test_safe_asset_filename_collapses_to_basename(
 def test_safe_asset_filename_falls_back_when_empty(suggested: str) -> None:
     """Names that strip down to nothing (pure dots/separators/control chars)
     yield the ``asset`` fallback rather than an empty or dot-only filename."""
-    assert _safe_asset_filename(suggested) == "asset"
+    assert safe_asset_filename(suggested) == "asset"
 
 
 @pytest.mark.offline
 def test_safe_asset_filename_drops_control_chars() -> None:
     """C0 control chars and DEL are stripped out of the basename so they can't
     smuggle separators or break the on-disk name."""
-    assert _safe_asset_filename("ev\x00i\x7fl\x1f.png") == "evil.png"
+    assert safe_asset_filename("ev\x00i\x7fl\x1f.png") == "evil.png"
+
+
+@pytest.mark.offline
+def test_safe_asset_filename_preserves_leading_dots() -> None:
+    """A leading dot is part of a legitimate basename, not a traversal payload.
+
+    The native DOCX extractor really produces dot-prefixed assets such as
+    ``.foo.part``; stripping every dot turned that into ``foo.part`` and made
+    the in-place asset lookup miss. Only names made entirely of dots are
+    unsafe. Trailing dots/spaces are still removed because Windows drops them
+    when it resolves a filename.
+    """
+    assert safe_asset_filename(".foo.part") == ".foo.part"
+    assert safe_asset_filename(".hidden.png") == ".hidden.png"
+    assert safe_asset_filename(".foo.") == ".foo"
+    assert safe_asset_filename(".foo ") == ".foo"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "suggested, expected",
+    [
+        ("img.png.", "img.png"),
+        ("img.png. . ", "img.png"),
+        ("img.png.\u3000.", "img.png"),
+        ("\x00 lead.png", "lead.png"),
+        ("tail.png \x00", "tail.png"),
+        ("a. .b", "a. .b"),
+    ],
+)
+def test_safe_asset_filename_is_canonical(suggested: str, expected: str) -> None:
+    """Edges are cleaned in any mix of whitespace, dots and control chars, and
+    a second pass changes nothing. In-place producers name their files with
+    this function and the writer refuses a name it would change, so a
+    non-idempotent result would drop a correctly extracted image."""
+    assert safe_asset_filename(suggested) == expected
+    assert safe_asset_filename(expected) == expected
+
+
+@pytest.mark.offline
+def test_safe_asset_filename_is_linear_on_long_dot_runs() -> None:
+    """A long run of dots that does not reach the end must not make the trim
+    quadratic: the name comes from an untrusted ZIP part, and a regex edge trim
+    took seconds on 20k dots while holding the GIL. On 50k dots the linear
+    trim takes a few milliseconds and the quadratic one about 15 seconds, so
+    the 1-second budget is loose for the first and decisive for the second."""
+    import time
+
+    name = "." * 50_000 + "x.png"
+    started = time.perf_counter()
+    assert safe_asset_filename(name) == name
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.offline
+def test_materialize_assets_refuses_non_canonical_in_place_name(
+    tmp_path: Path, lightrag_log_records
+) -> None:
+    """An in-place asset is looked up under the producer's own name. When the
+    canonical name differs (``img.png.`` -> ``img.png``) the writer must not
+    resolve it to whatever file holds the canonical name -- here a different
+    image -- but skip it loudly, leaving the other asset mapped correctly."""
+    assets_dir = tmp_path / "doc.blocks.assets"
+    assets_dir.mkdir()
+    (assets_dir / "img.png.").write_bytes(b"TRAILING")
+    (assets_dir / "img.png").write_bytes(b"PLAIN")
+
+    out = _materialize_assets(
+        [
+            AssetSpec(ref="img.png.", suggested_name="img.png.", source=None),
+            AssetSpec(ref="img.png", suggested_name="img.png", source=None),
+        ],
+        assets_dir,
+    )
+
+    assert out == {"img.png": "img.png"}
+    assert (assets_dir / "img.png").read_bytes() == b"PLAIN"
+    assert any(
+        "canonical name is" in record.getMessage() for record in lightrag_log_records
+    )
 
 
 @pytest.mark.offline

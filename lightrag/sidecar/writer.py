@@ -450,8 +450,21 @@ def _materialize_assets(
             target_path.write_bytes(spec.source)
         elif spec.source is None:
             # Assumed already on disk at the target location (native_docx
-            # writes assets during extraction). Verify presence; warn if
-            # missing.
+            # writes assets during extraction). The file is looked up under
+            # the producer's own name, so a name that sanitising or collision
+            # suffixing changed would resolve to a different file -- possibly
+            # another asset -- instead of the one the producer wrote. Refuse
+            # it rather than render the wrong image. Producers that write in
+            # place must name files with ``safe_asset_filename``.
+            if target_name != spec.suggested_name:
+                logger.warning(
+                    "[sidecar] asset ref=%s declared in place as %r but its "
+                    "canonical name is %r; skipping",
+                    spec.ref,
+                    spec.suggested_name,
+                    target_name,
+                )
+                continue
             if not target_path.exists():
                 logger.warning(
                     "[sidecar] asset ref=%s declared in place but %s is absent",
@@ -474,7 +487,7 @@ def _materialize_assets(
 
 def _allocate_unique_name(suggested: str, used: set[str]) -> str:
     """Make ``suggested`` unique within ``used``: ``foo.png`` → ``foo-2.png``."""
-    suggested = _safe_asset_filename(suggested)
+    suggested = safe_asset_filename(suggested)
     if suggested not in used:
         return suggested
     stem = Path(suggested).stem
@@ -487,11 +500,29 @@ def _allocate_unique_name(suggested: str, used: set[str]) -> str:
         n += 1
 
 
-def _safe_asset_filename(suggested: str) -> str:
-    """Collapse parser-suggested asset names to a safe filename."""
+def safe_asset_filename(suggested: str) -> str:
+    """Collapse a parser-suggested asset name to a safe, canonical filename.
+
+    Keeps only the basename (``/`` and ``\\`` both count as separators), drops
+    C0 control characters and DEL, strips leading whitespace and trailing
+    whitespace and dots, and falls back to ``asset`` when nothing is left.
+    Leading dots are kept: ``.foo.png`` is a legitimate name. Trailing dots and
+    spaces go because Windows drops them when it resolves a filename.
+
+    The result is idempotent. A producer that writes an asset into the assets
+    directory itself (``AssetSpec(source=None)``) must name the file with this
+    function, because the writer refuses an in-place asset whose name it would
+    have to change.
+    """
     name = Path(str(suggested).replace("\\", "/")).name
-    name = "".join(c for c in name.strip() if ord(c) >= 32 and c != "\x7f").strip(".")
-    return name or "asset"
+    name = "".join(c for c in name if ord(c) >= 32 and c != "\x7f").lstrip()
+    # Trailing whitespace and dots in any mix. A plain scan, not a regex: an
+    # unanchored ``[\s.]+$`` retries every run start and is quadratic on a
+    # long run of dots that does not reach the end (``"." * n + "x.png"``).
+    end = len(name)
+    while end and (name[end - 1] == "." or name[end - 1].isspace()):
+        end -= 1
+    return name[:end] or "asset"
 
 
 def _render_block_content(
