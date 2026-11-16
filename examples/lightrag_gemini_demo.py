@@ -1,8 +1,9 @@
 """
 LightRAG Demo with Google Gemini Models
 
-This example demonstrates how to use LightRAG with Google's Gemini 2.0 Flash model
-for text generation and the text-embedding-004 model for embeddings.
+This example demonstrates how to use LightRAG with Google's Gemini Flash model
+(the `gemini-flash-latest` alias) for text generation and the
+`gemini-embedding-001` model for embeddings.
 
 Prerequisites:
     1. Set GEMINI_API_KEY environment variable:
@@ -50,7 +51,7 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=GEMINI_API_KEY,
-        model_name="gemini-2.0-flash",
+        model_name="gemini-flash-latest",
         **kwargs,
     )
 
@@ -62,7 +63,7 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
     embedding_dim=768,
     send_dimensions=True,
     max_token_size=2048,
-    model_name="models/text-embedding-004",
+    model_name="gemini-embedding-001",
 )
 async def embedding_func(
     texts: list[str], embedding_dim: int | None = None
@@ -70,7 +71,7 @@ async def embedding_func(
     return await gemini_embed.func(
         texts,
         api_key=GEMINI_API_KEY,
-        model="models/text-embedding-004",
+        model="gemini-embedding-001",
         embedding_dim=embedding_dim,
     )
 
@@ -83,7 +84,7 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
-        llm_model_name="gemini-2.0-flash",
+        llm_model_name="gemini-flash-latest",
     )
 
     # 🔑 REQUIRED
