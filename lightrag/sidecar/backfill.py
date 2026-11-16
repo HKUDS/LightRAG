@@ -18,19 +18,23 @@ The merged text is exactly reproducible from ``blocks.jsonl``: both
 ``"\\n\\n".join(raw_content for content rows where content.strip())``. We rebuild
 the same string here so a chunk's ``_source_span`` indexes directly into it.
 
-F/R emit byte-verbatim spans (the span text equals the chunk content). V's
+F/R emit byte-verbatim spans (the span text equals the chunk content), except
+that an F window whose boundary split a multi-byte character keeps leading/trailing
+U+FFFD in its content while its span covers only the intact text. V's
 ``SemanticChunker`` rejoins sentences with a single space, so a V chunk's content
 may differ from its span text by whitespace alone; span validation therefore accepts
 either a byte-exact match or a **whitespace-stripped** match (every whitespace char
 removed, not merely collapsed to a single space). A span whose text matches the
-chunk under neither test is treated as absent.
+chunk under neither test, also after stripping boundary U+FFFD from the chunk, is
+treated as absent.
 
 A chunk that reaches this stage without a usable ``_source_span`` is a hard error:
-the document is marked FAILED via :class:`ChunkBlockMatchError`. The sole exception
-is a chunk whose decoded content carries the Unicode replacement character
-(:data:`_REPLACEMENT_CHAR`) — a multi-byte UTF-8 char split at a token-window
-boundary corrupts both its span probe and its own content, making provenance
-impossible; such a chunk degrades to no-sidecar rather than failing the document.
+the document is marked FAILED via :class:`ChunkBlockMatchError`. Two cases degrade
+to no-sidecar instead. A chunk without a usable span whose content carries the
+Unicode replacement character (:data:`_REPLACEMENT_CHAR`): the chunker could not
+locate it even with boundary U+FFFD stripped. A hard-split child
+marked ``_source_span_unavailable`` has no derivable span because its parent was
+boundary-damaged; the key is the marker, not a literal U+FFFD in the body.
 
 Multimodal placeholder tags (``<table …>…</table>``, ``<drawing …/>``,
 ``<equation …>…</equation>``) appear verbatim in both block content and chunk
@@ -45,29 +49,30 @@ from typing import Any
 
 from lightrag.chunk_schema import normalize_chunk_sidecar
 from lightrag.exceptions import ChunkBlockMatchError
-from lightrag.utils import logger
+from lightrag.utils import _REPLACEMENT_CHAR, logger
 
 # Separator used to join block content into the merged document text. Must match
 # lightrag/sidecar/writer.py and lightrag/utils_pipeline.py.
 _BLOCK_SEPARATOR = "\n\n"
 
-# U+FFFD. The fixed-token chunker decodes arbitrary token windows; when a window
-# boundary splits a multi-byte UTF-8 character (4-byte supplementary-plane chars:
-# emoji, rare CJK extensions), the partial decode yields this replacement character
-# in *both* the span probe and the chunk's own content. Such a chunk is then
-# inherently unlocatable in the source — by span or by text — so provenance is
-# impossible for it. We degrade to no-sidecar for that single chunk rather than
-# failing the whole document.
-_REPLACEMENT_CHAR = "�"
+# _REPLACEMENT_CHAR (U+FFFD, imported above). The fixed-token chunker decodes
+# arbitrary token windows; when a window boundary splits a multi-byte UTF-8
+# character (any non-ASCII char, not only 4-byte emoji), the partial decode puts
+# this character at the start or end of the chunk's content. The chunker
+# relocates such a window with those characters stripped, and
+# _chunk_source_span() accepts the span on the same terms. A window that still
+# cannot be located carries no span; it degrades to no-sidecar rather than
+# failing the whole document. On emoji-heavy text several consecutive windows
+# can hit the boundary, so this is not limited to one chunk per document.
 
 
 def _is_unlocatable(body: str) -> bool:
-    """True when a chunk's content cannot be located in the source by any means.
+    """True when a span-less chunk is a token-boundary artifact, not a mismatch.
 
-    See :data:`_REPLACEMENT_CHAR`: a chunk whose decoded content carries U+FFFD lost
-    bytes at a multi-byte token boundary, so neither its span nor its text can be
-    matched against the verbatim ``blocks.jsonl`` content. Callers skip provenance for
-    such chunks instead of marking the document FAILED.
+    Consulted only after :func:`_chunk_source_span` found no usable span. A chunk
+    whose decoded content carries U+FFFD lost bytes at a multi-byte token boundary,
+    and the chunker could not relocate it even with boundary U+FFFD stripped.
+    Callers skip provenance for such chunks instead of marking the document FAILED.
     """
     return _REPLACEMENT_CHAR in body
 
@@ -178,7 +183,15 @@ def _chunk_source_span(
         return None
     source_text = merged[start:end]
     if source_text != body and _normalize_text(source_text) != _normalize_text(body):
-        return None
+        # A window split inside a multi-byte character keeps U+FFFD at its
+        # edges while the chunker located it with them stripped. Strip only
+        # the edges: an interior U+FFFD is the source's own character.
+        cleaned = body.strip(_REPLACEMENT_CHAR)
+        if cleaned == body or (
+            source_text != cleaned
+            and _normalize_text(source_text) != _normalize_text(cleaned)
+        ):
+            return None
     return start, end
 
 
@@ -196,10 +209,9 @@ def backfill_chunk_sidecars(
     document FAILED.
 
     Exception: a chunk whose content carries the Unicode replacement character
-    (:data:`_REPLACEMENT_CHAR`) is inherently unlocatable — a multi-byte UTF-8
-    character was split at a token-window boundary, corrupting both its span probe
-    and its own content. Such a chunk is skipped (no sidecar) instead of failing the
-    document.
+    (:data:`_REPLACEMENT_CHAR`), or one marked ``_source_span_unavailable`` after
+    a hard split of a boundary-damaged parent, is skipped (no sidecar) instead of
+    failing the document.
     """
     if not blocks_path:
         return
@@ -224,6 +236,17 @@ def backfill_chunk_sidecars(
             continue
         body = chunk.get("content", "")
         if not isinstance(body, str) or not body.strip():
+            continue
+
+        # Hard-split children of a boundary-damaged parent carry this marker
+        # instead of a guessed span. The key is the marker; a literal U+FFFD
+        # in the body is not.
+        if "_source_span_unavailable" in chunk:
+            logger.warning(
+                f"[sidecar-backfill] chunk #{chunk.get('chunk_order_index', -1)} "
+                "has no derivable source span after a hard split of a "
+                "boundary-damaged parent; skipping provenance for it"
+            )
             continue
 
         source_span = _chunk_source_span(chunk, merged)
