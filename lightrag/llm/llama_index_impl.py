@@ -170,9 +170,14 @@ async def llama_index_complete(
             is ignored.
         entity_extraction: Deprecated compatibility shim. Emits a warning and
             is ignored.
-        settings: Optional LlamaIndex settings
-        **kwargs: Additional arguments. ``response_format`` is not supported by
-            this adapter and is stripped before calling LlamaIndex.
+        settings: Accepted for backward compatibility and ignored. The
+            completion always runs on ``llm_instance``; a LlamaIndex
+            ``Settings`` object is neither installed globally nor consulted,
+            so configure the model on the ``llm_instance`` you pass.
+        **kwargs: Additional arguments. ``llm_instance`` (required) is the
+            LlamaIndex LLM the completion runs on. ``response_format`` is not
+            supported by this adapter and is stripped before calling
+            LlamaIndex.
             ``max_tokens`` is folded into ``chat_kwargs`` (without overriding
             an explicit ``chat_kwargs["max_tokens"]``) since llama_index has
             no top-level parameter for it.
