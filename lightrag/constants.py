@@ -11,6 +11,13 @@ from typing import Literal, TypeAlias
 # Default values for server settings
 DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
+# Single source for the working directory default: the SDK dataclass default,
+# the server's --working-dir default and the maintenance tools' WORKING_DIR
+# fallback must all name the same directory.
+DEFAULT_WORKING_DIR = "./rag_storage"
+# Single source for the input directory default: the server's --input-dir
+# default and the cwd-relative fallback used when INPUT_DIR is unset.
+DEFAULT_INPUT_DIR = "./inputs"
 
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
@@ -196,6 +203,27 @@ DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 # Member-count ceiling. Its "checked after the central-directory walk" scope
 # note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
+
+# Limits for the legacy PDF extractor (pypdf). pypdf caps every object it reads
+# but not the document, and repeats work for each page and each form XObject
+# invocation, so a PDF of a few kilobytes could cost hours of CPU. pypdf
+# therefore runs in a child process with the two process limits below. They
+# hold whatever pypdf does. Env: PDF_MAX_CPU_SECONDS / PDF_MAX_MEMORY_MB.
+DEFAULT_PDF_MAX_CPU_SECONDS = 120
+DEFAULT_PDF_MAX_MEMORY_MB = 1024
+# Two cheap deterministic gates run first inside that process, and are the only
+# limits when PDF_EXTRACT_IN_SUBPROCESS=false. Content bytes are the decoded
+# bytes of all pages' /Contents, measured before any page is parsed; the cap is
+# min(PDF_MAX_CONTENT_BYTES, max(the floor below, PDF_MAX_CONTENT_RATIO * file
+# size)), so a small upload cannot buy the absolute ceiling. Extracted
+# characters bound the text returned. A non-positive value disables a limit.
+# Env: PDF_MAX_CONTENT_BYTES / PDF_MAX_CONTENT_RATIO / PDF_MAX_EXTRACTED_CHARS.
+# All five are read at parse time. Design: docs/design/PdfExtractionBudget.md.
+DEFAULT_PDF_MAX_CONTENT_BYTES = 256 * 1024 * 1024
+DEFAULT_PDF_MAX_CONTENT_RATIO = 100
+# Not a gate: the content allowance every PDF gets regardless of its size.
+DEFAULT_PDF_CONTENT_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
+DEFAULT_PDF_MAX_EXTRACTED_CHARS = 32 * 1024 * 1024
 
 # Native DOCX embedded-image export budgets. Unlike the archive-wide limits
 # above, these cap the bytes materialized into ``*.blocks.assets``: one image
@@ -689,6 +717,11 @@ DEFAULT_PROCESSING_PRIORITY = 10
 # queue fairly and advance evenly — otherwise a busy ingestion queue starves
 # analysis tasks, stalling analysis nodes and dragging down overall throughput.
 DEFAULT_MM_ANALYSIS_PRIORITY = DEFAULT_PROCESSING_PRIORITY
+# In-flight multimodal analysis items per sidecar, as a multiple of the role's
+# max_async. An internal tuning constant, not read from the environment: the
+# operator-facing knobs are the role limit (VLM_MAX_ASYNC_LLM /
+# EXTRACT_MAX_ASYNC_LLM, falling back to MAX_ASYNC_LLM) and MAX_PARALLEL_ANALYZE.
+MM_ANALYSIS_ITEM_CONCURRENCY_FACTOR = 2
 
 # Multimodal analysis / chunk thresholds
 # Minimum token count retained when truncating a multimodal chunk's

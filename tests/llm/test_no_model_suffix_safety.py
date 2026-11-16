@@ -15,6 +15,11 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
 
+import pytest
+
+
+pytestmark = pytest.mark.offline
+
 
 class TestNoModelSuffixSafety:
     """Test suite for preventing data loss when model_suffix is absent."""
@@ -87,6 +92,8 @@ class TestNoModelSuffixSafety:
         Bug: Without fix, Case 1 would delete the only table.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Configure mock return values to avoid unawaited coroutine warnings
         db.query.return_value = {"count": 0}
@@ -180,6 +187,8 @@ class TestNoModelSuffixSafety:
         This ensures our fix doesn't break the normal Case 1 scenario.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Different names (normal case)
         table_name = "LIGHTRAG_VDB_CHUNKS_ADA_002_1536D"  # With suffix
