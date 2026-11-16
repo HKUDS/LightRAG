@@ -32,7 +32,7 @@ def configure_logging():
     )
 
     print(f"\nLightRAG compatible demo log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
@@ -140,6 +140,10 @@ async def main():
             "vdb_chunks.json",
             "vdb_entities.json",
             "vdb_relationships.json",
+            # The embedding baseline recorded for those vectors, and the
+            # anchor that binds this directory to it: stale once they are gone.
+            "kv_workspace_config.json",
+            "config_storage_anchor.json",
         ]
 
         for file in files_to_delete:

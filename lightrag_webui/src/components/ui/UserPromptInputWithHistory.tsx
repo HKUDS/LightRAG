@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { ChevronDown, X } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, isImeComposing } from '@/lib/utils'
 import Input from './Input'
 
 interface UserPromptInputWithHistoryProps {
@@ -47,6 +47,9 @@ export default function UserPromptInputWithHistory({
 
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    // While an IME is composing, Enter confirms its candidate and the arrow
+    // keys move through its candidate list; none of them is meant for history.
+    if (isImeComposing(e)) return
     if (!isOpen) {
       if (e.key === 'ArrowDown' && history.length > 0) {
         e.preventDefault()

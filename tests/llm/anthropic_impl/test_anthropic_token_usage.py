@@ -54,7 +54,7 @@ async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
     )
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        result = await anthropic_complete_if_cache.__wrapped__(
+        result = await anthropic_complete_if_cache(
             model="claude-test",
             prompt="hello",
             api_key="test-key",
@@ -78,7 +78,7 @@ async def test_image_inputs_keeps_its_position_ahead_of_token_tracker():
     reintroduces the hazard fails this test."""
     import inspect
 
-    params = list(inspect.signature(anthropic_complete_if_cache.__wrapped__).parameters)
+    params = list(inspect.signature(anthropic_complete_if_cache).parameters)
     assert params.index("image_inputs") < params.index("token_tracker")
 
 
@@ -101,7 +101,7 @@ async def test_usage_recorded_even_when_content_extraction_fails():
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
         with pytest.raises(IndexError):
-            await anthropic_complete_if_cache.__wrapped__(
+            await anthropic_complete_if_cache(
                 model="claude-test",
                 prompt="hello",
                 api_key="test-key",
@@ -144,7 +144,7 @@ async def test_streaming_usage_is_tracked_after_full_consumption():
     )
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        result = await anthropic_complete_if_cache.__wrapped__(
+        result = await anthropic_complete_if_cache(
             model="claude-test",
             prompt="hello",
             api_key="test-key",
