@@ -10107,7 +10107,17 @@ class PGGraphStorage(BaseGraphStorage):
             return []
 
         try:
-            # Re-implementing with the correct agtype access operator and full scoring logic.
+            # Scoring follows NetworkXStorage.search_labels: the +50
+            # word-boundary bonus applies only to the contains branch, never
+            # to an exact or prefix match.
+            #
+            # '%' and '_' are LIKE wildcards, so the query is escaped before it
+            # goes into any pattern; otherwise "a_b" matches "axb", "50%"
+            # matches every label starting with "50", and the "_query"
+            # boundary probe matches any character before the query.
+            # $2 is the raw lowercased query (compared with =, so it must not
+            # carry LIKE escapes). ESCAPE uses an E'' literal so the backslash
+            # is one character regardless of standard_conforming_strings.
             sql_query = f"""
             WITH ranked_labels AS (
                 SELECT
@@ -10117,7 +10127,7 @@ class PGGraphStorage(BaseGraphStorage):
                     {self.graph_name}._ag_label_vertex
                 WHERE
                     ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]) IS NOT NULL
-                    AND LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) ILIKE $1
+                    AND LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) ILIKE $1 ESCAPE E'\\\\'
             )
             SELECT
                 label
@@ -10126,12 +10136,14 @@ class PGGraphStorage(BaseGraphStorage):
                     label,
                     CASE
                         WHEN label_lower = $2 THEN 1000
-                        WHEN label_lower LIKE $3 THEN 500
+                        WHEN label_lower LIKE $3 ESCAPE E'\\\\' THEN 500
                         ELSE (100 - LENGTH(label))
-                    END +
-                    CASE
-                        WHEN label_lower LIKE $4 OR label_lower LIKE $5 THEN 50
-                        ELSE 0
+                            + CASE
+                                  WHEN label_lower LIKE $4 ESCAPE E'\\\\'
+                                    OR label_lower LIKE $5 ESCAPE E'\\\\'
+                                  THEN 50
+                                  ELSE 0
+                              END
                     END AS score
                 FROM
                     ranked_labels
@@ -10141,12 +10153,17 @@ class PGGraphStorage(BaseGraphStorage):
                 label ASC
             LIMIT $6;
             """
+            escaped = (
+                query_lower.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
             params = (
-                f"%{query_lower}%",  # For the main ILIKE clause ($1)
+                f"%{escaped}%",  # For the main ILIKE clause ($1)
                 query_lower,  # For exact match ($2)
-                f"{query_lower}%",  # For prefix match ($3)
-                f"% {query_lower}%",  # For word boundary (space) ($4)
-                f"%_{query_lower}%",  # For word boundary (underscore) ($5)
+                f"{escaped}%",  # For prefix match ($3)
+                f"% {escaped}%",  # For word boundary (space) ($4)
+                rf"%\_{escaped}%",  # For word boundary (literal underscore) ($5)
                 limit,  # For LIMIT ($6)
             )
             results = await self._query(sql_query, params=dict(enumerate(params, 1)))
