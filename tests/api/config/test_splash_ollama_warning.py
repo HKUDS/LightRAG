@@ -25,7 +25,18 @@ pytestmark = pytest.mark.offline
 _WARNING_MARKER = "remain publicly accessible"
 
 
-def _splash(monkeypatch, *, host: str, api_prefix: str | None) -> str:
+_DEFAULT = object()
+
+
+def _splash(
+    monkeypatch,
+    *,
+    host: str,
+    api_prefix: str | None,
+    whitelist=_DEFAULT,
+    api_key: str | None = "an-api-key",
+    accounts: str | None = None,
+) -> str:
     """Render the real banner over real parsed args and return its output.
 
     ASCIIColors writes through its own stream rather than the stdout capsys
@@ -33,8 +44,23 @@ def _splash(monkeypatch, *, host: str, api_prefix: str | None) -> str:
     # WHITELIST_PATHS is pinned to the shipped default: a developer-local .env
     # value would otherwise decide whether the warning applies at all. setenv,
     # not delenv -- load_dotenv(override=False) would re-populate a deleted one.
-    monkeypatch.setenv("WHITELIST_PATHS", "/health,/api/*")
-    monkeypatch.setenv("LIGHTRAG_API_KEY", "an-api-key")
+    #
+    # ``whitelist=None`` exercises the unset default instead; that delenv is
+    # safe because it runs after the module-level imports below have happened
+    # once (the first _splash call imports, later ones reuse sys.modules), and
+    # parse_args never reloads .env.
+    importlib.import_module("lightrag.api.config")
+    for name, value in (
+        ("WHITELIST_PATHS", "/health,/api/*" if whitelist is _DEFAULT else whitelist),
+        ("LIGHTRAG_API_KEY", api_key),
+        ("AUTH_ACCOUNTS", accounts),
+        # parse_args refuses AUTH_ACCOUNTS without a non-default secret.
+        ("TOKEN_SECRET", "a-non-default-token-secret" if accounts else None),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
 
     argv = ["lightrag-server", "--host", host]
     if api_prefix is not None:
@@ -48,9 +74,10 @@ def _splash(monkeypatch, *, host: str, api_prefix: str | None) -> str:
         args = config.parse_args()
         # The matcher reads module state captured at import time; the banner reads
         # args. Keep them consistent.
-        monkeypatch.setattr(
-            utils_api, "whitelist_patterns", [("/health", False), ("/api", True)]
-        )
+        patterns = [("/health", False)]
+        if "/api/*" in args.whitelist_paths:
+            patterns.append(("/api", True))
+        monkeypatch.setattr(utils_api, "whitelist_patterns", patterns)
         colors = MagicMock()
         monkeypatch.setattr(utils_api, "ASCIIColors", colors)
         utils_api.display_splash_screen(args)
@@ -94,3 +121,33 @@ def test_an_empty_prefix_is_not_a_reverse_proxy(monkeypatch, api_prefix):
     output = _splash(monkeypatch, host="127.0.0.1", api_prefix=api_prefix)
 
     assert _WARNING_MARKER not in output
+
+
+def test_silent_with_a_key_and_the_default_whitelist(monkeypatch):
+    """A key makes the default /health, so the Ollama routes are protected."""
+    output = _splash(monkeypatch, host="0.0.0.0", api_prefix=None, whitelist=None)
+
+    assert _WARNING_MARKER not in output
+
+
+def test_with_a_key_the_remedy_is_to_drop_the_explicit_api_entry(monkeypatch):
+    output = _splash(monkeypatch, host="0.0.0.0", api_prefix=None)
+
+    assert _WARNING_MARKER in output
+    assert "remove /api from WHITELIST_PATHS" in output
+
+
+def test_accounts_only_warns_and_points_at_the_api_key(monkeypatch):
+    """AUTH_ACCOUNTS without a key keeps the open default; an Ollama client
+    cannot log in, so the remedy offered is the key, not a narrower whitelist."""
+    output = _splash(
+        monkeypatch,
+        host="0.0.0.0",
+        api_prefix=None,
+        whitelist=None,
+        api_key=None,
+        accounts="reader:a-strong-secret",
+    )
+
+    assert _WARNING_MARKER in output
+    assert "set\n    LIGHTRAG_API_KEY" in output

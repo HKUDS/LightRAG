@@ -994,8 +994,8 @@ class PGTableGraphStorage(BaseGraphStorage):
         #
         # The CASE mirrors _search_score / NetworkXStorage.search_labels' scoring
         # RULES: the +50 word-boundary bonus is nested INSIDE the ELSE branch so
-        # it can never apply to an exact or prefix match (AGE's SQL adds it
-        # unconditionally, which is the divergent one). LENGTH() counts
+        # it can never apply to an exact or prefix match (PGGraphStorage's AGE
+        # SQL nests it the same way). LENGTH() counts
         # characters like Python len(), not octets. ORDER BY id COLLATE "C"
         # reproduces Python's code-point tie-break on the original,
         # non-lowercased id.
