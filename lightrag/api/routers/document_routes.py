@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Annotated,
+    Collection,
     Dict,
     Iterator,
     List,
@@ -2230,11 +2231,105 @@ def _file_path_for_parsed_artifact_dir(dir_name: str) -> str | None:
     return None
 
 
+def _archived_file_readings(name: str) -> set[str]:
+    """Every canonical source a file under ``__parsed__`` may have been archived from.
+
+    An archived ``scan_001.pdf`` is either a numbered copy of ``scan.pdf`` or
+    the first archive of a document that is itself named ``scan_001.pdf``
+    (``get_unique_filename_in_parsed`` only numbers on a collision); the name
+    alone cannot tell which, so both readings are returned.
+    """
+    return {
+        canonicalize_archived_file_variant_basename(name),
+        canonicalize_archived_file_variant_basename(name, strip_archive_suffix=True),
+    }
+
+
+def find_archived_variants_shared_with_other_sources(
+    input_dir: Path,
+    file_path: str | None,
+) -> dict[str, list[str]]:
+    """Map other canonical sources to the ``__parsed__`` files they may own.
+
+    Lists the files :func:`delete_file_variants_by_file_path` would match for
+    ``file_path`` whose other reading names a different source. Callers must
+    resolve each returned source against doc_status and pass the files of every
+    source that is still referenced, or whose lookup failed, as
+    ``preserve_files``; this function does not read storage.
+    """
+    if not file_path:
+        return {}
+    canonical = normalize_file_path(file_path)
+    if canonical == UNKNOWN_FILE_SOURCE:
+        return {}
+    try:
+        candidates = list((input_dir / PARSED_DIR_NAME).iterdir())
+    except FileNotFoundError:
+        return {}
+
+    shared: dict[str, list[str]] = {}
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        readings = _archived_file_readings(candidate.name)
+        if canonical not in readings:
+            continue
+        for other in sorted(readings - {canonical}):
+            shared.setdefault(other, []).append(candidate.name)
+    return shared
+
+
+async def resolve_archived_variants_to_preserve(
+    rag: LightRAG,
+    input_dir: Path,
+    file_path: str | None,
+) -> dict[str, str]:
+    """Return ``{archived file name: reason}`` for files another source may own.
+
+    Fail closed: a file is preserved when the other source is still referenced
+    by a primary document or when its ownership lookup raises. Keeping a file
+    that could have been deleted is the accepted residue; deleting a live
+    document's archived source is not.
+    """
+    preserve: dict[str, str] = {}
+    shared = find_archived_variants_shared_with_other_sources(input_dir, file_path)
+    for other_source, names in shared.items():
+        try:
+            resolution = await rag.doc_status.resolve_doc_source_strict(other_source)
+        except Exception as e:
+            # Raw error in the log only; the reason reaches pipeline_status.
+            logger.warning(
+                "Ownership check failed for archived variants of %s: %s",
+                other_source,
+                e,
+            )
+            reason = (
+                f"ownership of '{other_source}' could not be checked: "
+                f"{type(e).__name__}"
+            )
+        else:
+            if isinstance(resolution, SourceAbsent):
+                continue
+            reason = f"may belong to document source '{other_source}'"
+        for name in names:
+            preserve[name] = reason
+    return preserve
+
+
 def delete_file_variants_by_file_path(
     input_dir: Path,
     file_path: str | None,
+    *,
+    preserve_files: Collection[str] = (),
 ) -> tuple[list[str], list[str]]:
-    """Delete input/__parsed__ source files matching a canonical ``file_path``."""
+    """Delete input/__parsed__ source files matching a canonical ``file_path``.
+
+    A ``__parsed__`` file is matched under both of its readings (see
+    :func:`_archived_file_readings`), so an archive whose name is shared with
+    another source is matched too. Callers that can reach doc_status must pass
+    the result of :func:`resolve_archived_variants_to_preserve` as
+    ``preserve_files``; those ``__parsed__`` file names are left in place.
+    """
     if not file_path:
         return [], []
     canonical = normalize_file_path(file_path)
@@ -2259,18 +2354,14 @@ def delete_file_variants_by_file_path(
         in_parsed_dir = candidate_dir.name == PARSED_DIR_NAME
         for candidate in candidates:
             if candidate.is_file():
-                variant_names = {
-                    canonicalize_archived_file_variant_basename(candidate.name)
-                }
                 if in_parsed_dir:
-                    # An archived ``scan_001.pdf`` is either a numbered copy of
-                    # ``scan.pdf`` or the first archive of a document that is
-                    # itself named ``scan_001.pdf``; match both readings.
-                    variant_names.add(
-                        canonicalize_archived_file_variant_basename(
-                            candidate.name, strip_archive_suffix=True
-                        )
-                    )
+                    if candidate.name in preserve_files:
+                        continue
+                    variant_names = _archived_file_readings(candidate.name)
+                else:
+                    variant_names = {
+                        canonicalize_archived_file_variant_basename(candidate.name)
+                    }
                 if variant_names.isdisjoint(canonical_names):
                     continue
 
@@ -4352,10 +4443,27 @@ async def background_delete_documents(
                         and result.file_path != UNKNOWN_FILE_SOURCE
                     ):
                         try:
+                            # Archived names such as ``X_001.ext`` may belong to
+                            # a live ``X.ext`` or ``X_001.ext``; keep those.
+                            preserve_files = (
+                                await resolve_archived_variants_to_preserve(
+                                    rag, doc_manager.input_dir, result.file_path
+                                )
+                            )
+                            for kept_name, kept_reason in preserve_files.items():
+                                kept_msg = (
+                                    f"Archived file kept: {PARSED_DIR_NAME}/"
+                                    f"{kept_name} ({kept_reason})"
+                                )
+                                logger.info(kept_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = kept_msg
+                                    append_pipeline_history(pipeline_status, kept_msg)
                             deleted_files, file_delete_errors = (
                                 delete_file_variants_by_file_path(
                                     doc_manager.input_dir,
                                     result.file_path,
+                                    preserve_files=preserve_files,
                                 )
                             )
                             for file_delete_error in file_delete_errors:
@@ -4379,7 +4487,7 @@ async def background_delete_documents(
                                     append_pipeline_history(
                                         pipeline_status, file_delete_msg
                                     )
-                            else:
+                            elif not preserve_files:
                                 file_error_msg = (
                                     "File deletion skipped, missing or unsafe file: "
                                     f"{result.file_path}"
