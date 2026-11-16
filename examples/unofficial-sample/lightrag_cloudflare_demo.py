@@ -230,6 +230,7 @@ async def print_stream(stream):
 
 
 async def main():
+    rag = None
     try:
         # Clear old data files
         files_to_delete = [
