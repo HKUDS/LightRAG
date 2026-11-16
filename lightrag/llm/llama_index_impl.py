@@ -50,9 +50,12 @@ def configure_llama_index(settings: Any = None, **kwargs):
     if settings is None:
         settings = LlamaIndexSettings
 
-    # Update settings with any provided kwargs
+    # Update settings with any provided kwargs. Look the name up on the class,
+    # not the instance: hasattr() on the instance runs lazy property getters
+    # (Settings.llm, Settings.embed_model) that load a default OpenAI model and
+    # raise without OPENAI_API_KEY, before the caller's value is assigned.
     for key, value in kwargs.items():
-        if hasattr(settings, key):
+        if hasattr(type(settings), key) or key in getattr(settings, "__dict__", {}):
             setattr(settings, key, value)
         else:
             logger.warning(f"Unknown LlamaIndex setting: {key}")
