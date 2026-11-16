@@ -145,9 +145,10 @@ async def achunk_documents_for_rerank(
 ) -> Tuple[List[str], List[int]]:
     """Async :func:`chunk_documents_for_rerank`.
 
-    Reranking runs on the query path and this function encodes and decodes once
-    per document plus once per emitted window, so on the event loop it scales the
-    stall with the number of retrieved chunks. The whole function is a single
+    Reranking runs on the query path and this function encodes every document
+    once, then re-encodes candidate windows of each over-budget document while
+    searching for safe boundaries, so on the event loop it scales the stall with
+    the number and size of retrieved chunks. The whole function is a single
     submission; splitting it per document would make the executor queue grow with
     the result set instead of with the number of in-flight requests.
     """
