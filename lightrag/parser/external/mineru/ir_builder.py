@@ -859,7 +859,14 @@ def _safe_local_asset_path(
         return raw_dir / "images" / name if name else None
 
     normalized = os.path.normpath(img_path)
-    if normalized.startswith("..") or os.path.isabs(normalized):
+    # normpath folds every inner ``..``, so a parent reference can only remain
+    # as the leading component; match that component, not the two-character
+    # prefix, so names such as ``..assets/fig.png`` stay inside ``raw_dir``.
+    if (
+        normalized == os.pardir
+        or normalized.startswith(os.pardir + os.sep)
+        or os.path.isabs(normalized)
+    ):
         return None
     candidate = (raw_dir / normalized).resolve()
     try:

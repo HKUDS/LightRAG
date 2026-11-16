@@ -1225,6 +1225,38 @@ def test_adapter_refuses_path_traversal_img_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "img_path", ["..fig.png", "...fig.png", "..assets/fig.png", "images/..fig.png"]
+)
+def test_adapter_resolves_dot_prefixed_img_path_inside_raw_dir(
+    tmp_path: Path, img_path: str
+) -> None:
+    """A name that merely starts with two dots is not a parent reference: the
+    image inside ``raw_dir`` must be found, not dropped as unsafe."""
+    raw = _write_bundle(tmp_path, [{"type": "image", "img_path": img_path}])
+    image = raw / img_path
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"png")
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
+
+    assert ir.assets[0].source == image.resolve()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("img_path", ["..", "../secret.png", "images/../../secret.png"])
+def test_adapter_refuses_parent_component_img_path(
+    tmp_path: Path, img_path: str
+) -> None:
+    (tmp_path / "secret.png").write_bytes(b"private")
+    raw = _write_bundle(tmp_path, [{"type": "image", "img_path": img_path}])
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
+
+    assert ir.assets[0].source is None
+
+
+@pytest.mark.offline
 def test_adapter_absolute_url_img_path_resolves_to_images_basename(
     tmp_path: Path,
 ) -> None:
