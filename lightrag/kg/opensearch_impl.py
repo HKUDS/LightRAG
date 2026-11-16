@@ -247,6 +247,24 @@ def _extract_bulk_failed_ids(
     return retryable, non_retryable
 
 
+def _raise_bulk_delete_failures(failed: list[Any], *, context: str) -> None:
+    """Reject incomplete deletes while treating already-absent rows as success."""
+    errors = [
+        payload
+        for entry in failed
+        for op, payload in entry.items()
+        if not 200 <= payload["status"] < 300
+        and not (op == "delete" and payload["status"] == 404)
+    ]
+    if errors:
+        sample = ", ".join(
+            f"{item['_id']}/status={item['status']}/"
+            f"{_summarize_bulk_error(item.get('error'))}"
+            for item in errors[:5]
+        )
+        raise OpenSearchException(f"{context}: bulk deletion failed: {sample}")
+
+
 # Flush-time bulk batching limits. opensearch-py's helpers.async_bulk already
 # splits a request by payload-byte budget (primary) and record count
 # (secondary) via _ActionChunker -- semantically identical to MongoDB's
@@ -3751,7 +3769,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await _run_chunked_async_bulk(
+            _, failed = await _run_chunked_async_bulk(
                 self.client,
                 actions,
                 max_payload_bytes=self._max_upsert_payload_bytes,
@@ -3761,11 +3779,15 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 raise_on_error=False,
                 refresh="wait_for",
             )
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] doc-status delete"
+            )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
             logger.error(f"[{self.workspace}] Error deleting doc statuses: {e}")
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Delete the entire doc status index."""
@@ -5114,18 +5136,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete the node
             try:
-                await self.client.delete(index=self._nodes_index, id=node_id)
-            except NotFoundError:
-                pass
-            self._nodes_dirty = True
-            self._edges_dirty = True
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete the node
+                try:
+                    await self.client.delete(index=self._nodes_index, id=node_id)
+                except NotFoundError:
+                    pass
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
             raise
@@ -5135,7 +5163,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         Marks node and edge search views dirty so refresh happens lazily on the
         next search/count-based graph read. Uses conflicts="proceed" to
-        tolerate already-deleted matches.
+        tolerate already-deleted matches. Raises when any node delete is
+        rejected (a 404 counts as deleted); ``delete_by_query`` needs no item
+        check because the server answers non-2xx when it records a failure.
         """
         if not nodes:
             return
@@ -5154,27 +5184,36 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await _run_chunked_async_bulk(
-                self.client,
-                actions,
-                max_payload_bytes=self._max_upsert_payload_bytes,
-                max_records_per_batch=self._max_delete_records_per_batch,
-                log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
-                what="node delete",
-                raise_on_error=False,
+            try:
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete nodes
+                _, failed = await _run_chunked_async_bulk(
+                    self.client,
+                    actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+                    what="node delete",
+                    raise_on_error=False,
+                )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] node delete"
             )
-            self._nodes_dirty = True
-            self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
             raise
@@ -5185,7 +5224,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         Startup migration is fail-fast, so every edge is keyed by its canonical
         (sorted-pair) ``_id``. Delete that single id per edge — dedup via a set so
         reciprocal inputs ``(A,B)`` and ``(B,A)`` collapse to one delete op. The
-        raw bulk API does not raise on a 404 delete.
+        raw bulk API answers 200 even when items fail, so every item is checked:
+        a 404 counts as deleted, any other failure raises.
 
         Marks edge search views dirty so refresh happens lazily on the next
         search/count-based graph read.
@@ -5217,9 +5257,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     f"[{self.workspace}] {self.namespace} edges: edge delete "
                     f"{len(operations)} ops split into bulk chunks (chunk={chunk})"
                 )
-            for i in range(0, len(operations), chunk):
-                await self.client.bulk(body=operations[i : i + chunk])
-            self._edges_dirty = True
+            try:
+                for i in range(0, len(operations), chunk):
+                    response = await self.client.bulk(body=operations[i : i + chunk])
+                    _raise_bulk_delete_failures(
+                        response["items"],
+                        context=f"[{self.workspace}] edge delete",
+                    )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
             raise
