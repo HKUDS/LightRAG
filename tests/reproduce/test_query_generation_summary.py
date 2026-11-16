@@ -16,21 +16,31 @@ class WordTokenizer:
         return " ".join(tokens)
 
 
-@pytest.mark.parametrize(
-    "count,budget",
-    [(5000, 2000), (10000, 1000), (5000, 1999)],
-)
-def test_summary_retains_both_existing_offset_windows(count, budget):
+def load_get_summary():
+    # Importing Step_2.py would download GPT-2 and call OpenAI at import time,
+    # so compile only the get_summary definition against a stub tokenizer.
     source = Path(__file__).resolve().parents[2] / "reproduce" / "Step_2.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     node = next(n for n in tree.body if getattr(n, "name", None) == "get_summary")
     namespace = {"tokenizer": WordTokenizer()}
-    exec(
+    exec(  # noqa: S102 - trusted repository source, compiled for the test only
         compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"),
         namespace,
     )
+    return namespace["get_summary"]
+
+
+@pytest.mark.parametrize(
+    "count,budget,head,tail",
+    [
+        (5000, 2000, (1000, 2000), (3000, 4000)),
+        (10000, 1000, (1000, 1500), (8500, 9000)),
+        (5000, 1999, (1000, 1999), (3001, 4000)),
+    ],
+)
+def test_summary_retains_both_existing_offset_windows(count, budget, head, tail):
     tokens = [str(i) for i in range(count)]
-    actual = namespace["get_summary"](" ".join(tokens), budget).split()
-    half = budget // 2
-    assert actual == tokens[1000 : 1000 + half] + tokens[-(1000 + half) : -1000]
+    actual = load_get_summary()(" ".join(tokens), budget).split()
+    expected = [str(i) for i in range(*head)] + [str(i) for i in range(*tail)]
+    assert actual == expected
     assert len(actual) <= budget
