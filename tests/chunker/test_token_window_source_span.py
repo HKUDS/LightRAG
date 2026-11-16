@@ -19,7 +19,11 @@ from __future__ import annotations
 import pytest
 
 from lightrag.chunker import chunking_by_fixed_token
-from lightrag.chunker.token_size import _source_span, _token_window_source_span
+from lightrag.chunker.token_size import (
+    _recover_boundary_window,
+    _source_span,
+    _token_window_source_span,
+)
 from lightrag.sidecar.backfill import _normalize_text
 from lightrag.utils import Tokenizer, TokenizerInterface
 
@@ -444,3 +448,121 @@ def test_every_span_is_the_window_position_under_tiktoken() -> None:
             expected = _byte_window_char_span(text, b0, b1)
             want = _source_span(text, *expected) if expected else None
             assert chunk.get("_source_span") == want, (case, k, text, size, overlap)
+
+
+class _PerByteReplacementTokenizer(_ByteTokenizer):
+    """Byte tokens; decode emits one U+FFFD per undecodable byte.
+
+    Python and Rust emit one U+FFFD for the whole head of a broken character;
+    other decoders emit one per byte. Recovery must not depend on which.
+    """
+
+    def decode(self, tokens: list[int]) -> str:
+        data = bytes(tokens)
+        out: list[str] = []
+        i = 0
+        while i < len(data):
+            for width in (1, 2, 3, 4):
+                try:
+                    out.append(data[i : i + width].decode("utf-8"))
+                except UnicodeDecodeError:
+                    continue
+                i += width
+                break
+            else:
+                out.append("\ufffd")
+                i += 1
+        return "".join(out)
+
+
+@pytest.mark.offline
+def test_every_span_is_the_window_position_when_decoder_replaces_per_byte() -> None:
+    """Counting the U+FFFD a decoder emits for a broken head put the start one
+    or two characters late with a per-byte decoder; over a repeated run the
+    late position still matched. The start is counted from whole characters."""
+    import random
+
+    rng = random.Random(5)
+    tok = Tokenizer("per-byte", _PerByteReplacementTokenizer())
+    for case in range(400):
+        text = _random_boundary_text(rng, _BYTE_AUDIT_ALPHABET)
+        if not text.strip():
+            continue
+        size = rng.randint(2, 24)
+        overlap = rng.randint(0, size - 1)
+        chunks = chunking_by_fixed_token(
+            tok,
+            text,
+            chunk_token_size=size,
+            chunk_overlap_token_size=overlap,
+            _emit_source_span=True,
+        )
+        step = size - overlap
+        for k, chunk in enumerate(chunks):
+            expected = _byte_window_char_span(text, k * step, k * step + size)
+            want = _source_span(text, *expected) if expected else None
+            assert chunk.get("_source_span") == want, (case, k, text, size, overlap)
+
+
+@pytest.mark.offline
+def test_source_replacement_near_boundary_window_gets_no_span(tmp_path) -> None:
+    """When the source has U+FFFD of its own next to a split character, the
+    window's edge U+FFFD cannot be told apart. Stripping them all left "x",
+    which was then found in another block; such a window keeps no span."""
+    import json
+
+    from lightrag.sidecar.backfill import backfill_chunk_sidecars
+
+    blocks = [("b0", "x"), ("b1", "\ufffd" * 4 + "x😀")]
+    text = "\n\n".join(content for _, content in blocks)
+    chunks = chunking_by_fixed_token(
+        Tokenizer("bytes", _ByteTokenizer()),
+        text,
+        chunk_token_size=14,
+        chunk_overlap_token_size=11,
+        _emit_source_span=True,
+    )
+    # Window 1 is bytes [3, 17): all of b1's U+FFFD, "x" and the emoji's head.
+    assert chunks[1]["content"] == "\ufffd" * 4 + "x\ufffd"
+    assert "_source_span" not in chunks[1]
+
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    rows = [json.dumps({"type": "meta", "format": "lightrag", "version": "1.0"})]
+    rows += [
+        json.dumps({"type": "content", "blockid": blockid, "content": content})
+        for blockid, content in blocks
+    ]
+    blocks_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    backfill_chunk_sidecars(chunks, str(blocks_path))
+    assert "sidecar" not in chunks[1]
+    for chunk in chunks:
+        if "sidecar" in chunk and chunk["chunk_order_index"] > 0:
+            assert [r["id"] for r in chunk["sidecar"]["refs"]] == ["b1"]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("head", ["\ufffd", "\ufffd\ufffd\ufffd"])
+def test_recover_boundary_window_counts_characters_not_replacements(head: str) -> None:
+    # "ab" then a split emoji, then "cd": the window holds the emoji's tail.
+    content = "ab😀cd😀cd"
+    assert _recover_boundary_window(
+        content, "\ufffd\ufffdcd\ufffd", "ab" + head, 0
+    ) == (
+        3,
+        5,
+    )
+
+
+@pytest.mark.offline
+def test_recover_boundary_window_declines_instead_of_searching() -> None:
+    content = "ab😀cd😀cd"
+    # The text is not at the computed offset; it does occur two characters on.
+    assert _recover_boundary_window(content, "\ufffdd😀c\ufffd", "ab\ufffd", 0) is None
+    # A window with no edge U+FFFD, or nothing but U+FFFD, is not this case.
+    assert _recover_boundary_window(content, "cd", "ab😀", 0) is None
+    assert _recover_boundary_window(content, "\ufffd\ufffd", "ab", 0) is None
+    # Source U+FFFD near the window: edge U+FFFD are no longer known artifacts.
+    garbled = "a\ufffdb😀cd😀cd"
+    assert (
+        _recover_boundary_window(garbled, "\ufffdcd\ufffd", "a\ufffdb\ufffd", 0) is None
+    )

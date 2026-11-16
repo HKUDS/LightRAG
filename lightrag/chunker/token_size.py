@@ -29,64 +29,49 @@ from lightrag.exceptions import ChunkTokenLimitExceededError
 from lightrag.utils import _REPLACEMENT_CHAR, Tokenizer, logger
 
 
-def _locate_window_in_content(
+# How far around a boundary-damaged window the source must be free of U+FFFD
+# before the window's own edge U+FFFD are taken for split characters. Matches
+# the slack of the +-32 ``find`` in :func:`_token_window_source_span`.
+_BOUNDARY_GUARD = 32
+
+
+def _recover_boundary_window(
     content: str,
     window: str,
-    start: int,
-    end: int,
-) -> tuple[int, int, bool] | None:
-    """Map a decoded window back to char offsets in ``content``.
+    prefix: str,
+    prefix_start: int,
+) -> tuple[int, int] | None:
+    """Locate a window whose edges split a multi-byte character.
 
-    Tries the predicted offset, then a ``find`` near it. When the window
-    carries leading/trailing U+FFFD from a split multi-byte character, the
-    probe is retried with those characters stripped; the returned span then
-    covers only the intact text and is NOT a verbatim slice of the window.
+    ``prefix`` is the decode of the tokens between a verified anchor at char
+    ``prefix_start`` and the window. Such a window decodes with leading and/or
+    trailing U+FFFD, so it is not a slice of ``content``; the text between
+    them is. Returns the ``(start, end)`` of that text, or ``None``.
 
-    Returns ``(start, end, anchorable)`` or ``None`` when neither probe finds
-    the window. ``anchorable`` says whether ``start`` is a verified char offset
-    for the window's first token, and is False in two cases:
+    The offset is computed, never searched for: text that repeats (an emoji
+    run, a repeated phrase) matches in several places, and only one of them is
+    this window. The start is the characters wholly before the window plus the
+    one its first token splits, counted from ``prefix`` with its trailing
+    U+FFFD dropped -- so the result does not depend on how many U+FFFD a
+    decoder emits for one broken character.
 
-    - The window began inside a character (leading U+FFFD stripped): the
-      match starts after that character, so the next delta decode would count
-      its remaining bytes as extra characters and every later prediction would
-      be shifted; in repetitive text the shifted exact-match check still passes.
-    - The stripped text occurs more than once in the search range (repetitive
-      text such as an emoji run): the occurrence nearest the predicted offset
-      is returned as the span, but an off-by-a-period pick must not become the
-      base of later predictions.
+    Declines when the source near the window has U+FFFD of its own: those
+    cannot be told from split characters, and a wrong span is worse than none.
     """
-    if content[start:end] == window:
-        return start, end, True
-    lo = max(0, start - 32)
-    hi = min(len(content), end + 32 + len(window))
-    found = content.find(window, lo, hi)
-    if found >= 0:
-        return found, found + len(window), True
     trimmed = window.strip(_REPLACEMENT_CHAR)
     if not trimmed or trimmed == window:
         return None
-    first = content.find(trimmed, lo, hi)
-    if first < 0:
+    whole = prefix.rstrip(_REPLACEMENT_CHAR)
+    split_at = prefix_start + len(whole)
+    start = split_at + (1 if len(whole) != len(prefix) else 0)
+    end = start + len(trimmed)
+    guard_lo = max(0, split_at - _BOUNDARY_GUARD)
+    guard_hi = min(len(content), end + _BOUNDARY_GUARD)
+    if _REPLACEMENT_CHAR in content[guard_lo:guard_hi]:
         return None
-    # A leading trim means ``start_token`` points inside a character while
-    # the match starts after it: not a (token, char) pair to anchor on.
-    leading_trim = window[0] == _REPLACEMENT_CHAR
-    if content.find(trimmed, first + 1, hi) < 0:
-        return first, first + len(trimmed), not leading_trim
-    # ``start`` predicts where ``trimmed`` begins: the split character's head
-    # bytes decoded to U+FFFD at the end of the delta, so the prediction lands
-    # just past that character.
-    target = start
-    candidates = [
-        pos
-        for pos in (
-            content.rfind(trimmed, lo, min(hi, target + len(trimmed))),
-            content.find(trimmed, max(lo, target), hi),
-        )
-        if pos >= 0
-    ]
-    best = min(candidates, key=lambda pos: abs(pos - target))
-    return best, best + len(trimmed), False
+    if not content.startswith(trimmed, start):
+        return None
+    return start, end
 
 
 def _trimmed_span(content: str, start: int, end: int) -> tuple[int, int]:
@@ -130,33 +115,44 @@ def _token_window_source_span(
     while the located span stays byte-exact.
 
     A window whose boundary split a multi-byte character carries leading/trailing
-    U+FFFD; it is located with those stripped (see
-    :func:`_locate_window_in_content`), so its span is narrower than its content.
-    Such a span is returned, but the anchor moves only when the window began on
-    a character boundary and the stripped text is unique in the search range:
-    only a verified ``(token, char)`` pair may seed the next prediction. A run
-    of windows that do not qualify decodes its delta from the last verified
-    anchor, which is O(run length) per window instead of one step -- the same
-    cost as a run of windows that cannot be located at all.
+    U+FFFD and fails both probes; :func:`_recover_boundary_window` then places
+    the text between them, so its span is narrower than its content. The anchor
+    moves to such a window only when it does not start with U+FFFD: a window
+    that starts inside a character has no char offset of its own, and anchoring
+    on it would shift every later prediction. A run of windows that all start
+    mid-character decodes its delta from the last anchor, O(run length) per
+    window -- what a run of windows that cannot be located already costs.
 
-    Returns ``(span, new_anchor)``. On a window that cannot be located even with
-    boundary U+FFFD stripped, the span is ``None`` and the anchor is returned
-    unchanged so the next window still predicts from the last verified position.
+    Returns ``(span, new_anchor)``. On a window that cannot be located the span
+    is ``None`` and the anchor is returned unchanged so the next window still
+    predicts from the last verified position.
     """
     anchor_token, anchor_char = anchor
     window = tokenizer.decode(tokens[start_token:end_token])
     if start_token >= anchor_token:
-        start = anchor_char + len(tokenizer.decode(tokens[anchor_token:start_token]))
+        prefix = tokenizer.decode(tokens[anchor_token:start_token])
     else:  # non-monotonic caller (not expected) — fall back to a full prefix decode
-        start = len(tokenizer.decode(tokens[:start_token]))
+        anchor_char = 0
+        prefix = tokenizer.decode(tokens[:start_token])
+    start = anchor_char + len(prefix)
     end = start + len(window)
-    located = _locate_window_in_content(content, window, start, end)
-    if located is None:
-        return None, anchor
-    start, end, anchorable = located
-    return _source_span(content, start, end), (
-        (start_token, start) if anchorable else anchor
-    )
+    if content[start:end] != window:
+        found = content.find(
+            window,
+            max(0, start - 32),
+            min(len(content), end + 32 + len(window)),
+        )
+        if found < 0:
+            recovered = _recover_boundary_window(content, window, prefix, anchor_char)
+            if recovered is None:
+                return None, anchor
+            start, end = recovered
+            if window.startswith(_REPLACEMENT_CHAR):
+                return _source_span(content, start, end), anchor
+            return _source_span(content, start, end), (start_token, start)
+        start = found
+        end = found + len(window)
+    return _source_span(content, start, end), (start_token, start)
 
 
 def _make_chunk(
