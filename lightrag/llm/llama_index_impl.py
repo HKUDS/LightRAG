@@ -42,21 +42,24 @@ def configure_llama_index(settings: Any = None, **kwargs):
     Configure LlamaIndex settings.
 
     Args:
-        settings: LlamaIndex Settings instance. If None, uses default settings.
+        settings: Settings object to configure in place. If None, uses the
+            LlamaIndex Settings singleton. Provided objects are not installed
+            as global settings.
         **kwargs: Additional settings to override/configure
     """
     if settings is None:
-        settings = LlamaIndexSettings()
+        settings = LlamaIndexSettings
 
-    # Update settings with any provided kwargs
+    # Update settings with any provided kwargs. Look the name up on the class,
+    # not the instance: hasattr() on the instance runs lazy property getters
+    # (Settings.llm, Settings.embed_model) that load a default OpenAI model and
+    # raise without OPENAI_API_KEY, before the caller's value is assigned.
     for key, value in kwargs.items():
-        if hasattr(settings, key):
+        if hasattr(type(settings), key) or key in getattr(settings, "__dict__", {}):
             setattr(settings, key, value)
         else:
             logger.warning(f"Unknown LlamaIndex setting: {key}")
 
-    # Set as global settings
-    LlamaIndexSettings.set_global(settings)
     return settings
 
 
@@ -246,6 +249,12 @@ async def llama_index_embed(
     """
     Generate embeddings using LlamaIndex
 
+    The model's ``embed_batch_size`` and ``embeddings_cache`` apply: each call
+    is split into sub-batches of at most ``embed_batch_size`` texts, sent as
+    concurrent requests. Set ``embed_batch_size >= embedding_batch_num`` to
+    keep one request per call. See "Embedding batch sizes" in
+    docs/ProgramingWithCore.md.
+
     Args:
         texts: List of texts to embed
         embed_model: LlamaIndex embedding model
@@ -258,7 +267,6 @@ async def llama_index_embed(
     if embed_model is None:
         raise ValueError("embed_model must be provided")
 
-    # Use the async batch method -- the sync _get_text_embeddings would
-    # block the event loop for the whole embedding call.
-    embeddings = await embed_model._aget_text_embeddings(texts)
+    # Preserve the model's batching, cache, and callbacks on the async path.
+    embeddings = await embed_model.aget_text_embedding_batch(texts)
     return np.array(embeddings)
