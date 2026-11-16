@@ -506,9 +506,9 @@ def test_every_span_is_the_window_position_when_decoder_replaces_per_byte() -> N
 
 @pytest.mark.offline
 def test_source_replacement_near_boundary_window_gets_no_span(tmp_path) -> None:
-    """When the source has U+FFFD of its own next to a split character, the
-    window's edge U+FFFD cannot be told apart. Stripping them all left "x",
-    which was then found in another block; such a window keeps no span."""
+    """When the source has U+FFFD of its own, a window's edge U+FFFD cannot be
+    told apart. Stripping them all left "x", which was then found in another
+    block; a document with U+FFFD gets no recovery, so the window has no span."""
     import json
 
     from lightrag.sidecar.backfill import backfill_chunk_sidecars
@@ -561,8 +561,88 @@ def test_recover_boundary_window_declines_instead_of_searching() -> None:
     # A window with no edge U+FFFD, or nothing but U+FFFD, is not this case.
     assert _recover_boundary_window(content, "cd", "ab😀", 0) is None
     assert _recover_boundary_window(content, "\ufffd\ufffd", "ab", 0) is None
-    # Source U+FFFD near the window: edge U+FFFD are no longer known artifacts.
-    garbled = "a\ufffdb😀cd😀cd"
-    assert (
-        _recover_boundary_window(garbled, "\ufffdcd\ufffd", "a\ufffdb\ufffd", 0) is None
+
+
+@pytest.mark.offline
+def test_source_replacement_far_from_window_still_disables_recovery(tmp_path) -> None:
+    """The exact-match probe can anchor on a split character that matched
+    source U+FFFD. Recovery then computed from that anchor, and far from the
+    U+FFFD a repeated run verified the shifted offset: a chunk holding only
+    b1's bytes got a b0 span. Any U+FFFD in the document disables recovery."""
+    import json
+
+    from lightrag.sidecar.backfill import backfill_chunk_sidecars
+
+    blocks = [
+        ("b0", "\ufffd" * 7 + "é" * 12 + "😀" * 25 + "é" * 6),
+        ("b1", "é" * 3),
+    ]
+    text = "\n\n".join(content for _, content in blocks)
+    chunks = chunking_by_fixed_token(
+        Tokenizer("bytes", _ByteTokenizer()),
+        text,
+        chunk_token_size=15,
+        chunk_overlap_token_size=5,
+        _emit_source_span=True,
     )
+    # Chunk 16 is bytes [160, 165): the tail of one "é" and two whole ones,
+    # all in b1 and more than 32 characters past the last source U+FFFD.
+    assert chunks[16]["content"] == "\ufffdéé"
+    assert "_source_span" not in chunks[16]
+
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    rows = [json.dumps({"type": "meta", "format": "lightrag", "version": "1.0"})]
+    rows += [
+        json.dumps({"type": "content", "blockid": blockid, "content": content})
+        for blockid, content in blocks
+    ]
+    blocks_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    backfill_chunk_sidecars(chunks, str(blocks_path))
+    assert "sidecar" not in chunks[16]
+
+
+@pytest.mark.offline
+def test_recovery_never_runs_on_content_with_replacement_characters(
+    monkeypatch,
+) -> None:
+    """Pins the rule itself rather than one input: content that holds U+FFFD
+    never reaches the recovery helper, on either chunking path; content
+    without it does, including a clean segment beside a garbled one."""
+    import random
+
+    from lightrag.chunker import token_size
+
+    calls: list[str] = []
+    real = token_size._recover_boundary_window
+
+    def recording(content, window, prefix, prefix_start):
+        calls.append(content)
+        return real(content, window, prefix, prefix_start)
+
+    monkeypatch.setattr(token_size, "_recover_boundary_window", recording)
+    tok = Tokenizer("bytes", _ByteTokenizer())
+    rng = random.Random(77)
+    for _ in range(200):
+        text = _random_boundary_text(rng, _BYTE_AUDIT_ALPHABET + ["\ufffd"])
+        if "\ufffd" not in text or not text.strip():
+            continue
+        size = rng.randint(2, 24)
+        chunking_by_fixed_token(
+            tok,
+            text,
+            chunk_token_size=size,
+            chunk_overlap_token_size=rng.randint(0, size - 1),
+            _emit_source_span=True,
+        )
+    assert calls == []
+
+    clean, garbled = "😀" * 12, "\ufffd" + "😀" * 12
+    chunking_by_fixed_token(
+        tok,
+        clean + "|" + garbled,
+        chunk_token_size=6,
+        chunk_overlap_token_size=0,
+        split_by_character="|",
+        _emit_source_span=True,
+    )
+    assert calls and set(calls) == {clean}
