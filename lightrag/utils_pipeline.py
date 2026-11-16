@@ -13,11 +13,13 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -28,6 +30,7 @@ from lightrag.base import (
 )
 from lightrag.constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    DEFAULT_INPUT_DIR,
     DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH,
     DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
@@ -1011,7 +1014,7 @@ def compute_file_content_hash(path_str: str) -> str | None:
 
 def configured_input_dir() -> Path:
     input_dir = os.getenv("INPUT_DIR", "").strip()
-    return Path(input_dir) if input_dir else Path.cwd() / "inputs"
+    return Path(input_dir) if input_dir else Path.cwd() / DEFAULT_INPUT_DIR
 
 
 async def resolve_existing_doc_source(
@@ -1231,9 +1234,18 @@ def parsed_artifact_dir_for(
 #
 # Sidecar URI scheme conventions:
 #   - Local:  ``file:///abs/path/to/abc.parsed/``   (trailing slash required)
+#             On Windows: ``file:///C:/path/to/abc.parsed/``. UNC paths
+#             (``\\server\share\...``) are not supported: the resolver
+#             returns None for a URI with a host, so readers skip the sidecar.
+#   - Legacy Windows form, read but never written: the writer before the
+#             canonical form percent-encoded the whole native path into the
+#             authority (``file://C%3A%5Cpath%5Cabc.parsed/``). Rows persisted
+#             in that form resolve without a migration.
 #   - Remote: ``s3://bucket/workspace/abc.parsed/`` (future; resolver returns
 #             None today so local readers gracefully skip)
 #   - Unknown sentinel: literal string ``"unknown_source"``
+
+_LEGACY_WINDOWS_AUTHORITY_RE = re.compile(r"[A-Za-z]:\\")
 
 
 def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
@@ -1241,24 +1253,58 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
 
     The result always ends with ``/`` so a reader can distinguish a directory
     from a file at the URI level. Non-ASCII characters are percent-encoded.
+    Built with ``Path.as_uri()``: on POSIX that is byte-identical to the
+    previous hand-built form, on Windows it keeps the drive in the path
+    (``file:///C:/...``) instead of the authority.
     """
     p = Path(parsed_artifact_dir).resolve()
-    encoded = quote(str(p), safe="/")
-    return f"file://{encoded}/"
+    uri = p.as_uri()
+    return uri if uri.endswith("/") else uri + "/"
+
+
+def _windows_sidecar_path(netloc: str, path: str) -> str | None:
+    """Map the authority and path of a ``file:`` URI to a Windows path string."""
+    if netloc and netloc.lower() != "localhost":
+        legacy = unquote(netloc)
+        if path == "/" and _LEGACY_WINDOWS_AUTHORITY_RE.match(legacy):
+            return legacy
+        return None  # A UNC host: not supported, see the conventions above.
+    try:
+        # Decodes exactly once and drops the slash before the drive letter.
+        return url2pathname(path)
+    except OSError as exc:  # CPython < 3.14 rejects a misplaced ':' this way.
+        logger.warning(f"Unresolvable sidecar URI path {path!r}: {exc}")
+        return None
 
 
 def resolve_sidecar_uri(uri: str | None) -> Path | None:
     """Decode a sidecar URI into a local filesystem Path.
 
-    Returns None for the unknown sentinel, empty input, or any non-``file://``
-    scheme (remote schemes will get their own resolvers).
+    Returns None for the unknown sentinel, empty input, any non-``file://``
+    scheme (remote schemes will get their own resolvers), and, on Windows, a
+    URI naming a UNC host or a path the platform converter rejects.
+
+    The path is percent-decoded exactly once: a second decode would turn a
+    literal ``%20`` in a directory name into a space. On POSIX the reader is
+    a plain ``unquote`` in the filesystem encoding, deliberately not
+    ``url2pathname``, which on Python 3.14 raises for a path starting with
+    ``//``. On Windows it also reads the legacy authority form.
     """
     if not uri or uri == SIDECAR_LOCATION_UNKNOWN:
         return None
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    path_str = unquote(parts.path)
+    if os.name == "nt":
+        path_str = _windows_sidecar_path(parts.netloc, parts.path)
+        if path_str is None:
+            return None
+    else:
+        path_str = unquote(
+            parts.path,
+            encoding=sys.getfilesystemencoding(),
+            errors=sys.getfilesystemencodeerrors(),
+        )
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
     return Path(path_str)

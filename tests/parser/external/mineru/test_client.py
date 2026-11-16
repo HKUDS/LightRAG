@@ -1155,3 +1155,31 @@ async def test_client_local_result_bundle_byte_budget_is_enforced(
     with pytest.raises(RuntimeError, match="uncompressed size"):
         await MinerURawClient().download_into(raw, src)
     assert not (raw / "content_list.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# content_list candidate selection: an unreadable candidate is skipped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("bad", [b"\xff\xfe", b"[{"], ids=["not_utf8", "malformed"])
+def test_select_content_list_candidate_skips_unreadable_candidate(
+    tmp_path: Path, bad: bytes
+) -> None:
+    # Invalid UTF-8 raises UnicodeDecodeError (a ValueError, not an OSError)
+    # before json.loads runs. It must be skipped like malformed JSON so the
+    # readable candidate wins, instead of aborting the download.
+    from lightrag.parser.external.mineru.client import (
+        _select_content_list_candidate,
+    )
+
+    raw = tmp_path / "demo.mineru_raw"
+    broken = raw / "demo" / "auto" / "demo_content_list.json"
+    readable = raw / "demo" / "ocr" / "demo_content_list.json"
+    broken.parent.mkdir(parents=True)
+    readable.parent.mkdir(parents=True)
+    broken.write_bytes(bad)
+    readable.write_text(json.dumps([{"type": "text", "text": "readable"}]))
+
+    assert _select_content_list_candidate(raw, tmp_path / "demo.pdf") == readable

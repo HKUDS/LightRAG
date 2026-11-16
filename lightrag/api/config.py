@@ -3,12 +3,11 @@ Configs for the LightRAG API.
 """
 
 import os
-import re
 import argparse
 import logging
 from dotenv import load_dotenv
 from lightrag import ROLES
-from lightrag.utils import get_env_value, logger
+from lightrag.utils import get_env_value, logger, normalize_server_workspace
 from lightrag.llm.binding_options import (
     BedrockLLMOptions,
     GeminiEmbeddingOptions,
@@ -16,12 +15,15 @@ from lightrag.llm.binding_options import (
     OllamaEmbeddingOptions,
     OllamaLLMOptions,
     OpenAILLMOptions,
+    OpenAIResponsesLLMOptions,
 )
 from lightrag.base import OllamaServerInfos
 import sys
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
+    DEFAULT_WORKING_DIR,
+    DEFAULT_INPUT_DIR,
     DEFAULT_TIMEOUT,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
@@ -81,6 +83,7 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "openai_responses": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
         # Let boto3 select the regional Bedrock endpoint unless the user
         # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
         "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
@@ -343,6 +346,21 @@ def normalize_api_prefix(value: str | None) -> str:
     return value.rstrip("/")
 
 
+def default_whitelist_paths(api_key: str | None) -> str:
+    """``WHITELIST_PATHS`` when the operator has not set it.
+
+    The Ollama-compatible ``/api/*`` routes follow ``LIGHTRAG_API_KEY``: exempt
+    while no key is configured, protected by it once one is. The key, not
+    ``AUTH_ACCOUNTS``, decides because it is the only credential an Ollama client
+    can carry -- it cannot run the ``/login`` flow a JWT needs -- so requiring
+    authentication there without a key would lock every Ollama client out.
+
+    An explicit ``WHITELIST_PATHS`` always wins, ``/health,/api/*`` included,
+    which is how an operator keeps the routes open next to a key.
+    """
+    return "/health" if api_key else "/health,/api/*"
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
@@ -375,13 +393,13 @@ def parse_args() -> argparse.Namespace:
     # Directory configuration
     parser.add_argument(
         "--working-dir",
-        default=get_env_value("WORKING_DIR", "./rag_storage"),
-        help="Working directory for RAG storage (default: from env or ./rag_storage)",
+        default=get_env_value("WORKING_DIR", DEFAULT_WORKING_DIR),
+        help=f"Working directory for RAG storage (default: from env or {DEFAULT_WORKING_DIR})",
     )
     parser.add_argument(
         "--input-dir",
-        default=get_env_value("INPUT_DIR", "./inputs"),
-        help="Directory containing input documents (default: from env or ./inputs)",
+        default=get_env_value("INPUT_DIR", DEFAULT_INPUT_DIR),
+        help=f"Directory containing input documents (default: from env or {DEFAULT_INPUT_DIR})",
     )
 
     parser.add_argument(
@@ -527,6 +545,7 @@ def parse_args() -> argparse.Namespace:
             "ollama",
             "openai",
             "openai-ollama",
+            "openai_responses",
             "azure_openai",
             "bedrock",
             "gemini",
@@ -580,6 +599,8 @@ def parse_args() -> argparse.Namespace:
         OllamaLLMOptions.add_args(parser)
     elif llm_binding_value in ["openai", "azure_openai"]:
         OpenAILLMOptions.add_args(parser)
+    elif llm_binding_value == "openai_responses":
+        OpenAIResponsesLLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)
     elif llm_binding_value == "bedrock":
@@ -635,6 +656,12 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
+    # The configuration storage is its own category. Passed through
+    # UNRESOLVED: empty means "follow kv_storage", and LightRAG resolves it
+    # once so there is a single answer to report. The JSON backend's
+    # location is derived from WORKING_DIR and the workspace; no setting
+    # moves it.
+    args.config_storage = get_env_value("LIGHTRAG_CONFIG_STORAGE", "")
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(
@@ -841,13 +868,15 @@ def parse_args() -> argparse.Namespace:
                 f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
                 f"'{effective_vlm_binding}' does not support image inputs. "
                 "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
-                "openai, azure_openai, gemini, bedrock, ollama."
+                "openai, openai_responses, azure_openai, gemini, bedrock, ollama."
             )
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
-    args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
+    args.whitelist_paths = get_env_value(
+        "WHITELIST_PATHS", default_whitelist_paths(args.key)
+    )
 
     # Single authoritative switch for the interactive API documentation
     # surfaces (/docs, /docs/oauth2-redirect, /redoc, /openapi.json and the
@@ -976,16 +1005,12 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
-    # Sanitize workspace: only alphanumeric characters and underscores are allowed
-    if args.workspace:
-        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
-        if sanitized != args.workspace:
-            logging.warning(
-                f"Workspace name '{args.workspace}' contains invalid characters. "
-                f"It has been sanitized to '{sanitized}'. "
-                "Only alphanumeric characters and underscores are allowed."
-            )
-            args.workspace = sanitized
+    try:
+        args.workspace = normalize_server_workspace(args.workspace)
+    except ValueError as e:
+        # A configuration refusal, reported like the others in this parser:
+        # one line naming the setting, no traceback.
+        raise SystemExit(f"WORKSPACE: {e}") from None
 
     validate_auth_configuration(args)
     validate_bedrock_auth_configuration(args)
