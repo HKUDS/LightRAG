@@ -18,7 +18,6 @@ from lightrag.llm.binding_options import (
     OpenAIResponsesLLMOptions,
 )
 from lightrag.base import OllamaServerInfos
-import sys
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -580,19 +579,25 @@ def parse_args() -> argparse.Namespace:
     # This registers command line arguments (e.g., --openai-llm-temperature)
     # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
 
-    # Determine LLM binding value consistently from command line or environment
-    llm_binding_value = None
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
-                llm_binding_value = sys.argv[idx + 1]
-        except IndexError:
-            pass
-
-    # Fall back to environment variable using same function as argparse default
-    if llm_binding_value is None:
-        llm_binding_value = get_binding_env_value("LLM_BINDING", "ollama")
+    # Pre-parse the two selectors with argparse itself, so the provider options
+    # registered below follow the binding the final parse will report: equals
+    # syntax, the last of repeated options and abbreviations (``allow_abbrev``
+    # stays on, as on ``parser``) all resolve the same way. ``add_help=False``
+    # keeps --help for the final parse, which lists the provider options. A
+    # malformed selector (e.g. a missing value) falls back to the defaults and
+    # is reported by the final parse, with the full usage text.
+    binding_parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    binding_parser.add_argument(
+        "--llm-binding", default=parser.get_default("llm_binding")
+    )
+    binding_parser.add_argument(
+        "--embedding-binding", default=parser.get_default("embedding_binding")
+    )
+    try:
+        binding_args, _ = binding_parser.parse_known_args()
+    except argparse.ArgumentError:
+        binding_args = binding_parser.parse_known_args([])[0]
+    llm_binding_value = binding_args.llm_binding
 
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
@@ -606,19 +611,7 @@ def parse_args() -> argparse.Namespace:
     elif llm_binding_value == "bedrock":
         BedrockLLMOptions.add_args(parser)
 
-    # Determine embedding binding value consistently from command line or environment
-    embedding_binding_value = None
-    if "--embedding-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--embedding-binding")
-            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
-                embedding_binding_value = sys.argv[idx + 1]
-        except IndexError:
-            pass
-
-    # Fall back to environment variable using same function as argparse default
-    if embedding_binding_value is None:
-        embedding_binding_value = get_binding_env_value("EMBEDDING_BINDING", "ollama")
+    embedding_binding_value = binding_args.embedding_binding
 
     # Add embedding binding options based on determined value
     if embedding_binding_value == "ollama":
