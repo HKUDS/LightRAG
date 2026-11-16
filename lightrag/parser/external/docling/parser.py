@@ -55,7 +55,26 @@ class DoclingParser(ExternalParserBase):
 
     def validate_ir(self, ir: "IRDoc", *, file_path: str, raw_dir: Path) -> None:
         if not ir.blocks:
-            raise ValueError(
+            message = (
                 f"Docling IR builder produced zero blocks for {file_path} "
                 f"(raw_dir={raw_dir})"
             )
+            if _vlm_pipeline_active():
+                # An unknown or disallowed preset fails the serve task before
+                # any result exists, so it never reaches this check; an empty
+                # result under VLM means the model itself returned nothing.
+                message += (
+                    ". Under DOCLING_PIPELINE=vlm this usually means the VLM "
+                    "model returned empty output for every page; check the "
+                    "model behind the preset on the docling-serve side."
+                )
+            raise ValueError(message)
+
+
+def _vlm_pipeline_active() -> bool:
+    from lightrag.parser.external.docling.cache import resolve_docling_pipeline
+
+    try:
+        return resolve_docling_pipeline() == "vlm"
+    except ValueError:
+        return False

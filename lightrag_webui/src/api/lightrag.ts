@@ -295,6 +295,7 @@ export type DocStatus =
   | 'processing'
   | 'preprocessed'
   | 'processed'
+  | 'deleting'
   | 'failed'
 
 export type DocStatusResponse = {
