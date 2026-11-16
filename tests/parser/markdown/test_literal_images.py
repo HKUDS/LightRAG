@@ -85,6 +85,20 @@ def test_code_and_escapes_closed_inside_alt_text_keep_the_image(line):
     assert out == "<img>"
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # After the unclosed ``x`` run scans the whole line, the closed `a`
+        # span must not make the later `b ...` span look unclosed.
+        ("``x `a` `b ![i](i.png)` `", []),
+        ("``x `a` `in ``` t` ![real](real.png) ```", ["real.png"]),
+    ],
+)
+def test_a_closed_span_does_not_hide_a_later_closer(line, expected):
+    calls, _ = _resolved(line)
+    assert calls == expected
+
+
 def test_skipped_code_spans_are_copied_verbatim():
     line = "`a` ``b ` c`` ![x](x.png) `![y](y.png)` tail"
     calls, out = _resolved(line)

@@ -545,10 +545,12 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         return (index - run_start) % 2 == 1
 
     # A closing backtick run is found the way cmark finds one: a forward scan
-    # that remembers, per run length, where the last run seen ended. Once a
+    # that remembers, per run length, the furthest run end it has seen. Once a
     # scan has reached the end of the line, an opener whose length was last
     # seen before it has no closer, so only one search ever fails by scanning,
-    # and the memory kept is one entry per distinct run length.
+    # and the memory kept is one entry per distinct run length. A later,
+    # shorter search must never move an entry back: the entry would then
+    # deny a closer that the exhausted scan did see.
     last_run_end: dict[int, int] = {}
     runs_exhausted = False
 
@@ -558,7 +560,8 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             return None
         for run in _BACKTICK_RUN_RE.finditer(line, search_from):
             run_length = run.end() - run.start()
-            last_run_end[run_length] = run.end()
+            if run.end() > last_run_end.get(run_length, -1):
+                last_run_end[run_length] = run.end()
             if run_length == length:
                 return run.end()
         runs_exhausted = True
@@ -578,35 +581,34 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
                 return end
         return run.end()
 
-    # The last ``]`` found literal, and the start below which every candidate
-    # sharing it reaches the same verdict. Nested candidates arrive one after
-    # the other, so this memo keeps their checks linear together.
-    literal_alt_end = -1
-    literal_before = -1
+    # The verdict on the last ``]`` checked. Candidates nested in one alt text
+    # share its ``]`` and arrive one after the other; the scan never enters
+    # a code span, so each of them reaches the verdict the first one did, and
+    # this memo keeps their checks linear together.
+    checked_alt_end = -1
+    checked_literal = False
 
     def _alt_end_is_literal(start: int) -> bool:
         """Whether the ``]`` that ends the alt text is literal text.
 
         It is when a backslash escapes it, or when a code span opened in the
-        alt text runs past it: code spans bind tighter than images.
+        alt text runs past it: code spans bind tighter than images. Checked
+        before the source is matched, so a rejected candidate copies nothing.
         """
 
-        nonlocal literal_alt_end, literal_before
+        nonlocal checked_alt_end, checked_literal
         alt_end = close_bracket.find(start + 2)
         if alt_end is None:
             return False
-        if alt_end == literal_alt_end and start < literal_before:
-            return True
-        if _escaped(alt_end):
-            literal_alt_end, literal_before = alt_end, alt_end
-            return True
-        scan = start + 2
-        while (run := _BACKTICK_RUN_RE.search(line, scan, alt_end)) is not None:
-            scan = _skip_backtick_run(run)
-            if scan > alt_end:
-                literal_alt_end, literal_before = alt_end, run.start()
-                return True
-        return False
+        if alt_end != checked_alt_end:
+            checked_alt_end, checked_literal = alt_end, _escaped(alt_end)
+            scan = start + 2
+            while not checked_literal and (
+                run := _BACKTICK_RUN_RE.search(line, scan, alt_end)
+            ):
+                scan = _skip_backtick_run(run)
+                checked_literal = scan > alt_end
+        return checked_literal
 
     parts: list[str] = []
     position = 0  # line[:position] is already in ``parts``
@@ -620,8 +622,10 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             # ``\![`` is a literal ``!`` followed by ``[``, never an image.
             cursor = start + 2
             continue
-        matched = _match_end(start) or _lenient_match_end(start)
-        if matched is None or _alt_end_is_literal(start):
+        matched = None
+        if not _alt_end_is_literal(start):
+            matched = _match_end(start) or _lenient_match_end(start)
+        if matched is None:
             # No image begins at this prefix.  Advance only past ``![`` so a
             # nested, valid image remains visible to the next iteration.
             cursor = start + 2
