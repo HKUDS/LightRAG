@@ -477,7 +477,10 @@ async def openai_complete_if_cache(
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url). Supports proxy configuration,
-                custom headers, retry policies, etc.
+                custom headers, retry policies, etc. A non-None ``http_client`` here
+                stays owned by the caller: LightRAG never closes it (not on retries,
+                errors, cancellation or success), so it can be shared across calls,
+                and the caller must close it when done.
 
     Returns:
         The completed text (with integrated COT content if available) or an async iterator
@@ -596,10 +599,11 @@ async def openai_complete_if_cache(
             model=api_model, messages=messages, **kwargs
         )
     except asyncio.CancelledError:
-        try:
-            await openai_async_client.close()
-        except Exception as close_error:
-            logger.warning(f"Failed to close OpenAI client: {close_error}")
+        # A cancelled request (query timeout, client gone) must not close a
+        # caller-supplied http_client: other concurrent calls may share it.
+        await _close_openai_client_if_unowned(
+            openai_async_client, caller_supplied_http_client
+        )
         raise
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
@@ -1167,7 +1171,9 @@ async def openai_embed(
         client_configs: Additional configuration options for the AsyncOpenAI/AsyncAzureOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url). Supports proxy configuration,
-            custom headers, retry policies, etc.
+            custom headers, retry policies, etc. A non-None ``http_client`` here
+            stays owned by the caller: LightRAG never closes it, so it can be
+            shared across calls, and the caller must close it when done.
         token_tracker: Optional token usage tracker for monitoring API usage.
         use_azure: Whether to use Azure OpenAI service instead of standard OpenAI.
             When True, creates an AsyncAzureOpenAI client. Default is False.

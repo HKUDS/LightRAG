@@ -12,6 +12,7 @@ client. Stream cleanup stays independent of that flag, because openai 2.x
 ``AsyncStream`` exposes async ``close()`` rather than ``aclose()``.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -326,3 +327,137 @@ async def test_real_sdk_stream_early_stop_closes_response_and_reuses_client():
         assert result == "OK"
         assert len(requests) == 2
         assert client.is_closed is False
+
+
+class _FailingAfterFirstChunkStream(httpx.AsyncByteStream):
+    """Yield one SSE event, then fail the read like a dropped connection."""
+
+    def __init__(self, first_chunk: bytes) -> None:
+        self.first_chunk = first_chunk
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self.first_chunk
+        raise httpx.ReadError("mid-stream failure")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_stream_error_after_chunk_propagates_and_keeps_client():
+    """A stream that fails after yielding must surface the error to the
+    consumer and leave the caller's shared client usable."""
+    event = {
+        "id": "x",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "m",
+        "choices": [{"index": 0, "delta": {"content": "A"}, "finish_reason": None}],
+    }
+    body = _FailingAfterFirstChunkStream(f"data: {json.dumps(event)}\n\n".encode())
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=body
+            )
+        return httpx.Response(200, json=_chat_success_body())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        configs = {"http_client": client, "max_retries": 0}
+        gen = await openai_complete_if_cache(
+            model="gpt-4o-mini",
+            prompt="hi",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            stream=True,
+            openai_client_configs=configs,
+        )
+        received: list[str] = []
+        with pytest.raises(httpx.ReadError, match="mid-stream failure"):
+            async for piece in gen:
+                received.append(piece)
+
+        assert received == ["A"]
+        assert body.closed is True
+        assert client.is_closed is False
+
+        result = await openai_complete_if_cache(
+            model="gpt-4o-mini",
+            prompt="hi again",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            openai_client_configs=configs,
+        )
+        assert result == "OK"
+        assert len(requests) == 2
+        assert client.is_closed is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_request_keeps_shared_client_open_for_concurrent_calls():
+    """Cancelling one in-flight request (query timeout, client disconnect)
+    must not close a caller-supplied client that other calls share."""
+    slow_request_started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["messages"][-1]["content"] == "slow":
+            slow_request_started.set()
+            await asyncio.Event().wait()  # never answers; only cancellation ends it
+        return httpx.Response(200, json=_chat_success_body())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        configs = {"http_client": client, "max_retries": 0}
+        slow = asyncio.create_task(
+            openai_complete_if_cache(
+                model="gpt-4o-mini",
+                prompt="slow",
+                api_key="sk-test",
+                base_url="https://api.openai.com/v1",
+                openai_client_configs=configs,
+            )
+        )
+        await asyncio.wait_for(slow_request_started.wait(), timeout=5)
+        slow.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await slow
+
+        assert client.is_closed is False
+        result = await openai_complete_if_cache(
+            model="gpt-4o-mini",
+            prompt="fast",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            openai_client_configs=configs,
+        )
+        assert result == "OK"
+        assert client.is_closed is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_request_still_closes_sdk_owned_client():
+    started = asyncio.Event()
+
+    async def hang(**_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    fake = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=hang)),
+        close=AsyncMock(),
+    )
+    with patch("lightrag.llm.openai.create_openai_async_client", return_value=fake):
+        task = asyncio.create_task(
+            openai_complete_if_cache.__wrapped__(
+                model="gpt-4o-mini", prompt="hi", api_key="sk-test"
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    fake.close.assert_awaited()
