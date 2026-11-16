@@ -115,3 +115,48 @@ async def test_azure_custom_headers_are_preserved(monkeypatch):
         assert client.default_headers["X-Custom-Route"] == "azure-route"
         assert "X-DashScope-Workspace" not in client.default_headers
     assert headers == {"X-Custom-Route": "azure-route"}
+
+
+@pytest.mark.asyncio
+async def test_caller_headers_override_defaults_case_insensitively(monkeypatch):
+    """A caller key differing only in case replaces the default, never duplicates it."""
+    monkeypatch.setenv("DASHSCOPE_WORKSPACE_ID", "environment-workspace")
+    captured = []
+
+    def respond(request):
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.0] * 8}],
+                "model": "test-embedding",
+                "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            },
+        )
+
+    headers = {
+        "user-agent": "caller-agent",
+        "x-dashscope-workspace": "caller-workspace",
+    }
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        await openai_embed.func(
+            ["hello"],
+            model="test-embedding",
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            client_configs={"default_headers": headers, "http_client": http_client},
+        )
+    finally:
+        await http_client.aclose()
+
+    assert len(captured) == 1
+    sent = captured[0].headers
+    assert sent.get_list("User-Agent") == ["caller-agent"]
+    assert sent.get_list("X-DashScope-Workspace") == ["caller-workspace"]
+    assert sent.get_list("Content-Type") == ["application/json"]
+    assert headers == {
+        "user-agent": "caller-agent",
+        "x-dashscope-workspace": "caller-workspace",
+    }

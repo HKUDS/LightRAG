@@ -226,7 +226,7 @@ def create_openai_async_client(
             explicit parameters (api_key, base_url). Pass ``max_retries`` here to
             re-enable the SDK's own retry loop (see below). For non-Azure clients,
             ``default_headers`` are merged with LightRAG's defaults, with caller
-            values taking precedence.
+            values taking precedence; names are matched case-insensitively.
 
     Returns:
         An AsyncOpenAI or AsyncAzureOpenAI client instance.
@@ -291,7 +291,11 @@ def create_openai_async_client(
         if client_configs is None:
             client_configs = {}
 
-        default_headers.update(client_configs.get("default_headers") or {})
+        # Header names are case-insensitive: a caller key that differs from a
+        # default only in case must replace it, not be sent alongside it.
+        canonical_names = {name.lower(): name for name in default_headers}
+        for name, value in (client_configs.get("default_headers") or {}).items():
+            default_headers[canonical_names.get(name.lower(), name)] = value
 
         # Create a merged config dict with precedence: explicit params > client_configs > defaults
         merged_configs = {
