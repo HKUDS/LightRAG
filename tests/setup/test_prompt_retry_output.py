@@ -6,6 +6,8 @@ import pytest
 
 from tests.setup._helpers import REPO_ROOT, run_bash_process
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.mark.parametrize(
     ("invocation", "stdin", "expected"),
