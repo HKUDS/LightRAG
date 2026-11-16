@@ -640,9 +640,13 @@ class TestAinsertCustomKgBatchPath:
             assert edge["description"] == "latest relation"
 
             entity_vdb_payload = rag.entities_vdb.upsert.await_args.args[0]
-            assert len(entity_vdb_payload) == 1
-            only_entity = next(iter(entity_vdb_payload.values()))
-            assert only_entity["entity_name"] == "A公司"
+            # The declared entity, and the undeclared relationship endpoint:
+            # it gets its vector with its node, under its normalized name.
+            by_name = {row["entity_name"]: row for row in entity_vdb_payload.values()}
+            assert set(by_name) == {"A公司", "B项目"}
+            assert by_name["A公司"]["description"] == "latest declaration"
+            assert by_name["B项目"]["entity_type"] == "UNKNOWN"
+            assert by_name["B项目"]["content"] == "B项目\nUNKNOWN"
 
             relation_vdb_payload = rag.relationships_vdb.upsert.await_args.args[0]
             assert len(relation_vdb_payload) == 1
@@ -896,9 +900,12 @@ class TestAinsertCustomKgBatchPath:
             assert edge_batch[0][2]["weight"] == 2.0
 
             entity_vdb_payload = rag.entities_vdb.upsert.await_args.args[0]
-            assert len(entity_vdb_payload) == 1
-            only_entity = next(iter(entity_vdb_payload.values()))
-            assert only_entity["description"] == "latest version"
+            # One row per entity: the deduplicated declaration, plus the
+            # undeclared endpoint EntityB embedded with its placeholder node.
+            by_name = {row["entity_name"]: row for row in entity_vdb_payload.values()}
+            assert set(by_name) == {"EntityA", "EntityB"}
+            assert by_name["EntityA"]["description"] == "latest version"
+            assert by_name["EntityB"]["description"] == "UNKNOWN"
 
             rel_vdb_payload = rag.relationships_vdb.upsert.await_args.args[0]
             assert len(rel_vdb_payload) == 1

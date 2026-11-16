@@ -68,13 +68,15 @@ LightRAG writes to independent stores — graph, KV, vector, doc-status — with
 
 **Full contracts: [docs/design/NetworkXSingleWriterContract.md](docs/design/NetworkXSingleWriterContract.md) — read it before touching `lightrag/kg/networkx_impl.py` or any caller of `index_done_callback` on the graph store; [docs/design/FileBackedSnapshotContract.md](docs/design/FileBackedSnapshotContract.md) — read it before touching `lightrag/kg/nano_vector_db_impl.py`, `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`, `lightrag/kg/json_doc_status_impl.py` or `lightrag/kg/file_fingerprint.py`.**
 
-Five storages keep their data in memory and publish it by rewriting a whole file, and **they do not share one model** — `JsonKVStorage` and `JsonDocStatusStorage` are the odd ones out and the contracts say so at length. Read the right one before assuming.
+Five storages keep their data in memory and publish it by rewriting a whole file. They are supported for **small-scale testing and validation only** (no change may be justified by write throughput), and **they do not share one model** — read the right contract before assuming:
 
-- **All five**: a commit publishes the WHOLE namespace, so any writer's flush also publishes every other writer's pending mutation there, half-finished ones included. All five are supported for **small-scale testing and validation only**; no change to them may be justified by write throughput.
-- **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`** keep one in-memory copy per process and reconcile by reloading the file. Visibility rests on a **two-channel fence**: the file's own `(st_mtime_ns, st_size)` (authoritative, state) OR-ed with the `storage_updated` flag (accelerator, a consumable event). Both are permanent — their blind spots do not overlap.
-- Those three diverge on a write conflict, and the reason is in the contracts: the graph store **declines** the commit (it has no buffer to replay, and graph payloads are accumulate-over-read), the vector stores **reload and replay** their pending buffers and redo logs. Do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
-- **`JsonKVStorage` and `JsonDocStatusStorage` use none of that.** Their data is a `Manager().dict()` every worker shares, so a mutation is visible everywhere immediately and there is nothing to reload — adding a `_get_*` entry method would be wrong. Their `storage_updated` flag means the OPPOSITE of the other three's: `True` is "dirty data still to flush", never "fresher data on disk to reload". Do not read it as a peer notification. `JsonDocStatusStorage` reimplements this protocol rather than inheriting it, so a change to one of the pair is almost always a change the other needs too; where they diverge is the flush trigger — doc-status writes that change scheduling state flush synchronously because doc-status is the pipeline's recovery anchor.
-- `NetworkXStorage` is the only storage that declares `requires_single_writer`, which is what puts the admin flows under `LightRAG._admin_write_gate`.
+- **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`**: one in-memory copy per process, reconciled by reloading the file through the **two-channel fence** (file fingerprint OR `storage_updated`). On a write conflict the graph store **declines** the commit, the vector stores **reload and replay**; do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
+- **`JsonKVStorage`, `JsonDocStatusStorage`**: one `Manager().dict()` shared by every worker, so there is nothing to reload and `storage_updated` means the OPPOSITE ("dirty, still to flush"). Their load claim (`namespace_init_claim`) must be handed back on a failed or cancelled load, and `JsonDocStatusStorage` reimplements the protocol rather than inheriting it — a change to one of the pair almost always needs the other.
+- A file-backed **configuration** storage additionally claims its workspace's snapshot directory (`lightrag/kg/working_dir_lock.py`) — see *Configuration storage contract* below. `NetworkXStorage` alone declares `requires_single_writer`, which puts the admin flows under `LightRAG._admin_write_gate`.
+
+### Server instance contract
+
+**Full contract: [docs/design/ServerInstanceContract.md](docs/design/ServerInstanceContract.md) — read it before changing anything one server could share with another on the same host (files under `WORKING_DIR` / `INPUT_DIR`, anything keyed without the workspace, locks taken at startup).** In short: several servers may share one `WORKING_DIR` on one host when each serves its own workspace, all use the same configuration container (a database backend, or `JsonKVStorage`'s per-workspace snapshots under one anchor), and each has its own port; first starts are serialized by the anchor bind lock, so on a filesystem without locks start one instance alone until every JSON workspace has registered. A new server-wide record needs a guard the instances share.
 
 ### Pipeline concurrency contract
 
@@ -98,6 +100,11 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 - Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
 - LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
+- A change to what `normalize_entity_name` produces may only **merge** names that used to differ, never split names that used to be equal: a rebuild re-parses cached LLM output with the current rules, and a split leaves some of a stored object's records unmatched, so their facts are dropped. [Entity name normalization changes](docs/design/PurgeRecoveryContract.md#entity-name-normalization-changes) has the reasoning and the consequences in the current rules.
+
+### Configuration storage contract
+
+**Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` or where the JSON configuration snapshots live, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here. [docs/design/ConfigurationStorageDesign.md](docs/design/ConfigurationStorageDesign.md) is the design overview: the components, the reasons behind them, the departures from the original plan and the known gaps -- start there before redesigning anything.
 
 ### Relation weight contract
 
@@ -182,11 +189,12 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 
 - Use mock-based tests for external services (Redis, httpx, etc.) — do not depend on live services in unit tests.
 - Add regression tests for every bug fix.
-- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~7800 offline tests: about 5 minutes serially, ~70 s with `-n auto` on an 8-core machine — still too slow for the edit loop. Every PR's CI runs the full offline suite (and `tests/setup/` when its inputs change) — proving nothing else broke is its job, not yours.
+- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~7800 offline tests: about 5 minutes serially, ~70 s with `-n auto` on an 8-core machine — still too slow for the edit loop. Every PR's CI runs the full offline suite (plus `tests/setup/` and, with the real RAGAS stack, `tests/evaluation/` when their inputs change) — proving nothing else broke is its job, not yours.
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - **`tests/setup/` is the setup wizard's suite and runs only when a wizard input changed**: `scripts/setup/**`, `env.example`, `docker-compose*.yml`, `Makefile`, or `tests/setup/` itself. It never imports `lightrag`, so a `lightrag/` change never needs it. `norecursedirs` in `pyproject.toml` already skips it in every recursive run (`pytest`, `pytest tests`, the full suite, CI's main job); run it by naming it: `./scripts/test.sh tests/setup`. The easy one to miss is `env.example`: adding a config knob for `lightrag` usually edits it, and the wizard parses it, so that change runs `tests/setup/` too.
 - Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits). **Run it with `-n auto --dist worksteal`** (pytest-xdist, in the `pytest` extra): on an 8-core machine it cuts ~5 min to ~1 min. CI stays serial because hosted 4-vCPU runners showed no gain. Do not add `-n` to subset runs: every worker re-collects and re-imports the suite (~12 s), which costs more than a single directory saves. Drop `-n` when you need `pdb`/`-s` or ordered output.
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above and *React component tests* below.
+- **Capturing `lightrag` logs in tests:** the `lightrag` logger sets `propagate = False`, and pytest < 9.1 attaches caplog's handler to the root logger only, so a bare `caplog` captures nothing from it there. The supported floor is `pytest>=8.4.2`, and the lock file's newer pytest hides the failure. Use the `lightrag_caplog` fixture (`tests/conftest.py`) when you need caplog's API, `lightrag_log_records` when you only count or inspect records, or `capture_lightrag_logs` (`tests/_log_capture.py`) inside a helper that receives `caplog`. Never set `propagate = True` in a test: on pytest >= 9.1 every record is then captured twice.
 - **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun install --frozen-lockfile` (see *WebUI* above — skip it after a branch switch and every later step fails on missing modules), then `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
 
 ```bash
@@ -219,6 +227,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
   - `tests/sidecar/`, `tests/setup/`, `tests/workspace/` for the like-named cross-cutting concerns. `tests/setup/` never imports `lightrag`; it runs in its own path-filtered CI job (`.github/workflows/setup-tests.yml`) and `norecursedirs` keeps it out of every recursive run, so a new input the wizard reads must be added to that workflow's `paths`.
   - When adding a new backend or LLM provider, create a new subdirectory plus an empty `__init__.py` rather than dropping the file in the parent directory root.
 - Markers (registered in `[tool.pytest.ini_options]` in `pyproject.toml`): `offline`, `integration`, `requires_db`, `requires_api`, `pg_smoke`. Integration tests are skipped by default via `-m "not integration"`; opt in with `--run-integration`.
+- **Every test must carry one of those five markers**, usually a module-level `pytestmark = pytest.mark.offline`. CI selects with `-m offline`, so an unmarked test is deselected without a trace; `tests/conftest.py` therefore fails any unmarked test at setup with the fix in the message. In a file mixing offline and service-backed cases, mark per test or per `pytest.param` instead of per module.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
 
 #### React component tests
@@ -361,6 +370,15 @@ See `env.example` for comprehensive template.
 ### Language
 Comments, backend code, log messages, and Git commit messages in English. Frontend uses i18next for multi-language support.
 
+### README translations
+
+`README.md` has three translations: `README-zh.md`, `README-ja.md` and `README-id.md`. All four are kept **line-for-line aligned**:
+
+- **A change to any README goes into all four in the same commit.** Never leave a translation for later. Changes that reached `README.md` alone are how the translations drifted before: they were missing a banner, a documentation table row, renamed env vars and whole paragraphs, and their line counts had drifted apart.
+- **Same line count, same structure.** Line N plays the same role in every file: a heading of the same level, a list item, a table row, a code fence, an HTML line, or a blank line. Keep the English line breaks. A two-line code comment stays two lines, and a bullet list does not become a numbered one.
+- **Translate the prose only.** Code, commands, env var names, file paths and anchors stay identical. Link targets do too, except that `README-zh.md` may point at a `*-zh.md` translation of the linked doc.
+- **Enforced by `tests/test_readme_translations.py`**, which is offline and runs in CI. It fails on a line-count mismatch and on the first line whose kind differs, and names that line in all files. Run it after any README edit: `./scripts/test.sh tests/test_readme_translations.py`. A new translation must be added to its `test_translations_exist` list and to this section.
+
 ### Docstrings and comments
 
 Docstrings state the **rules**: what a caller must do, what it must not do, and the gotchas it will otherwise be caught by. The **mechanism** — how it works, the accepted residues, and the alternatives already rejected — goes in `docs/design/` with a pointer from the docstring. A docstring that has grown into a design document is the thing this separates: it buries the code, and the same facts in two places drift apart.
@@ -384,6 +402,16 @@ A third test requires every `docs/**.md` path named in the package to resolve; n
 - 2-space indentation, single quotes (enforced by `@stylistic` rules)
 - Tailwind utility-first styling
 - ESLint stack: TypeScript-ESLint + React Hooks plugin + Prettier; `@typescript-eslint/no-explicit-any` is disabled (allowed)
+
+## PR Review Guidelines
+
+These apply to every review finding, automated reviews included.
+
+- **Verify before prescribing.** A finding names its trigger, reachable call path, affected behavior and evidence; check dependency behavior, platform semantics and real trust boundaries in source rather than assuming them. An unverified hypothesis is a question, not a defect.
+- **Justify the change, not just the failure.** Showing the current design can fail is not enough: compare it with the smallest sufficient fix and the proposal on likelihood, impact, complexity, compatibility and new failure modes. No abstractions, options or authorization machinery for hypothetical needs; guarding against accidental misuse is not guarding against an adversary.
+- **Respect documented decisions.** A residue or rejected alternative recorded in a contract (see *Consistency without transactions* and `docs/design/`) is a decision; its known limitation is not a new finding. Reopening it needs new evidence that its rationale no longer holds.
+- **Classify honestly.** Only demonstrated correctness problems are findings, and they may block on their impact. Preferences, optional hardening and extensions are non-blocking suggestions, never inflated in severity.
+- **Major redesigns need the author's agreement.** Changes to public APIs, storage formats, lifecycle, concurrency or permission models, or cross-module structure are proposed with evidence, alternatives and costs, and are not implemented in the PR or made a merge condition without the author's explicit agreement.
 
 ## Commit and Pull Request Guidance
 

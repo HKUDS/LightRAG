@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 
+pytestmark = pytest.mark.offline
+
 # Env vars that the project's `.env` may have populated (via load_dotenv at
 # import time of lightrag.api.config). Tests must be hermetic and not depend
 # on developer-local .env values, so we clear/override anything that affects
@@ -545,6 +547,25 @@ class TestUvicornRootPathSemantics:
         finally:
             sys.argv = original_argv
 
+    def _build_app_with_staged_webui(self, prefix, tmp_path, monkeypatch):
+        """Build the app against a minimal staged WebUI build.
+
+        The /webui Mount only exists when the build is present (otherwise
+        /webui/ redirects to /docs), and the build is git-ignored, so CI has
+        none. Point the server module's ``__file__`` at ``tmp_path`` so both
+        the build check and the StaticFiles directory resolve to the stage.
+        """
+        webui_dir = tmp_path / "webui"
+        webui_dir.mkdir()
+        (webui_dir / "index.html").write_text(
+            "<!doctype html><title>stub</title>", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "lightrag.api.lightrag_server.__file__",
+            str(tmp_path / "lightrag_server.py"),
+        )
+        return self._build_app_with_prefix(prefix)
+
     @pytest.mark.asyncio
     async def test_route_strip_mode_matches(self):
         """Plain Route, proxy-strip mode: backend receives /openapi.json."""
@@ -565,7 +586,7 @@ class TestUvicornRootPathSemantics:
         assert status == 200
 
     @pytest.mark.asyncio
-    async def test_mount_strip_mode_matches(self):
+    async def test_mount_strip_mode_matches(self, tmp_path, monkeypatch):
         """WebUI Mount, proxy-strip mode: backend receives /webui/.
 
         This is the bug the middleware fixes. Without normalization,
@@ -575,12 +596,12 @@ class TestUvicornRootPathSemantics:
         /site01/webui/ before routing and the lookup resolves to
         index.html.
         """
-        app = self._build_app_with_prefix("/site01")
+        app = self._build_app_with_staged_webui("/site01", tmp_path, monkeypatch)
         status = await self._call_with_scope(app, "/webui/")
         assert status == 200
 
     @pytest.mark.asyncio
-    async def test_mount_verbatim_mode_matches(self):
+    async def test_mount_verbatim_mode_matches(self, tmp_path, monkeypatch):
         """WebUI Mount, verbatim mode: backend receives /site01/webui/.
 
         Already canonical; the middleware is a no-op for this case. The
@@ -588,7 +609,7 @@ class TestUvicornRootPathSemantics:
         strip — symmetric to test_route_verbatim_mode_matches but exercises
         the Mount path with its nested ``get_route_path`` resolution.
         """
-        app = self._build_app_with_prefix("/site01")
+        app = self._build_app_with_staged_webui("/site01", tmp_path, monkeypatch)
         status = await self._call_with_scope(app, "/site01/webui/")
         assert status == 200
 
