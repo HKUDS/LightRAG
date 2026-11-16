@@ -6285,6 +6285,12 @@ async def _build_context_str(
         and merged_chunks
         and available_chunk_tokens <= 0
     ):
+        logger.warning(
+            f"Token budget left no room for any of {len(merged_chunks)} retrieved "
+            f"chunks (max_total_tokens: {max_total_tokens}, available for chunks: "
+            f"{available_chunk_tokens}); the query returns no result. "
+            "Raise max_total_tokens."
+        )
         return budget_failure()
 
     logger.debug(
@@ -6319,6 +6325,18 @@ async def _build_context_str(
     entities_context, relations_context, retained_chunks, result, reference_list = (
         fitted
     )
+    if truncated_chunks and not retained_chunks:
+        outcome = (
+            "the answer uses graph context only"
+            if entities_context or relations_context
+            else "the query returns no result"
+        )
+        logger.warning(
+            f"Token budget left no room for any of {len(truncated_chunks)} "
+            f"retrieved chunks once their reference list was rendered "
+            f"(max_total_tokens: {max_total_tokens}); {outcome}. "
+            "Raise max_total_tokens or lower max_entity_tokens / max_relation_tokens."
+        )
     if (
         truncated_chunks
         and not entities_context

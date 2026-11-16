@@ -1,5 +1,6 @@
 """The total KG budget constrains graph records and the rendered references."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -385,3 +386,74 @@ async def test_live_prefix_does_not_replace_chunk_selection_snapshot(monkeypatch
     prompt = model.call_args.kwargs["system_prompt"]
     assert "Live instructions." in prompt
     assert len(storage_config["tokenizer"].encode(prompt)) + len(QUERY) <= 1000
+
+
+def _no_chunk_room_warnings(records):
+    return [
+        record.getMessage()
+        for record in records
+        if record.levelno == logging.WARNING
+        and "Token budget left no room" in record.getMessage()
+    ]
+
+
+async def test_graph_filling_the_budget_warns_and_answers_from_graph(
+    lightrag_log_records,
+):
+    config = _config()
+    param = QueryParam(mode="mix", max_total_tokens=1000, enable_rerank=False)
+    entities = [{"entity": "Alice", "type": "person", "description": "e" * 300}]
+    chunks = [{"chunk_id": "c", "content": "c" * 500, "file_path": "c.md"}]
+    context, raw = await operate._build_context_str(
+        entities, [], chunks, QUERY, param, config, system_prompt=TEMPLATE
+    )
+    assert raw["status"] == "success"
+    assert len(raw["data"]["entities"]) == 1
+    assert raw["data"]["chunks"] == []
+    assert _prompt_tokens(context, param, config) <= param.max_total_tokens
+    warnings = _no_chunk_room_warnings(lightrag_log_records)
+    assert len(warnings) == 1
+    assert "max_entity_tokens" in warnings[0]
+
+
+async def test_reference_list_dropping_every_chunk_warns(lightrag_log_records):
+    config = _config()
+    param = QueryParam(mode="mix", max_total_tokens=1800, enable_rerank=False)
+    entities = [{"entity": "Alice", "type": "person", "description": "short"}]
+    chunks = [{"chunk_id": "z", "content": "z evidence", "file_path": "z" * 2000}]
+    context, raw = await operate._build_context_str(
+        entities, [], chunks, QUERY, param, config, system_prompt=TEMPLATE
+    )
+    assert raw["status"] == "success"
+    assert raw["data"]["chunks"] == []
+    assert "z evidence" not in context
+    warnings = _no_chunk_room_warnings(lightrag_log_records)
+    assert len(warnings) == 1
+    assert "reference list" in warnings[0]
+    assert "graph context only" in warnings[0]
+
+
+async def test_vector_only_budget_exhaustion_warns(lightrag_log_records):
+    config = _config()
+    param = QueryParam(mode="mix", max_total_tokens=650, enable_rerank=False)
+    chunks = [{"chunk_id": "chunk", "content": "e" * 1000, "file_path": "e.txt"}]
+    context, raw = await operate._build_context_str(
+        [], [], chunks, QUERY, param, config, system_prompt=TEMPLATE
+    )
+    assert context == ""
+    assert raw["status"] == "failure"
+    warnings = _no_chunk_room_warnings(lightrag_log_records)
+    assert len(warnings) == 1
+    assert "no result" in warnings[0]
+
+
+async def test_chunks_that_fit_log_no_budget_warning(lightrag_log_records):
+    config = _config()
+    param = QueryParam(mode="mix", max_total_tokens=10000, enable_rerank=False)
+    entities = [{"entity": "Alice", "type": "person", "description": "short"}]
+    chunks = [{"chunk_id": "c", "content": "evidence", "file_path": "c.md"}]
+    _, raw = await operate._build_context_str(
+        entities, [], chunks, QUERY, param, config, system_prompt=TEMPLATE
+    )
+    assert len(raw["data"]["chunks"]) == 1
+    assert _no_chunk_room_warnings(lightrag_log_records) == []
