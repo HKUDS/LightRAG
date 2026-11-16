@@ -5125,10 +5125,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         try:
             # Refresh edge search view so delete_by_query sees all un-flushed writes.
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
-            # Marked before the first write, never conditioned on its outcome:
-            # a failure below can follow writes that already landed.
-            self._nodes_dirty = True
-            self._edges_dirty = True
             # Delete all edges referencing this node
             body = {
                 "query": {
@@ -5140,16 +5136,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete the node
             try:
-                await self.client.delete(index=self._nodes_index, id=node_id)
-            except NotFoundError:
-                pass
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete the node
+                try:
+                    await self.client.delete(index=self._nodes_index, id=node_id)
+                except NotFoundError:
+                    pass
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
             raise
@@ -5169,10 +5173,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         try:
             # Refresh edge search view so delete_by_query sees all un-flushed writes.
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
-            # Marked before the first write, never conditioned on its outcome:
-            # a rejected node delete follows an edge delete that landed.
-            self._nodes_dirty = True
-            self._edges_dirty = True
             # Delete edges
             body = {
                 "query": {
@@ -5184,25 +5184,33 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            _, failed = await _run_chunked_async_bulk(
-                self.client,
-                actions,
-                max_payload_bytes=self._max_upsert_payload_bytes,
-                max_records_per_batch=self._max_delete_records_per_batch,
-                log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
-                what="node delete",
-                raise_on_error=False,
-            )
+            try:
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete nodes
+                _, failed = await _run_chunked_async_bulk(
+                    self.client,
+                    actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+                    what="node delete",
+                    raise_on_error=False,
+                )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
             _raise_bulk_delete_failures(
                 failed, context=f"[{self.workspace}] node delete"
             )
@@ -5249,15 +5257,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     f"[{self.workspace}] {self.namespace} edges: edge delete "
                     f"{len(operations)} ops split into bulk chunks (chunk={chunk})"
                 )
-            # Marked before the first write: a rejected item can follow
-            # deletes that already landed, in the same chunk or an earlier one.
-            self._edges_dirty = True
-            for i in range(0, len(operations), chunk):
-                response = await self.client.bulk(body=operations[i : i + chunk])
-                _raise_bulk_delete_failures(
-                    response["items"],
-                    context=f"[{self.workspace}] edge delete",
-                )
+            try:
+                for i in range(0, len(operations), chunk):
+                    response = await self.client.bulk(body=operations[i : i + chunk])
+                    _raise_bulk_delete_failures(
+                        response["items"],
+                        context=f"[{self.workspace}] edge delete",
+                    )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
             raise
