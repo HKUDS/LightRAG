@@ -159,8 +159,9 @@ def _find_table_open(lower: str) -> int:
 
 def find_html_tag(lower: str, tag: str) -> int:
     """First index of a real ``<tag`` start tag (not e.g. ``<tablefoo`` for
-    ``tag="table"``). ``lower`` must already be lower-cased. Returns -1 when
-    none is present."""
+    ``tag="table"``). ``lower`` must already be ASCII-lowercased with
+    ``_ASCII_LOWER``, not ``str.lower()``, whenever the returned index is used
+    to slice the original markup. Returns -1 when none is present."""
     needle = f"<{tag}"
     idx = 0
     while True:
