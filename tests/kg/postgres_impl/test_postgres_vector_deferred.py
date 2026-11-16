@@ -24,6 +24,8 @@ from lightrag.namespace import NameSpace
 from lightrag.utils import EmbeddingFunc, compute_mdhash_id
 
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

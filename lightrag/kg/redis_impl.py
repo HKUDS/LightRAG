@@ -4,7 +4,7 @@ import asyncio
 import re
 import time
 import hashlib
-from typing import Any, ClassVar, final, Sequence, Union
+from typing import Any, AsyncIterator, ClassVar, final, Sequence, Union
 from dataclasses import dataclass
 import pipmaster as pm
 import configparser
@@ -28,6 +28,7 @@ from lightrag.utils import (
     get_pinyin_sort_key,
     _cooperative_yield,
     validate_workspace,
+    validate_workspace_override,
 )
 
 from lightrag.base import (
@@ -181,8 +182,8 @@ redis_retry = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
-# One eviction-policy check per Redis URL per process: the answer is a server
-# property, not a per-storage one, and both storage classes share the pool.
+# Cache accepted eviction-policy checks per Redis URL per process: both storage
+# classes share the pool. Rejections must be checked again by later instances.
 _eviction_checked: set[str] = set()
 
 
@@ -227,7 +228,6 @@ async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> N
             f"documents and scheduling state."
         )
         return
-    _eviction_checked.add(redis_url)
     policy = str((settings or {}).get("maxmemory-policy") or "").strip().lower()
     raw_maxmemory = str((settings or {}).get("maxmemory") or "0").strip()
     try:
@@ -235,8 +235,10 @@ async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> N
     except ValueError:
         maxmemory = 0
     if maxmemory <= 0 or not policy.startswith("allkeys"):
+        _eviction_checked.add(redis_url)
         return
     if os.getenv("REDIS_ALLOW_EVICTION_POLICY", "false").strip().lower() == "true":
+        _eviction_checked.add(redis_url)
         logger.warning(
             f"[{workspace}] Redis is configured to EVICT (maxmemory-policy="
             f"'{policy}', maxmemory={maxmemory}) and REDIS_ALLOW_EVICTION_POLICY "
@@ -257,16 +259,19 @@ async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> N
 
 
 class RedisConnectionManager:
-    """Shared Redis connection pool manager to avoid creating multiple pools for the same Redis URI"""
+    """Shared Redis connection pool manager to avoid creating multiple pools for the same Redis URI
+
+    A reference is taken by ``get_pool`` and given back by ``release_pool`` /
+    ``release_pool_ref``. Both sides run from ``initialize()`` / ``close()``,
+    never from a storage's ``__post_init__``: a constructor has no teardown
+    path, so a reference taken there outlives any construction that fails
+    afterwards (``LightRAG.__post_init__`` builds twelve storages and then
+    validates, with nothing to unwind the ones already built).
+    """
 
     _pools = {}
     _pool_refs = {}  # Track reference count for each pool
     _lock = threading.Lock()
-    # Strong references to background pool-close tasks scheduled from sync
-    # contexts (init-error path). Held until each task completes so the loop
-    # cannot GC an in-flight task, and so a failing aclose() does not surface
-    # as "Task exception was never retrieved".
-    _cleanup_tasks: set = set()
 
     @classmethod
     def get_pool(cls, redis_url: str) -> ConnectionPool:
@@ -298,9 +303,9 @@ class RedisConnectionManager:
         Decrements the reference count and, if it reaches zero, pops the pool
         from the registry and **returns it** so the caller can await its
         async ``aclose()``. The disconnect is intentionally NOT performed here
-        because ``ConnectionPool.aclose()`` / ``disconnect()`` are coroutines
-        and this method is called from both sync (init-error) and async
-        (close/finalize) contexts.
+        because ``ConnectionPool.aclose()`` / ``disconnect()`` are coroutines,
+        which keeps the refcount arithmetic callable from a synchronous
+        context; ``release_pool`` is the async wrapper that also disconnects.
 
         Returns the pool to disconnect, or ``None`` if the reference count is
         still positive (or the URL is unknown).
@@ -351,39 +356,6 @@ class RedisConnectionManager:
             except Exception as e:
                 logger.error(f"Error closing Redis pool for {url}: {e}")
 
-    @classmethod
-    async def _close_pool_safely(cls, pool: ConnectionPool, redis_url: str) -> None:
-        """Await ``pool.aclose()``, swallowing errors as best-effort cleanup."""
-        try:
-            await pool.aclose()
-            logger.info(
-                f"Closed Redis connection pool for {redis_url} (no more references)"
-            )
-        except Exception as e:
-            logger.error(f"Error closing Redis pool for {redis_url}: {e}")
-
-    @classmethod
-    def schedule_pool_close(cls, pool: ConnectionPool, redis_url: str) -> None:
-        """Schedule a background pool disconnect from a *synchronous* context.
-
-        Used by the ``__post_init__`` init-error path, which cannot ``await``.
-        If an event loop is running, the disconnect runs as a managed task
-        (strong-referenced until done, errors swallowed by
-        ``_close_pool_safely``). If no loop is running, this is a no-op: the
-        coroutine is never created, so no ``RuntimeError`` masks the original
-        init exception and no unawaited-coroutine warning is emitted. Skipping
-        is safe — the pool was just created (no I/O yet) if this instance is the
-        sole owner, and if it is shared the refcount is still positive so
-        ``release_pool_ref`` would not have returned the pool.
-        """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        task = loop.create_task(cls._close_pool_safely(pool, redis_url))
-        cls._cleanup_tasks.add(task)
-        task.add_done_callback(cls._cleanup_tasks.discard)
-
 
 @final
 @dataclass
@@ -397,7 +369,9 @@ class RedisKVStorage(BaseKVStorage):
         redis_workspace = os.environ.get("REDIS_WORKSPACE")
         if redis_workspace and redis_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = redis_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "REDIS_WORKSPACE", redis_workspace
+            )
             logger.info(
                 f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -425,27 +399,16 @@ class RedisKVStorage(BaseKVStorage):
         self._redis_url = os.environ.get(
             "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
         )
+        # The shared pool is acquired in initialize(), NOT here: see
+        # RedisConnectionManager's docstring — a reference taken in a
+        # constructor can never be given back if construction fails later.
         self._pool = None
         self._redis = None
         self._initialized = False
-
-        try:
-            # Use shared connection pool
-            self._pool = RedisConnectionManager.get_pool(self._redis_url)
-            self._redis = Redis(connection_pool=self._pool)
-            logger.info(
-                f"[{self.workspace}] Initialized Redis KV storage for {self.namespace} using shared connection pool"
-            )
-        except Exception as e:
-            # Clean up on initialization failure
-            if self._redis_url:
-                pool = RedisConnectionManager.release_pool_ref(self._redis_url)
-                if pool is not None:
-                    RedisConnectionManager.schedule_pool_close(pool, self._redis_url)
-            logger.error(
-                f"[{self.workspace}] Failed to initialize Redis KV storage: {e}"
-            )
-            raise
+        logger.debug(
+            f"[{self.workspace}] Configured Redis KV storage for {self.namespace} "
+            f"(connection deferred to initialize())"
+        )
 
     async def initialize(self):
         """Initialize Redis connection and migrate legacy cache structure if needed"""
@@ -453,8 +416,13 @@ class RedisKVStorage(BaseKVStorage):
             if self._initialized:
                 return
 
-            # Test connection
+            # Acquire the shared pool and test the connection
             try:
+                if self._redis is None:
+                    # Assign the pool before building the client: if Redis()
+                    # raises, close() below still sees the reference to release.
+                    self._pool = RedisConnectionManager.get_pool(self._redis_url)
+                    self._redis = Redis(connection_pool=self._pool)
                 async with self._get_redis_connection() as redis:
                     await redis.ping()
                     await _ensure_no_eviction_policy(
@@ -506,20 +474,31 @@ class RedisKVStorage(BaseKVStorage):
             raise
 
     async def close(self):
-        """Close the Redis connection and release pool reference to prevent resource leaks."""
+        """Close the Redis connection and release pool reference to prevent resource leaks.
+
+        Idempotent, and safe on an instance that was never initialized: the
+        pool reference is released only if this instance actually holds one
+        (``_pool``), so closing before ``initialize()`` releases nothing and
+        cannot drive a sibling's refcount below its true value.
+        """
         # Detach all instance state BEFORE the first await, so a concurrent /
         # re-entrant close() (or finalize-after-__aexit__) is a complete no-op
         # from the start and cannot release the shared pool a second time.
+        # ``_pool`` is the token: it is set only while a reference is held, so
+        # clearing it here makes every later close() a no-op. ``_redis_url`` is
+        # configuration rather than a resource and is deliberately kept, so a
+        # closed instance can be initialized again.
         redis = getattr(self, "_redis", None)
+        pool = getattr(self, "_pool", None)
         redis_url = getattr(self, "_redis_url", None)
         self._redis = None
-        self._redis_url = None
         self._pool = None
+        self._initialized = False
 
         # Close the client first, then release the pool reference. The pool
         # release lives in ``finally`` so that even if ``aclose()`` is cancelled
         # (CancelledError is a BaseException and escapes ``except Exception``),
-        # the reference is still released — otherwise redis_url is already gone
+        # the reference is still released — otherwise the token is already gone
         # and the refcount would leak permanently.
         try:
             if redis is not None:
@@ -535,7 +514,7 @@ class RedisKVStorage(BaseKVStorage):
                         f"[{self.workspace}] Error closing Redis connection: {e}"
                     )
         finally:
-            if redis_url:
+            if pool is not None and redis_url:
                 await RedisConnectionManager.release_pool(redis_url)
                 logger.debug(
                     f"[{self.workspace}] Released Redis connection pool reference for {self.namespace}"
@@ -798,6 +777,35 @@ class RedisKVStorage(BaseKVStorage):
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
 
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract): SCAN the namespace prefix a page
+        of keys at a time and read each page through ``get_by_ids`` so the
+        rows come out exactly as a point read would shape them.
+
+        SCAN may return a key twice while the keyspace is rehashing; that is
+        the best-effort snapshot the base contract allows, and a caller that
+        needs uniqueness de-duplicates on ``_id``.
+        """
+        pattern = f"{self.final_namespace}:*"
+        prefix_len = len(self.final_namespace) + 1
+        page_size = max(1, int(page_size))
+        async with self._get_redis_connection() as redis:
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=pattern, count=page_size)
+                if keys:
+                    ids = [
+                        (k.decode() if isinstance(k, bytes) else k)[prefix_len:]
+                        for k in keys
+                    ]
+                    for row_id, row in zip(ids, await self.get_by_ids(ids)):
+                        if row is None:
+                            continue
+                        row["_id"] = row_id
+                        yield row
+                if cursor == 0:
+                    break
+
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs"""
         if not ids:
@@ -1013,7 +1021,9 @@ class RedisDocStatusStorage(DocStatusStorage):
         redis_workspace = os.environ.get("REDIS_WORKSPACE")
         if redis_workspace and redis_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = redis_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "REDIS_WORKSPACE", redis_workspace
+            )
             logger.info(
                 f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -1043,27 +1053,16 @@ class RedisDocStatusStorage(DocStatusStorage):
         self._redis_url = os.environ.get(
             "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
         )
+        # The shared pool is acquired in initialize(), NOT here: see
+        # RedisConnectionManager's docstring — a reference taken in a
+        # constructor can never be given back if construction fails later.
         self._pool = None
         self._redis = None
         self._initialized = False
-
-        try:
-            # Use shared connection pool
-            self._pool = RedisConnectionManager.get_pool(self._redis_url)
-            self._redis = Redis(connection_pool=self._pool)
-            logger.info(
-                f"[{self.workspace}] Initialized Redis doc status storage for {self.namespace} using shared connection pool"
-            )
-        except Exception as e:
-            # Clean up on initialization failure
-            if self._redis_url:
-                pool = RedisConnectionManager.release_pool_ref(self._redis_url)
-                if pool is not None:
-                    RedisConnectionManager.schedule_pool_close(pool, self._redis_url)
-            logger.error(
-                f"[{self.workspace}] Failed to initialize Redis doc status storage: {e}"
-            )
-            raise
+        logger.debug(
+            f"[{self.workspace}] Configured Redis doc status storage for "
+            f"{self.namespace} (connection deferred to initialize())"
+        )
 
     async def initialize(self):
         """Initialize Redis connection"""
@@ -1072,6 +1071,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                 return
 
             try:
+                if self._redis is None:
+                    # Assign the pool before building the client: if Redis()
+                    # raises, close() below still sees the reference to release.
+                    self._pool = RedisConnectionManager.get_pool(self._redis_url)
+                    self._redis = Redis(connection_pool=self._pool)
                 async with self._get_redis_connection() as redis:
                     await redis.ping()
                     await _ensure_no_eviction_policy(
@@ -1120,20 +1124,31 @@ class RedisDocStatusStorage(DocStatusStorage):
             raise
 
     async def close(self):
-        """Close the Redis connection and release pool reference to prevent resource leaks."""
+        """Close the Redis connection and release pool reference to prevent resource leaks.
+
+        Idempotent, and safe on an instance that was never initialized: the
+        pool reference is released only if this instance actually holds one
+        (``_pool``), so closing before ``initialize()`` releases nothing and
+        cannot drive a sibling's refcount below its true value.
+        """
         # Detach all instance state BEFORE the first await, so a concurrent /
         # re-entrant close() (or finalize-after-__aexit__) is a complete no-op
         # from the start and cannot release the shared pool a second time.
+        # ``_pool`` is the token: it is set only while a reference is held, so
+        # clearing it here makes every later close() a no-op. ``_redis_url`` is
+        # configuration rather than a resource and is deliberately kept, so a
+        # closed instance can be initialized again.
         redis = getattr(self, "_redis", None)
+        pool = getattr(self, "_pool", None)
         redis_url = getattr(self, "_redis_url", None)
         self._redis = None
-        self._redis_url = None
         self._pool = None
+        self._initialized = False
 
         # Close the client first, then release the pool reference. The pool
         # release lives in ``finally`` so that even if ``aclose()`` is cancelled
         # (CancelledError is a BaseException and escapes ``except Exception``),
-        # the reference is still released — otherwise redis_url is already gone
+        # the reference is still released — otherwise the token is already gone
         # and the refcount would leak permanently.
         try:
             if redis is not None:
@@ -1149,7 +1164,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                         f"[{self.workspace}] Error closing Redis connection: {e}"
                     )
         finally:
-            if redis_url:
+            if pool is not None and redis_url:
                 await RedisConnectionManager.release_pool(redis_url)
                 logger.debug(
                     f"[{self.workspace}] Released Redis connection pool reference for doc status {self.namespace}"
@@ -1214,40 +1229,24 @@ class RedisDocStatusStorage(DocStatusStorage):
         return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
-        """Get counts of documents in each status"""
-        counts = {status.value: 0 for status in DocStatus}
+        """Count documents per status from the scheduling sidecar.
+
+        One ``ZCARD`` per ``DocStatus`` in a single round trip, so the cost
+        does not grow with the corpus. Every write maintains the per-status
+        ZSETs atomically with the row (see the class docstring), so the
+        result equals a full scan of the primary rows.
+
+        Errors propagate, as in the PostgreSQL and MongoDB backends: a failed
+        read must never be reported as zero documents.
+        """
+        self._require_sidecar_ready()
+        statuses = [status.value for status in DocStatus]
         async with self._get_redis_connection() as redis:
-            try:
-                # Use SCAN to iterate through all keys in the namespace
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(
-                        cursor, match=f"{self.final_namespace}:*", count=1000
-                    )
-                    if keys:
-                        # Get all values in batch
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.get(key)
-                        values = await pipe.execute()
-
-                        # Count statuses
-                        for value in values:
-                            if value:
-                                try:
-                                    doc_data = json.loads(value)
-                                    status = doc_data.get("status")
-                                    if status in counts:
-                                        counts[status] += 1
-                                except json.JSONDecodeError:
-                                    continue
-
-                    if cursor == 0:
-                        break
-            except Exception as e:
-                logger.error(f"[{self.workspace}] Error getting status counts: {e}")
-
-        return counts
+            pipe = redis.pipeline()
+            for status in statuses:
+                pipe.zcard(self._zset_key(status))
+            cards = await pipe.execute()
+        return {status: int(card) for status, card in zip(statuses, cards)}
 
     @staticmethod
     def _redis_doc_processing_status_from_data(
