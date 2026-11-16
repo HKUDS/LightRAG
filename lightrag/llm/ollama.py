@@ -9,12 +9,14 @@ import pipmaster as pm
 if not pm.is_installed("ollama"):
     pm.install("ollama")
 
+import httpx
 import ollama
 
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 from lightrag.exceptions import (
@@ -482,11 +484,70 @@ async def ollama_model_complete(
     )
 
 
+# Statuses worth another attempt besides 5xx: 429 is the documented
+# rate-limit status (https://docs.ollama.com/api/errors), mainly relevant to
+# Ollama Cloud models. 408 / 409 are not documented for Ollama, so they stay
+# fail-fast like every other 4xx.
+_RETRYABLE_OLLAMA_4XX_STATUS_CODES = frozenset({429})
+
+# Transport failures ollama.AsyncClient lets through unwrapped (it converts only
+# httpx.ConnectError, into the builtin ConnectionError). NetworkError covers a
+# read/write failing on an established connection; RemoteProtocolError is the
+# server closing the connection without a complete response -- what the client
+# sees when the `ollama serve` process itself dies mid-request.
+_RETRYABLE_OLLAMA_TRANSPORT_ERRORS = (
+    ConnectionError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
+
+
+def _is_retryable_ollama_response_error(exc: BaseException) -> bool:
+    """True for an ``ollama.ResponseError`` with a 5xx or 429 status.
+
+    The Ollama server itself can fail mid-request -- its llama-server runner
+    subprocess dying under memory pressure from a large embedding batch is
+    the common case -- and reports that as an HTTP 500 whose body is the
+    runner's own error text (e.g. "Post http://127.0.0.1:PORT/embedding:
+    EOF"). ``ollama.AsyncClient`` converts that into
+    ``ollama.ResponseError(body, status_code=500)``, not a raw connection
+    exception, so this has to read the status code rather than rely on
+    exception type alone. Any other 4xx (bad model name, bad request) is a
+    caller error, not a transient one, and must not be retried.
+
+    A 429 is retried without distinguishing a short throttle from an exhausted
+    Ollama Cloud usage allowance: the docs give no field to tell them apart,
+    and the cost of a wrong retry is bounded at the two backoff waits.
+    """
+    if not isinstance(exc, ollama.ResponseError):
+        return False
+    status = exc.status_code
+    return status >= 500 or status in _RETRYABLE_OLLAMA_4XX_STATUS_CODES
+
+
 @wrap_embedding_func_with_attrs(
     embedding_dim=1024,
     max_token_size=8192,
     model_name="bge-m3:latest",
     supports_asymmetric=True,
+)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    # Transport errors: see _RETRYABLE_OLLAMA_TRANSPORT_ERRORS. Its
+    # httpx.TimeoutException member only fires when the caller passes a
+    # per-request ``timeout``. The API server passes none, so there the outer
+    # embedding worker's ``wait_for`` is the deadline, and it cancels this
+    # whole retry loop rather than one attempt.
+    # ollama.ResponseError(5xx / 429): see _is_retryable_ollama_response_error.
+    retry=(
+        retry_if_exception_type(_RETRYABLE_OLLAMA_TRANSPORT_ERRORS)
+        | retry_if_exception(_is_retryable_ollama_response_error)
+    ),
+    # Surface the last attempt's own error (e.g. "... EOF (status code: 500)")
+    # instead of an opaque tenacity.RetryError in the document's error_msg.
+    reraise=True,
 )
 async def ollama_embed(
     texts: list[str],

@@ -16,6 +16,9 @@ import pytest
 from lightrag.kg.postgres_impl import TABLES, PostgreSQLDB
 
 
+pytestmark = pytest.mark.offline
+
+
 def test_create_ddl_uses_text_for_parse_engine():
     ddl = TABLES["LIGHTRAG_DOC_FULL"]["ddl"]
     assert "parse_engine TEXT" in ddl

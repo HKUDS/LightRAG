@@ -7,10 +7,21 @@ import re
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, ClassVar, Sequence, TypeVar, Union, final
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    ClassVar,
+    Sequence,
+    TypeVar,
+    Union,
+    final,
+)
 import numpy as np
 import configparser
 import ssl
+import types
 import itertools
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -55,7 +66,7 @@ from ..exceptions import (
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
 )
-from ..namespace import NameSpace, is_namespace
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace, is_namespace
 from ..utils import (
     logger,
     compute_mdhash_id,
@@ -63,6 +74,7 @@ from ..utils import (
     get_env_value,
     performance_timing_log,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -324,6 +336,42 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
     return upsert_payload_bytes, upsert_records, delete_records
 
 
+# Transaction-local statement that lets a filtered ANN scan continue past
+# rejected candidates, per vector index type (pgvector >= 0.8). Must stay LOCAL;
+# see docs/design/PgVectorFilteredSearch.md.
+_ITERATIVE_SCAN_SQL: dict[str, str] = {
+    "HNSW": "SET LOCAL hnsw.iterative_scan = strict_order",
+    "HNSW_HALFVEC": "SET LOCAL hnsw.iterative_scan = strict_order",
+    "IVFFLAT": "SET LOCAL ivfflat.iterative_scan = relaxed_order",
+}
+
+_DISTANCE_COLUMN = "_distance"
+
+
+def _with_distance_resort(sql: str, vector_cast: str) -> str:
+    """Wrap an IVFFLAT vector query so its rows come back in distance order.
+
+    Required for ``ivfflat.iterative_scan = relaxed_order``, whose rows are not
+    ordered. The wrapper adds a ``_DISTANCE_COLUMN`` that the caller must remove
+    from every row. Why this form: docs/design/PgVectorFilteredSearch.md.
+    """
+    with_distance, replaced = re.subn(
+        r"\n(\s*)FROM ",
+        lambda m: (
+            f",\n{m.group(1)}content_vector <=> $4::{vector_cast} "
+            f"AS {_DISTANCE_COLUMN}\n{m.group(1)}FROM "
+        ),
+        sql.strip().rstrip(";"),
+        count=1,
+    )
+    if replaced != 1:
+        raise RuntimeError("vector query template has no top-level FROM line")
+    return (
+        f"WITH relaxed AS MATERIALIZED ({with_distance}) "
+        f"SELECT * FROM relaxed ORDER BY {_DISTANCE_COLUMN} + 0"
+    )
+
+
 # All known vector index suffixes, used to drop conflicting indexes when switching types
 _VECTOR_INDEX_SUFFIXES = [
     "hnsw_cosine",
@@ -331,6 +379,63 @@ _VECTOR_INDEX_SUFFIXES = [
     "ivfflat_cosine",
     "vchordrq_cosine",
 ]
+
+
+# pgvector refuses to build these index types above these dimensions. VCHORDRQ
+# is absent: VectorChord's own limit is far above any embedding model.
+_VECTOR_INDEX_MAX_DIMS = {
+    "HNSW": 2000,
+    "IVFFLAT": 2000,
+    "HNSW_HALFVEC": 4000,
+}
+
+
+def _check_vector_index_dimension(index_type: str | None, embedding_dim: int) -> None:
+    """Refuse an index type that pgvector cannot build for this dimension.
+
+    Must run before any DDL touches the vector table: index creation drops
+    the other index types first, so a doomed CREATE INDEX would leave the
+    table with no ANN index at all and every query on a sequential scan.
+
+    Raises:
+        ValueError: ``embedding_dim`` exceeds the index type's limit.
+    """
+    if not index_type:
+        return
+    limit = _VECTOR_INDEX_MAX_DIMS.get(index_type.upper())
+    if limit is None or embedding_dim <= limit:
+        return
+    # Chosen by the dimension, not by the refused type's limit: HNSW at 4096
+    # dimensions must not be sent to HNSW_HALFVEC, which refuses it too.
+    if embedding_dim <= _VECTOR_INDEX_MAX_DIMS["HNSW_HALFVEC"]:
+        hint = (
+            "Set POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC (up to 4000 "
+            "dimensions, pgvector >= 0.7.0). On a table that already holds "
+            "vectors, the switch converts them in place to 16-bit floats, a "
+            "precision loss that switching back cannot undo; back up first if "
+            "that matters. Otherwise use VCHORDRQ (VectorChord extension) or "
+            "an embedding model with at most 2000 dimensions."
+        )
+    else:
+        hint = (
+            "Use POSTGRES_VECTOR_INDEX_TYPE=VCHORDRQ (VectorChord extension), "
+            "or an embedding model with at most 4000 dimensions together "
+            "with HNSW_HALFVEC."
+        )
+    raise ValueError(
+        f"POSTGRES_VECTOR_INDEX_TYPE={index_type} supports at most {limit} "
+        f"dimensions, but the embedding model produces {embedding_dim}. {hint}"
+    )
+
+
+# Legacy vector migration (see docs/design/PostgresLegacyVectorMigration.md).
+# One row per (target table, workspace) whose copy has started and has not been
+# verified yet. Deliberately NOT in TABLES: it is created on first use, so a
+# deployment that never migrates never sees it.
+LEGACY_VECTOR_MIGRATION_STATE_TABLE = "LIGHTRAG_VDB_MIGRATION_STATE"
+# Rows copied per server-side statement, each its own transaction. Bounds the
+# WAL, lock time and rollback cost of one segment; not a tuning knob.
+LEGACY_VECTOR_MIGRATION_BATCH_SIZE = 5000
 
 
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
@@ -417,6 +522,31 @@ def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
 _PG_NAME_MAX_BYTES = 63
 
 
+def _is_valid_age_graph_name(name: str) -> bool:
+    """Whether every Apache AGE version accepts ``name`` as a graph name.
+
+    From AGE 1.6, create_vlabel() / create_elabel() take the graph name as
+    cstring and reject one over 63 bytes with "graph name is invalid"; earlier
+    versions take `name`, which PostgreSQL clips. AGE also rejects a name
+    starting with a digit. AGE's minimum length (3) and full identifier pattern
+    are not checked: the only caller passes names reduced to [A-Za-z0-9_] that
+    end in the namespace, which satisfy both.
+    """
+    return len(name.encode("utf-8")) <= _PG_NAME_MAX_BYTES and not name[:1].isdigit()
+
+
+# Which of the candidate graphs initialize() has already set up, i.e. given the
+# "base" label. A clipped graph only holds legacy data if it has that label,
+# which AGE 1.6+ rejects for the unclipped name: a failed startup there still
+# leaves the empty clipped graph behind, without it. Every candidate must
+# already fit in 63 bytes; a longer bind parameter cast to name raises 42622.
+_INITIALIZED_GRAPHS_LOOKUP = (
+    "SELECT g.name::text AS name FROM ag_catalog.ag_label l "
+    "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
+    "WHERE g.name = ANY($1::name[]) AND l.name = 'base'"
+)
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -424,7 +554,13 @@ class PostgreSQLDB:
         self.user = config["user"]
         self.password = config["password"]
         self.database = config["database"]
-        self.workspace = config["workspace"]
+        # One check for every PostgreSQL storage: they all take the
+        # override from this shared client. POSTGRES_WORKSPACE (or the
+        # config.ini value) may remap tenant data, never into the reserved
+        # family the configuration container lives in.
+        self.workspace = validate_workspace_override(
+            "POSTGRES_WORKSPACE", config["workspace"]
+        )
         self.max = int(config["max_connections"])
         self.increment = 1
         self.pool: Pool | None = None
@@ -444,6 +580,10 @@ class PostgreSQLDB:
             else str(_ev).lower() in ("true", "1", "yes", "on")
         )  # True for backward compatibility, can be set to False to disable vector features
         self.vector_index_type = config.get("vector_index_type")
+        # None = not probed yet; False = pgvector < 0.8 (no iterative scan GUC).
+        # Probed once by configure_vector_extension, read per connection.
+        self.iterative_scan_supported: bool | None = None
+        self._iterative_scan_warned = False
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
@@ -462,6 +602,13 @@ class PostgreSQLDB:
 
         # Guard concurrent pool resets
         self._pool_reconnect_lock = asyncio.Lock()
+        # Single-flight state for _ensure_pool(): the number of finished
+        # reconnect attempts, and the failure of the latest one (None if it
+        # succeeded), so callers that waited on an attempt share its outcome.
+        self._pool_connect_generation = 0
+        self._pool_connect_failure: (
+            tuple[Exception, types.TracebackType | None] | None
+        ) = None
 
         # AGE graphs this process has already confirmed to exist.  Graph
         # creation is one-time DDL, not connection session state, so it must
@@ -557,7 +704,19 @@ class PostgreSQLDB:
         logger.warning(f"PostgreSQL, Unknown SSL mode: {ssl_mode}, SSL disabled")
         return None
 
-    async def initdb(self):
+    async def initdb(self, *, reconnect: bool = False):
+        """Create the connection pool and assign it to ``self.pool``.
+
+        Startup calls it with the defaults: up to ``connection_retry_attempts``
+        attempts with the configured backoff, and an ERROR log if all of them
+        fail.
+
+        ``reconnect=True`` is for ``_ensure_pool()`` only, which calls it while
+        holding ``_pool_reconnect_lock``. It makes a single attempt, because
+        ``_run_with_retry()`` owns the retries and their backoff, and a
+        transient failure is logged at WARNING, because it will be retried.
+        Never reset the pool from here: ``_reset_pool()`` takes the same lock.
+        """
         # Prepare connection parameters
         connection_params = {
             "user": self.user,
@@ -724,10 +883,12 @@ class PostgreSQLDB:
 
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.connection_retry_attempts),
+                stop=stop_after_attempt(
+                    1 if reconnect else self.connection_retry_attempts
+                ),
                 retry=retry_if_exception_type(self._transient_exceptions),
                 wait=wait_strategy,
-                before_sleep=self._before_sleep,
+                before_sleep=self._log_transient_failure,
                 reraise=True,
             ):
                 with attempt:
@@ -738,20 +899,54 @@ class PostgreSQLDB:
                 f"PostgreSQL, Connected to database at {self.host}:{self.port}/{self.database} {ssl_status}"
             )
         except Exception as e:
-            logger.error(
-                f"PostgreSQL, Failed to connect database at {self.host}:{self.port}/{self.database}, Got:{e}"
-            )
+            if reconnect and isinstance(e, self._transient_exceptions):
+                logger.warning(
+                    f"PostgreSQL, Failed to reconnect database at {self.host}:{self.port}/{self.database}, Got:{e!r}"
+                )
+            else:
+                logger.error(
+                    f"PostgreSQL, Failed to connect database at {self.host}:{self.port}/{self.database}, Got:{e}"
+                )
             raise
 
     async def _ensure_pool(self) -> None:
-        """Ensure the connection pool is initialised."""
-        if self.pool is None:
-            async with self._pool_reconnect_lock:
-                if self.pool is None:
-                    await self.initdb()
+        """Ensure the connection pool is initialised.
 
-    async def _reset_pool(self) -> None:
+        Single-flight: a caller that waited on the lock while another caller's
+        reconnect attempt ran gets that attempt's outcome instead of making an
+        attempt of its own, so N concurrent requests during an outage cost one
+        connect attempt per round rather than N attempts made one after another.
+        A caller that arrives after an attempt finished always makes its own.
+        """
+        if self.pool is not None:
+            return
+        generation = self._pool_connect_generation
         async with self._pool_reconnect_lock:
+            if self.pool is not None:
+                return
+            # Bind no local to the stored failure on the path that connects: a
+            # new failure's traceback keeps this frame alive, so such a local
+            # would chain every failure of an outage, and their callers'
+            # frames, together until a reconnect succeeds.
+            if (
+                generation != self._pool_connect_generation
+                and self._pool_connect_failure is not None
+            ):
+                exc, tb = self._pool_connect_failure
+                raise exc.with_traceback(tb)
+            try:
+                await self.initdb(reconnect=True)
+            except Exception as exc:
+                self._pool_connect_failure = (exc, exc.__traceback__)
+                self._pool_connect_generation += 1
+                raise
+            self._pool_connect_failure = None
+            self._pool_connect_generation += 1
+
+    async def _reset_pool(self, failed_pool: Pool | None = None) -> None:
+        async with self._pool_reconnect_lock:
+            if failed_pool is not None and self.pool is not failed_pool:
+                return
             if self.pool is not None:
                 try:
                     await asyncio.wait_for(
@@ -768,16 +963,20 @@ class PostgreSQLDB:
                     )
             self.pool = None
 
-    async def _before_sleep(self, retry_state: RetryCallState) -> None:
-        """Hook invoked by tenacity before sleeping between retries."""
+    async def _log_transient_failure(self, retry_state: RetryCallState) -> None:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
+        # Report the limit of the retry loop that is running, not the config.
+        max_attempts = getattr(
+            retry_state.retry_object.stop,
+            "max_attempt_number",
+            self.connection_retry_attempts,
+        )
         logger.warning(
             "PostgreSQL transient connection issue on attempt %s/%s: %r",
             retry_state.attempt_number,
-            self.connection_retry_attempts,
+            max_attempts,
             exc,
         )
-        await self._reset_pool()
 
     async def _run_with_retry(
         self,
@@ -810,17 +1009,25 @@ class PostgreSQLDB:
             if self.connection_retry_backoff > 0
             else wait_fixed(0)
         )
+        pool: Pool | None = None
+
+        async def _before_sleep(retry_state: RetryCallState) -> None:
+            await self._log_transient_failure(retry_state)
+            if pool is not None:
+                await self._reset_pool(pool)
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self.connection_retry_attempts),
             retry=retry_if_exception_type(self._transient_exceptions),
             wait=wait_strategy,
-            before_sleep=self._before_sleep,
+            before_sleep=_before_sleep,
             reraise=True,
         ):
             with attempt:
+                pool = None
                 await self._ensure_pool()
-                assert self.pool is not None
+                pool = self.pool
+                assert pool is not None
                 if timing_label:
                     pool_snapshot_before = self._get_pool_snapshot()
                     performance_timing_log(
@@ -829,7 +1036,7 @@ class PostgreSQLDB:
                         pool_snapshot_before,
                     )
                 acquire_start = time.perf_counter()
-                async with self.pool.acquire() as connection:  # type: ignore[arg-type]
+                async with pool.acquire() as connection:
                     acquire_elapsed = time.perf_counter() - acquire_start
                     if timing_label:
                         pool_snapshot_after = self._get_pool_snapshot()
@@ -926,6 +1133,39 @@ class PostgreSQLDB:
                     f"but installed version is {raw_version}. Upgrade the pgvector extension "
                     "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
                 )
+
+        await self._probe_iterative_scan_support(connection)
+
+    async def _probe_iterative_scan_support(
+        self, connection: asyncpg.Connection
+    ) -> None:
+        """Record whether pgvector has iterative index scans (>= 0.8.0).
+
+        Never fatal. An unreadable version leaves the flag ``None``, and the
+        ``SET LOCAL`` is then still attempted. Why the version, not a failed
+        ``SET``, decides: docs/design/PgVectorFilteredSearch.md.
+        """
+        if getattr(self, "vector_index_type", None) not in _ITERATIVE_SCAN_SQL:
+            return
+        try:
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            match = re.match(r"(\d+)\.(\d+)", str(row["extversion"])) if row else None
+        except Exception as exc:  # noqa: BLE001 - never fatal, see docstring
+            logger.debug(f"PostgreSQL, pgvector version probe skipped: {exc}")
+            return
+        if match is None:
+            return
+        supported = (int(match.group(1)), int(match.group(2))) >= (0, 8)
+        self.iterative_scan_supported = supported
+        if not supported:
+            logger.warning(
+                f"PostgreSQL, pgvector {row['extversion']} has no "
+                "iterative index scan (needs >= 0.8.0): a workspace holding a "
+                "minority of the rows in a shared vector table can get no "
+                "dense-search results. Upgrade pgvector."
+            )
 
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
@@ -1229,22 +1469,20 @@ class PostgreSQLDB:
     ) -> None:
         """Prepare a pooled connection for Apache AGE access.
 
-        Two very different things are needed before an AGE statement can run,
-        and they have very different lifetimes:
+        AGE must be loaded in each physical connection before any Cypher query;
+        never cache library initialization per process. Reapply ``search_path``
+        on every checkout because pool release resets it. Only graph existence
+        is cached by :meth:`_ensure_age_graph`.
 
-        - ``SET search_path`` is genuine session state.  ``_reset_connection``
-          deliberately runs ``RESET ALL`` on every pool release so an AGE
-          search_path never leaks into a non-AGE checkout, which means it has
-          to be re-applied on every checkout.
-        - The graph itself is one-time DDL.  Creating it here unconditionally
-          made PostgreSQL log an ERROR/STATEMENT pair for *every* graph read
-          and write, because the server writes its log entry before the client
-          ever sees the error and can swallow it.  Graph
-          existence is now handled by :meth:`_ensure_age_graph`, which reaches
-          the database at most once per process.
+        The ``agtype`` literal is what loads AGE: its type input function pulls
+        in ``age.so`` with ordinary privileges and is a no-op when AGE is
+        preloaded. Do not replace it with ``LOAD 'age'``, which requires
+        superuser and breaks managed deployments that preload AGE for a
+        non-superuser role.
         """
         await connection.execute(  # type: ignore
-            'SET search_path = ag_catalog, "$user", public'
+            'SET search_path = ag_catalog, "$user", public; '
+            "SELECT 'null'::ag_catalog.agtype"
         )
         await self._ensure_age_graph(connection, graph_name)
 
@@ -1314,6 +1552,58 @@ class PostgreSQLDB:
                     )
 
             self._ensured_age_graphs.add(graph_name)
+
+    def iterative_scan_statement(self) -> str | None:
+        """Return the ``SET LOCAL`` that lets a filtered ANN scan keep going.
+
+        ``None`` means nothing to apply: an index type this does not cover
+        (VCHORDRQ), or pgvector < 0.8.
+
+        Rules:
+
+        * Apply it only through ``_fetch_with_iterative_scan``, in the query's
+          own transaction. Never as a session ``SET`` and never after a
+          ``LOAD 'vector'``.
+        * IVFFLAT yields ``relaxed_order`` rows: its query must go through
+          ``_with_distance_resort``.
+        * This is a mitigation, not a guarantee; the scan stays bounded.
+
+        Mechanism, measurements and residual cases:
+        docs/design/PgVectorFilteredSearch.md.
+        """
+        if getattr(self, "iterative_scan_supported", None) is False:
+            return None  # reported once at startup by the version probe
+        return _ITERATIVE_SCAN_SQL.get(getattr(self, "vector_index_type", None))
+
+    async def _fetch_with_iterative_scan(
+        self, connection: asyncpg.Connection, sql: str, params: tuple
+    ) -> list:
+        """Fetch ``sql`` in a transaction that first applies the scan setting.
+
+        Best-effort: a failing ``SET LOCAL`` (aborting only its own
+        transaction) is logged once and the query runs without it, as it did
+        before. A failure of the query itself is re-raised: this helper adds
+        no fallback and no retry of its own, so only the caller's normal
+        transient-error retry (``_run_with_retry``) can run it again.
+        """
+        statement = self.iterative_scan_statement()
+        if statement is not None:
+            applied = False
+            try:
+                async with connection.transaction():
+                    await connection.execute(statement)
+                    applied = True
+                    return await connection.fetch(sql, *params)
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                if applied:
+                    raise
+                if not getattr(self, "_iterative_scan_warned", False):
+                    self._iterative_scan_warned = True
+                    logger.warning(
+                        f"PostgreSQL, iterative scan not applied ({exc}); "
+                        "filtered vector search may return fewer rows than exist"
+                    )
+        return await connection.fetch(sql, *params)
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
         """Configure VCHORDRQ extension for vector similarity search.
@@ -2324,9 +2614,11 @@ class PostgreSQLDB:
             if k in vector_tables_to_skip:
                 continue
 
-            try:
-                await self.query(f"SELECT 1 FROM {k} LIMIT 1")
-            except Exception:
+            # Probe with to_regclass rather than selecting from the table: a
+            # failed SELECT goes through query(), which logs an ERROR, so a
+            # fresh database would report every missing table as an error
+            # right before creating it.
+            if not await self.check_table_exists(k):
                 try:
                     logger.info(f"PostgreSQL, Try Creating table {k} in database")
                     await self.execute(v["ddl"])
@@ -2673,6 +2965,8 @@ class PostgreSQLDB:
                 "Supported types: HNSW, HNSW_HALFVEC, IVFFLAT, VCHORDRQ"
             )
             return
+        # Outside the try below, which logs and swallows DDL failures.
+        _check_vector_index_dimension(self.vector_index_type, embedding_dim)
 
         k = table_name
         # Use _safe_index_name to avoid PostgreSQL's 63-byte identifier truncation
@@ -2723,11 +3017,16 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
         timing_label: str | None = None,
+        iterative_scan: bool = False,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
             fetch_start = time.perf_counter()
-            if prepared_params:
+            if iterative_scan:
+                rows = await self._fetch_with_iterative_scan(
+                    connection, sql, prepared_params
+                )
+            elif prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
             else:
                 rows = await connection.fetch(sql)
@@ -3116,6 +3415,40 @@ class ClientManager:
                         await db.pool.close()
 
 
+_CONFIG_ROW_COLUMNS = frozenset({"_id", "create_time", "update_time"})
+
+
+def _config_row_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """The part of a configuration KV row that goes into the JSONB column.
+
+    The storage-managed timestamps and the ``_id`` mirror are columns on
+    ``LIGHTRAG_CONFIG``; everything else (``schema_version``, ``workspace``,
+    ``updated_at``, ``updated_by``, ``value``) is the payload, kept whole so a
+    key added to the row shape later needs no DDL.
+    """
+    return {k: v for k, v in row.items() if k not in _CONFIG_ROW_COLUMNS}
+
+
+def _config_row_from_pg(row: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the KV row a caller expects from a ``LIGHTRAG_CONFIG`` result."""
+    payload = row.get("value")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    create_time = row.get("create_time", 0) or 0
+    update_time = row.get("update_time", 0) or 0
+    rebuilt = dict(payload)
+    rebuilt["id"] = row.get("id")
+    rebuilt["_id"] = row.get("id")
+    rebuilt["create_time"] = create_time
+    rebuilt["update_time"] = create_time if update_time == 0 else update_time
+    return rebuilt
+
+
 @final
 @dataclass
 class PGKVStorage(BaseKVStorage):
@@ -3124,7 +3457,17 @@ class PGKVStorage(BaseKVStorage):
     supports_strict_point_reads: ClassVar[bool] = True
 
     def __post_init__(self):
-        validate_workspace(self.workspace)
+        if self.namespace == NameSpace.KV_STORE_CONFIG:
+            # The configuration container is named in CODE. On PostgreSQL that
+            # name is the table ``LIGHTRAG_CONFIG`` plus a fixed value in its
+            # partition column -- which is called ``workspace`` for the DDL's
+            # sake and is NOT one: nothing validates it, no caller chooses it,
+            # and POSTGRES_WORKSPACE does not reach it (see ``initialize``).
+            # Two deployments sharing one database are told apart by the row
+            # KEY, whose scope is the business workspace the row is about.
+            self.workspace = CONFIG_CONTAINER_TAG
+        else:
+            validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
         (
             self._max_upsert_payload_bytes,
@@ -3140,7 +3483,11 @@ class PGKVStorage(BaseKVStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
+            if self.namespace == NameSpace.KV_STORE_CONFIG:
+                # Fixed in __post_init__ and not configurable: POSTGRES_WORKSPACE
+                # remaps tenant data, never the configuration container.
+                pass
+            elif self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
                 logger.info(
                     f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
@@ -3300,6 +3647,9 @@ class PGKVStorage(BaseKVStorage):
             update_time = response.get("update_time", 0)
             response["create_time"] = create_time
             response["update_time"] = create_time if update_time == 0 else update_time
+
+        if response and is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            response = _config_row_from_pg(response)
 
         return response if response else None
 
@@ -3483,6 +3833,9 @@ class PGKVStorage(BaseKVStorage):
                 update_time = result.get("update_time", 0)
                 result["create_time"] = create_time
                 result["update_time"] = create_time if update_time == 0 else update_time
+
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            results = [_config_row_from_pg(row) if row else row for row in results]
 
         return _order_results(results)
 
@@ -3672,6 +4025,16 @@ class PGKVStorage(BaseKVStorage):
                     )
                 )
                 await _cooperative_yield(i)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_CONFIG):
+            upsert_sql = SQL_TEMPLATES["upsert_config"]
+            for i, (k, v) in enumerate(data.items(), start=1):
+                # Tuple order must match SQL: (workspace, id, value). The row
+                # payload travels whole in the JSONB column; the storage-managed
+                # timestamps and the ``_id`` mirror are columns, not payload.
+                batch_values.append(
+                    (self.workspace, k, json.dumps(_config_row_payload(v)))
+                )
+                await _cooperative_yield(i)
         else:
             logger.error(f"Unknown namespace: {self.namespace}")
             raise ValueError(f"Unknown namespace: {self.namespace}")
@@ -3772,6 +4135,36 @@ class PGKVStorage(BaseKVStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) by keyset-paging the ids and
+        reading each page through ``get_by_ids``, so every namespace's rows
+        come out with the same per-namespace shaping a point read applies.
+        Two round trips per page, and never a whole-table read."""
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+        page_size = max(1, int(page_size))
+        page_sql = (
+            f"SELECT id FROM {table_name} WHERE workspace=$1 "
+            f"AND ($2::text IS NULL OR id > $2::text) ORDER BY id LIMIT $3"
+        )
+        last_id: str | None = None
+        while True:
+            id_rows = await self.db.query(
+                page_sql, [self.workspace, last_id, page_size], multirows=True
+            )
+            if not id_rows:
+                return
+            ids = [str(r["id"]) for r in id_rows if r and r.get("id") is not None]
+            for row_id, row in zip(ids, await self.get_by_ids(ids)):
+                if row is None:
+                    continue
+                row.setdefault("_id", row_id)
+                yield row
+            if len(id_rows) < page_size:
+                return
+            last_id = ids[-1]
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -3990,124 +4383,208 @@ class PGVectorStorage(BaseVectorStorage):
             )
 
     @staticmethod
+    async def _pg_migration_in_progress(
+        db: PostgreSQLDB, table_name: str, workspace: str
+    ) -> bool:
+        """Whether an earlier legacy migration into this workspace was interrupted.
+
+        True means the target may hold only part of the legacy rows and the copy
+        must be resumed, however many rows the target already has.
+        """
+        if not await db.check_table_exists(LEGACY_VECTOR_MIGRATION_STATE_TABLE):
+            return False
+        row = await db.query(
+            f"SELECT TRUE AS in_progress FROM {LEGACY_VECTOR_MIGRATION_STATE_TABLE} "
+            "WHERE target_table = $1 AND workspace = $2",
+            [table_name.lower(), workspace],
+        )
+        return bool(row and row.get("in_progress") is True)
+
+    @staticmethod
     async def _pg_migrate_workspace_data(
         db: PostgreSQLDB,
         legacy_table_name: str,
         new_table_name: str,
         workspace: str,
         expected_count: int,
-        embedding_dim: int,
+        resume: bool = False,
     ) -> int:
-        """Migrate workspace data from legacy table to new table using batch insert.
+        """Copy one workspace's legacy rows into the new table, in segments.
 
-        This function uses asyncpg's executemany for efficient batch insertion,
-        reducing database round-trips from N to 1 per batch.
+        Rules for callers:
 
-        Uses keyset pagination (cursor-based) with ORDER BY id for stable ordering.
-        This ensures every legacy row is migrated exactly once, avoiding the
-        non-deterministic row ordering issues with OFFSET/LIMIT without ORDER BY.
+        - Call it with ``resume=False`` only when the target workspace is
+          empty, and with ``resume=True`` only when
+          ``_pg_migration_in_progress`` is true. It never overwrites a target
+          row (``ON CONFLICT DO NOTHING``), so it is safe to call again after
+          any failure, and calling again is the only recovery.
+        - The marker row is the fence between server instances: whoever
+          clears it ends the migration for everyone. Never copy a legacy row
+          outside a statement that holds the marker, and never re-create the
+          marker on the resume path -- either one lets a slow instance write
+          back rows that a finished instance has since deleted.
+        - It raises unless every legacy row of the workspace is present in the
+          target afterwards. A raise leaves the in-progress marker behind on
+          purpose: the next startup resumes instead of accepting a partial
+          target.
+        - Each segment is one server-side statement in its own transaction; no
+          vector travels through Python. ``expected_count`` is used for
+          progress logging only.
 
-        Args:
-            db: PostgreSQLDB instance
-            legacy_table_name: Name of the legacy table to migrate from
-            new_table_name: Name of the new table to migrate to
-            workspace: Workspace to filter records for migration
-            expected_count: Expected number of records to migrate
-            embedding_dim: Embedding dimension for vector column
-
-        Returns:
-            Number of records migrated
+        Returns the number of legacy rows scanned. Mechanism, accepted residues
+        and rejected alternatives: docs/design/PostgresLegacyVectorMigration.md.
         """
-        migrated_count = 0
-        last_id: str | None = None
-        batch_size = 500
+        if not workspace:
+            raise ValueError("workspace must be provided")
 
-        while True:
-            # Use keyset pagination with ORDER BY id for deterministic ordering
-            # This avoids OFFSET/LIMIT without ORDER BY which can skip or duplicate rows
-            if workspace:
-                if last_id is not None:
-                    select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 AND id > $2 ORDER BY id LIMIT $3"
-                    rows = await db.query(
-                        select_query, [workspace, last_id, batch_size], multirows=True
-                    )
-                else:
-                    select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 ORDER BY id LIMIT $2"
-                    rows = await db.query(
-                        select_query, [workspace, batch_size], multirows=True
-                    )
-            else:
-                if last_id is not None:
-                    select_query = f"SELECT * FROM {legacy_table_name} WHERE id > $1 ORDER BY id LIMIT $2"
-                    rows = await db.query(
-                        select_query, [last_id, batch_size], multirows=True
-                    )
-                else:
-                    select_query = (
-                        f"SELECT * FROM {legacy_table_name} ORDER BY id LIMIT $1"
-                    )
-                    rows = await db.query(select_query, [batch_size], multirows=True)
+        state_table = LEGACY_VECTOR_MIGRATION_STATE_TABLE
+        marker_key = {"target_table": new_table_name.lower(), "workspace": workspace}
 
-            if not rows:
-                break
-
-            # Track the last ID for keyset pagination cursor
-            last_id = rows[-1]["id"]
-
-            # Batch insert optimization: use executemany instead of individual inserts
-            # Get column names from the first row
-            first_row = dict(rows[0])
-            columns = list(first_row.keys())
-            columns_str = ", ".join(columns)
-            placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])
-
-            insert_query = f"""
-                INSERT INTO {new_table_name} ({columns_str})
-                VALUES ({placeholders})
-                ON CONFLICT (workspace, id) DO NOTHING
-            """
-
-            # Prepare batch data: convert rows to list of tuples
-            batch_values = []
-            for row in rows:
-                row_dict = dict(row)
-
-                # FIX: Parse vector strings from connections without register_vector codec.
-                # When pgvector codec is not registered on the read connection, vector
-                # columns are returned as text strings like "[0.1,0.2,...]" instead of
-                # lists/arrays. We need to convert these to numpy arrays before passing
-                # to executemany, which uses a connection WITH register_vector codec
-                # that expects list/tuple/ndarray types.
-                if "content_vector" in row_dict:
-                    vec = row_dict["content_vector"]
-                    if isinstance(vec, str):
-                        # pgvector text format: "[0.1,0.2,0.3,...]"
-                        vec = vec.strip("[]")
-                        if vec:
-                            row_dict["content_vector"] = np.array(
-                                [float(x) for x in vec.split(",")], dtype=np.float32
-                            )
-                        else:
-                            row_dict["content_vector"] = None
-
-                # Extract values in column order to match placeholders
-                values_tuple = tuple(row_dict[col] for col in columns)
-                batch_values.append(values_tuple)
-
-            # Use executemany for batch execution - significantly reduces DB round-trips
-            # Note: register_vector is already called on pool init, no need to call it again
-            async def _batch_insert(connection: asyncpg.Connection) -> None:
-                await connection.executemany(insert_query, batch_values)
-
-            await db._run_with_retry(_batch_insert)
-
-            migrated_count += len(rows)
-            workspace_info = f" for workspace '{workspace}'" if workspace else ""
-            logger.info(
-                f"PostgreSQL: {migrated_count}/{expected_count} records migrated{workspace_info}"
+        # Marker BEFORE the first row: from here on a target that holds some
+        # rows is known to be unfinished rather than assumed complete. Only a
+        # fresh migration writes it, and only while the target is still empty:
+        # another instance may have finished the whole migration since the
+        # caller looked, and a new marker would reopen it.
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {state_table} (
+                    target_table VARCHAR(255) NOT NULL,
+                    workspace VARCHAR(255) NOT NULL,
+                    legacy_table VARCHAR(255) NOT NULL,
+                    started_at TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT {state_table}_PK PRIMARY KEY (target_table, workspace)
+                    )""",
+            ignore_if_exists=True,
+        )
+        if not resume:
+            await db.execute(
+                f"INSERT INTO {state_table} (target_table, workspace, legacy_table) "
+                "SELECT $1::varchar, $2::varchar, $3::varchar WHERE NOT EXISTS "
+                f"(SELECT 1 FROM {new_table_name} WHERE workspace = $2) "
+                "ON CONFLICT (target_table, workspace) DO NOTHING",
+                {**marker_key, "legacy_table": legacy_table_name.lower()},
             )
 
-        return migrated_count
+        # Name the legacy columns explicitly: the two tables need not share a
+        # column order, and a legacy column the target lacks must fail loudly
+        # rather than be dropped.
+        column_rows = await db.query(
+            "SELECT attname FROM pg_attribute "
+            "WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped "
+            "ORDER BY attnum",
+            [legacy_table_name.lower()],
+            multirows=True,
+        )
+        if not column_rows:
+            raise DataMigrationError(
+                f"PostgreSQL: Could not read the columns of legacy table "
+                f"'{legacy_table_name}'"
+            )
+        columns = ", ".join(
+            '"' + row["attname"].replace('"', '""') + '"' for row in column_rows
+        )
+
+        # Keyset pagination on the legacy primary key. Every segment takes a
+        # share lock on the marker row and copies only while it exists, so the
+        # instance that clears the marker waits for segments in flight and no
+        # segment starts after it. `guard` and `batch` are each referenced more
+        # than once, so PostgreSQL materializes them: the rows inserted and the
+        # rows reported are the same set. A retried segment (including one
+        # whose COMMIT response was lost) re-reads the same range and conflicts
+        # away.
+        def _segment_sql(after_first: bool) -> str:
+            cursor = "AND id > $3 " if after_first else ""
+            limit = "$4" if after_first else "$3"
+            return (
+                f"WITH guard AS (SELECT 1 FROM {state_table} "
+                "WHERE target_table = $2 AND workspace = $1 FOR SHARE), "
+                f"batch AS (SELECT {columns} FROM {legacy_table_name} "
+                f"WHERE workspace = $1 AND EXISTS (SELECT 1 FROM guard) "
+                f"{cursor}ORDER BY id LIMIT {limit}), "
+                f"copied AS (INSERT INTO {new_table_name} ({columns}) "
+                f"SELECT {columns} FROM batch "
+                "ON CONFLICT (workspace, id) DO NOTHING) "
+                "SELECT (SELECT COUNT(*) FROM batch) AS batch_rows, "
+                "(SELECT MAX(id) FROM batch) AS last_id, "
+                "EXISTS (SELECT 1 FROM guard) AS active"
+            )
+
+        finished_elsewhere = (
+            f"PostgreSQL: Migration of workspace '{workspace}' into "
+            f"'{new_table_name}' was completed by another instance"
+        )
+        target = new_table_name.lower()
+        batch_size = LEGACY_VECTOR_MIGRATION_BATCH_SIZE
+        scanned = 0
+        last_id: str | None = None
+        while True:
+            if last_id is None:
+                segment = await db.query(
+                    _segment_sql(False), [workspace, target, batch_size]
+                )
+            else:
+                segment = await db.query(
+                    _segment_sql(True), [workspace, target, last_id, batch_size]
+                )
+            batch_rows = segment.get("batch_rows") if segment else None
+            active = segment.get("active") if segment else None
+            if (
+                not isinstance(batch_rows, int)
+                or batch_rows < 0
+                or not isinstance(active, bool)
+            ):
+                raise DataMigrationError(
+                    f"PostgreSQL: Unexpected migration segment result: {segment!r}"
+                )
+            if not active:
+                # Not an error and not ours to verify: rows missing from the
+                # target now may have been deleted on purpose.
+                logger.info(finished_elsewhere)
+                return scanned
+            if batch_rows == 0:
+                break
+            scanned += batch_rows
+            last_id = segment["last_id"]
+            logger.info(
+                f"PostgreSQL: {scanned}/{expected_count} records migrated "
+                f"for workspace '{workspace}'"
+            )
+            if batch_rows < batch_size:
+                break
+
+        # Verify by identity, not by count: a count would also pass when rows
+        # are missing but unrelated rows make up the number. The marker is
+        # cleared in the same statement, and only on a clean result, so there
+        # is no moment at which a verified target is still marked unfinished
+        # or an unverified one is not.
+        outcome = await db.query(
+            f"WITH missing AS (SELECT COUNT(*) AS n FROM {legacy_table_name} l "
+            f"WHERE l.workspace = $1 AND NOT EXISTS (SELECT 1 FROM {new_table_name} n "
+            "WHERE n.workspace = l.workspace AND n.id = l.id)), "
+            f"cleared AS (DELETE FROM {state_table} WHERE target_table = $2 "
+            "AND workspace = $1 AND (SELECT n FROM missing) = 0 RETURNING 1) "
+            "SELECT (SELECT n FROM missing) AS missing, "
+            "(SELECT COUNT(*) FROM cleared) AS cleared",
+            [workspace, target],
+        )
+        missing = outcome.get("missing") if outcome else None
+        cleared = outcome.get("cleared") if outcome else None
+        if not isinstance(missing, int) or not isinstance(cleared, int):
+            raise DataMigrationError(
+                f"PostgreSQL: Unexpected migration verification result: {outcome!r}"
+            )
+        if cleared == 0:
+            if await PGVectorStorage._pg_migration_in_progress(
+                db, new_table_name, workspace
+            ):
+                raise DataMigrationError(
+                    "PostgreSQL: Migration verification failed, "
+                    f"{missing} legacy records of workspace '{workspace}' are missing "
+                    f"from '{new_table_name}'. The migration resumes on the next startup."
+                )
+            # The marker went before this statement ran (another instance, or
+            # this statement retried after a lost COMMIT response).
+            logger.info(finished_elsewhere)
+        return scanned
 
     @staticmethod
     async def setup_table(
@@ -4155,6 +4632,11 @@ class PGVectorStorage(BaseVectorStorage):
                 f"embedding_dim must be provided to create or migrate "
                 f"'{table_name}': the configured embedding function declares none."
             )
+        # Before any table is created or migrated, for the same reason as the
+        # guard above: a configuration error must not leave a half-built table.
+        _check_vector_index_dimension(
+            getattr(db, "vector_index_type", None), embedding_dim
+        )
 
         new_table_exists = await db.check_table_exists(table_name)
         legacy_exists = legacy_table_name and await db.check_table_exists(
@@ -4320,51 +4802,56 @@ class PGVectorStorage(BaseVectorStorage):
                 new_count_result.get("count", 0) if new_count_result else 0
             )
 
-            if new_table_workspace_count > 0:
+            # An interrupted migration outranks the row count: its target is
+            # non-empty AND incomplete, which a count alone cannot tell apart
+            # from a finished one.
+            resuming = await PGVectorStorage._pg_migration_in_progress(
+                db, table_name, workspace
+            )
+
+            if new_table_workspace_count > 0 and not resuming:
                 logger.warning(
                     f"PostgreSQL: Both new and legacy collection have data. "
                     f"{legacy_count} records in {legacy_table_name} require manual deletion after migration verification."
                 )
+                if new_table_workspace_count < legacy_count:
+                    # Not proof of anything -- deletions after a completed
+                    # migration look the same -- but it is the only trace a
+                    # migration interrupted under an older version leaves.
+                    logger.warning(
+                        f"PostgreSQL: '{table_name}' holds {new_table_workspace_count} "
+                        f"records{workspace_info}, fewer than the {legacy_count} in "
+                        f"'{legacy_table_name}'. If documents were not deleted since "
+                        "the migration, it may have been interrupted under an older "
+                        "version; see docs/design/PostgresLegacyVectorMigration.md."
+                    )
                 return
 
-            # Case 3: Legacy has workspace data and new table is empty for workspace
+            # Case 3: Legacy has workspace data and the new table is empty for
+            #         the workspace, or an earlier migration was interrupted
             logger.info(
                 f"PostgreSQL: Found legacy table '{legacy_table_name}' with {legacy_count} records{workspace_info}."
             )
-            logger.info(
-                f"PostgreSQL: Migrating data from legacy table '{legacy_table_name}' to new table '{table_name}'"
-            )
+            if resuming:
+                logger.warning(
+                    f"PostgreSQL: Resuming interrupted migration from '{legacy_table_name}' "
+                    f"to '{table_name}'{workspace_info}; {new_table_workspace_count} "
+                    "records are already in place."
+                )
+            else:
+                logger.info(
+                    f"PostgreSQL: Migrating data from legacy table '{legacy_table_name}' to new table '{table_name}'"
+                )
 
             try:
-                migrated_count = await PGVectorStorage._pg_migrate_workspace_data(
+                await PGVectorStorage._pg_migrate_workspace_data(
                     db,
                     legacy_table_name,
                     table_name,
                     workspace,
                     legacy_count,
-                    embedding_dim,
+                    resume=resuming,
                 )
-                if migrated_count != legacy_count:
-                    logger.warning(
-                        "PostgreSQL: Read %s legacy records%s during migration, expected %s.",
-                        migrated_count,
-                        workspace_info,
-                        legacy_count,
-                    )
-
-                new_count_result = await db.query(new_count_query, [workspace])
-                new_table_count_after = (
-                    new_count_result.get("count", 0) if new_count_result else 0
-                )
-                inserted_count = new_table_count_after - new_table_workspace_count
-
-                if inserted_count != legacy_count:
-                    error_msg = (
-                        "PostgreSQL: Migration verification failed, "
-                        f"expected {legacy_count} inserted records, got {inserted_count}."
-                    )
-                    logger.error(error_msg)
-                    raise DataMigrationError(error_msg)
 
             except DataMigrationError:
                 # Re-raise DataMigrationError as-is to preserve specific error messages
@@ -4936,13 +5423,28 @@ class PGVectorStorage(BaseVectorStorage):
         sql = SQL_TEMPLATES[self.namespace].format(
             table_name=self.table_name, vector_cast=vector_cast
         )
+        # IVFFLAT iterative scan is relaxed_order only: restore distance order.
+        resort = (
+            getattr(self.db, "vector_index_type", None) == "IVFFLAT"
+            and getattr(self.db, "iterative_scan_supported", None) is not False
+        )
+        if resort:
+            sql = _with_distance_resort(sql, vector_cast)
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
             "embedding": embedding,
         }
-        results = await self.db.query(sql, params=list(params.values()), multirows=True)
+        results = await self.db.query(
+            sql,
+            params=list(params.values()),
+            multirows=True,
+            iterative_scan=True,
+        )
+        if resort and results:
+            for row in results:
+                row.pop(_DISTANCE_COLUMN, None)
         return results
 
     async def index_done_callback(self) -> None:
@@ -5126,6 +5628,45 @@ class PGVectorStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error deleting relations for entity {entity_name}: {e}"
             )
             raise
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        Scoped by ``workspace``, not just by table: PostgreSQL isolates
+        workspaces with a column, so an unfiltered read would report a sibling
+        workspace's rows as this one's. The table name already carries the
+        embedding model and dimension, which is exactly why this backend needs
+        the check -- a model change lands in a different, empty table.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+
+        query = (
+            f"SELECT EXISTS(SELECT 1 FROM {self.table_name} WHERE workspace=$1) "
+            f"AS has_data"
+        )
+        result = await self.db.query(query, [self.workspace])
+        if not result or "has_data" not in result:
+            # `SELECT EXISTS(...)` always produces exactly one row, so no row
+            # means the read did not do what it claims. Raising keeps that out
+            # of the "empty" answer, which is the only one that can refuse.
+            raise RuntimeError(
+                f"[{self.workspace}] emptiness check on {self.table_name} "
+                f"returned no row"
+            )
+        return not result["has_data"]
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
@@ -7281,18 +7822,9 @@ class PGGraphStorage(BaseGraphStorage):
             self._max_delete_records_per_batch,
         ) = _resolve_pg_batch_limits()
 
-    def _get_workspace_graph_name(self) -> str:
-        """
-        Generate graph name based on workspace and namespace for data isolation.
-        Rules:
-        - If workspace is empty or "default": graph_name = namespace
-        - If workspace has other value: graph_name = workspace_namespace
-
-        Args:
-            None
-
-        Returns:
-            str: The graph name for the current workspace
+    def _get_unclipped_graph_name(self) -> str:
+        """workspace_namespace reduced to [A-Za-z0-9_], or the namespace alone
+        for an empty or "default" workspace. AGE may reject it as a graph name.
         """
         workspace = self.workspace
         namespace = self.namespace
@@ -7305,6 +7837,49 @@ class PGGraphStorage(BaseGraphStorage):
         else:
             # When the workspace is "default", use the namespace directly (for backward compatibility with legacy implementations)
             return re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
+
+    def _get_workspace_graph_name(self) -> str:
+        """
+        Generate graph name based on workspace and namespace for data isolation.
+        Rules:
+        - If workspace is empty or "default": graph_name = namespace
+        - If workspace has other value: graph_name = workspace_namespace
+        - If that is not a valid AGE graph name (over 63 bytes, or starting
+          with a digit): graph_name = ws_<hash of workspace_namespace>_namespace.
+          For a long workspace that has no such graph yet, initialize() keeps
+          an existing graph that AGE 1.5 or earlier created under the clipped
+          name instead; see _get_legacy_clipped_graph_name().
+
+        Args:
+            None
+
+        Returns:
+            str: The graph name for the current workspace
+        """
+        graph_name = self._get_unclipped_graph_name()
+        if _is_valid_age_graph_name(graph_name):
+            return graph_name
+        # Hash rather than clip, so two long workspaces sharing a 63-byte prefix
+        # get separate graphs.
+        name_hash = hashlib.md5(graph_name.encode("utf-8")).hexdigest()
+        safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", self.namespace)
+        return f"ws_{name_hash[:12]}_{safe_namespace}"
+
+    def _get_legacy_clipped_graph_name(self) -> str | None:
+        """The graph name AGE 1.5 or earlier used for a workspace too long for AGE.
+
+        Up to AGE 1.5, create_graph(), create_vlabel() and cypher() all take the
+        graph name as `name`, which PostgreSQL clips to 63 bytes, so such a
+        workspace worked and may hold data under the clipped name. Returns None
+        when the name fits, or starts with a digit (never usable on any AGE).
+        """
+        graph_name = self._get_unclipped_graph_name()
+        if (
+            len(graph_name.encode("utf-8")) <= _PG_NAME_MAX_BYTES
+            or graph_name[:1].isdigit()
+        ):
+            return None
+        return graph_name[:_PG_NAME_MAX_BYTES]
 
     @staticmethod
     def _normalize_node_id(node_id: str) -> str:
@@ -7357,11 +7932,6 @@ class PGGraphStorage(BaseGraphStorage):
             # Dynamically generate graph name based on workspace
             self.graph_name = self._get_workspace_graph_name()
 
-            # Log the graph initialization for debugging
-            logger.info(
-                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
-            )
-
             # Create AGE extension and configure graph environment once at initialization
             # Use _run_with_retry so transient connection errors are retried and pool=None
             # is handled safely (unlike a bare pool.acquire() call).
@@ -7371,6 +7941,48 @@ class PGGraphStorage(BaseGraphStorage):
                 await PostgreSQLDB.configure_age_extension(connection)
 
             await self.db._run_with_retry(_do_configure_age_extension)
+
+            # A workspace too long for AGE has two candidate graphs: the hashed
+            # one and the clipped one AGE 1.5 or earlier used. This must run
+            # before the first with_age=True call below, which has
+            # PostgreSQLDB._ensure_age_graph() create self.graph_name.
+            #
+            # - Hashed graph already set up: stay on it. This code only creates
+            #   it when no clipped graph existed, so a clipped graph that shows
+            #   up later (an older release run against this database, by this
+            #   workspace or one sharing its 63-byte prefix) must not take over.
+            #   Accepted residue: anything that older release wrote stays in
+            #   the clipped graph, unused; the warning names both graphs.
+            # - Otherwise an existing clipped graph is the legacy data: keep it.
+            # - Neither: a new graph gets the hashed name.
+            legacy_graph_name = self._get_legacy_clipped_graph_name()
+            if legacy_graph_name:
+                rows = await self.db.query(
+                    _INITIALIZED_GRAPHS_LOOKUP,
+                    [[self.graph_name, legacy_graph_name]],
+                    multirows=True,
+                )
+                initialized = {row["name"] for row in rows or []}
+                if self.graph_name in initialized:
+                    if legacy_graph_name in initialized:
+                        logger.warning(
+                            f"[{self.workspace}] Using the AGE graph '{self.graph_name}'. "
+                            f"The graph '{legacy_graph_name}' also exists and is not used: "
+                            "it was created by an older LightRAG release for this workspace "
+                            "or for one whose graph name has the same first 63 bytes."
+                        )
+                elif legacy_graph_name in initialized:
+                    logger.warning(
+                        f"[{self.workspace}] Using the existing AGE graph '{legacy_graph_name}', "
+                        "whose name PostgreSQL clipped to 63 bytes. It may be shared with "
+                        "any other workspace whose graph name has the same first 63 bytes."
+                    )
+                    self.graph_name = legacy_graph_name
+
+            # Log the graph initialization for debugging
+            logger.info(
+                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
+            )
 
             # Only create the labels that are actually missing. create_vlabel /
             # create_elabel have no IF NOT EXISTS form, so calling them for an
@@ -9582,6 +10194,7 @@ NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_ENTITY_CHUNKS: "LIGHTRAG_ENTITY_CHUNKS",
     NameSpace.KV_STORE_RELATION_CHUNKS: "LIGHTRAG_RELATION_CHUNKS",
     NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LIGHTRAG_LLM_CACHE",
+    NameSpace.KV_STORE_CONFIG: "LIGHTRAG_CONFIG",
     NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_VDB_CHUNKS",
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
     NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_VDB_RELATION",
@@ -9693,6 +10306,22 @@ TABLES = {
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    # The configuration store. ``workspace`` here is NOT a workspace: it is a
+    # fixed partition constant (``CONFIG_CONTAINER_TAG``) that gives the table
+    # the same shape as every other one. The workspace a row is ABOUT is a
+    # field inside ``value``, and ``id`` is TEXT because it carries that
+    # workspace name too -- which is what keeps two deployments sharing one
+    # database on disjoint rows. See docs/design/ConfigurationStorageContract.md.
+    "LIGHTRAG_CONFIG": {
+        "ddl": """CREATE TABLE LIGHTRAG_CONFIG (
+	                workspace varchar(255) NOT NULL,
+	                id TEXT NOT NULL,
+                    value JSONB NOT NULL,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	                CONSTRAINT LIGHTRAG_CONFIG_PK PRIMARY KEY (workspace, id)
                     )"""
     },
     "LIGHTRAG_DOC_STATUS": {
@@ -9855,6 +10484,16 @@ SQL_TEMPLATES = {
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
+    "get_by_id_config": """SELECT id, value,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_CONFIG WHERE workspace=$1 AND id=$2
+                            """,
+    "get_by_ids_config": """SELECT id, value,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_CONFIG WHERE workspace=$1 AND id = ANY($2)
+                            """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     # Pipeline-derived columns (sidecar_location / parse_format / content_hash /
     # process_options / chunk_options / parse_engine) are guarded with COALESCE
@@ -9925,6 +10564,12 @@ SQL_TEMPLATES = {
                       heading=EXCLUDED.heading,
                       sidecar=EXCLUDED.sidecar,
                       update_time = EXCLUDED.update_time
+                     """,
+    "upsert_config": """INSERT INTO LIGHTRAG_CONFIG (workspace, id, value)
+                      VALUES ($1, $2, $3)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET value=EXCLUDED.value,
+                      update_time = CURRENT_TIMESTAMP
                      """,
     "upsert_full_entities": """INSERT INTO LIGHTRAG_FULL_ENTITIES (workspace, id, entity_names, count,
                       create_time, update_time)

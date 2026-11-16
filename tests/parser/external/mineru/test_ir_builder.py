@@ -11,32 +11,25 @@ import pytest
 
 from lightrag.parser.external.mineru import MinerUIRBuilder
 from lightrag.utils import logger as lightrag_logger
+from tests._log_capture import capture_lightrag_logs
 
 
 @contextmanager
 def _captured_logs(caplog, level):
-    """Capture lightrag logger records.
-
-    The lightrag logger sets ``propagate = False``, so caplog cannot see it
-    unless propagation is re-enabled for the duration of the call.
-    """
-    original_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    """Capture lightrag logger records (see ``tests/_log_capture.py``)."""
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(level, logger=lightrag_logger.name):
             yield
-    finally:
-        lightrag_logger.propagate = original_propagate
 
 
 def _distinct_records(caplog, needle: str, level: int) -> list[logging.LogRecord]:
     """Records at ``level`` whose message contains ``needle``, deduplicated.
 
-    caplog sees each record twice (the lightrag logger's own handler, plus the
-    propagated copy at root), so the raw list says nothing about how many times
-    the code logged. One ``logger`` call emits ONE ``LogRecord`` object handed
-    to both handlers, so deduplicating by identity counts calls — unlike
-    deduplicating by message, which cannot tell one call from two.
+    ``_captured_logs`` routes each record to caplog once, but deduplicating by
+    identity keeps the count honest even if a record ever reaches caplog
+    through a second handler: one ``logger`` call emits ONE ``LogRecord``
+    object, so this counts calls — unlike deduplicating by message, which
+    cannot tell one call from two.
     """
     seen: dict[int, logging.LogRecord] = {}
     for record in caplog.records:

@@ -15,6 +15,9 @@ from lightrag.kg.postgres_impl import PGDocStatusStorage
 from lightrag.namespace import NameSpace
 
 
+pytestmark = pytest.mark.offline
+
+
 def _make_storage():
     storage = PGDocStatusStorage.__new__(PGDocStatusStorage)
     storage.namespace = NameSpace.DOC_STATUS
