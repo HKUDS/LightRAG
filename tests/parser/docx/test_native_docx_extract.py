@@ -18,6 +18,7 @@ from io import BytesIO
 
 import pytest
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from lxml import etree
@@ -27,7 +28,11 @@ from lightrag.parser.docx.parse_document import (
     extract_docx_blocks,
     extract_paragraph_content,
 )
-from lightrag.parser.docx.table_extractor import extract_paragraph_content_table
+from lightrag.parser.docx.smart_heading.features import StyleAttributes
+from lightrag.parser.docx.table_extractor import (
+    TableExtractor,
+    extract_paragraph_content_table,
+)
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 PARAGRAPH_NS = {
@@ -40,6 +45,98 @@ PARAGRAPH_NS = {
 def _p(inner_xml: str):
     """Build a ``<w:p>`` lxml element from inner OOXML."""
     return etree.fromstring(f'<w:p xmlns:w="{W_NS}">{inner_xml}</w:p>'.encode("utf-8"))
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("in_table", [False, True])
+def test_direct_list_level_with_style_inherited_numid(tmp_path, in_table) -> None:
+    doc = Document()
+    style = doc.styles.add_style("InheritedList", WD_STYLE_TYPE.PARAGRAPH)
+    style.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:numId w:val="42"/></w:numPr>')
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:abstractNum xmlns:w="{W_NS}" w:abstractNumId="42">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/>'
+            '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>'
+            '<w:pStyle w:val="InheritedList"/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/>'
+            '<w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/>'
+            "</w:lvl></w:abstractNum>"
+        )
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:num xmlns:w="{W_NS}" w:numId="42">'
+            '<w:abstractNumId w:val="42"/></w:num>'
+        )
+    )
+    container = doc.add_table(rows=1, cols=1).cell(0, 0) if in_table else doc
+    for text, level in [("nested", 1), ("next nested", 1), ("top", None)]:
+        para = container.add_paragraph(text, style="InheritedList")
+        if level is not None:
+            para._p.get_or_add_pPr().append(
+                etree.fromstring(
+                    f'<w:numPr xmlns:w="{W_NS}"><w:ilvl w:val="{level}"/></w:numPr>'
+                )
+            )
+    path = tmp_path / "inherited-list.docx"
+    doc.save(path)
+
+    content = "\n".join(block["content"] for block in extract_docx_blocks(str(path)))
+    assert "a) nested" in content
+    assert "b) next nested" in content
+    assert "2. top" in content
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("in_table", [False, True])
+def test_style_list_level_with_numid_from_base_style(tmp_path, in_table) -> None:
+    # A child style writes only w:ilvl and inherits w:numId from its base style;
+    # Word renders "1. a) b) 2." for this layout.
+    doc = Document()
+    base = doc.styles.add_style("ListBase", WD_STYLE_TYPE.PARAGRAPH)
+    base.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:numId w:val="43"/></w:numPr>')
+    )
+    child = doc.styles.add_style("ListChild", WD_STYLE_TYPE.PARAGRAPH)
+    child.base_style = base
+    child.element.get_or_add_pPr().append(
+        etree.fromstring(f'<w:numPr xmlns:w="{W_NS}"><w:ilvl w:val="1"/></w:numPr>')
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:abstractNum xmlns:w="{W_NS}" w:abstractNumId="43">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/>'
+            '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/>'
+            '<w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/>'
+            "</w:lvl></w:abstractNum>"
+        )
+    )
+    doc.part.numbering_part.element.append(
+        etree.fromstring(
+            f'<w:num xmlns:w="{W_NS}" w:numId="43">'
+            '<w:abstractNumId w:val="43"/></w:num>'
+        )
+    )
+    container = doc.add_table(rows=1, cols=1).cell(0, 0) if in_table else doc
+    for text, style in [
+        ("parent", "ListBase"),
+        ("child", "ListChild"),
+        ("next child", "ListChild"),
+        ("next parent", "ListBase"),
+    ]:
+        container.add_paragraph(text, style=style)
+    path = tmp_path / "style-level-list.docx"
+    doc.save(path)
+
+    content = "\n".join(block["content"] for block in extract_docx_blocks(str(path)))
+    assert "1. parent" in content
+    assert "a) child" in content
+    assert "b) next child" in content
+    assert "2. next parent" in content
 
 
 # --- paragraph walker (parse_document.extract_paragraph_content) -----------
@@ -176,6 +273,279 @@ def _build_docx_with_three_tables() -> BytesIO:
     doc.save(buf)
     buf.seek(0)
     return buf
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("continuation", [None, "continue"])
+def test_empty_table_cell_ends_vertical_merge(continuation: str | None) -> None:
+    document = Document()
+    table = document.add_table(rows=3, cols=2)
+    merged = table.cell(0, 0).merge(table.cell(1, 0))
+    _populate_cell(merged, "Operations")
+    _populate_cell(table.cell(0, 1), "Chair")
+    _populate_cell(table.cell(1, 1), "Desk")
+    _populate_cell(table.cell(2, 1), "Unassigned clipboard")
+
+    restart, continued, independent = (row.tc_lst[0] for row in table._tbl.tr_lst)
+    merge_marker = continued.tcPr.find(qn("w:vMerge"))
+    if continuation is not None:
+        merge_marker.set(qn("w:val"), continuation)
+    para_ids = ("00000001", "00000002", "00000003")
+    for cell, para_id in zip((restart, continued, independent), para_ids):
+        cell.find(qn("w:p")).set(qn("w14:paraId"), para_id)
+
+    source = BytesIO()
+    document.save(source)
+    source.seek(0)
+    result = TableExtractor.extract_with_metadata(Document(source).tables[0])
+
+    assert result["rows"] == [
+        ["Operations", "Chair"],
+        ["Operations", "Desk"],
+        ["", "Unassigned clipboard"],
+    ]
+    assert [row[0] for row in result["para_ids"]] == [
+        para_ids[0],
+        para_ids[0],
+        para_ids[2],
+    ]
+    assert [row[0] for row in result["para_ids_end"]] == list(para_ids)
+
+
+def _filled_table(document, rows: int, cols: int):
+    table = document.add_table(rows=rows, cols=cols)
+    for row in range(rows):
+        for column in range(cols):
+            _populate_cell(table.cell(row, column), f"r{row}c{column}")
+    return table
+
+
+def _skip_grid_columns(row, *, before: int = 0, after: int = 0) -> None:
+    """Drop cells from a row's ends and record them as gridBefore/gridAfter."""
+    tr = row._tr
+    for _ in range(before):
+        tr.remove(tr.tc_lst[0])
+    for _ in range(after):
+        tr.remove(tr.tc_lst[-1])
+    tr_pr = tr.get_or_add_trPr()
+    for tag, count in (("w:gridBefore", before), ("w:gridAfter", after)):
+        if count:
+            node = OxmlElement(tag)
+            node.set(qn("w:val"), str(count))
+            tr_pr.append(node)
+
+
+def _saved_table_metadata(document, **kwargs) -> dict:
+    source = BytesIO()
+    document.save(source)
+    source.seek(0)
+    return TableExtractor.extract_with_metadata(Document(source).tables[0], **kwargs)
+
+
+@pytest.mark.offline
+def test_grid_before_row_keeps_cells_in_their_columns() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 3)
+    _skip_grid_columns(table.rows[1], before=1)
+    _skip_grid_columns(table.rows[2], after=2)
+    skipped_row = table.rows[1]._tr
+    for tc, para_id in zip(skipped_row.tc_lst, ("00000011", "00000012")):
+        tc.find(qn("w:p")).set(qn("w14:paraId"), para_id)
+
+    result = _saved_table_metadata(document)
+
+    assert result["rows"] == [
+        ["r0c0", "r0c1", "r0c2"],
+        ["", "r1c1", "r1c2"],
+        ["r2c0", "", ""],
+    ]
+    assert result["para_ids"][1] == [None, "00000011", "00000012"]
+
+
+@pytest.mark.offline
+def test_vertical_merge_below_grid_before_row() -> None:
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    table.cell(0, 2).merge(table.cell(1, 2)).text = "Total"
+    _skip_grid_columns(table.rows[0], before=1)
+
+    # The continuation in row 2 sits under grid column 2, which row 1
+    # reaches only after its skipped first column.
+    assert _saved_table_metadata(document)["rows"] == [
+        ["", "r0c1", "Total"],
+        ["r1c0", "r1c1", "Total"],
+    ]
+
+
+@pytest.mark.offline
+def test_column_without_cell_ends_vertical_merge() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, 0).merge(table.cell(2, 0)).text = "Total"
+    # Row 2 loses its continuation cell: grid column 0 has no cell there.
+    _skip_grid_columns(table.rows[1], before=1)
+
+    # Row 3's continuation has no merge directly above it to repeat.
+    assert _saved_table_metadata(document)["rows"] == [
+        ["Total", "r0c1"],
+        ["", "r1c1"],
+        ["", "r2c1"],
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("breaker", ["gridAfter", "normal cell"])
+def test_orphaned_continuation_keeps_its_own_para_ids(breaker: str) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, 1).merge(table.cell(2, 1)).text = "Total"
+    if breaker == "gridAfter":
+        _skip_grid_columns(table.rows[1], after=1)
+    else:
+        tc_pr = table.rows[1]._tr.tc_lst[1].tcPr
+        tc_pr.remove(tc_pr.find(qn("w:vMerge")))
+    orphan = table.rows[2]._tr.tc_lst[1]
+    paragraphs = orphan.findall(qn("w:p"))
+    if len(paragraphs) == 1:
+        orphan.append(OxmlElement("w:p"))
+        paragraphs = orphan.findall(qn("w:p"))
+    paragraphs[0].set(qn("w14:paraId"), "0000000A")
+    paragraphs[-1].set(qn("w14:paraId"), "0000000B")
+
+    result = _saved_table_metadata(document)
+
+    # No merge reaches row 3: no text, but its paraIds still bound the range.
+    assert [row[1] for row in result["rows"]] == ["Total", "", ""]
+    assert result["para_ids"][2][1] == "0000000A"
+    assert result["para_ids_end"][2][1] == "0000000B"
+
+
+def _wrap(element, wrapper: str) -> None:
+    """Move ``element`` into a content control or custom XML element."""
+    parent = element.getparent()
+    index = parent.index(element)
+    if wrapper == "sdt":
+        outer = OxmlElement("w:sdt")
+        outer.append(OxmlElement("w:sdtPr"))
+        inner = OxmlElement("w:sdtContent")
+        outer.append(inner)
+    else:
+        outer = inner = OxmlElement("w:customXml")
+        outer.set(qn("w:element"), "item")
+    parent.remove(element)
+    inner.append(element)
+    parent.insert(index, outer)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("wrapper", ["sdt", "customXml"])
+@pytest.mark.parametrize("merged_col", [0, 1])
+def test_wrapped_continuation_cell_keeps_vertical_merge(
+    wrapper: str, merged_col: int
+) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, merged_col).merge(table.cell(2, merged_col)).text = "Total"
+    _wrap(table.rows[1]._tr.tc_lst[merged_col], wrapper)
+
+    rows = _saved_table_metadata(document)["rows"]
+
+    other = 1 - merged_col
+    assert [row[merged_col] for row in rows] == ["Total"] * 3
+    assert [row[other] for row in rows] == [f"r{i}c{other}" for i in range(3)]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("wrapper", ["sdt", "customXml"])
+def test_wrapped_row_counts_like_a_direct_row(wrapper: str) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.rows[2]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    _wrap(table.rows[1]._tr, wrapper)
+
+    result = _saved_table_metadata(document)
+
+    assert result["rows"] == [
+        ["r0c0", "r0c1"],
+        ["r1c0", "r1c1"],
+        ["r2c0", "r2c1"],
+    ]
+    assert result["header_indices"] == [2]
+
+
+def _wrap_in_placeholder(element) -> None:
+    """Wrap ``element`` in a content control still showing its placeholder."""
+    _wrap(element, "sdt")
+    element.getparent().getparent().find(qn("w:sdtPr")).append(
+        OxmlElement("w:showingPlcHdr")
+    )
+
+
+@pytest.mark.offline
+def test_placeholder_cell_keeps_its_column_without_text() -> None:
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    _wrap_in_placeholder(table.rows[0]._tr.tc_lst[1])
+
+    result = _saved_table_metadata(document, style_attributes=StyleAttributes())
+
+    assert result["rows"] == [["r0c0", "", "r0c2"], ["r1c0", "r1c1", "r1c2"]]
+    assert result["cell_features"][0][1] == ("", None, False)
+
+
+@pytest.mark.offline
+def test_placeholder_row_is_left_out() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    _wrap_in_placeholder(table.rows[1]._tr)
+
+    assert _saved_table_metadata(document)["rows"] == [
+        ["r0c0", "r0c1"],
+        ["r2c0", "r2c1"],
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("with_numbering", [False, True])
+def test_placeholder_cell_content_is_not_extracted(
+    monkeypatch, with_numbering: bool
+) -> None:
+    """Nothing in a hidden cell is extracted: no image export, no list count."""
+    import lightrag.parser.docx.table_extractor as table_extractor
+
+    document = Document()
+    table = _filled_table(document, 1, 2)
+    hidden_tc = table.rows[0]._tr.tc_lst[1]
+    hidden_tc.find(qn("w:p")).set(qn("w14:paraId"), "0000000C")
+    _wrap_in_placeholder(hidden_tc)
+
+    touched: list[str] = []
+    real_extract = table_extractor.extract_paragraph_content_table
+
+    def recording_extract(para_elem, *args, **kwargs):
+        text = real_extract(para_elem, *args, **kwargs)
+        touched.append(text)
+        return text
+
+    class RecordingResolver:
+        def reset_tracking_state(self) -> None:
+            pass
+
+        def get_label(self, para_elem) -> str:
+            touched.append("label:" + real_extract(para_elem, qn))
+            return ""
+
+    monkeypatch.setattr(
+        table_extractor, "extract_paragraph_content_table", recording_extract
+    )
+    result = _saved_table_metadata(
+        document, numbering_resolver=RecordingResolver() if with_numbering else None
+    )
+
+    assert result["rows"] == [["r0c0", ""]]
+    assert result["para_ids"][0][1] == "0000000C"
+    assert all("r0c1" not in entry for entry in touched)
+    assert any("r0c0" in entry for entry in touched)
 
 
 # --- end-to-end: every heading becomes its own block ----------------------
