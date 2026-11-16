@@ -15,6 +15,7 @@ run-level white-list); regressions now fail loudly.
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from docx import Document
@@ -757,6 +758,41 @@ def test_empty_tables_are_skipped(tmp_path) -> None:
         "must be dropped before the placeholder is emitted"
     )
     assert any('"A"' in b["content"] and '"B"' in b["content"] for b in blocks)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("value", "repeats"),
+    [
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("1", True),
+        ("true", True),
+        ("on", True),
+    ],
+)
+def test_docx_table_header_respects_explicit_value(
+    tmp_path: Path, value: str, repeats: bool
+) -> None:
+    doc = Document()
+    table = doc.add_table(rows=3, cols=2)
+    rows = [["Department", "Amount"], ["Operations", "100"], ["Inventory", "200"]]
+    for row, values in zip(table.rows, rows):
+        for cell, text in zip(row.cells, values):
+            _populate_cell(cell, text)
+
+    table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    flag = OxmlElement("w:tblHeader")
+    flag.set(qn("w:val"), value)
+    table.rows[1]._tr.get_or_add_trPr().append(flag)
+    path = tmp_path / "headers.docx"
+    doc.save(path)
+
+    (block,) = extract_docx_blocks(str(path))
+
+    assert block["table_headers"] == [rows[:2] if repeats else rows[:1]]
+    assert '"Operations"' in block["content"]
 
 
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------
