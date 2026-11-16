@@ -977,7 +977,18 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         # Fail-fast: any batch failure raises immediately
                         # and stops subsequent batches; the full buffer is
                         # retained so the next flush retries.
-                        self._client.upsert(
+                        #
+                        # upsert() is a synchronous network round trip on the
+                        # write path every document-ingestion flush goes
+                        # through (index_done_callback runs after every
+                        # pipeline batch). Calling it directly here would
+                        # occupy the whole asyncio event loop for its
+                        # duration, stalling every other coroutine in the
+                        # process. Offload it to a worker thread, matching
+                        # query()'s fix for the same blocking pattern on the
+                        # read path.
+                        await asyncio.to_thread(
+                            self._client.upsert,
                             collection_name=self.final_namespace,
                             points=points_batch,
                             wait=True,
