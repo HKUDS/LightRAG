@@ -252,6 +252,7 @@ def test_chat_accepts_queries_meeting_the_weighted_minimum(monkeypatch, query):
         "",  # nothing typed
         "   ",  # whitespace only
         "/bypass  ",  # the prefix consumed the whole message
+        "/bypass",  # the same, with no trailing separator
         "/local[use mermaid]",  # a user_prompt with no question after it
     ],
 )
