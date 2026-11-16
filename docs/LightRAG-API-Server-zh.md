@@ -117,6 +117,7 @@ LightRAG 支持以下 LLM 后端：
 * ollama
 * lollms
 * openai 或 openai 兼容
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * bedrock
 * gemini
@@ -225,7 +226,7 @@ lightrag-gunicorn --workers 4
 - `--log-level`：日志级别（默认：INFO）
 - `--working-dir`：数据库持久化目录（默认：./rag_storage）
 - `--input-dir`：上传文件存放目录（默认：./inputs）
-- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）
+- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）。以 `$` 开头的名称为系统保留，规范化前即拒绝使用。
 - `--api-prefix`：对浏览器暴露的反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置
 - `--rerank-binding`：Rerank provider（`null`、`cohere`、`jina` 或 `aliyun`）
 
@@ -610,7 +611,7 @@ sudo systemctl enable lightrag.service
 
 ### 将 Open WebUI 连接到 LightRAG
 
-启动 lightrag-server 后，您可以在 Open WebUI 管理面板中添加 Ollama 类型的连接。然后，一个名为 `lightrag:latest` 的模型将出现在 Open WebUI 的模型管理界面中。用户随后可以通过聊天界面向 LightRAG 发送查询。对于这种用例，最好将 LightRAG 安装为服务。
+启动 lightrag-server 后，您可以在 Open WebUI 管理面板中添加 Ollama 类型的连接。然后，一个名为 `lightrag:latest` 的模型将出现在 Open WebUI 的模型管理界面中。用户随后可以通过聊天界面向 LightRAG 发送查询。对于这种用例，最好将 LightRAG 安装为服务。如果设置了 `LIGHTRAG_API_KEY`，请在该连接中填入这个 key 作为 API 密钥：此时 Ollama 端点要求该 key，客户端会以 `Authorization: Bearer <key>` 发送。
 
 Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因此，Ollama 聊天补全 API 会检测并将 OpenWebUI 会话相关请求直接转发给底层 LLM。Open WebUI 的截图：
 
@@ -618,11 +619,11 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ### 在聊天中选择查询模式
 
-如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `hybrid`。您可以通过发送带有查询前缀的消息来选择查询模式。
+如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `mix`。您可以通过发送带有查询前缀的消息来选择查询模式。
 
 查询字符串中的查询前缀可以决定使用哪种 LightRAG 查询模式来生成响应。支持的前缀包括：
 
-去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`），将返回 **400**。
+去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`，或单独一个 `/bypass`），将返回 **400**。
 
 ```
 /local
@@ -640,7 +641,7 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 /mixcontext
 ```
 
-例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。
+例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。前缀之后必须是空白字符或消息结尾：空格、制表符、换行均可，因此问题可以从下一行开始。仅以前缀开头的更长单词（如 `/localize`）不是前缀，会作为普通查询发送。
 
 "/bypass" 不是 LightRAG 查询模式，它会告诉 API 服务器将查询连同聊天历史直接传递给底层 LLM。因此用户可以使用 LLM 基于聊天历史回答问题。如果您使用 Open WebUI 作为前端，您可以直接切换到普通 LLM 模型，而不是使用 /bypass 前缀。
 
@@ -663,10 +664,9 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
-WHITELIST_PATHS=/health,/api/*
 ```
 
-> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
+> 未设置 `WHITELIST_PATHS` 时，其默认值跟随 `LIGHTRAG_API_KEY`：设置了 key 时为 `/health`，Ollama 模拟端点与其他路由一样需要该 key；未设置 key 时为 `/health,/api/*`，这些端点保持开放（只配置 `AUTH_ACCOUNTS` 时也是如此，因为 Ollama 客户端无法登录）。Ollama 端点既接受 `X-API-Key`，也接受 `Authorization: Bearer <key>`（Ollama 客户端以后者发送 key）；其他路由只接受 `X-API-Key`。如果设置了 key 仍想让 Ollama 端点保持开放，请显式设置 `WHITELIST_PATHS=/health,/api/*`。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
 >
 > **条目是内部路由路径，永远不带前缀。** `/*` 后缀按路径分段边界匹配，因此 `/api/*` 只覆盖 `/api` 及 `/api/` 之下的路径，不会覆盖别的。如果设置了 `LIGHTRAG_API_PREFIX`，这里**不要**包含它：匹配前会先剥离该前缀，所以 `WHITELIST_PATHS=/health` 会豁免 `/site01/health`，而 `WHITELIST_PATHS=/site01/health` 什么都豁免不了。参见[路径前缀和多站点 WebUI](#路径前缀和多站点-webui)。
 
@@ -755,6 +755,7 @@ LightRAG 支持绑定到各种 LLM 后端：
 
 * ollama
 * openai (含openai 兼容)
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * lollms
 * bedrock
@@ -856,7 +857,7 @@ VLM_LLM_MODEL=gpt-5-mini
 
 `VLM_PROCESS_ENABLE` **只闸控图片**。表格和公式由 `EXTRACT` 角色分析，不受该开关影响，因此 `*:native-teP` 无需配置任何 VLM 即可工作。若启用了 `i` 而 VLM 不可用，通过了前置过滤（文件存在、栅格格式、长宽均不小于 `VLM_MIN_IMAGE_PIXEL`）的图片会让**该文档失败**而非被跳过：文档进入 `FAILED`，`error_msg` 为 "VLM analysis required but VLM role is not available"。
 
-当前支持视觉输入的 provider 包括 `openai`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
+当前支持视觉输入的 provider 包括 `openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
 
 ```bash
 VLM_PROCESS_ENABLE=true
@@ -912,9 +913,11 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
+> **已废弃：** `RedisKVStorage`、`RedisDocStatusStorage` 与 `PGGraphStorage` 已被标记为废弃，将在未来版本中移除。目前仍可正常使用，但启动时会输出警告，Server 启动画面也会标注。请迁移到 `PGKVStorage` / `PGDocStatusStorage` / `PGTableGraphStorage`（PostgreSQL）。图的迁移方法见下文“从 Apache AGE 迁移图数据到 PostgreSQL 表”。
+
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL（推荐）、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
-**PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
+**PostgreSQL 图存储使用 `PGTableGraphStorage`：** `PGTableGraphStorage` 是 PostgreSQL 上的 `GRAPH_STORAGE` 实现，用于替代已废弃的 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
 
 * **无需安装扩展。** `PGGraphStorage` 依赖 Apache AGE 扩展，而多数托管 PostgreSQL 服务（Amazon RDS、Cloud SQL、Supabase、Neon）并不提供该扩展，导致图存储往往无法与其余三类存储共用同一个数据库。`PGTableGraphStorage` 可运行在任意原生 PostgreSQL 14 及以上版本，所需的表在 `initialize()` 阶段自动创建。在 Docker 部署中，这也意味着使用官方镜像 `pgvector/pgvector:pg18` 即可；内置 AGE 的 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 镜像仅 `PGGraphStorage` 需要。
 * **性能大幅提升。** 查询是带索引的普通 SQL，而非基于 `agtype` 的 Cypher；`get_knowledge_graph` 采用受 `max_nodes` 约束的前沿限幅 BFS。根据 [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) 随附的实测数据（PostgreSQL 18，8k 节点 / 约 40k 边的图，两个后端在测量前均已执行 `VACUUM ANALYZE`）：`get_knowledge_graph` p50 为 **39 ms 对 1,099 ms（约 28 倍）**，图数据批量装载 **3.0 s 对 434 s**，混合负载吞吐 **1,431 对 73 RPS**。
@@ -988,7 +991,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--workspace` | `""` | 用于存储隔离的默认 workspace |
 | `--api-prefix` | `""` | 反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置 |
 | `--workers` | `1` | Gunicorn worker 数量 |
-| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`azure_openai`、`bedrock`、`gemini`） |
+| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`openai_responses`、`azure_openai`、`bedrock`、`gemini`） |
 | `--embedding-binding` | `ollama` | Embedding 绑定类型（`lollms`、`ollama`、`openai`、`azure_openai`、`bedrock`、`jina`、`gemini`、`voyageai`） |
 | `--rerank-binding` | `null` | Rerank 绑定类型（`null`、`cohere`、`jina`、`aliyun`） |
 
@@ -1260,7 +1263,7 @@ notes.[-R].md
 
 ## API 端点
 
-所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
+所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`openai_responses`、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
 
 - Swagger UI：http://localhost:9621/docs
 - ReDoc：http://localhost:9621/redoc

@@ -117,6 +117,7 @@ LightRAG supports these LLM backends:
 * ollama
 * lollms
 * openai or openai compatible
+* openai_responses (`/v1/responses`; opt-in sibling of `openai`)
 * azure_openai
 * bedrock
 * gemini
@@ -610,7 +611,7 @@ We provide Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG
 
 ### Connect Open WebUI to LightRAG
 
-After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin panel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You should install LightRAG as a service for this use case.
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin panel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You should install LightRAG as a service for this use case. If `LIGHTRAG_API_KEY` is set, enter it as the connection's API key: the Ollama endpoints then require it, and the client sends it as `Authorization: Bearer <key>`.
 
 Open WebUI uses an LLM to do the session title and session keyword generation task. So the Ollama chat completion API detects and forwards OpenWebUI session-related requests directly to the underlying LLM. Screenshot from Open WebUI:
 
@@ -622,7 +623,7 @@ The default query mode is `mix` if you send a message (query) from the Ollama in
 
 A query prefix in the query string can determine which LightRAG query mode is used to generate the response for the query. The supported prefixes include:
 
-RAG queries must have an English-equivalent length of at least 3 after the prefix is removed; each Chinese, Japanese or Korean character counts as 2. Direct-LLM `/bypass` requests do not use this minimum, but no request may carry an empty query — a prefix that consumes the whole message (`/local[hint]`) is refused with **400**.
+RAG queries must have an English-equivalent length of at least 3 after the prefix is removed; each Chinese, Japanese or Korean character counts as 2. Direct-LLM `/bypass` requests do not use this minimum, but no request may carry an empty query — a prefix that consumes the whole message (`/local[hint]`, or a bare `/bypass`) is refused with **400**.
 
 ```
 /local
@@ -640,7 +641,7 @@ RAG queries must have an English-equivalent length of at least 3 after the prefi
 /mixcontext
 ```
 
-For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default.
+For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default. The prefix must be followed by whitespace or by the end of the message: a space, a tab or a line break all work, so the question may start on the next line. A longer word that merely starts with a prefix, such as `/localize`, is not a prefix and is sent as an ordinary query.
 
 `/bypass` is not a LightRAG query mode; it will tell the API Server to pass the query directly to the underlying LLM, including the chat history. So the user can use the LLM to answer questions based on the chat history. If you are using Open WebUI as a front end, you can just switch the model to a normal LLM instead of using the `/bypass` prefix.
 
@@ -663,10 +664,9 @@ By default, the LightRAG Server can be accessed without any authentication. We c
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
-WHITELIST_PATHS=/health,/api/*
 ```
 
-> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
+> When `WHITELIST_PATHS` is unset, its default follows `LIGHTRAG_API_KEY`: with a key it is `/health`, so the Ollama emulation endpoints require the key like every other route; without one it is `/health,/api/*`, so they stay open (also when only `AUTH_ACCOUNTS` is set, because an Ollama client cannot log in). The Ollama endpoints accept the key both as `X-API-Key` and as `Authorization: Bearer <key>`, which is how Ollama clients send it; the other routes accept `X-API-Key` only. To keep the Ollama endpoints open next to a key, set `WHITELIST_PATHS=/health,/api/*` explicitly. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
 >
 > **Entries are internal route paths, never prefixed.** A `/*` suffix matches on path-segment boundaries, so `/api/*` covers `/api` and everything under `/api/` and nothing else. If `LIGHTRAG_API_PREFIX` is set, do **not** include it here: the prefix is removed before matching, so `WHITELIST_PATHS=/health` exempts `/site01/health` and `WHITELIST_PATHS=/site01/health` exempts nothing. See [Path Prefix and Multi-Site WebUI](#path-prefix-and-multi-site-webui).
 
@@ -755,6 +755,7 @@ LightRAG supports binding to various LLM backends:
 
 * ollama
 * openai (including openai compatible)
+* openai_responses (`/v1/responses`; opt-in sibling of `openai`)
 * azure_openai
 * lollms
 * bedrock
@@ -856,7 +857,7 @@ The parser can produce sidecars for drawings/images, tables, and equations. Anal
 
 `VLM_PROCESS_ENABLE` gates **images only**. Tables and equations are analyzed by the `EXTRACT` role and run regardless of this switch, so `*:native-teP` works without any VLM configured. With `i` enabled and the VLM unavailable, an image that survives the pre-filters (file present, raster format, both sides at least `VLM_MIN_IMAGE_PIXEL`) **fails the document** rather than being skipped — it lands in `FAILED` with `error_msg` "VLM analysis required but VLM role is not available".
 
-Current vision-capable providers are `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`; `lollms` is rejected for VLM use. Typical configuration:
+Current vision-capable providers are `openai`, `openai_responses`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`; `lollms` is rejected for VLM use. Typical configuration:
 
 ```bash
 VLM_PROCESS_ENABLE=true
@@ -912,9 +913,29 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 | GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
+> **Deprecated:** `RedisKVStorage`, `RedisDocStatusStorage` and `PGGraphStorage` are deprecated and will be removed in a future release. They still work, but startup logs a warning and the server splash screen marks them. Migrate to `PGKVStorage` / `PGDocStatusStorage` / `PGTableGraphStorage` (PostgreSQL). For the graph, see *Graph Migration From Apache AGE To PostgreSQL Tables* below.
+
 For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
-**PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
+**Configuration Storage — a fifth category, selected separately.** Besides the four storage types above, the server keeps a small **configuration storage**: one namespace holding each workspace's embedding baselines, the record that lets a start refuse a changed embedding model *before* it writes vectors the existing ones cannot be compared with. It is chosen with `LIGHTRAG_CONFIG_STORAGE` and admits four implementations:
+
+| Storage Type | Available Implementations |
+|---|---|
+| CONFIG_STORAGE | `JsonKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
+
+* **Left unset it follows `LIGHTRAG_KV_STORAGE` (JSON for Redis)**, so an ordinary deployment needs no new connection variables.
+* **`RedisKVStorage` is not admitted.** When business KV is Redis and `LIGHTRAG_CONFIG_STORAGE` is unset, configuration defaults to `JsonKVStorage` with a startup warning. Explicitly selecting Redis for configuration is still refused. This default needs no new connection settings and does not migrate old Redis configuration rows or bypass baseline validation. Persist `WORKING_DIR`, where the JSON configuration lives.
+* **JSON configuration lives beside each workspace's data**, at the fixed path `<WORKING_DIR>/<workspace>/kv_workspace_config.json` (`<WORKING_DIR>/kv_workspace_config.json` for the empty workspace). No setting moves it. Several servers may share one `WORKING_DIR` with JSON configuration when each serves its own workspace: each workspace registers itself on its first start, and a second server on the **same** workspace is refused. In a container, keep `WORKING_DIR` on a persistent volume.
+* **The first start binds the deployment to its configuration container.** It records the backend type and the container's UUID (for JSON, also the registered workspaces) in `<WORKING_DIR>/config_storage_anchor.json`, a fixed path. Every later start checks both before reading any baseline. If changing `LIGHTRAG_KV_STORAGE` while `LIGHTRAG_CONFIG_STORAGE` is unset selects a different configuration container, the start is **refused** instead of silently losing the records. Recover in one of two ways:
+  * set `LIGHTRAG_CONFIG_STORAGE` to the anchored backend explicitly (no migration needed);
+  * move the container with `lightrag-migrate-config` (see *Configuration Storage Migration Between Backend Types* below).
+
+  A container with the same type but another UUID (another or an emptied database, a JSON snapshot from another deployment) is refused too. Connection details (host, port, credentials) are not compared.
+* **Deployments that share one configuration database must not make their first start at the same time.** Each `WORKING_DIR` binds on its own, so two first starts can each create the container's identity; only the later one stays, and the other deployment is refused at its next restart (a different UUID). Start one deployment first and the others after it. If it already happened, stop the refused deployment, delete its anchor file and start it again: it adopts the identity that stayed.
+* **Deleting the anchor file, with every server and maintenance tool stopped, is the sanctioned rebind.** Use it for a container intentionally emptied, replaced or restored from an old backup: the next start binds to whatever is selected (for JSON, the surviving consistent workspace snapshots), with a WARNING. Do not delete it while servers are running.
+* **`WORKING_DIR` must persist, whichever backends are selected**, and belongs in backup, restore and volume migration. An ephemeral `WORKING_DIR`, such as the Helm chart with `persistence.enabled=false`, loses the anchor on every restart, so the check never runs.
+
+**PostgreSQL Graph Storage — use `PGTableGraphStorage`:** `PGTableGraphStorage` is the PostgreSQL `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`, which is deprecated. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
 
 * **No extension to install.** `PGGraphStorage` requires the Apache AGE extension, which most managed PostgreSQL services (Amazon RDS, Cloud SQL, Supabase, Neon) do not offer — so the graph layer frequently could not run on the same database as the other three storage types. `PGTableGraphStorage` runs on any stock PostgreSQL 14+ and creates the tables it needs during `initialize()`. For a Docker deployment this means the official `pgvector/pgvector:pg18` image is sufficient; the AGE-bundled `gzdaniel/postgres-for-rag:pg18-age-pgvector` image is only needed by `PGGraphStorage`.
 * **Substantially faster.** Queries are plain indexed SQL rather than Cypher over `agtype`, and `get_knowledge_graph` uses a frontier-capped BFS bounded by `max_nodes`. From the measurements published with [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) (PostgreSQL 18, an 8k-node / ~40k-edge graph, both backends `VACUUM ANALYZE`d before measuring): `get_knowledge_graph` p50 **39 ms vs 1,099 ms (~28×)**, bulk graph load **3.0 s vs 434 s**, mixed-workload throughput **1,431 vs 73 RPS**.
@@ -947,15 +968,41 @@ LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
 LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+# Configuration storage follows LIGHTRAG_KV_STORAGE when unset, as it does here.
+# Name one explicitly when the KV selection is RedisKVStorage, which it does not admit:
+# LIGHTRAG_CONFIG_STORAGE=JsonKVStorage
 ```
 
-You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `env.example` file.
+You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for:
+- the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below);
+- the LLM cache (see *LLM Cache Migration Between Storage Types* below);
+- the configuration storage (see *Configuration Storage Migration Between Backend Types* below). For further information, please read the sample `env.example` file.
 
 > The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
 ### LLM Cache Migration Between Storage Types
 
 When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+### Configuration Storage Migration Between Backend Types
+
+The configuration storage (embedding baselines and the server's own settings) can be moved to a configuration backend of a **different type**, offline, with `lightrag-migrate-config`:
+
+```bash
+# Stop every server, SDK process and maintenance tool using this WORKING_DIR first.
+lightrag-migrate-config --target-backend MongoKVStorage --dry-run   # report only
+lightrag-migrate-config --target-backend MongoKVStorage
+# Then set LIGHTRAG_CONFIG_STORAGE=MongoKVStorage explicitly and start the server.
+```
+
+How it works:
+- The tool keeps the container's UUID.
+- It copies every workspace's rows, verifies the copy, and only then moves the anchor.
+- It never modifies the source or edits `.env`.
+- A failed run leaves the anchor on the source, and re-running it resumes.
+- An **indeterminate** run is the exception: the anchor replace raised and the anchor could not be read back, so it may already name the target. Start nothing until the anchor reads back. If it names the target, the migration is complete; if it names the source, re-run.
+
+A same-type move (PostgreSQL to another PostgreSQL, and so on) is done with the backend's own dump/restore: the identity travels with the data. See [README_MIGRATE_CONFIG.md](../lightrag/tools/README_MIGRATE_CONFIG.md).
 
 ### Graph Migration From Apache AGE To PostgreSQL Tables
 
@@ -985,10 +1032,10 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--ssl` | `False` | Enable HTTPS |
 | `--ssl-certfile` | `None` | Path to SSL certificate file, required if `--ssl` is enabled |
 | `--ssl-keyfile` | `None` | Path to SSL private key file, required if `--ssl` is enabled |
-| `--workspace` | `""` | Default workspace for storage isolation |
+| `--workspace` | `""` | Default workspace for storage isolation; names starting with `$` are reserved and rejected before normalization |
 | `--api-prefix` | `""` | Reverse-proxy path prefix, also configurable with `LIGHTRAG_API_PREFIX` |
 | `--workers` | `1` | Gunicorn worker count |
-| `--llm-binding` | `ollama` | LLM binding type (`lollms`, `ollama`, `openai`, `openai-ollama`, `azure_openai`, `bedrock`, `gemini`) |
+| `--llm-binding` | `ollama` | LLM binding type (`lollms`, `ollama`, `openai`, `openai-ollama`, `openai_responses`, `azure_openai`, `bedrock`, `gemini`) |
 | `--embedding-binding` | `ollama` | Embedding binding type (`lollms`, `ollama`, `openai`, `azure_openai`, `bedrock`, `jina`, `gemini`, `voyageai`) |
 | `--rerank-binding` | `null` | Rerank binding type (`null`, `cohere`, `jina`, `aliyun`) |
 
@@ -1260,7 +1307,7 @@ Uploads and text inserts can be accepted while the processing loop is busy; the 
 
 ## API Endpoints
 
-All supported backends (`lollms`, `ollama`, `openai` / OpenAI-compatible, `azure_openai`, `bedrock`, and `gemini`) expose the same LightRAG REST API surface. When the API Server is running, visit:
+All supported backends (`lollms`, `ollama`, `openai` / OpenAI-compatible, `openai_responses`, `azure_openai`, `bedrock`, and `gemini`) expose the same LightRAG REST API surface. When the API Server is running, visit:
 
 - Swagger UI: http://localhost:9621/docs
 - ReDoc: http://localhost:9621/redoc
