@@ -301,6 +301,7 @@ class NativeDocxIRBuilder:
                     level=level,
                     parent_headings=parent_headings,
                     is_title_block=bool(block.get("is_title_block")),
+                    session_type=block.get("session_type") or "body",
                     positions=positions,
                     tables=builder.tables,
                     drawings=builder.drawings,

@@ -51,10 +51,13 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v7  # no floating major tag exists past v7
       with:
+        version: "0.13.7"  # keep in step with tests.yml; see the note there
         enable-cache: true
 
     - name: Install dependencies (locked)
-      run: uv sync --frozen --python 3.12 --extra pytest
+      # --locked fails on a uv.lock that is stale against pyproject.toml;
+      # see tests.yml.
+      run: uv sync --locked --python 3.12 --extra pytest
 
     - name: Run setup wizard tests
       run: uv run --no-sync pytest tests/setup -m offline -v --tb=short
