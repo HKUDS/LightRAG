@@ -16,6 +16,8 @@ anchor (O(N) total). These tests pin three properties:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from lightrag.chunker import chunking_by_fixed_token
@@ -852,3 +854,58 @@ async def test_boundary_spans_survive_hard_split_backfill_and_storage(
     assert all("_source_span" not in row for row in stored.values())
     assert all("_source_span_unavailable" not in row for row in stored.values())
     assert any(row.get("sidecar") for row in stored.values())
+
+
+class _MetaspaceTokenizer(TokenizerInterface):
+    """Count decodes that strip one leading space, as in Metaspace decoding."""
+
+    def __init__(self, *, lossy: bool = False) -> None:
+        self.vocab: dict[str, int] = {}
+        self.pieces: list[str] = []
+        self.decoded_tokens = 0
+        self.lossy = lossy
+
+    def encode(self, content: str) -> list[int]:
+        tokens = []
+        for piece in re.findall(r" ?\S+|\s", content):
+            if piece not in self.vocab:
+                self.vocab[piece] = len(self.pieces)
+                self.pieces.append(piece)
+            tokens.append(self.vocab[piece])
+        return tokens
+
+    def decode(self, tokens: list[int]) -> str:
+        self.decoded_tokens += len(tokens)
+        decoded = "".join(self.pieces[token] for token in tokens).removeprefix(" ")
+        return decoded.replace("□", "[UNK]") if self.lossy else decoded
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("lossy", [False, True])
+def test_metaspace_windows_keep_linear_decode_budget(lossy: bool) -> None:
+    words = ["alpha", "beta", "gamma", "delta"] * 1024
+    if lossy:
+        words[70] = "□"
+    content = " ".join(words)
+    tokenizer = _MetaspaceTokenizer(lossy=lossy)
+    chunks = chunking_by_fixed_token(
+        Tokenizer("metaspace", tokenizer),
+        content,
+        chunk_token_size=32,
+        chunk_overlap_token_size=8,
+        _emit_source_span=True,
+    )
+    assert tokenizer.decoded_tokens <= 7 * len(words)
+
+    offsets = [match.start() for match in re.finditer(r"\S+", content)]
+    windows = _windows(len(words), 32, 8)
+    assert len(chunks) == len(windows)
+    for chunk, (start, end) in zip(chunks, windows):
+        assert chunk["content"] == " ".join(words[start:end]).replace("□", "[UNK]")
+        if lossy and end > 70:
+            assert "_source_span" not in chunk
+        else:
+            assert chunk["_source_span"] == {
+                "start": offsets[start],
+                "end": offsets[end - 1] + len(words[end - 1]),
+            }

@@ -90,9 +90,9 @@ def _token_window_source_span(
     start_token: int,
     end_token: int,
     *,
-    anchor: tuple[int, int],
+    anchor: tuple[int, int] | None,
     recover_boundary: bool | None = None,
-) -> tuple[dict[str, int] | None, tuple[int, int]]:
+) -> tuple[dict[str, int] | None, tuple[int, int] | None]:
     """Map a token window from a verified ``(token, char)`` anchor.
 
     Decode through the window from that anchor to establish its end, rather
@@ -101,9 +101,9 @@ def _token_window_source_span(
     with repeated source text does not prove that estimated position.
 
     An exact window must be a suffix of the joint decode, and that decode must
-    match the source at the anchor. Only move the anchor when decoding across
-    the start is concatenative: otherwise the window starts inside a character.
-    This also locates windows from decoders that silently drop incomplete bytes.
+    match the source at the anchor. The exact suffix also verifies the window's
+    own start, even if decoding it in isolation drops a leading space or
+    incomplete bytes that the joint decode retained.
 
     With literal U+FFFD in the source, an edge U+FFFD needs a token round trip
     before it can be accepted as literal text. Otherwise decline the span.
@@ -111,33 +111,49 @@ def _token_window_source_span(
     interior text. Callers precompute ``recover_boundary`` to avoid rescanning.
 
     Decoding covers only the delta and window, keeping the normal path O(N).
-    Runs of mid-character starts retain the last verified anchor and may cost
-    O(run length) per window. Unlocatable windows leave that anchor unchanged.
+    Runs of ambiguous mid-character starts may retain the last verified anchor.
+    If both the joint decode and the prefix (ignoring trailing boundary
+    placeholders) disagree with the source, a lossy tokenizer may have changed
+    earlier text.
+    A dead anchor (None) omits provenance for the rest of this segment without
+    affecting chunk text or repeatedly decoding from the stale anchor.
     """
+    if anchor is None:
+        return None, None
     anchor_token, anchor_char = anchor
     if start_token < anchor_token:  # non-monotonic caller: use the source origin
         anchor_token, anchor_char = 0, 0
     window_tokens = tokens[start_token:end_token]
     window = tokenizer.decode(window_tokens)
-    prefix = tokenizer.decode(tokens[anchor_token:start_token])
     joint = tokenizer.decode(tokens[anchor_token:end_token])
     if recover_boundary is None:
         recover_boundary = _REPLACEMENT_CHAR not in content
 
-    if (
+    ambiguous_replacement = (
         not recover_boundary
         and (window.startswith(_REPLACEMENT_CHAR) or window.endswith(_REPLACEMENT_CHAR))
         and tokenizer.encode(window) != window_tokens
+    )
+    joint_matches = content.startswith(joint, anchor_char)
+    if (
+        window
+        and not ambiguous_replacement
+        and joint.endswith(window)
+        and joint_matches
     ):
-        # The same displayed U+FFFD may be a literal source character or a
-        # decoder artifact. A text match cannot distinguish them; the tokens can.
-        return None, anchor
-
-    if window and joint.endswith(window) and content.startswith(joint, anchor_char):
         end = anchor_char + len(joint)
         start = end - len(window)
-        new_anchor = (start_token, start) if joint == prefix + window else anchor
-        return _source_span(content, start, end), new_anchor
+        return _source_span(content, start, end), (start_token, start)
+
+    prefix = tokenizer.decode(tokens[anchor_token:start_token])
+    if not joint_matches and not content.startswith(
+        prefix.rstrip(_REPLACEMENT_CHAR), anchor_char
+    ):
+        return None, None
+
+    if ambiguous_replacement:
+        # A text match cannot distinguish a literal U+FFFD from an artifact.
+        return None, anchor
 
     recovered = (
         _recover_boundary_window(content, window, prefix, anchor_char)
