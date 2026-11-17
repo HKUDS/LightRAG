@@ -152,7 +152,12 @@ async def test_existing_sort_options_remain_supported(
     ]
     assert total == 13
     direction = 1 if options.get("sort_direction") == "asc" else -1
-    assert storage._data.sorts == [[(mongo_field, direction)]]
+    expected_criteria = [(mongo_field, direction)]
+    if mongo_field != "_id":
+        # A non-id sort field is not unique, so get_docs_paginated appends
+        # _id as a tie-breaker to keep multi-page results deterministic.
+        expected_criteria.append(("_id", 1))
+    assert storage._data.sorts == [expected_criteria]
     assert storage._data.collations == (
         [{"locale": "zh", "numericOrdering": True}]
         if mongo_field == "file_path"
