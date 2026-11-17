@@ -83,6 +83,26 @@ def _source_span(content: str, start: int, end: int) -> dict[str, int] | None:
     return {"start": start, "end": end}
 
 
+def _origin_anchor(
+    tokenizer: Tokenizer, content: str, tokens: list[int]
+) -> tuple[int, int]:
+    """The verified ``(0, char)`` anchor that token 0 decodes from.
+
+    A decoder may drop whitespace at the sequence start (Metaspace), so token
+    0 can decode from after the segment's leading whitespace. A prefix match
+    cannot locate it inside a run of whitespace; the whole-segment decode is
+    an exact suffix of ``content`` and does. Costs one decode per segment,
+    only when ``content`` starts with whitespace.
+    """
+    if not content[:1].isspace():
+        return 0, 0
+    full = tokenizer.decode(tokens)
+    skip = len(content) - len(full)
+    if skip > 0 and content.endswith(full) and content[:skip].isspace():
+        return 0, skip
+    return 0, 0
+
+
 def _token_window_source_span(
     tokenizer: Tokenizer,
     content: str,
@@ -270,7 +290,11 @@ def chunking_by_token_size(
                 if len(_tokens) > chunk_token_size:
                     # Anchor is chunk-relative (offsets are shifted by chunk_start
                     # below), so it resets per split-by-character segment.
-                    anchor = (0, 0)
+                    anchor = (
+                        _origin_anchor(tokenizer, chunk, _tokens)
+                        if _emit_source_span
+                        else (0, 0)
+                    )
                     recover_boundary = _REPLACEMENT_CHAR not in chunk
                     for start in range(
                         0,
@@ -325,7 +349,9 @@ def chunking_by_token_size(
         # boundaries differ on substrings), so the full encode is deferred
         # here rather than paid on every call.
         tokens = tokenizer.encode(content)
-        anchor = (0, 0)
+        anchor = (
+            _origin_anchor(tokenizer, content, tokens) if _emit_source_span else (0, 0)
+        )
         recover_boundary = _REPLACEMENT_CHAR not in content
         for index, start in enumerate(
             range(

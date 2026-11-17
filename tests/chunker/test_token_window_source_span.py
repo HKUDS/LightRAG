@@ -909,3 +909,76 @@ def test_metaspace_windows_keep_linear_decode_budget(lossy: bool) -> None:
                 "start": offsets[start],
                 "end": offsets[end - 1] + len(words[end - 1]),
             }
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("content", "split_by_character", "expected"),
+    [
+        pytest.param(
+            "intro. alpha beta gamma delta",
+            ".",
+            [("intro", 0, 5), ("alpha beta", 7, 17), ("gamma delta", 18, 29)],
+            id="split-segment-starts-with-space",
+        ),
+        pytest.param(
+            "intro.\n alpha beta gamma delta",
+            "\n",
+            [("intro.", 0, 6), ("alpha beta", 8, 18), ("gamma delta", 19, 30)],
+            id="split-on-newline",
+        ),
+        pytest.param(
+            " alpha beta gamma delta",
+            None,
+            [("alpha beta", 1, 11), ("gamma delta", 12, 23)],
+            id="document-starts-with-space",
+        ),
+        pytest.param(
+            "  alpha beta gamma delta",
+            None,
+            [("alpha", 2, 7), ("beta gamma", 8, 18), ("delta", 19, 24)],
+            id="only-one-of-two-spaces-dropped",
+        ),
+        pytest.param(
+            "     b   word b   word",
+            None,
+            [("b", 5, 6), ("word", 9, 13), ("b", 14, 15), ("word", 18, 22)],
+            id="joint-also-starts-with-whitespace",
+        ),
+    ],
+)
+def test_metaspace_origin_skips_dropped_leading_whitespace(
+    tmp_path, content: str, split_by_character: str | None, expected
+) -> None:
+    """A Metaspace decoder drops the space that starts a segment, so token 0
+    does not decode from offset 0. The origin must move past exactly the
+    dropped whitespace: left at 0, every window of the segment lost its span
+    and sidecar backfill failed the whole document; moved by a prefix match
+    inside a run of whitespace, it sat one character early and the anchor
+    died later in the segment."""
+    import json
+
+    from lightrag.sidecar.backfill import backfill_chunk_sidecars
+
+    chunks = chunking_by_fixed_token(
+        Tokenizer("metaspace", _MetaspaceTokenizer()),
+        content,
+        chunk_token_size=2,
+        chunk_overlap_token_size=0,
+        split_by_character=split_by_character,
+        _emit_source_span=True,
+    )
+    located = [c for c in chunks if c["content"].strip()]
+    assert [
+        (c["content"], c["_source_span"]["start"], c["_source_span"]["end"])
+        for c in located
+    ] == expected
+
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    rows = [
+        json.dumps({"type": "meta", "format": "lightrag", "version": "1.0"}),
+        json.dumps({"type": "content", "blockid": "b0", "content": content}),
+    ]
+    blocks_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    backfill_chunk_sidecars(chunks, str(blocks_path))
+    assert [chunk["sidecar"]["id"] for chunk in located] == ["b0"] * len(expected)
