@@ -938,8 +938,12 @@ def _read_document_records(
                     parse_warnings.get("missing_paraid_count", 0) + 1
                 )
 
-            # Convert table to JSON
-            table_json = json.dumps(table_rows, ensure_ascii=False)
+            # Convert table to JSON. "</" is written as the JSON escape "<\/"
+            # so a cell holding the text "</table>" cannot end the <table>
+            # tag that the IR builder later matches non-greedily.
+            table_json = json.dumps(table_rows, ensure_ascii=False).replace(
+                "</", "<\\/"
+            )
 
             # Extract cross-page repeating header rows (w:tblHeader) once per
             # table so we can surface them to the sidecar via the block-level
