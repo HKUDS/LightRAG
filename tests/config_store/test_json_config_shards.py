@@ -10,6 +10,7 @@ deleted anchor is rebuilt from the surviving consistent snapshots. See
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -1075,7 +1076,9 @@ class _FakeFcntl:
 async def test_posix_contention_is_waited_for_never_bypassed(tmp_path, monkeypatch):
     """``EWOULDBLOCK`` is the one answer that names another holder: waited
     for up to the timeout, then refused -- never a bind without the lock."""
-    fake = _FakeFcntl(BlockingIOError(11, "Resource temporarily unavailable"))
+    fake = _FakeFcntl(
+        BlockingIOError(errno.EWOULDBLOCK, "Resource temporarily unavailable")
+    )
     monkeypatch.setattr(al, "_fcntl", lambda: fake)
     entered = False
     with pytest.raises(ConfigurationAnchorLockError, match="bind lock"):
@@ -1088,9 +1091,9 @@ async def test_posix_contention_is_waited_for_never_bypassed(tmp_path, monkeypat
 @pytest.mark.parametrize(
     "error",
     [
-        OSError(37, "No locks available"),  # ENOLCK: NFS without lockd
-        OSError(95, "Operation not supported"),  # EOPNOTSUPP
-        OSError(5, "Input/output error"),  # EIO
+        OSError(errno.ENOLCK, "No locks available"),  # NFS without lockd
+        OSError(errno.EOPNOTSUPP, "Operation not supported"),
+        OSError(errno.EIO, "Input/output error"),
     ],
     ids=["ENOLCK", "EOPNOTSUPP", "EIO"],
 )
