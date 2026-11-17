@@ -671,6 +671,11 @@ STORAGE_IO_SUBMIT_LIMIT = 8
 # instead of growing the executor's unbounded wait queue.
 MILVUS_SUBMIT_LIMIT = 8
 
+# Same shape for the Qdrant pool (blocking HTTP rather than gRPC). It caps the
+# concurrent Qdrant round trips per process, and with them the HTTP
+# connections in use, however many queries the caller issues at once.
+QDRANT_SUBMIT_LIMIT = 8
+
 # Per-workspace ceiling on manual retry requests that have been published but
 # not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an
 # exclusive reset acknowledges it — so an operator hammering /reprocess_failed
