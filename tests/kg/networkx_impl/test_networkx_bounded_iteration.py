@@ -48,17 +48,14 @@ async def test_graph_iteration_rejects_non_positive_batch_size():
 
 @pytest.mark.asyncio
 async def test_iter_labels_tolerates_a_node_added_between_batches():
-    """A mutation landing between two yielded batches must not blow up the
-    generator with ``RuntimeError: dictionary changed size during iteration``.
+    """A node added between two batches must not raise ``RuntimeError:
+    dictionary changed size during iteration`` when the generator resumes.
 
-    ``iter_labels`` suspends mid-loop at every ``yield``, so a caller that
-    awaits something between batches (the normal shape for a maintenance
-    tool walking the whole graph) can let another coroutine in the same
-    process add or remove a node in between -- the single-writer invariant
-    bars a second concurrent WRITER, not a reader interleaved with one.
-    Iterating a live ``NodeView`` across that suspension point raises as
-    soon as the loop resumes, instead of finishing the batch it already
-    started from a stable snapshot.
+    No in-tree caller awaits between batches today, so nothing can mutate the
+    graph while the generator is suspended; this pins the hazard for a future
+    caller that does. Only what ``iter_labels`` promises is asserted: every
+    node present at the start is yielded exactly once. Whether the late node
+    also appears is left open, as keyset-paginating backends may include it.
     """
     graph = nx.Graph()
     graph.add_edges_from((f"N{index}", f"N{index + 1}") for index in range(5))
@@ -66,40 +63,32 @@ async def test_iter_labels_tolerates_a_node_added_between_batches():
     original_labels = set(graph.nodes)
 
     gen = storage.iter_labels(2)
-    first_batch = await anext(gen)
-    assert len(first_batch) == 2
-
-    # Simulate a concurrent mutation landing while the consumer is between
-    # batches (e.g. it awaited something of its own before asking for more).
+    batches = [await anext(gen)]
     graph.add_node("LATE_ARRIVAL")
+    batches.extend([batch async for batch in gen])
 
-    remaining_batches = [first_batch]
-    async for batch in gen:
-        remaining_batches.append(batch)
-
-    all_labels = {label for batch in remaining_batches for label in batch}
-    # The snapshot taken when iteration started must win: the node added
-    # mid-iteration is neither silently dropped from a torn snapshot nor
-    # inconsistently spliced in.
-    assert all_labels == original_labels
+    labels = [label for batch in batches for label in batch]
+    assert len(labels) == len(set(labels))
+    assert original_labels <= set(labels)
 
 
 @pytest.mark.asyncio
 async def test_iter_edges_tolerates_an_edge_added_between_batches():
-    """Same hazard as ``iter_labels``, for the edge iterator."""
+    """Same hazard and same assertions as the ``iter_labels`` case above."""
     graph = nx.Graph()
     graph.add_edges_from((f"N{index}", f"N{index + 1}") for index in range(5))
     storage = _make_storage(graph)
-    original_edge_count = graph.number_of_edges()
+    original_edges = {frozenset(edge) for edge in graph.edges}
 
     gen = storage.iter_edges(2)
-    first_batch = await anext(gen)
-    assert len(first_batch) == 2
-
+    batches = [await anext(gen)]
     graph.add_edge("N0", "LATE_ARRIVAL")
+    batches.extend([batch async for batch in gen])
 
-    remaining_batches = [first_batch]
-    async for batch in gen:
-        remaining_batches.append(batch)
-
-    assert sum(len(batch) for batch in remaining_batches) == original_edge_count
+    edges = [
+        frozenset((edge["source"], edge["target"]))
+        for batch in batches
+        for edge in batch
+    ]
+    assert len(edges) == len(set(edges))
+    assert original_edges <= set(edges)

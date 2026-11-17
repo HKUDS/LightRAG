@@ -982,14 +982,9 @@ class NetworkXStorage(BaseGraphStorage):
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         graph = await self._get_graph()
-        # Snapshot the node ids before looping: every ``yield`` below is a
-        # suspension point, and resuming after one re-advances the live
-        # ``NodeView`` iterator, which raises "dictionary changed size
-        # during iteration" if a concurrent coroutine added or removed a
-        # node while this generator was suspended. A plain list decouples
-        # the walk from the live graph, matching get_all_labels, which
-        # already completes its own pass in one synchronous block with no
-        # such suspension in the middle.
+        # Snapshot first: a live NodeView walked across ``yield`` raises
+        # "dictionary changed size during iteration" if the consumer awaits
+        # between batches and another coroutine mutates the graph meanwhile.
         node_ids = list(graph.nodes())
         batch: list[str] = []
         for node in node_ids:
@@ -1333,8 +1328,7 @@ class NetworkXStorage(BaseGraphStorage):
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         graph = await self._get_graph()
-        # Snapshot before looping -- see iter_labels for why a live EdgeView
-        # cannot be walked across the ``yield`` suspension points below.
+        # Snapshot first, for the same reason as in iter_labels.
         edges = list(graph.edges(data=True))
         batch: list[dict] = []
         for source, target, edge_data in edges:
