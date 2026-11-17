@@ -797,7 +797,10 @@ Contract:
   repeating the same call resumes the operation (roll-forward belongs to the
   SDK caller), while `/documents/scan` — through
   `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
-  assume a failed custom-chunk call left no recoverable state.
+  assume a failed custom-chunk call left no recoverable state. A chunk over
+  the embedding function's `max_token_size` is refused before any of this
+  (`ChunkTokenLimitExceededError`, nothing written), on every call, so a retry
+  after the limit was lowered is refused too and only the scan can clear it.
 - **A stateful validator keeps its identity.** A bound method or callable object
   that accumulates an audit log sees its own instance, not a per-document copy.
   As with a custom tokenizer, however, `LightRAG` builds its internal config
