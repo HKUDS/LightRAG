@@ -1359,3 +1359,115 @@ def test_injection_works_when_source_heading_empty(tmp_path):
 
     assert len(table_chunks) >= 2
     assert all(_slice_starts_with_header(c) for c in table_chunks)
+
+
+# ---------------------------------------------------------------------------
+# A cell holding the text "</table>" must not end a re-emitted slice early
+# ---------------------------------------------------------------------------
+
+
+def _markup_table_text() -> tuple[str, list[list[str]]]:
+    """An oversized JSON table with a ``</table>`` cell in the middle, as the
+    sidecar writer emits it (``</`` already escaped in the block text)."""
+    from lightrag.table_markup import dumps_json_table_body
+
+    rows = (
+        [["Tag", "Meaning"]]
+        + [[f"r{i}", "x" * 40] for i in range(8)]
+        + [["</table>", "closes an HTML table"]]
+        + [[f"s{i}", "y" * 40] for i in range(8)]
+    )
+    text = f'<table id="tb-1" format="json">{dumps_json_table_body(rows)}</table>'
+    return text, rows
+
+
+@pytest.mark.offline
+def test_split_table_text_slices_keep_a_closing_tag_cell_inside_the_tag():
+    # The source tag arrives escaped, but each slice is re-serialized from the
+    # parsed rows. A bare json.dumps put the raw "</table>" back, so the slice
+    # holding that row no longer parsed for any later reader.
+    from lightrag.table_markup import parse_table_tag
+
+    tokenizer = _make_tokenizer()
+    table_text, rows = _markup_table_text()
+
+    pieces = _split_table_text(
+        table_text, tokenizer=tokenizer, target_max=300, target_ideal=250, last_min=50
+    )
+
+    assert len(pieces) >= 2
+    recovered: list[list[str]] = []
+    for piece in pieces:
+        assert piece.count("</table>") == 1, piece
+        parsed = parse_table_tag(piece)
+        assert parsed is not None, piece
+        recovered.extend(parsed[1])
+    assert recovered == rows
+    assert all(_count_tokens(tokenizer, p) <= 300 for p in pieces)
+
+
+@pytest.mark.offline
+def test_split_table_text_injects_header_into_slice_with_closing_tag_cell(
+    lightrag_log_records,
+):
+    # Same table with a repeating header. The slice holding the "</table>" row
+    # used to fail HeaderRecovery ("no longer parses as <table>") and was left
+    # header-less with a warning the code calls unreachable.
+    from lightrag.table_markup import parse_table_tag
+
+    tokenizer = _make_tokenizer()
+    table_text, rows = _markup_table_text()
+    header = rows[:1]
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=300,
+        target_ideal=250,
+        last_min=50,
+        header_body=json.dumps(header),
+    )
+
+    assert len(pieces) >= 2
+    data: list[list[str]] = []
+    for piece in pieces:
+        parsed = parse_table_tag(piece)
+        assert parsed is not None, piece
+        assert parsed[1][:1] == header, piece
+        data.extend(parsed[1][1:])
+    assert data == rows[1:]
+    assert all(_count_tokens(tokenizer, p) <= 300 for p in pieces)
+    assert not [
+        rec.getMessage()
+        for rec in lightrag_log_records
+        if "header-less" in rec.getMessage()
+    ]
+
+
+@pytest.mark.offline
+def test_split_table_text_header_holding_closing_tag_is_injected_whole():
+    # The header itself may carry the markup text: it is stored unescaped in
+    # tables.json and re-serialized into every slice.
+    from lightrag.table_markup import dumps_json_table_body, parse_table_tag
+
+    tokenizer = _make_tokenizer()
+    header = [["<table>", "</table>"]]
+    rows = header + [[f"r{i}", "x" * 40] for i in range(12)]
+    table_text = f'<table id="tb-2" format="json">{dumps_json_table_body(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=300,
+        target_ideal=250,
+        last_min=50,
+        header_body=json.dumps(header),
+    )
+
+    assert len(pieces) >= 2
+    for piece in pieces:
+        assert piece.count("</table>") == 1, piece
+        parsed = parse_table_tag(piece)
+        assert parsed is not None, piece
+        assert parsed[1][:1] == header
+    assert all(_count_tokens(tokenizer, p) <= 300 for p in pieces)
