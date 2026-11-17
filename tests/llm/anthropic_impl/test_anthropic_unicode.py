@@ -3,6 +3,7 @@
 import json
 from functools import partial
 
+import anthropic._base_client as anthropic_base_client
 import httpx
 import pytest
 from anthropic import AsyncAnthropic
@@ -14,6 +15,11 @@ from lightrag.llm import anthropic
 
 pytestmark = pytest.mark.offline
 
+# The SDK only accepts an HTTP client from the package it is built on: httpx2
+# in current releases, httpx in older ones. Take the package from the SDK for
+# the provider side; the ASGI consumer below is ours and stays on httpx.
+sdk_http = getattr(anthropic_base_client, "httpx2", None) or anthropic_base_client.httpx
+
 
 @pytest.mark.asyncio
 async def test_surrogate_pair_in_anthropic_stream_is_utf8_encodable(monkeypatch):
@@ -24,14 +30,16 @@ async def test_surrogate_pair_in_anthropic_stream_is_utf8_encodable(monkeypatch)
     }
     sse = f"event: content_block_delta\ndata: {json.dumps(event)}\n\n"
 
-    def provider_response(request: httpx.Request) -> httpx.Response:
+    def provider_response(request):
         assert request.url.path == "/v1/messages"
         assert json.loads(request.content)["stream"] is True
-        return httpx.Response(
+        return sdk_http.Response(
             200, headers={"content-type": "text/event-stream"}, content=sse.encode()
         )
 
-    provider_http = httpx.AsyncClient(transport=httpx.MockTransport(provider_response))
+    provider_http = sdk_http.AsyncClient(
+        transport=sdk_http.MockTransport(provider_response)
+    )
     monkeypatch.setattr(
         anthropic, "AsyncAnthropic", partial(AsyncAnthropic, http_client=provider_http)
     )
