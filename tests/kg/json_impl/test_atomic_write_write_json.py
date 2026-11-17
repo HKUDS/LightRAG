@@ -55,7 +55,8 @@ def test_write_json_concurrent_writers_land_intact(tmp_path):
         barrier.wait()
         write_json({"writer": tid}, target)
 
-    # Executor.map re-raises the first exception any writer raised.
+    # Consuming Executor.map re-raises the exception of the first failing
+    # task in submission order, with its original traceback.
     with ThreadPoolExecutor(max_workers=5) as pool:
         list(pool.map(writer, range(5)))
 

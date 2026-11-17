@@ -52,7 +52,8 @@ def test_write_nx_graph_concurrent_writers_no_race(tmp_path):
         barrier.wait()
         NetworkXStorage.write_nx_graph(g, dst, workspace=f"w{tid}")
 
-    # Executor.map re-raises the first exception any writer raised.
+    # Consuming Executor.map re-raises the exception of the first failing
+    # task in submission order, with its original traceback.
     with ThreadPoolExecutor(max_workers=5) as pool:
         list(pool.map(writer, range(5)))
 

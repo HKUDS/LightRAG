@@ -144,11 +144,24 @@ def test_builtin_tokenizer_survives_concurrent_encode_and_decode():
     def work(index: int) -> list[tuple[list[int], str]]:
         return [round_trip(texts[index]) for _ in range(10)]
 
-    # Executor.map re-raises the first exception any worker raised.
+    # Consuming Executor.map re-raises the exception of the first failing
+    # task in submission order, with its original traceback.
     with ThreadPoolExecutor(max_workers=len(texts)) as pool:
         results = list(pool.map(work, range(len(texts))))
 
-    assert results == [[(expected[i], texts[i])] * 10 for i in range(len(texts))]
+    # Report (index, kind) pairs rather than diffing the full token lists:
+    # each text is thousands of characters long.
+    mismatches = [
+        (index, kind)
+        for index, rounds in enumerate(results)
+        for tokens, decoded in rounds
+        for kind, ok in (
+            ("encode", tokens == expected[index]),
+            ("decode", decoded == texts[index]),
+        )
+        if not ok
+    ]
+    assert mismatches == []
 
 
 # ---------------------------------------------------------------------------
