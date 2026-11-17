@@ -35,6 +35,7 @@ from lightrag.utils import (
 try:
     from botocore.exceptions import (
         ClientError,
+        ConnectionClosedError,
         ConnectionError as BotocoreConnectionError,
         ReadTimeoutError,
     )
@@ -42,6 +43,7 @@ except ImportError:
     # If botocore is not installed, define placeholders
     ClientError = Exception
     BotocoreConnectionError = Exception
+    ConnectionClosedError = Exception
     ReadTimeoutError = Exception
 
 
@@ -147,8 +149,13 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
             logging.error(f"{operation} client error: {error_msg}")
             raise BedrockError(f"Client error: {error_msg}")
 
-    # Connection errors (retryable)
-    elif isinstance(e, BotocoreConnectionError):
+    # Connection errors (retryable). ConnectionClosedError (raised when the
+    # server drops the connection mid-request, after botocore's own retries
+    # are spent) subclasses HTTPClientError, not botocore's ConnectionError,
+    # so it is checked for explicitly here rather than falling through to the
+    # generic, non-retryable branch below. A streamed response only gets the
+    # type: its generator runs outside @retry, so it is not retried.
+    elif isinstance(e, (BotocoreConnectionError, ConnectionClosedError)):
         logging.error(f"{operation} connection error: {error_message}")
         raise BedrockConnectionError(f"Connection error: {error_message}")
 
@@ -572,8 +579,14 @@ async def bedrock_embed(
     aws_region: str | None = None,
     api_key: str | None = None,
     endpoint_url: str | None = None,
+    *,
+    embedding_dim: int | None = None,
 ) -> np.ndarray:
     """Generate embeddings with Amazon Bedrock Runtime.
+
+    ``embedding_dim`` requests an output dimension for Titan V2 only.
+    Titan V1 and Cohere keep their model-defined dimensions. The API server
+    forwards this option when ``EMBEDDING_SEND_DIM=true``.
 
     Authentication note:
     - Bedrock does not use LightRAG's generic ``api_key`` fields.
@@ -614,13 +627,13 @@ async def bedrock_embed(
                 for text in texts:
                     try:
                         if "v2" in model:
-                            body = json.dumps(
-                                {
-                                    "inputText": text,
-                                    # 'dimensions': embedding_dim,
-                                    "embeddingTypes": ["float"],
-                                }
-                            )
+                            request_body: dict[str, Any] = {
+                                "inputText": text,
+                                "embeddingTypes": ["float"],
+                            }
+                            if embedding_dim is not None:
+                                request_body["dimensions"] = embedding_dim
+                            body = json.dumps(request_body)
                         elif "v1" in model:
                             body = json.dumps({"inputText": text})
                         else:

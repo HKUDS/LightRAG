@@ -13,6 +13,8 @@ import json
 import re
 from typing import Callable
 
+from lightrag.table_markup import escape_json_table_body
+
 _TOKEN_RE = re.compile(r"\{\{(TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}")
 
 
@@ -42,7 +44,13 @@ def render_table_tag(table_id: str, fmt: str, body: str) -> str:
     ``body`` is the table content; for ``json`` it is the JSON array, for
     ``html`` it is the raw ``<table>...</table>`` HTML inside (the outer
     wrapper is added here).
+
+    A ``json`` body is passed through ``escape_json_table_body`` here, so no
+    adapter can emit a cell text ``</table>`` that ends the tag early —
+    whether the body was encoded from ``rows`` or supplied verbatim.
     """
+    if fmt == "json":
+        body = escape_json_table_body(body)
     return (
         f'<table id="{xml_attr_escape(table_id)}" '
         f'format="{xml_attr_escape(fmt)}">{body}</table>'
