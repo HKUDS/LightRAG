@@ -109,6 +109,96 @@ def test_writer_renders_table_with_inline_body(tmp_path: Path) -> None:
     assert "<cite" not in body
 
 
+def _write_single_table(tmp_path: Path, table: IRTable) -> tuple[str, dict]:
+    """Write one table followed by a paragraph; return (block content, item)."""
+    parsed = tmp_path / "t.parsed"
+    ir = IRDoc(
+        document_name="t.pdf",
+        document_format="pdf",
+        doc_title="t",
+        split_option={},
+        blocks=[IRBlock(content_template="{{TBL:t1}}\nafter table", tables=[table])],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-cafebabe", engine="docling")
+    _, rows = _load_jsonl(parsed / "t.blocks.jsonl")
+    tables = json.loads((parsed / "t.tables.json").read_text("utf-8"))["tables"]
+    return rows[0]["content"], next(iter(tables.values()))
+
+
+_MARKUP_ROWS = [["Tag", "Meaning"], ["</table>", "closes a table"], ["<tr>", "row"]]
+
+
+@pytest.mark.offline
+def test_writer_table_cell_holding_closing_tag_keeps_the_tag_whole(
+    tmp_path: Path,
+) -> None:
+    """A cell whose text is ``</table>`` must not end the block's table tag.
+
+    This is the path of every adapter that hands ``rows`` to the writer
+    (docling, mineru, markdown pipe tables): the block text used to carry the
+    bare ``json.dumps`` of the rows, so every non-greedy reader stopped at the
+    cell and the table no longer parsed.
+    """
+    from lightrag.multimodal_context import find_target_span
+    from lightrag.table_markup import parse_table_tag
+
+    table = IRTable(placeholder_key="t1", rows=_MARKUP_ROWS, num_rows=3, num_cols=2)
+    content, item = _write_single_table(tmp_path, table)
+
+    tag, _, rest = content.partition("\n")
+    assert rest == "after table"
+    assert tag.count("</table>") == 1
+    parsed = parse_table_tag(tag)
+    assert parsed is not None
+    assert parsed[1] == _MARKUP_ROWS
+    # The surrounding-context locator sees the whole tag, not a prefix of it.
+    assert find_target_span("tables", item["id"], content) == (0, len(tag))
+    # tables.json ``content`` is a data field, not a tag body: unchanged.
+    assert item["content"] == json.dumps(_MARKUP_ROWS, ensure_ascii=False)
+    assert item["format"] == "json"
+
+
+@pytest.mark.offline
+def test_writer_escapes_a_verbatim_json_body_override(tmp_path: Path) -> None:
+    """``body_override`` is written verbatim, except that a JSON body can not
+    carry a closing tag either — the writer does not rely on the adapter."""
+    from lightrag.table_markup import parse_table_tag
+
+    raw = json.dumps(_MARKUP_ROWS, ensure_ascii=False, separators=(",", ":"))
+    table = IRTable(
+        placeholder_key="t1",
+        rows=_MARKUP_ROWS,
+        num_rows=3,
+        num_cols=2,
+        body_override=raw,
+    )
+    content, _ = _write_single_table(tmp_path, table)
+
+    tag = content.partition("\n")[0]
+    assert tag.count("</table>") == 1
+    # Compact separators survive: only the closing tag text was rewritten.
+    assert raw.replace("</table>", "<\\/table>") in tag
+    parsed = parse_table_tag(tag)
+    assert parsed is not None
+    assert parsed[1] == _MARKUP_ROWS
+
+
+@pytest.mark.offline
+def test_writer_leaves_an_html_table_body_untouched(tmp_path: Path) -> None:
+    html_body = "<tr><td>a</td><td>&lt;/table&gt;</td></tr>"
+    table = IRTable(
+        placeholder_key="t1",
+        rows=None,
+        html=f"<table>{html_body}</table>",
+        num_rows=1,
+        num_cols=2,
+        body_override=html_body,
+    )
+    content, _ = _write_single_table(tmp_path, table)
+
+    assert f'format="html">{html_body}</table>' in content
+
+
 @pytest.mark.offline
 def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
     """Spec §四 / fix 5: drawing path always points inside *.blocks.assets/.

@@ -230,6 +230,16 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - **Every test must carry one of those five markers**, usually a module-level `pytestmark = pytest.mark.offline`. CI selects with `-m offline`, so an unmarked test is deselected without a trace; `tests/conftest.py` therefore fails any unmarked test at setup with the fix in the message. In a file mixing offline and service-backed cases, mark per test or per `pytest.param` instead of per module.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
 
+#### Writing backend tests
+
+**Full guide: [docs/design/BackendTestingGuide.md](docs/design/BackendTestingGuide.md) — read it before writing or refactoring a test under `tests/`.**
+
+- **Every test asserts an observable outcome**, including what a no-op leaves unchanged. Pin only what a docstring, contract or sibling test promises, and prove that an injected fault actually fired.
+- **Expected exceptions go through `pytest.raises`**, never `try/except`. Never wrap the call under test in `except Exception: pass`.
+- **A fake that must never be called records the call as well as raising**: a broad `except Exception` in the code under test swallows `AssertionError`.
+- **Concurrent workers must surface their exceptions** (`ThreadPoolExecutor.map`, `future.result()`, `asyncio.gather`/`TaskGroup`), with `max_workers` at least the `Barrier` parties and a `Barrier` timeout.
+- **Cases are `@pytest.mark.parametrize`, not a `for` loop**, unless the repetition is the behavior. Reduce large values before comparing them so the failure names the case.
+
 #### React component tests
 
 **Full guide: [docs/design/WebUITestingGuide.md](docs/design/WebUITestingGuide.md) — read it before writing or converting any test under `lightrag_webui/src/`.**

@@ -3,20 +3,25 @@ import configparser
 import hashlib
 import json
 import os
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, List, final
+from typing import Any, Callable, List, Optional, final
 
 import numpy as np
 import pipmaster as pm
 
 from ..base import BaseVectorStorage
-from ..constants import DEFAULT_QUERY_PRIORITY
+from ..constants import DEFAULT_QUERY_PRIORITY, QDRANT_SUBMIT_LIMIT
 from ..exceptions import DataMigrationError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..utils import (
+    _bounded_submit_impl,
     _cooperative_yield,
+    bounded_submit,
     compute_mdhash_id,
+    get_loop_semaphore,
     logger,
     validate_workspace,
     validate_workspace_override,
@@ -26,6 +31,99 @@ if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
 
 from qdrant_client import QdrantClient, models  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Blocking Qdrant calls off the event loop
+# ---------------------------------------------------------------------------
+#
+# QdrantClient is synchronous: every request-path call blocks until the server
+# answers. Awaited inline from an `async def`, it holds the only thread serving
+# HTTP for the whole round trip. Same shape and same remedy as the Milvus pool
+# (`lightrag/kg/milvus_impl.py`, "Blocking gRPC off the event loop"), whose
+# comment explains why neither the default executor nor `run_in_storage_io`
+# will do.
+#
+# QDRANT_SUBMIT_LIMIT is both the worker count and the per-loop submission
+# ceiling, so it caps the concurrent Qdrant round trips of the process. Every
+# blocking call holds at most one HTTP connection, so it also caps the
+# connections in use: a burst of queries queues on the semaphore (cheap
+# coroutines) instead of opening connections or growing the executor's
+# unbounded wait queue.
+#
+# Writers (flush, delete_entity_relation, drop) hold `_flush_lock` and submit
+# through `run_in_qdrant_executor_uninterruptible`: a cancelled caller must
+# not release the lock while its write is still in flight, or a later
+# writer's request can land on the server before it (a drop followed by the
+# stale upsert resurrects the dropped rows). Readers hold no lock and use
+# `run_in_qdrant_executor`; a cancelled read just abandons its result.
+#
+# Accepted residue: with the loop free, a read can now interleave with a
+# multi-request write -- a query issued during a flush or a drop sees some
+# batches applied and others not. Harmless in direction: buffered writes were
+# never promised to be visible before the flush returns (see `query`), and a
+# read during a workspace clear only surfaces rows that are being deleted.
+#
+# `initialize()` / `setup_collection` (startup, under the data-init lock) and
+# `finalize()`'s `close()` stay inline: they run before the server serves or
+# while it shuts down, not on the request path.
+#
+# Invariants for anything submitted here: synchronous client calls only, no
+# nested submission, and no re-entry into the storage layer (the caller may
+# hold `_flush_lock`, which is not reentrant).
+
+_QDRANT_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_QDRANT_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_qdrant_executor() -> ThreadPoolExecutor:
+    """The process-wide pool used for blocking QdrantClient calls."""
+    global _QDRANT_EXECUTOR
+    if _QDRANT_EXECUTOR is None:
+        with _QDRANT_EXECUTOR_GUARD:
+            if _QDRANT_EXECUTOR is None:
+                _QDRANT_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=QDRANT_SUBMIT_LIMIT,
+                    thread_name_prefix="lightrag-qdrant",
+                )
+    return _QDRANT_EXECUTOR
+
+
+async def run_in_qdrant_executor(
+    fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run one blocking QdrantClient READ off the event loop thread.
+
+    Cancelling the caller releases the awaiter while the call runs to
+    completion in the pool (it keeps its permit until then). Never use this
+    for a write made under ``_flush_lock``; use
+    :func:`run_in_qdrant_executor_uninterruptible`.
+    """
+    semaphore = get_loop_semaphore("qdrant", QDRANT_SUBMIT_LIMIT)
+    return await bounded_submit(get_qdrant_executor(), semaphore, fn, *args, **kwargs)
+
+
+async def run_in_qdrant_executor_uninterruptible(fn: Callable[[], Any]) -> Any:
+    """Run one blocking Qdrant WRITE that the caller must not outlive.
+
+    Returns only once ``fn`` has finished, even when the caller is cancelled
+    (repeatedly, or by a shutdown that cancels every task); the withheld
+    cancellation is re-raised afterwards. ``fn`` takes no arguments: bind the
+    write AND the buffer bookkeeping that must follow it into one callable, so
+    nothing can be cancelled between the two. It may mutate the pending
+    buffers only because the caller holds ``_flush_lock`` across this call.
+    The wait for a permit stays cancellable, since nothing has been submitted
+    yet.
+    """
+    semaphore = get_loop_semaphore("qdrant", QDRANT_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_qdrant_executor(),
+        semaphore,
+        fn,
+        (),
+        {},
+        wait_for_completion=True,
+    )
 
 
 @dataclass
@@ -823,7 +921,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )  # higher priority for query
             embedding = embedding_result[0]
 
-        results = self._client.query_points(
+        response = await run_in_qdrant_executor(
+            self._client.query_points,
             collection_name=self.final_namespace,
             query=embedding,
             limit=top_k,
@@ -832,7 +931,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             query_filter=models.Filter(
                 must=[workspace_filter_condition(self.effective_workspace)]
             ),
-        ).points
+        )
+        results = response.points
 
         return [
             {
@@ -942,20 +1042,38 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
 
             try:
-                if list_points:
-                    point_batches = self._build_upsert_batches(
+                point_batches = (
+                    self._build_upsert_batches(
                         list_points,
                         max_payload_bytes=self._max_upsert_payload_bytes,
                         max_points_per_batch=self._max_upsert_points_per_batch,
                     )
+                    if list_points
+                    else []
+                )
+                if len(point_batches) > 1:
+                    logger.info(
+                        f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
+                        f"for {len(list_points)} records (max_payload={self._max_upsert_payload_bytes}, "
+                        f"batch={self._max_upsert_points_per_batch})"
+                    )
 
-                    if len(point_batches) > 1:
-                        logger.info(
-                            f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
-                            f"for {len(list_points)} records (max_payload={self._max_upsert_payload_bytes}, "
-                            f"batch={self._max_upsert_points_per_batch})"
-                        )
+                qdrant_delete_ids = [
+                    compute_mdhash_id_for_qdrant(
+                        doc_id, prefix=self.effective_workspace
+                    )
+                    for doc_id in pending_deletes
+                ]
 
+                def _write_then_clear() -> None:
+                    """Every server write of this flush, then the buffer pop.
+
+                    One uninterruptible submission (see the module comment), so a
+                    cancelled flush cannot release ``_flush_lock`` mid-write, and
+                    the pop cannot be separated from the writes that justify it.
+                    Fail-fast: any batch failure raises before the pop, leaving
+                    both buffers intact for the next flush to retry.
+                    """
                     for batch_index, (points_batch, estimated_bytes) in enumerate(
                         point_batches, 1
                     ):
@@ -974,37 +1092,37 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                             f"[{self.workspace}] Qdrant upsert batch {batch_index}/{len(point_batches)}: "
                             f"points={len(points_batch)}, estimated_payload_bytes={estimated_bytes}"
                         )
-                        # Fail-fast: any batch failure raises immediately
-                        # and stops subsequent batches; the full buffer is
-                        # retained so the next flush retries.
                         self._client.upsert(
                             collection_name=self.final_namespace,
                             points=points_batch,
                             wait=True,
                         )
 
-                if pending_deletes:
-                    qdrant_delete_ids = [
-                        compute_mdhash_id_for_qdrant(
-                            doc_id, prefix=self.effective_workspace
+                    if qdrant_delete_ids:
+                        # Chunk deletes by point count; ids are short so a
+                        # count cap keeps each request under the server limit.
+                        delete_chunk = (
+                            self._max_delete_points_per_batch
+                            if self._max_delete_points_per_batch > 0
+                            else len(qdrant_delete_ids)
                         )
-                        for doc_id in pending_deletes
-                    ]
-                    # Chunk deletes by point count; ids are short so a count cap
-                    # is enough to keep each request under the server limit.
-                    delete_chunk = (
-                        self._max_delete_points_per_batch
-                        if self._max_delete_points_per_batch > 0
-                        else len(qdrant_delete_ids)
-                    )
-                    for i in range(0, len(qdrant_delete_ids), delete_chunk):
-                        self._client.delete(
-                            collection_name=self.final_namespace,
-                            points_selector=models.PointIdsList(
-                                points=qdrant_delete_ids[i : i + delete_chunk]
-                            ),
-                            wait=True,
-                        )
+                        for i in range(0, len(qdrant_delete_ids), delete_chunk):
+                            self._client.delete(
+                                collection_name=self.final_namespace,
+                                points_selector=models.PointIdsList(
+                                    points=qdrant_delete_ids[i : i + delete_chunk]
+                                ),
+                                wait=True,
+                            )
+
+                    for doc_id in committed_ids:
+                        pending_docs.pop(doc_id, None)
+                    pending_deletes.clear()
+
+                if not point_batches and not qdrant_delete_ids:
+                    return
+
+                await run_in_qdrant_executor_uninterruptible(_write_then_clear)
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
@@ -1012,10 +1130,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"deletes={len(pending_deletes)}): {e}"
                 )
                 raise
-
-            for doc_id in committed_ids:
-                pending_docs.pop(doc_id, None)
-            pending_deletes.clear()
 
     async def delete(self, ids: List[str]) -> None:
         """Buffer vector deletes for batched flush."""
@@ -1091,48 +1205,61 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 ],
             )
 
-            total_deleted = 0
-            offset = None
-            batch_size = 1000
+            def _scroll_delete_then_prune() -> int:
+                """Page through the matching rows deleting each page, then
+                prune the pending upserts the delete made stale.
 
-            while True:
-                results = self._client.scroll(
-                    collection_name=self.final_namespace,
-                    scroll_filter=relation_filter,
-                    with_payload=False,
-                    with_vectors=False,
-                    limit=batch_size,
-                    offset=offset,
-                )
+                One uninterruptible submission (see the module comment): a
+                cancelled caller cannot release ``_flush_lock`` while a page
+                is still being deleted, and the prune cannot be separated from
+                the deletes. A raise skips the prune, which is the ordering
+                the buffer contract above wants. Mutating the buffer from the
+                pool thread is safe only because the caller holds
+                ``_flush_lock`` for the whole submission.
+                """
+                total_deleted = 0
+                offset = None
+                batch_size = 1000
 
-                points, next_offset = results
-                if not points:
-                    break
+                while True:
+                    points, next_offset = self._client.scroll(
+                        collection_name=self.final_namespace,
+                        scroll_filter=relation_filter,
+                        with_payload=False,
+                        with_vectors=False,
+                        limit=batch_size,
+                        offset=offset,
+                    )
+                    if not points:
+                        break
 
-                ids_to_delete = [point.id for point in points]
-                self._client.delete(
-                    collection_name=self.final_namespace,
-                    points_selector=models.PointIdsList(points=ids_to_delete),
-                    wait=True,
-                )
-                total_deleted += len(ids_to_delete)
+                    ids_to_delete = [point.id for point in points]
+                    self._client.delete(
+                        collection_name=self.final_namespace,
+                        points_selector=models.PointIdsList(points=ids_to_delete),
+                        wait=True,
+                    )
+                    total_deleted += len(ids_to_delete)
 
-                if next_offset is None:
-                    break
-                offset = next_offset
+                    if next_offset is None:
+                        break
+                    offset = next_offset
 
-            # Server-side scroll+delete fully succeeded — safe to prune
-            # matching pending relation upserts so the next flush won't
-            # re-upsert the just-deleted relations. If the loop above
-            # raised, this prune is skipped and the buffer state stays
-            # available for the caller's retry path.
-            for doc_id in [
-                k
-                for k, v in self._pending_vector_docs.items()
-                if v.source.get("src_id") == entity_name
-                or v.source.get("tgt_id") == entity_name
-            ]:
-                self._pending_vector_docs.pop(doc_id, None)
+                # Server-side scroll+delete fully succeeded — safe to prune
+                # matching pending relation upserts so the next flush won't
+                # re-upsert the just-deleted relations.
+                for doc_id in [
+                    k
+                    for k, v in self._pending_vector_docs.items()
+                    if v.source.get("src_id") == entity_name
+                    or v.source.get("tgt_id") == entity_name
+                ]:
+                    self._pending_vector_docs.pop(doc_id, None)
+                return total_deleted
+
+            total_deleted = await run_in_qdrant_executor_uninterruptible(
+                _scroll_delete_then_prune
+            )
 
             if total_deleted > 0:
                 logger.debug(
@@ -1167,7 +1294,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # `scroll(limit=1)` rather than `count`: existence is all that is
         # asked, and an approximate count can answer 0 for a populated
         # collection.
-        points, _ = self._client.scroll(
+        points, _ = await run_in_qdrant_executor(
+            self._client.scroll,
             collection_name=self.final_namespace,
             scroll_filter=models.Filter(
                 must=[workspace_filter_condition(self.effective_workspace)]
@@ -1196,7 +1324,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 id, prefix=self.effective_workspace
             )
 
-            result = self._client.retrieve(
+            result = await run_in_qdrant_executor(
+                self._client.retrieve,
                 collection_name=self.final_namespace,
                 ids=[qdrant_id],
                 with_payload=True,
@@ -1245,7 +1374,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
                     for id in remaining
                 ]
-                results = self._client.retrieve(
+                results = await run_in_qdrant_executor(
+                    self._client.retrieve,
                     collection_name=self.final_namespace,
                     ids=qdrant_ids,
                     with_payload=True,
@@ -1365,7 +1495,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 for id in remaining
             }
             qdrant_ids = list(qdrant_id_to_requested_id)
-            results = self._client.retrieve(
+            results = await run_in_qdrant_executor(
+                self._client.retrieve,
                 collection_name=self.final_namespace,
                 ids=qdrant_ids,
                 with_vectors=True,
@@ -1497,74 +1628,82 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_docs.clear()
                 self._pending_vector_deletes.clear()
 
-                # Delete all points for the current workspace
-                workspace_selector = models.FilterSelector(
-                    filter=models.Filter(
-                        must=[workspace_filter_condition(self.effective_workspace)]
-                    )
-                )
-                # The suffixed collection may legitimately not exist: an
-                # initialize() that refused with VectorSpaceMismatchError raised
-                # BEFORE creating it, and that refusal is exactly what
-                # `lightrag-rebuild-vdb` calls this method to clear. Nothing to
-                # delete there is success, not an error -- the legacy cleanup
-                # below is the part that actually clears the refusal.
-                if self._client.collection_exists(self.final_namespace):
-                    self._client.delete(
-                        collection_name=self.final_namespace,
-                        points_selector=workspace_selector,
-                        wait=True,
-                    )
-
-                # Also clear this workspace's data from the kept legacy
-                # collection so the next startup does not re-migrate the
-                # just-cleared data back into the suffixed collection.
-                legacy_collection = _find_legacy_collection(
-                    self._client,
-                    self.namespace,
-                    self.effective_workspace,
-                    self.model_suffix,
-                )
-                if legacy_collection and legacy_collection != self.final_namespace:
-                    legacy_has_workspace = _legacy_collection_has_workspace_field(
-                        self._client, legacy_collection
-                    )
-                    if legacy_has_workspace is None:
-                        # Tagging undetermined (transient metadata / scroll error):
-                        # do NOT drop the collection (it may be an actually-tagged,
-                        # shared legacy and we'd delete other workspaces' migration
-                        # source). But the legacy data is left untouched, so the
-                        # next startup would re-migrate this workspace's cleared
-                        # points back — the clear is NOT durable. Abort with an
-                        # error so the caller can retry instead of reporting a
-                        # success that does not survive a restart.
-                        raise RuntimeError(
-                            f"Could not determine workspace tagging of legacy "
-                            f"collection '{legacy_collection}'; aborting clear of "
-                            f"'{self.namespace}' to avoid leaving stale legacy data "
-                            f"that would resurrect on restart. Retry once Qdrant "
-                            f"metadata is reachable."
+                def _drop_server_side() -> None:
+                    """Every server-side step of the drop, as ONE uninterruptible
+                    submission (see the module comment): a cancelled drop must not
+                    release ``_flush_lock`` while its delete is still in flight, or
+                    a flush that follows can land rows the delete then removes.
+                    """
+                    # Delete all points for the current workspace
+                    workspace_selector = models.FilterSelector(
+                        filter=models.Filter(
+                            must=[workspace_filter_condition(self.effective_workspace)]
                         )
-                    elif legacy_has_workspace:
-                        # Workspace-tagged legacy: remove only this workspace's points.
+                    )
+                    # The suffixed collection may legitimately not exist: an
+                    # initialize() that refused with VectorSpaceMismatchError raised
+                    # BEFORE creating it, and that refusal is exactly what
+                    # `lightrag-rebuild-vdb` calls this method to clear. Nothing to
+                    # delete there is success, not an error -- the legacy cleanup
+                    # below is the part that actually clears the refusal.
+                    if self._client.collection_exists(self.final_namespace):
                         self._client.delete(
-                            collection_name=legacy_collection,
+                            collection_name=self.final_namespace,
                             points_selector=workspace_selector,
                             wait=True,
                         )
-                    else:
-                        # Untagged (pre-isolation) legacy: setup_collection migrates
-                        # ALL of its points into this workspace with no workspace
-                        # filter, so a workspace-filtered delete would miss them.
-                        # Drop the whole legacy collection to remove the migration
-                        # source.
-                        self._client.delete_collection(
-                            collection_name=legacy_collection
+
+                    # Also clear this workspace's data from the kept legacy
+                    # collection so the next startup does not re-migrate the
+                    # just-cleared data back into the suffixed collection.
+                    legacy_collection = _find_legacy_collection(
+                        self._client,
+                        self.namespace,
+                        self.effective_workspace,
+                        self.model_suffix,
+                    )
+                    if legacy_collection and legacy_collection != self.final_namespace:
+                        legacy_has_workspace = _legacy_collection_has_workspace_field(
+                            self._client, legacy_collection
                         )
-                        logger.info(
-                            f"[{self.workspace}] Dropped untagged legacy Qdrant collection "
-                            f"'{legacy_collection}' on workspace clear"
-                        )
+                        if legacy_has_workspace is None:
+                            # Tagging undetermined (transient metadata / scroll error):
+                            # do NOT drop the collection (it may be an actually-tagged,
+                            # shared legacy and we'd delete other workspaces' migration
+                            # source). But the legacy data is left untouched, so the
+                            # next startup would re-migrate this workspace's cleared
+                            # points back — the clear is NOT durable. Abort with an
+                            # error so the caller can retry instead of reporting a
+                            # success that does not survive a restart.
+                            raise RuntimeError(
+                                f"Could not determine workspace tagging of legacy "
+                                f"collection '{legacy_collection}'; aborting clear of "
+                                f"'{self.namespace}' to avoid leaving stale legacy data "
+                                f"that would resurrect on restart. Retry once Qdrant "
+                                f"metadata is reachable."
+                            )
+                        elif legacy_has_workspace:
+                            # Workspace-tagged legacy: remove only this workspace's points.
+                            self._client.delete(
+                                collection_name=legacy_collection,
+                                points_selector=workspace_selector,
+                                wait=True,
+                            )
+                        else:
+                            # Untagged (pre-isolation) legacy: setup_collection migrates
+                            # ALL of its points into this workspace with no workspace
+                            # filter, so a workspace-filtered delete would miss them.
+                            # Drop the whole legacy collection to remove the migration
+                            # source.
+                            self._client.delete_collection(
+                                collection_name=legacy_collection
+                            )
+                            logger.info(
+                                f"[{self.workspace}] Dropped untagged legacy Qdrant collection "
+                                f"'{legacy_collection}' on workspace clear"
+                            )
+
+                await run_in_qdrant_executor_uninterruptible(_drop_server_side)
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"

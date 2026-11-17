@@ -200,6 +200,7 @@ from lightrag.exceptions import (
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
     AdminWriteGateRefusedError,
     AdminWriteHoldExceededError,
+    ChunkTokenLimitExceededError,
     IndexFlushError,
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
@@ -3178,6 +3179,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         marked ``FAILED`` with the journal (and any staged data) retained —
         the same call can be retried by the SDK caller, and ``/documents/scan``
         can roll the operation back. Partial work is never blind-flushed.
+
+        Caller boundaries are preserved: when the embedding function declares a
+        positive ``max_token_size``, a chunk over it raises
+        ``ChunkTokenLimitExceededError`` before busy is reserved or anything is
+        written, instead of being split or truncated. ``chunk_token_size`` is
+        not a bound here. A retry is checked again under the current limit, so
+        if the limit was lowered after a failed operation its retry is refused
+        and the journal stays for ``/documents/scan`` to roll back.
         """
         # Owner token for the busy reservation, generated before any await so the
         # finally always holds it and can release the slot by owner (even if the
@@ -3224,6 +3233,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if not chunk_entries:
                 logger.warning("No non-empty custom chunks to insert.")
                 return
+
+            # Validate the entire input before reserving busy or writing a
+            # journal. The bound is the embedding limit only, the same hard
+            # bound the file pipeline enforces before embedding:
+            # ``chunk_token_size`` is advisory there (R/V chunkers may exceed
+            # it), so it must not reject caller-defined chunks here. Encoding
+            # stays off the event loop, bounded by the shared chunking
+            # executor; the counts are reused for the staged payloads.
+            embedding_token_limit = self.embedding_token_limit
+            if embedding_token_limit is not None and embedding_token_limit <= 0:
+                embedding_token_limit = None
+
+            def _count_chunk_tokens() -> dict[str, int]:
+                counts = {}
+                for chunk_id, content, _ in chunk_entries:
+                    count = len(self.tokenizer.encode(content))
+                    if (
+                        embedding_token_limit is not None
+                        and count > embedding_token_limit
+                    ):
+                        raise ChunkTokenLimitExceededError(
+                            count,
+                            embedding_token_limit,
+                            chunk_preview=content,
+                            limit_name="the embedding token limit",
+                        )
+                    counts[chunk_id] = count
+                return counts
+
+            chunk_token_counts = await run_in_chunking_executor(_count_chunk_tokens)
             operation_id = make_custom_chunk_operation_id(
                 doc_key, [cid for cid, _, _ in chunk_entries]
             )
@@ -3531,28 +3570,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # concurrently with these upserts can observe a
                     # not-yet-persisted chunk and silently drop the cache
                     # reference.
-                    # Off the loop: this shares ``self.tokenizer`` with the
-                    # chunking executor, and this entry point is gated by
-                    # neither max_parallel_insert nor the pipeline busy flag, so
-                    # nothing else keeps it from encoding concurrently with a
-                    # document being chunked.
-                    def _build_inserting_chunks() -> dict[str, Any]:
-                        return {
-                            chunk_id: {
-                                "content": content,
-                                "full_doc_id": doc_key,
-                                "tokens": len(self.tokenizer.encode(content)),
-                                "chunk_order_index": index,
-                                "file_path": file_path,
-                            }
-                            for index, (chunk_id, content, _) in enumerate(
-                                chunk_entries
-                            )
+                    inserting_chunks: dict[str, Any] = {
+                        chunk_id: {
+                            "content": content,
+                            "full_doc_id": doc_key,
+                            "tokens": chunk_token_counts[chunk_id],
+                            "chunk_order_index": index,
+                            "file_path": file_path,
                         }
-
-                    inserting_chunks: dict[str, Any] = await run_in_chunking_executor(
-                        _build_inserting_chunks
-                    )
+                        for index, (chunk_id, content, _) in enumerate(chunk_entries)
+                    }
                     stage1_writes = [
                         self.chunks_vdb.upsert(inserting_chunks),
                         self.text_chunks.upsert(inserting_chunks),

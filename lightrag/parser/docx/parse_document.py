@@ -4,7 +4,6 @@ ABOUTME: Parses DOCX documents into text blocks using python-docx
 ABOUTME: Extracts automatic numbering, splits by headings, converts tables to JSON
 """
 
-import json
 import sys
 from dataclasses import dataclass
 
@@ -24,6 +23,7 @@ from lightrag.parser._markdown import (
     render_heading_line,
     strip_heading_markdown_prefix,
 )
+from lightrag.table_markup import dumps_json_table_body
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
 from .ooxml import is_on
@@ -938,12 +938,10 @@ def _read_document_records(
                     parse_warnings.get("missing_paraid_count", 0) + 1
                 )
 
-            # Convert table to JSON. "</" is written as the JSON escape "<\/"
-            # so a cell holding the text "</table>" cannot end the <table>
-            # tag that the IR builder later matches non-greedily.
-            table_json = json.dumps(table_rows, ensure_ascii=False).replace(
-                "</", "<\\/"
-            )
+            # Convert table to JSON. The shared encoder keeps a cell holding
+            # the text "</table>" from ending the <table> tag that the IR
+            # builder later matches non-greedily.
+            table_json = dumps_json_table_body(table_rows)
 
             # Extract cross-page repeating header rows (w:tblHeader) once per
             # table so we can surface them to the sidecar via the block-level

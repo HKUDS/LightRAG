@@ -67,6 +67,11 @@ This checks whether the bundled sample questions can lexically retrieve their
 expected sample documents before running LightRAG, embeddings, LLM calls, or
 RAGAS.
 
+To check your own corpus instead, pass `--dataset`, `--oracle` and `--docs-dir`
+(a folder of Markdown files), shaped like the bundled samples. English words and
+CJK text are both tokenized; CJK runs are indexed as overlapping character
+bigrams, after NFKC normalization (so full-width `ＲＡＧ` matches `RAG`).
+
 **Basic usage (uses defaults):**
 ```bash
 cd /path/to/LightRAG
