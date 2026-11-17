@@ -1927,12 +1927,15 @@ What remains, and why it is tolerated:
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
 
-The current concurrency contract is storage-specific: when the graph backend declares
-`requires_single_writer` (`NetworkXStorage`), public admin graph writes use
-`LightRAG._admin_write_gate`, including a workspace-wide admin lock and pipeline
-reservation. Server-backed graph stores do not take that gate; writes to distinct
-keys retain their per-entity keyed-lock behavior. See [Concurrent admin writes](#concurrent-admin-writes)
-for the supported boundaries and recovery behavior.
+Serializing admin writers would not remove any of these: they are what a crash
+can leave behind, and the same residue is reachable with no concurrency at all.
+Concurrency is handled separately and per storage: when the graph backend
+declares `requires_single_writer` (`NetworkXStorage`, the only one), public admin
+graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
+lock plus the pipeline `busy` reservation. Other graph backends do not take that
+gate and rely on the per-entity keyed locks. See
+[Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
+and recovery behavior.
 
 #### Repairing chunk tracking
 

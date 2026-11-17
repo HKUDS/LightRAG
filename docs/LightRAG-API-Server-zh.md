@@ -20,7 +20,7 @@ LIGHTRAG_PARSER=*:legacy-F
 
 - `ENTITY_TYPES` 已不再支持。请改用 `ENTITY_TYPE_PROMPT_FILE`，并把 YAML profile 放在 `PROMPT_DIR/entity_type` 下（`PROMPT_DIR` 默认是 `./prompts`）。参考模板位于 `prompts/samples/entity_type_prompt.sample.yml`。
 - 如果使用 OpenSearch 存储且集群版本低于 OpenSearch 3.3.0，请先升级 OpenSearch，再启用 v1.5 存储路径并校验已有索引。新部署建议使用 OpenSearch 3.3.0 或更高版本。
-- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请清空受影响的 LightRAG workspace/向量数据并重新索引源文件。
+- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请停止服务器，并使用新的 embedding 配置运行 `lightrag-rebuild-vdb`，从知识图谱和文本块重建向量，详见[切换 Embedding 模型](ProgramingWithCore.md#switching-embedding-models)。不要清空 workspace 或数据目录：那会删除重建所依赖的图谱和文本块。
 - 修改解析器路由（`LIGHTRAG_PARSER`）或文件名 hint 只影响新上传文件。若要把已有文档切换到另一个解析引擎，请先删除该文档再重新上传。
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
 - 启用多模态选项（`i/t/e`）需要已有解析 sidecar；`VLM_PROCESS_ENABLE=true` 仅控制图片分析，表格和公式使用 `EXTRACT` role。已有文档可通过重新处理分析可用 sidecar；切换解析引擎仍需要删除并重新上传。

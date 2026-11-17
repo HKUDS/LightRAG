@@ -1132,7 +1132,7 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 - Many PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=1`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (the defaults; raise MINERU only after verifying available VRAM).
 - Many PDFs + MinerU's cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (per your cloud quota), everything else default.
 - Native-supported docx / Markdown / textpack files: `MAX_PARALLEL_PARSE_NATIVE=10`, with `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
-- Visible Extract-role LLM rate limiting: lower `EXTRACT_MAX_ASYNC_LLM` (or `MAX_ASYNC_LLM` when no override is set) to cap provider requests; lower `MAX_PARALLEL_INSERT` as well if fewer in-flight documents or lower memory use is needed. `MAX_PARALLEL_ANALYZE` controls the separate VLM stage.
+- Visible Extract-role LLM rate limiting: lower `EXTRACT_MAX_ASYNC_LLM` (or `MAX_ASYNC_LLM` when no override is set) to cap provider requests; lower `MAX_PARALLEL_INSERT` as well if fewer in-flight documents or lower memory use is needed. `MAX_PARALLEL_ANALYZE` controls the separate multimodal analysis stage, whose table and equation items also call the Extract role.
 
 ### 8.7 Admission and Request Limits
 

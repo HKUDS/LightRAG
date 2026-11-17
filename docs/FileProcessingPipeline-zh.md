@@ -37,7 +37,7 @@ LIGHTRAG_PARSER=*:legacy-F
 
 ### 1.2 推荐起步文件处理行为
 
-不依赖外部文档解析服务，不依赖`VLM`视觉模型。使用新版原生的 `Native` 解析 `docx` 文档，开启表格(t)和公式(e)的模态分析，搭配`P`分块策略；其余文档使用老版本的内容解析器，搭配效果更好的`R`分块策略。
+不依赖外部文档解析服务，不依赖`VLM`视觉模型。使用内置的 `Native` 引擎解析受支持的 `docx`、Markdown 和 textpack 文件；表格 (t) 和公式 (e) 分析使用 `EXTRACT` role，`P` 分块适用于任何产出结构化 sidecar 的解析器。其余文档可使用旧内容抽取器并搭配 `R` 分块。
 
 ```bash
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
@@ -1132,7 +1132,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 - 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=1`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=3`（默认即可；确认显存充足后再提高 MINERU）。
 - 大量 PDF + MinerU 云端服务：`MAX_PARALLEL_PARSE_MINERU=3~5`（视云端配额），其它保持默认。
 - native 支持的 docx / Markdown / textpack 文件：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
-- Extract 角色 LLM 限流明显：先降 `EXTRACT_MAX_ASYNC_LLM`（未设置覆盖时降 `MAX_ASYNC_LLM`）以限制 provider 请求；如需减少在途文档数或内存，再同时降低 `MAX_PARALLEL_INSERT`。`MAX_PARALLEL_ANALYZE` 控制独立的 VLM 阶段。
+- Extract 角色 LLM 限流明显：先降 `EXTRACT_MAX_ASYNC_LLM`（未设置覆盖时降 `MAX_ASYNC_LLM`）以限制 provider 请求；如需减少在途文档数或内存，再同时降低 `MAX_PARALLEL_INSERT`。`MAX_PARALLEL_ANALYZE` 控制独立的多模态分析阶段，其中表格和公式 item 同样调用 Extract 角色。
 
 ### 8.7 准入与请求限制
 
