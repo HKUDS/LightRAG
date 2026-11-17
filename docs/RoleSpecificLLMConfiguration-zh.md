@@ -353,7 +353,7 @@ VLM_LLM_TIMEOUT=240
 
 如果 VLM 使用同一个 provider 和 key，可以省略 `VLM_LLM_BINDING_HOST` 与 `VLM_LLM_BINDING_API_KEY`。
 
-`VLM_PROCESS_ENABLE` 是多模态分析的总开关：设为 `false` 时，pipeline 会对每个多模态 item 输出 warning 并跳过，不调用 VLM；设为 `true` 时，生效的 VLM binding（设置了 `VLM_LLM_BINDING` 时取该值，否则取 `LLM_BINDING`）必须支持图片输入。当前支持视觉输入的 provider 包括：`openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama`、`anthropic`。`lollms` 无法接收图片输入，会在启动时直接报错。
+`VLM_PROCESS_ENABLE` 只控制图片/绘图分析；表格和公式无论其取值如何都由 `EXTRACT` role 分析。它不是跳过开关：文档带 `i` 选项且包含通过预过滤的图片时，`VLM_PROCESS_ENABLE=false` 或 VLM role 不可用都会让该文档失败，而不是跳过图片（见[失败与跳过](FileProcessingPipeline-zh.md#43-失败与跳过)）。设为 `true` 时，生效的 VLM binding（设置了 `VLM_LLM_BINDING` 时取该值，否则取 `LLM_BINDING`）必须支持图片输入。当前支持视觉输入的 provider 包括：`openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama`、`anthropic`。`lollms` 无法接收图片输入，会在启动时直接报错。
 
 ### 6. Bedrock 角色级 SigV4 凭证
 

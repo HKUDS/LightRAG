@@ -110,7 +110,7 @@ Notes:
 | `language` | Non-empty string. Defaults to `SUMMARY_LANGUAGE`, then `English`. | Output language used in entity and relationship extraction, entity/relation summaries, keyword extraction, and multimodal analysis prompts. |
 | `entity_type_prompt_file` | `.yml` or `.yaml` file name only. Loaded from `${PROMPT_DIR:-./prompts}/entity_type`. | Loads an entity extraction prompt profile. The profile can define `entity_types_guidance`, `entity_extraction_examples`, and `entity_extraction_json_examples`. The active extraction mode must have matching examples: text mode needs `entity_extraction_examples`; JSON mode needs `entity_extraction_json_examples`. |
 | `entity_types_guidance` | Non-empty string. | Inline entity type guidance injected into extraction prompts. This overrides both the prompt profile file and the built-in default guidance. |
-| `chunker` | Dict with F/R/V/P chunking settings (the `C` selector reuses the `fixed_token` sub-dictionary). | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
+| `chunker` | Dict with F/R/V/P chunking settings; `C` selects a custom chunker callback and reuses the `fixed_token` sub-dictionary for its fallback. | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
 
 Compact `chunker` shape:
 
@@ -1362,9 +1362,9 @@ rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 
 ```python
 rag = LightRAG(..)
-await rag.apipeline_enqueue_documents(input)
+await rag.apipeline_enqueue_documents(["TEXT1", "TEXT2"])
 # Your routine in loop
-await rag.apipeline_process_enqueue_documents(input)
+await rag.apipeline_process_enqueue_documents()
 ```
 
 * Insert Multi-file Type Support
@@ -1927,13 +1927,15 @@ What remains, and why it is tolerated:
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
 
-A workspace-wide admin lock was specified and dropped: it would not have changed
-what a crash can leave behind, since the same residue is reachable with no
-concurrency at all. If you drive the public Python admin API yourself
-(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
-their relation counterparts) **do not call them concurrently on a file-backed
-workspace** — one at a time, or use a server-backed graph and KV store.
-`ainsert_custom_kg` is subject to the same rule.
+Serializing admin writers would not remove any of these: they are what a crash
+can leave behind, and the same residue is reachable with no concurrency at all.
+Concurrency is handled separately and per storage: when the graph backend
+declares `requires_single_writer` (`NetworkXStorage`, the only one), public admin
+graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
+lock plus the pipeline `busy` reservation. Other graph backends do not take that
+gate and rely on the per-entity keyed locks. See
+[Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
+and recovery behavior.
 
 #### Repairing chunk tracking
 
