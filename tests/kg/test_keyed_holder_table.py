@@ -522,9 +522,9 @@ def test_my_start_id_recomputed_after_real_fork():
 
 @pytest.mark.skipif(
     sys.platform == "win32",
-    reason="the os.kill(pid, 0) fallback cannot prove a pid is gone on Windows "
-    "(OpenProcess failure is not ProcessLookupError), so the probe errs on the "
-    "side of alive by design",
+    reason="os.kill(pid, 0) is not a liveness probe on Windows (signal 0 is "
+    "CTRL_C_EVENT there and a missing pid does not raise ProcessLookupError), "
+    "so the fallback cannot prove a pid is gone and errs on the side of alive",
 )
 def test_pid_alive_fallback_without_psutil(monkeypatch):
     monkeypatch.setattr(shared_storage, "psutil", None)

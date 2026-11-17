@@ -3922,7 +3922,6 @@ def test_upload_file_opener_refuses_existing_symlink(tmp_path):
     assert outside.read_text(encoding="utf-8") == "keep"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX chmod semantics")
 def test_upload_file_opener_creates_new_file_with_private_permissions(tmp_path):
     path = tmp_path / "safe.pdf"
 
@@ -3931,10 +3930,10 @@ def test_upload_file_opener_creates_new_file_with_private_permissions(tmp_path):
         fh.write(b"content")
 
     assert path.read_bytes() == b"content"
-    assert (path.stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":  # POSIX chmod semantics; NTFS reports 0o666
+        assert (path.stat().st_mode & 0o777) == 0o600
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX chmod semantics")
 def test_upload_file_opener_falls_back_when_dir_fd_unsupported(tmp_path, monkeypatch):
     """Simulates Windows: os.open() cannot bind a directory fd there at all,
     so the opener must skip that step entirely rather than crash on it."""
@@ -3958,7 +3957,8 @@ def test_upload_file_opener_falls_back_when_dir_fd_unsupported(tmp_path, monkeyp
         fh.write(b"content")
 
     assert path.read_bytes() == b"content"
-    assert (path.stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":  # POSIX chmod semantics; NTFS reports 0o666
+        assert (path.stat().st_mode & 0o777) == 0o600
     assert directory_open_attempts == []
 
     with pytest.raises(FileExistsError):

@@ -111,7 +111,9 @@ async def _scan(tmp_path, monkeypatch, *, filenames) -> tuple[_ScanRag, list[str
         try:
             (doc_manager.input_dir / name).write_text("body", encoding="utf-8")
         except (OSError, UnicodeEncodeError) as exc:
-            pytest.skip(f"filesystem rejects the test file name: {exc}")
+            if name != UNSAFE_NAME:
+                raise  # an ordinary name must be writable: fail, never skip
+            pytest.skip(f"filesystem rejects the unsafe test file name: {exc}")
 
     enqueued: list[str] = []
 
