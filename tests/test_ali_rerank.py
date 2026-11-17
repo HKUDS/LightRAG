@@ -10,56 +10,12 @@ suite before this file: existing coverage in tests/chunker/test_rerank_chunking.
 only drives cohere_rerank / generic_rerank_api with response_format="standard".
 """
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 
 from lightrag.rerank import ali_rerank
-
-
-def _mock_session(response_json, status=200, headers=None):
-    """Build a mock aiohttp.ClientSession whose session.post(...) resolves,
-    as an async context manager, to a response carrying response_json."""
-    mock_response = Mock()
-    mock_response.status = status
-    mock_response.json = AsyncMock(return_value=response_json)
-    mock_response.text = AsyncMock(return_value=str(response_json))
-    mock_response.request_info = None
-    mock_response.history = None
-    mock_response.headers = headers or {}
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-
-    mock_session = Mock()
-    mock_session.post = Mock(return_value=mock_response)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
-    return mock_session
-
-
-def _capturing_session(response_json):
-    """Like _mock_session, but also records the kwargs passed to session.post
-    so the request payload/headers can be asserted on."""
-    captured = {}
-    mock_response = Mock()
-    mock_response.status = 200
-    mock_response.json = AsyncMock(return_value=response_json)
-    mock_response.request_info = None
-    mock_response.history = None
-    mock_response.headers = {}
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-
-    def capture_post(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return mock_response
-
-    mock_session = Mock()
-    mock_session.post = Mock(side_effect=capture_post)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
-    return mock_session, captured
+from tests._rerank_session import mock_rerank_session
 
 
 @pytest.mark.offline
@@ -70,7 +26,7 @@ class TestAliRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_payload_nests_query_and_documents_under_input(self):
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(
@@ -90,7 +46,7 @@ class TestAliRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_top_n_and_return_documents_go_under_parameters(self):
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(
@@ -111,7 +67,7 @@ class TestAliRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_extra_body_merges_into_parameters_not_top_level(self):
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(
@@ -127,7 +83,7 @@ class TestAliRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_model_and_default_base_url(self):
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(query="q", documents=["a"], api_key="test-key")
@@ -143,7 +99,7 @@ class TestAliRerankResponseFormat:
 
     @pytest.mark.asyncio
     async def test_parses_nested_output_results(self):
-        session = _mock_session(
+        session, _ = mock_rerank_session(
             {
                 "output": {
                     "results": [
@@ -171,7 +127,7 @@ class TestAliRerankResponseFormat:
     async def test_missing_output_key_returns_empty_without_raising(self):
         """A response with no "output" at all (e.g. an unexpected provider
         payload shape) must degrade to an empty result, not raise."""
-        session = _mock_session({"unexpected": "shape"})
+        session, _ = mock_rerank_session({"unexpected": "shape"})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await ali_rerank(
@@ -187,7 +143,7 @@ class TestAliRerankResponseFormat:
         """If "output.results" is present but malformed (not a list), the
         aliyun branch must warn and fall back to an empty list rather than
         crash on next on a non-iterable."""
-        session = _mock_session({"output": {"results": {"not": "a list"}}})
+        session, _ = mock_rerank_session({"output": {"results": {"not": "a list"}}})
 
         with (
             patch("lightrag.rerank.aiohttp.ClientSession", return_value=session),
@@ -207,7 +163,7 @@ class TestAliRerankResponseFormat:
 
     @pytest.mark.asyncio
     async def test_empty_results_list_returns_empty(self):
-        session = _mock_session({"output": {"results": []}})
+        session, _ = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await ali_rerank(
@@ -222,9 +178,9 @@ class TestAliRerankResponseFormat:
     async def test_malformed_result_items_are_dropped_not_fatal(self):
         """Out-of-range / wrong-typed entries inside output.results must be
         discarded individually rather than failing the whole call, matching
-        the standard-format malformed-item handling already covered for
-        cohere/jina in tests/chunker/test_rerank_chunking.py."""
-        session = _mock_session(
+        the standard-format malformed-item handling already covered in
+        tests/chunker/test_rerank_chunking.py and tests/test_jina_rerank.py."""
+        session, _ = mock_rerank_session(
             {
                 "output": {
                     "results": [
@@ -255,7 +211,7 @@ class TestAliRerankApiKeyResolution:
     @pytest.mark.asyncio
     async def test_explicit_api_key_takes_precedence_over_env(self, monkeypatch):
         monkeypatch.setenv("DASHSCOPE_API_KEY", "env-dashscope-key")
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(query="q", documents=["a"], api_key="explicit-key")
@@ -266,7 +222,7 @@ class TestAliRerankApiKeyResolution:
     async def test_falls_back_to_dashscope_api_key_env_var(self, monkeypatch):
         monkeypatch.delenv("RERANK_BINDING_API_KEY", raising=False)
         monkeypatch.setenv("DASHSCOPE_API_KEY", "env-dashscope-key")
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(query="q", documents=["a"])
@@ -279,7 +235,7 @@ class TestAliRerankApiKeyResolution:
     async def test_falls_back_to_generic_rerank_binding_api_key(self, monkeypatch):
         monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
         monkeypatch.setenv("RERANK_BINDING_API_KEY", "generic-binding-key")
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(query="q", documents=["a"])
@@ -295,7 +251,7 @@ class TestAliRerankApiKeyResolution:
     ):
         monkeypatch.setenv("RERANK_BINDING_API_KEY", "generic-binding-key")
         monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
-        session, captured = _capturing_session({"output": {"results": []}})
+        session, captured = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await ali_rerank(query="q", documents=["a"])
@@ -306,11 +262,14 @@ class TestAliRerankApiKeyResolution:
 @pytest.mark.offline
 class TestAliRerankEmptyDocuments:
     @pytest.mark.asyncio
-    async def test_empty_document_list_sends_empty_documents_and_returns_empty(self):
-        session, captured = _capturing_session({"output": {"results": []}})
+    async def test_empty_document_list_returns_empty(self):
+        """Only the result is pinned. Whether an HTTP request is sent for an
+        empty list is deliberately left open, so that a later short-circuit
+        (the query path never reranks an empty list) does not break this test.
+        """
+        session, _ = mock_rerank_session({"output": {"results": []}})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await ali_rerank(query="q", documents=[], api_key="test-key")
 
-        assert captured["kwargs"]["json"]["input"]["documents"] == []
         assert result == []

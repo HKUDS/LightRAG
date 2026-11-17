@@ -13,56 +13,12 @@ tests/chunker/test_rerank_chunking.py only drives cohere_rerank, and
 tests/test_ali_rerank.py only drives the nested "aliyun" format.
 """
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 
 from lightrag.rerank import jina_rerank
-
-
-def _mock_session(response_json, status=200, headers=None):
-    """Build a mock aiohttp.ClientSession whose session.post(...) resolves,
-    as an async context manager, to a response carrying response_json."""
-    mock_response = Mock()
-    mock_response.status = status
-    mock_response.json = AsyncMock(return_value=response_json)
-    mock_response.text = AsyncMock(return_value=str(response_json))
-    mock_response.request_info = None
-    mock_response.history = None
-    mock_response.headers = headers or {}
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-
-    mock_session = Mock()
-    mock_session.post = Mock(return_value=mock_response)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
-    return mock_session
-
-
-def _capturing_session(response_json):
-    """Like _mock_session, but also records the kwargs passed to session.post
-    so the request payload/headers can be asserted on."""
-    captured = {}
-    mock_response = Mock()
-    mock_response.status = 200
-    mock_response.json = AsyncMock(return_value=response_json)
-    mock_response.request_info = None
-    mock_response.history = None
-    mock_response.headers = {}
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-
-    def capture_post(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return mock_response
-
-    mock_session = Mock()
-    mock_session.post = Mock(side_effect=capture_post)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
-    return mock_session, captured
+from tests._rerank_session import mock_rerank_session
 
 
 @pytest.mark.offline
@@ -73,7 +29,7 @@ class TestJinaRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_payload_uses_flat_query_and_documents(self):
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(
@@ -99,7 +55,7 @@ class TestJinaRerankRequestFormat:
         in the payload. cohere_rerank passes None instead, so the key is
         absent for Cohere -- this is the behavior that tells the two apart.
         """
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(query="q", documents=["a", "b"], api_key="test-key")
@@ -109,7 +65,7 @@ class TestJinaRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_top_n_sent_at_top_level(self):
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(
@@ -120,7 +76,7 @@ class TestJinaRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_extra_body_merges_into_top_level_payload(self):
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(
@@ -135,7 +91,7 @@ class TestJinaRerankRequestFormat:
 
     @pytest.mark.asyncio
     async def test_model_and_default_base_url(self):
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(query="q", documents=["a"], api_key="test-key")
@@ -153,7 +109,7 @@ class TestJinaRerankResponseFormat:
 
     @pytest.mark.asyncio
     async def test_parses_top_level_results(self):
-        session = _mock_session(
+        session, _ = mock_rerank_session(
             {
                 "results": [
                     {"index": 1, "relevance_score": 0.95},
@@ -174,7 +130,7 @@ class TestJinaRerankResponseFormat:
 
     @pytest.mark.asyncio
     async def test_empty_results_list_returns_empty(self):
-        session = _mock_session({"results": []})
+        session, _ = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await jina_rerank(
@@ -185,7 +141,7 @@ class TestJinaRerankResponseFormat:
 
     @pytest.mark.asyncio
     async def test_missing_results_key_returns_empty_without_raising(self):
-        session = _mock_session({"unexpected": "shape"})
+        session, _ = mock_rerank_session({"unexpected": "shape"})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await jina_rerank(
@@ -198,7 +154,7 @@ class TestJinaRerankResponseFormat:
     async def test_malformed_result_items_are_dropped_not_fatal(self):
         """Out-of-range / wrong-typed entries must be discarded individually
         rather than failing the whole call."""
-        session = _mock_session(
+        session, _ = mock_rerank_session(
             {
                 "results": [
                     None,
@@ -226,7 +182,7 @@ class TestJinaRerankApiKeyResolution:
     @pytest.mark.asyncio
     async def test_explicit_api_key_takes_precedence_over_env(self, monkeypatch):
         monkeypatch.setenv("JINA_API_KEY", "env-jina-key")
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(query="q", documents=["a"], api_key="explicit-key")
@@ -237,7 +193,7 @@ class TestJinaRerankApiKeyResolution:
     async def test_falls_back_to_jina_api_key_env_var(self, monkeypatch):
         monkeypatch.delenv("RERANK_BINDING_API_KEY", raising=False)
         monkeypatch.setenv("JINA_API_KEY", "env-jina-key")
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(query="q", documents=["a"])
@@ -248,7 +204,7 @@ class TestJinaRerankApiKeyResolution:
     async def test_falls_back_to_generic_rerank_binding_api_key(self, monkeypatch):
         monkeypatch.delenv("JINA_API_KEY", raising=False)
         monkeypatch.setenv("RERANK_BINDING_API_KEY", "generic-binding-key")
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(query="q", documents=["a"])
@@ -262,7 +218,7 @@ class TestJinaRerankApiKeyResolution:
     async def test_jina_api_key_preferred_over_generic_binding_key(self, monkeypatch):
         monkeypatch.setenv("RERANK_BINDING_API_KEY", "generic-binding-key")
         monkeypatch.setenv("JINA_API_KEY", "jina-key")
-        session, captured = _capturing_session({"results": []})
+        session, captured = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             await jina_rerank(query="q", documents=["a"])
@@ -273,11 +229,14 @@ class TestJinaRerankApiKeyResolution:
 @pytest.mark.offline
 class TestJinaRerankEmptyDocuments:
     @pytest.mark.asyncio
-    async def test_empty_document_list_sends_empty_documents_and_returns_empty(self):
-        session, captured = _capturing_session({"results": []})
+    async def test_empty_document_list_returns_empty(self):
+        """Only the result is pinned. Whether an HTTP request is sent for an
+        empty list is deliberately left open, so that a later short-circuit
+        (the query path never reranks an empty list) does not break this test.
+        """
+        session, _ = mock_rerank_session({"results": []})
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await jina_rerank(query="q", documents=[], api_key="test-key")
 
-        assert captured["kwargs"]["json"]["documents"] == []
         assert result == []
