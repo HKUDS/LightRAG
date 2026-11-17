@@ -3201,6 +3201,188 @@ def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     assert unrelated_artifact_dir.is_dir()
 
 
+@pytest.mark.parametrize(
+    ("file_path", "numbered_copy"),
+    [
+        ("scan_001.pdf", "scan_001_001.pdf"),
+        ("export_1700000000.csv", "export_1700000000_001.csv"),
+    ],
+)
+def test_delete_file_variants_removes_archive_of_name_ending_in_archive_suffix(
+    tmp_path, file_path, numbered_copy
+):
+    # A document whose own name ends like an archive suffix keeps that name
+    # when it is first archived into __parsed__; delete_file must still find it.
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    archived = parsed_dir / file_path
+    archived.write_bytes(b"delete me")
+    (parsed_dir / numbered_copy).write_bytes(b"delete me")
+    unrelated = parsed_dir / "other_001.pdf"
+    unrelated.write_bytes(b"keep me")
+
+    deleted_files, errors = _document_routes.delete_file_variants_by_file_path(
+        tmp_path,
+        file_path,
+    )
+
+    assert errors == []
+    assert set(deleted_files) == {
+        str(Path(PARSED_DIR_NAME) / file_path),
+        str(Path(PARSED_DIR_NAME) / numbered_copy),
+    }
+    assert not archived.exists()
+    assert unrelated.exists()
+
+
+def test_find_archived_variants_shared_with_other_sources(tmp_path):
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    for name in ("scan.pdf", "scan_001.pdf", "scan_001_001.pdf", "other_001.pdf"):
+        (parsed_dir / name).write_bytes(b"x")
+    (parsed_dir / "scan_002.pdf.parsed").mkdir()
+
+    find = _document_routes.find_archived_variants_shared_with_other_sources
+    assert find(tmp_path, "scan.pdf") == {"scan_001.pdf": ["scan_001.pdf"]}
+    assert find(tmp_path, "scan_001.pdf") == {
+        "scan.pdf": ["scan_001.pdf"],
+        "scan_001_001.pdf": ["scan_001_001.pdf"],
+    }
+    assert find(tmp_path, "unknown.pdf") == {}
+    assert find(tmp_path / "missing", "scan.pdf") == {}
+
+
+def _seed_archive_family(tmp_path):
+    """``scan.pdf`` archived twice, then ``scan_001.pdf`` archived once."""
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    files = {}
+    for name in ("scan.pdf", "scan_001.pdf", "scan_001_001.pdf", "scan_002.pdf"):
+        files[name] = parsed_dir / name
+        files[name].write_bytes(name.encode())
+    return files
+
+
+async def _run_background_delete(tmp_path, rag, doc_id):
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    await _document_routes.background_delete_documents(
+        rag,
+        DocumentManager(str(tmp_path)),
+        [doc_id],
+        delete_file=True,
+    )
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    return list(pipeline_status.get("history_messages", []))
+
+
+@pytest.mark.parametrize(
+    ("deleted_source", "live_source", "kept", "removed"),
+    [
+        # Deleting scan.pdf must not take the first archive of live scan_001.pdf.
+        (
+            "scan.pdf",
+            "scan_001.pdf",
+            {"scan_001.pdf", "scan_001_001.pdf"},
+            {"scan.pdf", "scan_002.pdf"},
+        ),
+        # Deleting scan_001.pdf must not take a numbered copy of live scan.pdf.
+        (
+            "scan_001.pdf",
+            "scan.pdf",
+            {"scan.pdf", "scan_001.pdf", "scan_002.pdf"},
+            {"scan_001_001.pdf"},
+        ),
+    ],
+)
+async def test_background_delete_keeps_archive_shared_with_live_source(
+    tmp_path, deleted_source, live_source, kept, removed
+):
+    files = _seed_archive_family(tmp_path)
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-deleted",
+            message="deleted",
+            file_path=deleted_source,
+        ),
+        status_rows={
+            "doc-deleted": {"file_path": deleted_source, "metadata": {}},
+            "doc-live": {"file_path": live_source, "metadata": {}},
+        },
+    )
+
+    history = await _run_background_delete(tmp_path, rag, "doc-deleted")
+
+    assert {name for name, path in files.items() if path.exists()} == kept
+    assert not any(files[name].exists() for name in removed)
+    assert any(
+        "Archived file kept" in msg and f"'{live_source}'" in msg for msg in history
+    )
+    assert not any("missing or unsafe" in msg for msg in history)
+
+
+async def test_background_delete_removes_shared_archive_without_live_source(
+    tmp_path,
+):
+    files = _seed_archive_family(tmp_path)
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-deleted",
+            message="deleted",
+            file_path="scan_001.pdf",
+        ),
+        status_rows={"doc-deleted": {"file_path": "scan_001.pdf", "metadata": {}}},
+    )
+
+    history = await _run_background_delete(tmp_path, rag, "doc-deleted")
+
+    assert not files["scan_001.pdf"].exists()
+    assert not files["scan_001_001.pdf"].exists()
+    assert files["scan.pdf"].exists()
+    assert files["scan_002.pdf"].exists()
+    assert not any("Archived file kept" in msg for msg in history)
+
+
+class _OtherSourceLookupFailsDocStatus(_DeleteDocStatus):
+    def __init__(self, rows, failing_key):
+        super().__init__(rows)
+        self.failing_key = failing_key
+
+    async def resolve_doc_source_strict(self, canonical_source_key: str):
+        if canonical_source_key == self.failing_key:
+            raise RuntimeError("simulated backend read failure")
+        return await super().resolve_doc_source_strict(canonical_source_key)
+
+
+async def test_background_delete_keeps_shared_archive_when_lookup_fails(tmp_path):
+    files = _seed_archive_family(tmp_path)
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-deleted",
+            message="deleted",
+            file_path="scan_001.pdf",
+        ),
+    )
+    rag.doc_status = _OtherSourceLookupFailsDocStatus(
+        {"doc-deleted": {"file_path": "scan_001.pdf", "metadata": {}}},
+        failing_key="scan.pdf",
+    )
+
+    history = await _run_background_delete(tmp_path, rag, "doc-deleted")
+
+    assert files["scan_001.pdf"].exists()
+    assert not files["scan_001_001.pdf"].exists()
+    assert any(
+        "Archived file kept" in msg and "could not be checked" in msg for msg in history
+    )
+
+
 async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
     shared_storage = importlib.import_module("lightrag.kg.shared_storage")
     parsed_dir = tmp_path / PARSED_DIR_NAME

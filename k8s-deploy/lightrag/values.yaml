@@ -72,6 +72,12 @@ resources:
     cpu: 500m
     memory: 1Gi
 
+# Keep persistence enabled in production even with every storage on a
+# database: the working directory holds the configuration storage anchor
+# (config_storage_anchor.json). Without a persistent volume the
+# anchor is lost on every restart, and the check that the configuration
+# container is the one this deployment was bound to never runs. See
+# K8S-README.md "Modifying Persistent Storage".
 persistence:
   enabled: true
   ragStorage:
@@ -103,6 +109,10 @@ env:
   LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
   #  LIGHTRAG_KV_STORAGE: RedisKVStorage
   #  LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
+  #  # Redis business KV defaults to JSON configuration when unset. Select
+  #  # PostgreSQL explicitly here to keep configuration on the database
+  #  # already configured below, instead of a local file.
+  #  LIGHTRAG_CONFIG_STORAGE: PGKVStorage
   LIGHTRAG_GRAPH_STORAGE: Neo4JStorage
   LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
   # Replace with your POSTGRES credentials

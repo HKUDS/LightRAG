@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from html import unescape
 from html.parser import HTMLParser
+from string import ascii_lowercase, ascii_uppercase
 
 from lightrag.utils import logger
+
+# HTML tag names are ASCII case-insensitive. Unicode lowercasing can expand
+# characters such as U+0130, invalidating offsets into the original markup.
+_ASCII_LOWER = str.maketrans(ascii_uppercase, ascii_lowercase)
 
 
 @dataclass
@@ -107,7 +113,7 @@ def extract_thead_html(html: str) -> str | None:
     otherwise emit empty ``<th>`` headers).
     """
     stripped = (html or "").strip()
-    lower = stripped.lower()
+    lower = stripped.translate(_ASCII_LOWER)
     start = find_html_tag(lower, "thead")
     if start < 0:
         return None
@@ -116,7 +122,7 @@ def extract_thead_html(html: str) -> str | None:
         return None
     thead = stripped[start : close + len("</thead>")]
     # Blank check: drop a header whose cells hold no non-whitespace text.
-    if not re.sub(r"<[^>]+>", "", thead).strip():
+    if not unescape(re.sub(r"<[^>]+>", "", thead)).strip():
         return None
     return thead
 
@@ -136,7 +142,7 @@ def unwrap_html_table(payload: str) -> str:
     non-greedy ``TABLE_TAG_RE`` is not truncated at an inner ``</table>``.
     Falls back to the stripped payload when no ``<table>`` element exists."""
     stripped = (payload or "").strip()
-    lower = stripped.lower()
+    lower = stripped.translate(_ASCII_LOWER)
     start = _find_table_open(lower)
     if start < 0:
         return stripped
@@ -154,8 +160,9 @@ def _find_table_open(lower: str) -> int:
 
 def find_html_tag(lower: str, tag: str) -> int:
     """First index of a real ``<tag`` start tag (not e.g. ``<tablefoo`` for
-    ``tag="table"``). ``lower`` must already be lower-cased. Returns -1 when
-    none is present."""
+    ``tag="table"``). ``lower`` must already be ASCII-lowercased with
+    ``_ASCII_LOWER``, not ``str.lower()``, whenever the returned index is used
+    to slice the original markup. Returns -1 when none is present."""
     needle = f"<{tag}"
     idx = 0
     while True:
@@ -179,7 +186,7 @@ def starts_with_html_tag(lower: str, tag: str) -> bool:
 
 def html_table_inner_body(html: str) -> str:
     stripped = (html or "").strip()
-    lower = stripped.lower()
+    lower = stripped.translate(_ASCII_LOWER)
     if not starts_with_html_tag(lower, "table"):
         return stripped
     open_end = _open_tag_end(stripped)
