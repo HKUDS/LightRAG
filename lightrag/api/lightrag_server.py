@@ -65,6 +65,7 @@ from lightrag.parser.docx.smart_heading.nlp import SmartHeadingNLPError
 from lightrag.parser.plugins import load_third_party_parsers
 from lightrag.chunker.plugins import load_and_resolve_chunker
 from lightrag.chunker.registry import log_chunker_selection
+from lightrag.entity_name_normalizer import get_entity_name_normalizer
 from lightrag.parser.routing import (
     parser_rules_from_env,
     validate_parser_routing_config,
@@ -1578,6 +1579,8 @@ def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
+    # Resolve before constructing storages, including the Gunicorn preload path.
+    get_entity_name_normalizer()
     # Discover third-party parser engines (``lightrag.parsers`` entry points)
     # BEFORE validating routing rules, so LIGHTRAG_PARSER may reference them.
     load_third_party_parsers()

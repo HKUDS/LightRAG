@@ -1764,9 +1764,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         }
 
     def __post_init__(self, addon_params: dict[str, Any] | None):
+        from lightrag.entity_name_normalizer import get_entity_name_normalizer
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        get_entity_name_normalizer()
 
         # Fail fast if deprecated ENTITY_TYPES env var is set
         if os.getenv("ENTITY_TYPES") is not None:
