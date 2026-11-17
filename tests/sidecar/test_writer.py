@@ -176,8 +176,8 @@ def test_writer_escapes_a_verbatim_json_body_override(tmp_path: Path) -> None:
 
     tag = content.partition("\n")[0]
     assert tag.count("</table>") == 1
-    # Compact separators survive: only "</" was rewritten.
-    assert raw.replace("</", "<\\/") in tag
+    # Compact separators survive: only the closing tag text was rewritten.
+    assert raw.replace("</table>", "<\\/table>") in tag
     parsed = parse_table_tag(tag)
     assert parsed is not None
     assert parsed[1] == _MARKUP_ROWS

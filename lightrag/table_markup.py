@@ -34,6 +34,10 @@ TABLE_TAG_RE = re.compile(
     re.DOTALL,
 )
 
+# The closing tag as it may appear inside a JSON body. Case-insensitive
+# because some readers match the tag that way.
+_CLOSING_TABLE_TAG_RE = re.compile(r"<(/table>)", re.IGNORECASE)
+
 # Format detection regex inside the attrs string, e.g. format="json".
 _TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
 
@@ -65,12 +69,16 @@ HTML_WRAPPER_TAG_RE = re.compile(
 def escape_json_table_body(body: str) -> str:
     """Make serialized JSON safe to use as the body of a ``<table>`` tag.
 
-    Writes ``</`` as the JSON escape ``<\\/``. In valid JSON ``</`` can only
-    occur inside a string, where ``\\/`` decodes back to ``/``, so
-    ``json.loads`` returns the same value while the text no longer holds a
-    closing tag of any name or case. Idempotent.
+    Writes each ``</table>`` (any case) as ``<\\/table>``. In valid JSON that
+    text can only occur inside a string, where ``\\/`` decodes back to ``/``,
+    so ``json.loads`` returns the same value. Idempotent.
+
+    Escape nothing else. Cells routinely hold balanced inner markup
+    (``<sup>…</sup>``, ``<equation>…</equation>``) that other scanners pair up
+    across the whole chunk; rewriting those closers would leave the openers
+    to pair with a later, real tag.
     """
-    return body.replace("</", "<\\/")
+    return _CLOSING_TABLE_TAG_RE.sub(r"<\\\1", body)
 
 
 def dumps_json_table_body(rows: Any) -> str:
@@ -79,7 +87,8 @@ def dumps_json_table_body(rows: Any) -> str:
     Use this for every JSON body that is placed inside a ``<table>`` tag, and
     for measuring one: a bare ``json.dumps`` leaves a cell holding the text
     ``</table>`` as is, and that ends the tag early for every reader (see
-    ``TABLE_TAG_RE``). Read the body back with ``json.loads`` as usual.
+    ``TABLE_TAG_RE``). Read the body back with ``json.loads`` as usual. Rows
+    without that text are encoded exactly as ``json.dumps`` encodes them.
     """
     return escape_json_table_body(json.dumps(rows, ensure_ascii=False))
 
