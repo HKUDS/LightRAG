@@ -20,10 +20,10 @@ LIGHTRAG_PARSER=*:legacy-F
 
 - `ENTITY_TYPES` 已不再支持。请改用 `ENTITY_TYPE_PROMPT_FILE`，并把 YAML profile 放在 `PROMPT_DIR/entity_type` 下（`PROMPT_DIR` 默认是 `./prompts`）。参考模板位于 `prompts/samples/entity_type_prompt.sample.yml`。
 - 如果使用 OpenSearch 存储且集群版本低于 OpenSearch 3.3.0，请先升级 OpenSearch，再启用 v1.5 存储路径并校验已有索引。新部署建议使用 OpenSearch 3.3.0 或更高版本。
-- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请清空受影响的 LightRAG workspace/向量数据并重新索引源文件。
+- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请停止服务器，并使用新的 embedding 配置运行 `lightrag-rebuild-vdb`，从知识图谱和文本块重建向量，详见[切换 Embedding 模型](ProgramingWithCore.md#switching-embedding-models)。不要清空 workspace 或数据目录：那会删除重建所依赖的图谱和文本块。
 - 修改解析器路由（`LIGHTRAG_PARSER`）或文件名 hint 只影响新上传文件。若要把已有文档切换到另一个解析引擎，请先删除该文档再重新上传。
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
-- 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
+- 启用多模态选项（`i/t/e`）需要已有解析 sidecar；`VLM_PROCESS_ENABLE=true` 仅控制图片分析，表格和公式使用 `EXTRACT` role。已有文档可通过重新处理分析可用 sidecar；切换解析引擎仍需要删除并重新上传。
 
 ## 升级到有界请求体
 
@@ -117,6 +117,7 @@ LightRAG 支持以下 LLM 后端：
 * ollama
 * lollms
 * openai 或 openai 兼容
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * bedrock
 * gemini
@@ -225,7 +226,7 @@ lightrag-gunicorn --workers 4
 - `--log-level`：日志级别（默认：INFO）
 - `--working-dir`：数据库持久化目录（默认：./rag_storage）
 - `--input-dir`：上传文件存放目录（默认：./inputs）
-- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）
+- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）。以 `$` 开头的名称为系统保留，规范化前即拒绝使用。
 - `--api-prefix`：对浏览器暴露的反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置
 - `--rerank-binding`：Rerank provider（`null`、`cohere`、`jina` 或 `aliyun`）
 
@@ -389,7 +390,7 @@ MINERU_MODEL_VERSION=vlm
 MINERU_IS_OCR=false
 ```
 
-该路由会优先对支持的 DOCX 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。`i`、`t`、`e` 选项会在解析器产出对应 sidecar 时，对图片、表格和公式运行 VLM 分析。
+该路由会对支持的 DOCX、Markdown 和 textpack 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。解析器产出对应 sidecar 时，`i`、`t`、`e` 分别启用图片、表格和公式分析；图片分析使用 VLM，表格和公式使用 `EXTRACT` role。
 
 使用 official 模式时，Docker 不需要访问宿主机上的 MinerU 回环地址；容器只需要能够访问 `MINERU_OFFICIAL_ENDPOINT`。
 
@@ -610,7 +611,7 @@ sudo systemctl enable lightrag.service
 
 ### 将 Open WebUI 连接到 LightRAG
 
-启动 lightrag-server 后，您可以在 Open WebUI 管理面板中添加 Ollama 类型的连接。然后，一个名为 `lightrag:latest` 的模型将出现在 Open WebUI 的模型管理界面中。用户随后可以通过聊天界面向 LightRAG 发送查询。对于这种用例，最好将 LightRAG 安装为服务。
+启动 lightrag-server 后，您可以在 Open WebUI 管理面板中添加 Ollama 类型的连接。然后，一个名为 `lightrag:latest` 的模型将出现在 Open WebUI 的模型管理界面中。用户随后可以通过聊天界面向 LightRAG 发送查询。对于这种用例，最好将 LightRAG 安装为服务。如果设置了 `LIGHTRAG_API_KEY`，请在该连接中填入这个 key 作为 API 密钥：此时 Ollama 端点要求该 key，客户端会以 `Authorization: Bearer <key>` 发送。
 
 Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因此，Ollama 聊天补全 API 会检测并将 OpenWebUI 会话相关请求直接转发给底层 LLM。Open WebUI 的截图：
 
@@ -618,11 +619,11 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ### 在聊天中选择查询模式
 
-如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `hybrid`。您可以通过发送带有查询前缀的消息来选择查询模式。
+如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `mix`。您可以通过发送带有查询前缀的消息来选择查询模式。
 
 查询字符串中的查询前缀可以决定使用哪种 LightRAG 查询模式来生成响应。支持的前缀包括：
 
-去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`），将返回 **400**。
+去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`，或单独一个 `/bypass`），将返回 **400**。
 
 ```
 /local
@@ -640,7 +641,7 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 /mixcontext
 ```
 
-例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。
+例如，聊天消息 "/mix 唐僧有几个徒弟" 将触发 LightRAG 的混合模式查询。没有查询前缀的聊天消息默认会触发混合模式查询。前缀之后必须是空白字符或消息结尾：空格、制表符、换行均可，因此问题可以从下一行开始。仅以前缀开头的更长单词（如 `/localize`）不是前缀，会作为普通查询发送。
 
 "/bypass" 不是 LightRAG 查询模式，它会告诉 API 服务器将查询连同聊天历史直接传递给底层 LLM。因此用户可以使用 LLM 基于聊天历史回答问题。如果您使用 Open WebUI 作为前端，您可以直接切换到普通 LLM 模型，而不是使用 /bypass 前缀。
 
@@ -663,10 +664,9 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
-WHITELIST_PATHS=/health,/api/*
 ```
 
-> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
+> 未设置 `WHITELIST_PATHS` 时，其默认值跟随 `LIGHTRAG_API_KEY`：设置了 key 时为 `/health`，Ollama 模拟端点与其他路由一样需要该 key；未设置 key 时为 `/health,/api/*`，这些端点保持开放（只配置 `AUTH_ACCOUNTS` 时也是如此，因为 Ollama 客户端无法登录）。Ollama 端点既接受 `X-API-Key`，也接受 `Authorization: Bearer <key>`（Ollama 客户端以后者发送 key）；其他路由只接受 `X-API-Key`。如果设置了 key 仍想让 Ollama 端点保持开放，请显式设置 `WHITELIST_PATHS=/health,/api/*`。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
 >
 > **条目是内部路由路径，永远不带前缀。** `/*` 后缀按路径分段边界匹配，因此 `/api/*` 只覆盖 `/api` 及 `/api/` 之下的路径，不会覆盖别的。如果设置了 `LIGHTRAG_API_PREFIX`，这里**不要**包含它：匹配前会先剥离该前缀，所以 `WHITELIST_PATHS=/health` 会豁免 `/site01/health`，而 `WHITELIST_PATHS=/site01/health` 什么都豁免不了。参见[路径前缀和多站点 WebUI](#路径前缀和多站点-webui)。
 
@@ -755,6 +755,7 @@ LightRAG 支持绑定到各种 LLM 后端：
 
 * ollama
 * openai (含openai 兼容)
+* openai_responses（`/v1/responses`；`openai` 的可选并列 binding）
 * azure_openai
 * lollms
 * bedrock
@@ -822,7 +823,7 @@ OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 | `EXTRACT` | 实体/关系抽取以及实体/关系描述合并摘要 |
 | `KEYWORD` | 查询检索前的关键词生成 |
 | `QUERY` | 最终回答、bypass 查询以及 Ollama 兼容聊天响应 |
-| `VLM` | 图片、表格、公式等 sidecar 项目的多模态分析 |
+| `VLM` | 对符合条件的 sidecar 图片/绘图进行分析 |
 
 如果某个角色未单独配置，会继承基础 `LLM_*` 设置。同 provider 的最小示例：
 
@@ -856,7 +857,7 @@ VLM_LLM_MODEL=gpt-5-mini
 
 `VLM_PROCESS_ENABLE` **只闸控图片**。表格和公式由 `EXTRACT` 角色分析，不受该开关影响，因此 `*:native-teP` 无需配置任何 VLM 即可工作。若启用了 `i` 而 VLM 不可用，通过了前置过滤（文件存在、栅格格式、长宽均不小于 `VLM_MIN_IMAGE_PIXEL`）的图片会让**该文档失败**而非被跳过：文档进入 `FAILED`，`error_msg` 为 "VLM analysis required but VLM role is not available"。
 
-当前支持视觉输入的 provider 包括 `openai`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
+当前支持视觉输入的 provider 包括 `openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
 
 ```bash
 VLM_PROCESS_ENABLE=true
@@ -912,9 +913,11 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
+> **已废弃：** `RedisKVStorage`、`RedisDocStatusStorage` 与 `PGGraphStorage` 已被标记为废弃，将在未来版本中移除。目前仍可正常使用，但启动时会输出警告，Server 启动画面也会标注。请迁移到 `PGKVStorage` / `PGDocStatusStorage` / `PGTableGraphStorage`（PostgreSQL）。图的迁移方法见下文“从 Apache AGE 迁移图数据到 PostgreSQL 表”。
+
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL（推荐）、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
-**PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
+**PostgreSQL 图存储使用 `PGTableGraphStorage`：** `PGTableGraphStorage` 是 PostgreSQL 上的 `GRAPH_STORAGE` 实现，用于替代已废弃的 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
 
 * **无需安装扩展。** `PGGraphStorage` 依赖 Apache AGE 扩展，而多数托管 PostgreSQL 服务（Amazon RDS、Cloud SQL、Supabase、Neon）并不提供该扩展，导致图存储往往无法与其余三类存储共用同一个数据库。`PGTableGraphStorage` 可运行在任意原生 PostgreSQL 14 及以上版本，所需的表在 `initialize()` 阶段自动创建。在 Docker 部署中，这也意味着使用官方镜像 `pgvector/pgvector:pg18` 即可；内置 AGE 的 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 镜像仅 `PGGraphStorage` 需要。
 * **性能大幅提升。** 查询是带索引的普通 SQL，而非基于 `agtype` 的 Cypher；`get_knowledge_graph` 采用受 `max_nodes` 约束的前沿限幅 BFS。根据 [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) 随附的实测数据（PostgreSQL 18，8k 节点 / 约 40k 边的图，两个后端在测量前均已执行 `VACUUM ANALYZE`）：`get_knowledge_graph` p50 为 **39 ms 对 1,099 ms（约 28 倍）**，图数据批量装载 **3.0 s 对 434 s**，混合负载吞吐 **1,431 对 73 RPS**。
@@ -988,7 +991,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--workspace` | `""` | 用于存储隔离的默认 workspace |
 | `--api-prefix` | `""` | 反向代理路径前缀，也可通过 `LIGHTRAG_API_PREFIX` 配置 |
 | `--workers` | `1` | Gunicorn worker 数量 |
-| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`azure_openai`、`bedrock`、`gemini`） |
+| `--llm-binding` | `ollama` | LLM 绑定类型（`lollms`、`ollama`、`openai`、`openai-ollama`、`openai_responses`、`azure_openai`、`bedrock`、`gemini`） |
 | `--embedding-binding` | `ollama` | Embedding 绑定类型（`lollms`、`ollama`、`openai`、`azure_openai`、`bedrock`、`jina`、`gemini`、`voyageai`） |
 | `--rerank-binding` | `null` | Rerank 绑定类型（`null`、`cohere`、`jina`、`aliyun`） |
 
@@ -1215,7 +1218,7 @@ LIGHTRAG_PARSER=pdf:mineru-R,docx:native-ietP,*:legacy-R
 | 引擎 | 用途 |
 | --- | --- |
 | `legacy` | 原有抽取行为，适合兼容旧部署和简单文本类文件。 |
-| `native` | 内置结构化解析器，目前重点支持 `.docx` 和 LightRAG Document sidecar。 |
+| `native` | 内置结构化解析器，支持 `.docx`、`.md` 和 `.textpack`，并产出 LightRAG Document sidecar。 |
 | `mineru` | 外部 MinerU 解析器，适用于 PDF、Office 文件和图片。需要配置 `MINERU_API_MODE` 以及 `MINERU_LOCAL_ENDPOINT` 或 `MINERU_API_TOKEN`。 |
 | `docling` | 外部 docling-serve 解析器，适用于 PDF、Office 文件、Markdown/HTML 和图片。需要配置 `DOCLING_ENDPOINT`。 |
 
@@ -1236,15 +1239,16 @@ notes.[-R].md
 | 选项 | 含义 |
 | --- | --- |
 | `i` | 对存在的图片/绘图 sidecar 运行 VLM 分析 |
-| `t` | 对存在的表格 sidecar 运行 VLM 分析 |
-| `e` | 对存在的公式 sidecar 运行 VLM 分析 |
+| `t` | 对存在的表格 sidecar 使用 `EXTRACT` role 分析 |
+| `e` | 对存在的公式 sidecar 使用 `EXTRACT` role 分析 |
 | `!` | 跳过实体/关系抽取和图写入；仍会保存 chunk 向量 |
 | `F` | 固定 token 分块，即 legacy 分块方式 |
 | `R` | 递归字符分块，支持可配置分隔符级联 |
 | `V` | 语义向量分块；超长 chunk 会再用 `R` 切分 |
 | `P` | 面向结构化 LightRAG Document 内容的段落语义分块；缺少结构化内容时自动回退到 `R` |
+| `C` | 自定义 chunker 回调；未配置回调时使用 fixed-token fallback |
 
-每个文件最多选择 `F`、`R`、`V`、`P` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
+每个文件最多选择 `F`、`R`、`V`、`P`、`C` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
 
 `V` 策略的句子切分正则是唯一不能按请求设置的 chunker 参数：只能通过 `CHUNK_V_SENTENCE_SPLIT_REGEX`（或 SDK 的 `addon_params`）修改。`/documents/text` 和 `/documents/texts` 会拒绝 `chunking.params` 中的 `sentence_split_regex` 键并返回 HTTP 422。调用方提供的正则会应用于同一请求的文本，而 CPython 正则引擎在回溯时会持有 GIL，因此 `(a+)+$` 之类的模式可能冻结整个 worker 进程——参见 [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84)。文档 `chunk_options` 快照中已经保存的该值也会在处理时被丢弃（并以 `WARNING` 级别记录日志），因此旧版本持久化的模式不会在升级后冻结 worker。
 
@@ -1260,7 +1264,7 @@ notes.[-R].md
 
 ## API 端点
 
-所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
+所有支持的后端（`lollms`、`ollama`、`openai` / OpenAI-compatible、`openai_responses`、`azure_openai`、`bedrock` 和 `gemini`）都暴露相同的 LightRAG REST API。当 API 服务器运行时，访问：
 
 - Swagger UI：http://localhost:9621/docs
 - ReDoc：http://localhost:9621/redoc

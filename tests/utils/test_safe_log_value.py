@@ -29,3 +29,11 @@ def test_over_long_values_are_truncated():
 def test_printable_unicode_survives():
     # Sanitizing must not mangle legitimate non-ASCII identifiers.
     assert safe_log_value("报告.docx") == "报告.docx"
+
+
+def test_truncation_happens_before_sanitizing():
+    # Same result as sanitize-then-truncate, without walking the whole value:
+    # a control character past the cut cannot leak in, one before it is still
+    # replaced, and a value exactly at the limit gets no suffix.
+    assert safe_log_value("ab\ncd" + "\n" * 50, max_length=5) == "ab?cd…(truncated)"
+    assert safe_log_value("abcde", max_length=5) == "abcde"

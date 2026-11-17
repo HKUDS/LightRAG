@@ -1,6 +1,5 @@
 """Exercise the shared uvicorn/Gunicorn app factory, not just a helper."""
 
-import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -17,14 +16,13 @@ pytestmark = pytest.mark.offline
 
 
 @pytest.fixture
-def startup(monkeypatch, tmp_path):
+def startup(monkeypatch, tmp_path, lightrag_caplog):
     monkeypatch.setattr(config, "_global_args", None)
     monkeypatch.setattr(config, "_initialized", False)
     monkeypatch.setattr(registry, "_REGISTRY", {})
     monkeypatch.setattr(registry, "_DUPLICATES", set())
     monkeypatch.setattr(plugins, "_loaded", False)
     monkeypatch.setattr(plugins, "_failures", [])
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
     monkeypatch.setenv("CUSTOM_CHUNKER", "")
     monkeypatch.setenv("LLM_BINDING", "openai")
     monkeypatch.setenv("EMBEDDING_BINDING", "openai")
@@ -48,7 +46,7 @@ def startup(monkeypatch, tmp_path):
     captured = []
 
     class Constructed(Exception):
-        pass
+        """Stops startup once the stubbed LightRAG constructor captured its kwargs."""
 
     def construct(**kwargs):
         captured.append(kwargs)

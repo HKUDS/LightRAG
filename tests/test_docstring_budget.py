@@ -120,7 +120,7 @@ def _oversized(path: pathlib.Path) -> list[tuple[str, int, int]]:
 def test_no_docstring_grows_into_a_design_document():
     offenders = []
     for path in _python_files():
-        rel = str(path.relative_to(_REPO_ROOT))
+        rel = path.relative_to(_REPO_ROOT).as_posix()
         for name, lines, limit in _oversized(path):
             if (rel, name) in _KNOWN_OVERSIZED:
                 continue
@@ -143,7 +143,7 @@ def test_the_known_oversized_list_does_not_go_stale():
     """
     still_oversized = set()
     for path in _python_files():
-        rel = str(path.relative_to(_REPO_ROOT))
+        rel = path.relative_to(_REPO_ROOT).as_posix()
         for name, _lines, _limit in _oversized(path):
             still_oversized.add((rel, name))
 
@@ -198,11 +198,14 @@ def test_every_documentation_path_named_in_the_package_exists():
     """A docstring pointer that does not resolve is worse than no pointer.
 
     The contracts are only useful if the code can send a reader to them, and a
-    path typo is silent -- nothing imports these strings.
+    path typo is silent -- nothing imports these strings. The setup wizard's
+    shell scripts cite the same contracts, so they are checked too: a renamed
+    contract otherwise leaves their pointers dangling unnoticed.
     """
     pattern = re.compile(r"docs/[A-Za-z0-9_/\-]+\.md")
     missing = []
-    for path in _python_files():
+    setup_scripts = sorted((_REPO_ROOT / "scripts" / "setup").rglob("*.sh"))
+    for path in _python_files() + setup_scripts:
         text = path.read_text(encoding="utf-8")
         for match in sorted(set(pattern.findall(text))):
             if not (_REPO_ROOT / match).is_file():

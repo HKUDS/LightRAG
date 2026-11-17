@@ -23,6 +23,9 @@ from lightrag.parser.docx.parse_document import (
 )
 
 
+pytestmark = pytest.mark.offline
+
+
 def test_docx_content_error_is_an_exception_not_just_baseexception():
     # The pipeline parse worker catches ``except Exception``; SystemExit
     # (BaseException) would bypass it. Guard against a future regression that
