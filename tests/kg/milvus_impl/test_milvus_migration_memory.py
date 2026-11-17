@@ -14,6 +14,8 @@ from pymilvus import MilvusException
 
 from lightrag.kg.milvus_impl import MilvusVectorDBStorage
 
+from tests._sleep_patch import patch_module_sleep
+
 
 class _EmbeddingFunc:
     def __init__(self, dim=128, model_name="text-embedding-3-small"):
@@ -152,7 +154,7 @@ class TestMigrationFlushBackpressure:
 
         with patch.object(storage, "_create_indexes_after_collection"):
             with patch.object(storage, "_rebuild_milvus_client") as rebuild:
-                with patch("lightrag.kg.milvus_impl.time.sleep"):
+                with patch_module_sleep("lightrag.kg.milvus_impl"):
                     storage._migrate_collection_schema(
                         source_collection_name=storage.legacy_namespace,
                         target_collection_name=storage.final_namespace,
@@ -173,7 +175,7 @@ class TestMigrationBatchThrottle:
         _wire_iterator(client, [_rows(2), _rows(2, 2)])
 
         with patch.object(storage, "_create_indexes_after_collection"):
-            with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+            with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                 storage._migrate_collection_schema(
                     source_collection_name=storage.legacy_namespace,
                     target_collection_name=storage.final_namespace,
@@ -191,7 +193,7 @@ class TestMigrationBatchThrottle:
         _wire_iterator(client, [_rows(2)])
 
         with patch.object(storage, "_create_indexes_after_collection"):
-            with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+            with patch_module_sleep("lightrag.kg.milvus_impl") as sleep:
                 storage._migrate_collection_schema(
                     source_collection_name=storage.legacy_namespace,
                     target_collection_name=storage.final_namespace,

@@ -18,7 +18,10 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
 from lightrag.exceptions import VectorSpaceMismatchError
+from tests._pg_legacy_migration import answer_legacy_migration
 
+
+pytestmark = pytest.mark.offline
 
 # Note: Tests should use proper table names that have DDL templates
 # Valid base tables: LIGHTRAG_VDB_CHUNKS, LIGHTRAG_VDB_ENTITIES, LIGHTRAG_VDB_RELATIONSHIPS,
@@ -193,6 +196,8 @@ class TestPostgresDimensionMismatch:
         """
         # Setup mock database
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Mock check_table_exists
         async def mock_check_table_exists(table_name):
@@ -240,6 +245,8 @@ class TestPostgresDimensionMismatch:
         Expected: VectorSpaceMismatchError is raised to prevent data corruption.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Mock check_table_exists
         async def mock_check_table_exists(table_name):
@@ -292,6 +299,8 @@ class TestPostgresDimensionMismatch:
         Expected: Migration proceeds normally.
         """
         db = AsyncMock()
+        # Real default; an auto-created mock breaks _check_vector_index_dimension.
+        db.vector_index_type = None
 
         # Track migration state
         migration_done = {"value": False}
@@ -362,15 +371,16 @@ class TestPostgresDimensionMismatch:
 
         db.query.side_effect = query_side_effect
 
-        # Mock _run_with_retry to track when migration happens
+        # Track migration through its server-side copy statement
         migration_executed = []
 
-        async def mock_run_with_retry(operation, *args, **kwargs):
+        def record_migration(sql, params):
             migration_executed.append(True)
             migration_done["value"] = True
-            return None
 
-        db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+        db.query = AsyncMock(
+            side_effect=answer_legacy_migration(db.query.side_effect, record_migration)
+        )
         db.execute = AsyncMock()
         db._create_vector_index = AsyncMock()
 
@@ -384,5 +394,5 @@ class TestPostgresDimensionMismatch:
             workspace="test",
         )
 
-        # Verify migration WAS called (via _run_with_retry for batch operations)
+        # Verify migration WAS called
         assert len(migration_executed) > 0, "Migration should have been executed"
