@@ -36,7 +36,7 @@ Common fields:
 
 | Variable | Description |
 | --- | --- |
-| `LLM_BINDING` | Base LLM provider. Supported values are `openai`, `ollama`, `lollms`, `azure_openai`, `bedrock`, and `gemini`. |
+| `LLM_BINDING` | Base LLM provider. Supported values are `openai`, `openai_responses`, `ollama`, `lollms`, `azure_openai`, `bedrock`, and `gemini`. |
 | `LLM_MODEL` | Base model name. For Azure OpenAI, this is usually the deployment name. |
 | `LLM_BINDING_HOST` | Base provider endpoint. For SDK default endpoints, use the corresponding sentinel, such as `DEFAULT_GEMINI_ENDPOINT` or `DEFAULT_BEDROCK_ENDPOINT`. |
 | `LLM_BINDING_API_KEY` | Base API key. Bedrock does not use this field. |
@@ -101,6 +101,7 @@ Common provider prefixes:
 | Provider | Base option prefix | Role option example |
 | --- | --- | --- |
 | `openai` / `azure_openai` | `OPENAI_LLM_*` | `QUERY_OPENAI_LLM_REASONING_EFFORT` |
+| `openai_responses` | `OPENAI_RESPONSES_LLM_*` (separate namespace; `OPENAI_LLM_*` does not apply) | `QUERY_OPENAI_RESPONSES_LLM_REASONING_EFFORT` |
 | `ollama` | `OLLAMA_LLM_*` | `EXTRACT_OLLAMA_LLM_NUM_PREDICT` |
 | `lollms` | Uses the Ollama-compatible option set | `QUERY_OLLAMA_LLM_TEMPERATURE` |
 | `bedrock` | `BEDROCK_LLM_*` | `EXTRACT_BEDROCK_LLM_MAX_TOKENS` |
@@ -194,6 +195,7 @@ EXTRACT_BEDROCK_LLM_MAX_TOKENS=2048
 | Provider | Role-level host/base_url | Role-level API key | Authentication limitations |
 | --- | --- | --- | --- |
 | `openai` | Supported, passed to the OpenAI-compatible client through `{ROLE}_LLM_BINDING_HOST`. | Supports `{ROLE}_LLM_BINDING_API_KEY`; when unset within the same provider, it inherits the base `LLM_BINDING_API_KEY`. | Currently mainly API key / Bearer mode. |
+| `openai_responses` | Same as `openai`; the host must implement `/v1/responses`. | Same as `openai`. | Same as `openai`. |
 | `ollama` | Supported, passed to the Ollama client through `{ROLE}_LLM_BINDING_HOST`. | Supports `{ROLE}_LLM_BINDING_API_KEY`; when unset within the same provider, it inherits the base key. If no key reaches the lower layer, it falls back to `OLLAMA_API_KEY`. | Bearer header. |
 | `lollms` | Supported, using `{ROLE}_LLM_BINDING_HOST` as `base_url`. | Supports `{ROLE}_LLM_BINDING_API_KEY`; when unset within the same provider, it inherits the base key. | Bearer header. |
 | `azure_openai` | Supported, using `{ROLE}_LLM_BINDING_HOST` as the Azure endpoint. | Supports `{ROLE}_LLM_BINDING_API_KEY`; when unset within the same provider, it inherits the base key and may also fall back to `AZURE_OPENAI_API_KEY`. | `AZURE_OPENAI_API_VERSION` is a global environment variable and does not support role-level overrides. |
@@ -351,7 +353,7 @@ VLM_LLM_TIMEOUT=240
 
 If VLM uses the same provider and key, `VLM_LLM_BINDING_HOST` and `VLM_LLM_BINDING_API_KEY` can be omitted.
 
-`VLM_PROCESS_ENABLE` is the master switch for multimodal analysis. When `false`, the pipeline emits a warning and skips every multimodal item without invoking the VLM. When `true`, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. The following providers are vision-capable: `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
+`VLM_PROCESS_ENABLE` is the master switch for multimodal analysis. When `false`, the pipeline emits a warning and skips every multimodal item without invoking the VLM. When `true`, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. The following providers are vision-capable: `openai`, `openai_responses`, `azure_openai`, `gemini`, `bedrock`, `ollama`, `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
 
 ### 6. Bedrock Role-Level SigV4 Credentials
 

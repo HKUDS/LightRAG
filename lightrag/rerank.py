@@ -8,11 +8,12 @@ import aiohttp
 from dotenv import load_dotenv
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
 
+from .llm._aiohttp_retry import is_transient_aiohttp_error
 from .utils import logger, normalize_rerank_result, run_in_tokenizer_executor
 
 # use the .env that is inside the current folder
@@ -52,6 +53,10 @@ def chunk_documents_for_rerank(
         Tuple of (chunked_documents, original_doc_indices)
         - chunked_documents: List of document chunks (may be more than input)
         - original_doc_indices: Maps each chunk back to its original document index
+
+    Raises:
+        TokenBudgetError: If one complete Unicode code point exceeds max_tokens
+            when using the tokenizer; lossy replacement characters are not emitted.
     """
     if max_tokens < 1:
         # max_tokens=0 makes the chunk window zero-width and the loop never advances
@@ -123,18 +128,11 @@ def chunk_documents_for_rerank(
             chunked_docs.append(doc)
             doc_indices.append(idx)
         else:
-            # Split into overlapping chunks
-            start = 0
-            while start < len(tokens):
-                end = min(start + max_tokens, len(tokens))
-                chunk_tokens = tokens[start:end]
-                chunk_text = tokenizer.decode(chunk_tokens)
-                chunked_docs.append(chunk_text)
+            # Token windows can cut through a Unicode code point. Use source
+            # spans so each chunk preserves text and fits after re-encoding.
+            for span in tokenizer.split_by_token_limit(doc, max_tokens, overlap_tokens):
+                chunked_docs.append(doc[span.start : span.end])
                 doc_indices.append(idx)
-
-                if end >= len(tokens):
-                    break
-                start = end - overlap_tokens
 
     return chunked_docs, doc_indices
 
@@ -147,9 +145,10 @@ async def achunk_documents_for_rerank(
 ) -> Tuple[List[str], List[int]]:
     """Async :func:`chunk_documents_for_rerank`.
 
-    Reranking runs on the query path and this function encodes and decodes once
-    per document plus once per emitted window, so on the event loop it scales the
-    stall with the number of retrieved chunks. The whole function is a single
+    Reranking runs on the query path and this function encodes every document
+    once, then re-encodes candidate windows of each over-budget document while
+    searching for safe boundaries, so on the event loop it scales the stall with
+    the number and size of retrieved chunks. The whole function is a single
     submission; splitting it per document would make the executor queue grow with
     the result set instead of with the number of in-flight requests.
     """
@@ -232,10 +231,10 @@ def aggregate_chunk_scores(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=(
-        retry_if_exception_type(aiohttp.ClientError)
-        | retry_if_exception_type(aiohttp.ClientResponseError)
-    ),
+    retry=retry_if_exception(is_transient_aiohttp_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the "Error during reranking" log names the provider's message.
+    reraise=True,
 )
 async def generic_rerank_api(
     query: str,
@@ -270,6 +269,12 @@ async def generic_rerank_api(
 
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
+
+    Raises:
+        aiohttp.ClientResponseError: If the rerank API returns a non-200
+            response. Connection failures and 408 / 409 / 429 / 5xx responses
+            are retried up to three attempts first; the last attempt's
+            exception is raised as-is, never wrapped in ``tenacity.RetryError``.
     """
     if not base_url:
         raise ValueError("Base URL is required")

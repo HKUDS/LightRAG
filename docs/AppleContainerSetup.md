@@ -142,20 +142,20 @@ container from another project.
 | --- | --- |
 | postgres | `pgvector/pgvector:pg18` |
 | neo4j | `neo4j:5-community` |
-| milvus | `milvusdb/milvus:v2.6.11` (standalone, CPU) |
+| milvus | `milvusdb/milvus:v2.6.27` (standalone, CPU) |
 | milvus-etcd | `quay.io/coreos/etcd:v3.5.25` |
-| milvus-minio | `minio/minio:RELEASE.2025-09-07T16-13-09Z` |
+| milvus-minio | `milvusdb/minio:RELEASE.2024-12-18T13-15-44Z` |
 | lightrag | `ghcr.io/hkuds/lightrag:latest` |
 
 Two deviations from `docker-compose-full.yml` / `scripts/setup/templates/`:
 
-- **Postgres** uses `pgvector/pgvector:pg18` instead of the setup template's
-  `gzdaniel/postgres-for-rag:pg18-age-pgvector`. Both publish a linux/arm64
-  manifest, so this is not an architecture constraint — the Apache AGE graph
-  extension the template image adds is simply not needed here: graph storage is
-  Neo4j and vector storage is Milvus, so Postgres only serves `PGKVStorage` +
-  `PGDocStatusStorage`.
-- **Milvus** uses the CPU tag `milvusdb/milvus:v2.6.11`, **not** the
+- **Postgres** uses `pgvector/pgvector:pg18`, as `docker-compose-full.yml`
+  does. The setup template uses the same official image in its trixie build,
+  `pgvector/pgvector:pg18-trixie`; that only matters for a data volume created
+  by the earlier AGE-enabled default image, and this stack always starts a new
+  one. Graph storage is Neo4j and vector storage is Milvus, so Postgres only
+  serves `PGKVStorage` + `PGDocStatusStorage`.
+- **Milvus** uses the CPU tag `milvusdb/milvus:v2.6.27`, **not** the
   `…-gpu` tag from `docker-compose-full.yml` (which is amd64 + CUDA and cannot run
   on Apple Silicon).
 

@@ -20,6 +20,17 @@ export function errorMessage(error: any) {
 }
 
 /**
+ * Whether a keydown belongs to an input method (IME) composition, such as the
+ * Enter that confirms a Chinese or Japanese candidate. Keydown handlers must
+ * return early, without preventDefault, so the IME receives the key.
+ * Safari ends the composition before dispatching that keydown, so
+ * `isComposing` is already false there and only keyCode 229 shows it.
+ */
+export function isImeComposing(e: { nativeEvent: KeyboardEvent }): boolean {
+  return e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229
+}
+
+/**
  * Creates a throttled function that limits how often the original function can be called
  * @param fn The function to throttle
  * @param delay The delay in milliseconds
