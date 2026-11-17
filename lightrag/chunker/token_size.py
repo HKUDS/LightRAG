@@ -51,9 +51,8 @@ def _recover_boundary_window(
 
     Call it only for ``content`` that holds no U+FFFD of its own. With one
     anywhere in it, a window's edge U+FFFD cannot be told from split
-    characters, and the exact-match probes may already have anchored on a
-    split character that matched it, so ``prefix_start`` is not trustworthy
-    either. :func:`_token_window_source_span` enforces this.
+    characters. :func:`_token_window_source_span` declines ambiguous spans
+    instead and enforces this restriction on recovery.
     """
     trimmed = window.strip(_REPLACEMENT_CHAR)
     if not trimmed or trimmed == window:
@@ -84,6 +83,26 @@ def _source_span(content: str, start: int, end: int) -> dict[str, int] | None:
     return {"start": start, "end": end}
 
 
+def _origin_anchor(
+    tokenizer: Tokenizer, content: str, tokens: list[int]
+) -> tuple[int, int]:
+    """The verified ``(0, char)`` anchor that token 0 decodes from.
+
+    A decoder may drop whitespace at the sequence start (Metaspace), so token
+    0 can decode from after the segment's leading whitespace. A prefix match
+    cannot locate it inside a run of whitespace; the whole-segment decode is
+    an exact suffix of ``content`` and does. Costs one decode per segment,
+    only when ``content`` starts with whitespace.
+    """
+    if not content[:1].isspace():
+        return 0, 0
+    full = tokenizer.decode(tokens)
+    skip = len(content) - len(full)
+    if skip > 0 and content.endswith(full) and content[:skip].isspace():
+        return 0, skip
+    return 0, 0
+
+
 def _token_window_source_span(
     tokenizer: Tokenizer,
     content: str,
@@ -91,71 +110,81 @@ def _token_window_source_span(
     start_token: int,
     end_token: int,
     *,
-    anchor: tuple[int, int],
+    anchor: tuple[int, int] | None,
     recover_boundary: bool | None = None,
-) -> tuple[dict[str, int] | None, tuple[int, int]]:
-    """Map a decoded token window back to its exact source span.
+) -> tuple[dict[str, int] | None, tuple[int, int] | None]:
+    """Map a token window from a verified ``(token, char)`` anchor.
 
-    ``anchor`` is the previous window's *verified* ``(start_token, start_char)``.
-    Window starts are monotonically increasing, so instead of re-decoding the whole
-    ``tokens[:start_token]`` prefix (O(N) per window → O(N²) overall) we decode only
-    the delta ``tokens[anchor_token:start_token]`` (≈ one chunking step) to predict
-    the start char. The predicted offset is then verified against ``content`` exactly
-    as a full prefix decode would be: byte-level BPE decode is non-concatenative at a
-    multi-byte UTF-8 boundary, so a delta can be off by the few chars of one split
-    char — the ±32 ``find`` fallback corrects that, and re-anchoring on the verified
-    position each call keeps the error from accumulating. Net cost is O(N) total
-    while the located span stays byte-exact.
+    Decode through the window from that anchor to establish its end, rather
+    than searching for text near an estimated start. In particular, decoding
+    a prefix separately can insert U+FFFD or drop a partial character; equality
+    with repeated source text does not prove that estimated position.
 
-    A window whose boundary split a multi-byte character carries leading/trailing
-    U+FFFD and fails both probes; :func:`_recover_boundary_window` then places
-    the text between them, so its span is narrower than its content. The anchor
-    moves to such a window only when it does not start with U+FFFD: a window
-    that starts inside a character has no char offset of its own, and anchoring
-    on it would shift every later prediction. A run of windows that all start
-    mid-character decodes its delta from the last anchor, O(run length) per
-    window -- what a run of windows that cannot be located already costs.
+    An exact window must be a suffix of the joint decode, and that decode must
+    match the source at the anchor. The exact suffix also verifies the window's
+    own start, even if decoding it in isolation drops a leading space or
+    incomplete bytes that the joint decode retained.
 
-    ``recover_boundary`` must be False when ``content`` contains U+FFFD of its
-    own: such a document gets no recovery at all and behaves as if the helper
-    did not exist. Callers looping over windows pass it precomputed; ``None``
-    checks ``content`` here, which costs a scan per damaged window.
+    With literal U+FFFD in the source, an edge U+FFFD needs a token round trip
+    before it can be accepted as literal text. Otherwise decline the span.
+    Without source U+FFFD, the existing boundary recovery can safely locate the
+    interior text. Callers precompute ``recover_boundary`` to avoid rescanning.
 
-    Returns ``(span, new_anchor)``. On a window that cannot be located the span
-    is ``None`` and the anchor is returned unchanged so the next window still
-    predicts from the last verified position.
+    Decoding covers only the delta and window, keeping the normal path O(N).
+    Runs of ambiguous mid-character starts may retain the last verified anchor.
+    If both the joint decode and the prefix (ignoring trailing boundary
+    placeholders) disagree with the source, a lossy tokenizer may have changed
+    earlier text.
+    A dead anchor (None) omits provenance for the rest of this segment without
+    affecting chunk text or repeatedly decoding from the stale anchor.
     """
+    if anchor is None:
+        return None, None
     anchor_token, anchor_char = anchor
-    window = tokenizer.decode(tokens[start_token:end_token])
-    if start_token >= anchor_token:
-        prefix = tokenizer.decode(tokens[anchor_token:start_token])
-    else:  # non-monotonic caller (not expected) — fall back to a full prefix decode
-        anchor_char = 0
-        prefix = tokenizer.decode(tokens[:start_token])
-    start = anchor_char + len(prefix)
-    end = start + len(window)
-    if content[start:end] != window:
-        found = content.find(
-            window,
-            max(0, start - 32),
-            min(len(content), end + 32 + len(window)),
-        )
-        if found < 0:
-            if recover_boundary is None:
-                recover_boundary = _REPLACEMENT_CHAR not in content
-            recovered = (
-                _recover_boundary_window(content, window, prefix, anchor_char)
-                if recover_boundary
-                else None
-            )
-            if recovered is None:
-                return None, anchor
-            start, end = recovered
-            if window.startswith(_REPLACEMENT_CHAR):
-                return _source_span(content, start, end), anchor
-            return _source_span(content, start, end), (start_token, start)
-        start = found
-        end = found + len(window)
+    if start_token < anchor_token:  # non-monotonic caller: use the source origin
+        anchor_token, anchor_char = 0, 0
+    window_tokens = tokens[start_token:end_token]
+    window = tokenizer.decode(window_tokens)
+    joint = tokenizer.decode(tokens[anchor_token:end_token])
+    if recover_boundary is None:
+        recover_boundary = _REPLACEMENT_CHAR not in content
+
+    ambiguous_replacement = (
+        not recover_boundary
+        and (window.startswith(_REPLACEMENT_CHAR) or window.endswith(_REPLACEMENT_CHAR))
+        and tokenizer.encode(window) != window_tokens
+    )
+    joint_matches = content.startswith(joint, anchor_char)
+    if (
+        window
+        and not ambiguous_replacement
+        and joint.endswith(window)
+        and joint_matches
+    ):
+        end = anchor_char + len(joint)
+        start = end - len(window)
+        return _source_span(content, start, end), (start_token, start)
+
+    prefix = tokenizer.decode(tokens[anchor_token:start_token])
+    if not joint_matches and not content.startswith(
+        prefix.rstrip(_REPLACEMENT_CHAR), anchor_char
+    ):
+        return None, None
+
+    if ambiguous_replacement:
+        # A text match cannot distinguish a literal U+FFFD from an artifact.
+        return None, anchor
+
+    recovered = (
+        _recover_boundary_window(content, window, prefix, anchor_char)
+        if recover_boundary
+        else None
+    )
+    if recovered is None:
+        return None, anchor
+    start, end = recovered
+    if window.startswith(_REPLACEMENT_CHAR):
+        return _source_span(content, start, end), anchor
     return _source_span(content, start, end), (start_token, start)
 
 
@@ -261,7 +290,11 @@ def chunking_by_token_size(
                 if len(_tokens) > chunk_token_size:
                     # Anchor is chunk-relative (offsets are shifted by chunk_start
                     # below), so it resets per split-by-character segment.
-                    anchor = (0, 0)
+                    anchor = (
+                        _origin_anchor(tokenizer, chunk, _tokens)
+                        if _emit_source_span
+                        else (0, 0)
+                    )
                     recover_boundary = _REPLACEMENT_CHAR not in chunk
                     for start in range(
                         0,
@@ -316,7 +349,9 @@ def chunking_by_token_size(
         # boundaries differ on substrings), so the full encode is deferred
         # here rather than paid on every call.
         tokens = tokenizer.encode(content)
-        anchor = (0, 0)
+        anchor = (
+            _origin_anchor(tokenizer, content, tokens) if _emit_source_span else (0, 0)
+        )
         recover_boundary = _REPLACEMENT_CHAR not in content
         for index, start in enumerate(
             range(
