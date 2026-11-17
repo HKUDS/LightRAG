@@ -62,3 +62,36 @@ def test_cell_text_with_closing_table_tag_keeps_every_row(
     assert entry["format"] == "json"
     assert entry["dimension"] == [3, 2]
     assert json.loads(entry["content"]) == rows
+
+
+def test_cell_inner_markup_is_written_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the text ``</table>`` is escaped in a cell.
+
+    A superscript run becomes ``<sup>…</sup>`` in the cell text; its closing
+    tag must reach the block as written, like every other inner tag.
+    """
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Room"
+    table.cell(0, 1).text = "Area"
+    table.cell(1, 0).text = "Lab"
+    paragraph = table.cell(1, 1).paragraphs[0]
+    paragraph.add_run("25 m")
+    paragraph.add_run("2").font.superscript = True
+    source = tmp_path / "markup.docx"
+    document.save(source)
+
+    parsed_dir = _parse_native(source, monkeypatch)
+
+    lines = (parsed_dir / "markup.blocks.jsonl").read_text(encoding="utf-8")
+    contents = [
+        row["content"]
+        for row in map(json.loads, lines.splitlines())
+        if row.get("type") == "content"
+    ]
+    assert contents == [
+        '<table id="tb-table-markup-0001" format="json">'
+        '[["Room", "Area"], ["Lab", "25 m<sup>2</sup>"]]</table>'
+    ]

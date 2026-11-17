@@ -74,6 +74,7 @@ from lightrag.constants import DEFAULT_R_SEPARATORS
 from lightrag.table_markup import (
     TABLE_TAG_RE,
     detect_table_format,
+    dumps_json_table_body,
     parse_table_tag,
     serialize_html_rows,
     split_html_rows,
@@ -317,11 +318,7 @@ def _row_trim_table_leading(
         attrs_str, rows = parsed
         candidate = _largest_fitting_row_prefix(
             len(rows),
-            lambda k: (
-                f"<table {attrs_str}>"
-                f"{json.dumps(rows[-k:], ensure_ascii=False)}"
-                f"</table>"
-            ),
+            lambda k: f"<table {attrs_str}>{dumps_json_table_body(rows[-k:])}</table>",
             max_tokens,
             tokenizer,
         )
@@ -373,9 +370,7 @@ def _row_trim_table_trailing(
         attrs_str, rows = parsed
         candidate = _largest_fitting_row_prefix(
             len(rows),
-            lambda k: (
-                f"<table {attrs_str}>{json.dumps(rows[:k], ensure_ascii=False)}</table>"
-            ),
+            lambda k: f"<table {attrs_str}>{dumps_json_table_body(rows[:k])}</table>",
             max_tokens,
             tokenizer,
         )
@@ -436,7 +431,7 @@ def _char_fallback_json_table(
         snippet = source_text[-chars:] if keep_tail and chars else source_text[:chars]
         if not chars:
             return empty
-        body = json.dumps([[snippet]], ensure_ascii=False)
+        body = dumps_json_table_body([[snippet]])
         return f"<table {attrs}>{body}</table>"
 
     if _count_tokens(tokenizer, candidate(len(source_text))) <= max_tokens:

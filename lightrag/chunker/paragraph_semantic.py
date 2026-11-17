@@ -64,6 +64,7 @@ from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.table_markup import (
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
+    dumps_json_table_body as _dumps_json_table_body,
     extract_table_id as _extract_table_id,
     serialize_html_rows as _serialize_rows_with_wrappers,
     split_html_rows as _split_html_rows,
@@ -415,13 +416,13 @@ def _header_reserve_tokens(header_rows: list[Any], tokenizer: Tokenizer) -> int:
     """Tokens to reserve out of a JSON slice's body budget for the header.
 
     Conservative on purpose: we reserve the cost of the header rows serialized
-    on their own (``json.dumps(header_rows)``); the in-place form
+    on their own (as a table body); the in-place form
     ``header_rows + data`` is actually a couple of tokens cheaper (one shared
     set of brackets), so reserving the standalone cost can only over-budget,
     never under-budget — the safe direction for the cap. (HTML headers reserve
     the raw ``<thead>`` token cost directly in :func:`_split_table_text`.)
     """
-    return _count_tokens(tokenizer, json.dumps(header_rows, ensure_ascii=False))
+    return _count_tokens(tokenizer, _dumps_json_table_body(header_rows))
 
 
 def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
@@ -478,7 +479,7 @@ def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
         # rows — prepend the full header verbatim, never heuristically stripping
         # leading rows (which would corrupt a data row that happens to equal a
         # header row).
-        merged = json.dumps(header_rows + rows, ensure_ascii=False)
+        merged = _dumps_json_table_body(header_rows + rows)
         return f"<table {attrs}>{merged}</table>"
     if slice_fmt == "html":
         # header_fmt is guaranteed "html" here. If the slice already carries a
@@ -615,7 +616,7 @@ def _split_rows_by_tokens(
     last_min: int,
 ) -> list[list[Any]]:
     """Split ``rows`` into balanced row-bounded chunks (TableRowSplit core)."""
-    total = _count_tokens(tokenizer, json.dumps(rows, ensure_ascii=False))
+    total = _count_tokens(tokenizer, _dumps_json_table_body(rows))
     if total <= target_max or len(rows) <= 1:
         return [rows]
 
@@ -647,12 +648,10 @@ def _split_rows_by_tokens(
 
     # Merge a tiny last chunk back into the previous chunk when feasible.
     if len(chunks) >= 2:
-        last_json = json.dumps(chunks[-1], ensure_ascii=False)
+        last_json = _dumps_json_table_body(chunks[-1])
         if _count_tokens(tokenizer, last_json) < last_min:
             merged = chunks[-2] + chunks[-1]
-            merged_tokens = _count_tokens(
-                tokenizer, json.dumps(merged, ensure_ascii=False)
-            )
+            merged_tokens = _count_tokens(tokenizer, _dumps_json_table_body(merged))
             if merged_tokens <= target_max:
                 chunks[-2] = merged
                 chunks.pop()
@@ -823,11 +822,7 @@ def _split_table_text(
             )
 
             def serialize(chunk_rows: list[Any]) -> str:
-                return (
-                    f"<table {attrs}>"
-                    f"{json.dumps(chunk_rows, ensure_ascii=False)}"
-                    f"</table>"
-                )
+                return f"<table {attrs}>{_dumps_json_table_body(chunk_rows)}</table>"
 
     elif fmt == "html":
         rows_html = _split_html_rows(body)
