@@ -42,14 +42,18 @@ lightrag/evaluation/
 
 ### 1. Install Dependencies
 
-```bash
-pip install ragas datasets langfuse
-```
-
-Or use your project dependencies (already included in pyproject.toml):
+Use the project's `evaluation` extra (recommended; it carries the version caps
+RAGAS needs):
 
 ```bash
 pip install -e ".[evaluation]"
+```
+
+Or install the packages by hand, keeping the same cap on `langchain-community`
+(see *Troubleshooting* below for why):
+
+```bash
+pip install ragas datasets "langchain-community<0.4.2" langfuse
 ```
 
 ### 2. Run Evaluation
@@ -353,8 +357,21 @@ EVAL_LLM_TIMEOUT=180     # 3-minute timeout per request
 ### "ModuleNotFoundError: No module named 'ragas'"
 
 ```bash
-pip install ragas datasets
+pip install -e ".[evaluation]"
 ```
+
+### "No module named 'langchain_community.chat_models.vertexai'"
+
+RAGAS is installed but cannot be imported. ragas (up to 0.4.3) imports
+`langchain_community.chat_models.vertexai`, which `langchain-community` 0.4.2
+deleted. Downgrade it:
+
+```bash
+pip install "langchain-community<0.4.2"
+```
+
+The evaluator reports the underlying import error in its `ImportError`
+message, so any other version mismatch in the RAGAS stack shows up the same way.
 
 ### "Warning: LM returned 1 generations instead of requested 3" or Context Precision NaN
 

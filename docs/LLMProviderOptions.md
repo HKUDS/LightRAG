@@ -237,7 +237,7 @@ Prefix `GEMINI_LLM_`. Each field maps onto the Google GenAI
 | `GEMINI_LLM_STOP_SEQUENCES` | JSON list | Stop sequences, e.g. `'["END"]'`. |
 | `GEMINI_LLM_SEED` | int | Random seed for reproducible generation. |
 | `GEMINI_LLM_THINKING_CONFIG` | JSON dict | Thinking configuration, e.g. `'{"thinking_budget": 1024}'`, `'{"include_thoughts": true}'`, or `'{"thinking_budget": 0, "include_thoughts": false}'` to turn thinking off. `thinking_budget: -1` selects Gemini's dynamic budget (the model chooses). |
-| `GEMINI_LLM_SAFETY_SETTINGS` | JSON dict | Gemini safety-settings overrides. |
+| `GEMINI_LLM_SAFETY_SETTINGS` | JSON dict | Gemini safety-settings overrides as a category-to-threshold mapping, e.g. `'{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE", "HARM_CATEGORY_HATE_SPEECH": "BLOCK_ONLY_HIGH"}'`. It is converted to the SDK's list of `{category, threshold}` entries before the request; a single entry written as `'{"category": ..., "threshold": ...}'` is accepted as well. |
 
 Note: entries whose value is `None` or an empty string are dropped before the config
 object is built, so an empty setting cannot produce a type error at request time.
