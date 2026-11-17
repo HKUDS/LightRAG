@@ -17,6 +17,7 @@ from lightrag.utils import (
     _consume_future_exception,
     _wait_deferring_cancellation,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..base import BaseVectorStorage
 from ..constants import (
@@ -25,6 +26,7 @@ from ..constants import (
     GRAPH_FIELD_SEP,
     MILVUS_SUBMIT_LIMIT,
 )
+from ..exceptions import StorageCapabilityError, VectorSpaceMismatchError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -339,6 +341,29 @@ MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
 # either — grpc-core always attaches this text to a genuine oversize response
 # — so quota errors fail fast instead.
 MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = ("received message larger than max",)
+
+# Consistency level for every point read (`query()` by id or by filter).
+# Collections are created without a level, so the server default -- Bounded --
+# applies to any request that does not name one. Bounded serves a snapshot up to
+# `common.gracefulTime` (5 s by default) old, so a row upserted or deleted by
+# the flush that just emptied `_pending_vector_docs` / `_pending_vector_deletes`
+# can be missing from, or still present in, the next read. The write buffer
+# gives read-your-writes only until that flush. Reads whose answer drives a
+# decision or is shown back to the caller -- `delete_entity_relation`'s
+# victim lookup, `is_empty`, `get_by_id(s)`, `get_vectors_by_ids` -- therefore
+# ask for Strong, which waits for the server's time tick (`timeTickInterval`,
+# 200 ms by default) instead of reading a stale snapshot. Passed per request
+# rather than set at creation, so collections created before this change get it
+# too.
+#
+# Accepted residue: vector search (`MilvusVectorDBStorage.query()`, which calls
+# `client.search`) stays on the collection default. A search that misses
+# vectors written moments ago is ordinary retrieval lag, healed by the next
+# search, and Strong would add a time-tick wait to every query. The schema
+# migration's `query_iterator` is also left on its default: it runs inside
+# `initialize()`, before this instance has written anything, so it copies rows
+# an earlier run flushed.
+MILVUS_POINT_READ_CONSISTENCY_LEVEL = "Strong"
 
 # Schema-migration resilience. A transient Milvus outage during the long
 # iterator-based migration must not kill worker startup: when pymilvus'
@@ -1451,8 +1476,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         logger.debug(f"[{self.workspace}] Field '{field_name}' is compatible")
         return True
 
-    def _check_vector_dimension(self, collection_info: dict):
-        """Check vector dimension compatibility"""
+    def _check_vector_dimension(
+        self, collection_info: dict, container: str | None = None
+    ):
+        """Check vector dimension compatibility.
+
+        Args:
+            collection_info: ``describe_collection`` output for ``container``.
+            container: the collection the info describes. Defaults to
+                ``final_namespace``; the legacy-migration caller passes its own
+                source collection so the refusal names what it actually read.
+
+        Raises:
+            VectorSpaceMismatchError: the collection holds vectors of another
+                dimension. Callers that are merely *sourcing* a migration
+                (the legacy collection) must catch it -- a legacy collection in
+                another embedding space is not a refusal, because the suffixed
+                collection is a different container and is created fresh.
+            ValueError: the dimensions could not be parsed at all, which is a
+                broken schema rather than an embedding-space change and must
+                never reach ``lightrag-rebuild-vdb`` as a droppable condition.
+        """
+        container = container or self.final_namespace
         current_dimension = self.embedding_func.embedding_dim
 
         # Find vector field dimension
@@ -1492,14 +1537,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             f"current={current_dimension} (type={type(current_dimension)}), error={e}"
                         )
                         raise ValueError(
-                            f"Invalid dimension values for collection '{self.final_namespace}': "
+                            f"Invalid dimension values for collection '{container}': "
                             f"existing={existing_dimension}, current={current_dimension}"
                         ) from e
 
-                    if existing_dim_int != current_dim_int:
+                    # A dimension that is MISSING is not an embedding-space
+                    # change. `None != 768` would otherwise raise the typed
+                    # refusal, and `lightrag-rebuild-vdb` answers that by
+                    # DROPPING the collection -- so a malformed describe_collection
+                    # response, or an embedding_func that never declared a
+                    # dimension, would authorise destroying live vectors. A fact
+                    # nobody reported can never be evidence of a mismatch; see
+                    # "Absent evidence never refuses" in
+                    # docs/design/VectorSpaceProvenance.md.
+                    if existing_dim_int is None or current_dim_int is None:
+                        logger.error(
+                            f"[{self.workspace}] Missing dimension: existing={existing_dimension}, "
+                            f"current={current_dimension}"
+                        )
                         raise ValueError(
-                            f"Vector dimension mismatch for collection '{self.final_namespace}': "
-                            f"existing={existing_dim_int}, current={current_dim_int}"
+                            f"Missing dimension values for collection '{container}': "
+                            f"existing={existing_dimension}, current={current_dimension}"
+                        )
+
+                    if existing_dim_int != current_dim_int:
+                        raise VectorSpaceMismatchError(
+                            backend=type(self).__name__,
+                            container=container,
+                            expected_dim=current_dim_int,
+                            stored_dim=existing_dim_int,
                         )
 
                     logger.debug(
@@ -2127,6 +2193,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         try:
             self._client.describe_collection(self.final_namespace)
             self._validate_collection_compatibility()
+        except VectorSpaceMismatchError:
+            # Never reframed as a migration failure. The typed refusal is what
+            # `lightrag-rebuild-vdb` matches on to drop and re-provision this
+            # collection; wrapping it in a generic RuntimeError would leave the
+            # operator with no automated way out, which is the defect this
+            # replaces. See docs/design/VectorSpaceProvenance.md.
+            raise
         except Exception as validation_error:
             logger.error(
                 f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
@@ -2272,8 +2345,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
                 else:
                     try:
-                        self._check_vector_dimension(legacy_collection_info)
-                    except ValueError as legacy_error:
+                        self._check_vector_dimension(
+                            legacy_collection_info, container=self.legacy_namespace
+                        )
+                    # VectorSpaceMismatchError is caught here, not propagated:
+                    # the suffixed collection does not exist yet, so nothing is
+                    # being served out of the wrong embedding space. The legacy
+                    # collection is only a migration SOURCE, and an incompatible
+                    # source simply is not migrated.
+                    except (ValueError, VectorSpaceMismatchError) as legacy_error:
                         logger.warning(
                             f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
                             f"is not compatible with '{self.final_namespace}': {legacy_error}. "
@@ -2319,23 +2399,42 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error in _create_collection_if_not_exist for {self.namespace}: {e}"
             )
 
-            # If there's any error (other than validation failure), try to force create the collection
+            # If there's any error (other than validation failure), create the
+            # collection only if it is missing and would hide nothing.
+            # Never drop an existing collection here: an unclassified error
+            # (a load the cluster refuses, a transient "server is busy") says
+            # nothing about corruption, and dropping would destroy its
+            # vectors. Nor create one that would hide data: an empty target
+            # permanently shadows an unmigrated legacy collection or an
+            # interrupted migration's _old/_temp. Only create when none of
+            # them exists; if existence cannot be established, fail closed.
+            if self._client.has_collection(self.final_namespace):
+                raise RuntimeError(
+                    f"Collection '{self.final_namespace}' exists but could not be "
+                    f"initialized; refusing to drop and recreate it. Original error: {e}"
+                ) from e
+            shadowed = [
+                name
+                for name in (
+                    self.legacy_namespace
+                    if self.legacy_namespace != self.final_namespace
+                    else None,
+                    f"{self.final_namespace}_old",
+                    f"{self.final_namespace}_temp",
+                )
+                if name and self._client.has_collection(name)
+            ]
+            if shadowed:
+                raise RuntimeError(
+                    f"Collection '{self.final_namespace}' could not be initialized; "
+                    f"refusing to create it over existing data in {shadowed}. "
+                    f"Original error: {e}"
+                ) from e
+
             logger.info(
                 f"[{self.workspace}] Attempting to force create collection {self.namespace}..."
             )
             try:
-                # Try to drop the collection first if it exists in a bad state
-                try:
-                    if self._client.has_collection(self.final_namespace):
-                        logger.info(
-                            f"[{self.workspace}] Dropping potentially corrupted collection {self.namespace}"
-                        )
-                        self._client.drop_collection(self.final_namespace)
-                except Exception as drop_error:
-                    logger.warning(
-                        f"[{self.workspace}] Could not drop collection {self.namespace}: {drop_error}"
-                    )
-
                 # Create fresh collection
                 self._create_collection_with_schema(self.final_namespace)
 
@@ -2397,7 +2496,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
         if milvus_workspace and milvus_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MILVUS_WORKSPACE", milvus_workspace
+            )
             logger.info(
                 f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -2682,7 +2783,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         Note: buffered-but-unflushed upserts are NOT visible to this method —
         they exist only in `_pending_vector_docs` until `index_done_callback()`
         embeds and writes them. Callers that need read-after-write visibility
-        for similarity search must run an explicit flush first.
+        for similarity search must run an explicit flush first, and even then
+        a search issued right after the flush can still miss those rows: it
+        reads at the collection's default Bounded consistency (see
+        ``MILVUS_POINT_READ_CONSISTENCY_LEVEL`` for why it stays there).
         """
         # Ensure collection is loaded before querying. MilvusClient is a
         # synchronous SDK (blocking gRPC calls) -- run it off the event loop
@@ -3033,7 +3137,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pending overwrite is dropped — i.e. the final state can diverge
         from the eager-flush ordering (upsert → flush → delete). Callers
         that require eager-equivalent semantics should call
-        ``index_done_callback()`` before ``delete_entity_relation``.
+        ``index_done_callback()`` before ``delete_entity_relation``. That
+        flush is enough only because the victim lookup reads with
+        ``MILVUS_POINT_READ_CONSISTENCY_LEVEL`` (Strong): under the
+        collection's default Bounded level it could miss the rows the flush
+        just wrote.
         """
 
         def _prune_pending() -> None:
@@ -3061,6 +3169,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 filter=expr,
                 output_fields=["id"],
+                consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
             )
 
             if not results:
@@ -3166,6 +3275,44 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         page_size = MILVUS_QUERY_MAX_RESPONSE_BYTES // row_bytes
         return max(1, min(page_size, MILVUS_QUERY_MAX_RECORDS_PER_BATCH))
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            if self._client is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] Milvus client is not connected, so "
+                    f"{self.final_namespace} cannot be read for emptiness"
+                )
+
+        await self._run_gated(self._ensure_collection_loaded)
+        # `id != ""` rather than an empty filter: every row carries a non-empty
+        # varchar primary key, so this matches all of them on every pymilvus
+        # version, while an empty `filter` needs a `limit` the older clients
+        # reject.
+        rows = await self._run_gated(
+            self._client.query,
+            collection_name=self.final_namespace,
+            filter='id != ""',
+            output_fields=["id"],
+            limit=1,
+            consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
+        )
+        return not rows
+
     async def _query_rows_by_ids(
         self,
         ids: list[str],
@@ -3205,6 +3352,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     collection_name=self.final_namespace,
                     filter=filter_expr,
                     output_fields=output_fields,
+                    consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
                 )
             except Exception as e:
                 if len(page) == 1 or not self._is_response_too_large_error(e):
@@ -3253,6 +3401,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 filter=f'id == "{_escape_milvus_str(id)}"',
                 output_fields=output_fields,
+                consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
             )
 
             if not result or len(result) == 0:

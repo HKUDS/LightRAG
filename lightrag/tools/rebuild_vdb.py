@@ -18,6 +18,25 @@ dimension. Run it with the updated embedding configuration and rebuild all
 vector storages so stored vectors match the embedding space the server will
 query.
 
+That second use is the reason this tool tolerates one specific startup
+failure. A vector storage whose container was written in a different embedding
+space REFUSES to attach (``VectorSpaceMismatchError``) -- that refusal is what
+stops the server serving an empty or foreign index, and it is the condition
+this tool exists to clear. So the three vector targets are initialized
+individually and a typed refusal is *recorded* rather than aborting the run;
+the rebuild then opens with ``drop()`` on the refused container, which
+re-provisions it in the current embedding space, and re-initializes it. A typed
+corrupt file-backed snapshot also permits entering the menu, but every file it
+names is backed up before any confirmed rebuild drops it. Source checks and
+user confirmation precede recovery; normal startup still refuses corruption.
+Other failures, including outages and bad credentials, abort without dropping
+anything.
+
+The authoritative SOURCES (graph storage and the ``text_chunks`` KV store) keep
+the server-identical init path and still abort the run on any failure -- they
+are what the rebuild reads from, and rebuilding vectors out of a half-migrated
+source is worse than not rebuilding at all.
+
 A diagnostic consistency check mode is also provided so users can decide
 whether a (potentially expensive, full re-embedding) rebuild is needed. The
 check itself only issues read queries and does not run a rebuild (no drop +
@@ -44,10 +63,13 @@ function is constructed through the same factory the server uses, so rebuilt
 vectors live in exactly the same embedding space.
 """
 
+import argparse
 import asyncio
 import os
 import sys
+import shutil
 import time
+from uuid import uuid4
 from typing import Any, Callable, Dict, List
 
 from dotenv import load_dotenv
@@ -60,9 +82,40 @@ sys.path.insert(
 from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_WORKING_DIR,
 )
-from lightrag.exceptions import StorageCapabilityError
+from lightrag.config_store import (
+    EMBEDDING_TARGETS,
+    create_configuration_storage,
+    describe_configuration_container,
+    preflight_configuration_anchor,
+    read_embedding_baselines,
+    record_embedding_baseline,
+    resolve_config_dir,
+    resolve_configuration_storage,
+    verify_configuration_identity,
+)
+from lightrag.config_shards import validate_deployment_workspace
+from lightrag.exceptions import (
+    ConfigurationAnchorLockError,
+    ConfigurationStorageError,
+    CorruptStorageSnapshotError,
+    ReferencesIntactFlushError,
+    StorageCapabilityError,
+    VectorSpaceMismatchError,
+    WorkingDirectoryInUseError,
+)
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
+from lightrag.private_file import PrivateFileError, open_private_file
+from lightrag.kg.anchor_lock import (
+    acquire_anchor_lock_shared,
+    release_anchor_lock_shared,
+)
+from lightrag.kg.working_dir_lock import (
+    acquire_working_dir_lock,
+    release_working_dir_lock,
+    uses_working_dir,
+)
 from lightrag.namespace import NameSpace
 from lightrag.utils import (
     EmbeddingFunc,
@@ -70,8 +123,10 @@ from lightrag.utils import (
     get_env_value,
     logger,
     make_relation_vdb_ids,
+    normalize_server_workspace,
     safe_vdb_operation_with_exception,
     setup_logger,
+    validate_workspace,
 )
 
 # NOTE: .env loading and logger setup are deferred to main() so that importing
@@ -132,6 +187,98 @@ async def _drop_vdb(vdb, label: str) -> None:
     logger.info(f"Dropped {label} vector storage")
 
 
+def backup_corrupt_snapshot(paths: tuple[str, ...]) -> List[str]:
+    """Preserve every file of a corrupt storage before a confirmed rebuild.
+
+    Copies each path that exists to an exclusive ``<path>.corrupt-<token>``
+    sibling and flushes it before the caller may drop the originals. One token
+    per recovery, so a multi-file storage's backups read as one set. Any error
+    aborts recovery with the originals untouched. Backups are never deleted
+    automatically, including after a failed rebuild.
+
+    A storage whose files have all vanished is REFUSED rather than reported as
+    backed up: there is nothing left to preserve, so nothing may be destroyed.
+    A file that is merely absent from a present set is skipped -- a torn pair
+    is exactly the shape some corruption takes.
+
+    "Absent" is decided by OPENING the source and catching ``FileNotFoundError``
+    from that one call, not by a prior ``exists()``. A file that disappears
+    between the check and the open would otherwise abort mid-way through, and,
+    worse, only the open can tell "this half of a torn pair is missing" apart
+    from "the directory is gone" or "this file cannot be read" -- both of which
+    must abort rather than be silently skipped as nothing-to-preserve.
+
+    A backup holds the same documents and metadata as the store it copies and
+    is kept indefinitely by design, so it must never be more readable than
+    what it copies. ``open_private_file`` is what enforces that, on both
+    platforms and from the instant each file exists -- read it before relying
+    on this. A backup that cannot be created private, or proven private,
+    removes itself and aborts the recovery with the originals intact.
+    """
+    token = uuid4().hex[:8]
+    backups: List[str] = []
+    for path in paths:
+        absolute = os.path.abspath(path)
+        try:
+            source = open(absolute, "rb")
+        except FileNotFoundError:
+            # The ONLY tolerated failure, and scoped to the open alone.
+            continue
+        backup = f"{absolute}.corrupt-{token}"
+        with source, open_private_file(backup) as destination:
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        # Appended only once the copy is durable, so the returned list never
+        # names a backup that does not hold its source.
+        backups.append(backup)
+    if not backups:
+        raise FileNotFoundError(
+            f"Refusing to recover: none of {list(paths)} exists to be backed up"
+        )
+    if os.name != "nt":
+        for parent in sorted({os.path.dirname(backup) for backup in backups}):
+            directory = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    return backups
+
+
+async def clear_vector_space_refusal(vdb, label: str) -> None:
+    """Make a vector storage that refused to attach usable again.
+
+    A storage raises ``VectorSpaceMismatchError`` from ``initialize()`` when
+    its container holds vectors from another embedding space. The way out is
+    the one this tool is built around, and it is two steps, in this order:
+
+    1. ``drop()`` -- destroys the foreign vectors and re-provisions the
+       container in the CURRENT embedding space, recording this process's
+       provenance marker. Every backend must be able to serve ``drop()`` while
+       refused; a backend that raises its refusal before it has a client or a
+       lock is wedged, not fail-closed.
+    2. ``initialize()`` again -- the container now matches, so this is the
+       ordinary init path and leaves a fully live instance. Doing the rebuild
+       against the half-initialized object instead would depend on which step
+       of ``initialize()`` happened to run before the refusal.
+
+    Destructive by construction: it exists to delete a container the operator
+    has already been told is unusable. Call it only for a target whose
+    ``initialize()`` raised ``VectorSpaceMismatchError`` -- never to paper over
+    another failure.
+    """
+    logger.warning(
+        f"Rebuild {label}: dropping the incompatible vector container before "
+        f"the rebuild (its vectors were written in a different embedding space)"
+    )
+    await _drop_vdb(vdb, label)
+    await vdb.initialize()
+    logger.info(
+        f"Rebuild {label}: vector storage re-provisioned in the current embedding space"
+    )
+
+
 async def _flush(vdb, stats: Dict[str, Any]) -> None:
     """Flush staged records to disk and credit them as rebuilt.
 
@@ -140,29 +287,77 @@ async def _flush(vdb, stats: Dict[str, Any]) -> None:
     than in ``upsert``. Treat such a failure the same way as a failed upsert
     batch: record it, drop the staged count, and continue (sources are never
     modified, so the user can re-run). ``rebuilt`` is only incremented after a
-    flush succeeds, so it never overstates what was actually persisted.
+    flush succeeds. That is not the whole story on a per-item backend, which
+    keeps a retryable failure buffered and returns normally: ``rebuilt`` then
+    counts a record the server never took. Mid-rebuild that heals -- the next
+    flush retries it -- so it is not treated as an error here. What must not
+    heal silently is a residue left by the LAST flush, and ``commit_baseline``
+    asks the storage directly before recording anything.
     """
     if stats["staged"] == 0:
         return
     label = stats["label"]
+    failure: BaseException | None = None
     try:
         await vdb.index_done_callback()
-        stats["rebuilt"] += stats["staged"]
+    except ReferencesIntactFlushError as e:
+        # A backend that can prove its raise lost nothing. Whether anything
+        # LANDED is the buffer's answer to give, not this exception's -- and
+        # OpenSearch raises this both when a bulk failed with every operation
+        # still buffered AND when the bulk was accepted and only the refresh
+        # after it failed. Reading both as a failed flush reports durable
+        # vectors as lost, and ``commit_baseline`` then withholds the
+        # baseline, leaving the server refusing to start over an index that
+        # is in fact rebuilt.
+        if await _retained_after_flush(vdb):
+            failure = e
+        else:
+            logger.warning(
+                f"Rebuild {label}: the flush of {stats['staged']} staged "
+                f"record(s) reported {type(e).__name__}, but the storage "
+                f"kept nothing buffered -- the write landed and only a step "
+                f"after it failed ({e})"
+            )
     except Exception as e:
+        failure = e
+
+    if failure is None:
+        stats["rebuilt"] += stats["staged"]
+    else:
         logger.error(
-            f"Rebuild {label}: flush of {stats['staged']} staged record(s) failed: {e}"
+            f"Rebuild {label}: flush of {stats['staged']} staged record(s) "
+            f"failed: {failure}"
         )
         stats["failed_batches"] += 1
         stats["errors"].append(
             {
                 "batch": f"flush@batch-{stats['batches']}",
                 "records_lost": stats["staged"],
-                "error_type": type(e).__name__,
-                "error_msg": str(e),
+                "error_type": type(failure).__name__,
+                "error_msg": str(failure),
             }
         )
-    finally:
-        stats["staged"] = 0
+    stats["staged"] = 0
+
+
+async def _retained_after_flush(vdb) -> bool:
+    """Whether the storage still holds operations the server never took.
+
+    A backend that cannot be asked keeps the conservative reading of its own
+    raise: unanswerable is treated as retained, so a flush is never credited
+    on an assumption.
+    """
+    has_pending = getattr(vdb, "has_pending_index_ops", None)
+    if has_pending is None:
+        return True
+    try:
+        return bool(await has_pending(include_deletes=True))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.error(
+            f"Could not ask {type(vdb).__name__} whether its flush retained "
+            f"anything ({type(e).__name__}: {e}); treating it as retained"
+        )
+        return True
 
 
 async def _upsert_batch(
@@ -471,6 +666,7 @@ async def check_vdb_consistency(
     relationships_vdb,
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    incompatible: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Read-only diagnosis: find graph records with no vector counterpart.
 
@@ -479,7 +675,18 @@ async def check_vdb_consistency(
     eliminated by a full rebuild. Relations are probed with both candidate
     ids from make_relation_vdb_ids so legacy reverse-order ids are not
     misreported as missing.
+
+    ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
+    storage refused to attach because of incompatible vectors or a corrupt
+    snapshot, mapped to the refusal message. Such a target is NOT
+    probed: its storage cannot answer, and probing it anyway would report
+    every graph record as missing -- a true statement about that container
+    that reads as a routine drift report and buries the one fact that matters,
+    which is that the container is unusable and a rebuild is mandatory rather
+    than optional. The report carries the refusal under ``"incompatible"``
+    instead, and ``consistent`` is False.
     """
+    incompatible = dict(incompatible or {})
     report: Dict[str, Any] = {
         "graph_entities": 0,
         "graph_relations": 0,
@@ -489,6 +696,7 @@ async def check_vdb_consistency(
         "missing_relation_pairs": [],
         "skipped_nodes": 0,
         "skipped_edges": 0,
+        "incompatible": incompatible,
     }
 
     # Entities: one candidate id per graph node
@@ -508,6 +716,8 @@ async def check_vdb_consistency(
         entity_items.append((entity_vdb_id, entity_name))
 
     report["graph_entities"] = len(entity_items)
+    if "entities" in incompatible:
+        entity_items = []
     for start in range(0, len(entity_items), batch_size):
         batch = entity_items[start : start + batch_size]
         results = await entities_vdb.get_by_ids([vdb_id for vdb_id, _ in batch])
@@ -534,6 +744,8 @@ async def check_vdb_consistency(
         relation_items.append((candidate_ids, f"{src} ~ {tgt}"))
 
     report["graph_relations"] = len(relation_items)
+    if "relationships" in incompatible:
+        relation_items = []
     for start in range(0, len(relation_items), batch_size):
         batch = relation_items[start : start + batch_size]
         flat_ids: List[str] = []
@@ -551,7 +763,9 @@ async def check_vdb_consistency(
                     report["missing_relation_pairs"].append(pair_label)
 
     report["consistent"] = (
-        report["missing_entities"] == 0 and report["missing_relations"] == 0
+        not incompatible
+        and report["missing_entities"] == 0
+        and report["missing_relations"] == 0
     )
     return report
 
@@ -559,29 +773,66 @@ async def check_vdb_consistency(
 class RebuildTool:
     """Interactive CLI for the offline VDB rebuild."""
 
-    def __init__(self):
+    def __init__(self, *, workspace: str | None = None):
+        self._workspace_override = workspace
         self.graph = None
         self.entities_vdb = None
         self.relationships_vdb = None
         self.chunks_vdb = None
         self.text_chunks = None
+        # The configuration storage: where each target's embedding baseline is
+        # recorded AFTER that target's rebuild is durable and verified, and
+        # never before. See docs/design/ConfigurationStorageContract.md.
+        self.configuration_storage = None
+        # Whether this run holds the configuration-directory claim; see
+        # ``setup_storages``.
+        self._holds_working_dir = False
+        self.config_dir = ""
+        # The shared anchor lock (``lightrag/kg/anchor_lock.py``) and the
+        # anchor it guards, read before anything opens. The tool VERIFIES the
+        # container's identity against it and never writes either.
+        self._holds_anchor_lock = False
+        self.anchor_working_dir = ""
+        self.anchor = None
         self.global_config: Dict[str, Any] = {}
         self.embedding_func: EmbeddingFunc | None = None
         self.embedding_available = False
         self.workspace = ""
         self.batch_size = DEFAULT_BATCH_SIZE
         self.storage_names: Dict[str, str] = {}
+        # Vector targets that refused initialization, label -> diagnostic.
+        # Corrupt targets additionally retain the typed error, whose
+        # ``artifacts`` name the files the recovery must preserve first.
+        # Entries are cleared after confirmed recovery reinitializes a target.
+        self.incompatible_vdbs: Dict[str, str] = {}
+        self.corrupt_vdbs: Dict[str, CorruptStorageSnapshotError] = {}
 
     # ------------------------------------------------------------------
     # Configuration / setup
     # ------------------------------------------------------------------
 
     def resolve_storage_names(self) -> Dict[str, str]:
+        kv = os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage")
         return {
             "graph": os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),
             "vector": os.getenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"),
-            "kv": os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+            "kv": kv,
+            # Its own category, resolved exactly as the server resolves it --
+            # the tool must open the SAME container the server records into,
+            # or its post-rebuild baseline lands where nothing reads it.
+            "config": resolve_configuration_storage(
+                os.getenv("LIGHTRAG_CONFIG_STORAGE", ""), kv_storage=kv
+            ),
         }
+
+    def resolve_config_dir(self) -> str:
+        """The workspace's JSON configuration directory ("" for a database
+        backend), derived exactly as the server derives it."""
+        return resolve_config_dir(
+            self.storage_names["config"],
+            working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
+            workspace=self.workspace,
+        )
 
     def check_env_vars(self, storage_name: str) -> None:
         """Warn about missing env vars (initialization is the real validation)."""
@@ -618,8 +869,19 @@ class RebuildTool:
         return embedding_func
 
     def build_global_config(self) -> Dict[str, Any]:
+        # This tool builds the vector storages without a LightRAG instance,
+        # so LightRAG.__post_init__'s check never sees this value. It is the
+        # stride of every vector store's embedding loop: reject it here by
+        # name rather than failing mid-rebuild with a range() error.
+        embedding_batch_num = get_env_value(
+            "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
+        )
+        if embedding_batch_num < 1:
+            raise ValueError(
+                f"EMBEDDING_BATCH_NUM must be >= 1; got {embedding_batch_num}"
+            )
         global_config: Dict[str, Any] = {
-            "working_dir": os.getenv("WORKING_DIR", "./rag_storage"),
+            "working_dir": os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
             # Backend selection, mirroring LightRAG._build_global_config. PG
             # storages derive enable_vector from global_config["vector_storage"],
             # so this must carry the real backend name for a mixed config like
@@ -628,9 +890,11 @@ class RebuildTool:
             "kv_storage": self.storage_names["kv"],
             "vector_storage": self.storage_names["vector"],
             "graph_storage": self.storage_names["graph"],
-            "embedding_batch_num": get_env_value(
-                "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
-            ),
+            # Read by the JSON backend when it opens the configuration
+            # container (it picks this workspace's snapshot); ignored by the
+            # server backends.
+            "workspace": self.workspace,
+            "embedding_batch_num": embedding_batch_num,
             "vector_db_storage_cls_kwargs": {
                 "cosine_better_than_threshold": get_env_value(
                     "COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float
@@ -659,7 +923,46 @@ class RebuildTool:
         from lightrag.kg.factory import get_storage_class
 
         self.storage_names = self.resolve_storage_names()
-        self.workspace = os.getenv("WORKSPACE", "")
+        # Environment defaults follow the server; an explicit override names
+        # an existing SDK workspace exactly, including the empty workspace.
+        try:
+            self.workspace = (
+                self._workspace_override
+                if self._workspace_override is not None
+                else normalize_server_workspace(os.getenv("WORKSPACE", "")) or ""
+            )
+            validate_deployment_workspace(
+                self.workspace, storages=self.storage_names.values()
+            )
+            self.config_dir = self.resolve_config_dir()
+        except ValueError as e:
+            print(f"\n✗ {e}")
+            return False
+
+        # The anchor first (steps 0a-0c, as a start runs them): the shared
+        # lock, a strict read, and a refusal when it binds another backend
+        # type -- before the directory claim and before anything opens.
+        if not self.preflight_anchor():
+            return False
+
+        # Claim the working directory FIRST, before building anything. This
+        # tool is a SECOND process tree: a server running on the same
+        # directory keeps its own in-memory copy of a file-backed
+        # configuration namespace and publishes by rewriting the whole file,
+        # so the two would overwrite each other's baselines -- and the record
+        # this tool writes is the one that says the rebuild happened. The
+        # confirmation prompt is not a substitute; it asks the operator, and
+        # this asks the filesystem. Taken on the resolved storage NAME so the
+        # refusal precedes the environment checks and the embedding function:
+        # the answer does not depend on them, so neither should the wait.
+        self._holds_working_dir = uses_working_dir(self.storage_names["config"])
+        if self._holds_working_dir:
+            try:
+                acquire_working_dir_lock(self.config_dir)
+            except WorkingDirectoryInUseError as e:
+                self._holds_working_dir = False
+                print(f"\n✗ {e}")
+                return False
 
         print("\nChecking configuration...")
         for storage_name in set(self.storage_names.values()):
@@ -692,6 +995,7 @@ class RebuildTool:
         graph_cls = get_storage_class(self.storage_names["graph"])
         vector_cls = get_storage_class(self.storage_names["vector"])
         kv_cls = get_storage_class(self.storage_names["kv"])
+        config_cls = get_storage_class(self.storage_names["config"])
 
         # Namespaces and meta_fields must match LightRAG's own storage setup
         self.graph = graph_cls(
@@ -727,11 +1031,49 @@ class RebuildTool:
             global_config=self.global_config,
             embedding_func=self.embedding_func,
         )
+        self.configuration_storage = create_configuration_storage(
+            config_cls,
+            global_config=self.global_config,
+            embedding_func=self.embedding_func,
+        )
 
         print("\nInitializing storages...")
         try:
-            for storage in self.all_storages():
+            # Authoritative sources first, on the server-identical path: any
+            # failure here aborts, migrations included. Rebuilding vectors out
+            # of a half-migrated graph or chunk store is worse than not
+            # rebuilding. The configuration storage is a source too: a rebuild
+            # that cannot record its baseline afterwards is not a clean
+            # recovery, so failing to open it aborts here rather than after
+            # the vectors were dropped.
+            await self.configuration_storage.initialize()
+            # The container must be the one the anchor binds before anything
+            # else opens: a baseline recorded into the wrong container is a
+            # rebuild that protects nothing.
+            if not await self.verify_identity():
+                return False
+            for storage in (self.graph, self.text_chunks):
                 await storage.initialize()
+            # Vector targets, one at a time, tolerating ONLY the typed
+            # embedding-space refusal or a typed corrupt snapshot.
+            # Neither is deleted during setup. Corrupt files require a backup
+            # after source checks and explicit rebuild confirmation.
+            for label, vdb in self.vector_targets().items():
+                try:
+                    await vdb.initialize()
+                except CorruptStorageSnapshotError as e:
+                    # Recovery DESTROYS the container, so it is offered only to
+                    # a raiser that named the local files to preserve first.
+                    # A raiser with none (a server-backed store) cannot be
+                    # preserved, so it must not be destroyed either.
+                    if not e.artifacts:
+                        raise
+                    self.corrupt_vdbs[label] = e
+                    self.incompatible_vdbs[label] = str(e)
+                    print(f"⚠️  {label} snapshot is corrupt: {e}")
+                except VectorSpaceMismatchError as e:
+                    self.incompatible_vdbs[label] = str(e)
+                    print(f"⚠️  {label} vector storage refused to attach: {e}")
         except Exception as e:
             print(f"✗ Storage initialization failed: {e}")
             for storage_name in set(self.storage_names.values()):
@@ -743,10 +1085,283 @@ class RebuildTool:
         print(f"- Graph Storage:  {self.storage_names['graph']}")
         print(f"- Vector Storage: {self.storage_names['vector']}")
         print(f"- KV Storage:     {self.storage_names['kv']}")
+        print(
+            f"- Configuration:  "
+            f"{describe_configuration_container(self.storage_names['config'], self.config_dir)}"
+        )
         print(f"- Workspace:      {self.workspace if self.workspace else '(default)'}")
         print(f"- Working Dir:    {self.global_config['working_dir']}")
         print("- Connection Status: ✓ Success")
+        if not await self.print_baselines():
+            return False
+        if self.incompatible_vdbs:
+            print(
+                f"\n{BOLD_RED}⚠️  {len(self.incompatible_vdbs)} vector storage(s) cannot attach: "
+                f"incompatible vectors or corrupt snapshots{RESET}"
+            )
+            for label in self.incompatible_vdbs:
+                print(f"    - {label}")
+            print(
+                "  They are unusable until rebuilt. A rebuild (menu options 2-4)\n"
+                "  drops the incompatible container and re-embeds from the\n"
+                "  authoritative sources; nothing else can repair them."
+            )
         return True
+
+    def preflight_anchor(self) -> bool:
+        """Take the shared anchor lock and refuse on a backend-type mismatch.
+
+        Refuses exactly as a start would. Never creates or rewrites the
+        anchor: only a server or SDK start binds.
+        """
+        self.anchor_working_dir = os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR)
+        try:
+            acquire_anchor_lock_shared(self.anchor_working_dir)
+        except ConfigurationAnchorLockError as e:
+            print(f"\n✗ {e}")
+            return False
+        self._holds_anchor_lock = True
+        try:
+            self.anchor = preflight_configuration_anchor(
+                working_dir=self.anchor_working_dir,
+                backend=self.storage_names["config"],
+                container=describe_configuration_container(
+                    self.storage_names["config"], self.config_dir
+                ),
+            )
+        except ConfigurationStorageError as e:
+            print(f"\n✗ {e}")
+            self.release_anchor_lock()
+            return False
+        return True
+
+    async def verify_identity(self) -> bool:
+        """Verify the configuration container against the anchor; write nothing."""
+        try:
+            binding = await verify_configuration_identity(
+                self.configuration_storage,
+                self.anchor,
+                working_dir=self.anchor_working_dir,
+                backend=self.storage_names["config"],
+                container=describe_configuration_container(
+                    self.storage_names["config"], self.config_dir
+                ),
+                workspace=self.workspace,
+            )
+        except ConfigurationStorageError as e:
+            print(f"✗ {e}")
+            return False
+        if binding.action == "unanchored":
+            print(
+                "- Storage identity: no anchor on record, so the configuration "
+                "container's identity was not verified (only a server start "
+                "binds one)"
+            )
+        else:
+            print(f"- Storage identity: {binding.storage_uuid} (matches the anchor)")
+        return True
+
+    def release_anchor_lock(self) -> None:
+        if self._holds_anchor_lock:
+            self._holds_anchor_lock = False
+            release_anchor_lock_shared(self.anchor_working_dir)
+
+    async def print_baselines(self) -> bool:
+        """Report each target's recorded embedding baseline against the config.
+
+        Diagnostic: the server refuses to START on a recorded mismatch, and
+        this tool is the way out of that refusal, so it lists what the server
+        would refuse on rather than refusing itself. A configuration read that
+        cannot complete aborts (returns False): a rebuild that could not record
+        its baseline afterwards would leave the server refusing anyway.
+        """
+        try:
+            recorded = await read_embedding_baselines(
+                self.configuration_storage, self.workspace
+            )
+        except ConfigurationStorageError as e:
+            print(f"✗ Could not read the recorded embedding baselines: {e}")
+            return False
+        print("- Embedding baselines (recorded -> configured):")
+        mismatched = []
+        for target in EMBEDDING_TARGETS:
+            baseline = recorded.get(target)
+            if baseline is None:
+                print(f"    {target:14s} (none recorded)")
+                continue
+            differs = baseline.differs_from(self.embedding_func)
+            flag = "  ✗ MISMATCH" if differs else ""
+            print(
+                f"    {target:14s} model={baseline.model!r} dim={baseline.dim} "
+                f"origin={baseline.origin}{flag}"
+            )
+            if differs:
+                mismatched.append(target)
+        if mismatched:
+            print(
+                f"\n{BOLD_RED}⚠️  The server refuses to start this workspace: "
+                f"{', '.join(mismatched)} were adopted under another embedding "
+                f"space.{RESET}\n  Rebuilding them (menu options 2-4) re-embeds "
+                f"from the authoritative sources and records the configured "
+                f"space as their baseline."
+            )
+        return True
+
+    async def commit_baseline(self, label: str, stats: Dict[str, Any]) -> None:
+        """Record ``label``'s baseline once its rebuild is durable and verified.
+
+        Configuration LAST: the record is written only when every batch and
+        every flush of that one target succeeded, and only that target's
+        record moves. A rebuild whose baseline could not be recorded is
+        reported as a failed rebuild -- the stale record keeps the server
+        refusing, which is the safe direction, and re-running converges.
+
+        "Every flush succeeded" is not what a returning ``index_done_callback``
+        proves. A per-item backend keeps its retryable failures (408/429/5xx)
+        buffered and returns normally, so the last flush of a rebuild can leave
+        vectors that never reached the server with nothing left to retry them.
+        The baseline would then say the target was adopted in the configured
+        space while its index is incomplete -- and no later check catches that:
+        the startup precheck sees a matching record, and the coverage gate only
+        refuses an EMPTY index. So the storage is asked directly, and a
+        retained operation is a failed rebuild.
+        """
+        if stats["errors"]:
+            print(
+                f"  ⚠️  {label}: baseline NOT recorded -- the rebuild reported "
+                f"errors, so the previous record stays and the server keeps "
+                f"refusing until a clean rebuild."
+            )
+            return
+        if not await self._vectors_are_durable(label, stats):
+            return
+        try:
+            baseline = await record_embedding_baseline(
+                self.configuration_storage,
+                workspace=self.workspace,
+                target=label,
+                embedding_func=self.embedding_func,
+            )
+        except ConfigurationStorageError as e:
+            print(f"  ✗ {label}: rebuilt, but the baseline could not be recorded: {e}")
+            stats["errors"].append(
+                {
+                    "batch": "baseline",
+                    "records_lost": 0,
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                }
+            )
+            return
+        print(
+            f"  ✓ {label}: baseline recorded (model={baseline.model!r} "
+            f"dim={baseline.dim})"
+        )
+
+    async def _vectors_are_durable(self, label: str, stats: Dict[str, Any]) -> bool:
+        """Whether ``label``'s vector storage retained nothing after its flush.
+
+        Records an error on ``stats`` and returns False when something is still
+        buffered, or when the storage could not answer -- an unreadable answer
+        is not a durable one. A backend that buffers nothing answers False and
+        costs a method call.
+        """
+        vdb = self.vector_targets().get(label)
+        has_pending = getattr(vdb, "has_pending_index_ops", None)
+        if has_pending is None:
+            return True
+        try:
+            retained = bool(await has_pending(include_deletes=True))
+        except Exception as e:
+            print(
+                f"  ✗ {label}: rebuilt, but the vector storage could not say "
+                f"whether anything is still buffered: {e}"
+            )
+            stats["errors"].append(
+                {
+                    "batch": "durability",
+                    "records_lost": 0,
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                }
+            )
+            return False
+        if not retained:
+            return True
+        print(
+            f"  ✗ {label}: rebuilt, but the vector storage still holds "
+            f"operations its last flush could not deliver -- the baseline is "
+            f"NOT recorded, so the server keeps refusing until a clean rebuild."
+        )
+        stats["errors"].append(
+            {
+                "batch": "durability",
+                "records_lost": 0,
+                "error_type": "RetainedVectorOps",
+                "error_msg": (
+                    "the vector storage retained operations after its final "
+                    "flush; the rebuilt index is incomplete"
+                ),
+            }
+        )
+        return False
+
+    def vector_targets(self) -> Dict[str, Any]:
+        """The three rebuild targets, keyed by the label used in reports."""
+        return {
+            "entities": self.entities_vdb,
+            "relationships": self.relationships_vdb,
+            "chunks": self.chunks_vdb,
+        }
+
+    async def recover_incompatible(self, labels: List[str]) -> None:
+        """Drop + re-initialize each named target that refused to attach.
+
+        The caller must check sources and obtain explicit confirmation first.
+        A corrupt target's files are backed up before any destructive action.
+        Runs immediately before the rebuild of those targets, so a refused
+        container is destroyed only once the operator has confirmed the
+        rebuild. The rebuild helpers drop again straight after; ``drop()`` is
+        idempotent, and paying it twice is cheaper than threading the refusal
+        state through the library API.
+        """
+        targets = self.vector_targets()
+        for label in labels:
+            if label not in self.incompatible_vdbs:
+                continue
+            if label in self.corrupt_vdbs:
+                error = self.corrupt_vdbs[label]
+                logger.warning(
+                    f"Rebuild {label}: backing up the corrupt files before the "
+                    f"rebuild drops them ({', '.join(error.artifacts)})"
+                )
+                try:
+                    for backup in backup_corrupt_snapshot(error.artifacts):
+                        print(f"  ✓ {label}: corrupt file preserved at {backup}")
+                except PrivateFileError as privacy_error:
+                    # The refusal alone would leave the operator stuck: every
+                    # re-run reaches this same branch. Name the way out that
+                    # actually works -- an absent container reads as a first
+                    # start, so moving the files aside turns this into an
+                    # ordinary rebuild with nothing left to preserve.
+                    raise PrivateFileError(
+                        f"{privacy_error}\n\nNothing has been changed. To "
+                        f"recover {label} by hand, move these files somewhere "
+                        f"you control and re-run this tool -- a container that "
+                        f"is absent reads as a first start, so the rebuild "
+                        f"then proceeds normally:\n"
+                        + "\n".join(f"    {artifact}" for artifact in error.artifacts)
+                    ) from privacy_error
+                await _drop_vdb(targets[label], label)
+                await targets[label].initialize()
+                logger.info(f"Rebuild {label}: corrupt container re-provisioned")
+                del self.corrupt_vdbs[label]
+                del self.incompatible_vdbs[label]
+                print(f"  ✓ {label}: corrupt container dropped and re-provisioned")
+                continue
+            await clear_vector_space_refusal(targets[label], label)
+            del self.incompatible_vdbs[label]
+            print(f"  ✓ {label}: incompatible container dropped and re-provisioned")
 
     def all_storages(self):
         return [
@@ -755,6 +1370,7 @@ class RebuildTool:
             self.relationships_vdb,
             self.chunks_vdb,
             self.text_chunks,
+            self.configuration_storage,
         ]
 
     # ------------------------------------------------------------------
@@ -829,13 +1445,30 @@ class RebuildTool:
                 print(f"      ... and {len(stats['errors']) - 5} more")
 
     def print_check_report(self, report: Dict[str, Any]):
+        incompatible = report.get("incompatible") or {}
         print("\n" + "=" * 60)
         print("📊 Consistency Report (graph -> vector storage)")
         print("=" * 60)
+        if incompatible:
+            print(
+                f"\n{BOLD_RED}✗ Vector storage refused to attach — these storages were "
+                f"not probed:{RESET}"
+            )
+            for label, message in incompatible.items():
+                print(f"    - {label}: {message}")
+            print(
+                "\n  Their containers hold another embedding space's vectors, or\n"
+                "  cannot be read back at all, so every record is unreachable by\n"
+                "  construction and a 'missing' count for them would say nothing\n"
+                "  about drift. A rebuild (menu options 2-4) is required, not\n"
+                "  optional."
+            )
         print(f"  Graph entities:    {report['graph_entities']:,}")
         print(f"  Graph relations:   {report['graph_relations']:,}")
-        print(f"  Missing entities:  {report['missing_entities']:,}")
-        print(f"  Missing relations: {report['missing_relations']:,}")
+        if "entities" not in incompatible:
+            print(f"  Missing entities:  {report['missing_entities']:,}")
+        if "relationships" not in incompatible:
+            print(f"  Missing relations: {report['missing_relations']:,}")
         if report["missing_entity_names"]:
             print("\n  Missing entities (first few):")
             for name in report["missing_entity_names"]:
@@ -850,6 +1483,9 @@ class RebuildTool:
             print(
                 "  VDB-only records (reverse orphans) require a full rebuild to clear."
             )
+        elif incompatible:
+            print(f"\n{BOLD_RED}✗ Vector storage unusable (see above).{RESET}")
+            print("  Run a rebuild (menu options 2-4) to restore service.")
         else:
             print(f"\n{BOLD_RED}✗ Inconsistencies detected.{RESET}")
             print("  Run a rebuild (menu options 2-4) to restore consistency.")
@@ -871,6 +1507,10 @@ class RebuildTool:
         print("\nAll affected records will be re-embedded, which may incur")
         print("significant embedding API cost and time on large datasets.")
         print("If interrupted, simply re-run this tool (sources are read-only).")
+        if self.corrupt_vdbs:
+            print("Selected corrupt files will be backed up before deletion.")
+            print("Verify the source counts and source integrity before proceeding;")
+            print("a readable source is not proof that it contains every lost row.")
         confirm = input("\nProceed with the rebuild? (yes/no): ").strip().lower()
         if confirm != "yes":
             print("\n✓ Rebuild cancelled")
@@ -889,6 +1529,7 @@ class RebuildTool:
             self.entities_vdb,
             self.relationships_vdb,
             batch_size=self.batch_size,
+            incompatible=self.incompatible_vdbs,
         )
         self.print_check_report(report)
         print(f"\n(check took {time.time() - start:.1f}s)")
@@ -896,37 +1537,37 @@ class RebuildTool:
     async def run_rebuild_entities_relations(self) -> List[Dict[str, Any]]:
         all_stats = []
         self.print_rebuild_section("entities")
-        all_stats.append(
-            await rebuild_entities_vdb(
-                self.graph,
-                self.entities_vdb,
-                self.global_config,
-                batch_size=self.batch_size,
-                progress_callback=self.make_progress_printer("entities"),
-            )
+        stats = await rebuild_entities_vdb(
+            self.graph,
+            self.entities_vdb,
+            self.global_config,
+            batch_size=self.batch_size,
+            progress_callback=self.make_progress_printer("entities"),
         )
+        await self.commit_baseline("entities", stats)
+        all_stats.append(stats)
         self.print_rebuild_section("relationships")
-        all_stats.append(
-            await rebuild_relationships_vdb(
-                self.graph,
-                self.relationships_vdb,
-                self.global_config,
-                batch_size=self.batch_size,
-                progress_callback=self.make_progress_printer("relationships"),
-            )
+        stats = await rebuild_relationships_vdb(
+            self.graph,
+            self.relationships_vdb,
+            self.global_config,
+            batch_size=self.batch_size,
+            progress_callback=self.make_progress_printer("relationships"),
         )
+        await self.commit_baseline("relationships", stats)
+        all_stats.append(stats)
         return all_stats
 
     async def run_rebuild_chunks(self) -> List[Dict[str, Any]]:
         self.print_rebuild_section("chunks")
-        return [
-            await rebuild_chunks_vdb(
-                self.text_chunks,
-                self.chunks_vdb,
-                batch_size=self.batch_size,
-                progress_callback=self.make_progress_printer("chunks"),
-            )
-        ]
+        stats = await rebuild_chunks_vdb(
+            self.text_chunks,
+            self.chunks_vdb,
+            batch_size=self.batch_size,
+            progress_callback=self.make_progress_printer("chunks"),
+        )
+        await self.commit_baseline("chunks", stats)
+        return [stats]
 
     def report_rebuild(self, all_stats: List[Dict[str, Any]]) -> bool:
         """Print the rebuild report and return True if any batch/flush failed."""
@@ -1011,6 +1652,10 @@ class RebuildTool:
                     continue
 
                 start = time.time()
+                selected = (["entities", "relationships"] if include_graph else []) + (
+                    ["chunks"] if include_chunks else []
+                )
+                await self.recover_incompatible(selected)
                 all_stats: List[Dict[str, Any]] = []
                 if include_graph:
                     all_stats.extend(await self.run_rebuild_entities_relations())
@@ -1045,25 +1690,54 @@ class RebuildTool:
                 finalize_share_data()
             except Exception:
                 pass
+            # Last, after every storage that writes under it is down.
+            if self._holds_working_dir:
+                self._holds_working_dir = False
+                release_working_dir_lock(self.config_dir)
+            # Taken before the directory claim, so given back after it.
+            self.release_anchor_lock()
 
 
-async def async_main() -> bool:
+async def async_main(*, workspace: str | None = None) -> bool:
     """Async main entry point. Returns True on success, False on failure."""
-    tool = RebuildTool()
+    tool = RebuildTool(workspace=workspace)
     return await tool.run()
 
 
-def main():
+def _workspace_argument(value: str) -> str:
+    """``--workspace``, checked by ``validate_workspace``: the rules that hold
+    for every backend. The directory rules wait for ``setup_storages``,
+    which knows whether a storage keeps a workspace directory. argparse
+    reports only an ``ArgumentTypeError``'s text; a bare ``ValueError``
+    would reach the operator as "invalid value" without the reason."""
+    try:
+        return validate_workspace(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def main(argv: list[str] | None = None):
     """Synchronous entry point for CLI command.
 
     Exits non-zero on failure (storage-init failure, unhandled error,
     interruption, or a rebuild that finished with errors) so automation and
     operators do not mistake a partial/failed recovery for a clean one.
     """
+    parser = argparse.ArgumentParser(
+        description="Check or rebuild workspace vector storages."
+    )
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        type=_workspace_argument,
+        help="Exact workspace name (no character replacement); use an empty string "
+        "for the default workspace. If omitted, WORKSPACE is normalized as by the server.",
+    )
+    args = parser.parse_args(argv)
     # Load environment and configure logging only when run as a tool, never on import.
     load_dotenv(dotenv_path=".env", override=False)
     setup_logger("lightrag", level="INFO")
-    success = asyncio.run(async_main())
+    success = asyncio.run(async_main(workspace=args.workspace))
     if not success:
         raise SystemExit(1)
 
