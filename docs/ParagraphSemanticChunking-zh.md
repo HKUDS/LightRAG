@@ -322,7 +322,7 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 
 P 策略**不接收** `split_by_character` / `split_by_character_only`，因为正常路径由标题和段落结构驱动。
 
-**丢弃参考文献（`drop_references`）**：开启后，在 HeadingBlocks 之后、TableRowSplit/AnchorSplit/LevelMerge 之前，对从 `blocks.jsonl` 读出的有序内容块做过滤——`references_tail_n=0` 时扫描全部内容块，正数时只扫描文末最后 N 个内容块；扫描范围内 `heading` 命中参考文献前缀的块会被丢弃。只有开关 `drop_references` 可经 per-file hint 设定并冻结进快照/metadata；`references_tail_n` / `references_headings` 是纯 env 调参，由 chunker 每次运行时实时读取当前环境变量——改 env 即可即时影响已入队文档的重跑。若丢弃后没有任何含内容的块剩余，则放弃丢弃并告警，避免产出空文档。
+**丢弃参考文献（`drop_references`）**：开启后，在 HeadingBlocks 之后、TableRowSplit/AnchorSplit/LevelMerge 之前，对从 `blocks.jsonl` 读出的有序内容块做过滤——`references_tail_n=0` 时扫描全部内容块，正数时只扫描文末最后 N 个内容块；扫描范围内 `heading` 命中参考文献前缀的块会被丢弃。此外，解析器标记为 `session_type="references"` 的块（目前是 native DOCX 引擎识别出的 Word 参考文献控件，即“引用”选项卡插入的书目）无论标题是什么、位于文中何处都会被丢弃。只有开关 `drop_references` 可经 per-file hint 设定并冻结进快照/metadata；`references_tail_n` / `references_headings` 是纯 env 调参，由 chunker 每次运行时实时读取当前环境变量——改 env 即可即时影响已入队文档的重跑。若丢弃后没有任何含内容的块剩余，则放弃丢弃并告警，避免产出空文档。
 
 ### 4.2 `.blocks.jsonl` 约定
 

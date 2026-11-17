@@ -118,7 +118,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `heading` | content所在章节的最高层级标题；heading真实存在时，应该以 markdown 渲染后的标题行出现在content的开头。**每个被识别出的标题都独立成块**：若标题后紧跟正文，正文与该标题合并进同一个块（content = markdown 渲染后的标题行 + 正文）；若标题后没有正文（例如其后紧接下一个层级的标题），该标题仍单独成块、content 仅为 markdown 渲染后的标题行。这样可保证所有 Block 的 content 字段拼接后仍能完整、无重叠地还原原文。 |
 | `parent_headings` | 字符串数组: 自顶向下的祖先标题列表，不含当前 `heading` |
 | `level` | 整数: `heading` 在文档大纲中的层级（`1` = H1 / 一级标题，0表示无标题） |
-| `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix` |
+| `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix`。目前各引擎都写 `body`，只有 native DOCX 引擎对读自 Word 参考文献控件的块写 `references`；P 分块的 `drop_references` 会丢弃这类块，不论其标题 |
 | `table_slice` | 可选保留字段；表示Block是否仅包括表格片段。目前分析引擎不会拆分长表格。因此本字段固定为 `"none"`（表示表格不会被分片） |
 | `table_header` | 可选保留字段；在当前块位表格片段的时候，保存识别出来的表格头。目前不存在 |
 | `positions` | `position` 对象数组：标识文本块的版面位置；文本块来与版面的多个位置的时候，则会出现多个`position` 对象。参见[§八](#八positions) |
@@ -135,6 +135,8 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `<table id="tb-…" format="json">…</table>` | 表格占位，包体是表格原始 JSON / HTML | `id` 指向 `tables.json` 里对应 item；`format` ∈ `json` / `html` |
 | `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录——图片字节未落地时（外链未下载 / 下载失败）为空串 `""`；`src` 是原文档中的原始引用（远程 URL、外链 target） |
 | `<equation id="eq-…" format="latex" caption="…">…</equation>` | 公式占位 | 行内公式同样用 `<equation format="latex">` 但**不**带 `id`，不会进 sidecar； 仅块公式（独占一行或多行）时携带 `id` |
+
+`format="json"` 的包体里不会出现 `</table>` 这段文字（不区分大小写）：它被写成带 JSON 转义的 `<\/table>`，`json.loads` 读回来仍是 `</table>`。否则单元格里含这段文字时标签会被提前截断，因为所有读取方都把起始标签之后的第一个 `</table>` 当作结束标签。单元格里的其他内容不做任何改写，`<sup>…</sup>`、`<equation>…</equation>` 等内部标记保持原样。把行重新序列化进 `<table>` 标签的代码（表格切分、裁剪）必须保持这一性质，LightRAG 内统一使用 `lightrag.table_markup.dumps_json_table_body`。`tables.json` 的 `content` 字段不是标签包体，按原样存储、不做该转义。
 
 在实体关系抽取的时候喂给大模型的文本会把 `id / path / src` 等内部属性剥掉，但为保留键属性（`format / caption`）。目的是避免抽取出文章不可见的实体，给抽取结果注入过多的噪声。
 

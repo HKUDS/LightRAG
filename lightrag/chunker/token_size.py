@@ -26,7 +26,44 @@ from __future__ import annotations
 from typing import Any
 
 from lightrag.exceptions import ChunkTokenLimitExceededError
-from lightrag.utils import Tokenizer, logger
+from lightrag.utils import _REPLACEMENT_CHAR, Tokenizer, logger
+
+
+def _recover_boundary_window(
+    content: str,
+    window: str,
+    prefix: str,
+    prefix_start: int,
+) -> tuple[int, int] | None:
+    """Locate a window whose edges split a multi-byte character.
+
+    ``prefix`` is the decode of the tokens between a verified anchor at char
+    ``prefix_start`` and the window. Such a window decodes with leading and/or
+    trailing U+FFFD, so it is not a slice of ``content``; the text between
+    them is. Returns the ``(start, end)`` of that text, or ``None``.
+
+    The offset is computed, never searched for: text that repeats (an emoji
+    run, a repeated phrase) matches in several places, and only one of them is
+    this window. The start is the characters wholly before the window plus the
+    one its first token splits, counted from ``prefix`` with its trailing
+    U+FFFD dropped -- so the result does not depend on how many U+FFFD a
+    decoder emits for one broken character.
+
+    Call it only for ``content`` that holds no U+FFFD of its own. With one
+    anywhere in it, a window's edge U+FFFD cannot be told from split
+    characters, and the exact-match probes may already have anchored on a
+    split character that matched it, so ``prefix_start`` is not trustworthy
+    either. :func:`_token_window_source_span` enforces this.
+    """
+    trimmed = window.strip(_REPLACEMENT_CHAR)
+    if not trimmed or trimmed == window:
+        return None
+    whole = prefix.rstrip(_REPLACEMENT_CHAR)
+    start = prefix_start + len(whole) + (1 if len(whole) != len(prefix) else 0)
+    end = start + len(trimmed)
+    if not content.startswith(trimmed, start):
+        return None
+    return start, end
 
 
 def _trimmed_span(content: str, start: int, end: int) -> tuple[int, int]:
@@ -55,6 +92,7 @@ def _token_window_source_span(
     end_token: int,
     *,
     anchor: tuple[int, int],
+    recover_boundary: bool | None = None,
 ) -> tuple[dict[str, int] | None, tuple[int, int]]:
     """Map a decoded token window back to its exact source span.
 
@@ -69,16 +107,32 @@ def _token_window_source_span(
     position each call keeps the error from accumulating. Net cost is O(N) total
     while the located span stays byte-exact.
 
-    Returns ``(span, new_anchor)``. On an unlocatable (U+FFFD) window the span is
-    ``None`` and the anchor is returned unchanged so the next window still predicts
-    from the last verified position.
+    A window whose boundary split a multi-byte character carries leading/trailing
+    U+FFFD and fails both probes; :func:`_recover_boundary_window` then places
+    the text between them, so its span is narrower than its content. The anchor
+    moves to such a window only when it does not start with U+FFFD: a window
+    that starts inside a character has no char offset of its own, and anchoring
+    on it would shift every later prediction. A run of windows that all start
+    mid-character decodes its delta from the last anchor, O(run length) per
+    window -- what a run of windows that cannot be located already costs.
+
+    ``recover_boundary`` must be False when ``content`` contains U+FFFD of its
+    own: such a document gets no recovery at all and behaves as if the helper
+    did not exist. Callers looping over windows pass it precomputed; ``None``
+    checks ``content`` here, which costs a scan per damaged window.
+
+    Returns ``(span, new_anchor)``. On a window that cannot be located the span
+    is ``None`` and the anchor is returned unchanged so the next window still
+    predicts from the last verified position.
     """
     anchor_token, anchor_char = anchor
     window = tokenizer.decode(tokens[start_token:end_token])
     if start_token >= anchor_token:
-        start = anchor_char + len(tokenizer.decode(tokens[anchor_token:start_token]))
+        prefix = tokenizer.decode(tokens[anchor_token:start_token])
     else:  # non-monotonic caller (not expected) — fall back to a full prefix decode
-        start = len(tokenizer.decode(tokens[:start_token]))
+        anchor_char = 0
+        prefix = tokenizer.decode(tokens[:start_token])
+    start = anchor_char + len(prefix)
     end = start + len(window)
     if content[start:end] != window:
         found = content.find(
@@ -87,7 +141,19 @@ def _token_window_source_span(
             min(len(content), end + 32 + len(window)),
         )
         if found < 0:
-            return None, anchor
+            if recover_boundary is None:
+                recover_boundary = _REPLACEMENT_CHAR not in content
+            recovered = (
+                _recover_boundary_window(content, window, prefix, anchor_char)
+                if recover_boundary
+                else None
+            )
+            if recovered is None:
+                return None, anchor
+            start, end = recovered
+            if window.startswith(_REPLACEMENT_CHAR):
+                return _source_span(content, start, end), anchor
+            return _source_span(content, start, end), (start_token, start)
         start = found
         end = found + len(window)
     return _source_span(content, start, end), (start_token, start)
@@ -196,6 +262,7 @@ def chunking_by_token_size(
                     # Anchor is chunk-relative (offsets are shifted by chunk_start
                     # below), so it resets per split-by-character segment.
                     anchor = (0, 0)
+                    recover_boundary = _REPLACEMENT_CHAR not in chunk
                     for start in range(
                         0,
                         len(_tokens),
@@ -212,6 +279,7 @@ def chunking_by_token_size(
                                 start,
                                 end_token,
                                 anchor=anchor,
+                                recover_boundary=recover_boundary,
                             )
                         if span is not None:
                             span = {
@@ -249,6 +317,7 @@ def chunking_by_token_size(
         # here rather than paid on every call.
         tokens = tokenizer.encode(content)
         anchor = (0, 0)
+        recover_boundary = _REPLACEMENT_CHAR not in content
         for index, start in enumerate(
             range(
                 0,
@@ -261,7 +330,13 @@ def chunking_by_token_size(
             span = None
             if _emit_source_span:
                 span, anchor = _token_window_source_span(
-                    tokenizer, content, tokens, start, end, anchor=anchor
+                    tokenizer,
+                    content,
+                    tokens,
+                    start,
+                    end,
+                    anchor=anchor,
+                    recover_boundary=recover_boundary,
                 )
             results.append(
                 _make_chunk(

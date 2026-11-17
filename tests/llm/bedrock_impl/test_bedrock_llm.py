@@ -1,5 +1,4 @@
 import importlib
-import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -989,11 +988,10 @@ async def test_create_app_bedrock_server_timeout_overrides_caller_value(
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_create_app_keyword_openai_role_forwards_nested_extra_body(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     _reload_api_modules_if_mocked()
     monkeypatch.setattr(sys, "argv", ["pytest"])
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
     monkeypatch.setenv(
         "KEYWORD_OPENAI_LLM_EXTRA_BODY",
         '{"chat_template_kwargs": {"enable_thinking": false}}',

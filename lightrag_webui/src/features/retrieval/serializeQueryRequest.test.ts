@@ -124,3 +124,66 @@ describe('disable_user_prompt_prefix', () => {
     expect('disable_user_prompt_prefix' in JSON.parse(JSON.stringify(body))).toBe(false)
   })
 })
+
+describe('conversation history turns', () => {
+  const bypass = (history: MessageWithError[], historyTurns = 0) =>
+    serializeQueryRequest(
+      { ...baseSettings('bypass'), history_turns: historyTurns },
+      'next',
+      history
+    ).conversation_history
+
+  const turn = (n: number, answer: Partial<MessageWithError> = {}): MessageWithError[] => [
+    { id: `u${n}`, role: 'user', content: `q${n}` },
+    { id: `a${n}`, role: 'assistant', content: `a${n}`, ...answer }
+  ]
+
+  test.each([
+    ['a failed', { isError: true }],
+    ['a stopped', { isAborted: true }],
+    ['an empty', { content: '' }],
+    ['a whitespace-only', { content: '  \n' }]
+  ] as const)('%s answer drops its whole turn, question included', (_label, answer) => {
+    expect(bypass([...turn(1), ...turn(2, answer), ...turn(3)])).toEqual([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q3' },
+      { role: 'assistant', content: 'a3' }
+    ])
+  })
+
+  test('dropped turns do not consume the window: it still holds N completed turns', () => {
+    const history = [
+      ...turn(1),
+      ...turn(2),
+      ...turn(3, { isError: true }),
+      ...turn(4, { isAborted: true }),
+      ...turn(5)
+    ]
+    expect(bypass(history, 2)).toEqual([
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' },
+      { role: 'user', content: 'q5' },
+      { role: 'assistant', content: 'a5' }
+    ])
+  })
+
+  test('messages outside a question/answer pair are dropped, so the window alternates', () => {
+    const history: MessageWithError[] = [
+      { id: 'a0', role: 'assistant', content: 'orphan answer' },
+      ...turn(1),
+      { id: 's', role: 'system', content: 'Error loading message', isError: true },
+      { id: 'u-lone', role: 'user', content: 'unanswered' },
+      ...turn(2)
+    ]
+    expect(bypass(history, 1)).toEqual([
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' }
+    ])
+    expect(bypass(history)?.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+  })
+
+  test('a partial answer with only unfinished reasoning is dropped once stopped', () => {
+    expect(bypass(turn(1, { content: '<think>half a thought', isAborted: true }))).toEqual([])
+  })
+})

@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,8 +27,6 @@ from lightrag.utils import logger
 
 if TYPE_CHECKING:
     import httpx
-
-    import async_timeout
 
 
 def compute_size_and_hash(path: Path) -> tuple[int, str]:
@@ -209,36 +206,16 @@ def download_max_bytes() -> int | None:
     return raw if raw > 0 else None
 
 
-def download_timeout(
-    seconds: float | None,
-) -> "asyncio.Timeout | async_timeout.Timeout":
+def download_timeout(seconds: float | None) -> asyncio.Timeout:
     """Wall-clock timeout context manager for a download call.
 
-    Uses the stdlib ``asyncio.timeout()`` on Python 3.11+; that API does
-    not exist on 3.10, which this package's ``requires-python = ">=3.10"``
-    still allows, so 3.10 falls back to the ``async_timeout`` backport
-    instead. The backport is imported lazily, inside this function, rather
-    than at module level: this module is also imported by code with no
-    HTTP/timeout involvement at all (e.g. the native markdown parser via
-    ``raw_dir_for_parsed_dir``), and ``async-timeout`` is only declared as
-    a dependency for Python <3.11 (see the ``api`` extra in
-    ``pyproject.toml``) -- a top-level import would make merely importing
-    this module fail on a base install running 3.11+ that never even
-    reaches this function.
-
-    Both raise ``asyncio.TimeoutError`` on their own deadline firing --
-    on 3.11+ that is the exact same class as builtin ``TimeoutError``
-    (aliased since 3.11), so callers should catch ``asyncio.TimeoutError``
-    specifically rather than plain ``TimeoutError`` to also catch the
-    3.10 backport's distinct exception class. Both implementations
-    preserve the same distinction between their own deadline firing and
-    an unrelated external cancellation.
+    A thin wrapper over ``asyncio.timeout()``, kept so every download call
+    site shares one entry point. Its own deadline raises
+    ``asyncio.TimeoutError`` (the builtin ``TimeoutError``), distinct from an
+    unrelated external cancellation, which still propagates as
+    ``CancelledError``.
     """
-    if sys.version_info >= (3, 11):
-        return asyncio.timeout(seconds)
-    import async_timeout
-
-    return async_timeout.timeout(seconds)
+    return asyncio.timeout(seconds)
 
 
 async def stream_capped_get(
