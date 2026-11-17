@@ -62,10 +62,7 @@ async def _build_rag(tmp_path, **overrides) -> LightRAG:
         working_dir=str(tmp_path / "wd"),
         workspace=f"ccpatch-{uuid4().hex[:8]}",
         llm_model_func=_dummy_llm,
-        embedding_func=overrides.pop(
-            "embedding_func",
-            EmbeddingFunc(embedding_dim=8, max_token_size=8192, func=_dummy_embedding),
-        ),
+        embedding_func=overrides.pop("embedding_func", _embedding_func(8192)),
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
         max_parallel_insert=1,
         **overrides,
@@ -74,19 +71,25 @@ async def _build_rag(tmp_path, **overrides) -> LightRAG:
     return rag
 
 
+def _embedding_func(max_token_size: int | None) -> EmbeddingFunc:
+    return EmbeddingFunc(
+        embedding_dim=8, max_token_size=max_token_size, func=_dummy_embedding
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["create", "patch"])
-@pytest.mark.parametrize("embedding_limit", [None, 0, 8, 8192])
+@pytest.mark.parametrize("chunk_token_size", [4, 16])
 async def test_oversized_custom_chunk_rejected_before_journal(
-    tmp_path, monkeypatch, mode, embedding_limit
+    tmp_path, monkeypatch, mode, chunk_token_size
 ):
+    """A chunk over the embedding limit is refused before anything is written,
+    whatever ``chunk_token_size`` is."""
     rag = await _build_rag(
         tmp_path,
-        chunk_token_size=16 if embedding_limit == 8 else 8,
+        chunk_token_size=chunk_token_size,
         chunk_overlap_token_size=0,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=8, max_token_size=embedding_limit, func=_dummy_embedding
-        ),
+        embedding_func=_embedding_func(8),
     )
     try:
         _fake_extraction(rag, monkeypatch)
@@ -106,6 +109,7 @@ async def test_oversized_custom_chunk_rejected_before_journal(
 
         assert exc.value.chunk_tokens == 9
         assert exc.value.chunk_token_limit == 8
+        assert "embedding token limit" in str(exc.value)
         assert await rag.doc_status.get_by_id("doc-1") == before
         assert await rag.full_docs.get_by_id("doc-1") == full_doc_before
         for text in ("bob", "123456789"):
@@ -115,8 +119,39 @@ async def test_oversized_custom_chunk_rejected_before_journal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("embedding_limit", [None, 0, 8192])
+async def test_chunk_over_chunk_token_size_is_accepted(
+    tmp_path, monkeypatch, embedding_limit
+):
+    """``chunk_token_size`` is advisory for caller chunks, as it is for the R/V
+    chunkers; only a positive embedding limit bounds them."""
+    rag = await _build_rag(
+        tmp_path,
+        chunk_token_size=4,
+        chunk_overlap_token_size=0,
+        embedding_func=_embedding_func(embedding_limit),
+    )
+    try:
+        _fake_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice 123456789"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        chunk = await rag.text_chunks.get_by_id(_chunk_id("doc-1", "alice 123456789"))
+        assert chunk["content"] == "alice 123456789"
+        assert chunk["tokens"] == 15
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_exact_limit_custom_chunk_keeps_caller_boundaries(tmp_path, monkeypatch):
-    rag = await _build_rag(tmp_path, chunk_token_size=8, chunk_overlap_token_size=0)
+    rag = await _build_rag(
+        tmp_path,
+        chunk_token_size=4,
+        chunk_overlap_token_size=0,
+        embedding_func=_embedding_func(8),
+    )
     try:
         _fake_extraction(rag, monkeypatch)
         original_encode = rag.tokenizer.encode
@@ -154,7 +189,11 @@ async def test_exact_limit_custom_chunk_keeps_caller_boundaries(tmp_path, monkey
 async def test_token_rejection_preserves_existing_recovery_journal(
     tmp_path, monkeypatch
 ):
-    rag = await _build_rag(tmp_path, chunk_token_size=16, chunk_overlap_token_size=0)
+    rag = await _build_rag(
+        tmp_path,
+        chunk_overlap_token_size=0,
+        embedding_func=_embedding_func(16),
+    )
     try:
         _fake_extraction(rag, monkeypatch)
         await _fail_one_merge_then_restore(monkeypatch)
@@ -163,8 +202,8 @@ async def test_token_rejection_preserves_existing_recovery_journal(
         before = await rag.doc_status.get_by_id("doc-1")
         assert _journal(before) is not None
 
-        # Configuration can become stricter between a failed call and its retry.
-        rag.chunk_token_size = 8
+        # The limit can become stricter between a failed call and its retry.
+        rag.embedding_token_limit = 8
         with pytest.raises(ChunkTokenLimitExceededError):
             await rag.ainsert_custom_chunks("base", ["alice xxx"], doc_id="doc-1")
 

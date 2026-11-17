@@ -3180,9 +3180,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         the same call can be retried by the SDK caller, and ``/documents/scan``
         can roll the operation back. Partial work is never blind-flushed.
 
-        Caller boundaries are preserved: chunks exceeding ``chunk_token_size``
-        or a positive embedding token limit are rejected before any journal or
-        storage mutation, rather than split or truncated.
+        Caller boundaries are preserved: when the embedding function declares a
+        positive ``max_token_size``, a chunk over it raises
+        ``ChunkTokenLimitExceededError`` before busy is reserved or anything is
+        written, instead of being split or truncated. ``chunk_token_size`` is
+        not a bound here. A retry is checked again under the current limit, so
+        if the limit was lowered after a failed operation its retry is refused
+        and the journal stays for ``/documents/scan`` to roll back.
         """
         # Owner token for the busy reservation, generated before any await so the
         # finally always holds it and can release the slot by owner (even if the
@@ -3230,30 +3234,35 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.warning("No non-empty custom chunks to insert.")
                 return
 
-            chunk_token_limit = self.chunk_token_size
-            if (
-                self.embedding_token_limit is not None
-                and self.embedding_token_limit > 0
-            ):
-                chunk_token_limit = min(chunk_token_limit, self.embedding_token_limit)
+            # Validate the entire input before reserving busy or writing a
+            # journal. The bound is the embedding limit only, the same hard
+            # bound the file pipeline enforces before embedding:
+            # ``chunk_token_size`` is advisory there (R/V chunkers may exceed
+            # it), so it must not reject caller-defined chunks here. Encoding
+            # stays off the event loop, bounded by the shared chunking
+            # executor; the counts are reused for the staged payloads.
+            embedding_token_limit = self.embedding_token_limit
+            if embedding_token_limit is not None and embedding_token_limit <= 0:
+                embedding_token_limit = None
 
-            # Validate the entire input before reserving busy or writing a journal.
-            # Encoding stays off the event loop, bounded by the shared chunking
-            # executor; reuse these counts when constructing the staged payloads.
-            def _validate_chunk_token_sizes() -> dict[str, int]:
+            def _count_chunk_tokens() -> dict[str, int]:
                 counts = {}
                 for chunk_id, content, _ in chunk_entries:
                     count = len(self.tokenizer.encode(content))
-                    if count > chunk_token_limit:
+                    if (
+                        embedding_token_limit is not None
+                        and count > embedding_token_limit
+                    ):
                         raise ChunkTokenLimitExceededError(
-                            count, chunk_token_limit, chunk_preview=content
+                            count,
+                            embedding_token_limit,
+                            chunk_preview=content,
+                            limit_name="the embedding token limit",
                         )
                     counts[chunk_id] = count
                 return counts
 
-            chunk_token_counts = await run_in_chunking_executor(
-                _validate_chunk_token_sizes
-            )
+            chunk_token_counts = await run_in_chunking_executor(_count_chunk_tokens)
             operation_id = make_custom_chunk_operation_id(
                 doc_key, [cid for cid, _, _ in chunk_entries]
             )
