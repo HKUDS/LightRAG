@@ -149,11 +149,12 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
             logging.error(f"{operation} client error: {error_msg}")
             raise BedrockError(f"Client error: {error_msg}")
 
-    # Connection errors (retryable). ConnectionClosedError (raised by
-    # aiobotocore when the server drops the connection mid-request) does not
-    # subclass botocore's ConnectionError despite the name, so it is checked
-    # for explicitly here rather than falling through to the generic,
-    # non-retryable branch below.
+    # Connection errors (retryable). ConnectionClosedError (raised when the
+    # server drops the connection mid-request, after botocore's own retries
+    # are spent) subclasses HTTPClientError, not botocore's ConnectionError,
+    # so it is checked for explicitly here rather than falling through to the
+    # generic, non-retryable branch below. A streamed response only gets the
+    # type: its generator runs outside @retry, so it is not retried.
     elif isinstance(e, (BotocoreConnectionError, ConnectionClosedError)):
         logging.error(f"{operation} connection error: {error_message}")
         raise BedrockConnectionError(f"Connection error: {error_message}")
