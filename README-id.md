@@ -557,6 +557,7 @@ Entri yang ditandai 🇨🇳 juga menyediakan terjemahan bahasa Mandarin sebagai
 | [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) [🇨🇳](./docs/ParagraphSemanticChunking-zh.md) | Strategi chunking `Paragraph semantic (P)`: batas yang memahami heading/paragraf/tabel, serta pembuangan referensi |
 | [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) [🇨🇳](./docs/LightRAGSidecarFormat-zh.md) | Format interchange sidecar (`*.parsed/`) yang harus dihasilkan setiap parser engine yang mendukung multimodal |
 | [ThirdPartyParser.md](./docs/ThirdPartyParser.md) [🇨🇳](./docs/ThirdPartyParser-zh.md) | Mengembangkan dan mendaftarkan parser engine Anda sendiri |
+| [ThirdPartyEntityNameNormalizer.md](./docs/ThirdPartyEntityNameNormalizer.md) | Memilih plugin nama entitas murni dan idempoten dengan `CUSTOM_ENTITY_NAME_NORMALIZER`; batas panjang kunci dan aturan pengindeksan ulang |
 | [ParserDebugCLI.md](./docs/ParserDebugCLI.md) [🇨🇳](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` — mem-parsing satu file secara offline dan memeriksa hasil tanpa server |
 
 **Model dan Storage**

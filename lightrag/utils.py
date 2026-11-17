@@ -6341,12 +6341,16 @@ def normalize_entity_name(input_text: str, *, final_space_pass: bool = True) -> 
 
     A caller that caps the identifier's length must pass
     ``final_space_pass=False`` and run :func:`remove_spaces_next_to_chinese`
-    on the capped result, as the extraction parsers in ``lightrag.operate`` do
-    (see :func:`normalize_extracted_info`).
+    on the capped result, then apply the selected entity-name plugin, as the
+    extraction parsers in ``lightrag.operate`` do. With the default final pass,
+    the plugin runs here for graph API and custom-KG callers too.
     """
-    return sanitize_and_normalize_extracted_text(
+    from lightrag.entity_name_normalizer import apply_entity_name_normalizer
+
+    normalized = sanitize_and_normalize_extracted_text(
         input_text, remove_inner_quotes=True, final_space_pass=final_space_pass
     )
+    return apply_entity_name_normalizer(normalized) if final_space_pass else normalized
 
 
 def normalize_extracted_info(

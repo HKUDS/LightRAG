@@ -557,6 +557,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 | [ParagraphSemanticChunking-zh.md](./docs/ParagraphSemanticChunking-zh.md) | `Paragraph semantic (P)` 分块策略：对齐标题/段落/表格边界、参考文献丢弃 |
 | [LightRAGSidecarFormat-zh.md](./docs/LightRAGSidecarFormat-zh.md) | sidecar（`*.parsed/`）交换格式规范，所有支持多模态的解析引擎都必须遵循 |
 | [ThirdPartyParser-zh.md](./docs/ThirdPartyParser-zh.md) | 开发并注册自定义 parser 引擎 |
+| [ThirdPartyEntityNameNormalizer.md](./docs/ThirdPartyEntityNameNormalizer.md) | 通过 `CUSTOM_ENTITY_NAME_NORMALIZER` 选择纯函数且幂等的实体名插件；键长度限制与重建索引规则 |
 | [ParserDebugCLI-zh.md](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` —— 脱离服务器离线解析单个文件并查看结果 |
 
 **模型与存储**

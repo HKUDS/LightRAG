@@ -557,6 +557,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 | [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) [🇨🇳](./docs/ParagraphSemanticChunking-zh.md) | `Paragraph semantic (P)` チャンク戦略：見出し／段落／表の境界に合わせた分割、参考文献の除外 |
 | [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) [🇨🇳](./docs/LightRAGSidecarFormat-zh.md) | マルチモーダル対応パーサーエンジンが必ず出力すべき sidecar（`*.parsed/`）交換フォーマットの仕様 |
 | [ThirdPartyParser.md](./docs/ThirdPartyParser.md) [🇨🇳](./docs/ThirdPartyParser-zh.md) | 独自パーサーエンジンの開発と登録 |
+| [ThirdPartyEntityNameNormalizer.md](./docs/ThirdPartyEntityNameNormalizer.md) | `CUSTOM_ENTITY_NAME_NORMALIZER` による純粋かつ冪等なエンティティ名プラグインの選択、キーの長さ制限と再インデックスの規則 |
 | [ParserDebugCLI.md](./docs/ParserDebugCLI.md) [🇨🇳](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` — サーバーなしで単一ファイルをオフライン解析し、結果を確認する |
 
 **モデルとストレージ**
