@@ -646,3 +646,209 @@ def test_recovery_never_runs_on_content_with_replacement_characters(
         _emit_source_span=True,
     )
     assert calls and set(calls) == {clean}
+
+
+class _DropInvalidTokenizer(_ByteTokenizer):
+    """Byte tokenizer whose decoder silently drops incomplete UTF-8 characters."""
+
+    def decode(self, tokens: list[int]) -> str:
+        return bytes(tokens).decode("utf-8", errors="ignore")
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("kind", ["literal-tiktoken", "literal-bytes", "drop-bytes"])
+def test_ambiguous_boundary_windows_keep_their_own_position(kind: str) -> None:
+    """Matching repeated text must never establish a false positional anchor."""
+    from lightrag.utils import TiktokenTokenizer
+
+    if kind == "literal-tiktoken":
+        tok = TiktokenTokenizer()
+        text, size, overlap = "🇨🇳🇨🇳��", 2, 1
+    elif kind == "literal-bytes":
+        tok = Tokenizer("bytes", _ByteTokenizer())
+        text, size, overlap = "🇨🇳🇨🇳��", 4, 0
+    else:
+        tok = Tokenizer("bytes", _DropInvalidTokenizer())
+        text, size, overlap = "😀" * 6 + "x", 6, 0
+
+    tokens = tok.encode(text)
+    widths = (
+        [len(tok.tokenizer.decode_single_token_bytes(t)) for t in tokens]
+        if kind == "literal-tiktoken"
+        else [1] * len(tokens)
+    )
+    offsets = [0]
+    for width in widths:
+        offsets.append(offsets[-1] + width)
+    chunks = chunking_by_fixed_token(
+        tok,
+        text,
+        chunk_token_size=size,
+        chunk_overlap_token_size=overlap,
+        _emit_source_span=True,
+    )
+    mismatches = []
+    located = []
+    for k, chunk in enumerate(chunks):
+        start = k * (size - overlap)
+        expected = _byte_window_char_span(
+            text, offsets[start], offsets[min(start + size, len(tokens))]
+        )
+        want = _source_span(text, *expected) if expected else None
+        got = chunk.get("_source_span")
+        if got is not None:
+            located.append(k)
+        if (got is not None or kind == "drop-bytes") and got != want:
+            mismatches.append((k, got, want))
+    assert mismatches == [], "source spans must follow token byte positions"
+    assert located, "already-valid windows must retain provenance"
+    if kind == "drop-bytes":
+        assert chunks[-1].get("_source_span") == {"start": 6, "end": 7}
+    else:
+        clean_index = 4 if kind == "literal-tiktoken" else 2
+        assert chunks[clean_index].get("_source_span") == {"start": 2, "end": 3}
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("kind", ["replace", "per-byte", "drop", "tiktoken"])
+@pytest.mark.parametrize("split_by_character", [None, "|"])
+def test_literal_replacement_and_dropping_decoder_span_audit(
+    kind: str, split_by_character: str | None
+) -> None:
+    """Audit offsets, including segment-relative anchors, against token bytes."""
+    import random
+
+    from lightrag.utils import TiktokenTokenizer
+
+    if kind == "tiktoken":
+        tok = TiktokenTokenizer()
+    else:
+        impl = {
+            "replace": _ByteTokenizer,
+            "per-byte": _PerByteReplacementTokenizer,
+            "drop": _DropInvalidTokenizer,
+        }[kind]()
+        tok = Tokenizer(kind, impl)
+    rng = random.Random(4443)
+    for _ in range(100):
+        segments = [
+            _random_boundary_text(rng, _BPE_AUDIT_ALPHABET + ["\ufffd", "\ufffd\ufffd"])
+            for _ in range(2 if split_by_character else 1)
+        ]
+        text = "|".join(segments)
+        size = rng.randint(2, 24)
+        overlap = rng.randint(0, size - 1)
+        chunks = chunking_by_fixed_token(
+            tok,
+            text,
+            chunk_token_size=size,
+            chunk_overlap_token_size=overlap,
+            split_by_character=split_by_character,
+            _emit_source_span=True,
+        )
+        expected = []
+        segment_start = 0
+        for segment in segments:
+            tokens = tok.encode(segment)
+            offsets = [0]
+            for token in tokens:
+                width = (
+                    len(tok.tokenizer.decode_single_token_bytes(token))
+                    if kind == "tiktoken"
+                    else 1
+                )
+                offsets.append(offsets[-1] + width)
+            windows = (
+                [(0, len(tokens))]
+                if split_by_character and len(tokens) <= size
+                else _windows(len(tokens), size, overlap)
+            )
+            for start, end in windows:
+                span = _byte_window_char_span(segment, offsets[start], offsets[end])
+                expected.append(
+                    _source_span(text, segment_start + span[0], segment_start + span[1])
+                    if span
+                    else None
+                )
+            segment_start += len(segment) + 1
+        assert len(chunks) == len(expected)
+        mismatches = [
+            (k, chunk.get("_source_span"), want)
+            for k, (chunk, want) in enumerate(zip(chunks, expected))
+            if chunk.get("_source_span") is not None and chunk["_source_span"] != want
+        ]
+        assert mismatches == [], (text, size, overlap)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("kind", ["replace", "drop", "tiktoken"])
+async def test_boundary_spans_survive_hard_split_backfill_and_storage(
+    kind, tmp_path
+) -> None:
+    """Use the chunker's actual dictionaries through the downstream copy path."""
+    import json
+
+    from lightrag.sidecar.backfill import backfill_chunk_sidecars
+    from lightrag.utils import (
+        TiktokenTokenizer,
+        enforce_chunk_token_limit_before_embedding,
+    )
+    from lightrag.utils_pipeline import (
+        build_chunks_dict_from_chunking_result,
+        load_lightrag_document_content,
+    )
+
+    tok = (
+        TiktokenTokenizer()
+        if kind == "tiktoken"
+        else Tokenizer(
+            kind, _DropInvalidTokenizer() if kind == "drop" else _ByteTokenizer()
+        )
+    )
+    blocks = [("b0", "🇨🇳🇨🇳��"), ("b1", "😀" * 6 + "x")]
+    text = "\n\n".join(body for _, body in blocks)
+    path = tmp_path / "doc.blocks.jsonl"
+    rows = [{"type": "meta", "format": "lightrag", "version": "1.0"}]
+    rows += [
+        {"type": "content", "blockid": blockid, "content": body}
+        for blockid, body in blocks
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    merged, blocks_path = await load_lightrag_document_content(tmp_path.as_uri())
+    assert merged == text
+    chunks = chunking_by_fixed_token(
+        tok,
+        merged,
+        chunk_token_size=10,
+        chunk_overlap_token_size=0,
+        _emit_source_span=True,
+    )
+    children = enforce_chunk_token_limit_before_embedding(
+        chunking_result=chunks,
+        tokenizer=tok,
+        max_tokens=4,
+        source_content=text,
+    )
+    assert len(children) > len(chunks)
+    backfill_chunk_sidecars(children, blocks_path)
+    located = []
+    for child in children:
+        if "sidecar" not in child:
+            continue
+        span = child["_source_span"]
+        expected_refs = []
+        cursor = 0
+        for blockid, body in blocks:
+            if cursor < span["end"] and span["start"] < cursor + len(body):
+                expected_refs.append(blockid)
+            cursor += len(body) + 2
+        assert [ref["id"] for ref in child["sidecar"]["refs"]] == expected_refs
+        located.append(child)
+    assert located
+    stored = build_chunks_dict_from_chunking_result(
+        children, doc_id="doc-boundaries", file_path="doc.txt"
+    )
+    assert stored
+    assert all("_source_span" not in row for row in stored.values())
+    assert all("_source_span_unavailable" not in row for row in stored.values())
+    assert any(row.get("sidecar") for row in stored.values())
