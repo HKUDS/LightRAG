@@ -119,6 +119,32 @@ class OfflineRetrievalCheckTests(unittest.TestCase):
         # that drops single ASCII characters does not apply to it.
         self.assertEqual(tokenize("铜，价格"), ["铜", "价格"])
 
+    def test_full_width_ascii_matches_its_ascii_form(self):
+        self.assertEqual(tokenize("ＲＡＧ系统"), ["rag", "系统"])
+
+    def test_half_width_katakana_matches_full_width(self):
+        self.assertEqual(tokenize("ｶﾀｶﾅ"), tokenize("カタカナ"))
+        self.assertEqual(tokenize("カタカナ"), ["カタ", "タカ", "カナ"])
+
+    def test_katakana_middle_dot_splits_runs(self):
+        self.assertEqual(
+            tokenize("データ・ベース"),
+            ["デー", "ータ", "ベー", "ース"],
+        )
+
+    def test_iteration_mark_stays_in_its_word(self):
+        self.assertEqual(tokenize("人々"), ["人々"])
+
+    def test_ideographs_outside_the_bmp_are_kept(self):
+        # U+20000 and U+20001 are CJK Unified Ideographs Extension B.
+        self.assertEqual(
+            tokenize("\U00020000\U00020001图"),
+            [
+                "\U00020000\U00020001",
+                "\U00020001图",
+            ],
+        )
+
     def test_chinese_question_ranks_the_matching_document_first(self):
         # Without CJK tokenization a Chinese question has no terms, every
         # document scores zero, and nothing is ranked at all.
