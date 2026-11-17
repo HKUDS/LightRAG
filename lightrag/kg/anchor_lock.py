@@ -58,6 +58,7 @@ be stopped and coordinated by the operator. No distributed lock is offered.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import time
 from contextlib import asynccontextmanager
@@ -75,6 +76,11 @@ BIND_LOCK_FILENAME = ANCHOR_BIND_LOCK_FILE_NAME
 # How long a start waits for another process tree's bind to finish. A bind is
 # one identity write, flush and read-back plus a file publish; this is ample.
 DEFAULT_BIND_LOCK_TIMEOUT_SECONDS = 120.0
+
+# ``flock`` reports contention as EAGAIN/EWOULDBLOCK.  Keep Linux's value
+# too because an injected or forwarded OS error can retain its source
+# platform's errno when this code is exercised on another POSIX platform.
+_WOULD_BLOCK_ERRNOS = {errno.EAGAIN, errno.EWOULDBLOCK, 11}
 
 
 @dataclass
@@ -327,14 +333,13 @@ async def anchor_bind_lock(
                         handle.seek(0)
                         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     locked = True
-                except BlockingIOError:
-                    pass
                 except OSError as e:
-                    if fcntl is not None:
+                    if fcntl is not None and e.errno not in _WOULD_BLOCK_ERRNOS:
                         _warn_bind_unlocked(path, f"{type(e).__name__}: {e}")
                         break
-                    # msvcrt: "held by another process" and "cannot lock
-                    # here" are the same error; the safe reading is "held".
+                    # POSIX EAGAIN/EWOULDBLOCK identifies contention.  msvcrt
+                    # reports "held by another process" and "cannot lock
+                    # here" as the same error; the safe reading is "held".
                 if locked:
                     break
                 if time.monotonic() >= deadline:
