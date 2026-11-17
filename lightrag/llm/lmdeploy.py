@@ -46,11 +46,13 @@ def initialize_lmdeploy_pipeline(
 def _is_retryable_lmdeploy_error(exc: BaseException) -> bool:
     """True for an lmdeploy ``RequestError`` reporting an engine-side 5xx.
 
-    ``Pipeline.generate()`` propagates lmdeploy's own
-    ``lmdeploy.serve.core.exceptions.RequestError`` uncaught -- a
-    ``RuntimeError`` subclass carrying ``status_code`` -- for conditions
-    such as ``ENGINE_UNAVAILABLE`` (503), which is exactly the transient
-    failure this retry loop exists for. It never raises
+    Since lmdeploy 0.16.0, ``Pipeline.generate()`` propagates lmdeploy's
+    own ``lmdeploy.serve.core.exceptions.RequestError`` uncaught -- a
+    ``RuntimeError`` subclass carrying ``status_code`` -- for engine-side
+    failures such as ``ENGINE_UNAVAILABLE`` (503) or ``INTERNAL_ERROR``
+    (500). Some of them may be transient; for the rest (an engine whose
+    main loop has died stays dead, since the pipeline is cached) a retry
+    only delays the same error by a few seconds. It never raises
     ``lightrag.exceptions.RateLimitError`` / ``APIConnectionError`` /
     ``APITimeoutError``: those are a different client's exception types
     and this binding has no code path that translates into them, so a
@@ -74,6 +76,10 @@ def _is_retryable_lmdeploy_error(exc: BaseException) -> bool:
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception(_is_retryable_lmdeploy_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries lmdeploy's message and callers can
+    # still catch RequestError.
+    reraise=True,
 )
 async def lmdeploy_model_if_cache(
     model,

@@ -123,3 +123,22 @@ async def test_does_not_retry_permanent_request_error(monkeypatch):
         await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
 
     assert attempts["count"] == 1
+
+
+async def test_exhausted_retries_reraise_the_request_error(monkeypatch):
+    """A 5xx that persists through every attempt must surface as lmdeploy's
+    own RequestError, not as tenacity.RetryError, so the document's
+    error_msg keeps lmdeploy's message and callers can still catch it."""
+    attempts = {"count": 0}
+
+    async def fake_generate(*_args, **_kwargs):
+        attempts["count"] += 1
+        raise FakeRequestError(503)
+        yield  # pragma: no cover - unreachable; keeps this an async generator
+
+    _install_fake_lmdeploy(monkeypatch, fake_generate)
+
+    with pytest.raises(FakeRequestError, match=r"\(503\)"):
+        await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
+
+    assert attempts["count"] == 3
