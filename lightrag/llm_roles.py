@@ -90,6 +90,34 @@ class _RoleLLMState:
     wrapped: Callable[..., object] | None = None
 
 
+def _role_max_async_seed(
+    spec: RoleSpec, role_llm_configs: Any
+) -> tuple[int | None, str]:
+    """Construction-time ``max_async`` seed for one role, and who supplied it.
+
+    Returns ``(value, source)``: an explicit ``role_llm_configs`` entry wins
+    over the ``{ROLE}_MAX_ASYNC_LLM`` env var, and ``value`` is None when
+    neither is set (the role then follows ``llm_model_max_async``).
+    ``source`` names the setting for error messages. A malformed
+    ``role_llm_configs`` is treated as "no override" here; its type errors
+    are raised where the role states are built.
+    """
+    override = (
+        role_llm_configs.get(spec.name)
+        if isinstance(role_llm_configs, Mapping)
+        else None
+    )
+    explicit = None
+    if isinstance(override, RoleLLMConfig):
+        explicit = override.max_async
+    elif isinstance(override, Mapping):
+        explicit = override.get("max_async")
+    if explicit is not None:
+        return explicit, f"role_llm_configs[{spec.name!r}].max_async"
+    env_key = f"{spec.env_prefix}_MAX_ASYNC_LLM"
+    return _optional_env_int(env_key), env_key
+
+
 class _RoleLLMMixin:
     """Mixin that owns the role LLM runtime on :class:`LightRAG`.
 
@@ -185,6 +213,17 @@ class _RoleLLMMixin:
         timeout: int,
         model_kwargs: dict[str, Any],
     ) -> Callable[..., object]:
+        # Every role queue funnels through here, which makes this the check
+        # for runtime config updates (a rejected update rolls back). The
+        # construction-time seeds (role_llm_configs, {ROLE}_MAX_ASYNC_LLM)
+        # are rejected earlier, in __post_init__, by the name of the
+        # setting; this is their backstop.
+        if max_async < 1:
+            raise ValueError(
+                f"max_async for LLM role {role_name!r} must be >= 1 (a "
+                "non-positive limit dispatches no workers, so calls "
+                f"through this role would never run); got {max_async}"
+            )
         spec = ROLES_BY_NAME[role_name]
         return priority_limit_async_func_call(
             max_async,
@@ -273,29 +312,14 @@ class _RoleLLMMixin:
             tasks = list(self._retired_llm_queue_cleanup_tasks)
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _shutdown_model_queues(self) -> None:
-        """Shut down every queue owned by this instance.
+    async def _shutdown_queue_wrappers(
+        self, wrappers: list[tuple[str, Callable[..., object] | None]]
+    ) -> None:
+        """Shut the given queue wrappers down, best-effort.
 
-        Finalization must call this before tearing down storages: role LLM
-        calls can still use the response cache while their queues drain.
-        Queue shutdown is best-effort, matching storage finalization, but one
-        broken wrapper must not leave the remaining workers attached to the
-        event loop.
+        Matches storage finalization: one broken wrapper must not leave the
+        remaining workers attached to the event loop.
         """
-        await self.wait_for_retired_llm_queues()
-
-        wrappers: list[tuple[str, Callable[..., object] | None]] = [
-            (f"{spec.name} LLM", self._role_llm_states[spec.name].wrapped)
-            for spec in ROLES
-        ]
-        embedding = getattr(self, "embedding_func", None)
-        wrappers.extend(
-            (
-                ("embedding", getattr(embedding, "func", None)),
-                ("rerank", getattr(self, "rerank_model_func", None)),
-            )
-        )
-
         seen: set[int] = set()
         for label, wrapped in wrappers:
             if wrapped is None or id(wrapped) in seen:
@@ -305,6 +329,41 @@ class _RoleLLMMixin:
                 await self._shutdown_llm_wrapper(wrapped)
             except Exception as e:
                 logger.error(f"Failed to shut down {label} queue: {e}")
+
+    async def _shutdown_llm_and_rerank_queues(self) -> None:
+        """Shut down the role LLM queues and the rerank queue.
+
+        Finalization must call this BEFORE tearing down storages: role LLM
+        calls can still use the response cache while their queues drain.
+        The embedding queue is not included, because storages need it to
+        finalize; see ``_shutdown_embedding_queue``.
+        """
+        await self.wait_for_retired_llm_queues()
+
+        wrappers: list[tuple[str, Callable[..., object] | None]] = [
+            (f"{spec.name} LLM", self._role_llm_states[spec.name].wrapped)
+            for spec in ROLES
+        ]
+        wrappers.append(("rerank", getattr(self, "rerank_model_func", None)))
+        await self._shutdown_queue_wrappers(wrappers)
+
+    async def _shutdown_embedding_queue(self) -> None:
+        """Shut down the embedding queue.
+
+        Finalization must call this AFTER the storages are finalized: a
+        vector storage's ``finalize()`` flushes its pending upserts, and that
+        flush embeds first. Closing the queue earlier makes the flush fail and
+        the buffered vectors are dropped.
+
+        Do not call it after an INTERRUPTED finalize (from a ``finally``, an
+        ``except``) either: the shutdown is permanent, so the retried
+        finalize could no longer flush the vectors the interrupted one left
+        buffered. ``finalize_storages`` records the residue this accepts.
+        """
+        embedding = getattr(self, "embedding_func", None)
+        await self._shutdown_queue_wrappers(
+            [("embedding", getattr(embedding, "func", None))]
+        )
 
     def _apply_llm_role_config_update(
         self,

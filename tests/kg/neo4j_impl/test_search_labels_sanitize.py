@@ -22,6 +22,9 @@ sys.path.append(
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.mark.parametrize(
     "raw, expected",
     [

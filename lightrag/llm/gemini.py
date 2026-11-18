@@ -20,6 +20,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 
@@ -44,6 +45,7 @@ if not pm.is_installed("google-api-core"):
 
 from google import genai  # type: ignore
 from google.genai import types  # type: ignore
+from google.genai import errors as google_genai_errors  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
 
@@ -51,6 +53,26 @@ class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
 
     pass
+
+
+def _is_retryable_gemini_client_error(exc: BaseException) -> bool:
+    """True for a rate-limit response, the one 4xx worth a fresh attempt.
+
+    ``google-genai`` (the client this module actually calls through
+    ``client.aio.models.*``) raises its own ``google.genai.errors``
+    hierarchy, not ``google.api_core.exceptions`` -- that module belongs to
+    the older Vertex AI client libraries and is never raised on this
+    request path. Its 5xx failures surface as ``ServerError``, matched
+    directly in the retry predicate below. A 429 rate-limit response,
+    however, surfaces as the generic 4xx ``ClientError`` rather than a
+    distinct "resource exhausted" type, so it must be matched by status
+    code; every other ``ClientError`` (bad request, bad auth, not found)
+    stays non-retryable.
+    """
+    return (
+        isinstance(exc, google_genai_errors.ClientError)
+        and getattr(exc, "code", None) == 429
+    )
 
 
 _DEFAULT_GEMINI_BASE_URLS = {
@@ -171,6 +193,11 @@ def _build_generation_config(
         if schema is not None and "response_json_schema" not in config_data:
             config_data["response_json_schema"] = schema
 
+    if "safety_settings" in config_data:
+        config_data["safety_settings"] = _normalize_gemini_safety_settings(
+            config_data["safety_settings"]
+        )
+
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
         key: value
@@ -204,6 +231,30 @@ def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
         return response_format
 
     return response_format
+
+
+def _normalize_gemini_safety_settings(safety_settings: Any) -> Any:
+    """Convert a category-to-threshold mapping to the SDK's native list shape.
+
+    ``GeminiLLMOptions.safety_settings`` is documented and typed as a plain
+    JSON object (e.g. ``{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}``), but
+    ``types.GenerateContentConfig.safety_settings`` only accepts a list of
+    ``{"category": ..., "threshold": ...}`` entries and rejects a bare dict.
+    A value that is already a list (the SDK's own shape) passes through
+    unchanged, and a single SDK entry (a dict with a ``category`` key) is
+    wrapped in a list rather than read as a mapping. No harm category is
+    named ``category``, so the two dict shapes cannot collide.
+    """
+    if not isinstance(safety_settings, dict):
+        return safety_settings
+
+    if "category" in safety_settings:
+        return [safety_settings]
+
+    return [
+        {"category": category, "threshold": threshold}
+        for category, threshold in safety_settings.items()
+    ]
 
 
 def _validate_gemini_response_format(response_format: Any | None) -> None:
@@ -282,6 +333,8 @@ def _extract_response_text(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
 )
@@ -699,6 +752,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
     ),
 )
 async def gemini_embed(

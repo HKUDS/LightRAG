@@ -5,6 +5,41 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
+class _FakeGeminiAPIError(Exception):
+    """Stand-in for google.genai.errors.APIError."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f"fake gemini api error {code}")
+
+
+class _FakeGeminiClientError(_FakeGeminiAPIError):
+    """Stand-in for google.genai.errors.ClientError (4xx)."""
+
+
+class _FakeGeminiServerError(_FakeGeminiAPIError):
+    """Stand-in for google.genai.errors.ServerError (5xx)."""
+
+
+class _FakeOutcome:
+    """Stand-in for tenacity's Future outcome: a failed call carrying exc."""
+
+    failed = True
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def exception(self):
+        return self._exc
+
+
+class _FakeRetryState:
+    """Minimal tenacity RetryCallState double: just enough for retry_base."""
+
+    def __init__(self, exc):
+        self.outcome = _FakeOutcome(exc)
+
+
 def _load_gemini_module(monkeypatch, request):
     fake_pm = SimpleNamespace(
         is_installed=lambda name: True,
@@ -27,7 +62,15 @@ def _load_gemini_module(monkeypatch, request):
         # for the real google.genai enum members.
         FinishReason=SimpleNamespace(MAX_TOKENS="MAX_TOKENS", STOP="STOP"),
     )
-    fake_genai = SimpleNamespace(Client=lambda **kwargs: SimpleNamespace(kwargs=kwargs))
+    fake_genai_errors = SimpleNamespace(
+        APIError=_FakeGeminiAPIError,
+        ClientError=_FakeGeminiClientError,
+        ServerError=_FakeGeminiServerError,
+    )
+    fake_genai = SimpleNamespace(
+        Client=lambda **kwargs: SimpleNamespace(kwargs=kwargs),
+        errors=fake_genai_errors,
+    )
     fake_google_module = ModuleType("google")
     fake_google_module.genai = fake_genai
     fake_api_exceptions = SimpleNamespace(
@@ -45,7 +88,11 @@ def _load_gemini_module(monkeypatch, request):
 
     monkeypatch.setitem(sys.modules, "pipmaster", fake_pm)
     monkeypatch.setitem(sys.modules, "google", fake_google_module)
-    monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(types=fake_types))
+    monkeypatch.setitem(
+        sys.modules,
+        "google.genai",
+        SimpleNamespace(types=fake_types, errors=fake_genai_errors),
+    )
     monkeypatch.setitem(sys.modules, "google.api_core", fake_google_api_core)
     monkeypatch.setitem(sys.modules, "google.api_core.exceptions", fake_api_exceptions)
 
@@ -152,11 +199,78 @@ def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch, request):
 
 
 @pytest.mark.offline
+def test_gemini_safety_settings_mapping_is_converted_to_sdk_list_shape(
+    monkeypatch, request
+):
+    """GeminiLLMOptions documents safety_settings as a JSON object (a plain
+    {category: threshold} mapping) and the server forwards that mapping into
+    generation_config unchanged. google.genai.types.GenerateContentConfig
+    requires safety_settings to be a list of {category, threshold} entries
+    and rejects a bare mapping outright, so every completion call made with
+    this documented option crashed before a request was ever sent."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    config = gemini_module._build_generation_config(
+        base_config={
+            "safety_settings": {
+                "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
+                "HARM_CATEGORY_HATE_SPEECH": "BLOCK_ONLY_HIGH",
+            }
+        },
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+    ]
+
+
+@pytest.mark.offline
+def test_gemini_safety_settings_list_shape_passes_through_unchanged(
+    monkeypatch, request
+):
+    """A caller already passing the SDK's native list shape must not be
+    altered by the dict-to-list normalization."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    native_shape = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}]
+    config = gemini_module._build_generation_config(
+        base_config={"safety_settings": native_shape},
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == native_shape
+
+
+@pytest.mark.offline
+def test_gemini_safety_settings_single_sdk_entry_is_wrapped_not_unpacked(
+    monkeypatch, request
+):
+    """A single SDK entry written as a dict must become a one-item list.
+    Read as a category-to-threshold mapping it would turn into the bogus
+    categories "category" and "threshold", which the SDK only warns about,
+    so the misconfiguration would reach the API instead of failing here."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    entry = {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}
+    config = gemini_module._build_generation_config(
+        base_config={"safety_settings": entry},
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == [entry]
+
+
+@pytest.mark.offline
 def test_gemini_rejects_typed_response_format(monkeypatch, request):
     gemini_module = _load_gemini_module(monkeypatch, request)
 
     class FakeSchemaModel:
-        pass
+        """A class object where Gemini expects a dict schema (typed/Pydantic)."""
 
     with pytest.raises(TypeError, match="typed/Pydantic"):
         gemini_module._validate_gemini_response_format(FakeSchemaModel)
@@ -542,3 +656,42 @@ async def test_gemini_no_max_tokens_builds_no_config(monkeypatch, request):
     )
 
     assert "config" not in captured
+
+
+@pytest.mark.offline
+def test_gemini_complete_retry_predicate_matches_native_genai_errors(
+    monkeypatch, request
+):
+    """google-genai raises its own errors.ServerError/ClientError -- never
+    google.api_core.exceptions, which this SDK's request path never touches.
+    A predicate built only from google.api_core.exceptions types never
+    matches a real transient failure, so a 503 gets zero retries instead of
+    the intended three."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    def _would_retry(exc):
+        return gemini_module.gemini_complete_if_cache.retry.retry(_FakeRetryState(exc))
+
+    # A transient 5xx from the real SDK must be retried.
+    assert _would_retry(_FakeGeminiServerError(503)) is True
+    # 429 rate-limiting surfaces as a ClientError (4xx) in this SDK's
+    # scheme rather than a distinct "resource exhausted" type, but it is
+    # still transient and worth a fresh attempt.
+    assert _would_retry(_FakeGeminiClientError(429)) is True
+    # An ordinary 4xx (bad request, bad auth) must NOT be retried.
+    assert _would_retry(_FakeGeminiClientError(400)) is False
+
+
+@pytest.mark.offline
+def test_gemini_embed_retry_predicate_matches_native_genai_server_error(
+    monkeypatch, request
+):
+    """Same misclassification as the completion path, in gemini_embed's
+    own retry decorator."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    would_retry = gemini_module.gemini_embed.func.retry.retry(
+        _FakeRetryState(_FakeGeminiServerError(503))
+    )
+
+    assert would_retry is True
