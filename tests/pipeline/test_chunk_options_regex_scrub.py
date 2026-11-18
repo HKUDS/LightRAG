@@ -74,12 +74,14 @@ def test_missing_live_value_omits_the_key_entirely():
     assert "sentence_split_regex" not in out
 
 
-def test_empty_addon_params_falls_back_to_env_default():
+@pytest.mark.parametrize(
+    "addon", [{}, None, {"chunker": {}}], ids=["empty", "none", "empty-chunker"]
+)
+def test_empty_addon_params_falls_back_to_env_default(addon):
     # A LightRAG instance whose addon_params were never populated must still get
     # the trusted default rather than the snapshot value.
-    for addon in ({}, None, {"chunker": {}}):
-        out = apply_trusted_sentence_split_regex({"sentence_split_regex": REDOS}, addon)
-        assert out.get("sentence_split_regex") == DEFAULT_SENTENCE_SPLIT_REGEX
+    out = apply_trusted_sentence_split_regex({"sentence_split_regex": REDOS}, addon)
+    assert out.get("sentence_split_regex") == DEFAULT_SENTENCE_SPLIT_REGEX
 
 
 def test_discarding_a_snapshot_value_leaves_an_audit_line(lightrag_log_records):

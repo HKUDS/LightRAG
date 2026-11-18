@@ -48,21 +48,30 @@ def test_quoted_prose_apostrophe_before_object_still_recovers_object() -> None:
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
 
 
-def test_greedy_regex_would_fail_same_input() -> None:
-    """The old greedy ``\\{.*\\}`` slice over-extends across trailing braces and
-    drops the object; the new helper recovers it."""
+def _legacy_greedy_load(raw: str) -> dict:
+    """The pre-fix parser: greedy ``\\{.*\\}`` slice, then json_repair.
+
+    Returns ``{}`` when the slice does not repair into an object, whether
+    json_repair raises or returns a non-dict (depends on its version).
+    """
     import json_repair
     import re
 
-    raw = '{"facts":[{"text":"ok"}]} trailing {brace}'
     m = re.search(r"\{[\s\S]*\}", raw)
-    assert m is not None
+    if m is None:
+        return {}
     try:
         obj = json_repair.loads(m.group(0))
-        recovered = obj if isinstance(obj, dict) else {}
     except Exception:
-        recovered = {}
-    assert recovered == {}
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def test_greedy_regex_would_fail_same_input() -> None:
+    """The old greedy ``\\{.*\\}`` slice over-extends across trailing braces and
+    drops the object; the new helper recovers it."""
+    raw = '{"facts":[{"text":"ok"}]} trailing {brace}'
+    assert _legacy_greedy_load(raw) == {}
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
 
 

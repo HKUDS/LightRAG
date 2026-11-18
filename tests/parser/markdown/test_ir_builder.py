@@ -12,6 +12,9 @@ from lightrag.parser.markdown.extract import (
 from lightrag.parser.markdown.ir_builder import NativeMarkdownIRBuilder
 
 
+pytestmark = pytest.mark.offline
+
+
 def _normalize(blocks, meta, *, document_name="doc.md"):
     return NativeMarkdownIRBuilder().normalize(
         blocks,
@@ -112,6 +115,26 @@ def test_html_table_becomes_html_irtable_with_thead_and_dims():
     assert table.html and table.html.startswith("<table>")
     assert isinstance(table.table_header, str) and "<thead>" in table.table_header
     assert table.body_override and "<thead>" in table.body_override
+    assert (table.num_rows, table.num_cols) == (2, 2)
+
+
+@pytest.mark.offline
+def test_html_table_optional_end_tags_keep_dimensions_in_ir():
+    html = "<table><thead><tr><th>K<th>V</thead><tbody><tr><td>a<td>1</tbody></table>"
+    blocks = [
+        {
+            "heading": "H",
+            "level": 1,
+            "parent_headings": [],
+            "content": table_marker("t1"),
+        }
+    ]
+
+    ir = _normalize(blocks, {"md_tables": {"t1": {"kind": "html", "html": html}}})
+    (table,) = ir.blocks[0].tables
+
+    assert table.html == html
+    assert table.table_header == "<thead><tr><th>K<th>V</thead>"
     assert (table.num_rows, table.num_cols) == (2, 2)
 
 

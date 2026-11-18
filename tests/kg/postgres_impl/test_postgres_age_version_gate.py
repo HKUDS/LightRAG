@@ -54,6 +54,7 @@ from lightrag.utils import logger as lightrag_logger
 # importable. A plain import here therefore adds no new dependency on this module --
 # it cannot fail unless the import above already did.
 import asyncpg
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -183,20 +184,12 @@ def _allow_unsupported(monkeypatch) -> None:
 
 @contextlib.contextmanager
 def _capture_gate_logs(caplog, level=logging.DEBUG):
-    """Capture records emitted on the ``lightrag`` logger.
-
-    ``lightrag/utils.py`` sets ``propagate = False`` on that logger, so caplog --
-    which attaches to root -- never sees its records. Flip propagation for the
-    duration of the block, then restore it.
-    """
+    """Capture records emitted on the ``lightrag`` logger (see
+    ``tests/_log_capture.py``)."""
     caplog.clear()
-    old_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(level, logger=lightrag_logger.name):
             yield caplog
-    finally:
-        lightrag_logger.propagate = old_propagate
 
 
 class _FakeAcquire:
@@ -249,8 +242,9 @@ def _make_db(monkeypatch, connection, *, attempts: int = 3) -> PostgreSQLDB:
     pool = _FakePool(connection)
 
     async def _ensure_pool() -> None:
-        # _before_sleep calls _reset_pool(), which clears self.pool; restore it so a
-        # retried attempt has a pool to acquire from, as reconnecting would in reality.
+        # A failed attempt makes _run_with_retry() reset the pool it used, which
+        # clears self.pool; restore it so a retried attempt has a pool to acquire
+        # from, as reconnecting would in reality.
         db.pool = pool
 
     monkeypatch.setattr(db, "_ensure_pool", _ensure_pool)
