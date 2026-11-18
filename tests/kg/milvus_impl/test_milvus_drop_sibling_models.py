@@ -227,6 +227,48 @@ async def test_a_voucher_never_overrides_another_owners_marker():
     assert await storage.unvouched_sibling_containers() == []
 
 
+@pytest.mark.parametrize(
+    "family",
+    [
+        pytest.param(
+            {
+                "a_chunks_m_entities_x_8d": "FOREIGN",
+                "a_chunks_m_entities_x_8d_old": OURS,
+            },
+            id="our-marker-on-the-backup",
+        ),
+        pytest.param(
+            {
+                "a_chunks_m_entities_x_8d": OURS,
+                "a_chunks_m_entities_x_8d_old": "FOREIGN",
+            },
+            id="our-marker-on-the-collection",
+        ),
+    ],
+)
+@pytest.mark.parametrize("vouched", [(), ("a_chunks_m_entities_x_8d",)])
+async def test_a_family_marked_for_two_owners_is_refused_whole(family, vouched):
+    """Workspace ``a`` + ``chunks`` + model ``m_entities_x`` and workspace
+    ``a_chunks_m`` + ``entities`` + model ``x`` fold onto one collection name.
+    A schema migration by either leaves an ``_old`` carrying the other's
+    marker beside its own live collection, and a backup must never authorize
+    dropping a collection that names another owner."""
+    foreign = "[lightrag:workspace=a_chunks_m;namespace=entities]"
+    client = fake_milvus(
+        {name: foreign if d == "FOREIGN" else d for name, d in family.items()}
+    )
+    storage = _storage(client)
+
+    result = await storage.drop_sibling_models(vouched=vouched)
+
+    assert result["status"] == "error"
+    assert "another owner" in result["message"]
+    assert "a_chunks_m_entities_x_8d" in result["message"]
+    assert client.dropped == []
+    # Nothing a voucher could settle, so it is not offered for one.
+    assert await storage.unvouched_sibling_containers() == []
+
+
 async def test_listing_unvouched_siblings_drops_nothing():
     client = fake_milvus(
         {
@@ -304,6 +346,19 @@ async def test_drop_leaves_a_legacy_collection_nothing_would_migrate(
         "'a_chunks'" in r.getMessage() and "no vector field" in r.getMessage()
         for r in lightrag_log_records
     )
+
+
+async def test_drop_leaves_a_backup_marked_as_another_owners(lightrag_log_records):
+    foreign = "[lightrag:workspace=a_chunks_model;namespace=entities]"
+    client = fake_milvus(
+        {"a_chunks_model_b_768d": OURS, "a_chunks_model_b_768d_old": foreign}
+    )
+    result = await _storage(client).drop()
+
+    assert result["status"] == "success"
+    assert client.dropped == ["a_chunks_model_b_768d"]
+    assert client.collections["a_chunks_model_b_768d_old"] == foreign
+    assert any("another owner's" in r.getMessage() for r in lightrag_log_records)
 
 
 async def test_drop_without_a_model_suffix_treats_no_collection_as_legacy():

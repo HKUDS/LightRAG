@@ -1017,9 +1017,12 @@ the interrupted-migration recovery -- an in-place schema migration keeps
   `initialize()` applies before migrating one, so it is exactly the
   collections that could come back -- and one that fails it may not be
   LightRAG's.
-- A sibling's `_temp` and `_old` are dropped before the sibling. They share
-  its verdict: `_old` keeps the description of the collection it was renamed
-  from, which may predate the marker its rebuilt successor carries.
+- A backup of the active or legacy collection that is marked as another
+  owner's is left alone too, with a warning.
+- A sibling's `_temp` and `_old` are dropped before the sibling. An unmarked
+  one shares its verdict: `_old` keeps the description of the collection it
+  was renamed from, which may predate the marker its rebuilt successor
+  carries. One marked as another owner's never does (*Accepted residues*).
 - The active collection is still rebuilt empty rather than dropped. That was
   never only about the legacy migration: a clear leaves the server running,
   and nothing but `initialize()` creates a collection.
@@ -1040,6 +1043,11 @@ namespace and migrate nothing into it.
   remove another workspace's data, which is never acceptable; a clear that
   keeps failing is loud and has a documented way out.
 - **A Milvus collection marked as another owner's is skipped silently.**
+- **A Milvus family carrying both this workspace's marker and another
+  owner's is left whole and reported as an error.** It means two workspaces
+  fold onto one collection name, and a schema migration by one left an `_old`
+  carrying the other's marker beside its own live collection. A voucher does
+  not override a marker; the operator inspects and drops by hand.
 - **A sweep that fails after a rebuild leaves the sibling** until the next
   rebuild or clear. No baseline was deleted, so the server still refuses the
   sibling's model, and that refusal is what keeps the leftover unread.

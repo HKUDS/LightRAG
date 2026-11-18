@@ -3747,28 +3747,36 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     def _drop_backup_collections(self) -> None:
         """Drop every backup copy of the ACTIVE model's collection. Blocking.
 
-        Runs on the Milvus pool, inside ``drop()``'s single submission. The
-        legacy collection and its own backups are dropped only when they carry
-        a ``vector`` field -- the test ``initialize()`` applies before
-        migrating one, so exactly the collections that could come back.
+        Runs on the Milvus pool, inside ``drop()``'s single submission. Two
+        kinds are left in place, each with a warning:
+
+          - a legacy collection (or its backup) with no ``vector`` field --
+            the test ``initialize()`` applies before migrating one, so what
+            is dropped is exactly what could come back;
+          - any backup whose description carries ANOTHER owner's marker: two
+            workspaces fold onto this name, and it is not ours to drop.
         """
-        for name in (f"{self.final_namespace}_temp", f"{self.final_namespace}_old"):
-            if self._client.has_collection(name):
-                self._client.drop_collection(name)
-                logger.info(
-                    f"[{self.workspace}] Dropped backup collection '{name}' "
-                    f"with the workspace drop"
-                )
-        if self.legacy_namespace == self.final_namespace:
-            return
-        for name in (
-            f"{self.legacy_namespace}_temp",
-            f"{self.legacy_namespace}_old",
-            self.legacy_namespace,
-        ):
+        marker = self._ownership_marker()
+        backups = [
+            (f"{self.final_namespace}{tail}", False) for tail in ("_temp", "_old")
+        ]
+        if self.legacy_namespace != self.final_namespace:
+            backups += [
+                (f"{self.legacy_namespace}{tail}", True)
+                for tail in ("_temp", "_old", "")
+            ]
+        for name, needs_vector_field in backups:
             if not self._client.has_collection(name):
                 continue
-            if not self._has_vector_field(self._client.describe_collection(name)):
+            info = self._client.describe_collection(name)
+            description = info.get("description") or ""
+            if _OWNERSHIP_MARKER_PREFIX in description and marker not in description:
+                logger.warning(
+                    f"[{self.workspace}] Left collection '{name}' in place: it "
+                    f"is marked as another owner's"
+                )
+                continue
+            if needs_vector_field and not self._has_vector_field(info):
                 logger.warning(
                     f"[{self.workspace}] Left collection '{name}' in place: it "
                     f"has no vector field, so nothing migrates it"
@@ -3776,7 +3784,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 continue
             self._client.drop_collection(name)
             logger.info(
-                f"[{self.workspace}] Dropped legacy collection '{name}' with "
+                f"[{self.workspace}] Dropped backup collection '{name}' with "
                 f"the workspace drop"
             )
 
@@ -3816,19 +3824,29 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         }
 
     def _sibling_ownership(self, members: list[tuple[str, str]]) -> str:
-        """``"ours"``, ``"foreign"`` or ``"unmarked"`` for one model's collections.
+        """``"ours"``, ``"foreign"``, ``"conflict"`` or ``"unmarked"`` for one
+        model's collections.
 
         Judged per family, not per collection: an ``_old`` backup keeps the
         description of the collection it was renamed from, which may predate
-        the marker its rebuilt successor carries.
+        the marker its rebuilt successor carries. So an UNMARKED member takes
+        the family's verdict -- but a member marked as another owner's never
+        does. When two workspaces fold onto one collection name, a schema
+        migration by one leaves an ``_old`` carrying the other's marker beside
+        its own live collection; a family holding both markers is a
+        ``"conflict"``, and nothing in it is ours to drop.
         """
         marker = self._ownership_marker()
         descriptions = [description for _, description in members]
-        if any(marker in description for description in descriptions):
-            return "ours"
-        if any(_OWNERSHIP_MARKER_PREFIX in d for d in descriptions):
+        ours = any(marker in d for d in descriptions)
+        foreign = any(
+            _OWNERSHIP_MARKER_PREFIX in d and marker not in d for d in descriptions
+        )
+        if ours and foreign:
+            return "conflict"
+        if foreign:
             return "foreign"
-        return "unmarked"
+        return "ours" if ours else "unmarked"
 
     async def unvouched_sibling_containers(self) -> list[str]:
         def _list() -> list[str]:
@@ -3859,15 +3877,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         A collection marked as another owner's is skipped. One with no marker
         and no voucher is left in place and makes the result an ERROR naming
         it: it may hold this workspace's vectors, and it may be another
-        workspace's. A sibling's ``_temp`` / ``_old`` backups share its
-        verdict and are dropped before it, and nothing is recreated -- no
-        running instance serves a sibling. Same preconditions as ``drop()``.
+        workspace's. So does a family whose members carry BOTH this instance's
+        marker and another owner's: a voucher never overrides a marker. A
+        sibling's unmarked ``_temp`` / ``_old`` backups share its verdict and
+        are dropped before it, and nothing is recreated -- no running instance
+        serves a sibling. Same preconditions as ``drop()``.
         """
         vouched = frozenset(vouched)
 
-        def _drop_siblings() -> tuple[list[str], list[str]]:
+        def _drop_siblings() -> tuple[list[str], list[str], list[str]]:
             dropped: list[str] = []
             unmarked: list[str] = []
+            conflicting: list[str] = []
             for base, members in self._sibling_candidates().items():
                 ownership = self._sibling_ownership(members)
                 if ownership == "unmarked" and base in vouched:
@@ -3878,13 +3899,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         dropped.append(name)
                 elif ownership == "unmarked":
                     unmarked.append(base)
+                elif ownership == "conflict":
+                    conflicting.append(base)
                 # "foreign": another workspace or namespace owns it.
-            return dropped, unmarked
+            return dropped, unmarked, conflicting
 
         try:
-            dropped, unmarked = await run_in_milvus_executor_uninterruptible(
-                _drop_siblings
-            )
+            (
+                dropped,
+                unmarked,
+                conflicting,
+            ) = await run_in_milvus_executor_uninterruptible(_drop_siblings)
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error dropping sibling model collections "
@@ -3895,13 +3920,23 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             logger.info(
                 f"[{self.workspace}] Dropped sibling Milvus model collections: {dropped}"
             )
+        problems = []
         if unmarked:
-            message = (
+            problems.append(
                 f"collections without an ownership marker were left in place "
                 f"and may hold this workspace's vectors: {sorted(unmarked)}. "
                 f"Drop them with lightrag-clear-storage, which lists them and "
                 f"asks first, or by hand."
             )
+        if conflicting:
+            problems.append(
+                f"collections marked both as this workspace's and as another "
+                f"owner's were left in place: {sorted(conflicting)}. Two "
+                f"workspaces share these names; inspect them and drop what is "
+                f"this workspace's by hand."
+            )
+        if problems:
+            message = " ".join(problems)
             logger.warning(f"[{self.workspace}] {message}")
             return {"status": "error", "message": message}
         return {"status": "success", "message": "sibling models dropped"}
