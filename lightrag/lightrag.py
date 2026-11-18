@@ -216,6 +216,8 @@ from lightrag.utils import (
     always_get_an_event_loop,
     compute_mdhash_id,
     priority_limit_async_func_call,
+    bind_embedding_timeout,
+    bind_rerank_timeout,
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
@@ -1998,13 +2000,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"summary_max_tokens({self.summary_max_tokens}) should be greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
+        # The queue is sized from the timeout, and bind_*_timeout hands the
+        # same value to the bundled bindings' clients (see embedding_timeout /
+        # rerank_timeout in lightrag.utils) without passing it as an argument.
         if self.rerank_model_func is not None:
             self.rerank_model_func = priority_limit_async_func_call(
                 self.rerank_model_max_async,
                 llm_timeout=self.default_rerank_timeout,
                 queue_name="Rerank func",
                 concurrency_group="rerank",
-            )(self.rerank_model_func)
+            )(bind_rerank_timeout(self.rerank_model_func, self.default_rerank_timeout))
 
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
@@ -2035,7 +2040,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 llm_timeout=self.default_embedding_timeout,
                 queue_name="Embedding func",
                 concurrency_group="embedding",
-            )(self.embedding_func.func)
+            )(
+                bind_embedding_timeout(
+                    self.embedding_func.func, self.default_embedding_timeout
+                )
+            )
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)
 

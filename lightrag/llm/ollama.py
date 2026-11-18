@@ -30,6 +30,7 @@ import numpy as np
 from typing import Any, Optional, Union
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
     provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -536,10 +537,11 @@ def _is_retryable_ollama_response_error(exc: BaseException) -> bool:
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     # Transport errors: see _RETRYABLE_OLLAMA_TRANSPORT_ERRORS. Its
-    # httpx.TimeoutException member only fires when the caller passes a
-    # per-request ``timeout``. The API server passes none, so there the outer
-    # embedding worker's ``wait_for`` is the deadline, and it cancels this
-    # whole retry loop rather than one attempt.
+    # httpx.TimeoutException member fires on the client ``timeout``, which
+    # defaults to LightRAG's embedding timeout inside a LightRAG call. With
+    # none set (0, or outside a LightRAG call) the outer embedding worker's
+    # ``wait_for`` is the only deadline, and it cancels this whole retry loop
+    # rather than one attempt.
     # ollama.ResponseError(5xx / 429): see _is_retryable_ollama_response_error.
     retry=(
         retry_if_exception_type(_RETRYABLE_OLLAMA_TRANSPORT_ERRORS)
@@ -583,7 +585,11 @@ async def ollama_embed(
             reports ``prompt_eval_count`` for an embed call and no
             ``eval_count``, so a tracked embedding contributes prompt tokens
             only.
-        **kwargs: Additional arguments passed to the Ollama client.
+        **kwargs: Additional arguments passed to the Ollama client. A
+            ``timeout`` (seconds) here is the client's request timeout; without
+            one, LightRAG's ``default_embedding_timeout`` applies inside a
+            LightRAG embedding call. 0 or a negative value, or no timeout
+            outside one, keeps the Ollama client's default.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -612,7 +618,7 @@ async def ollama_embed(
         headers["Authorization"] = f"Bearer {api_key}"
 
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None)
+    timeout = embedding_timeout(kwargs.pop("timeout", None))
 
     host = _coerce_host_for_cloud_model(host, embed_model)
 

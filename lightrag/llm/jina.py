@@ -17,11 +17,16 @@ from tenacity import (
     retry_if_exception,
 )
 from lightrag.llm._aiohttp_retry import is_transient_aiohttp_error
-from lightrag.utils import wrap_embedding_func_with_attrs, logger
+from lightrag.utils import embedding_timeout, wrap_embedding_func_with_attrs, logger
 
 
-async def fetch_data(url, headers, data):
-    async with aiohttp.ClientSession() as session:
+async def fetch_data(url, headers, data, timeout=None):
+    # ``timeout`` is a resolved value: None keeps aiohttp's session default
+    # rather than building ClientTimeout(total=None), which never times out.
+    session_kwargs = {}
+    if timeout is not None:
+        session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(**session_kwargs) as session:
         async with session.post(url, headers=headers, json=data) as response:
             if response.status != 200:
                 error_text = await response.text()
@@ -83,6 +88,7 @@ async def jina_embed(
     api_key: str = None,
     context: str | None = None,
     task: str | None = None,
+    timeout: float | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Jina AI's API.
 
@@ -109,6 +115,10 @@ async def jina_embed(
             - "retrieval.passage" for context="document"
             - "text-matching" otherwise (true backward-compatible default)
             Any explicit non-None task value overrides context-based selection.
+        timeout: Total request timeout in seconds for one attempt. None (the
+            default) uses LightRAG's ``default_embedding_timeout`` inside a
+            LightRAG embedding call; 0 or a negative value, or None outside
+            one, keeps aiohttp's session default (300 s).
 
 
     Returns:
@@ -120,6 +130,7 @@ async def jina_embed(
             Connection failures and 408 / 409 / 429 / 5xx responses are retried
             up to three attempts first; the last attempt's exception is raised
             as-is, never wrapped in ``tenacity.RetryError``.
+        TimeoutError: If an attempt exceeds ``timeout``; retried the same way.
     """
     effective_api_key = api_key or os.getenv("JINA_API_KEY")
     if not effective_api_key:
@@ -157,7 +168,9 @@ async def jina_embed(
     )
 
     try:
-        data_list = await fetch_data(url, headers, data)
+        data_list = await fetch_data(
+            url, headers, data, timeout=embedding_timeout(timeout)
+        )
 
         if not data_list:
             logger.error("Jina API returned empty data list")

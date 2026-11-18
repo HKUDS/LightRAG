@@ -33,6 +33,7 @@ from tenacity import (
 )
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
     provider_timeout,
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
@@ -1162,6 +1163,7 @@ async def openai_embed(
     context: str = "document",
     query_prefix: str | None = None,
     document_prefix: str | None = None,
+    timeout: float | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API with automatic text truncation.
 
@@ -1206,6 +1208,10 @@ async def openai_embed(
             when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
+        timeout: Request timeout in seconds. None (the default) uses LightRAG's
+            ``default_embedding_timeout`` inside a LightRAG embedding call,
+            unless ``client_configs`` sets ``"timeout"``; 0 or a negative
+            value, or None outside one, keeps the SDK default (600 s).
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -1261,6 +1267,11 @@ async def openai_embed(
 
         texts = truncated_texts
 
+    # A "timeout" in client_configs is the caller's explicit choice; only an
+    # explicit argument outranks it. None reaches the builder as "omit".
+    if timeout is not None or not (client_configs and "timeout" in client_configs):
+        timeout = embedding_timeout(timeout)
+
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
         api_key=api_key,
@@ -1268,6 +1279,7 @@ async def openai_embed(
         use_azure=use_azure,
         azure_deployment=azure_deployment,
         api_version=api_version,
+        timeout=timeout,
         client_configs=client_configs,
     )
     caller_supplied_http_client = _caller_supplied_http_client(client_configs)
@@ -1421,6 +1433,7 @@ async def azure_openai_embed(
     query_prefix: str | None = None,
     document_prefix: str | None = None,
     max_token_size: int | None = None,
+    timeout: float | None = None,
 ) -> np.ndarray:
     """Azure OpenAI embedding wrapper function.
 
@@ -1506,4 +1519,5 @@ async def azure_openai_embed(
         context=context,
         query_prefix=query_prefix,
         document_prefix=document_prefix,
+        timeout=timeout,
     )

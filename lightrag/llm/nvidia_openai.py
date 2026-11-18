@@ -26,6 +26,7 @@ from tenacity import (
 )
 
 from lightrag.utils import (
+    embedding_timeout,
     wrap_embedding_func_with_attrs,
 )
 
@@ -53,6 +54,7 @@ async def nvidia_openai_embed(
     trunc: str = "NONE",  # NONE or START or END
     encode: str = "float",  # float or base64
     context: str | None = None,
+    timeout: float | None = None,
 ) -> np.ndarray:
     """Generate embeddings with an NVIDIA NIM embedding model.
 
@@ -62,6 +64,10 @@ async def nvidia_openai_embed(
     own `context` ("query" / "document") onto NVIDIA's "query" / "passage"
     values, so a query embedded via a LightRAG query path actually uses
     NVIDIA's query mode instead of always defaulting to "passage".
+
+    ``timeout`` (seconds) defaults to LightRAG's ``default_embedding_timeout``
+    inside a LightRAG embedding call; 0 or a negative value, or None outside
+    one, keeps the OpenAI SDK default.
     """
     if input_type is None:
         input_type = "query" if context == "query" else "passage"
@@ -71,6 +77,10 @@ async def nvidia_openai_embed(
         client_kwargs["base_url"] = base_url
     if api_key:
         client_kwargs["api_key"] = api_key
+    # Omitted rather than passed as None, which the SDK reads as "no timeout".
+    timeout = embedding_timeout(timeout)
+    if timeout is not None:
+        client_kwargs["timeout"] = timeout
 
     openai_async_client = AsyncOpenAI(**client_kwargs)
     # Hold the client in an async-with so its httpx connection pool is
