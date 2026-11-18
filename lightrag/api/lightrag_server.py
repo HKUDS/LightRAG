@@ -2158,11 +2158,13 @@ def create_app(args):
             role_apikey = None
         else:
             role_apikey = explicit_role_apikey or args.llm_binding_api_key
-        role_timeout = (
-            override_meta.get("timeout")
-            or getattr(args, f"{attr}_llm_timeout", None)
-            or llm_timeout
-        )
+        # ``is None`` rather than ``or``: an explicit 0 means "no timeout" and
+        # must not fall through to the base LLM_TIMEOUT.
+        role_timeout = override_meta.get("timeout")
+        if role_timeout is None:
+            role_timeout = getattr(args, f"{attr}_llm_timeout", None)
+        if role_timeout is None:
+            role_timeout = llm_timeout
         role_max_async = override_meta.get("max_async")
         if role_max_async is None:
             role_max_async = getattr(args, f"{attr}_llm_max_async", None)

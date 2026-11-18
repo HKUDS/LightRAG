@@ -40,7 +40,7 @@ Common fields:
 | `LLM_MODEL` | Base model name. For Azure OpenAI, this is usually the deployment name. |
 | `LLM_BINDING_HOST` | Base provider endpoint. For SDK default endpoints, use the corresponding sentinel, such as `DEFAULT_GEMINI_ENDPOINT` or `DEFAULT_BEDROCK_ENDPOINT`. |
 | `LLM_BINDING_API_KEY` | Base API key. Bedrock does not use this field. |
-| `LLM_TIMEOUT` | Base LLM timeout. A role inherits it when no role timeout is set. |
+| `LLM_TIMEOUT` | Base LLM timeout. A role inherits it when no role timeout is set. `0` leaves the provider SDK's default timeout in place. |
 | `MAX_ASYNC_LLM` | Base maximum LLM concurrency. A role inherits it when `{ROLE}_MAX_ASYNC_LLM` is not set. `MAX_ASYNC` is still accepted as a deprecated alias. |
 
 ### File-processing interaction
@@ -71,7 +71,7 @@ Variable format:
 | `{ROLE}_LLM_BINDING_HOST` | Overrides the role endpoint. |
 | `{ROLE}_LLM_BINDING_API_KEY` | Overrides the role API key. Bedrock does not support it. |
 | `{ROLE}_MAX_ASYNC_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC_LLM` when unset. |
-| `{ROLE}_LLM_TIMEOUT` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset. |
+| `{ROLE}_LLM_TIMEOUT` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset; `0` gives the role the provider SDK's default timeout. |
 
 ## Provider Option Overrides
 

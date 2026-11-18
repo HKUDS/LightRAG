@@ -25,7 +25,9 @@ from tenacity import (
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -414,7 +416,9 @@ async def gemini_complete_if_cache(
         ValueError: If API key is not provided or configured.
     """
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset leaves the SDK default in place.
+    timeout = provider_timeout(timeout)
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 
@@ -711,6 +715,7 @@ async def gemini_model_complete(
     entity_extraction: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
+    apply_llm_timeout(kwargs)
     # Accept legacy keyword if passed via kwargs to preserve backwards compat.
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     hashing_kv = kwargs.get("hashing_kv")

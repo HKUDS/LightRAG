@@ -22,7 +22,9 @@ from tenacity import (
     retry_if_exception,
 )
 
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    provider_timeout,
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
     logger,
@@ -167,6 +169,13 @@ async def zhipu_complete_if_cache(
     if kwargs.get("response_format") is not None:
         enable_cot = False
 
+    # <= 0 or unset means the SDK default. zai-sdk reads an explicit
+    # timeout=None as "no timeout at all", so it is only passed when set.
+    if "timeout" in kwargs:
+        timeout = provider_timeout(kwargs.pop("timeout"))
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
     # Remove unsupported kwargs
     kwargs = {
         k: v
@@ -252,6 +261,7 @@ async def zhipu_complete(
       compatibility shims; when no explicit ``response_format`` is supplied,
       they are mapped to ``{"type": "json_object"}``.
     """
+    apply_llm_timeout(kwargs)
     # Pop legacy extraction flags from kwargs to avoid passing them downstream.
     keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)

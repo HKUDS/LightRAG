@@ -40,7 +40,7 @@ MAX_ASYNC_LLM=4
 | `LLM_MODEL` | 基础模型名。对 Azure OpenAI 通常使用 deployment 名称。 |
 | `LLM_BINDING_HOST` | 基础 provider endpoint。对于 SDK 默认 endpoint，可使用对应 sentinel，例如 `DEFAULT_GEMINI_ENDPOINT` 或 `DEFAULT_BEDROCK_ENDPOINT`。 |
 | `LLM_BINDING_API_KEY` | 基础 API key。Bedrock 不使用这个字段。 |
-| `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。 |
+| `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。`0` 表示使用 provider SDK 的默认超时。 |
 | `MAX_ASYNC_LLM` | 基础 LLM 最大并发。角色未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承它。`MAX_ASYNC` 作为兼容旧名仍可用。 |
 
 ### 与文件处理的关系
@@ -71,7 +71,7 @@ QUERY_LLM_TIMEOUT=240
 | `{ROLE}_LLM_BINDING_HOST` | 覆盖角色 endpoint。 |
 | `{ROLE}_LLM_BINDING_API_KEY` | 覆盖角色 API key。Bedrock 不支持。 |
 | `{ROLE}_MAX_ASYNC_LLM` | 覆盖角色最大并发。未设置时继承 `MAX_ASYNC_LLM`。 |
-| `{ROLE}_LLM_TIMEOUT` | 覆盖角色 timeout。未设置时继承 `LLM_TIMEOUT`。 |
+| `{ROLE}_LLM_TIMEOUT` | 覆盖角色 timeout。未设置时继承 `LLM_TIMEOUT`；`0` 表示该角色使用 provider SDK 的默认超时。 |
 
 ## Provider 参数覆盖
 

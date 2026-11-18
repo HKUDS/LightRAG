@@ -58,6 +58,8 @@ from openai import (
     InternalServerError,
     RateLimitError,
 )
+
+
 from tenacity import (
     retry,
     retry_if_exception,
@@ -67,7 +69,9 @@ from tenacity import (
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    provider_timeout,
     VERBOSE_DEBUG,
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -483,6 +487,8 @@ async def openai_responses_complete_if_cache(
 
     client_configs = kwargs.pop("openai_client_configs", {})
     kwargs.pop("hashing_kv", None)
+    # <= 0 means the SDK default: None is not passed on below.
+    timeout = provider_timeout(timeout)
     # Accepted for signature parity with the Chat Completions driver, which
     # uses it only to pick a default response_format.
     entity_extraction = kwargs.pop("entity_extraction", False)
@@ -1017,6 +1023,7 @@ async def openai_responses_complete(
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """LightRAG ``llm_model_func`` entry point for the Responses binding."""
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)

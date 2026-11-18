@@ -28,7 +28,9 @@ from lightrag.exceptions import (
 from typing import Any, List, Union
 import numpy as np
 
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    provider_timeout,
     wrap_embedding_func_with_attrs,
 )
 
@@ -137,14 +139,17 @@ async def lollms_model_if_cache(
     full_prompt += prompt
 
     request_data["prompt"] = full_prompt
-    timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
+    # <= 0 or unset keeps aiohttp's session default; ClientTimeout(total=None)
+    # would mean "no timeout at all".
+    timeout = provider_timeout(kwargs.get("timeout"))
+    session_kwargs: dict = {"headers": headers}
+    if timeout is not None:
+        session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
 
     if stream:
 
         async def inner():
-            async with aiohttp.ClientSession(
-                timeout=timeout, headers=headers
-            ) as session:
+            async with aiohttp.ClientSession(**session_kwargs) as session:
                 async with session.post(
                     f"{base_url}/lollms_generate", json=request_data
                 ) as response:
@@ -159,7 +164,7 @@ async def lollms_model_if_cache(
 
         return inner()
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+    async with aiohttp.ClientSession(**session_kwargs) as session:
         async with session.post(
             f"{base_url}/lollms_generate", json=request_data
         ) as response:
@@ -177,6 +182,7 @@ async def lollms_model_complete(
 ) -> Union[str, AsyncIterator[str]]:
     """Complete function for lollms model generation."""
 
+    apply_llm_timeout(kwargs)
     # Forward legacy extraction flags as kwargs so lollms_model_if_cache can
     # emit a single DeprecationWarning with the correct stack frame.
     if keyword_extraction:

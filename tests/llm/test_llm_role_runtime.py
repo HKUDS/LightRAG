@@ -10,6 +10,7 @@ import pytest
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import StoragesStatus
 from lightrag.llm.binding_options import OpenAILLMOptions
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_call
 
 
@@ -73,11 +74,11 @@ def _make_rag(tmp_path, **kwargs) -> LightRAG:
 
     if role_configs:
         kwargs["role_llm_configs"] = role_configs
+    kwargs.setdefault("llm_model_func", _base_llm)
 
     return LightRAG(
         working_dir=str(tmp_path / "role-runtime"),
         workspace="role-runtime",
-        llm_model_func=_base_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=16,
             max_token_size=4096,
@@ -1288,3 +1289,85 @@ async def test_vlm_role_supports_runtime_update(tmp_path):
     assert vlm_calls[1]["tag"] == "updated"
     assert rag._role_llm_states["vlm"].max_async == 2
     assert rag._role_llm_states["vlm"].timeout == 240
+
+
+def _timeout_probe_func(calls: list[dict]):
+    """A custom llm_model_func recording its kwargs and the timeout a bundled
+    provider wrapper would apply at this point of the call."""
+
+    async def func(*args, **kwargs):
+        probe: dict = {}
+        apply_llm_timeout(probe)
+        calls.append({"kwargs": kwargs, "applied": probe.get("timeout")})
+        return "ok"
+
+    return func
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role_config", "expected_applied"),
+    [
+        pytest.param({"timeout": 180}, 180, id="role-own-timeout"),
+        # A role without its own timeout uses the base one its queue uses.
+        pytest.param({}, 30, id="inherited-base-timeout"),
+        pytest.param({"timeout": 0}, 0, id="zero-applied-verbatim"),
+    ],
+)
+async def test_role_call_exposes_effective_timeout_without_passing_it(
+    tmp_path, role_config, expected_applied
+):
+    calls: list[dict] = []
+    rag = _make_rag(
+        tmp_path,
+        default_llm_timeout=30,
+        llm_model_func=_timeout_probe_func(calls),
+        role_llm_configs={"extract": RoleLLMConfig(**role_config)},
+    )
+
+    await rag.role_llm_funcs["extract"]("prompt")
+
+    assert len(calls) == 1
+    assert calls[0]["applied"] == expected_applied
+    # A custom function is never handed a timeout it did not ask for.
+    assert "timeout" not in calls[0]["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_role_kwargs_timeout_reaches_the_function_unchanged(tmp_path):
+    calls: list[dict] = []
+    rag = _make_rag(
+        tmp_path,
+        default_llm_timeout=30,
+        llm_model_func=_timeout_probe_func(calls),
+        role_llm_configs={
+            "extract": RoleLLMConfig(timeout=180, kwargs={"timeout": 45})
+        },
+    )
+
+    await rag.role_llm_funcs["extract"]("prompt")
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["timeout"] == 45
+
+
+@pytest.mark.asyncio
+async def test_role_timeout_follows_runtime_update_and_does_not_leak(tmp_path):
+    calls: list[dict] = []
+    rag = _make_rag(
+        tmp_path,
+        default_llm_timeout=30,
+        query_llm_model_func=_timeout_probe_func(calls),
+        query_llm_timeout=120,
+    )
+
+    await rag.role_llm_funcs["query"]("first")
+    rag.update_llm_role_config("query", timeout=300)
+    await rag.role_llm_funcs["query"]("second")
+
+    assert [call["applied"] for call in calls] == [120, 300]
+    # Outside a role call nothing is left behind in this context.
+    outside: dict = {}
+    apply_llm_timeout(outside)
+    assert "timeout" not in outside
+    await rag.wait_for_retired_llm_queues()

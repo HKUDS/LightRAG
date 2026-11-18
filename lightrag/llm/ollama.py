@@ -28,7 +28,9 @@ from lightrag.api import __api_version__
 
 import numpy as np
 from typing import Any, Optional, Union
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -290,9 +292,8 @@ async def _ollama_model_if_cache(
         kwargs["options"] = {k: v for k, v in options.items() if k != "think"}
 
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None)
-    if timeout == 0:
-        timeout = None
+    # <= 0 or unset: None, which is the Ollama client's own default.
+    timeout = provider_timeout(kwargs.pop("timeout", None))
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
     # fallback to environment variable when not provided explicitly
@@ -460,6 +461,7 @@ async def ollama_model_complete(
     token_tracker: Any | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     # Forward legacy extraction flags as kwargs so _ollama_model_if_cache can
     # emit a single DeprecationWarning with the correct stack frame.
     if keyword_extraction:
