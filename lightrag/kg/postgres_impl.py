@@ -13,6 +13,7 @@ from typing import (
     Awaitable,
     Callable,
     ClassVar,
+    Collection,
     Sequence,
     TypeVar,
     Union,
@@ -97,6 +98,8 @@ T = TypeVar("T")
 
 # PostgreSQL identifier length limit (in bytes)
 PG_MAX_IDENTIFIER_LENGTH = 63
+# A model-suffixed vector table as the catalog reports it: ``..._{model}_{dim}d``.
+_MODEL_TABLE_RE = re.compile(r"[a-z0-9_]+_\d+d")
 
 # Flush-time batching limits shared by the PostgreSQL non-graph write paths
 # (PGKVStorage, PGVectorStorage, PGDocStatusStorage). Mirrors the MONGO_* /
@@ -5998,7 +6001,13 @@ class PGVectorStorage(BaseVectorStorage):
             )
             return {"status": "error", "message": str(e)}
 
-    async def drop_sibling_models(self) -> dict[str, str]:
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        suffix = self._collection_suffix_for(model_name, embedding_dim)
+        return f"{self.legacy_table_name}_{suffix}".lower() if suffix else None
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
         """Delete this workspace's rows from every other model's table.
 
         A sibling is a table named ``{base}_{model}_{dim}d`` in the current
@@ -6006,8 +6015,14 @@ class PGVectorStorage(BaseVectorStorage):
         ``content_vector`` column -- the shape ``_pg_create_table`` gives it --
         so an unrelated table that happens to share the prefix is left alone.
         Rows are removed with the same workspace-scoped DELETE as ``drop()``;
-        the tables stay, because they are shared with other workspaces. Same
+        the tables stay, because they are shared with other workspaces. That
+        evidence is always present, so ``vouched`` is unused. Same
         preconditions as ``drop()``.
+
+        ``_flush_lock`` is not taken: no instance buffers writes for a
+        sibling. The legacy table needs nothing here: ``drop()`` already
+        cleared this workspace out of it, so an emptied sibling has nothing to
+        migrate back on the next start.
         """
         try:
             rows = await self.db.query(
@@ -6032,18 +6047,19 @@ class PGVectorStorage(BaseVectorStorage):
                 multirows=True,
             )
             cleared = []
-            async with self._flush_lock:
-                for row in rows or []:
-                    name = row["table_name"]
-                    if not name.startswith(
-                        self.legacy_table_name.lower() + "_"
-                    ) or not re.search(r"_\d+d$", name):
-                        continue
-                    sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                        table_name=name
-                    )
-                    await self.db.execute(sql, {"workspace": self.workspace})
-                    cleared.append(name)
+            prefix = self.legacy_table_name.lower() + "_"
+            for row in rows or []:
+                name = row["table_name"]
+                # LIKE treats the base name's own underscores as wildcards, and
+                # the name is formatted into SQL below: accept only the exact
+                # prefix and the identifier shape the suffix fold produces.
+                if not name.startswith(prefix) or not _MODEL_TABLE_RE.fullmatch(name):
+                    continue
+                sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=name
+                )
+                await self.db.execute(sql, {"workspace": self.workspace})
+                cleared.append(name)
             if cleared:
                 logger.info(
                     f"[{self.workspace}] Cleared workspace rows from sibling "

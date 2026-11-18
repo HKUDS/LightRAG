@@ -67,7 +67,11 @@ def _make_storage(embed_func, *, namespace="entities", workspace="test"):
         meta_fields={"content"},
     )
     storage._client = MagicMock()
-    storage._client.has_collection.return_value = True
+    # Only the active collection exists: no legacy collection and no
+    # _old / _temp backup, which drop() would otherwise remove first.
+    storage._client.has_collection.side_effect = lambda name, *a, **k: (
+        name == storage.final_namespace
+    )
     storage._client.load_collection = MagicMock()
     storage._initialized = True
     return storage
@@ -473,9 +477,7 @@ async def test_cancelling_drop_defers_until_the_collection_is_recreated():
     between the drop and the recreate would leave the namespace with NO
     collection at all, and unlike the residues Consistency without
     transactions accepts, that one never heals: nothing recreates it at run
-    time and the next initialize() would re-run the legacy migration this
-    method exists to avoid. Cancellation must be deferred until the empty
-    replacement exists."""
+    time. Cancellation must be deferred until the empty replacement exists."""
     call_started = threading.Event()
     release_call = threading.Event()
 

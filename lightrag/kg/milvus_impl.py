@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Awaitable, Callable, final, Optional, Dict
+from typing import Any, Awaitable, Callable, Collection, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import (
@@ -261,6 +261,12 @@ class _CollectionGate:
 
 
 _COLLECTION_GATES: dict[int, tuple[Any, dict[str, _CollectionGate]]] = {}
+# Ownership marker written into a collection's schema description, and the
+# shape of a model collection's name with its in-place-migration backups. See
+# ``MilvusVectorDBStorage.drop_sibling_models``.
+_OWNERSHIP_MARKER_PREFIX = "[lightrag:"
+_SIBLING_COLLECTION_RE = re.compile(r"_\d+d(_temp|_old)?$")
+
 _COLLECTION_GATES_GUARD = threading.Lock()
 
 
@@ -1028,7 +1034,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     def _ownership_marker(self) -> str:
         """Schema-description tag naming the workspace and namespace that own a
         collection; ``drop_sibling_models`` trusts it, never the name alone."""
-        return f"[lightrag:workspace={self.workspace};namespace={self.namespace}]"
+        return (
+            f"{_OWNERSHIP_MARKER_PREFIX}workspace={self.workspace};"
+            f"namespace={self.namespace}]"
+        )
 
     def _get_varchar_field_limits_for_namespace(self) -> dict[str, int]:
         base_fields = {
@@ -3640,10 +3649,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         caller rewriting it knows the drop did land. The state this rules out
         does not self-heal like the ones
         ``AGENTS.md`` *Consistency without transactions* accepts: nothing
-        recreates the collection at run time, every later call fails on a
-        missing collection, and the next ``initialize()`` would see the
-        intentionally-kept legacy collection and re-run the
-        legacy->suffixed migration this method exists to avoid.
+        recreates the collection at run time, and every later call fails on a
+        missing collection.
+
+        Every other copy of this workspace's vectors goes too, BEFORE the
+        active collection is rebuilt: the un-suffixed legacy collection the
+        model-suffix migration kept as a backup, and the ``_old`` / ``_temp``
+        collections an in-place schema migration leaves behind. Each is a
+        source ``initialize()`` refills a free collection name from, so one
+        left in place puts the dropped rows back -- see *Workspace clear and
+        sibling model containers* in ``docs/design/VectorSpaceProvenance.md``.
+        A legacy collection with no ``vector`` field is left alone: nothing
+        migrates it, and it may not be LightRAG's.
 
         Returns:
             dict[str, str]: ``{"status": "success"|"error", "message": str}``
@@ -3663,14 +3680,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             it to the end no matter what the loop does, which is the only form
             the guarantee can actually take.
 
+            The backups go FIRST. A crash after them leaves the active
+            collection still populated and nothing to refill it from, which a
+            re-run clears; a crash the other way round leaves a free name
+            beside a backup, which the next ``initialize()`` migrates or
+            restores into it.
+
             Recreating must NOT route through _create_collection_if_not_exist:
-            with the suffixed collection gone it would see the
-            intentionally-kept legacy collection and re-run the
-            legacy->suffixed migration, pulling the just-dropped rows back in.
-            That makes drop() non-empty (clear_documents would leave stale
-            legacy data behind) and forces a needless full migration on every
-            rebuild/clear.
+            it would run the recovery and migration paths this method has just
+            removed the sources of, for nothing.
             """
+            self._drop_backup_collections()
             if self._client.has_collection(self.final_namespace):
                 self._client.drop_collection(self.final_namespace)
             self._create_collection_with_schema(self.final_namespace)
@@ -3724,40 +3744,141 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
             return {"status": "error", "message": str(e)}
 
-    async def drop_sibling_models(self) -> dict[str, str]:
-        """Drop every other model's collection owned by this workspace+namespace.
+    def _drop_backup_collections(self) -> None:
+        """Drop every backup copy of the ACTIVE model's collection. Blocking.
 
-        Collection names carry the workspace as a plain prefix, so one
-        workspace's prefix can also match another's (``a`` + ``chunks`` vs.
-        ``a_chunks_m`` + ``entities``). A collection is therefore only dropped
-        when its schema description carries this instance's ownership marker,
-        which ``_create_schema_for_namespace`` writes at creation. Collections
-        created before the marker existed are NOT dropped: they are reported in
-        the error message so the operator can remove them, rather than risk
-        deleting another workspace's data. Same preconditions as ``drop()``.
+        Runs on the Milvus pool, inside ``drop()``'s single submission. The
+        legacy collection and its own backups are dropped only when they carry
+        a ``vector`` field -- the test ``initialize()`` applies before
+        migrating one, so exactly the collections that could come back.
+        """
+        for name in (f"{self.final_namespace}_temp", f"{self.final_namespace}_old"):
+            if self._client.has_collection(name):
+                self._client.drop_collection(name)
+                logger.info(
+                    f"[{self.workspace}] Dropped backup collection '{name}' "
+                    f"with the workspace drop"
+                )
+        if self.legacy_namespace == self.final_namespace:
+            return
+        for name in (
+            f"{self.legacy_namespace}_temp",
+            f"{self.legacy_namespace}_old",
+            self.legacy_namespace,
+        ):
+            if not self._client.has_collection(name):
+                continue
+            if not self._has_vector_field(self._client.describe_collection(name)):
+                logger.warning(
+                    f"[{self.workspace}] Left collection '{name}' in place: it "
+                    f"has no vector field, so nothing migrates it"
+                )
+                continue
+            self._client.drop_collection(name)
+            logger.info(
+                f"[{self.workspace}] Dropped legacy collection '{name}' with "
+                f"the workspace drop"
+            )
+
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        suffix = self._collection_suffix_for(model_name, embedding_dim)
+        return f"{self.legacy_namespace}_{suffix}" if suffix else None
+
+    def _sibling_candidates(self) -> dict[str, list[tuple[str, str]]]:
+        """Group sibling-shaped collections by the model collection they belong to.
+
+        Blocking. Maps ``{ws}_{ns}_{model}_{dim}d`` to its existing members as
+        ``(name, description)``, ordered ``_temp``, ``_old``, then the
+        collection itself -- the order they must be dropped in, so a crash
+        never leaves the name free beside a backup ``initialize()`` would
+        restore into it. The active model's collections are excluded.
         """
         prefix = f"{self.legacy_namespace}_"
+        groups: dict[str, dict[str, str]] = {}
+        for name in self._client.list_collections():
+            if not name.startswith(prefix):
+                continue
+            matched = _SIBLING_COLLECTION_RE.search(name)
+            if not matched:
+                continue
+            base = name[: matched.start(1)] if matched.group(1) else name
+            if base == self.final_namespace:
+                continue
+            description = self._client.describe_collection(name).get("description")
+            groups.setdefault(base, {})[matched.group(1) or ""] = description or ""
+        return {
+            base: [
+                (f"{base}{tail}", members[tail])
+                for tail in ("_temp", "_old", "")
+                if tail in members
+            ]
+            for base, members in groups.items()
+        }
+
+    def _sibling_ownership(self, members: list[tuple[str, str]]) -> str:
+        """``"ours"``, ``"foreign"`` or ``"unmarked"`` for one model's collections.
+
+        Judged per family, not per collection: an ``_old`` backup keeps the
+        description of the collection it was renamed from, which may predate
+        the marker its rebuilt successor carries.
+        """
         marker = self._ownership_marker()
+        descriptions = [description for _, description in members]
+        if any(marker in description for description in descriptions):
+            return "ours"
+        if any(_OWNERSHIP_MARKER_PREFIX in d for d in descriptions):
+            return "foreign"
+        return "unmarked"
+
+    async def unvouched_sibling_containers(self) -> list[str]:
+        def _list() -> list[str]:
+            return sorted(
+                base
+                for base, members in self._sibling_candidates().items()
+                if self._sibling_ownership(members) == "unmarked"
+            )
+
+        return await run_in_milvus_executor(_list)
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
+        """Drop every other model's collections owned by this workspace+namespace.
+
+        Collection names carry the workspace as a plain prefix, so one
+        workspace's prefix also matches another's (``a`` + ``chunks`` vs.
+        ``a_chunks_m`` + ``entities``). A collection is therefore dropped only
+        on evidence:
+
+          - its schema description carries this instance's ownership marker,
+            which ``_create_schema_for_namespace`` writes at creation; or
+          - it carries no marker at all and the caller ``vouched`` for it by
+            the name ``model_container_name`` / ``unvouched_sibling_containers``
+            gives.
+
+        A collection marked as another owner's is skipped. One with no marker
+        and no voucher is left in place and makes the result an ERROR naming
+        it: it may hold this workspace's vectors, and it may be another
+        workspace's. A sibling's ``_temp`` / ``_old`` backups share its
+        verdict and are dropped before it, and nothing is recreated -- no
+        running instance serves a sibling. Same preconditions as ``drop()``.
+        """
+        vouched = frozenset(vouched)
 
         def _drop_siblings() -> tuple[list[str], list[str]]:
             dropped: list[str] = []
             unmarked: list[str] = []
-            for name in self._client.list_collections():
-                if (
-                    name == self.final_namespace
-                    or not name.startswith(prefix)
-                    or not re.search(r"_\d+d$", name)
-                ):
-                    continue
-                info = self._client.describe_collection(name)
-                description = info.get("description") or ""
-                if marker in description:
-                    self._client.drop_collection(name)
-                    dropped.append(name)
-                elif "[lightrag:" not in description:
-                    # Owned by another workspace/namespace when a marker is
-                    # present but not ours: skipped, not reported.
-                    unmarked.append(name)
+            for base, members in self._sibling_candidates().items():
+                ownership = self._sibling_ownership(members)
+                if ownership == "unmarked" and base in vouched:
+                    ownership = "ours"
+                if ownership == "ours":
+                    for name, _ in members:
+                        self._client.drop_collection(name)
+                        dropped.append(name)
+                elif ownership == "unmarked":
+                    unmarked.append(base)
+                # "foreign": another workspace or namespace owns it.
             return dropped, unmarked
 
         try:
@@ -3777,7 +3898,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if unmarked:
             message = (
                 f"collections without an ownership marker were left in place "
-                f"and may hold this workspace's vectors: {unmarked}"
+                f"and may hold this workspace's vectors: {sorted(unmarked)}. "
+                f"Drop them with lightrag-clear-storage, which asks before "
+                f"each, or by hand."
             )
             logger.warning(f"[{self.workspace}] {message}")
             return {"status": "error", "message": message}

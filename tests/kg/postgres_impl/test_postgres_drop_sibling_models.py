@@ -18,9 +18,9 @@ def _shared_storage():
     initialize_share_data(workers=1)
 
 
-def _storage(rows):
+def _storage(rows, model_name="model-b", dim=768):
     async def embed(texts, **kwargs):
-        return np.array([[0.1] * 768 for _ in texts])
+        return np.array([[0.1] * dim for _ in texts])
 
     storage = PGVectorStorage(
         namespace="chunks",
@@ -29,7 +29,7 @@ def _storage(rows):
             "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
         },
         embedding_func=EmbeddingFunc(
-            embedding_dim=768, func=embed, model_name="model-b"
+            embedding_dim=dim, func=embed, model_name=model_name
         ),
         workspace="ws",
     )
@@ -80,3 +80,45 @@ async def test_reports_a_backend_failure():
 
     assert result["status"] == "error"
     assert "boom" in result["message"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("lightrag_vdbxchunks_model_a_1536d", id="like-wildcard-match"),
+        pytest.param('lightrag_vdb_chunks_a"; drop table x; --_8d', id="quoted-name"),
+        pytest.param("lightrag_vdb_chunks_Model_8d", id="mixed-case"),
+    ],
+)
+async def test_a_name_the_suffix_fold_cannot_produce_is_never_formatted_into_sql(name):
+    """LIKE reads the base name's own underscores as wildcards, and the table
+    name is formatted into the DELETE: only the exact prefix and the folded
+    identifier shape may reach it."""
+    storage = _storage([{"table_name": name}])
+
+    result = await storage.drop_sibling_models()
+
+    assert result["status"] == "success"
+    storage.db.execute.assert_not_called()
+
+
+async def test_does_not_wait_on_the_flush_lock():
+    """No instance buffers writes for a sibling table, so a flush in progress
+    on the active one is no reason to hold the sweep."""
+    storage = _storage([{"table_name": "lightrag_vdb_chunks_model_a_1536d"}])
+    await storage._flush_lock.acquire()
+    try:
+        result = await asyncio.wait_for(storage.drop_sibling_models(), timeout=5)
+    finally:
+        storage._flush_lock.release()
+
+    assert result["status"] == "success"
+    assert storage.db.execute.await_count == 1
+
+
+def test_model_container_name_is_the_table_that_model_would_attach_to():
+    """Compared as the catalog reports it: unquoted identifiers fold to lower case."""
+    other = _storage([], model_name="Model-A", dim=1536)
+    assert (
+        _storage([]).model_container_name("Model-A", 1536) == other.table_name.lower()
+    )

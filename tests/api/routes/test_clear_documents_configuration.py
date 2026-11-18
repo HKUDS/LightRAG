@@ -62,6 +62,30 @@ class _CancelledStorage:
         raise AssertionError("the drop was expected to be cancelled")
 
 
+class _VectorStorage(_document_routes.BaseVectorStorage):
+    """A real ``BaseVectorStorage`` with its abstract surface waived, so the
+    endpoint's own ``isinstance`` test and the base ``drop_all_models`` are
+    what run. ``calls`` records the order ``drop`` and the sibling sweep ran in."""
+
+    namespace = "vectors"
+
+    def __init__(self, workspace, sibling_result=None):
+        self.workspace = workspace
+        self.calls: list[str] = []
+        self.sibling_result = sibling_result or {"status": "success", "message": ""}
+
+    async def drop(self):
+        self.calls.append("drop")
+        return {"status": "success", "message": "data dropped"}
+
+    async def drop_sibling_models(self, vouched=()):
+        self.calls.append("siblings")
+        return self.sibling_result
+
+
+_VectorStorage.__abstractmethods__ = frozenset()
+
+
 class _FakeConfigKV:
     supports_strict_point_reads = True
 
@@ -252,3 +276,41 @@ async def test_a_cancelled_drop_keeps_all_three_records(tmp_path):
     assert rag.cache_cleared == 0, (
         "a cancelled drop was counted as a success and the LLM cache went too"
     )
+
+
+async def test_a_vector_storage_is_cleared_for_every_embedding_model(tmp_path):
+    """``drop()`` empties one model's container. Left to that, a clear under
+    model B keeps model A's vectors, and the records deleted below let the
+    next start that names A adopt them."""
+    workspace = f"clear-config-siblings-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+    rag = _ClearRag(workspace)
+    vdbs = [_VectorStorage(workspace) for _ in range(3)]
+    rag.entities_vdb, rag.relationships_vdb, rag.chunks_vdb = vdbs
+
+    response = await _clear_endpoint(rag, tmp_path)()
+
+    assert response.status == "success"
+    assert [vdb.calls for vdb in vdbs] == [["drop", "siblings"]] * 3
+    assert rag.configuration_storage.rows == {}
+
+
+async def test_a_sibling_left_behind_keeps_all_three_records(tmp_path):
+    """Another model's vectors that could not be cleared are data that
+    remains, exactly as a failed ``drop()`` is."""
+    workspace = f"clear-config-sibling-left-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+    rag = _ClearRag(workspace)
+    rag.chunks_vdb = _VectorStorage(
+        workspace, sibling_result={"status": "error", "message": "left a_chunks_x_8d"}
+    )
+
+    response = await _clear_endpoint(rag, tmp_path)()
+
+    assert response.status == "partial_success"
+    assert rag.chunks_vdb.calls == ["drop", "siblings"]
+    config = rag.configuration_storage
+    assert config.deleted == []
+    assert len(config.rows) == 3
+    # The backend's text names a container; it stays in the server log.
+    assert "a_chunks_x_8d" not in response.message

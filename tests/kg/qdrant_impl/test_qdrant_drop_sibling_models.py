@@ -3,6 +3,7 @@
 Offline: the client is a mock, so nothing here needs a running Qdrant.
 """
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +32,7 @@ def _embedding_func(model_name: str = "model-b", dim: int = 768) -> EmbeddingFun
     return EmbeddingFunc(embedding_dim=dim, func=embed, model_name=model_name)
 
 
-def _storage(client):
+def _storage(client, embedding_func=None):
     from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 
     with patch("lightrag.kg.qdrant_impl.QdrantClient", return_value=client):
@@ -41,7 +42,7 @@ def _storage(client):
                 "embedding_batch_num": 10,
                 "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
             },
-            embedding_func=_embedding_func(),
+            embedding_func=embedding_func or _embedding_func(),
             workspace="ws",
         )
     storage._client = client
@@ -110,3 +111,55 @@ async def test_reports_a_backend_failure():
 
     assert result["status"] == "error"
     assert "boom" in result["message"]
+
+
+async def test_every_client_call_runs_off_the_event_loop():
+    """qdrant-client is synchronous: a delete with ``wait=True`` on the loop
+    thread stalls every request the server is serving."""
+    loop_thread = threading.get_ident()
+    callers: dict[str, int] = {}
+    collections = {"lightrag_vdb_chunks_model_a_1536d": {"workspace_id": object()}}
+    client = _client(collections)
+
+    def recording(name, result):
+        def call(*args, **kwargs):
+            callers[name] = threading.get_ident()
+            return result(*args, **kwargs)
+
+        return call
+
+    client.get_collections.side_effect = recording(
+        "get_collections",
+        lambda: SimpleNamespace(
+            collections=[SimpleNamespace(name=n) for n in collections]
+        ),
+    )
+    client.get_collection.side_effect = recording(
+        "get_collection", lambda n: SimpleNamespace(payload_schema=collections[n])
+    )
+    client.delete.side_effect = recording("delete", lambda **kwargs: None)
+
+    result = await _storage(client).drop_sibling_models()
+
+    assert result["status"] == "success"
+    assert sorted(callers) == ["delete", "get_collection", "get_collections"]
+    assert loop_thread not in callers.values()
+
+
+async def test_only_this_workspaces_points_are_selected():
+    client = _client({"lightrag_vdb_chunks_model_a_1536d": {"workspace_id": object()}})
+
+    await _storage(client).drop_sibling_models()
+
+    selector = client.delete.call_args.kwargs["points_selector"]
+    (condition,) = selector.filter.must
+    assert (condition.key, condition.match.value) == ("workspace_id", "ws")
+    assert client.delete.call_args.kwargs["wait"] is True
+
+
+def test_model_container_name_is_the_collection_that_model_would_attach_to():
+    other = _storage(MagicMock(), _embedding_func("Model-A", 1536))
+    assert (
+        _storage(MagicMock()).model_container_name("Model-A", 1536)
+        == other.final_namespace
+    )
