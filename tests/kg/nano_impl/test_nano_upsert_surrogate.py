@@ -97,7 +97,9 @@ async def test_poisoned_row_no_longer_wedges_namespace(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_clean_content_and_nested_values_unchanged_except_surrogates(tmp_path):
+async def test_clean_content_and_nested_values_unchanged_except_stripped_chars(
+    tmp_path,
+):
     storage = _make_storage(tmp_path)
     await storage.initialize()
 
@@ -106,14 +108,15 @@ async def test_clean_content_and_nested_values_unchanged_except_surrogates(tmp_p
             "id1": {
                 "content": "plain text with emoji \U0001f600 and entity &amp;",
                 "tags": ["keep", "drop\udc00me"],
-                "extra": {"note": "x\udfffy", "count": 3},
+                "extra": {"note": "x\udfffy", "count": 3, "nc": "a\ufffeb\uffffc"},
             }
         }
     )
     await storage.index_done_callback()
 
     row = await storage.get_by_id("id1")
-    # Clean strings pass through byte-identical; only the surrogates go.
+    # Clean strings pass through byte-identical; only lone surrogates and the
+    # non-characters U+FFFE / U+FFFF go (the same set ``write_json`` drops).
     assert row["content"] == "plain text with emoji \U0001f600 and entity &amp;"
     assert row["tags"] == ["keep", "dropme"]
-    assert row["extra"] == {"note": "xy", "count": 3}
+    assert row["extra"] == {"note": "xy", "count": 3, "nc": "abc"}

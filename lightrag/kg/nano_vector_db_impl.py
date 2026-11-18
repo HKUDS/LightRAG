@@ -59,7 +59,7 @@ class _PendingNanoDoc:
 
 
 def _sanitize_record_value(value: Any) -> Any:
-    """Strip characters the on-disk snapshot cannot hold from a record value.
+    """Strip lone surrogates and U+FFFE / U+FFFF from a record value.
 
     The namespace file is written by the external ``NanoVectorDB.save`` with
     ``json.dump(..., ensure_ascii=False)`` into a UTF-8 file, so a lone
@@ -67,8 +67,10 @@ def _sanitize_record_value(value: Any) -> Any:
     ``UnicodeEncodeError`` — and the poisoned row stays buffered, so every
     later commit on that namespace fails the same way until the row is
     deleted. Clean string values at upsert time (recursing into list, tuple
-    and dict values), mirroring what the sibling JSON stores get from
-    ``write_json``. Clean strings pass through unchanged.
+    and dict values) with ``_sanitize_string_for_json``, the helper behind
+    the sibling JSON stores' ``write_json``. It also drops the non-characters
+    U+FFFE / U+FFFF, which UTF-8 could encode, so this store keeps exactly
+    what the JSON stores keep. Clean strings pass through unchanged.
     """
     if isinstance(value, str):
         return _sanitize_string_for_json(value)
@@ -497,9 +499,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             them until that commit fires (see the contract doc,
             *Cross-process sync protocol*). Until the flush, an upserted id
             is observable only through the read-your-writes read paths, not
-            through ``query``. Record string values are stripped of
-            characters the on-disk snapshot cannot hold (lone surrogates)
-            here, so a buffered record can never wedge the namespace's
+            through ``query``. Record string values are stripped of lone
+            surrogates (which the on-disk snapshot cannot hold) and of
+            U+FFFE / U+FFFF here, as ``write_json`` does for the JSON
+            stores, so a buffered record can never wedge the namespace's
             commits.
         """
         # logger.debug(f"[{self.workspace}] Buffering {len(data)} to {self.namespace}")
