@@ -14,8 +14,9 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
+from lightrag.llm._aiohttp_retry import is_transient_aiohttp_error
 from lightrag.utils import wrap_embedding_func_with_attrs, logger
 
 
@@ -67,10 +68,11 @@ async def fetch_data(url, headers, data):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=(
-        retry_if_exception_type(aiohttp.ClientError)
-        | retry_if_exception_type(aiohttp.ClientResponseError)
-    ),
+    retry=retry_if_exception(is_transient_aiohttp_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Jina's message and callers can still
+    # catch aiohttp.ClientResponseError.
+    reraise=True,
 )
 async def jina_embed(
     texts: list[str],
@@ -115,6 +117,9 @@ async def jina_embed(
     Raises:
         aiohttp.ClientError: If there is a connection error with the Jina API.
         aiohttp.ClientResponseError: If the Jina API returns an error response.
+            Connection failures and 408 / 409 / 429 / 5xx responses are retried
+            up to three attempts first; the last attempt's exception is raised
+            as-is, never wrapped in ``tenacity.RetryError``.
     """
     effective_api_key = api_key or os.getenv("JINA_API_KEY")
     if not effective_api_key:

@@ -207,10 +207,15 @@ def get_summary(context, tot_tokens=2000):
     tokens = tokenizer.tokenize(context)
     half_tokens = tot_tokens // 2
 
-    start_tokens = tokens[1000:1000 + half_tokens]
-    end_tokens = tokens[-(1000 + half_tokens):1000]
+    # Too short to skip 1000 tokens at each end and still take two disjoint
+    # windows: sample from the start rather than dropping or repeating text.
+    if len(tokens) < 2 * (1000 + half_tokens):
+        summary_tokens = tokens[:tot_tokens]
+    else:
+        start_tokens = tokens[1000:1000 + half_tokens]
+        end_tokens = tokens[-(1000 + half_tokens):-1000]
+        summary_tokens = start_tokens + end_tokens
 
-    summary_tokens = start_tokens + end_tokens
     summary = tokenizer.convert_tokens_to_string(summary_tokens)
 
     return summary

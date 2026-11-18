@@ -27,7 +27,7 @@ from lightrag.sidecar import writer as _writer
 from lightrag.sidecar.writer import (
     _allocate_unique_name,
     _materialize_assets,
-    _safe_asset_filename,
+    safe_asset_filename,
 )
 
 
@@ -109,6 +109,96 @@ def test_writer_renders_table_with_inline_body(tmp_path: Path) -> None:
     assert "<cite" not in body
 
 
+def _write_single_table(tmp_path: Path, table: IRTable) -> tuple[str, dict]:
+    """Write one table followed by a paragraph; return (block content, item)."""
+    parsed = tmp_path / "t.parsed"
+    ir = IRDoc(
+        document_name="t.pdf",
+        document_format="pdf",
+        doc_title="t",
+        split_option={},
+        blocks=[IRBlock(content_template="{{TBL:t1}}\nafter table", tables=[table])],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-cafebabe", engine="docling")
+    _, rows = _load_jsonl(parsed / "t.blocks.jsonl")
+    tables = json.loads((parsed / "t.tables.json").read_text("utf-8"))["tables"]
+    return rows[0]["content"], next(iter(tables.values()))
+
+
+_MARKUP_ROWS = [["Tag", "Meaning"], ["</table>", "closes a table"], ["<tr>", "row"]]
+
+
+@pytest.mark.offline
+def test_writer_table_cell_holding_closing_tag_keeps_the_tag_whole(
+    tmp_path: Path,
+) -> None:
+    """A cell whose text is ``</table>`` must not end the block's table tag.
+
+    This is the path of every adapter that hands ``rows`` to the writer
+    (docling, mineru, markdown pipe tables): the block text used to carry the
+    bare ``json.dumps`` of the rows, so every non-greedy reader stopped at the
+    cell and the table no longer parsed.
+    """
+    from lightrag.multimodal_context import find_target_span
+    from lightrag.table_markup import parse_table_tag
+
+    table = IRTable(placeholder_key="t1", rows=_MARKUP_ROWS, num_rows=3, num_cols=2)
+    content, item = _write_single_table(tmp_path, table)
+
+    tag, _, rest = content.partition("\n")
+    assert rest == "after table"
+    assert tag.count("</table>") == 1
+    parsed = parse_table_tag(tag)
+    assert parsed is not None
+    assert parsed[1] == _MARKUP_ROWS
+    # The surrounding-context locator sees the whole tag, not a prefix of it.
+    assert find_target_span("tables", item["id"], content) == (0, len(tag))
+    # tables.json ``content`` is a data field, not a tag body: unchanged.
+    assert item["content"] == json.dumps(_MARKUP_ROWS, ensure_ascii=False)
+    assert item["format"] == "json"
+
+
+@pytest.mark.offline
+def test_writer_escapes_a_verbatim_json_body_override(tmp_path: Path) -> None:
+    """``body_override`` is written verbatim, except that a JSON body can not
+    carry a closing tag either — the writer does not rely on the adapter."""
+    from lightrag.table_markup import parse_table_tag
+
+    raw = json.dumps(_MARKUP_ROWS, ensure_ascii=False, separators=(",", ":"))
+    table = IRTable(
+        placeholder_key="t1",
+        rows=_MARKUP_ROWS,
+        num_rows=3,
+        num_cols=2,
+        body_override=raw,
+    )
+    content, _ = _write_single_table(tmp_path, table)
+
+    tag = content.partition("\n")[0]
+    assert tag.count("</table>") == 1
+    # Compact separators survive: only the closing tag text was rewritten.
+    assert raw.replace("</table>", "<\\/table>") in tag
+    parsed = parse_table_tag(tag)
+    assert parsed is not None
+    assert parsed[1] == _MARKUP_ROWS
+
+
+@pytest.mark.offline
+def test_writer_leaves_an_html_table_body_untouched(tmp_path: Path) -> None:
+    html_body = "<tr><td>a</td><td>&lt;/table&gt;</td></tr>"
+    table = IRTable(
+        placeholder_key="t1",
+        rows=None,
+        html=f"<table>{html_body}</table>",
+        num_rows=1,
+        num_cols=2,
+        body_override=html_body,
+    )
+    content, _ = _write_single_table(tmp_path, table)
+
+    assert f'format="html">{html_body}</table>' in content
+
+
 @pytest.mark.offline
 def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
     """Spec §四 / fix 5: drawing path always points inside *.blocks.assets/.
@@ -151,6 +241,46 @@ def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
     assert item["path"] == "d.blocks.assets/x.png"
     assert item["caption"] == "figure 1"
     assert item["format"] == "png"
+
+
+@pytest.mark.offline
+def test_writer_preserves_dot_prefixed_in_place_asset(tmp_path: Path) -> None:
+    """A dot-prefixed asset already on disk must survive ``source=None``.
+
+    The native DOCX adapter pre-extracts images into the assets directory and
+    passes ``AssetSpec(source=None)``. ``safe_asset_filename`` used to strip
+    every leading dot, so the writer looked for ``foo.part`` while the file was
+    ``.foo.part``: the asset was skipped and the drawing path became empty.
+    """
+    parsed = tmp_path / "d.parsed"
+    assets_dir = parsed / "d.blocks.assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / ".foo.part").write_bytes(b"IMAGEDATA")
+
+    ir = IRDoc(
+        document_name="d.docx",
+        document_format="docx",
+        doc_title="d",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{IMG:i1}}",
+                drawings=[IRDrawing(placeholder_key="i1", asset_ref=".foo.part")],
+            )
+        ],
+        assets=[AssetSpec(ref=".foo.part", suggested_name=".foo.part", source=None)],
+    )
+    write_sidecar(
+        ir,
+        parsed_dir=parsed,
+        doc_id="doc-cafebabe",
+        engine="native",
+        clean_parsed_dir=False,
+    )
+
+    _, rows = _load_jsonl(parsed / "d.blocks.jsonl")
+    assert 'path="d.blocks.assets/.foo.part"' in rows[0]["content"]
+    assert (assets_dir / ".foo.part").read_bytes() == b"IMAGEDATA"
 
 
 @pytest.mark.offline
@@ -672,7 +802,7 @@ def test_safe_asset_filename_collapses_to_basename(
     path separators they carry, so they can never steer the output path out of
     the assets dir. ``\\`` is normalised first so Windows-style payloads on a
     POSIX host still collapse rather than surviving as a single filename."""
-    assert _safe_asset_filename(suggested) == expected
+    assert safe_asset_filename(suggested) == expected
 
 
 @pytest.mark.offline
@@ -680,14 +810,94 @@ def test_safe_asset_filename_collapses_to_basename(
 def test_safe_asset_filename_falls_back_when_empty(suggested: str) -> None:
     """Names that strip down to nothing (pure dots/separators/control chars)
     yield the ``asset`` fallback rather than an empty or dot-only filename."""
-    assert _safe_asset_filename(suggested) == "asset"
+    assert safe_asset_filename(suggested) == "asset"
 
 
 @pytest.mark.offline
 def test_safe_asset_filename_drops_control_chars() -> None:
     """C0 control chars and DEL are stripped out of the basename so they can't
     smuggle separators or break the on-disk name."""
-    assert _safe_asset_filename("ev\x00i\x7fl\x1f.png") == "evil.png"
+    assert safe_asset_filename("ev\x00i\x7fl\x1f.png") == "evil.png"
+
+
+@pytest.mark.offline
+def test_safe_asset_filename_preserves_leading_dots() -> None:
+    """A leading dot is part of a legitimate basename, not a traversal payload.
+
+    The native DOCX extractor really produces dot-prefixed assets such as
+    ``.foo.part``; stripping every dot turned that into ``foo.part`` and made
+    the in-place asset lookup miss. Only names made entirely of dots are
+    unsafe. Trailing dots/spaces are still removed because Windows drops them
+    when it resolves a filename.
+    """
+    assert safe_asset_filename(".foo.part") == ".foo.part"
+    assert safe_asset_filename(".hidden.png") == ".hidden.png"
+    assert safe_asset_filename(".foo.") == ".foo"
+    assert safe_asset_filename(".foo ") == ".foo"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "suggested, expected",
+    [
+        ("img.png.", "img.png"),
+        ("img.png. . ", "img.png"),
+        ("img.png.\u3000.", "img.png"),
+        ("\x00 lead.png", "lead.png"),
+        ("tail.png \x00", "tail.png"),
+        ("a. .b", "a. .b"),
+    ],
+)
+def test_safe_asset_filename_is_canonical(suggested: str, expected: str) -> None:
+    """Edges are cleaned in any mix of whitespace, dots and control chars, and
+    a second pass changes nothing. In-place producers name their files with
+    this function and the writer refuses a name it would change, so a
+    non-idempotent result would drop a correctly extracted image."""
+    assert safe_asset_filename(suggested) == expected
+    assert safe_asset_filename(expected) == expected
+
+
+@pytest.mark.offline
+def test_safe_asset_filename_is_linear_on_long_dot_runs() -> None:
+    """A long run of dots that does not reach the end must not make the trim
+    quadratic: the name comes from an untrusted ZIP part, and a regex edge trim
+    took seconds on 20k dots while holding the GIL. On 50k dots the linear
+    trim takes a few milliseconds and the quadratic one about 15 seconds, so
+    the 1-second budget is loose for the first and decisive for the second."""
+    import time
+
+    name = "." * 50_000 + "x.png"
+    started = time.perf_counter()
+    assert safe_asset_filename(name) == name
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.offline
+def test_materialize_assets_refuses_non_canonical_in_place_name(
+    tmp_path: Path, lightrag_log_records
+) -> None:
+    """An in-place asset is looked up under the producer's own name. When the
+    canonical name differs (``img.png.`` -> ``img.png``) the writer must not
+    resolve it to whatever file holds the canonical name -- here a different
+    image -- but skip it loudly, leaving the other asset mapped correctly."""
+    assets_dir = tmp_path / "doc.blocks.assets"
+    assets_dir.mkdir()
+    (assets_dir / "img.png.").write_bytes(b"TRAILING")
+    (assets_dir / "img.png").write_bytes(b"PLAIN")
+
+    out = _materialize_assets(
+        [
+            AssetSpec(ref="img.png.", suggested_name="img.png.", source=None),
+            AssetSpec(ref="img.png", suggested_name="img.png", source=None),
+        ],
+        assets_dir,
+    )
+
+    assert out == {"img.png": "img.png"}
+    assert (assets_dir / "img.png").read_bytes() == b"PLAIN"
+    assert any(
+        "canonical name is" in record.getMessage() for record in lightrag_log_records
+    )
 
 
 @pytest.mark.offline
@@ -757,7 +967,10 @@ def test_writer_traversal_asset_name_stays_in_assets_dir(tmp_path: Path) -> None
 
 @pytest.mark.offline
 def test_materialize_assets_containment_check_skips_escaping_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    lightrag_caplog,
 ) -> None:
     """Defense-in-depth: even if name sanitisation were bypassed and a target
     resolved outside the assets dir, the ``relative_to`` containment guard skips
@@ -770,7 +983,6 @@ def test_materialize_assets_containment_check_skips_escaping_target(
 
     import logging
 
-    monkeypatch.setattr(_writer.logger, "propagate", True)
     with caplog.at_level(logging.WARNING, logger=_writer.logger.name):
         out = _materialize_assets(
             [AssetSpec(ref="r1", suggested_name="ok.png", source=b"\x89PNG")],
@@ -928,6 +1140,70 @@ def test_writer_blockid_unchanged_when_no_control_chars(tmp_path: Path) -> None:
     assert rows_c[0]["content"] == rows_d[0]["content"] == "hello world"
     assert rows_c[0]["blockid"] == rows_d[0]["blockid"]
     assert meta_c["document_hash"] == meta_d["document_hash"]
+
+
+@pytest.mark.offline
+def test_writer_artifacts_use_lf_line_endings(
+    tmp_path: Path, emulate_windows_newlines
+) -> None:
+    """Every artifact keeps LF on every platform.
+
+    The canonical bytes of this format are the ones under
+    ``tests/parser/docx/golden/``, compared byte-for-byte by
+    ``test_native_docx_golden``. ``Path.write_text`` translates ``\\n`` to
+    ``os.linesep`` unless ``newline`` is passed, so a Windows parse would
+    otherwise emit CRLF for the record separators of ``blocks.jsonl`` and for
+    every interior line of the indented per-modality JSONs — the same
+    document would then not round-trip byte-identically across platforms.
+    ``emulate_windows_newlines`` applies that translation on Linux as well,
+    so this test goes red in CI if the pin is dropped.
+    """
+    parsed = tmp_path / "lf.parsed"
+    ir = IRDoc(
+        document_name="lf.docx",
+        document_format="docx",
+        doc_title="lf",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{TBL:t1}} {{IMG:i1}} {{EQ:e1}}",
+                tables=[
+                    IRTable(
+                        placeholder_key="t1",
+                        rows=[["a", "b"], ["1", "2"]],
+                        num_rows=2,
+                        num_cols=2,
+                        caption="cap",
+                    )
+                ],
+                drawings=[
+                    IRDrawing(
+                        placeholder_key="i1",
+                        asset_ref="r1",
+                        fmt="png",
+                        caption="figure 1",
+                    )
+                ],
+                equations=[
+                    IREquation(placeholder_key="e1", latex="E = mc^2", is_block=True)
+                ],
+            )
+        ],
+        assets=[AssetSpec(ref="r1", suggested_name="p.png", source=b"\x89PNG")],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-lf", engine="native")
+
+    artifacts = sorted(p.name for p in parsed.iterdir() if p.is_file())
+    assert artifacts == [
+        "lf.blocks.jsonl",
+        "lf.drawings.json",
+        "lf.equations.json",
+        "lf.tables.json",
+    ]
+    for name in artifacts:
+        raw = (parsed / name).read_bytes()
+        assert b"\n" in raw, f"{name} should be a multi-line text artifact"
+        assert b"\r\n" not in raw, f"{name} was written with CRLF line endings"
 
 
 @pytest.mark.offline
