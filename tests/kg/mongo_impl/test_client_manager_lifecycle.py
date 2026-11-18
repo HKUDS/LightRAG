@@ -16,6 +16,9 @@ pytest.importorskip(
 from lightrag.kg.mongo_impl import ClientManager
 
 
+pytestmark = pytest.mark.offline
+
+
 class TestClientManagerLifecycle:
     """Verify ClientManager connection open/close behavior."""
 

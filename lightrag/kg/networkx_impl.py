@@ -33,6 +33,29 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=".env", override=False)
 
 
+def _walk_live_view(view, method: str):
+    """Iterate a live networkx view without copying it, naming the cause if
+    the graph changes size while a bounded iterator is suspended.
+
+    ``iter_labels`` / ``iter_edges`` must stay bounded, so they cannot
+    snapshot the view; this only turns networkx's bare "dictionary changed
+    size during iteration" into an error that says what the caller did.
+    """
+    iterator = iter(view)
+    while True:
+        try:
+            item = next(iterator)
+        except StopIteration:
+            return
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"NetworkXStorage.{method}: the graph was modified while the "
+                "iterator was suspended between batches; do not let a writer "
+                "run on this graph until the iteration finishes"
+            ) from exc
+        yield item
+
+
 @final
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
@@ -979,11 +1002,18 @@ class NetworkXStorage(BaseGraphStorage):
         return sorted(list(labels))
 
     async def iter_labels(self, batch_size: int):
+        """Yield node ids in bounded batches, read from the live graph.
+
+        Nothing is copied up front, so the graph must not be mutated while
+        the generator is suspended between batches: a change in node count
+        raises ``RuntimeError`` naming this method, and a change that keeps
+        the count may go undetected and skip or repeat nodes.
+        """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         graph = await self._get_graph()
         batch: list[str] = []
-        for node in graph.nodes():
+        for node in _walk_live_view(graph.nodes(), "iter_labels"):
             batch.append(str(node))
             if len(batch) == batch_size:
                 yield batch
@@ -1321,11 +1351,18 @@ class NetworkXStorage(BaseGraphStorage):
         return all_edges
 
     async def iter_edges(self, batch_size: int):
+        """Yield edges in bounded batches, read from the live graph.
+
+        Same rule as :meth:`iter_labels`: do not mutate the graph while the
+        generator is suspended between batches.
+        """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         graph = await self._get_graph()
         batch: list[dict] = []
-        for source, target, edge_data in graph.edges(data=True):
+        for source, target, edge_data in _walk_live_view(
+            graph.edges(data=True), "iter_edges"
+        ):
             edge = edge_data.copy()
             edge["source"] = source
             edge["target"] = target
