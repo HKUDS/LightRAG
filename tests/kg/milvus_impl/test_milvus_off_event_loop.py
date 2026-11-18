@@ -999,18 +999,24 @@ async def test_concurrent_searches_are_capped_by_the_submit_limit():
 #
 # pymilvus' load_collection() without a timeout waits until the load reaches
 # 100%, so a load stuck server-side holds a pool thread forever. The limit is
-# opt-in: unset, the call is exactly what it was.
+# on by default; 0 or a negative value restores the unbounded call.
 
 
 @pytest.mark.asyncio
-async def test_load_collection_has_no_timeout_by_default(monkeypatch):
-    monkeypatch.delenv("MILVUS_LOAD_TIMEOUT", raising=False)
+@pytest.mark.parametrize("value", [None, "", "  "])
+async def test_load_collection_is_bounded_by_default(monkeypatch, value):
+    """Unset or blank (an empty Compose/.env pass-through) takes the default."""
+    if value is None:
+        monkeypatch.delenv("MILVUS_LOAD_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", value)
     s = _make_storage(MockEmbeddingFunc())
     s._client.search = MagicMock(return_value=[[]])
 
     await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
 
-    s._client.load_collection.assert_called_once_with(s.final_namespace)
+    assert milvus_impl.DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS == 600.0
+    s._client.load_collection.assert_called_once_with(s.final_namespace, timeout=600.0)
 
 
 @pytest.mark.asyncio
@@ -1024,20 +1030,61 @@ async def test_load_collection_receives_configured_timeout(monkeypatch):
     s._client.load_collection.assert_called_once_with(s.final_namespace, timeout=12.5)
 
 
-@pytest.mark.parametrize("value", ["0", "-1"])
-def test_non_positive_load_timeout_means_no_limit(monkeypatch, value):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["0", "-1", "inf"])
+async def test_non_positive_load_timeout_means_no_limit(monkeypatch, value):
     monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", value)
     s = _make_storage(MockEmbeddingFunc())
+    s._client.search = MagicMock(return_value=[[]])
 
-    assert s._load_timeout is None
+    await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+
+    s._client.load_collection.assert_called_once_with(s.final_namespace)
 
 
-@pytest.mark.parametrize("value", ["", "  ", "5m"])
-def test_invalid_load_timeout_fails_fast(monkeypatch, value):
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [("5m", "could not convert string to float"), ("nan", "got nan")],
+)
+def test_invalid_load_timeout_fails_fast(monkeypatch, value, message):
     monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", value)
 
-    with pytest.raises(ValueError, match="could not convert string to float"):
+    with pytest.raises(ValueError, match=message):
         _make_storage(MockEmbeddingFunc())
+
+
+@pytest.mark.asyncio
+async def test_expired_load_names_the_knob_and_keeps_the_original_error(monkeypatch):
+    monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", "0.05")
+    s = _make_storage(MockEmbeddingFunc())
+
+    def expire(*args, **kwargs):
+        time.sleep(kwargs["timeout"] + 0.05)
+        raise MilvusException(message="wait for loading collection timeout")
+
+    s._client.load_collection = MagicMock(side_effect=expire)
+
+    with pytest.raises(MilvusCollectionLoadError) as exc_info:
+        await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+
+    message = str(exc_info.value)
+    assert "wait for loading collection timeout" in message
+    assert "MILVUS_LOAD_TIMEOUT=0.05s" in message
+
+
+@pytest.mark.asyncio
+async def test_load_refused_before_the_limit_does_not_blame_the_knob():
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.load_collection = MagicMock(
+        side_effect=MilvusException(message="resource group node not enough")
+    )
+
+    with pytest.raises(MilvusCollectionLoadError) as exc_info:
+        await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+
+    message = str(exc_info.value)
+    assert "resource group node not enough" in message
+    assert "MILVUS_LOAD_TIMEOUT" not in message
 
 
 @pytest.mark.asyncio

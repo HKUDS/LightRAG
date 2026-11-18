@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import threading
 import time
@@ -318,6 +319,15 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 )  # 32MB, well below the 64MB gRPC ceiling
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+
+# Default MILVUS_LOAD_TIMEOUT. pymilvus' load_collection() without a timeout
+# returns only when the load reaches 100%, and the server does not always end
+# a load that cannot complete, so an unbounded wait can block queries, flushes
+# and startup for good. 600s matches Milvus' own queryCoord.loadTimeoutSeconds
+# default; a deployment whose largest collection needs longer to cold-load
+# raises it, and 0 restores the unbounded wait.
+DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS = 600.0
 
 
 class MilvusCollectionLoadError(StorageControlPlaneError):
@@ -2290,15 +2300,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             load_kwargs = (
                 {} if self._load_timeout is None else {"timeout": self._load_timeout}
             )
+            load_started = time.monotonic()
             try:
                 self._client.load_collection(self.final_namespace, **load_kwargs)
             except Exception as load_error:
                 # Typed (a RuntimeError) so _create_collection_if_not_exist
                 # re-raises it as-is instead of routing it to the force-create
                 # fallback, whose generic refusal would hide the cause.
+                # Name the knob only when the limit is what ended the wait,
+                # judged by the clock rather than by pymilvus' error text.
+                timeout_hint = ""
+                if (
+                    self._load_timeout is not None
+                    and time.monotonic() - load_started >= self._load_timeout
+                ):
+                    timeout_hint = (
+                        f" (gave up after MILVUS_LOAD_TIMEOUT={self._load_timeout:g}s;"
+                        " raise it if this collection needs longer to load,"
+                        " 0 disables the limit)"
+                    )
                 raise MilvusCollectionLoadError(
                     f"Failed to load Milvus collection '{self.final_namespace}': "
-                    f"{load_error}"
+                    f"{load_error}{timeout_hint}"
                 ) from load_error
 
         except Exception as e:
@@ -2601,10 +2624,21 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"MILVUS_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
             )
 
-        # Collection-load wait limit in seconds; unset or <= 0 means no limit,
-        # i.e. load_collection() without a timeout. Malformed values fail fast.
-        load_timeout = float(os.getenv("MILVUS_LOAD_TIMEOUT", "0.0"))
-        self._load_timeout: float | None = load_timeout if load_timeout > 0 else None
+        # Collection-load wait limit in seconds. Unset or blank takes the
+        # default; <= 0 (or inf) means no limit, i.e. load_collection() without
+        # a timeout. A malformed value fails fast rather than silently running
+        # with a limit the operator did not choose.
+        raw_load_timeout = os.getenv("MILVUS_LOAD_TIMEOUT", "").strip()
+        load_timeout = (
+            float(raw_load_timeout)
+            if raw_load_timeout
+            else DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS
+        )
+        if math.isnan(load_timeout):
+            raise ValueError("MILVUS_LOAD_TIMEOUT must be a number of seconds, got nan")
+        self._load_timeout: float | None = (
+            load_timeout if 0 < load_timeout < math.inf else None
+        )
 
         # Schema-migration retry knobs (see DEFAULT_MILVUS_MIGRATION_*
         # constants). MILVUS_MIGRATION_MAX_RETRIES=0 restores fail-fast.
