@@ -86,6 +86,7 @@ Notes:
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
 | **embedding_batch_num** | `int` | Maximum batch size for embedding processes (multiple texts sent per batch) | `32` |
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
+| **default_embedding_timeout** | `int` | Embedding request timeout in seconds. It sizes the embedding queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the client's request timeout: the bundled embedding bindings (`openai_embed`, `azure_openai_embed`, `ollama_embed`, `gemini_embed`, `bedrock_embed`, `jina_embed`, `voyageai_embed`, `zhipu_embedding`, `nvidia_openai_embed`, `lollms_embed`) read it during the call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `embedding_func` as an argument; one that builds its own client can read it with `lightrag.utils.embedding_timeout()`. A binding's own positive `timeout` argument takes precedence, and a `timeout` in `openai_embed`'s `client_configs` outranks the LightRAG value. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and the client keeps its SDK default (or the `client_configs` timeout, if one is set). | `30` (configured by env var EMBEDDING_TIMEOUT) |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
@@ -649,6 +650,8 @@ To enhance retrieval quality, documents can be re-ranked based on a more effecti
 - **Aliyun**: `ali_rerank`
 
 Inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. For detailed usage, refer to `examples/rerank_example.py`.
+
+`default_rerank_timeout` (env var `RERANK_TIMEOUT`, default `30`) sizes the rerank queue the same way `default_embedding_timeout` sizes the embedding queue, and these three functions use it as their HTTP session's total timeout per attempt; a timed-out attempt is retried. A `timeout` argument passed to the function takes precedence, a custom `rerank_model_func` can read the value with `lightrag.utils.rerank_timeout()`, and `0` (or a negative value) keeps aiohttp's session default (300 s).
 
 ### Injecting a Custom Tokenizer
 

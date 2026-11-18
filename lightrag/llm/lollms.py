@@ -30,6 +30,7 @@ import numpy as np
 
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
     provider_timeout,
     wrap_embedding_func_with_attrs,
 )
@@ -214,7 +215,11 @@ async def lollms_embed(
         texts: List of strings to embed
         embed_model: Model name (not used directly as lollms uses configured vectorizer)
         base_url: URL of the lollms server
-        **kwargs: Additional arguments passed to the request
+        **kwargs: Additional arguments passed to the request. A ``timeout``
+            (seconds) here is the session's total timeout; without one,
+            LightRAG's ``default_embedding_timeout`` applies inside a LightRAG
+            embedding call. 0 or a negative value, or no timeout outside one,
+            keeps aiohttp's session default (300 s).
 
     Returns:
         np.ndarray: Array of embeddings
@@ -225,7 +230,11 @@ async def lollms_embed(
         if api_key
         else {"Content-Type": "application/json"}
     )
-    async with aiohttp.ClientSession(headers=headers) as session:
+    session_kwargs: dict[str, Any] = {"headers": headers}
+    timeout = embedding_timeout(kwargs.pop("timeout", None))
+    if timeout is not None:
+        session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(**session_kwargs) as session:
         embeddings = []
         for text in texts:
             request_data = {"text": text}

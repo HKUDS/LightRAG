@@ -14,7 +14,12 @@ from tenacity import (
 )
 
 from .llm._aiohttp_retry import is_transient_aiohttp_error
-from .utils import logger, normalize_rerank_result, run_in_tokenizer_executor
+from .utils import (
+    logger,
+    normalize_rerank_result,
+    rerank_timeout,
+    run_in_tokenizer_executor,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -249,6 +254,7 @@ async def generic_rerank_api(
     request_format: str = "standard",  # "standard" (Jina/Cohere) or "aliyun"
     enable_chunking: bool = False,
     max_tokens_per_doc: int = 480,
+    timeout: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generic rerank API call for Jina/Cohere/Aliyun models.
@@ -266,6 +272,10 @@ async def generic_rerank_api(
         request_format: Request format type
         enable_chunking: Whether to chunk documents exceeding token limit
         max_tokens_per_doc: Maximum tokens per document for chunking
+        timeout: Total request timeout in seconds for one attempt. None (the
+            default) uses LightRAG's ``default_rerank_timeout`` inside a
+            LightRAG rerank call; 0 or a negative value, or None outside one,
+            keeps aiohttp's session default (300 s).
 
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
@@ -275,6 +285,7 @@ async def generic_rerank_api(
             response. Connection failures and 408 / 409 / 429 / 5xx responses
             are retried up to three attempts first; the last attempt's
             exception is raised as-is, never wrapped in ``tenacity.RetryError``.
+        TimeoutError: If an attempt exceeds ``timeout``; retried the same way.
     """
     if not base_url:
         raise ValueError("Base URL is required")
@@ -350,7 +361,14 @@ async def generic_rerank_api(
         f"Rerank request: {len(documents)} documents, model: {model}, format: {response_format}"
     )
 
-    async with aiohttp.ClientSession() as session:
+    # Omitted (not ClientTimeout(total=None), which never times out) when
+    # LightRAG sets no timeout, so aiohttp's session default applies.
+    session_kwargs: Dict[str, Any] = {}
+    effective_timeout = rerank_timeout(timeout)
+    if effective_timeout is not None:
+        session_kwargs["timeout"] = aiohttp.ClientTimeout(total=effective_timeout)
+
+    async with aiohttp.ClientSession(**session_kwargs) as session:
         async with session.post(base_url, headers=headers, json=payload) as response:
             if response.status != 200:
                 error_text = await response.text()
@@ -460,6 +478,7 @@ async def cohere_rerank(
     extra_body: Optional[Dict[str, Any]] = None,
     enable_chunking: bool = False,
     max_tokens_per_doc: int = 4096,
+    timeout: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     Rerank documents using Cohere API.
@@ -476,6 +495,7 @@ async def cohere_rerank(
         extra_body: Additional body for http request(reserved for extra params)
         enable_chunking: Whether to chunk documents exceeding max_tokens_per_doc
         max_tokens_per_doc: Maximum tokens per document (default: 4096 for Cohere v3.5)
+        timeout: Request timeout in seconds; see ``generic_rerank_api``.
 
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
@@ -514,6 +534,7 @@ async def cohere_rerank(
         response_format="standard",
         enable_chunking=enable_chunking,
         max_tokens_per_doc=max_tokens_per_doc,
+        timeout=timeout,
     )
 
 
@@ -525,6 +546,7 @@ async def jina_rerank(
     model: str = "jina-reranker-v2-base-multilingual",
     base_url: str = "https://api.jina.ai/v1/rerank",
     extra_body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     Rerank documents using Jina AI API.
@@ -537,6 +559,7 @@ async def jina_rerank(
         model: rerank model name
         base_url: API endpoint
         extra_body: Additional body for http request(reserved for extra params)
+        timeout: Request timeout in seconds; see ``generic_rerank_api``.
 
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
@@ -554,6 +577,7 @@ async def jina_rerank(
         return_documents=False,
         extra_body=extra_body,
         response_format="standard",
+        timeout=timeout,
     )
 
 
@@ -565,6 +589,7 @@ async def ali_rerank(
     model: str = "gte-rerank-v2",
     base_url: str = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
     extra_body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     Rerank documents using Aliyun DashScope API.
@@ -577,6 +602,7 @@ async def ali_rerank(
         model: rerank model name
         base_url: API endpoint
         extra_body: Additional body for http request(reserved for extra params)
+        timeout: Request timeout in seconds; see ``generic_rerank_api``.
 
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
@@ -595,6 +621,7 @@ async def ali_rerank(
         extra_body=extra_body,
         response_format="aliyun",
         request_format="aliyun",
+        timeout=timeout,
     )
 
 

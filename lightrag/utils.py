@@ -1216,6 +1216,81 @@ def provider_timeout(timeout: Any) -> Any:
     return timeout
 
 
+# The effective embedding / rerank timeout of the LightRAG call running in this
+# context (``default_embedding_timeout`` / ``default_rerank_timeout``): the
+# value that call's queue is sized from. ``bind_embedding_timeout`` /
+# ``bind_rerank_timeout`` set it inside the queue worker around each call;
+# ``embedding_timeout`` / ``rerank_timeout`` read it so a bundled binding sizes
+# its client the same way, even when it is reached through a ``partial`` or a
+# custom function.
+_EMBEDDING_TIMEOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "lightrag_embedding_timeout"
+)
+_RERANK_TIMEOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "lightrag_rerank_timeout"
+)
+
+
+def _bind_call_timeout(
+    func: Callable[..., Any], timeout_var: contextvars.ContextVar, timeout: Any
+) -> Callable[..., Any]:
+    @wraps(func)
+    async def call_with_timeout(*args: Any, **kwargs: Any) -> Any:
+        token = timeout_var.set(timeout)
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            timeout_var.reset(token)
+
+    return call_with_timeout
+
+
+def bind_embedding_timeout(
+    func: Callable[..., Any], timeout: Any
+) -> Callable[..., Any]:
+    """Wrap async ``func`` so :func:`embedding_timeout` sees ``timeout`` inside it.
+
+    Apply it BEFORE ``priority_limit_async_func_call``, so the value is set
+    inside the worker task that executes the call. ``timeout`` is never
+    passed to ``func`` as an argument, and ``func``'s signature stays
+    inspectable through ``__wrapped__`` (``EmbeddingFunc`` reads it).
+    """
+    return _bind_call_timeout(func, _EMBEDDING_TIMEOUT, timeout)
+
+
+def bind_rerank_timeout(func: Callable[..., Any], timeout: Any) -> Callable[..., Any]:
+    """Wrap async ``func`` so :func:`rerank_timeout` sees ``timeout`` inside it.
+
+    Same rules as :func:`bind_embedding_timeout`.
+    """
+    return _bind_call_timeout(func, _RERANK_TIMEOUT, timeout)
+
+
+def embedding_timeout(timeout: Any = None) -> Any:
+    """The timeout an embedding binding hands its client, or None for the SDK default.
+
+    ``timeout`` is the binding's own explicit argument and wins when given.
+    When it is None, the effective ``default_embedding_timeout`` of the
+    LightRAG embedding call in progress applies, and nothing outside one. The
+    result goes through :func:`provider_timeout`, so a number <= 0 also
+    returns None: the binding must then OMIT the timeout, not pass None on.
+    """
+    if timeout is None:
+        timeout = _EMBEDDING_TIMEOUT.get(None)
+    return provider_timeout(timeout)
+
+
+def rerank_timeout(timeout: Any = None) -> Any:
+    """The timeout a rerank binding hands its client, or None for the SDK default.
+
+    Same rules as :func:`embedding_timeout`, with ``default_rerank_timeout``
+    as the fallback inside a LightRAG rerank call.
+    """
+    if timeout is None:
+        timeout = _RERANK_TIMEOUT.get(None)
+    return provider_timeout(timeout)
+
+
 def priority_limit_async_func_call(
     max_size: int,
     llm_timeout: float = None,

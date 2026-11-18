@@ -24,6 +24,7 @@ from tenacity import (
 
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
     provider_timeout,
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
@@ -323,6 +324,13 @@ async def zhipu_embedding(
     # Convert single text to list if needed
     if isinstance(texts, str):
         texts = [texts]
+
+    # A ``timeout`` kwarg wins; otherwise LightRAG's embedding timeout applies
+    # inside a LightRAG call. zai-sdk reads an explicit timeout=None as "no
+    # timeout at all", so it is only passed when set.
+    timeout = embedding_timeout(kwargs.pop("timeout", None))
+    if timeout is not None:
+        kwargs["timeout"] = timeout
 
     cancelled = threading.Event()
 
