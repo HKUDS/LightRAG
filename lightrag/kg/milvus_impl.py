@@ -3899,8 +3899,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             message = (
                 f"collections without an ownership marker were left in place "
                 f"and may hold this workspace's vectors: {sorted(unmarked)}. "
-                f"Drop them with lightrag-clear-storage, which asks before "
-                f"each, or by hand."
+                f"Drop them with lightrag-clear-storage, which lists them and "
+                f"asks first, or by hand."
             )
             logger.warning(f"[{self.workspace}] {message}")
             return {"status": "error", "message": message}
