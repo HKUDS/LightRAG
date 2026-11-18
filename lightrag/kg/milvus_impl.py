@@ -1,10 +1,12 @@
 import asyncio
 import json
+import math
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Awaitable, Callable, final, Optional, Dict
+from typing import Any, Awaitable, Callable, Collection, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import (
@@ -26,7 +28,11 @@ from ..constants import (
     GRAPH_FIELD_SEP,
     MILVUS_SUBMIT_LIMIT,
 )
-from ..exceptions import StorageCapabilityError, VectorSpaceMismatchError
+from ..exceptions import (
+    StorageCapabilityError,
+    StorageControlPlaneError,
+    VectorSpaceMismatchError,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -260,6 +266,12 @@ class _CollectionGate:
 
 
 _COLLECTION_GATES: dict[int, tuple[Any, dict[str, _CollectionGate]]] = {}
+# Ownership marker written into a collection's schema description, and the
+# shape of a model collection's name with its in-place-migration backups. See
+# ``MilvusVectorDBStorage.drop_sibling_models``.
+_OWNERSHIP_MARKER_PREFIX = "[lightrag:"
+_SIBLING_COLLECTION_RE = re.compile(r"_\d+d(_temp|_old)?$")
+
 _COLLECTION_GATES_GUARD = threading.Lock()
 
 
@@ -314,6 +326,22 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 )  # 32MB, well below the 64MB gRPC ceiling
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+
+# Default MILVUS_LOAD_TIMEOUT. pymilvus' load_collection() without a timeout
+# returns only when the load reaches 100%, and the server does not always end
+# a load that cannot complete, so an unbounded wait can block queries, flushes
+# and startup for good. 600s matches Milvus' own queryCoord.loadTimeoutSeconds
+# default; a deployment whose largest collection needs longer to cold-load
+# raises it, and 0 restores the unbounded wait.
+DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS = 600.0
+
+
+class MilvusCollectionLoadError(StorageControlPlaneError):
+    """An existing collection could not be loaded (refused, or still loading
+    when MILVUS_LOAD_TIMEOUT expired).
+    """
+
 
 # Read-path response-size ceiling. Unlike the write path above,
 # a query() response that crosses the gRPC message ceiling isn't rejected by
@@ -1020,8 +1048,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         return CollectionSchema(
             fields=all_fields,
-            description=description,
+            description=f"{description} {self._ownership_marker()}",
             enable_dynamic_field=True,  # Support dynamic fields
+        )
+
+    def _ownership_marker(self) -> str:
+        """Schema-description tag naming the workspace and namespace that own a
+        collection; ``drop_sibling_models`` trusts it, never the name alone."""
+        return (
+            f"{_OWNERSHIP_MARKER_PREFIX}workspace={self.workspace};"
+            f"namespace={self.namespace}]"
         )
 
     def _get_varchar_field_limits_for_namespace(self) -> dict[str, int]:
@@ -2273,9 +2309,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise ValueError(f"Collection {self.final_namespace} does not exist")
 
             # Load the collection if it's not already loaded
-            # In Milvus, collections need to be loaded before they can be searched
-            self._client.load_collection(self.final_namespace)
-            # logger.debug(f"[{self.workspace}] Collection {self.namespace} loaded successfully")
+            # In Milvus, collections need to be loaded before they can be searched.
+            # Without a timeout pymilvus waits until the load reaches 100%, so a
+            # load stuck server-side blocks forever; MILVUS_LOAD_TIMEOUT bounds it.
+            load_kwargs = (
+                {} if self._load_timeout is None else {"timeout": self._load_timeout}
+            )
+            load_started = time.monotonic()
+            try:
+                self._client.load_collection(self.final_namespace, **load_kwargs)
+            except Exception as load_error:
+                # Typed (a RuntimeError) so _create_collection_if_not_exist
+                # re-raises it as-is instead of routing it to the force-create
+                # fallback, whose generic refusal would hide the cause.
+                # Name the knob only when the limit is what ended the wait,
+                # judged by the clock rather than by pymilvus' error text.
+                timeout_hint = ""
+                if (
+                    self._load_timeout is not None
+                    and time.monotonic() - load_started >= self._load_timeout
+                ):
+                    timeout_hint = (
+                        f" (gave up after MILVUS_LOAD_TIMEOUT={self._load_timeout:g}s;"
+                        " raise it if this collection needs longer to load,"
+                        " 0 disables the limit)"
+                    )
+                raise MilvusCollectionLoadError(
+                    f"Failed to load Milvus collection '{self.final_namespace}': "
+                    f"{load_error}{timeout_hint}"
+                ) from load_error
 
         except Exception as e:
             logger.error(
@@ -2576,6 +2638,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"MILVUS_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
             )
+
+        # Collection-load wait limit in seconds. Unset or blank takes the
+        # default; <= 0 (or inf) means no limit, i.e. load_collection() without
+        # a timeout. A malformed value fails fast rather than silently running
+        # with a limit the operator did not choose.
+        raw_load_timeout = os.getenv("MILVUS_LOAD_TIMEOUT", "").strip()
+        load_timeout = (
+            float(raw_load_timeout)
+            if raw_load_timeout
+            else DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS
+        )
+        if math.isnan(load_timeout):
+            raise ValueError("MILVUS_LOAD_TIMEOUT must be a number of seconds, got nan")
+        self._load_timeout: float | None = (
+            load_timeout if 0 < load_timeout < math.inf else None
+        )
 
         # Schema-migration retry knobs (see DEFAULT_MILVUS_MIGRATION_*
         # constants). MILVUS_MIGRATION_MAX_RETRIES=0 restores fail-fast.
@@ -3634,10 +3712,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         caller rewriting it knows the drop did land. The state this rules out
         does not self-heal like the ones
         ``AGENTS.md`` *Consistency without transactions* accepts: nothing
-        recreates the collection at run time, every later call fails on a
-        missing collection, and the next ``initialize()`` would see the
-        intentionally-kept legacy collection and re-run the
-        legacy->suffixed migration this method exists to avoid.
+        recreates the collection at run time, and every later call fails on a
+        missing collection.
+
+        Every other copy of this workspace's vectors goes too, BEFORE the
+        active collection is rebuilt: the un-suffixed legacy collection the
+        model-suffix migration kept as a backup, and the ``_old`` / ``_temp``
+        collections an in-place schema migration leaves behind. Each is a
+        source ``initialize()`` refills a free collection name from, so one
+        left in place puts the dropped rows back -- see *Workspace clear and
+        sibling model containers* in ``docs/design/VectorSpaceProvenance.md``.
+        A legacy collection with no ``vector`` field is left alone: nothing
+        migrates it, and it may not be LightRAG's.
 
         Returns:
             dict[str, str]: ``{"status": "success"|"error", "message": str}``
@@ -3657,18 +3743,30 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             it to the end no matter what the loop does, which is the only form
             the guarantee can actually take.
 
+            The backups go FIRST. A crash after them leaves the active
+            collection still populated and nothing to refill it from, which a
+            re-run clears; a crash the other way round leaves a free name
+            beside a backup, which the next ``initialize()`` migrates or
+            restores into it.
+
             Recreating must NOT route through _create_collection_if_not_exist:
-            with the suffixed collection gone it would see the
-            intentionally-kept legacy collection and re-run the
-            legacy->suffixed migration, pulling the just-dropped rows back in.
-            That makes drop() non-empty (clear_documents would leave stale
-            legacy data behind) and forces a needless full migration on every
-            rebuild/clear.
+            it would run the recovery and migration paths this method has just
+            removed the sources of, for nothing.
             """
+            self._drop_backup_collections()
             if self._client.has_collection(self.final_namespace):
                 self._client.drop_collection(self.final_namespace)
             self._create_collection_with_schema(self.final_namespace)
-            self._ensure_collection_loaded()
+            # The drop is durable from here on, and every later call loads the
+            # collection on demand: a failed load must not report the drop
+            # itself as failed.
+            try:
+                self._ensure_collection_loaded()
+            except MilvusCollectionLoadError as e:
+                logger.warning(
+                    f"[{self.workspace}] Collection {self.namespace} recreated empty; "
+                    f"initial load deferred to the next call: {e}"
+                )
 
         try:
             async with self._flush_lock:
@@ -3717,3 +3815,200 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
+
+    def _drop_backup_collections(self) -> None:
+        """Drop every backup copy of the ACTIVE model's collection. Blocking.
+
+        Runs on the Milvus pool, inside ``drop()``'s single submission. Two
+        kinds are left in place, each with a warning:
+
+          - a legacy collection (or its backup) with no ``vector`` field --
+            the test ``initialize()`` applies before migrating one, so what
+            is dropped is exactly what could come back;
+          - any backup whose description carries ANOTHER owner's marker: two
+            workspaces fold onto this name, and it is not ours to drop.
+        """
+        marker = self._ownership_marker()
+        backups = [
+            (f"{self.final_namespace}{tail}", False) for tail in ("_temp", "_old")
+        ]
+        if self.legacy_namespace != self.final_namespace:
+            backups += [
+                (f"{self.legacy_namespace}{tail}", True)
+                for tail in ("_temp", "_old", "")
+            ]
+        for name, needs_vector_field in backups:
+            if not self._client.has_collection(name):
+                continue
+            info = self._client.describe_collection(name)
+            description = info.get("description") or ""
+            if _OWNERSHIP_MARKER_PREFIX in description and marker not in description:
+                logger.warning(
+                    f"[{self.workspace}] Left collection '{name}' in place: it "
+                    f"is marked as another owner's"
+                )
+                continue
+            if needs_vector_field and not self._has_vector_field(info):
+                logger.warning(
+                    f"[{self.workspace}] Left collection '{name}' in place: it "
+                    f"has no vector field, so nothing migrates it"
+                )
+                continue
+            self._client.drop_collection(name)
+            logger.info(
+                f"[{self.workspace}] Dropped backup collection '{name}' with "
+                f"the workspace drop"
+            )
+
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        suffix = self._collection_suffix_for(model_name, embedding_dim)
+        return f"{self.legacy_namespace}_{suffix}" if suffix else None
+
+    def _sibling_candidates(self) -> dict[str, list[tuple[str, str]]]:
+        """Group sibling-shaped collections by the model collection they belong to.
+
+        Blocking. Maps ``{ws}_{ns}_{model}_{dim}d`` to its existing members as
+        ``(name, description)``, ordered ``_temp``, ``_old``, then the
+        collection itself -- the order they must be dropped in, so a crash
+        never leaves the name free beside a backup ``initialize()`` would
+        restore into it. The active model's collections are excluded.
+        """
+        prefix = f"{self.legacy_namespace}_"
+        groups: dict[str, dict[str, str]] = {}
+        for name in self._client.list_collections():
+            if not name.startswith(prefix):
+                continue
+            matched = _SIBLING_COLLECTION_RE.search(name)
+            if not matched:
+                continue
+            base = name[: matched.start(1)] if matched.group(1) else name
+            if base == self.final_namespace:
+                continue
+            description = self._client.describe_collection(name).get("description")
+            groups.setdefault(base, {})[matched.group(1) or ""] = description or ""
+        return {
+            base: [
+                (f"{base}{tail}", members[tail])
+                for tail in ("_temp", "_old", "")
+                if tail in members
+            ]
+            for base, members in groups.items()
+        }
+
+    def _sibling_ownership(self, members: list[tuple[str, str]]) -> str:
+        """``"ours"``, ``"foreign"``, ``"conflict"`` or ``"unmarked"`` for one
+        model's collections.
+
+        Judged per family, not per collection: an ``_old`` backup keeps the
+        description of the collection it was renamed from, which may predate
+        the marker its rebuilt successor carries. So an UNMARKED member takes
+        the family's verdict -- but a member marked as another owner's never
+        does. When two workspaces fold onto one collection name, a schema
+        migration by one leaves an ``_old`` carrying the other's marker beside
+        its own live collection; a family holding both markers is a
+        ``"conflict"``, and nothing in it is ours to drop.
+        """
+        marker = self._ownership_marker()
+        descriptions = [description for _, description in members]
+        ours = any(marker in d for d in descriptions)
+        foreign = any(
+            _OWNERSHIP_MARKER_PREFIX in d and marker not in d for d in descriptions
+        )
+        if ours and foreign:
+            return "conflict"
+        if foreign:
+            return "foreign"
+        return "ours" if ours else "unmarked"
+
+    async def unvouched_sibling_containers(self) -> list[str]:
+        def _list() -> list[str]:
+            return sorted(
+                base
+                for base, members in self._sibling_candidates().items()
+                if self._sibling_ownership(members) == "unmarked"
+            )
+
+        return await run_in_milvus_executor(_list)
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
+        """Drop every other model's collections owned by this workspace+namespace.
+
+        Collection names carry the workspace as a plain prefix, so one
+        workspace's prefix also matches another's (``a`` + ``chunks`` vs.
+        ``a_chunks_m`` + ``entities``). A collection is therefore dropped only
+        on evidence:
+
+          - its schema description carries this instance's ownership marker,
+            which ``_create_schema_for_namespace`` writes at creation; or
+          - it carries no marker at all and the caller ``vouched`` for it by
+            the name ``model_container_name`` / ``unvouched_sibling_containers``
+            gives.
+
+        A collection marked as another owner's is skipped. One with no marker
+        and no voucher is left in place and makes the result an ERROR naming
+        it: it may hold this workspace's vectors, and it may be another
+        workspace's. So does a family whose members carry BOTH this instance's
+        marker and another owner's: a voucher never overrides a marker. A
+        sibling's unmarked ``_temp`` / ``_old`` backups share its verdict and
+        are dropped before it, and nothing is recreated -- no running instance
+        serves a sibling. Same preconditions as ``drop()``.
+        """
+        vouched = frozenset(vouched)
+
+        def _drop_siblings() -> tuple[list[str], list[str], list[str]]:
+            dropped: list[str] = []
+            unmarked: list[str] = []
+            conflicting: list[str] = []
+            for base, members in self._sibling_candidates().items():
+                ownership = self._sibling_ownership(members)
+                if ownership == "unmarked" and base in vouched:
+                    ownership = "ours"
+                if ownership == "ours":
+                    for name, _ in members:
+                        self._client.drop_collection(name)
+                        dropped.append(name)
+                elif ownership == "unmarked":
+                    unmarked.append(base)
+                elif ownership == "conflict":
+                    conflicting.append(base)
+                # "foreign": another workspace or namespace owns it.
+            return dropped, unmarked, conflicting
+
+        try:
+            (
+                dropped,
+                unmarked,
+                conflicting,
+            ) = await run_in_milvus_executor_uninterruptible(_drop_siblings)
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping sibling model collections "
+                f"for Milvus namespace {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+        if dropped:
+            logger.info(
+                f"[{self.workspace}] Dropped sibling Milvus model collections: {dropped}"
+            )
+        problems = []
+        if unmarked:
+            problems.append(
+                f"collections without an ownership marker were left in place "
+                f"and may hold this workspace's vectors: {sorted(unmarked)}. "
+                f"Drop them with lightrag-clear-storage, which lists them and "
+                f"asks first, or by hand."
+            )
+        if conflicting:
+            problems.append(
+                f"collections marked both as this workspace's and as another "
+                f"owner's were left in place: {sorted(conflicting)}. Two "
+                f"workspaces share these names; inspect them and drop what is "
+                f"this workspace's by hand."
+            )
+        if problems:
+            message = " ".join(problems)
+            logger.warning(f"[{self.workspace}] {message}")
+            return {"status": "error", "message": message}
+        return {"status": "success", "message": "sibling models dropped"}

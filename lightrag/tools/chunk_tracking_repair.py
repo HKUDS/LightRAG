@@ -171,7 +171,8 @@ class _DiskPlan:
     def sync(self) -> None:
         """Commit the plan and force its file and directory entry to disk."""
         self.connection.commit()
-        file_fd = os.open(self.path, os.O_RDONLY)
+        # Not O_RDONLY: Windows os.fsync needs a writable descriptor (EBADF).
+        file_fd = os.open(self.path, os.O_RDWR)
         try:
             os.fsync(file_fd)
         finally:

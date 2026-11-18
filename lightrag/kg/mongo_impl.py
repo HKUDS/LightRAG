@@ -647,6 +647,7 @@ class MongoKVStorage(BaseKVStorage):
             logger.error(
                 f"[{self.workspace}] Error deleting documents from {self.namespace}: {e}"
             )
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
@@ -1334,8 +1335,17 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     @staticmethod
     def _decode_cursor(opaque: str) -> tuple[str | None, str]:
+        """Decode an opaque scheduling cursor into its ``(created_at, id)`` key.
+
+        Only this backend's own ``[created_at | null, id]`` list is a cursor.
+        Any other payload -- including a two-entry object or a two-character
+        string, which would unpack to two strings and mis-position the sweep --
+        raises :class:`~lightrag.exceptions.StorageControlPlaneError`.
+        """
         try:
             decoded = json.loads(opaque)
+            if not isinstance(decoded, list) or len(decoded) != 2:
+                raise ValueError("cursor must be a two-element list")
             created, doc_id = decoded
             if not isinstance(doc_id, str):
                 raise ValueError("cursor id must be a string")

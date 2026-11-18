@@ -932,6 +932,7 @@ def create_optimized_embedding_function(
                 # Pass model only if provided, let function use its default otherwise
                 kwargs = {
                     "texts": texts,
+                    "embedding_dim": embedding_dim,
                     "aws_region": getattr(args, "aws_region", None),
                     "aws_access_key_id": getattr(args, "aws_access_key_id", None),
                     "aws_secret_access_key": getattr(
@@ -2157,11 +2158,13 @@ def create_app(args):
             role_apikey = None
         else:
             role_apikey = explicit_role_apikey or args.llm_binding_api_key
-        role_timeout = (
-            override_meta.get("timeout")
-            or getattr(args, f"{attr}_llm_timeout", None)
-            or llm_timeout
-        )
+        # ``is None`` rather than ``or``: an explicit 0 means "no timeout" and
+        # must not fall through to the base LLM_TIMEOUT.
+        role_timeout = override_meta.get("timeout")
+        if role_timeout is None:
+            role_timeout = getattr(args, f"{attr}_llm_timeout", None)
+        if role_timeout is None:
+            role_timeout = llm_timeout
         role_max_async = override_meta.get("max_async")
         if role_max_async is None:
             role_max_async = getattr(args, f"{attr}_llm_max_async", None)
@@ -3455,7 +3458,7 @@ def configure_logging():
     log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)

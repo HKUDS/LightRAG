@@ -75,7 +75,9 @@ def test_clear_dir_contents_keeps_dir_and_removes_children(tmp_path: Path) -> No
 
 
 def test_clear_dir_contents_noop_when_missing(tmp_path: Path) -> None:
-    clear_dir_contents(tmp_path / "does-not-exist")
+    missing = tmp_path / "does-not-exist"
+    clear_dir_contents(missing)
+    assert not missing.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -144,18 +146,49 @@ def test_safe_extract_zip_rejects_absolute_path(tmp_path: Path) -> None:
         safe_extract_zip(payload, tmp_path / "raw")
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["..notes.md", "...report.md", "..assets/figure.png", "nested/..notes.md"]
+)
+def test_safe_extract_zip_allows_dot_prefixed_names(tmp_path: Path, name: str) -> None:
+    payload = _make_zip({name: b"Document content"})
+
+    assert safe_extract_zip(payload, tmp_path) == [name]
+    assert (tmp_path / name).read_bytes() == b"Document content"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["..", "../outside.md", "nested/../../outside.md", "/outside.md"]
+)
+def test_safe_extract_zip_rejects_unsafe_bundle_before_writing(
+    tmp_path: Path, name: str
+) -> None:
+    destination = tmp_path / "bundle"
+    payload = _make_zip({"safe.md": b"safe", name: b"unsafe"})
+
+    with pytest.raises(RuntimeError, match="unsafe path"):
+        safe_extract_zip(payload, destination)
+
+    assert not (destination / "safe.md").exists()
+    assert not (tmp_path / "outside.md").exists()
+
+
 # ---------------------------------------------------------------------------
 # env coercion
 # ---------------------------------------------------------------------------
 
 
-def test_env_bool_truthy_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
-    for raw in ("1", "true", "yes", "ON"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", False) is True
-    for raw in ("0", "false", "no", "off"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", True) is False
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "ON"])
+def test_env_bool_truthy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", False) is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_env_bool_falsy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", True) is False
 
 
 def test_env_bool_falls_back_on_unrecognized(monkeypatch: pytest.MonkeyPatch) -> None:

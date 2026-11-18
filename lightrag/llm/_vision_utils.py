@@ -5,9 +5,14 @@ element may be:
 
 - a raw base64 string (the MIME type is inferred via ``imghdr`` / magic bytes,
   defaulting to ``image/png``);
-- a data URL of the form ``data:<mime>;base64,<payload>``;
+- a data URL of the form ``data:<mime>;base64,<payload>`` (the scheme and
+  base64 marker are ASCII case-insensitive);
 - a dict with keys ``base64`` (required) and optional ``mime_type``,
   ``source_id``, ``source_file``, ``modality``, ``doc_id``.
+
+A declared MIME type (from a data URL or the dict's ``mime_type``) is
+lowercased, as MIME types are case-insensitive while provider APIs and the
+cache key expect the canonical lowercase form.
 
 The provider-specific binding code converts the normalized result to its own
 content-block format. The VLM pipeline uses :func:`image_cache_metadata` for
@@ -29,7 +34,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 DATA_URL_RE = re.compile(
-    r"^data:(?P<mime>[\w./+-]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)$"
+    r"^(?ai:data):(?P<mime>[\w./+-]+);(?ai:base64),(?P<data>[A-Za-z0-9+/=\s]+)$"
 )
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -122,6 +127,8 @@ def normalize_image_inputs(
         if not raw_bytes:
             raise ValueError(f"image_inputs[{idx}] decoded to empty bytes")
         mime_type = item.get("mime_type") or _detect_mime(raw_bytes)
+        if isinstance(mime_type, str):
+            mime_type = mime_type.lower()
         sha = hashlib.sha256(raw_bytes).hexdigest()
         clean_b64 = base64.b64encode(raw_bytes).decode("ascii")
         dims = _dimensions_from_bytes(raw_bytes)

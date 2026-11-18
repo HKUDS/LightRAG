@@ -136,6 +136,8 @@ To let the P chunking strategy split body text without breaking multimodal objec
 | `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | Self-closing drawing placeholder | `id` points to `drawings.json`; `path` is relative to the `*.parsed/` directory — empty string `""` when the image bytes were not materialized (external link not downloaded / download failed); `src` is the original reference from the source document (remote URL, external link target) |
 | `<equation id="eq-…" format="latex" caption="…">…</equation>` | Equation placeholder | Inline equations also use `<equation format="latex">`, but **without** `id`, and are not written to the sidecar; only block equations (occupying one or more entire lines) carry an `id` |
 
+A `format="json"` body never contains the text `</table>` (in any letter case): it is written with the JSON escape `<\/table>`, which `json.loads` reads back as `</table>`. A cell holding that text would otherwise end the tag early for every reader, since readers take the first `</table>` after the opening tag as the closing one. Nothing else in a cell is rewritten, so inner markup such as `<sup>…</sup>` or `<equation>…</equation>` stays as it is. Code that re-serializes rows into a `<table>` tag (table splitting, trimming) must keep this property — in LightRAG through `lightrag.table_markup.dumps_json_table_body`. The `content` field in `tables.json` is not a tag body and is stored without the escape.
+
 When the text is fed to the LLM during entity/relation extraction, internal attributes such as `id / path / src` are stripped, but key attributes (`format / caption`) are preserved. The goal is to avoid extracting entities that are invisible in the article and injecting too much noise into the extraction results.
 
 ### 3.4 Correspondence between blockid and chunk sidecar.refs
@@ -392,7 +394,7 @@ Applicable to text-like files; locates content by absolute character position. `
 | `status` | Trigger scenario | Field description |
 |---|---|---|
 | `success` | The model returns valid JSON and all required fields are present | Drawing: `name / type / description`; Table: `name / description`; Equation: `name / description / equation` |
-| `skipped` | Multimodal analysis was deliberately skipped: image format unsupported, pixels < `VLM_MIN_IMAGE_PIXEL` (default 32 px), larger than `VLM_MAX_IMAGE_BYTES` (default 5 MB), or VLM not enabled | `message` records the skip reason |
+| `skipped` | Analysis was deliberately skipped: the image file is not found or its reference is refused (outside the document directory or malformed), unsupported image format, either dimension < `VLM_MIN_IMAGE_PIXEL` (default 64 px), image larger than `VLM_MAX_IMAGE_BYTES` (default 5 MB), or a table item with empty content | `message` records the skip reason |
 | `failure` | Required fields missing, JSON still invalid after repair, the VLM/EXTRACT role is not configured while the corresponding modality is enabled, or the model invocation throws an exception | `message` records the diagnostic |
 
 Additional notes:

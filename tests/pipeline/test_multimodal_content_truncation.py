@@ -294,3 +294,66 @@ def test_row_trim_keeps_most_rows_with_logarithmic_probes(fmt, keep):
     assert len(bigger) > budget
     edge = "r0c0" if keep == "head" else f"r{row_count - 1}c0"
     assert edge in out
+
+
+# ---------------------------------------------------------------------------
+# A cell holding the text "</table>" must not end a trimmed table early
+# ---------------------------------------------------------------------------
+
+_MARKUP_ROWS = [["Tag", "Meaning"], ["</table>", "closes"], ["<tr>", "row"]]
+
+
+def _markup_table() -> str:
+    from lightrag.table_markup import dumps_json_table_body
+
+    return (
+        f'<table id="tb-1" format="json">{dumps_json_table_body(_MARKUP_ROWS)}</table>'
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("trim", "kept"),
+    [
+        ("_row_trim_table_trailing", _MARKUP_ROWS[:2]),
+        ("_row_trim_table_leading", _MARKUP_ROWS[1:]),
+    ],
+)
+def test_row_trim_keeps_a_closing_tag_cell_inside_the_tag(trim, kept):
+    # The trimmed table is re-serialized from the parsed rows; a bare
+    # json.dumps put the raw "</table>" back and the result no longer parsed.
+    import lightrag.multimodal_context as mc
+    from lightrag.table_markup import parse_table_tag
+
+    tok = _tokenizer()
+    table = _markup_table()
+
+    out = getattr(mc, trim)(table, len(table) - 5, tok)
+
+    assert out is not None
+    assert out.count("</table>") == 1
+    parsed = parse_table_tag(out)
+    assert parsed is not None, out
+    assert parsed[1] == kept
+    assert len(tok.encode(out)) <= len(table) - 5
+
+
+@pytest.mark.offline
+def test_char_fallback_keeps_a_closing_tag_cell_inside_the_tag():
+    # No whole row fits: the fallback stores a slice of the serialized row as
+    # one JSON string, which carries the cell's markup text along.
+    from lightrag.multimodal_context import _row_trim_table_trailing
+    from lightrag.table_markup import dumps_json_table_body, parse_table_tag
+
+    tok = _tokenizer()
+    rows = [["</table>" + "X" * 400]]
+    table = f'<table id="tb-1" format="json">{dumps_json_table_body(rows)}</table>'
+
+    out = _row_trim_table_trailing(table, 120, tok)
+
+    assert out is not None
+    assert out.count("</table>") == 1
+    parsed = parse_table_tag(out)
+    assert parsed is not None, out
+    assert "</table>" in parsed[1][0][0]
+    assert len(tok.encode(out)) <= 120

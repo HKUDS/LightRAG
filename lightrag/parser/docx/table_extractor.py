@@ -11,6 +11,7 @@ from docx.oxml.ns import qn
 from typing import List
 
 from .content_controls import is_hidden_inline_control, iter_blocks, iter_cells
+from .ooxml import is_on
 from .drawing_image_extractor import (
     DrawingExtractionContext,
     extract_drawing_placeholder_from_element,
@@ -66,14 +67,19 @@ def extract_text_from_run_table(
         tag = child.tag.split("}")[-1]  # Remove namespace
         if tag == "t" and child.text:
             text += child.text
-        elif tag == "tab":
+        elif tag in ("tab", "ptab"):
+            # w:ptab is an absolute position tab; same as the body walker.
             text += "\t"
-        elif tag == "br":
-            # Handle line breaks - textWrapping or no type = soft line break
+        elif tag in ("br", "cr"):
+            # Handle line breaks - textWrapping or no type = soft line break.
+            # A w:cr (carriage return) has no type and breaks the line too.
             br_type = child.get(qn_func("w:type"))
             if br_type in (None, "textWrapping"):
                 text += "\n"
             # Skip page and column breaks (layout elements)
+        elif tag == "noBreakHyphen":
+            # Non-breaking hyphen, written as a plain hyphen like the body walker.
+            text += "-"
         elif tag == "drawing":
             text += extract_drawing_placeholder_from_element(
                 child,
@@ -304,7 +310,9 @@ class TableExtractor:
                         For vertically merged cells, all rows share the start cell's paraId
             - para_ids_end: 2D list of paraIds (last paraId in each cell, or None)
                             Continuations use the last paraId of their own cell
-            - header_indices: List of row indices marked as table headers
+            - header_indices: indices of the repeating header rows: the
+              rows marked ``w:tblHeader`` from the first row down to
+              the first unmarked one
             - cell_features: per-row lists of PHYSICAL cells as
               ``(text, effective_size_pt, has_outline)`` tuples (one entry per
               ``w:tc`` — a gridSpan-merged full-width row is ONE cell), or
@@ -328,14 +336,16 @@ class TableExtractor:
                 "cell_features": [] if collect_features else None,
             }
 
-        # Detect header rows using w:tblHeader attribute
+        # Repeating header rows (w:tblHeader): only the run of marked rows that
+        # starts at the first row. A marked row below an unmarked one is not
+        # repeated by Word (the schema says the property "shall be ignored").
         header_indices = []
         for idx, tr in enumerate(iter_blocks(tbl, _ROW_TAGS)):
             trPr = tr.find(qn("w:trPr"))
-            if trPr is not None:
-                tbl_header = trPr.find(qn("w:tblHeader"))
-                if tbl_header is not None:
-                    header_indices.append(idx)
+            tbl_header = trPr.find(qn("w:tblHeader")) if trPr is not None else None
+            if tbl_header is None or not is_on(tbl_header):
+                break
+            header_indices.append(idx)
 
         # Process each row by directly iterating <w:tr> elements
         grid = []

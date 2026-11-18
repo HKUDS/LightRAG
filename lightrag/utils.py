@@ -494,9 +494,11 @@ def safe_log_value(value: str, max_length: int = 200) -> str:
     submitted username, and operator-supplied identifiers in audited admin
     actions (source-conflict repair).
     """
-    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
-    if len(sanitized) > max_length:
-        sanitized = sanitized[:max_length] + "…(truncated)"
+    # Truncate BEFORE the per-character pass: the value can be as large as a
+    # request body, and the replacement is one-for-one, so the result is the same.
+    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value[:max_length])
+    if len(value) > max_length:
+        sanitized += "…(truncated)"
     return sanitized
 
 
@@ -1192,6 +1194,103 @@ class TokenBudgetError(Exception):
         )
 
 
+def provider_timeout(timeout: Any) -> Any:
+    """The timeout to hand a provider client, or None to keep the SDK default.
+
+    ``LLM_TIMEOUT`` / ``{ROLE}_LLM_TIMEOUT`` / ``default_llm_timeout`` of 0 (or
+    a negative value) mean "LightRAG sets no timeout; the provider SDK's own
+    default applies" -- never "wait forever". So a number <= 0 maps to None,
+    like an unset value; anything else (a positive number, an
+    ``httpx.Timeout``) is returned unchanged.
+
+    A provider must then OMIT the timeout when this returns None rather than
+    pass ``timeout=None`` on: OpenAI-style SDKs read an explicit None as "no
+    timeout at all", and httpx-based ones time out at once on 0.
+    """
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and timeout <= 0
+    ):
+        return None
+    return timeout
+
+
+# The effective embedding / rerank timeout of the LightRAG call running in this
+# context (``default_embedding_timeout`` / ``default_rerank_timeout``): the
+# value that call's queue is sized from. ``bind_embedding_timeout`` /
+# ``bind_rerank_timeout`` set it inside the queue worker around each call;
+# ``embedding_timeout`` / ``rerank_timeout`` read it so a bundled binding sizes
+# its client the same way, even when it is reached through a ``partial`` or a
+# custom function.
+_EMBEDDING_TIMEOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "lightrag_embedding_timeout"
+)
+_RERANK_TIMEOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "lightrag_rerank_timeout"
+)
+
+
+def _bind_call_timeout(
+    func: Callable[..., Any], timeout_var: contextvars.ContextVar, timeout: Any
+) -> Callable[..., Any]:
+    @wraps(func)
+    async def call_with_timeout(*args: Any, **kwargs: Any) -> Any:
+        token = timeout_var.set(timeout)
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            timeout_var.reset(token)
+
+    return call_with_timeout
+
+
+def bind_embedding_timeout(
+    func: Callable[..., Any], timeout: Any
+) -> Callable[..., Any]:
+    """Wrap async ``func`` so :func:`embedding_timeout` sees ``timeout`` inside it.
+
+    Apply it BEFORE ``priority_limit_async_func_call``, so the value is set
+    inside the worker task that executes the call. ``timeout`` is never
+    passed to ``func`` as an argument, and ``func``'s signature stays
+    inspectable through ``__wrapped__`` (``EmbeddingFunc`` reads it).
+    """
+    return _bind_call_timeout(func, _EMBEDDING_TIMEOUT, timeout)
+
+
+def bind_rerank_timeout(func: Callable[..., Any], timeout: Any) -> Callable[..., Any]:
+    """Wrap async ``func`` so :func:`rerank_timeout` sees ``timeout`` inside it.
+
+    Same rules as :func:`bind_embedding_timeout`.
+    """
+    return _bind_call_timeout(func, _RERANK_TIMEOUT, timeout)
+
+
+def embedding_timeout(timeout: Any = None) -> Any:
+    """The timeout an embedding binding hands its client, or None for the SDK default.
+
+    ``timeout`` is the binding's own explicit argument and wins when given.
+    When it is None, the effective ``default_embedding_timeout`` of the
+    LightRAG embedding call in progress applies, and nothing outside one. The
+    result goes through :func:`provider_timeout`, so a number <= 0 also
+    returns None: the binding must then OMIT the timeout, not pass None on.
+    """
+    if timeout is None:
+        timeout = _EMBEDDING_TIMEOUT.get(None)
+    return provider_timeout(timeout)
+
+
+def rerank_timeout(timeout: Any = None) -> Any:
+    """The timeout a rerank binding hands its client, or None for the SDK default.
+
+    Same rules as :func:`embedding_timeout`, with ``default_rerank_timeout``
+    as the fallback inside a LightRAG rerank call.
+    """
+    if timeout is None:
+        timeout = _RERANK_TIMEOUT.get(None)
+    return provider_timeout(timeout)
+
+
 def priority_limit_async_func_call(
     max_size: int,
     llm_timeout: float = None,
@@ -1215,7 +1314,10 @@ def priority_limit_async_func_call(
     Args:
         max_size: Maximum number of concurrent calls
         max_queue_size: Maximum queue capacity to prevent memory overflow
-        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts
+        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts.
+            A value <= 0 means the provider SDK's default timeout applies (see
+            ``provider_timeout``): no execution or health-check cap is derived
+            from it, since the client's own timeout bounds the call.
         max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
@@ -1254,6 +1356,15 @@ def priority_limit_async_func_call(
         # Ensure func is callable
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
+
+        # A non-positive ``llm_timeout`` means "LightRAG sets no timeout; the
+        # provider SDK's default bounds the call" (see ``provider_timeout``).
+        # Normalize it to the unset state here, otherwise the derivation below
+        # produces a 0s worker budget and ``asyncio.wait_for`` fails every call
+        # before the wrapped function starts.
+        nonlocal llm_timeout
+        if provider_timeout(llm_timeout) is None:
+            llm_timeout = None
 
         # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)
         if llm_timeout is not None:
@@ -3084,6 +3195,23 @@ def mark_cancellation_deferred(exc: BaseException) -> None:
         setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, True)
 
 
+def retract_cancellation_deferred(exc: BaseException) -> None:
+    """Withdraw the stamp after the caller ROLLED BACK what the region wrote.
+
+    ``_wait_deferring_cancellation`` judges only the future it was given: a
+    write that finished after the cancel was requested is stamped as durable.
+    A caller that then undoes that write on its way out -- the upload route
+    unlinking the file it was copying -- must call this once the undo has
+    SUCCEEDED, or the cancellation it re-raises claims a write that no longer
+    exists. Do not call it when the undo failed: what was written is still
+    there, and the stamp is then the truthful report.
+
+    A no-op for anything that is not a stamped cancellation.
+    """
+    if isinstance(exc, asyncio.CancelledError) and cancellation_was_deferred(exc):
+        setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False)
+
+
 async def _wait_deferring_cancellation(
     future: "asyncio.Future",
     pending_cancel: Optional[asyncio.CancelledError],
@@ -4388,6 +4516,14 @@ def _map_child_span(
     return {"start": abs_start, "end": abs_end}
 
 
+# U+FFFD. A token window whose boundary splits a multi-byte UTF-8 character
+# (any non-ASCII char: 2-byte Latin/Greek, 3-byte CJK and symbols, 4-byte emoji)
+# decodes the partial bytes to this character. Shared by the fixed-token chunker,
+# this function and sidecar backfill so the three agree on what a boundary
+# artifact is.
+_REPLACEMENT_CHAR = "\ufffd"
+
+
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
@@ -4418,6 +4554,14 @@ def enforce_chunk_token_limit_before_embedding(
     cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
     than silently emitting a wrong span — the same failure sidecar backfill
     itself would eventually surface, just earlier and with better context.
+    A span recovered by stripping boundary U+FFFD, or a parent with no span
+    whose content still contains U+FFFD, is not that divergence: the children
+    are marked ``_source_span_unavailable`` (popped before the chunk dict is
+    stored) so backfill degrades them instead of failing the document. The
+    recovered case is recognized by the content minus its leading/trailing
+    U+FFFD matching the source slice; interior U+FFFD that the source itself
+    contains does not disqualify it. Content that does not reconcile with the
+    source slice still raises.
 
     Known limitation -- ``sidecar`` is not re-scoped for pre-sidecar chunks:
     this function runs BEFORE :func:`lightrag.sidecar.backfill.backfill_chunk_sidecars`
@@ -4491,6 +4635,7 @@ def enforce_chunk_token_limit_before_embedding(
         # O(parent length)).
         projection: list[int] | None = None
         parent_start = parent_end = None
+        span_unavailable = False
         if isinstance(parent_span, dict):
             try:
                 parent_start = int(parent_span["start"])
@@ -4503,7 +4648,32 @@ def enforce_chunk_token_limit_before_embedding(
                 parent_start = parent_end = None
 
             if parent_start is not None and parent_end - parent_start != len(content):
-                if source_content:
+                # A span recovered by stripping boundary U+FFFD is not a
+                # verbatim slice of the chunk beside it. Child offsets cannot
+                # be projected (a ZWJ sequence makes the width gap unequal to
+                # the replacement count). Mark the children unavailable
+                # instead of raising. Interior U+FFFD is allowed: the source
+                # comparison below proves it is the source's own character.
+                # Content that does not reconcile with the source slice is
+                # still a real divergence.
+                boundary_artifact = False
+                if source_content and (
+                    content.startswith(_REPLACEMENT_CHAR)
+                    or content.endswith(_REPLACEMENT_CHAR)
+                ):
+                    stripped = content.strip(_REPLACEMENT_CHAR)
+                    if stripped:
+                        source_slice = source_content[parent_start:parent_end]
+                        stripped_compact = "".join(stripped.split())
+                        if source_slice == stripped or (
+                            stripped_compact
+                            and stripped_compact == "".join(source_slice.split())
+                        ):
+                            boundary_artifact = True
+                if boundary_artifact:
+                    span_unavailable = True
+                    parent_start = parent_end = None
+                elif source_content:
                     projection = _parent_to_source_projection(
                         source_content, parent_start, parent_end, content
                     )
@@ -4520,6 +4690,12 @@ def enforce_chunk_token_limit_before_embedding(
                     # _map_child_span is never reached with an untrustworthy
                     # direct-arithmetic assumption).
                     parent_start = parent_end = None
+        if parent_start is None and _REPLACEMENT_CHAR in content:
+            # No usable parent span (probe failed, or a boundary-recovered
+            # span we refused to project). Children that no longer contain
+            # U+FFFD must degrade instead of failing backfill. A literal
+            # U+FFFD is not itself the marker.
+            span_unavailable = True
 
         total_parts = len(spans)
         for i, span in enumerate(spans, 1):
@@ -4538,15 +4714,19 @@ def enforce_chunk_token_limit_before_embedding(
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
-            child_span = None
-            if parent_start is not None:
-                child_span = _map_child_span(
-                    span.start, span.end, parent_start, parent_end, projection
-                )
-            if child_span is not None:
-                new_dp["_source_span"] = child_span
-            elif "_source_span" in new_dp:
+            if span_unavailable:
                 new_dp.pop("_source_span", None)
+                new_dp["_source_span_unavailable"] = True
+            else:
+                child_span = None
+                if parent_start is not None:
+                    child_span = _map_child_span(
+                        span.start, span.end, parent_start, parent_end, projection
+                    )
+                if child_span is not None:
+                    new_dp["_source_span"] = child_span
+                elif "_source_span" in new_dp:
+                    new_dp.pop("_source_span", None)
 
             new_dp["split_type"] = "hard_fallback"
             new_dp["split_part"] = i
@@ -4665,14 +4845,15 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     await hashing_kv.upsert({flattened_key: cache_entry})
 
 
-def safe_unicode_decode(content):
-    # Regular expression to find all Unicode escape sequences of the form \uXXXX
-    unicode_escape_pattern = re.compile(r"\\u([0-9a-fA-F]{4})")
+def safe_unicode_decode(content: bytes) -> str:
+    r"""Decode complete \uXXXX runs, combining valid UTF-16 surrogate pairs.
 
-    # Function to replace the Unicode escape with the actual character
-    def replace_unicode_escape(match):
-        # Convert the matched hexadecimal value into the actual Unicode character
-        return chr(int(match.group(1), 16))
+    Other escape sequences and already-decoded UTF-8 text are preserved.
+    """
+    unicode_escape_pattern = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
+
+    def replace_unicode_escape(match: re.Match[str]) -> str:
+        return json.loads(f'"{match.group(0)}"')
 
     # Perform the substitution
     decoded_content = unicode_escape_pattern.sub(
@@ -7424,6 +7605,20 @@ async def process_chunks_unified(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
         )
+        if not unique_chunks:
+            # Every candidate survived rerank and top-k, so only the token
+            # budget can have emptied the list: make that visible.
+            hint = (
+                "raise max_total_tokens"
+                if source_type == "vector"
+                else "raise max_total_tokens or lower max_entity_tokens / "
+                "max_relation_tokens so the graph context leaves room for chunks"
+            )
+            logger.warning(
+                f"Token budget left no room for any of {original_count} retrieved "
+                f"chunks (available for chunks: {chunk_token_limit} tokens, "
+                f"source: {source_type}); {hint}"
+            )
 
     # 5. add id field to each chunk
     final_chunks = []

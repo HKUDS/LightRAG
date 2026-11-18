@@ -27,6 +27,8 @@ the bibliography text rather than dropping the rest.
 
 from docx.oxml.ns import qn
 
+from .ooxml import is_on
+
 # A content control keeps its content in w:sdtContent; custom XML markup
 # wraps it directly.
 WRAPPERS = frozenset({qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")})
@@ -62,11 +64,7 @@ def is_placeholder_control(sdt) -> bool:
     if sdt_pr is None:
         return False
     placeholder = sdt_pr.find(qn("w:showingPlcHdr"))
-    return placeholder is not None and placeholder.get(qn("w:val")) not in (
-        "0",
-        "false",
-        "off",
-    )
+    return placeholder is not None and is_on(placeholder)
 
 
 def is_bibliography_control(sdt) -> bool:

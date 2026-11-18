@@ -799,8 +799,17 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     @staticmethod
     def _decode_cursor(opaque: str) -> tuple[str, str]:
+        """Decode an opaque scheduling cursor into its ``(created_at, id)`` key.
+
+        Only this backend's own ``[created_at, id]`` list is a cursor. Any other
+        payload -- including a two-entry object or a two-character string,
+        which would unpack to two strings and mis-position the sweep -- raises
+        :class:`~lightrag.exceptions.StorageControlPlaneError`.
+        """
         try:
             decoded = json.loads(opaque)
+            if not isinstance(decoded, list) or len(decoded) != 2:
+                raise ValueError("cursor must be a two-element list")
             created, doc_id = decoded
             if not isinstance(created, str) or not isinstance(doc_id, str):
                 raise ValueError("cursor fields must be strings")

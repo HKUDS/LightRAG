@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import threading
 import warnings
 from ..utils import verbose_debug
 
@@ -21,7 +22,10 @@ from tenacity import (
     retry_if_exception,
 )
 
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
+    provider_timeout,
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
     logger,
@@ -119,8 +123,6 @@ async def zhipu_complete_if_cache(
     except ImportError:
         raise ImportError("Please install zai-sdk before initialize zhipuai backend.")
 
-    client = _build_client(ZhipuAiClient, api_key)
-
     messages = []
 
     if not system_prompt:
@@ -168,6 +170,13 @@ async def zhipu_complete_if_cache(
     if kwargs.get("response_format") is not None:
         enable_cot = False
 
+    # <= 0 or unset means the SDK default. zai-sdk reads an explicit
+    # timeout=None as "no timeout at all", so it is only passed when set.
+    if "timeout" in kwargs:
+        timeout = provider_timeout(kwargs.pop("timeout"))
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
     # Remove unsupported kwargs
     kwargs = {
         k: v
@@ -189,10 +198,14 @@ async def zhipu_complete_if_cache(
     # the HTTP call keeps running in the background until it finishes on its
     # own. This is an inherent limit of bridging a synchronous SDK through
     # asyncio.to_thread, not something fixable at this call site.
+    def complete():
+        with _build_client(ZhipuAiClient, api_key) as client:
+            return client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
+
     try:
-        response = await asyncio.to_thread(
-            client.chat.completions.create, model=model, messages=messages, **kwargs
-        )
+        response = await asyncio.to_thread(complete)
     except asyncio.CancelledError:
         logger.warning(
             "zhipu_complete_if_cache: cancelled while awaiting the SDK call; "
@@ -249,6 +262,7 @@ async def zhipu_complete(
       compatibility shims; when no explicit ``response_format`` is supplied,
       they are mapped to ``{"type": "json_object"}``.
     """
+    apply_llm_timeout(kwargs)
     # Pop legacy extraction flags from kwargs to avoid passing them downstream.
     keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
@@ -307,33 +321,48 @@ async def zhipu_embedding(
         from zai import ZhipuAiClient
     except ImportError:
         raise ImportError("Please install zai-sdk before initialize zhipuai backend.")
-    client = _build_client(ZhipuAiClient, api_key)
-
     # Convert single text to list if needed
     if isinstance(texts, str):
         texts = [texts]
 
-    embeddings = []
-    for text in texts:
-        try:
-            request_kwargs = dict(kwargs)
-            if embedding_dim is not None:
-                request_kwargs["dimensions"] = embedding_dim
-            # Same blocking-client concern as zhipu_complete_if_cache, same
-            # cancellation caveat: run each synchronous HTTP call off the
-            # event loop thread, but a timeout here cannot stop it early.
-            response = await asyncio.to_thread(
-                client.embeddings.create,
-                model=model,
-                input=[text],
-                **request_kwargs,
-            )
-            embeddings.append(response.data[0].embedding)
-        except Exception as e:
-            # A retryable error must reach the decorator with its own type;
-            # wrapping it in a bare Exception would make it unretryable.
-            if _is_retryable_zhipu_error(e):
-                raise
-            raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}") from e
+    # A ``timeout`` kwarg wins; otherwise LightRAG's embedding timeout applies
+    # inside a LightRAG call. zai-sdk reads an explicit timeout=None as "no
+    # timeout at all", so it is only passed when set.
+    timeout = embedding_timeout(kwargs.pop("timeout", None))
+    if timeout is not None:
+        kwargs["timeout"] = timeout
 
-    return np.array(embeddings)
+    cancelled = threading.Event()
+
+    def embed():
+        # Keep the client alive through the in-flight request, including when
+        # the outer await is cancelled. Stop before sending any remaining texts.
+        with _build_client(ZhipuAiClient, api_key) as client:
+            embeddings = []
+            for text in texts:
+                if cancelled.is_set():
+                    break
+                try:
+                    request_kwargs = dict(kwargs)
+                    if embedding_dim is not None:
+                        request_kwargs["dimensions"] = embedding_dim
+                    response = client.embeddings.create(
+                        model=model,
+                        input=[text],
+                        **request_kwargs,
+                    )
+                    embeddings.append(response.data[0].embedding)
+                except Exception as e:
+                    # Preserve SDK exception types for the retry decorator.
+                    if _is_retryable_zhipu_error(e):
+                        raise
+                    raise Exception(
+                        f"Error calling ChatGLM Embedding API: {str(e)}"
+                    ) from e
+            return np.array(embeddings)
+
+    try:
+        return await asyncio.to_thread(embed)
+    except asyncio.CancelledError:
+        cancelled.set()
+        raise

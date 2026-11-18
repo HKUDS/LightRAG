@@ -200,6 +200,7 @@ from lightrag.exceptions import (
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
     AdminWriteGateRefusedError,
     AdminWriteHoldExceededError,
+    ChunkTokenLimitExceededError,
     IndexFlushError,
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
@@ -215,11 +216,14 @@ from lightrag.utils import (
     always_get_an_event_loop,
     compute_mdhash_id,
     priority_limit_async_func_call,
+    bind_embedding_timeout,
+    bind_rerank_timeout,
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
     get_content_summary,
     get_extract_cache_fence,
+    graph_attribute_value_rejection,
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
@@ -1996,13 +2000,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"summary_max_tokens({self.summary_max_tokens}) should be greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
+        # The queue is sized from the timeout, and bind_*_timeout hands the
+        # same value to the bundled bindings' clients (see embedding_timeout /
+        # rerank_timeout in lightrag.utils) without passing it as an argument.
         if self.rerank_model_func is not None:
             self.rerank_model_func = priority_limit_async_func_call(
                 self.rerank_model_max_async,
                 llm_timeout=self.default_rerank_timeout,
                 queue_name="Rerank func",
                 concurrency_group="rerank",
-            )(self.rerank_model_func)
+            )(bind_rerank_timeout(self.rerank_model_func, self.default_rerank_timeout))
 
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
@@ -2033,7 +2040,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 llm_timeout=self.default_embedding_timeout,
                 queue_name="Embedding func",
                 concurrency_group="embedding",
-            )(self.embedding_func.func)
+            )(
+                bind_embedding_timeout(
+                    self.embedding_func.func, self.default_embedding_timeout
+                )
+            )
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)
 
@@ -3178,6 +3189,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         marked ``FAILED`` with the journal (and any staged data) retained —
         the same call can be retried by the SDK caller, and ``/documents/scan``
         can roll the operation back. Partial work is never blind-flushed.
+
+        Caller boundaries are preserved: when the embedding function declares a
+        positive ``max_token_size``, a chunk over it raises
+        ``ChunkTokenLimitExceededError`` before busy is reserved or anything is
+        written, instead of being split or truncated. ``chunk_token_size`` is
+        not a bound here. A retry is checked again under the current limit, so
+        if the limit was lowered after a failed operation its retry is refused
+        and the journal stays for ``/documents/scan`` to roll back.
         """
         # Owner token for the busy reservation, generated before any await so the
         # finally always holds it and can release the slot by owner (even if the
@@ -3224,6 +3243,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if not chunk_entries:
                 logger.warning("No non-empty custom chunks to insert.")
                 return
+
+            # Validate the entire input before reserving busy or writing a
+            # journal. The bound is the embedding limit only, the same hard
+            # bound the file pipeline enforces before embedding:
+            # ``chunk_token_size`` is advisory there (R/V chunkers may exceed
+            # it), so it must not reject caller-defined chunks here. Encoding
+            # stays off the event loop, bounded by the shared chunking
+            # executor; the counts are reused for the staged payloads.
+            embedding_token_limit = self.embedding_token_limit
+            if embedding_token_limit is not None and embedding_token_limit <= 0:
+                embedding_token_limit = None
+
+            def _count_chunk_tokens() -> dict[str, int]:
+                counts = {}
+                for chunk_id, content, _ in chunk_entries:
+                    count = len(self.tokenizer.encode(content))
+                    if (
+                        embedding_token_limit is not None
+                        and count > embedding_token_limit
+                    ):
+                        raise ChunkTokenLimitExceededError(
+                            count,
+                            embedding_token_limit,
+                            chunk_preview=content,
+                            limit_name="the embedding token limit",
+                        )
+                    counts[chunk_id] = count
+                return counts
+
+            chunk_token_counts = await run_in_chunking_executor(_count_chunk_tokens)
             operation_id = make_custom_chunk_operation_id(
                 doc_key, [cid for cid, _, _ in chunk_entries]
             )
@@ -3531,28 +3580,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # concurrently with these upserts can observe a
                     # not-yet-persisted chunk and silently drop the cache
                     # reference.
-                    # Off the loop: this shares ``self.tokenizer`` with the
-                    # chunking executor, and this entry point is gated by
-                    # neither max_parallel_insert nor the pipeline busy flag, so
-                    # nothing else keeps it from encoding concurrently with a
-                    # document being chunked.
-                    def _build_inserting_chunks() -> dict[str, Any]:
-                        return {
-                            chunk_id: {
-                                "content": content,
-                                "full_doc_id": doc_key,
-                                "tokens": len(self.tokenizer.encode(content)),
-                                "chunk_order_index": index,
-                                "file_path": file_path,
-                            }
-                            for index, (chunk_id, content, _) in enumerate(
-                                chunk_entries
-                            )
+                    inserting_chunks: dict[str, Any] = {
+                        chunk_id: {
+                            "content": content,
+                            "full_doc_id": doc_key,
+                            "tokens": chunk_token_counts[chunk_id],
+                            "chunk_order_index": index,
+                            "file_path": file_path,
                         }
-
-                    inserting_chunks: dict[str, Any] = await run_in_chunking_executor(
-                        _build_inserting_chunks
-                    )
+                        for index, (chunk_id, content, _) in enumerate(chunk_entries)
+                    }
                     stage1_writes = [
                         self.chunks_vdb.upsert(inserting_chunks),
                         self.text_chunks.upsert(inserting_chunks),
@@ -5108,6 +5145,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Entity names and relationship endpoints are normalized with the same
         contract used by document extraction before any storage write begins.
+        Every ``file_path`` (on chunks, entities and relationships) is checked
+        in that same phase against the rule graph attributes follow
+        (``lightrag.utils.graph_attribute_value_rejection``): a value holding a
+        lone surrogate, U+FFFE / U+FFFF or a control character other than tab,
+        newline and carriage return raises ``ValueError`` and nothing is
+        written. A chunk's path never reaches the graph, but the same source
+        is stamped on the entities and relations taken from it.
         A relationship weight is bounded below by its number of distinct real
         evidence sources. Explicit weights may boost that baseline; omit the
         relationship ``source_id`` to use a fractional source-less weight.
@@ -5156,11 +5200,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                     return normalized_value
 
+                def _validate_custom_kg_file_path(value: Any, *, field: str) -> None:
+                    # Checked on the normalized value, the one the stores get.
+                    # Rejected rather than cleaned, like a REST document source:
+                    # the graph guard refuses these values on an entity or
+                    # relation anyway, and on a chunk some stores fail the
+                    # write while others silently store a cleaned name.
+                    rejection = graph_attribute_value_rejection(
+                        normalize_document_file_path(value)
+                    )
+                    if rejection is not None:
+                        raise ValueError(f"Custom KG {field} {rejection}")
+
                 # Validate and canonicalize the complete identifier set before
                 # chunks or graph objects are written. Copies keep the caller's
                 # custom_kg payload unchanged.
+                # Materialized once: the build below walks the chunks again,
+                # and a one-shot iterable would arrive there exhausted.
+                custom_chunks = list(custom_kg.get("chunks", []))
+                for index, chunk_data in enumerate(custom_chunks):
+                    _validate_custom_kg_file_path(
+                        chunk_data.get("file_path", "custom_kg"),
+                        field=f"chunks[{index}].file_path",
+                    )
+
                 normalized_entities: list[dict[str, Any]] = []
                 for index, entity_data in enumerate(custom_kg.get("entities", [])):
+                    _validate_custom_kg_file_path(
+                        entity_data.get("file_path", "custom_kg"),
+                        field=f"entities[{index}].file_path",
+                    )
                     normalized_entity_data = dict(entity_data)
                     normalized_entity_data["entity_name"] = (
                         _normalize_custom_kg_entity_name(
@@ -5174,6 +5243,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for index, relationship_data in enumerate(
                     custom_kg.get("relationships", [])
                 ):
+                    _validate_custom_kg_file_path(
+                        relationship_data.get("file_path", "custom_kg"),
+                        field=f"relationships[{index}].file_path",
+                    )
                     normalized_relationship_data = dict(relationship_data)
                     normalized_relationship_data["src_id"] = (
                         _normalize_custom_kg_entity_name(
@@ -5227,7 +5300,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline busy flag, so leaving the loop here would let it encode
                     concurrently with a document being chunked.
                     """
-                    for chunk_data in custom_kg.get("chunks", []):
+                    for chunk_data in custom_chunks:
                         chunk_content = sanitize_text_for_encoding(
                             chunk_data["content"]
                         )
@@ -5613,6 +5686,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             str: The result of the query execution.
+
+        Raises:
+            Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
         return _run_sync(  # type: ignore
             lambda: self.aquery(query, param, system_prompt),
@@ -5642,6 +5718,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             str | AsyncIterator[str]: The LLM response content.
                 - Non-streaming: Returns str
                 - Streaming: Returns AsyncIterator[str]
+
+        Raises:
+            Exception: a failed query raises, as in :meth:`aquery_llm`; it is
+            never returned as ``None`` or an empty string.
         """
         # Call the new aquery_llm function to get complete results
         result = await self.aquery_llm(query, param, system_prompt)
@@ -5859,7 +5939,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         else:
             raise ValueError(f"Unknown mode {data_param.mode}")
 
-        if query_result is None:
+        # A result without raw_data is the canned fail_response that kg_query
+        # and naive_query return before any retrieval runs (e.g. no keywords
+        # could be extracted from the query); report it like an empty result.
+        if query_result is None or not query_result.raw_data:
             no_result_message = "Query returned no results"
             if data_param.mode == "naive":
                 no_result_message = "No relevant document chunks found."
@@ -5875,10 +5958,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.info("[aquery_data] Query returned no results.")
         else:
             # Extract raw_data from QueryResult
-            final_data = query_result.raw_data or {}
+            final_data = query_result.raw_data
 
             # Log final result counts - adapt to new data format from convert_to_user_format
-            if final_data and "data" in final_data:
+            if "data" in final_data:
                 data_section = final_data["data"]
                 entities_count = len(data_section.get("entities", []))
                 relationships_count = len(data_section.get("relationships", []))
@@ -5912,6 +5995,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
+            A query that finds nothing returns ``status == "failure"`` with
+            ``metadata["failure_reason"] == "no_results"`` and the canned
+            ``PROMPTS["fail_response"]`` as content.
+
+        Raises:
+            Exception: whatever retrieval or the answering LLM call raised (a
+            timeout, a connection or provider error). A failed query is never
+            returned as a result, so it cannot be mistaken for an empty answer.
+            A streamed answer can still fail while it is being iterated; that
+            error is raised by the iterator.
         """
         # `bypass` skips retrieval, so the RAG minimum does not apply to it —
         # but no mode may forward an empty prompt to the LLM.
@@ -5923,133 +6016,117 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         global_config = self._build_global_config()
 
-        try:
-            query_result = None
+        query_result = None
 
-            if param.mode in ["local", "global", "hybrid", "mix"]:
-                query_result = await kg_query(
-                    query,
-                    self.chunk_entity_relation_graph,
-                    self.entities_vdb,
-                    self.relationships_vdb,
-                    self.text_chunks,
-                    param,
-                    global_config,
-                    hashing_kv=self.llm_response_cache,
-                    system_prompt=system_prompt,
-                    chunks_vdb=self.chunks_vdb,
-                    progress_callback=progress_callback,
-                )
-            elif param.mode == "naive":
-                query_result = await naive_query(
-                    query,
-                    self.chunks_vdb,
-                    param,
-                    global_config,
-                    hashing_kv=self.llm_response_cache,
-                    system_prompt=system_prompt,
-                    text_chunks_db=self.text_chunks,
-                    progress_callback=progress_callback,
-                )
-            elif param.mode == "bypass":
-                # Bypass mode: directly use LLM without knowledge retrieval
-                # Apply higher priority to entity/relation summary tasks
-                use_llm_func = partial(
-                    global_config["role_llm_funcs"]["query"],
-                    _priority=DEFAULT_SUMMARY_PRIORITY,
-                )
+        if param.mode in ["local", "global", "hybrid", "mix"]:
+            query_result = await kg_query(
+                query,
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=system_prompt,
+                chunks_vdb=self.chunks_vdb,
+                progress_callback=progress_callback,
+            )
+        elif param.mode == "naive":
+            query_result = await naive_query(
+                query,
+                self.chunks_vdb,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=system_prompt,
+                text_chunks_db=self.text_chunks,
+                progress_callback=progress_callback,
+            )
+        elif param.mode == "bypass":
+            # Bypass mode: directly use LLM without knowledge retrieval
+            # Apply higher priority to entity/relation summary tasks
+            use_llm_func = partial(
+                global_config["role_llm_funcs"]["query"],
+                _priority=DEFAULT_SUMMARY_PRIORITY,
+            )
 
-                param.stream = True if param.stream is None else param.stream
-                response = await use_llm_func(
-                    query,
-                    system_prompt=system_prompt,
-                    history_messages=param.conversation_history,
-                    enable_cot=True,
-                    stream=param.stream,
-                )
-                # isinstance, not exact type: a truncated non-streaming
-                # response arrives as TruncatedResponse (a str subclass) and
-                # must not be misclassified as a streaming iterator.
-                if isinstance(response, str):
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM non streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": response,
-                            "response_iterator": None,
-                            "is_streaming": False,
-                            "llm_generated": True,
-                        },
-                    }
-                else:
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": None,
-                            "response_iterator": response,
-                            "is_streaming": True,
-                            "llm_generated": True,
-                        },
-                    }
-            else:
-                raise ValueError(f"Unknown mode {param.mode}")
-
-            await self._query_done()
-
-            # Check if query_result is None
-            if query_result is None:
+            param.stream = True if param.stream is None else param.stream
+            response = await use_llm_func(
+                query,
+                system_prompt=system_prompt,
+                history_messages=param.conversation_history,
+                enable_cot=True,
+                stream=param.stream,
+            )
+            # isinstance, not exact type: a truncated non-streaming
+            # response arrives as TruncatedResponse (a str subclass) and
+            # must not be misclassified as a streaming iterator.
+            if isinstance(response, str):
                 return {
-                    "status": "failure",
-                    "message": "Query returned no results",
+                    "status": "success",
+                    "message": "Bypass mode LLM non streaming response",
                     "data": {},
-                    "metadata": {
-                        "failure_reason": "no_results",
-                        "mode": param.mode,
-                    },
+                    "metadata": {},
                     "llm_response": {
-                        "content": PROMPTS["fail_response"],
+                        "content": response,
                         "response_iterator": None,
                         "is_streaming": False,
-                        # Canned text: no answering LLM was invoked.
-                        "llm_generated": False,
+                        "llm_generated": True,
                     },
                 }
+            else:
+                return {
+                    "status": "success",
+                    "message": "Bypass mode LLM streaming response",
+                    "data": {},
+                    "metadata": {},
+                    "llm_response": {
+                        "content": None,
+                        "response_iterator": response,
+                        "is_streaming": True,
+                        "llm_generated": True,
+                    },
+                }
+        else:
+            raise ValueError(f"Unknown mode {param.mode}")
 
-            # Extract structured data from query result
-            raw_data = query_result.raw_data or {}
-            raw_data["llm_response"] = {
-                "content": query_result.content
-                if not query_result.is_streaming
-                else None,
-                "response_iterator": query_result.response_iterator
-                if query_result.is_streaming
-                else None,
-                "is_streaming": query_result.is_streaming,
-                "llm_generated": query_result.llm_generated,
-            }
+        await self._query_done()
 
-            return raw_data
-
-        except Exception as e:
-            logger.error(f"Query failed: {e}")
-            # Return error response
+        # A result without raw_data is the canned fail_response that
+        # kg_query and naive_query return before any retrieval runs (e.g.
+        # no keywords could be extracted); report it like an empty result,
+        # the same way aquery_data does.
+        if query_result is None or not query_result.raw_data:
             return {
                 "status": "failure",
-                "message": f"Query failed: {str(e)}",
+                "message": "Query returned no results",
                 "data": {},
-                "metadata": {},
+                "metadata": {
+                    "failure_reason": "no_results",
+                    "mode": param.mode,
+                },
                 "llm_response": {
-                    "content": None,
+                    "content": PROMPTS["fail_response"],
                     "response_iterator": None,
                     "is_streaming": False,
+                    # Canned text: no answering LLM was invoked.
                     "llm_generated": False,
                 },
             }
+
+        # Extract structured data from query result
+        raw_data = query_result.raw_data
+        raw_data["llm_response"] = {
+            "content": query_result.content if not query_result.is_streaming else None,
+            "response_iterator": query_result.response_iterator
+            if query_result.is_streaming
+            else None,
+            "is_streaming": query_result.is_streaming,
+            "llm_generated": query_result.llm_generated,
+        }
+
+        return raw_data
 
     def query_llm(
         self,
@@ -6070,6 +6147,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             dict[str, Any]: Same complete response format as aquery_llm.
+
+        Raises:
+            Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
         return _run_sync(
             lambda: self.aquery_llm(query, param, system_prompt),

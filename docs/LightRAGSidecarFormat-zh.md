@@ -136,6 +136,8 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录——图片字节未落地时（外链未下载 / 下载失败）为空串 `""`；`src` 是原文档中的原始引用（远程 URL、外链 target） |
 | `<equation id="eq-…" format="latex" caption="…">…</equation>` | 公式占位 | 行内公式同样用 `<equation format="latex">` 但**不**带 `id`，不会进 sidecar； 仅块公式（独占一行或多行）时携带 `id` |
 
+`format="json"` 的包体里不会出现 `</table>` 这段文字（不区分大小写）：它被写成带 JSON 转义的 `<\/table>`，`json.loads` 读回来仍是 `</table>`。否则单元格里含这段文字时标签会被提前截断，因为所有读取方都把起始标签之后的第一个 `</table>` 当作结束标签。单元格里的其他内容不做任何改写，`<sup>…</sup>`、`<equation>…</equation>` 等内部标记保持原样。把行重新序列化进 `<table>` 标签的代码（表格切分、裁剪）必须保持这一性质，LightRAG 内统一使用 `lightrag.table_markup.dumps_json_table_body`。`tables.json` 的 `content` 字段不是标签包体，按原样存储、不做该转义。
+
 在实体关系抽取的时候喂给大模型的文本会把 `id / path / src` 等内部属性剥掉，但为保留键属性（`format / caption`）。目的是避免抽取出文章不可见的实体，给抽取结果注入过多的噪声。
 
 ### 3.4 blockid 与 chunk sidecar.refs 的对应
@@ -392,7 +394,7 @@ charspan: 内容从标定段落的m个字符开始到底n个字符结束（可�
 | `status` | 触发场景 | 字段说明 |
 |---|---|---|
 | `success` | 模型成功返回合法 JSON 且必需字段齐全 | 图形：`name / type / description`；表格：`name / description`；公式：`name / description / equation` |
-| `skipped` | 期跳过多模态分析：图片格式不支持、像素 < `VLM_MIN_IMAGE_PIXEL`（默认 32px）、大于 `VLM_MAX_IMAGE_BYTES`（默认 5 MB）、未启用VLM | `message` 写跳过原因 |
+| `skipped` | 分析被跳过：图片文件不存在或引用被拒绝（位于文档目录之外或格式错误）、图片格式不支持、任一边长 < `VLM_MIN_IMAGE_PIXEL`（默认 64px）、图片大于 `VLM_MAX_IMAGE_BYTES`（默认 5 MB），或表格 item 内容为空 | `message` 写跳过原因 |
 | `failure` | 必需字段缺失、JSON 修复后仍不合法、VLM/EXTRACT role 未配置而对应模态被启用、模型调用异常 | `message` 写诊断 |
 
 补充：

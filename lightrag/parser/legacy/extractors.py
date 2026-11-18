@@ -1,10 +1,12 @@
 """Legacy text extractors (moved from the API layer).
 
 ``extract_text`` dispatches on file suffix: binary office/pdf formats use the
-dedicated ``_extract_*`` helpers; everything else is decoded as UTF-8 text
-with the same validation (empty / binary-looking / non-UTF-8) the API upload
-path used to enforce — now raised as :class:`LegacyExtractionError` so a bad
-file fails the parse stage instead of silently yielding an empty document.
+dedicated ``_extract_*`` helpers; everything else is decoded as text (UTF-8,
+or UTF-16 / UTF-32 with a byte order mark; see
+:mod:`lightrag.parser.text_decoding`) with the same validation (empty /
+binary-looking / undecodable) the API upload path used to enforce — now
+raised as :class:`LegacyExtractionError` so a bad file fails the parse stage
+instead of silently yielding an empty document.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from io import BytesIO
 from itertools import zip_longest
+
+from lightrag.parser.text_decoding import TextDecodeError, decode_text_bytes
 
 
 class LegacyExtractionError(ValueError):
@@ -411,14 +415,11 @@ _ZIP_OFFICE_SUFFIXES = frozenset({"docx", "pptx", "xlsx"})
 
 
 def _decode_text(file_bytes: bytes) -> str:
-    """UTF-8 decode with the upload-path validation, raised on failure."""
+    """Decode via ``decode_text_bytes`` and validate the text, raised on failure."""
     try:
-        content = file_bytes.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise LegacyExtractionError(
-            "File is not valid UTF-8 encoded text. Please convert it to "
-            f"UTF-8 before processing: {e}"
-        ) from e
+        content = decode_text_bytes(file_bytes)
+    except TextDecodeError as e:
+        raise LegacyExtractionError(str(e)) from e
     if not content or len(content.strip()) == 0:
         raise LegacyExtractionError("File contains no content or only whitespace")
     if content.startswith("b'") or content.startswith('b"'):

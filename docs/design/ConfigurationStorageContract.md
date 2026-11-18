@@ -1245,6 +1245,7 @@ rebuild the target's vectors
 -> verify: nothing retained (has_pending_index_ops(include_deletes=True))
 -> record THAT target's baseline (record_embedding_baseline)
 -> flush the configuration storage
+-> clear the workspace out of that target's other-model containers
 ```
 
 - A rebuild of `entities` updates `embedding/entities` and nothing else.
@@ -1256,6 +1257,12 @@ rebuild the target's vectors
 - A failed rebuild advances nothing. A rebuild whose baseline record fails
   makes the **tool exit non-zero**; the stale record keeps refusing, and a
   re-run converges.
+- **Other models' containers are cleared last, and only then.** Until the
+  record moves, the previous model's container is what a failed rebuild
+  falls back to. Afterwards the server refuses that model, so the container
+  is a leftover. A failure of this step is reported and does not fail the
+  rebuild: nothing was deleted from the configuration, and the next rebuild
+  or workspace clear sweeps again.
 - The tool bypasses the mismatch refusal only for the targets it rebuilds.
   Its sources (the graph and `text_chunks`) open through the strict path.
 
@@ -1275,6 +1282,11 @@ drop every data storage of the workspace
 
 - If **any** drop fails, all three records stay. A partial drop never
   deletes the records "for the parts that dropped".
+- **A vector storage's drop covers every embedding model's container**
+  (`BaseVectorStorage.drop_all_models()`), and a container of another model
+  that could not be cleared is a failed drop like any other. Its vectors are
+  exactly what a start with no record would adopt. See *Workspace clear and
+  sibling model containers* in `docs/design/VectorSpaceProvenance.md`.
 - **A cancelled drop is a drop that did not happen.** The drop results are
   classified on `BaseException`, because `asyncio.gather(...,
   return_exceptions=True)` returns a `CancelledError` *object*.

@@ -8,6 +8,7 @@ policy.
 
 from __future__ import annotations
 
+import codecs
 import io
 import zipfile
 from pathlib import Path
@@ -24,6 +25,7 @@ from lightrag.parser.markdown.parser import (
     _pin_socket,
     _unwrap_embedded_ipv4,
 )
+from lightrag.parser.text_decoding import TextDecodeError
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
@@ -578,3 +580,50 @@ def test_remote_image_private_host_blocked(monkeypatch):
     (drawing,) = meta["md_drawings"].values()
     assert drawing["kind"] == "external"
     assert warnings.get("images_download_failed") == 1
+
+
+_MD_TEXT = "# 标题\n\n正文 body\n"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        codecs.BOM_UTF8 + _MD_TEXT.encode("utf-8"),
+        codecs.BOM_UTF16_LE + _MD_TEXT.encode("utf-16-le"),
+        codecs.BOM_UTF16_BE + _MD_TEXT.encode("utf-16-be"),
+    ],
+    ids=["utf-8-bom", "utf-16-le", "utf-16-be"],
+)
+def test_md_bom_encodings_are_decoded(tmp_path: Path, data: bytes):
+    source = tmp_path / "note.md"
+    source.write_bytes(data)
+    blocks, _, _ = _make_parser().extract(
+        source, parsed_dir=tmp_path / "p", asset_dir=tmp_path / "a", base_name="note"
+    )
+    assert blocks[0]["heading"] == "标题"
+    assert blocks[0]["content"] == _MD_TEXT.strip()
+
+
+def test_md_decode_failure_has_the_legacy_message(tmp_path: Path):
+    source = tmp_path / "note.md"
+    source.write_bytes("中文".encode("gbk"))
+    with pytest.raises(TextDecodeError) as exc_info:
+        _make_parser().extract(
+            source,
+            parsed_dir=tmp_path / "p",
+            asset_dir=tmp_path / "a",
+            base_name="note",
+        )
+    message = str(exc_info.value)
+    assert message.startswith("File is not valid UTF-8 encoded text")
+    assert "Please convert it to UTF-8 before processing" in message
+
+
+def test_textpack_utf16_text_is_decoded(tmp_path: Path):
+    pack = tmp_path / "note.textpack"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("text.markdown", codecs.BOM_UTF16_LE + _MD_TEXT.encode("utf-16-le"))
+    blocks, _, _ = _make_parser().extract(
+        pack, parsed_dir=tmp_path / "p", asset_dir=tmp_path / "a", base_name="note"
+    )
+    assert blocks[0]["content"] == _MD_TEXT.strip()

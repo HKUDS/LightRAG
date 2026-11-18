@@ -4,7 +4,6 @@ ABOUTME: Parses DOCX documents into text blocks using python-docx
 ABOUTME: Extracts automatic numbering, splits by headings, converts tables to JSON
 """
 
-import json
 import sys
 from dataclasses import dataclass
 
@@ -24,8 +23,10 @@ from lightrag.parser._markdown import (
     render_heading_line,
     strip_heading_markdown_prefix,
 )
+from lightrag.table_markup import dumps_json_table_body
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
+from .ooxml import is_on
 from .content_controls import (
     in_bibliography,
     is_bibliography_table,
@@ -477,16 +478,23 @@ def extract_text_from_run(
         tag = child.tag.split("}")[-1]  # Remove namespace
         if tag == "t" and child.text:
             text += child.text
-        elif tag == "tab":
+        elif tag in ("tab", "ptab"):
+            # w:ptab is an absolute position tab, e.g. the one that moves a
+            # footer's page number to the right margin.
             text += "\t"
-        elif tag == "br":
-            # Handle line breaks - textWrapping or no type = soft line break
+        elif tag in ("br", "cr"):
+            # Handle line breaks - textWrapping or no type = soft line break.
+            # A w:cr (carriage return) has no type and breaks the line too.
             br_type = child.get(
                 "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type"
             )
             if br_type in (None, "textWrapping"):
                 text += "\n"
             # Skip page and column breaks (layout elements)
+        elif tag == "noBreakHyphen":
+            # A hyphen Word keeps on one line with its neighbours (COVID-19);
+            # written as a plain hyphen so the word reads as typed.
+            text += "-"
         elif tag == "drawing":
             text += extract_drawing_placeholder_from_element(
                 child,
@@ -782,12 +790,7 @@ def _read_document_records(
                 pPr = element.find(f"{w_ns}pPr")
                 if pPr is not None:
                     pbb = pPr.find(f"{w_ns}pageBreakBefore")
-                    # OOXML on/off: absent val means on.
-                    if pbb is not None and pbb.get(f"{w_ns}val") not in (
-                        "0",
-                        "false",
-                        "none",
-                    ):
+                    if pbb is not None and is_on(pbb):
                         rec.page_break_before = True
                     if pPr.find(f"{w_ns}sectPr") is not None:
                         # Section boundary on a blank paragraph: same
@@ -935,8 +938,10 @@ def _read_document_records(
                     parse_warnings.get("missing_paraid_count", 0) + 1
                 )
 
-            # Convert table to JSON
-            table_json = json.dumps(table_rows, ensure_ascii=False)
+            # Convert table to JSON. The shared encoder keeps a cell holding
+            # the text "</table>" from ending the <table> tag that the IR
+            # builder later matches non-greedily.
+            table_json = dumps_json_table_body(table_rows)
 
             # Extract cross-page repeating header rows (w:tblHeader) once per
             # table so we can surface them to the sidecar via the block-level

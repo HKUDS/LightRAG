@@ -21,6 +21,7 @@ from lightrag.constants import (
     DEFAULT_NATIVE_DOCX_IMAGE_MAX_BYTES,
     DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES,
 )
+from lightrag.sidecar.writer import safe_asset_filename
 from lightrag.utils import get_env_value, logger, safe_log_value
 
 try:
@@ -164,8 +165,12 @@ class DrawingExtractionContext:
                 self._record_image_budget_skip(rel.part_name, declared_size)
                 return None
 
+            # Name the file exactly as the sidecar writer would: it looks
+            # pre-extracted assets up by this name and refuses one it would
+            # have to rename (a trailing dot or a control character in the
+            # ZIP part name would otherwise point it at the wrong file).
             filename = self._available_filename(
-                PurePosixPath(rel.part_name).name or "image"
+                safe_asset_filename(PurePosixPath(rel.part_name).name or "image")
             )
             output_file = self.export_dir_path / filename
 

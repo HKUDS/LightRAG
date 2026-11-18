@@ -187,9 +187,9 @@ class HeadingDecision:
 def _record_weight(rec: Any) -> int:
     """Char weight for FS_base statistics.
 
-    Prefers the visible source-text count (w:t only) so auto-numbering labels
-    and ``<sup>``/``<equation>``/``<drawing>``/``<table>`` placeholder markup
-    never skew the body-size mode. Falls back to the stripped assembly text
+    Prefers the visible source-text count (source run text only) so
+    auto-numbering labels and ``<sup>``/``<equation>``/``<drawing>``/``<table>``
+    placeholder markup never skew the body-size mode. Falls back to the stripped assembly text
     when the count was not computed (manually built records / smart-off)."""
     vc = getattr(rec, "visible_char_count", None)
     if vc is not None:

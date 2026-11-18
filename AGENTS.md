@@ -189,10 +189,10 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 
 - Use mock-based tests for external services (Redis, httpx, etc.) — do not depend on live services in unit tests.
 - Add regression tests for every bug fix.
-- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~7800 offline tests: about 5 minutes serially, ~70 s with `-n auto` on an 8-core machine — still too slow for the edit loop. Every PR's CI runs the full offline suite (plus `tests/setup/` and, with the real RAGAS stack, `tests/evaluation/` when their inputs change) — proving nothing else broke is its job, not yours.
+- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~11500 offline tests: about 5 minutes serially, ~70 s with `-n auto` on an 8-core machine — still too slow for the edit loop. Every PR's CI runs the full offline suite (plus `tests/setup/` and, with the real RAGAS stack, `tests/evaluation/` when their inputs change) — proving nothing else broke is its job, not yours.
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - **`tests/setup/` is the setup wizard's suite and runs only when a wizard input changed**: `scripts/setup/**`, `env.example`, `docker-compose*.yml`, `Makefile`, or `tests/setup/` itself. It never imports `lightrag`, so a `lightrag/` change never needs it. `norecursedirs` in `pyproject.toml` already skips it in every recursive run (`pytest`, `pytest tests`, the full suite, CI's main job); run it by naming it: `./scripts/test.sh tests/setup`. The easy one to miss is `env.example`: adding a config knob for `lightrag` usually edits it, and the wizard parses it, so that change runs `tests/setup/` too.
-- Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits). **Run it with `-n auto --dist worksteal`** (pytest-xdist, in the `pytest` extra): on an 8-core machine it cuts ~5 min to ~1 min. CI stays serial because hosted 4-vCPU runners showed no gain. Do not add `-n` to subset runs: every worker re-collects and re-imports the suite (~12 s), which costs more than a single directory saves. Drop `-n` when you need `pdb`/`-s` or ordered output.
+- Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits). **Run it with `-n auto --dist worksteal`** (pytest-xdist, in the `pytest` extra): on an 8-core machine it cuts ~5 min to ~1 min. CI does not use `-n` because hosted 4-vCPU runners showed no gain; it splits the suite by directory into parallel shard jobs instead (`.github/workflows/tests.yml`, where the shard lists live). Do not add `-n` to subset runs: every worker re-collects and re-imports the suite (~12 s), which costs more than a single directory saves. Drop `-n` when you need `pdb`/`-s` or ordered output.
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above and *React component tests* below.
 - **Capturing `lightrag` logs in tests:** the `lightrag` logger sets `propagate = False`, and pytest < 9.1 attaches caplog's handler to the root logger only, so a bare `caplog` captures nothing from it there. The supported floor is `pytest>=8.4.2`, and the lock file's newer pytest hides the failure. Use the `lightrag_caplog` fixture (`tests/conftest.py`) when you need caplog's API, `lightrag_log_records` when you only count or inspect records, or `capture_lightrag_logs` (`tests/_log_capture.py`) inside a helper that receives `caplog`. Never set `propagate = True` in a test: on pytest >= 9.1 every record is then captured twice.
 - **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun install --frozen-lockfile` (see *WebUI* above — skip it after a branch switch and every later step fails on missing modules), then `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
@@ -206,7 +206,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 # Run specific test file
 ./scripts/test.sh tests/kg/test_graph_storage.py
 
-# Full suite — ~7800 offline tests; milestones and cross-cutting changes only.
+# Full suite — ~11500 offline tests; milestones and cross-cutting changes only.
 # Parallel via pytest-xdist: ~70 s on 8 cores (vs ~5 min serial).
 # tests/setup is skipped by default (norecursedirs); name it explicitly when
 # scripts/setup/, env.example, docker-compose*.yml or Makefile change.
@@ -229,6 +229,16 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - Markers (registered in `[tool.pytest.ini_options]` in `pyproject.toml`): `offline`, `integration`, `requires_db`, `requires_api`, `pg_smoke`. Integration tests are skipped by default via `-m "not integration"`; opt in with `--run-integration`.
 - **Every test must carry one of those five markers**, usually a module-level `pytestmark = pytest.mark.offline`. CI selects with `-m offline`, so an unmarked test is deselected without a trace; `tests/conftest.py` therefore fails any unmarked test at setup with the fix in the message. In a file mixing offline and service-backed cases, mark per test or per `pytest.param` instead of per module.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
+
+#### Writing backend tests
+
+**Full guide: [docs/design/BackendTestingGuide.md](docs/design/BackendTestingGuide.md) — read it before writing or refactoring a test under `tests/`.**
+
+- **Every test asserts an observable outcome**, including what a no-op leaves unchanged. Pin only what a docstring, contract or sibling test promises, and prove that an injected fault actually fired.
+- **Expected exceptions go through `pytest.raises`**, never `try/except`. Never wrap the call under test in `except Exception: pass`.
+- **A fake that must never be called records the call as well as raising**: a broad `except Exception` in the code under test swallows `AssertionError`.
+- **Concurrent workers must surface their exceptions** (`ThreadPoolExecutor.map`, `future.result()`, `asyncio.gather`/`TaskGroup`), with `max_workers` at least the `Barrier` parties and a `Barrier` timeout.
+- **Cases are `@pytest.mark.parametrize`, not a `for` loop**, unless the repetition is the behavior. Reduce large values before comparing them so the failure names the case.
 
 #### React component tests
 
@@ -416,5 +426,5 @@ These apply to every review finding, automated reviews included.
 ## Commit and Pull Request Guidance
 
 - If this repo is a fork of `HKUDS/LightRAG`. Target to `HKUDS/LightRAG` when creating PRs, not the fork's own repo.
-- PR descriptions should include: summary, motivation, linked issues if applyed, what's changed, what's broken and how it works.
+- PR descriptions should include: summary, motivation, linked issues if applied, what's changed, what's broken and how it works.
 - Write commit messages (subject and body) in English. Commit messages are repository artifacts — like code comments and log messages — not conversational replies, so they follow the English code-style rule above regardless of any per-conversation working language.

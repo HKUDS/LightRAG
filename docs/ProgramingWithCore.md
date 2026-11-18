@@ -86,12 +86,14 @@ Notes:
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
 | **embedding_batch_num** | `int` | Maximum batch size for embedding processes (multiple texts sent per batch) | `32` |
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
+| **default_embedding_timeout** | `int` | Embedding request timeout in seconds. It sizes the embedding queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the client's request timeout: the bundled embedding bindings (`openai_embed`, `azure_openai_embed`, `ollama_embed`, `gemini_embed`, `bedrock_embed`, `jina_embed`, `voyageai_embed`, `zhipu_embedding`, `nvidia_openai_embed`, `lollms_embed`) read it during the call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `embedding_func` as an argument; one that builds its own client can read it with `lightrag.utils.embedding_timeout()`. A binding's own positive `timeout` argument takes precedence, and a `timeout` in `openai_embed`'s `client_configs` outranks the LightRAG value. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and the client keeps its SDK default (or the `client_configs` timeout, if one is set). | `30` (configured by env var EMBEDDING_TIMEOUT) |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Base maximum LLM concurrency; also caps per-document chunk extraction tasks, while each entity/relation merge phase uses twice this task limit | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias; `EXTRACT_MAX_ASYNC_LLM` can independently limit actual Extract-role requests) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
+| **default_llm_timeout** | `int` | Base LLM request timeout in seconds. A role uses it unless its `RoleLLMConfig(timeout=...)` is set. The role's effective timeout sizes its queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the provider client's request timeout: the bundled `*_complete` provider wrappers read it during the role call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `llm_model_func` as an argument; one that calls a provider's `*_if_cache` function directly can apply it with `lightrag.llm_roles.apply_llm_timeout(kwargs)`. A `timeout` in `llm_model_kwargs`, in the role's kwargs or in `openai_client_configs` takes precedence. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and each provider client keeps its SDK default (for example 600 s for OpenAI, 60 s for Bedrock through botocore). | `240` (configured by env var LLM_TIMEOUT) |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
@@ -110,7 +112,7 @@ Notes:
 | `language` | Non-empty string. Defaults to `SUMMARY_LANGUAGE`, then `English`. | Output language used in entity and relationship extraction, entity/relation summaries, keyword extraction, and multimodal analysis prompts. |
 | `entity_type_prompt_file` | `.yml` or `.yaml` file name only. Loaded from `${PROMPT_DIR:-./prompts}/entity_type`. | Loads an entity extraction prompt profile. The profile can define `entity_types_guidance`, `entity_extraction_examples`, and `entity_extraction_json_examples`. The active extraction mode must have matching examples: text mode needs `entity_extraction_examples`; JSON mode needs `entity_extraction_json_examples`. |
 | `entity_types_guidance` | Non-empty string. | Inline entity type guidance injected into extraction prompts. This overrides both the prompt profile file and the built-in default guidance. |
-| `chunker` | Dict with F/R/V/P chunking settings (the `C` selector reuses the `fixed_token` sub-dictionary). | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
+| `chunker` | Dict with F/R/V/P chunking settings; `C` selects a custom chunker callback and reuses the `fixed_token` sub-dictionary for its fallback. | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
 
 Compact `chunker` shape:
 
@@ -302,6 +304,17 @@ class QueryParam:
 
 > The default value of `top_k` can be changed by the environment variable `TOP_K`.
 
+For graph query modes (`local`, `global`, `hybrid`, `mix`), `max_total_tokens`
+also caps the graph context when the entity and relationship limits are larger.
+Whole records are retained in ranking order before selecting their source chunks;
+the final check includes the rendered system prompt, user query, chunk references,
+and configured user instructions. If the required prompt and query alone cannot
+fit, the query returns no result without calling the answer model. Graph records
+are filled before chunks: when they use up the budget, no chunk is sent, the answer
+relies on the graph context alone, and a "Token budget left no room" warning is
+logged. Conversation history and provider-specific message framing are outside
+this context budget.
+
 
 ## LLM and Embedding Injection
 
@@ -475,6 +488,23 @@ async def initialize_rag():
     return rag
 ```
 
+**Embedding batch sizes:** `llama_index_embed` calls the model's public
+`aget_text_embedding_batch`, so the model's `embed_batch_size` and
+`embeddings_cache` apply. The two batch sizes stack:
+
+- LightRAG's `embedding_batch_num` (`EMBEDDING_BATCH_NUM`) sets how many texts
+  one `embedding_func` call hands to the adapter, and `embedding_func_max_async`
+  (`EMBEDDING_FUNC_MAX_ASYNC`) caps how many of those calls run at once.
+- The model's `embed_batch_size` (LlamaIndex default: 10) splits each call into
+  sub-batches of at most that many texts, one embedding request each, and
+  LlamaIndex sends a call's sub-batches concurrently. Up to
+  `embedding_func_max_async × ceil(embedding_batch_num / embed_batch_size)`
+  requests can therefore be in flight; with `EMBEDDING_BATCH_NUM=32` and the
+  default `embed_batch_size`, each call becomes four concurrent requests.
+- Set `embed_batch_size` to the provider's per-request input limit. To keep one
+  request per call, set `embed_batch_size >= embedding_batch_num`; to lower the
+  overall request concurrency, lower `embedding_func_max_async`.
+
 **Further reading:**
 - [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)
 - [Direct OpenAI Example](../examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
@@ -540,26 +570,30 @@ async def llm_model_func(
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model_name="gemini-2.0-flash",
+        model_name="gemini-flash-latest",
         **kwargs
     )
 
+# send_dimensions=True makes LightRAG pass embedding_dim to the wrapper, which
+# must accept it and forward it so Gemini returns vectors of that size.
 @wrap_embedding_func_with_attrs(
     embedding_dim=768,
+    send_dimensions=True,
     max_token_size=2048,
-    model_name="models/text-embedding-004"
+    model_name="gemini-embedding-001"
 )
-async def embedding_func(texts: list[str]) -> np.ndarray:
+async def embedding_func(texts: list[str], embedding_dim: int | None = None) -> np.ndarray:
     return await gemini_embed.func(
         texts,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model="models/text-embedding-004"
+        model="gemini-embedding-001",
+        embedding_dim=embedding_dim
     )
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
-    llm_model_name="gemini-2.0-flash",
+    llm_model_name="gemini-flash-latest",
     embedding_func=embedding_func
 )
 ```
@@ -616,6 +650,8 @@ To enhance retrieval quality, documents can be re-ranked based on a more effecti
 - **Aliyun**: `ali_rerank`
 
 Inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. For detailed usage, refer to `examples/rerank_example.py`.
+
+`default_rerank_timeout` (env var `RERANK_TIMEOUT`, default `30`) sizes the rerank queue the same way `default_embedding_timeout` sizes the embedding queue, and these three functions use it as their HTTP session's total timeout per attempt; a timed-out attempt is retried. A `timeout` argument passed to the function takes precedence, a custom `rerank_model_func` can read the value with `lightrag.utils.rerank_timeout()`, and `0` (or a negative value) keeps aiohttp's session default (300 s).
 
 ### Injecting a Custom Tokenizer
 
@@ -765,7 +801,10 @@ Contract:
   repeating the same call resumes the operation (roll-forward belongs to the
   SDK caller), while `/documents/scan` — through
   `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
-  assume a failed custom-chunk call left no recoverable state.
+  assume a failed custom-chunk call left no recoverable state. A chunk over
+  the embedding function's `max_token_size` is refused before any of this
+  (`ChunkTokenLimitExceededError`, nothing written), on every call, so a retry
+  after the limit was lowered is refused too and only the scan can clear it.
 - **A stateful validator keeps its identity.** A bound method or callable object
   that accumulates an audit log sees its own instance, not a per-document copy.
   As with a custom tokenizer, however, `LightRAG` builds its internal config
@@ -864,7 +903,7 @@ unchanged, so existing cache entries keep hitting.
 
 ## Storage Backends
 
-### Sotrage Types
+### Storage Types
 
 LightRAG uses 4 types of storage for different purposes:
 
@@ -1327,9 +1366,9 @@ rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 
 ```python
 rag = LightRAG(..)
-await rag.apipeline_enqueue_documents(input)
+await rag.apipeline_enqueue_documents(["TEXT1", "TEXT2"])
 # Your routine in loop
-await rag.apipeline_process_enqueue_documents(input)
+await rag.apipeline_process_enqueue_documents()
 ```
 
 * Insert Multi-file Type Support
@@ -1892,13 +1931,15 @@ What remains, and why it is tolerated:
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
 
-A workspace-wide admin lock was specified and dropped: it would not have changed
-what a crash can leave behind, since the same residue is reachable with no
-concurrency at all. If you drive the public Python admin API yourself
-(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
-their relation counterparts) **do not call them concurrently on a file-backed
-workspace** — one at a time, or use a server-backed graph and KV store.
-`ainsert_custom_kg` is subject to the same rule.
+Serializing admin writers would not remove any of these: they are what a crash
+can leave behind, and the same residue is reachable with no concurrency at all.
+Concurrency is handled separately and per storage: when the graph backend
+declares `requires_single_writer` (`NetworkXStorage`, the only one), public admin
+graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
+lock plus the pipeline `busy` reservation. Other graph backends do not take that
+gate and rely on the per-entity keyed locks. See
+[Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
+and recovery behavior.
 
 #### Repairing chunk tracking
 

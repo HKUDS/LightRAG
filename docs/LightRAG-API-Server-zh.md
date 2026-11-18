@@ -20,10 +20,10 @@ LIGHTRAG_PARSER=*:legacy-F
 
 - `ENTITY_TYPES` 已不再支持。请改用 `ENTITY_TYPE_PROMPT_FILE`，并把 YAML profile 放在 `PROMPT_DIR/entity_type` 下（`PROMPT_DIR` 默认是 `./prompts`）。参考模板位于 `prompts/samples/entity_type_prompt.sample.yml`。
 - 如果使用 OpenSearch 存储且集群版本低于 OpenSearch 3.3.0，请先升级 OpenSearch，再启用 v1.5 存储路径并校验已有索引。新部署建议使用 OpenSearch 3.3.0 或更高版本。
-- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请清空受影响的 LightRAG workspace/向量数据并重新索引源文件。
+- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请停止服务器，并使用新的 embedding 配置运行 `lightrag-rebuild-vdb`，从知识图谱和文本块重建向量，详见[切换 Embedding 模型](ProgramingWithCore.md#switching-embedding-models)。不要清空 workspace 或数据目录：那会删除重建所依赖的图谱和文本块。
 - 修改解析器路由（`LIGHTRAG_PARSER`）或文件名 hint 只影响新上传文件。若要把已有文档切换到另一个解析引擎，请先删除该文档再重新上传。
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
-- 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
+- 启用多模态选项（`i/t/e`）需要已有解析 sidecar；`VLM_PROCESS_ENABLE=true` 仅控制图片分析，表格和公式使用 `EXTRACT` role。已有文档可通过重新处理分析可用 sidecar；切换解析引擎仍需要删除并重新上传。
 
 ## 升级到有界请求体
 
@@ -390,7 +390,7 @@ MINERU_MODEL_VERSION=vlm
 MINERU_IS_OCR=false
 ```
 
-该路由会优先对支持的 DOCX 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。`i`、`t`、`e` 选项会在解析器产出对应 sidecar 时，对图片、表格和公式运行 VLM 分析。
+该路由会对支持的 DOCX、Markdown 和 textpack 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。解析器产出对应 sidecar 时，`i`、`t`、`e` 分别启用图片、表格和公式分析；图片分析使用 VLM，表格和公式使用 `EXTRACT` role。
 
 使用 official 模式时，Docker 不需要访问宿主机上的 MinerU 回环地址；容器只需要能够访问 `MINERU_OFFICIAL_ENDPOINT`。
 
@@ -804,13 +804,13 @@ lightrag-server --embedding-binding gemini --help
 设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：`LLM_TIMEOUT * llm_output_tokens/second`（例如 `240s * 50 tokens/s = 12000`，此时 max_tokens 应小于 12000）。
 
 ```
-# For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
+# For vLLM/SGLang deployed models, or most of OpenAI compatible API provider
 OPENAI_LLM_MAX_TOKENS=9000
 
-# For Ollama Deployed Modeles
+# For Ollama Deployed Models
 OLLAMA_LLM_NUM_PREDICT=9000
 
-# For OpenAI o1-mini or newer modles
+# For OpenAI o1-mini or newer models
 OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 ```
 
@@ -823,7 +823,7 @@ OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 | `EXTRACT` | 实体/关系抽取以及实体/关系描述合并摘要 |
 | `KEYWORD` | 查询检索前的关键词生成 |
 | `QUERY` | 最终回答、bypass 查询以及 Ollama 兼容聊天响应 |
-| `VLM` | 图片、表格、公式等 sidecar 项目的多模态分析 |
+| `VLM` | 对符合条件的 sidecar 图片/绘图进行分析 |
 
 如果某个角色未单独配置，会继承基础 `LLM_*` 设置。同 provider 的最小示例：
 
@@ -1218,7 +1218,7 @@ LIGHTRAG_PARSER=pdf:mineru-R,docx:native-ietP,*:legacy-R
 | 引擎 | 用途 |
 | --- | --- |
 | `legacy` | 原有抽取行为，适合兼容旧部署和简单文本类文件。 |
-| `native` | 内置结构化解析器，目前重点支持 `.docx` 和 LightRAG Document sidecar。 |
+| `native` | 内置结构化解析器，支持 `.docx`、`.md` 和 `.textpack`，并产出 LightRAG Document sidecar。 |
 | `mineru` | 外部 MinerU 解析器，适用于 PDF、Office 文件和图片。需要配置 `MINERU_API_MODE` 以及 `MINERU_LOCAL_ENDPOINT` 或 `MINERU_API_TOKEN`。 |
 | `docling` | 外部 docling-serve 解析器，适用于 PDF、Office 文件、Markdown/HTML 和图片。需要配置 `DOCLING_ENDPOINT`。 |
 
@@ -1239,15 +1239,16 @@ notes.[-R].md
 | 选项 | 含义 |
 | --- | --- |
 | `i` | 对存在的图片/绘图 sidecar 运行 VLM 分析 |
-| `t` | 对存在的表格 sidecar 运行 VLM 分析 |
-| `e` | 对存在的公式 sidecar 运行 VLM 分析 |
+| `t` | 对存在的表格 sidecar 使用 `EXTRACT` role 分析 |
+| `e` | 对存在的公式 sidecar 使用 `EXTRACT` role 分析 |
 | `!` | 跳过实体/关系抽取和图写入；仍会保存 chunk 向量 |
 | `F` | 固定 token 分块，即 legacy 分块方式 |
 | `R` | 递归字符分块，支持可配置分隔符级联 |
 | `V` | 语义向量分块；超长 chunk 会再用 `R` 切分 |
 | `P` | 面向结构化 LightRAG Document 内容的段落语义分块；缺少结构化内容时自动回退到 `R` |
+| `C` | 自定义 chunker 回调；未配置回调时使用 fixed-token fallback |
 
-每个文件最多选择 `F`、`R`、`V`、`P` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
+每个文件最多选择 `F`、`R`、`V`、`P`、`C` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
 
 `V` 策略的句子切分正则是唯一不能按请求设置的 chunker 参数：只能通过 `CHUNK_V_SENTENCE_SPLIT_REGEX`（或 SDK 的 `addon_params`）修改。`/documents/text` 和 `/documents/texts` 会拒绝 `chunking.params` 中的 `sentence_split_regex` 键并返回 HTTP 422。调用方提供的正则会应用于同一请求的文本，而 CPython 正则引擎在回溯时会持有 GIL，因此 `(a+)+$` 之类的模式可能冻结整个 worker 进程——参见 [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84)。文档 `chunk_options` 快照中已经保存的该值也会在处理时被丢弃（并以 `WARNING` 级别记录日志），因此旧版本持久化的模式不会在升级后冻结 worker。
 
