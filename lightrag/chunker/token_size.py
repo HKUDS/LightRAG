@@ -326,6 +326,9 @@ def chunking_by_token_size(
                                 span,
                             )
                         )
+                        # Same stop rule as the fixed-window loop below.
+                        if end_token >= len(_tokens):
+                            break
                 else:
                     span = (
                         _source_span(content, chunk_start, chunk_end)
@@ -382,6 +385,12 @@ def chunking_by_token_size(
                     emit_source_span=_emit_source_span,
                 )
             )
+            # Once a window reaches the last token, every later start falls
+            # inside this window's overlap, so those windows would only repeat
+            # its tail: no new text, but each still costs an extraction call
+            # and an embedding.
+            if end >= len(tokens):
+                break
     return results
 
 
