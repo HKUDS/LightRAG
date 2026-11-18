@@ -14,6 +14,7 @@ pytest.importorskip(
 
 from lightrag.tools.clean_llm_query_cache import CleanupStats, CleanupTool
 from lightrag.tools.migrate_llm_cache import MigrationTool
+from lightrag.utils import parse_cache_key
 
 pytestmark = pytest.mark.offline
 
@@ -30,6 +31,20 @@ class FakeOpenSearchStorage:
 
     async def delete(self, ids):
         self.deleted_batches.append(list(ids))
+
+    async def delete_by_cache_types(self, cache_types):
+        """Stand-in for the storage method the tool now delegates to; the real
+        one is pinned in test_opensearch_storage.py."""
+        self.deleted_cache_types = set(cache_types)
+        doomed = [
+            hit["_id"]
+            for batch in self._batches
+            for hit in batch
+            if (parsed := parse_cache_key(hit["_id"])) is not None
+            and parsed[1] in cache_types
+        ]
+        await self.delete(doomed)
+        return len(doomed)
 
 
 def _flatten(batches):
@@ -64,10 +79,11 @@ class TestCleanupToolOpenSearch:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("cleanup_type", "expected_ids"),
+        ("cleanup_type", "expected_types", "expected_ids"),
         [
             (
                 "all",
+                {"query", "keywords"},
                 [
                     "mix:query:1",
                     "mix:keywords:1",
@@ -75,13 +91,17 @@ class TestCleanupToolOpenSearch:
                     "local:keywords:1",
                 ],
             ),
-            ("query", ["mix:query:1", "global:query:1"]),
-            ("keywords", ["mix:keywords:1", "local:keywords:1"]),
+            ("query", {"query"}, ["mix:query:1", "global:query:1"]),
+            ("keywords", {"keywords"}, ["mix:keywords:1", "local:keywords:1"]),
         ],
     )
-    async def test_delete_query_caches_opensearch(self, cleanup_type, expected_ids):
+    async def test_delete_query_caches_opensearch(
+        self, cleanup_type, expected_types, expected_ids
+    ):
+        """The tool delegates to ``delete_by_cache_types`` -- the one
+        implementation the server route shares -- and never names an extract
+        type."""
         tool = CleanupTool()
-        tool.batch_size = 2
         storage = FakeOpenSearchStorage(
             [
                 [
@@ -101,10 +121,11 @@ class TestCleanupToolOpenSearch:
             storage, "OpenSearchKVStorage", cleanup_type, stats
         )
 
+        assert storage.deleted_cache_types == expected_types
         assert _flatten(storage.deleted_batches) == expected_ids
-        assert all(len(batch) <= 2 for batch in storage.deleted_batches)
         assert stats.successfully_deleted == len(expected_ids)
-        assert stats.successful_batches == len(storage.deleted_batches)
+        assert stats.successful_batches == 1
+        assert not stats.errors
 
     def test_check_config_ini_for_storage_opensearch(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

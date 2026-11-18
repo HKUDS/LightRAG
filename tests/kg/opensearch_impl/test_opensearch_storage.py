@@ -1028,6 +1028,91 @@ class TestKVStorageBatching:
             assert s._pending_kv_deletes == {"gone-1"}
 
     @pytest.mark.asyncio
+    async def test_delete_by_cache_types_buffers_and_never_flushes(
+        self, global_config, embed_func, mock_client
+    ):
+        """The delete must land with the caller's ORDERED commit, not its own.
+
+        A flush here would publish this process's whole buffer -- extract rows
+        whose chunk references are not committed yet included -- outside the
+        ``text_chunks`` -> ``llm_response_cache`` pair. So matching rows on the
+        server and in the upsert buffer become tombstones, the buffered
+        extract rows stay exactly as they were, and nothing reaches the client.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert(
+                {
+                    "default:extract:buffered": {"return": "e"},
+                    "mix:query:buffered": {"return": "fresh answer"},
+                }
+            )
+            await s.delete(["earlier-tombstone"])
+
+            async def _server_rows(batch_size=1000):
+                yield [
+                    {"_id": "local:query:a"},
+                    {"_id": "hybrid:keywords:b"},
+                    {"_id": "default:extract:c"},
+                ]
+                yield [{"_id": "naive:query:d"}, {"_id": "not-a-cache-key"}]
+
+            s._iter_raw_docs = _server_rows
+            mock_client.bulk.reset_mock()
+
+            deleted = await s.delete_by_cache_types({"query", "keywords"})
+
+            assert deleted == 4
+            assert set(s._pending_upserts) == {"default:extract:buffered"}
+            assert s._pending_kv_deletes == {
+                "earlier-tombstone",
+                "local:query:a",
+                "hybrid:keywords:b",
+                "naive:query:d",
+                "mix:query:buffered",
+            }
+            mock_client.bulk.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_by_cache_types_sees_a_row_flushed_during_the_scan(
+        self, global_config, embed_func, mock_client
+    ):
+        """A query row buffered when the call starts, then flushed by another
+        query's commit after the scan's point-in-time opened, is on neither
+        side of a scan-then-buffer read. Reading the buffer first catches it."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"mix:query:inflight": {"return": "stale answer"}})
+
+            async def _scan_that_races_a_flush(batch_size=1000):
+                # The concurrent flush lands now: the row leaves the buffer,
+                # and the scan's frozen view predates it on the server.
+                s._pending_upserts.pop("mix:query:inflight", None)
+                yield [{"_id": "local:query:a"}]
+
+            s._iter_raw_docs = _scan_that_races_a_flush
+
+            deleted = await s.delete_by_cache_types({"query"})
+
+            assert deleted == 2
+            assert s._pending_kv_deletes == {"mix:query:inflight", "local:query:a"}
+
+    @pytest.mark.asyncio
+    async def test_delete_by_cache_types_with_no_types_touches_nothing(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"mix:query:q": {"return": "x"}})
+
+            assert await s.delete_by_cache_types(set()) == 0
+            assert set(s._pending_upserts) == {"mix:query:q"}
+            assert not s._pending_kv_deletes
+
+    @pytest.mark.asyncio
     async def test_has_pending_index_ops_reports_retained_upserts_only(
         self, global_config, embed_func, mock_client
     ):

@@ -322,17 +322,27 @@ processed, clear the relevant cache explicitly. Which one depends on what you tu
 
 - **Query tuning** (retrieval or answer-generation options). Only the query-mode cache
   entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) have to go, and they
-  can go on their own:
+  can go on their own. On a running server:
+
+  ```bash
+  curl -X DELETE "http://localhost:9621/documents/query_cache"
+  # only the answers, keeping the extracted query keywords:
+  curl -X DELETE "http://localhost:9621/documents/query_cache?cache_type=query"
+  ```
+
+  With the server stopped, the offline tool does the same:
 
   ```bash
   python -m lightrag.tools.clean_llm_query_cache
   ```
 
-  The tool is workspace-aware and leaves the extraction cache untouched, so nothing you
-  already paid to extract is re-billed. It requires the LightRAG Server to be shut down
-  first (it asks) — a running server holds the same namespace in memory and would
-  republish it over the tool's work. While experimenting, `ENABLE_LLM_CACHE=false`
-  bypasses the cache instead of clearing it.
+  Both are workspace-aware and leave the extraction cache untouched, so nothing you
+  already paid to extract is re-billed. The route is safe while documents are being
+  ingested. The tool requires the LightRAG Server to be shut down first (it asks) — a
+  running server holds the same namespace in memory and would republish it over the
+  tool's work. The same route also refreshes answers that went stale after new
+  documents were ingested. While experimenting, `ENABLE_LLM_CACHE=false` bypasses the
+  cache instead of clearing it.
 
 - **Extraction tuning** (options that change entity/relation extraction). The extraction
   cache has to go for the affected content, and both supported ways take the documents
