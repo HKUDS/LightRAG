@@ -153,6 +153,7 @@
         "parse": "Розбір",
         "analyze": "Аналіз",
         "process": "Обробка",
+        "deleting": "Видалення",
         "failed": "Невдало"
       },
       "status": {
@@ -163,6 +164,7 @@
         "analyzing": "Аналіз",
         "processing": "Обробка",
         "pending": "Очікування",
+        "deleting": "Видалення",
         "failed": "Невдало"
       },
       "errors": {

@@ -143,7 +143,7 @@ class DoclingIRBuilder:
         # Heading stack + current block accumulator — identical structure
         # to MinerUIRBuilder so downstream P-chunking and provenance behave
         # the same way regardless of engine.
-        heading_stack: list[str] = []
+        heading_stack: list[tuple[int, str]] = []
         cb_lines: list[str] = []
         cb_tables: list[IRTable] = []
         cb_drawings: list[IRDrawing] = []
@@ -346,7 +346,7 @@ class DoclingIRBuilder:
                 _append_text(line)
 
         def _handle_text(item: dict) -> None:
-            nonlocal doc_title, heading_stack
+            nonlocal doc_title
             label = str(item.get("label") or "").lower()
             text = _text_of(item).strip()
 
@@ -354,9 +354,10 @@ class DoclingIRBuilder:
             heading_level = _docling_heading_level(label, item)
             if heading_level > 0 and text:
                 clean_heading = strip_heading_markdown_prefix(text)
-                heading_stack = heading_stack[: max(heading_level - 1, 0)]
-                parents = [h for h in heading_stack if h]
-                heading_stack.append(clean_heading)
+                while heading_stack and heading_stack[-1][0] >= heading_level:
+                    heading_stack.pop()
+                parents = [h for _, h in heading_stack if h]
+                heading_stack.append((heading_level, clean_heading))
                 # Every recognized heading starts its own block: flush the
                 # in-flight block (body or bare heading) and open a fresh one.
                 # A heading with no following body becomes a standalone block

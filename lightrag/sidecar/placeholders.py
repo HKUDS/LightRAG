@@ -13,7 +13,12 @@ import json
 import re
 from typing import Callable
 
-_TOKEN_RE = re.compile(r"\{\{(TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}")
+from lightrag.table_markup import escape_json_table_body
+
+# Group 1 is the token kind, group 2 the placeholder key. Adapters that must
+# keep generated keys clear of author-written tokens scan with this same
+# pattern, so a token the writer would expand is always one they reserve.
+PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{(TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}")
 
 
 def xml_attr_escape(value: str) -> str:
@@ -42,7 +47,13 @@ def render_table_tag(table_id: str, fmt: str, body: str) -> str:
     ``body`` is the table content; for ``json`` it is the JSON array, for
     ``html`` it is the raw ``<table>...</table>`` HTML inside (the outer
     wrapper is added here).
+
+    A ``json`` body is passed through ``escape_json_table_body`` here, so no
+    adapter can emit a cell text ``</table>`` that ends the tag early —
+    whether the body was encoded from ``rows`` or supplied verbatim.
     """
+    if fmt == "json":
+        body = escape_json_table_body(body)
     return (
         f'<table id="{xml_attr_escape(table_id)}" '
         f'format="{xml_attr_escape(fmt)}">{body}</table>'
@@ -109,7 +120,7 @@ def render_template(
             return equation_renderer(key)
         return inline_equation_renderer(key)
 
-    return _TOKEN_RE.sub(_replace, template)
+    return PLACEHOLDER_TOKEN_RE.sub(_replace, template)
 
 
 def table_body_for_rows(rows: list[list[str]]) -> str:

@@ -667,6 +667,11 @@ def test_split_does_not_emit_single_character_spans():
         (("D" * 200 + "s" * 8000) * 8, 2048),  # alternating blocks
         ("s" * 100000 + "D" * 5000, 8192),  # long, and sparse for most of it
     ],
+    # Explicit ids: the auto-generated ones embed the whole parametrised
+    # string, and pytest writes the node id into PYTEST_CURRENT_TEST. A
+    # 105 000-character env value exceeds the Windows 32,767-character cap,
+    # so the case errors in setup/teardown before the test body runs.
+    ids=["sparse_head", "dense_head", "alternating_blocks", "long_sparse"],
 )
 def test_probe_count_stays_logarithmic_on_heterogeneous_input(
     content, budget, tokenizer_factory
