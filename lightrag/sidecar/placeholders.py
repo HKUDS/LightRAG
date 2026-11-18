@@ -15,7 +15,10 @@ from typing import Callable
 
 from lightrag.table_markup import escape_json_table_body
 
-_TOKEN_RE = re.compile(r"\{\{(TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}")
+# Group 1 is the token kind, group 2 the placeholder key. Adapters that must
+# keep generated keys clear of author-written tokens scan with this same
+# pattern, so a token the writer would expand is always one they reserve.
+PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{(TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}")
 
 
 def xml_attr_escape(value: str) -> str:
@@ -117,7 +120,7 @@ def render_template(
             return equation_renderer(key)
         return inline_equation_renderer(key)
 
-    return _TOKEN_RE.sub(_replace, template)
+    return PLACEHOLDER_TOKEN_RE.sub(_replace, template)
 
 
 def table_body_for_rows(rows: list[list[str]]) -> str:

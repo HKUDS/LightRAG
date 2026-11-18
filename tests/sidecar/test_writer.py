@@ -45,6 +45,26 @@ def _load_jsonl(path: Path) -> tuple[dict, list[dict]]:
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("kind", ["TBL", "IMG", "EQ", "EQI"])
+def test_writer_preserves_undeclared_source_tokens(tmp_path: Path, kind: str) -> None:
+    content = f"Source example: {{{{{kind}:author_key}}}}"
+    ir = IRDoc(
+        document_name="literal.md",
+        document_format="md",
+        doc_title="literal",
+        split_option={},
+        blocks=[IRBlock(content_template=content)],
+    )
+    parsed = tmp_path / "literal.parsed"
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-literal", engine="native")
+    _, rows = _load_jsonl(parsed / "literal.blocks.jsonl")
+    assert rows[0]["content"] == content
+    assert not any(parsed.glob("*.tables.json"))
+    assert not any(parsed.glob("*.drawings.json"))
+    assert not any(parsed.glob("*.equations.json"))
+
+
+@pytest.mark.offline
 def test_writer_empty_doc_emits_only_blocks_jsonl(tmp_path: Path) -> None:
     """Document with no blocks: only the meta line, no per-modality JSONs,
     no assets dir."""
