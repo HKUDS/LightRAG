@@ -122,3 +122,20 @@ def test_model_container_name_is_the_table_that_model_would_attach_to():
     assert (
         _storage([]).model_container_name("Model-A", 1536) == other.table_name.lower()
     )
+
+
+async def test_siblings_are_found_by_search_path_visibility_not_one_schema():
+    """Every other statement names these tables unqualified, so they resolve
+    through the whole search path. ``current_schema()`` is only its FIRST
+    schema: with a ``"$user"`` schema or AGE's ``ag_catalog`` ahead of
+    ``public`` it is not where the tables are, the listing comes back empty,
+    and a sibling that was never looked at is reported as a clean sweep.
+    Checked against a real PostgreSQL for the PR; this pins the predicate."""
+    storage = _storage([])
+
+    await storage.drop_sibling_models()
+
+    sql = storage.db.query.call_args.args[0]
+    assert "pg_table_is_visible" in sql
+    assert "current_schema" not in sql
+    assert "information_schema" not in sql

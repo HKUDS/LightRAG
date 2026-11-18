@@ -6010,8 +6010,8 @@ class PGVectorStorage(BaseVectorStorage):
     ) -> dict[str, str]:
         """Delete this workspace's rows from every other model's table.
 
-        A sibling is a table named ``{base}_{model}_{dim}d`` in the current
-        schema, other than ``table_name``, that has both a ``workspace`` and a
+        A sibling is a table named ``{base}_{model}_{dim}d`` visible on the
+        search path, other than ``table_name``, that has both a ``workspace`` and a
         ``content_vector`` column -- the shape ``_pg_create_table`` gives it --
         so an unrelated table that happens to share the prefix is left alone.
         Rows are removed with the same workspace-scoped DELETE as ``drop()``;
@@ -6025,23 +6025,32 @@ class PGVectorStorage(BaseVectorStorage):
         migrate back on the next start.
         """
         try:
+            # Visibility, not a schema name: ``pg_table_is_visible`` resolves
+            # exactly as the unqualified names in every other statement here
+            # do (and as ``check_table_exists``'s ``to_regclass``).
+            # ``current_schema()`` is only the FIRST schema on the search
+            # path, which is not where the tables are once another schema
+            # precedes ``public`` -- a ``"$user"`` schema, or ``ag_catalog``
+            # on a connection AGE configured -- and a sibling this query
+            # misses is reported as a clean sweep.
             rows = await self.db.query(
                 """
-                SELECT t.table_name
-                FROM information_schema.tables t
-                WHERE t.table_schema = current_schema()
-                  AND t.table_name LIKE $1
-                  AND t.table_name <> $2
+                SELECT c.relname AS table_name
+                FROM pg_catalog.pg_class c
+                WHERE c.relkind IN ('r', 'p')
+                  AND pg_catalog.pg_table_is_visible(c.oid)
+                  AND c.relname LIKE $1
+                  AND c.relname <> $2
                   AND EXISTS (
-                      SELECT 1 FROM information_schema.columns c
-                      WHERE c.table_schema = t.table_schema
-                        AND c.table_name = t.table_name
-                        AND c.column_name = 'workspace')
+                      SELECT 1 FROM pg_catalog.pg_attribute a
+                      WHERE a.attrelid = c.oid
+                        AND a.attname = 'workspace'
+                        AND NOT a.attisdropped)
                   AND EXISTS (
-                      SELECT 1 FROM information_schema.columns c
-                      WHERE c.table_schema = t.table_schema
-                        AND c.table_name = t.table_name
-                        AND c.column_name = 'content_vector')
+                      SELECT 1 FROM pg_catalog.pg_attribute a
+                      WHERE a.attrelid = c.oid
+                        AND a.attname = 'content_vector'
+                        AND NOT a.attisdropped)
                 """,
                 [self.legacy_table_name.lower() + "\\_%", self.table_name.lower()],
                 multirows=True,

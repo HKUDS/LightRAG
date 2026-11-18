@@ -972,7 +972,7 @@ Siblings are selected by evidence, never by name pattern alone:
 | backend | sibling | evidence | removal |
 | --- | --- | --- | --- |
 | Qdrant | `lightrag_vdb_{ns}_*_{dim}d` | indexes `workspace_id` | this workspace's points |
-| PostgreSQL | `{base}_*_{dim}d` | has `workspace` and `content_vector` columns | this workspace's rows |
+| PostgreSQL | `{base}_*_{dim}d`, visible on the search path | has `workspace` and `content_vector` columns | this workspace's rows |
 | Milvus | `{workspace}_{ns}_*_{dim}d`, with its `_old` / `_temp` backups | schema description carries `[lightrag:workspace=..;namespace=..]`, or the caller vouches for the name | whole collections |
 
 Qdrant and PostgreSQL containers are shared across workspaces, so the removal
