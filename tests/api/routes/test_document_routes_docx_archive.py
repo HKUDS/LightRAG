@@ -1,5 +1,8 @@
+import asyncio
 import importlib
+import io
 import sys
+import threading
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -1418,7 +1421,6 @@ async def test_upload_write_failure_cleans_up_partial_file_and_returns_500(
 async def test_incomplete_upload_is_removed_and_can_be_retried(
     tmp_path, monkeypatch, failure
 ):
-    import asyncio
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         initialize_pipeline_status,
@@ -1487,9 +1489,6 @@ async def test_upload_cancellation_waits_for_inflight_file_io(
     tmp_path, monkeypatch, stage
 ):
     """Cancel while a real aiofiles executor thread owns the output file."""
-    import asyncio
-    import io
-    import threading
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         initialize_pipeline_status,
@@ -1550,8 +1549,11 @@ async def test_upload_cancellation_waits_for_inflight_file_io(
         assert status["pending_enqueues"] == 1
     finally:
         release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as cancelled:
         await asyncio.wait_for(task, 5)
+    # The write settled after the cancel was requested, but the file it wrote
+    # was removed: the cancellation must not claim a durable write.
+    assert not _utils.cancellation_was_deferred(cancelled.value)
     # In the broken open path the executor can finish after the cancelled
     # endpoint returned; wait for it before inspecting the resulting residue.
     await asyncio.to_thread(lambda: None)
@@ -1568,11 +1570,8 @@ async def test_upload_cancellation_waits_for_inflight_file_io(
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_upload_open_conflict_never_removes_another_writers_file(
-    tmp_path, monkeypatch, cancel
+    tmp_path, monkeypatch, cancel, lightrag_log_records
 ):
-    import asyncio
-    import threading
-
     monkeypatch.setattr(
         _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
     )
@@ -1614,6 +1613,11 @@ async def test_upload_open_conflict_never_removes_another_writers_file(
             await asyncio.wait_for(task, 5)
         assert excinfo.value.status_code == 409
     assert path.read_bytes() == b"other writer's complete report"
+    # Losing the name is the caller's ordinary conflict, cancelled or not --
+    # never reported as a server-side file IO failure.
+    assert [
+        r.getMessage() for r in lightrag_log_records if r.levelname == "ERROR"
+    ] == []
 
 
 async def test_upload_streaming_size_limit_removes_owned_file(tmp_path, monkeypatch):

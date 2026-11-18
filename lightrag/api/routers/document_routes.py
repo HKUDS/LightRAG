@@ -24,6 +24,7 @@ from lightrag.utils import (
     validate_workspace,
     _consume_future_exception,
     _wait_deferring_cancellation,
+    retract_cancellation_deferred,
 )
 import aiofiles
 import traceback
@@ -5553,6 +5554,13 @@ def create_document_routes(
             out_file = None
             pending_cancel = None
 
+            def is_name_conflict(error):
+                # The O_EXCL/O_NOFOLLOW refusal this opener exists to enforce:
+                # the name is already taken, or the path is a symlink.
+                return isinstance(error, OSError) and (
+                    isinstance(error, FileExistsError) or error.errno == errno.ELOOP
+                )
+
             async def settle_file_io(operation):
                 # Cancelling aiofiles does not stop its executor thread. Settle
                 # each operation before closing/unlinking or releasing admission.
@@ -5563,10 +5571,13 @@ def create_document_routes(
                     future, pending_cancel
                 )
                 if pending_cancel is not None:
-                    if not future.cancelled() and future.exception() is not None:
+                    io_error = None if future.cancelled() else future.exception()
+                    # A name conflict is the caller's ordinary 409, not a
+                    # server fault: the cancellation simply outranks it.
+                    if io_error is not None and not is_name_conflict(io_error):
                         logger.error(
                             f"File IO failed while cancelling upload {safe_filename}: "
-                            f"{future.exception()}"
+                            f"{io_error}"
                         )
                     raise pending_cancel
                 return future.result()
@@ -5610,12 +5621,8 @@ def create_document_routes(
 
             except BaseException as e:
                 if not opened:
-                    if isinstance(e, OSError) and (
-                        isinstance(e, FileExistsError) or e.errno == errno.ELOOP
-                    ):
-                        # The O_EXCL/O_NOFOLLOW conflict this opener exists to
-                        # enforce (name already taken, or refused to follow a
-                        # symlink). No file was created.
+                    if is_name_conflict(e):
+                        # No file was created.
                         raise HTTPException(
                             status_code=409,
                             detail=(
@@ -5636,6 +5643,11 @@ def create_document_routes(
                     logger.error(
                         f"Error cleaning up partially written file {safe_filename}: {cleanup_error}"
                     )
+                else:
+                    # A write that settled after the cancel was requested left
+                    # the cancellation stamped as "durable". The file is gone,
+                    # so the stamp must not travel on with it.
+                    retract_cancellation_deferred(e)
                 raise
 
             # Cleanup after file is closed
