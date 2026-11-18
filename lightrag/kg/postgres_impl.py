@@ -13,6 +13,7 @@ from typing import (
     Awaitable,
     Callable,
     ClassVar,
+    Collection,
     Sequence,
     TypeVar,
     Union,
@@ -97,6 +98,8 @@ T = TypeVar("T")
 
 # PostgreSQL identifier length limit (in bytes)
 PG_MAX_IDENTIFIER_LENGTH = 63
+# A model-suffixed vector table as the catalog reports it: ``..._{model}_{dim}d``.
+_MODEL_TABLE_RE = re.compile(r"[a-z0-9_]+_\d+d")
 
 # Flush-time batching limits shared by the PostgreSQL non-graph write paths
 # (PGKVStorage, PGVectorStorage, PGDocStatusStorage). Mirrors the MONGO_* /
@@ -5995,6 +5998,87 @@ class PGVectorStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Error dropping vector storage "
                 f"{self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        suffix = self._collection_suffix_for(model_name, embedding_dim)
+        return f"{self.legacy_table_name}_{suffix}".lower() if suffix else None
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
+        """Delete this workspace's rows from every other model's table.
+
+        A sibling is a table named ``{base}_{model}_{dim}d`` visible on the
+        search path, other than ``table_name``, that has both a ``workspace`` and a
+        ``content_vector`` column -- the shape ``_pg_create_table`` gives it --
+        so an unrelated table that happens to share the prefix is left alone.
+        Rows are removed with the same workspace-scoped DELETE as ``drop()``;
+        the tables stay, because they are shared with other workspaces. That
+        evidence is always present, so ``vouched`` is unused. Same
+        preconditions as ``drop()``.
+
+        ``_flush_lock`` is not taken: no instance buffers writes for a
+        sibling. The legacy table needs nothing here: ``drop()`` already
+        cleared this workspace out of it, so an emptied sibling has nothing to
+        migrate back on the next start.
+        """
+        try:
+            # Visibility, not a schema name: ``pg_table_is_visible`` resolves
+            # exactly as the unqualified names in every other statement here
+            # do (and as ``check_table_exists``'s ``to_regclass``).
+            # ``current_schema()`` is only the FIRST schema on the search
+            # path, which is not where the tables are once another schema
+            # precedes ``public`` -- a ``"$user"`` schema, or ``ag_catalog``
+            # on a connection AGE configured -- and a sibling this query
+            # misses is reported as a clean sweep.
+            rows = await self.db.query(
+                """
+                SELECT c.relname AS table_name
+                FROM pg_catalog.pg_class c
+                WHERE c.relkind IN ('r', 'p')
+                  AND pg_catalog.pg_table_is_visible(c.oid)
+                  AND c.relname LIKE $1
+                  AND c.relname <> $2
+                  AND EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_attribute a
+                      WHERE a.attrelid = c.oid
+                        AND a.attname = 'workspace'
+                        AND NOT a.attisdropped)
+                  AND EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_attribute a
+                      WHERE a.attrelid = c.oid
+                        AND a.attname = 'content_vector'
+                        AND NOT a.attisdropped)
+                """,
+                [self.legacy_table_name.lower() + "\\_%", self.table_name.lower()],
+                multirows=True,
+            )
+            cleared = []
+            prefix = self.legacy_table_name.lower() + "_"
+            for row in rows or []:
+                name = row["table_name"]
+                # LIKE treats the base name's own underscores as wildcards, and
+                # the name is formatted into SQL below: accept only the exact
+                # prefix and the identifier shape the suffix fold produces.
+                if not name.startswith(prefix) or not _MODEL_TABLE_RE.fullmatch(name):
+                    continue
+                sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=name
+                )
+                await self.db.execute(sql, {"workspace": self.workspace})
+                cleared.append(name)
+            if cleared:
+                logger.info(
+                    f"[{self.workspace}] Cleared workspace rows from sibling "
+                    f"model tables: {cleared}"
+                )
+            return {"status": "success", "message": "sibling models dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error clearing sibling model tables "
+                f"for {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
 

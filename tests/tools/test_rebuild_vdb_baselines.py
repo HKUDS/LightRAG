@@ -60,10 +60,22 @@ class _FakeVectorStorage:
     backend does: ``index_done_callback`` already returned, and whether anything
     is still buffered is a separate question only the storage can answer."""
 
-    def __init__(self, *, retained=False, answer_error=None):
+    def __init__(self, *, retained=False, answer_error=None, sibling_result=None):
         self.retained = retained
         self.answer_error = answer_error
         self.asked = 0
+        self.sibling_result = sibling_result or {"status": "success", "message": ""}
+        # One entry per ``drop_sibling_models`` call: what the tool vouched for.
+        self.sibling_sweeps: list[list[str]] = []
+
+    def model_container_name(self, model_name, embedding_dim):
+        return f"box_{model_name}_{embedding_dim}d"
+
+    async def drop_sibling_models(self, vouched=()):
+        self.sibling_sweeps.append(list(vouched))
+        if isinstance(self.sibling_result, BaseException):
+            raise self.sibling_result
+        return self.sibling_result
 
     async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         self.asked += 1
@@ -252,6 +264,90 @@ async def test_a_storage_that_retained_nothing_records_its_baseline(capsys):
     )
     assert stats["errors"] == []
     assert "baseline recorded" in capsys.readouterr().out
+
+
+async def test_a_recorded_baseline_sweeps_the_other_models_containers():
+    """Once the baseline moved, nothing can fall back to the previous model's
+    container, and the record that was just replaced names it exactly -- so
+    the tool vouches for that one container by name."""
+    config = _FakeConfigKV(
+        {cs.embedding_baseline_key("ws", "chunks"): _old_record("chunks")}
+    )
+    vdb = _FakeVectorStorage()
+    tool = _tool(config, vdbs={"chunks": vdb})
+
+    await tool.commit_baseline("chunks", _stats("chunks"))
+
+    assert vdb.sibling_sweeps == [["box_old-model_1024d"]]
+
+
+async def test_a_first_baseline_sweeps_without_vouching_for_anything():
+    """No previous record, no name to vouch for: the sweep still runs on the
+    backend's own evidence."""
+    vdb = _FakeVectorStorage()
+    tool = _tool(_FakeConfigKV(), vdbs={"chunks": vdb})
+
+    await tool.commit_baseline("chunks", _stats("chunks"))
+
+    assert vdb.sibling_sweeps == [[]]
+
+
+@pytest.mark.parametrize(
+    "vdb_kwargs, stats_errors, write_error",
+    [
+        pytest.param({}, [{"batch": 2, "records_lost": 5}], None, id="rebuild-errors"),
+        pytest.param({"retained": True}, [], None, id="retained-ops"),
+        pytest.param({}, [], RuntimeError("config down"), id="baseline-write-failed"),
+    ],
+)
+async def test_no_sweep_while_the_previous_container_is_still_the_fallback(
+    vdb_kwargs, stats_errors, write_error
+):
+    """A rebuild that did not move the baseline leaves the server on the
+    previous model, whose container is then live data, not a leftover."""
+    config = _FakeConfigKV(
+        {cs.embedding_baseline_key("ws", "chunks"): _old_record("chunks")},
+        write_error=write_error,
+    )
+    vdb = _FakeVectorStorage(**vdb_kwargs)
+    tool = _tool(config, vdbs={"chunks": vdb})
+
+    await tool.commit_baseline("chunks", _stats("chunks", errors=stats_errors))
+
+    assert vdb.sibling_sweeps == []
+    assert (
+        config.rows[cs.embedding_baseline_key("ws", "chunks")]["value"]["model"]
+        == "old-model"
+    )
+
+
+@pytest.mark.parametrize(
+    "sibling_result",
+    [
+        pytest.param({"status": "error", "message": "left a_chunks_x_8d"}, id="error"),
+        pytest.param(ConnectionError("left a_chunks_x_8d"), id="raises"),
+    ],
+)
+async def test_a_failed_sweep_is_reported_and_does_not_fail_the_rebuild(
+    sibling_result, capsys
+):
+    """The vectors and the baseline are in place; the leftover is cleared by
+    the next rebuild or workspace clear."""
+    config = _FakeConfigKV()
+    vdb = _FakeVectorStorage(sibling_result=sibling_result)
+    tool = _tool(config, vdbs={"chunks": vdb})
+    stats = _stats("chunks")
+
+    await tool.commit_baseline("chunks", stats)
+
+    assert vdb.sibling_sweeps == [[]], "the sweep did run"
+    assert stats["errors"] == []
+    assert (
+        config.rows[cs.embedding_baseline_key("ws", "chunks")]["value"]["model"]
+        == "new-model"
+    )
+    out = capsys.readouterr().out
+    assert "not all cleared" in out and "left a_chunks_x_8d" in out
 
 
 class TestTheToolIsASecondProcessTree:
