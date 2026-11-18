@@ -195,3 +195,38 @@ async def test_rejected_chunk_path_leaves_default_storages_clean_and_writable(
     finally:
         await rag.finalize_storages()
         finalize_share_data()
+
+
+@pytest.mark.asyncio
+async def test_one_shot_chunk_iterable_is_still_stored(tmp_path):
+    """The validation pass must not consume a generator the build reads again."""
+    finalize_share_data()
+    rag = _real_rag(tmp_path)
+    await rag.initialize_storages()
+    try:
+        contents = ["First chunk.", "Second chunk."]
+        await rag.ainsert_custom_kg(
+            {
+                "chunks": (
+                    {"content": c, "source_id": f"c{i}", "file_path": "a.txt"}
+                    for i, c in enumerate(contents)
+                ),
+                "entities": [
+                    {
+                        "entity_name": "Alpha",
+                        "description": "Linked to the second chunk.",
+                        "source_id": "c1",
+                    }
+                ],
+                "relationships": [],
+            }
+        )
+        ids = [compute_mdhash_id(c, prefix="chunk-") for c in contents]
+        stored = [await rag.text_chunks.get_by_id(i) is not None for i in ids]
+        assert stored == [True, True]
+        # The alias still resolves, so the entity names its real chunk.
+        node = await rag.chunk_entity_relation_graph.get_node("Alpha")
+        assert node["source_id"] == ids[1]
+    finally:
+        await rag.finalize_storages()
+        finalize_share_data()

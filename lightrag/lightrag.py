@@ -5206,7 +5206,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Validate and canonicalize the complete identifier set before
                 # chunks or graph objects are written. Copies keep the caller's
                 # custom_kg payload unchanged.
-                for index, chunk_data in enumerate(custom_kg.get("chunks", [])):
+                # Materialized once: the build below walks the chunks again,
+                # and a one-shot iterable would arrive there exhausted.
+                custom_chunks = list(custom_kg.get("chunks", []))
+                for index, chunk_data in enumerate(custom_chunks):
                     _validate_custom_kg_file_path(
                         chunk_data.get("file_path", "custom_kg"),
                         field=f"chunks[{index}].file_path",
@@ -5288,7 +5291,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline busy flag, so leaving the loop here would let it encode
                     concurrently with a document being chunked.
                     """
-                    for chunk_data in custom_kg.get("chunks", []):
+                    for chunk_data in custom_chunks:
                         chunk_content = sanitize_text_for_encoding(
                             chunk_data["content"]
                         )
