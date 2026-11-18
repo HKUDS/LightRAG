@@ -17,6 +17,11 @@ exercised for real:
 Vectors stay in ``NanoVectorDBStorage`` so the test runs on a plain postgres
 image without pgvector, like ``pg-smoke.yml``. The markers and the
 ``POSTGRES_PASSWORD`` guard follow ``tests/kg/pgtable_impl/test_pgtable_smoke.py``.
+
+Cleanup drops whole workspaces, so the test skips when ``POSTGRES_WORKSPACE``
+or ``config.ini``'s ``[postgres] workspace`` would remap the PG backends onto
+an existing workspace, and drops nothing unless every PG storage resolved to
+the test's own workspace.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ if not os.environ.get("POSTGRES_PASSWORD", ""):
 
 from lightrag import LightRAG  # noqa: E402
 from lightrag.base import DocStatus  # noqa: E402
+from lightrag.kg.postgres_impl import ClientManager  # noqa: E402
 from lightrag.kg.shared_storage import initialize_share_data  # noqa: E402
 from lightrag.utils import EmbeddingFunc, make_relation_chunk_key  # noqa: E402
 
@@ -63,11 +69,11 @@ async def _llm(*args, **kwargs) -> str:
     return ""
 
 
-async def _build_pg_rag(tmp_path) -> LightRAG:
+async def _build_pg_rag(tmp_path, workspace: str) -> LightRAG:
     initialize_share_data(workers=1)
     rag = LightRAG(
         working_dir=str(tmp_path / "wd"),
-        workspace=f"anchor_smoke_{uuid4().hex[:8]}",
+        workspace=workspace,
         kv_storage="PGKVStorage",
         doc_status_storage="PGDocStatusStorage",
         graph_storage="PGTableGraphStorage",
@@ -147,8 +153,9 @@ async def _seed_legacy_workspace(rag: LightRAG) -> None:
     await rag._insert_done()
 
 
-async def _drop_workspace(rag: LightRAG) -> None:
-    storages = [
+def _workspace_storages(rag: LightRAG) -> list:
+    """Every PG storage holding the test workspace's rows."""
+    return [
         rag.full_docs,
         rag.text_chunks,
         rag.full_entities,
@@ -159,8 +166,11 @@ async def _drop_workspace(rag: LightRAG) -> None:
         rag.doc_status,
         rag.chunk_entity_relation_graph,
     ]
+
+
+async def _drop_workspace(rag: LightRAG) -> None:
     errors = []
-    for storage in storages:
+    for storage in _workspace_storages(rag):
         result = await storage.drop()
         if result.get("status") != "success":
             errors.append((type(storage).__name__, storage.namespace, result))
@@ -169,7 +179,21 @@ async def _drop_workspace(rag: LightRAG) -> None:
 
 @pytest.mark.asyncio
 async def test_legacy_anchor_migration_then_delete_on_postgres(tmp_path):
-    rag = await _build_pg_rag(tmp_path)
+    # Same resolution the PG backends apply in initialize(): env, then config.ini.
+    if ClientManager.get_config()["workspace"]:
+        pytest.skip(
+            "POSTGRES_WORKSPACE / [postgres] workspace would remap the workspace "
+            "under test onto an existing one"
+        )
+    workspace = f"anchor_smoke_{uuid4().hex[:8]}"
+    rag = await _build_pg_rag(tmp_path, workspace)
+    resolved = {
+        type(storage).__name__ + "/" + storage.namespace: storage.workspace
+        for storage in _workspace_storages(rag)
+    }
+    if set(resolved.values()) != {workspace}:
+        await rag.finalize_storages()
+        pytest.fail(f"PG storages left workspace {workspace!r}: {resolved}")
     try:
         await _seed_legacy_workspace(rag)
         for doc, _ in _DOCS:
