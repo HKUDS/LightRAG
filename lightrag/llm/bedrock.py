@@ -23,7 +23,7 @@ from tenacity import (
 from collections.abc import AsyncIterator
 from typing import Any, Union
 
-from lightrag.llm_roles import accepts_llm_timeout
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -535,7 +535,6 @@ async def bedrock_complete_if_cache(
 
 
 # Generic Bedrock completion function
-@accepts_llm_timeout
 async def bedrock_complete(
     prompt,
     system_prompt=None,
@@ -544,15 +543,11 @@ async def bedrock_complete(
     entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     # Bedrock Converse API has no JSON mode; the shim booleans are absorbed
     # and forwarded so bedrock_complete_if_cache can emit DeprecationWarnings
     # with accurate stack frames.
-    global_config = kwargs["hashing_kv"].global_config
-    model_name = global_config["llm_model_name"]
-    # Through a role queue the role wrapper already passes the role's
-    # effective timeout (see @accepts_llm_timeout). A direct call that passes
-    # none still follows LightRAG's LLM timeout instead of botocore's 60s.
-    kwargs.setdefault("timeout", global_config.get("default_llm_timeout"))
+    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,

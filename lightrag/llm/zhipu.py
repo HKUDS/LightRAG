@@ -22,7 +22,7 @@ from tenacity import (
     retry_if_exception,
 )
 
-from lightrag.llm_roles import accepts_llm_timeout
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
@@ -235,7 +235,6 @@ async def zhipu_complete_if_cache(
     return content
 
 
-@accepts_llm_timeout
 async def zhipu_complete(
     prompt,
     system_prompt=None,
@@ -254,6 +253,7 @@ async def zhipu_complete(
       compatibility shims; when no explicit ``response_format`` is supplied,
       they are mapped to ``{"type": "json_object"}``.
     """
+    apply_llm_timeout(kwargs)
     # Pop legacy extraction flags from kwargs to avoid passing them downstream.
     keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)

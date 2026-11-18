@@ -1,4 +1,5 @@
 import importlib
+from functools import partial
 import os
 import sys
 from types import SimpleNamespace
@@ -548,16 +549,29 @@ async def test_bedrock_complete_inherits_default_llm_timeout(
         assert config.connect_timeout == expected_read_timeout
 
 
+async def _custom_bedrock_wrapper(prompt, **kwargs):
+    return await bedrock_complete(prompt, aws_region="us-east-1", **kwargs)
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "llm_model_func",
+    [
+        pytest.param(bedrock_complete, id="bedrock_complete"),
+        pytest.param(partial(bedrock_complete, aws_region="us-east-1"), id="partial"),
+        pytest.param(_custom_bedrock_wrapper, id="custom-wrapper"),
+    ],
+)
 async def test_bedrock_complete_uses_role_timeout_through_role_wrapper(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, llm_model_func
 ):
     """Each role's effective timeout must size its Bedrock client.
 
     An extract role at timeout=180 reaches the client as 180 rather than the
-    base 30s or botocore's 60s; a role without its own timeout gets the base
-    default_llm_timeout its queue is sized from.
+    base 30s or botocore's 60s, also when bedrock_complete sits behind a
+    partial or a custom function; a role without its own timeout gets the
+    base default_llm_timeout its queue is sized from.
     """
     import numpy as np
 
@@ -571,7 +585,7 @@ async def test_bedrock_complete_uses_role_timeout_through_role_wrapper(
 
     rag = LightRAG(
         working_dir=str(tmp_path / "bedrock-role-timeout"),
-        llm_model_func=bedrock_complete,
+        llm_model_func=llm_model_func,
         llm_model_name="bedrock-model",
         embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=512, func=_embed),
         default_llm_timeout=30,

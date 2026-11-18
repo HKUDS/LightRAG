@@ -67,7 +67,7 @@ from tenacity import (
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
-from lightrag.llm_roles import accepts_llm_timeout
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     VERBOSE_DEBUG,
     TruncatedResponse,
@@ -1009,7 +1009,6 @@ async def _handle_non_streaming(
         await _close_quietly(client)
 
 
-@accepts_llm_timeout
 async def openai_responses_complete(
     prompt: str,
     system_prompt: str | None = None,
@@ -1019,6 +1018,7 @@ async def openai_responses_complete(
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """LightRAG ``llm_model_func`` entry point for the Responses binding."""
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)

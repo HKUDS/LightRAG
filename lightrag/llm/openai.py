@@ -29,7 +29,7 @@ from tenacity import (
     retry_if_exception,
     retry_if_exception_type,
 )
-from lightrag.llm_roles import accepts_llm_timeout
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
@@ -1017,7 +1017,6 @@ async def openai_complete_if_cache(
             )
 
 
-@accepts_llm_timeout
 async def openai_complete(
     prompt,
     system_prompt=None,
@@ -1026,6 +1025,7 @@ async def openai_complete(
     entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     # Pop entity_extraction from kwargs if also passed there (avoid duplication)
@@ -1042,7 +1042,6 @@ async def openai_complete(
     )
 
 
-@accepts_llm_timeout
 async def gpt_4o_complete(
     prompt,
     system_prompt=None,
@@ -1052,6 +1051,7 @@ async def gpt_4o_complete(
     entity_extraction=False,
     **kwargs,
 ) -> str:
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
@@ -1067,7 +1067,6 @@ async def gpt_4o_complete(
     )
 
 
-@accepts_llm_timeout
 async def gpt_4o_mini_complete(
     prompt,
     system_prompt=None,
@@ -1077,6 +1076,7 @@ async def gpt_4o_mini_complete(
     entity_extraction=False,
     **kwargs,
 ) -> str:
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
@@ -1092,7 +1092,6 @@ async def gpt_4o_mini_complete(
     )
 
 
-@accepts_llm_timeout
 async def nvidia_openai_complete(
     prompt,
     system_prompt=None,
@@ -1102,6 +1101,7 @@ async def nvidia_openai_complete(
     entity_extraction=False,
     **kwargs,
 ) -> str:
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
@@ -1368,7 +1368,6 @@ async def azure_openai_complete_if_cache(
     )
 
 
-@accepts_llm_timeout
 async def azure_openai_complete(
     prompt,
     system_prompt=None,
@@ -1381,6 +1380,7 @@ async def azure_openai_complete(
 
     Provides backward compatibility for azure_openai_complete calls.
     """
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
