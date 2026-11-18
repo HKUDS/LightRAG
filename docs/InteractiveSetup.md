@@ -144,6 +144,7 @@ make env-storage
 
 **Important rule**
 
+- `PGGraphStorage` (Apache AGE) is deprecated. It is offered only when `.env` already selects it, so an existing deployment can keep it; it then stays the default, and the wizard-managed PostgreSQL service is generated with the AGE-enabled image. Everyone else is offered `PGTableGraphStorage`, the PostgreSQL graph storage that needs no extension, and gets the official pgvector image. To move an existing deployment to `PGTableGraphStorage` without indexing the documents again, stop LightRAG and run `python -m lightrag.tools.migrate_graph_storage --apply` while the AGE-enabled PostgreSQL is still running, then choose `PGTableGraphStorage`.
 - `MongoVectorDBStorage` requires Atlas Search / Vector Search support.
 - If you choose the wizard-managed Docker MongoDB service, the wizard now provisions MongoDB Atlas Local, so `MongoVectorDBStorage` can run against the local Docker deployment. The generated host-side `MONGO_URI` uses `?directConnection=true`.
 - If you do not use the wizard-managed Docker MongoDB service, provide an external Atlas-capable MongoDB endpoint for `MONGO_URI`, such as a `mongodb+srv://` Atlas cluster URI or an Atlas Local `mongodb://...?...directConnection=true` URI.

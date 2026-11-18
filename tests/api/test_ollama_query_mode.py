@@ -1,9 +1,9 @@
 """parse_query_mode must honor the mode prefix in the bracket user-prompt form.
 
-The bracket branch rebuilds the query as ``/{mode} {rest}``. The mode table it
-is matched against uses space-suffixed keys, so dropping that separator (or
-emitting a bare ``/`` when no mode was given) silently downgraded the search
-mode to the default and leaked the prefix into the retrieval query text.
+The bracket branch rebuilds the query as ``/{mode} {rest}``. A mode key only
+matches at a word boundary, so dropping that separator (or emitting a bare ``/``
+when no mode was given) silently downgraded the search mode to the default and
+leaked the prefix into the retrieval query text.
 """
 
 import importlib
@@ -40,8 +40,8 @@ pytestmark = pytest.mark.offline
             ("tell me about X", SearchMode.mix, False, "use mermaid"),
         ),
         ("/[use mermaid]", ("", SearchMode.mix, False, "use mermaid")),
-        # Context modes use unsuffixed keys, so they never depended on the
-        # separator — pin them so the fix does not regress them.
+        # Context modes never depended on the separator — pin them so the fix
+        # does not regress them.
         (
             "/localcontext[use mermaid] tell me about X",
             ("tell me about X", SearchMode.local, True, "use mermaid"),
@@ -84,7 +84,7 @@ def test_bracket_prompt_keeps_multiline_query(query, expected):
 
 @pytest.mark.parametrize("mode_prefix", ["local", "global", "naive", "hybrid", "mix"])
 def test_bracket_prompt_without_query_keeps_mode(mode_prefix):
-    """Every space-suffixed mode key survives an empty trailing query."""
+    """Every plain mode key survives an empty trailing query."""
     cleaned, mode, only_need_context, user_prompt = parse_query_mode(
         f"/{mode_prefix}[be brief]"
     )
@@ -98,8 +98,8 @@ def test_bracket_prompt_without_query_keeps_mode(mode_prefix):
     "query,expected",
     [
         # An English word starting with "context" must pass through as an
-        # unknown mode, exactly like "/nosuchmode": the unsuffixed "/context"
-        # key swallowed it, truncating the retrieval text and silently
+        # unknown mode, exactly like "/nosuchmode": the "/context" key
+        # swallowed it, truncating the retrieval text and silently
         # flipping the query to context-only retrieval.
         (
             "/contextualize the following passage",
@@ -109,7 +109,7 @@ def test_bracket_prompt_without_query_keeps_mode(mode_prefix):
             "/contexts in which k8s is used",
             ("/contexts in which k8s is used", SearchMode.mix, False, None),
         ),
-        # The legitimate unsuffixed forms keep matching: trailing space ...
+        # The legitimate forms keep matching: trailing space ...
         (
             "/context how does docker networking work",
             ("how does docker networking work", SearchMode.mix, True, None),
@@ -120,8 +120,8 @@ def test_bracket_prompt_without_query_keeps_mode(mode_prefix):
         ("/localcontext foo", ("foo", SearchMode.local, True, None)),
     ],
 )
-def test_unsuffixed_context_keys_end_at_a_word_boundary(query, expected):
-    """An unsuffixed mode key must not prefix-match a longer word.
+def test_context_keys_end_at_a_word_boundary(query, expected):
+    """A context mode key must not prefix-match a longer word.
 
     Without a boundary check, "/context" also prefixes "/contextualize" and
     "/contexts": the matched fragment is cut out of the retrieval query text
@@ -129,3 +129,52 @@ def test_unsuffixed_context_keys_end_at_a_word_boundary(query, expected):
     the user never asked for.
     """
     assert parse_query_mode(query) == expected
+
+
+_PLAIN_MODES = [
+    ("local", SearchMode.local),
+    ("global", SearchMode.global_),
+    ("naive", SearchMode.naive),
+    ("hybrid", SearchMode.hybrid),
+    ("mix", SearchMode.mix),
+    ("bypass", SearchMode.bypass),
+]
+
+
+@pytest.mark.parametrize("mode_prefix,mode", _PLAIN_MODES)
+@pytest.mark.parametrize("separator", ["\n", "\r\n", "\t", "\n\n  "])
+def test_mode_key_accepts_any_whitespace_separator(mode_prefix, mode, separator):
+    """A newline after the prefix selects the mode, as it does for "/context".
+
+    Only a literal space used to match, so a "/bypass" message continued on the
+    next line went through RAG retrieval as a mix query, with the prefix left in
+    the retrieval text.
+    """
+    assert parse_query_mode(f"/{mode_prefix}{separator}line one\nline two") == (
+        "line one\nline two",
+        mode,
+        False,
+        None,
+    )
+
+
+@pytest.mark.parametrize("mode_prefix,mode", _PLAIN_MODES)
+def test_bare_mode_key_is_consumed(mode_prefix, mode):
+    """A mode key at the end of the query is a prefix, not the question."""
+    assert parse_query_mode(f"/{mode_prefix}") == ("", mode, False, None)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "/localize the failing test",
+        "/globally unique identifiers",
+        "/naively retry the request",
+        "/hybrids of both approaches",
+        "/mixture of experts",
+        "/bypassing the proxy",
+    ],
+)
+def test_mode_keys_end_at_a_word_boundary(query):
+    """A longer word that starts with a mode key stays an ordinary query."""
+    assert parse_query_mode(query) == (query, SearchMode.mix, False, None)

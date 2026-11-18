@@ -193,6 +193,11 @@ def _build_generation_config(
         if schema is not None and "response_json_schema" not in config_data:
             config_data["response_json_schema"] = schema
 
+    if "safety_settings" in config_data:
+        config_data["safety_settings"] = _normalize_gemini_safety_settings(
+            config_data["safety_settings"]
+        )
+
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
         key: value
@@ -226,6 +231,30 @@ def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
         return response_format
 
     return response_format
+
+
+def _normalize_gemini_safety_settings(safety_settings: Any) -> Any:
+    """Convert a category-to-threshold mapping to the SDK's native list shape.
+
+    ``GeminiLLMOptions.safety_settings`` is documented and typed as a plain
+    JSON object (e.g. ``{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}``), but
+    ``types.GenerateContentConfig.safety_settings`` only accepts a list of
+    ``{"category": ..., "threshold": ...}`` entries and rejects a bare dict.
+    A value that is already a list (the SDK's own shape) passes through
+    unchanged, and a single SDK entry (a dict with a ``category`` key) is
+    wrapped in a list rather than read as a mapping. No harm category is
+    named ``category``, so the two dict shapes cannot collide.
+    """
+    if not isinstance(safety_settings, dict):
+        return safety_settings
+
+    if "category" in safety_settings:
+        return [safety_settings]
+
+    return [
+        {"category": category, "threshold": threshold}
+        for category, threshold in safety_settings.items()
+    ]
 
 
 def _validate_gemini_response_format(response_format: Any | None) -> None:
