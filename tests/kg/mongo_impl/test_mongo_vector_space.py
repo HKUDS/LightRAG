@@ -497,3 +497,62 @@ async def test_a_denied_collmod_on_an_unmarked_collection_still_serves(mongo):
 
     assert result["status"] == "success"
     assert mongo.validator_of() is None
+
+
+# ---------------------------------------------------------------------------
+# Adoption: the evidence-carrying backfill the attach path refuses to do
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unmarked_collection_reports_adoption_pending(mongo):
+    """The state ``test_attaching_is_not_a_backfill`` leaves behind. Someone
+    has to end that silence, and it is the probe one layer up."""
+    mongo.seed_collection(validator=None, index_dim=8)
+    storage = await _initialize(_storage(_Embed("bge-m3", 8)), mongo)
+
+    assert await storage.vector_space_adoption_pending() is True
+
+
+@pytest.mark.asyncio
+async def test_a_marked_collection_reports_nothing_pending(mongo):
+    storage = await _initialize(_storage(_Embed("bge-m3", 8)), mongo)
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_a_process_with_no_model_has_nothing_to_adopt(mongo):
+    """Pending must mean someone can act on it: a process that cannot name its
+    own model would invite a probe whose result nobody can record."""
+    mongo.seed_collection(validator=None, index_dim=8)
+    storage = await _initialize(_storage(_Embed(None, 8)), mongo)
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_adoption_records_the_marker_and_ends_the_silence(mongo):
+    mongo.seed_collection(validator=None, index_dim=8)
+    storage = await _initialize(_storage(_Embed("bge-m3", 8)), mongo)
+
+    assert await storage.adopt_vector_space() is True
+    assert _marker(mongo) == ("bge-m3", 8)
+    assert await storage.vector_space_adoption_pending() is False
+
+    peer = _storage(_Embed("e5-large", 8))
+    with pytest.raises(VectorSpaceMismatchError):
+        await _initialize(peer, mongo)
+
+
+@pytest.mark.asyncio
+async def test_a_denied_collmod_reports_failure_instead_of_raising(mongo):
+    """Adoption must never take the process down: a restricted role leaves the
+    collection unmarked, which is where every collection was before this
+    feature existed. The caller retries at the next start."""
+    mongo.seed_collection(validator=None, index_dim=8)
+    storage = await _initialize(_storage(_Embed("bge-m3", 8)), mongo)
+    mongo.collmod_error = OperationFailure("not authorized to execute collMod")
+
+    assert await storage.adopt_vector_space() is False
+    assert mongo.validator_of() is None

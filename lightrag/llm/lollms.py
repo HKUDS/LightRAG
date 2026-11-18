@@ -1,3 +1,4 @@
+import codecs
 import sys
 import warnings
 
@@ -147,8 +148,14 @@ async def lollms_model_if_cache(
                 async with session.post(
                     f"{base_url}/lollms_generate", json=request_data
                 ) as response:
-                    async for line in response.content:
-                        yield line.decode().strip()
+                    decoder = codecs.getincrementaldecoder("utf-8")()
+                    async for chunk in response.content.iter_any():
+                        text = decoder.decode(chunk)
+                        if text:
+                            yield text
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        yield tail
 
         return inner()
 

@@ -9,7 +9,7 @@ against every backend, or the backend is reported as unavailable.
 
 JSON needs no service and always runs. To run the other four:
 
-    docker run -d -p 6379:6379 redis:latest
+    docker run -d -p 6379:6379 redis:8
     docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=... -e POSTGRES_DB=... \\
         gzdaniel/postgres-for-rag:pg18-age-pgvector
     docker run -d -p 27017:27017 mongodb/mongodb-atlas-local:8

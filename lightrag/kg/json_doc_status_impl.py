@@ -50,7 +50,8 @@ from .shared_storage import (
     get_update_flag,
     set_all_update_flags,
     clear_all_update_flags,
-    try_initialize_namespace,
+    leave_namespace_init,
+    namespace_init_claim,
 )
 
 
@@ -117,40 +118,73 @@ class JsonDocStatusStorage(DocStatusStorage):
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
         self._data = None
+        # Whether THIS instance holds the shared namespace; see ``finalize``.
+        self._holds_namespace = False
         self._storage_lock = None
         self.storage_updated = None
 
         reap_orphan_tmp_files(self._file_name, self.workspace or "_")
 
+    async def finalize(self):
+        """Give up this instance's hold on the shared namespace.
+
+        ``JsonKVStorage`` does the same (the pair reimplement one protocol, so
+        a change to one is nearly always a change the other needs). Nothing is
+        flushed here: doc-status writes that change scheduling state already
+        flush synchronously, because doc-status is the pipeline's recovery
+        anchor.
+        """
+        if self._holds_namespace:
+            self._holds_namespace = False
+            await leave_namespace_init(self.namespace, workspace=self.workspace)
+            # Same rule as ``JsonKVStorage.finalize``: the shared dict may be
+            # empty now, so every later call raises until ``initialize()``.
+            self._storage_lock = None
+
     async def initialize(self):
         """Bind to the shared namespace dict and load from disk on first init.
 
         Same protocol as ``JsonKVStorage.initialize``: a global init
-        lock (``try_initialize_namespace``) elects one process to read
-        the JSON file into the shared ``self._data``; other processes
-        skip the read and see the same shared dict.
+        lock (``namespace_init_claim``) elects one process to read the
+        JSON file into the shared ``self._data``; other processes skip
+        the read and see the same shared dict. The load stays inside the
+        claim so that a failed read is retried by the next process
+        instead of leaving the namespace empty but marked loaded.
         """
-        self._storage_lock = get_namespace_lock(
-            self.namespace, workspace=self.workspace
-        )
-        self.storage_updated = await get_update_flag(
-            self.namespace, workspace=self.workspace
-        )
         async with get_data_init_lock():
+            # A repeated (including concurrent) initialize owns no extra hold
+            # or update flag, and must preserve any pending dirty state.
+            if self._holds_namespace:
+                return
+            self._storage_lock = get_namespace_lock(
+                self.namespace, workspace=self.workspace
+            )
+            self.storage_updated = await get_update_flag(
+                self.namespace, workspace=self.workspace
+            )
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(
-                self.namespace, workspace=self.workspace
-            )
-            self._data = await get_namespace_data(
-                self.namespace, workspace=self.workspace
-            )
-            if need_init:
-                loaded_data = load_json(self._file_name) or {}
-                async with self._storage_lock:
-                    self._data.update(loaded_data)
-                    logger.info(
-                        f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
-                    )
+            async with namespace_init_claim(
+                self.namespace, workspace=self.workspace, backing=self._file_name
+            ) as need_init:
+                self._data = await get_namespace_data(
+                    self.namespace, workspace=self.workspace
+                )
+                if need_init:
+                    loaded_data = load_json(self._file_name) or {}
+                    async with self._storage_lock:
+                        self._data.update(loaded_data)
+                        logger.info(
+                            f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
+                        )
+
+            # Only NOW does this instance hold the namespace. The claim is counted
+            # and the count belongs to whoever took it, so a ``finalize()`` from an
+            # instance that never got one releases somebody else's -- and the last
+            # release empties the shared dict, which the real holder then publishes
+            # over its own file. ``initialize_storages`` adds a storage to its
+            # rollback list BEFORE initializing it, so that finalize is on the
+            # normal path of any refusal here, this claim's own included.
+            self._holds_namespace = True
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
@@ -199,6 +233,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             return {}
         status_values = {s.value for s in statuses}
         result = {}
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for k, v in self._data.items():
                 try:
@@ -231,6 +267,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         document behind one bad row.
         """
         result = {}
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for k, v in self._data.items():
                 if not isinstance(v, dict):
@@ -266,6 +304,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         ``upsert`` persists on every call, so a purge journalling four phases
         per document commits this file four times for that document alone.
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             if self.storage_updated.value:
                 # DictProxy.copy() is a single Manager RPC that marshals the
@@ -421,6 +461,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             return len(self._data) == 0
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             data = self._data.get(id)
             return copy.deepcopy(data) if isinstance(data, dict) else data
@@ -481,6 +523,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         # holding the lock across them does not reintroduce the "deep-copy
         # the whole corpus" cost. Only the final page (bounded by page_size,
         # <=200) is ever deep-copied.
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             projections: list[tuple[Any, str]] = []
             for doc_id, doc_data in self._data.items():
@@ -569,6 +613,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         Args:
             doc_ids: List of document IDs to be deleted from storage
         """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             any_deleted = False
             for doc_id in doc_ids:
@@ -1223,6 +1269,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             - On failure: {"status": "error", "message": "<error details>"}
         """
         try:
+            if self._storage_lock is None:
+                raise StorageNotInitializedError("JsonDocStatusStorage")
             async with self._storage_lock:
                 self._data.clear()
                 await set_all_update_flags(self.namespace, workspace=self.workspace)

@@ -23,6 +23,9 @@ from fastapi.testclient import TestClient
 from lightrag.base import QueryResult
 from lightrag.prompt import PROMPTS
 
+
+pytestmark = pytest.mark.offline
+
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",
     "EMBEDDING_BINDING",
