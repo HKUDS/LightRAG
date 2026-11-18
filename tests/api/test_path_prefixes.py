@@ -523,8 +523,14 @@ class TestUvicornRootPathSemantics:
         }
         status = {"code": None}
 
+        request_received = False
+
         async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
+            nonlocal request_received
+            if not request_received:
+                request_received = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.disconnect"}
 
         async def send(message):
             if message["type"] == "http.response.start":
