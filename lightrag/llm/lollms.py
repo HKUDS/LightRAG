@@ -28,6 +28,7 @@ from lightrag.exceptions import (
 from typing import Any, List, Union
 import numpy as np
 
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
 )
@@ -166,6 +167,7 @@ async def lollms_model_if_cache(
             return await response.text()
 
 
+@accepts_llm_timeout
 async def lollms_model_complete(
     prompt,
     system_prompt=None,

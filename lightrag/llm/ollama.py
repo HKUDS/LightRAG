@@ -28,6 +28,7 @@ from lightrag.api import __api_version__
 
 import numpy as np
 from typing import Any, Optional, Union
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import (
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -450,6 +451,7 @@ async def _ollama_model_if_cache(
                 )
 
 
+@accepts_llm_timeout
 async def ollama_model_complete(
     prompt,
     system_prompt=None,

@@ -10,6 +10,7 @@ import pytest
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import StoragesStatus
 from lightrag.llm.binding_options import OpenAILLMOptions
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_call
 
 
@@ -73,11 +74,11 @@ def _make_rag(tmp_path, **kwargs) -> LightRAG:
 
     if role_configs:
         kwargs["role_llm_configs"] = role_configs
+    kwargs.setdefault("llm_model_func", _base_llm)
 
     return LightRAG(
         working_dir=str(tmp_path / "role-runtime"),
         workspace="role-runtime",
-        llm_model_func=_base_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=16,
             max_token_size=4096,
@@ -1288,3 +1289,68 @@ async def test_vlm_role_supports_runtime_update(tmp_path):
     assert vlm_calls[1]["tag"] == "updated"
     assert rag._role_llm_states["vlm"].max_async == 2
     assert rag._role_llm_states["vlm"].timeout == 240
+
+
+def _timeout_recording_func(calls: list[dict], *, opt_in: bool):
+    async def func(*args, **kwargs):
+        calls.append(kwargs)
+        return "ok"
+
+    return accepts_llm_timeout(func) if opt_in else func
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("opt_in", "role_config", "base_kwargs", "expected_timeout"),
+    [
+        pytest.param(True, {"timeout": 180}, {}, 180, id="role-own-timeout"),
+        # A role without its own timeout gets the base one its queue uses.
+        pytest.param(True, {}, {}, 30, id="inherited-base-timeout"),
+        pytest.param(True, {"timeout": 0}, {}, 0, id="zero-forwarded-verbatim"),
+        pytest.param(
+            True,
+            {"timeout": 180, "kwargs": {"timeout": 45}},
+            {},
+            45,
+            id="role-kwargs-timeout-wins",
+        ),
+        pytest.param(
+            True, {"timeout": 180}, {"timeout": 45}, 45, id="base-kwargs-timeout-wins"
+        ),
+        pytest.param(False, {"timeout": 180}, {}, None, id="unmarked-never-forwarded"),
+    ],
+)
+async def test_role_timeout_forwarded_only_to_marked_funcs(
+    tmp_path, opt_in, role_config, base_kwargs, expected_timeout
+):
+    calls: list[dict] = []
+    rag = _make_rag(
+        tmp_path,
+        default_llm_timeout=30,
+        llm_model_func=_timeout_recording_func(calls, opt_in=opt_in),
+        llm_model_kwargs=base_kwargs,
+        role_llm_configs={"extract": RoleLLMConfig(**role_config)},
+    )
+
+    await rag.role_llm_funcs["extract"]("prompt")
+
+    assert len(calls) == 1
+    assert calls[0].get("timeout") == expected_timeout
+
+
+@pytest.mark.asyncio
+async def test_role_timeout_forwarding_follows_runtime_update(tmp_path):
+    calls: list[dict] = []
+    rag = _make_rag(
+        tmp_path,
+        default_llm_timeout=30,
+        query_llm_model_func=_timeout_recording_func(calls, opt_in=True),
+        query_llm_timeout=120,
+    )
+
+    await rag.role_llm_funcs["query"]("first")
+    rag.update_llm_role_config("query", timeout=300)
+    await rag.role_llm_funcs["query"]("second")
+
+    assert [call.get("timeout") for call in calls] == [120, 300]
+    await rag.wait_for_retired_llm_queues()

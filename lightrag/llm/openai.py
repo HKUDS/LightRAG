@@ -29,6 +29,7 @@ from tenacity import (
     retry_if_exception,
     retry_if_exception_type,
 )
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
@@ -1016,6 +1017,7 @@ async def openai_complete_if_cache(
             )
 
 
+@accepts_llm_timeout
 async def openai_complete(
     prompt,
     system_prompt=None,
@@ -1040,6 +1042,7 @@ async def openai_complete(
     )
 
 
+@accepts_llm_timeout
 async def gpt_4o_complete(
     prompt,
     system_prompt=None,
@@ -1064,6 +1067,7 @@ async def gpt_4o_complete(
     )
 
 
+@accepts_llm_timeout
 async def gpt_4o_mini_complete(
     prompt,
     system_prompt=None,
@@ -1088,6 +1092,7 @@ async def gpt_4o_mini_complete(
     )
 
 
+@accepts_llm_timeout
 async def nvidia_openai_complete(
     prompt,
     system_prompt=None,
@@ -1363,6 +1368,7 @@ async def azure_openai_complete_if_cache(
     )
 
 
+@accepts_llm_timeout
 async def azure_openai_complete(
     prompt,
     system_prompt=None,

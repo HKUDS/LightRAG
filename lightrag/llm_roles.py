@@ -59,6 +59,27 @@ ROLE_NAMES: frozenset[str] = frozenset(spec.name for spec in ROLES)
 ROLES_BY_NAME: dict[str, RoleSpec] = {spec.name: spec for spec in ROLES}
 
 
+# Function attribute marking a raw LLM function that takes a ``timeout`` kwarg
+# and applies it to its provider client. The role wrapper passes such a
+# function the role's effective timeout (RoleLLMConfig(timeout=...), else
+# default_llm_timeout) -- the value its queue is sized from -- unless the
+# role's kwargs already carry a ``timeout``. Opt-in because a function that
+# does not take ``timeout`` (a custom llm_model_func without ``**kwargs``,
+# local inference, lmdeploy's generation config) would fail on it.
+LLM_TIMEOUT_FORWARD_ATTR = "lightrag_accepts_llm_timeout"
+
+
+def accepts_llm_timeout(func: Callable[..., object]) -> Callable[..., object]:
+    """Mark ``func`` to receive its role's effective LLM timeout as ``timeout``.
+
+    Apply it only to a function that accepts a ``timeout`` kwarg in seconds and
+    uses it as its provider client's request timeout. See
+    ``LLM_TIMEOUT_FORWARD_ATTR``.
+    """
+    setattr(func, LLM_TIMEOUT_FORWARD_ATTR, True)
+    return func
+
+
 @dataclass
 class RoleLLMConfig:
     """Per-role LLM override accepted at :class:`LightRAG` init time.
@@ -69,6 +90,13 @@ class RoleLLMConfig:
     user did not pass a ``role_llm_configs`` entry for the role, the value is
     additionally seeded from ``{ROLE_PREFIX}_MAX_ASYNC_LLM``. ``metadata`` seeds
     runtime observability and role-builder context.
+
+    The effective ``timeout`` (this field, else ``default_llm_timeout``) sizes
+    the role's queue and reaches the model function as its ``timeout`` kwarg
+    when the function is marked with :func:`accepts_llm_timeout` (the bundled
+    ``*_complete`` provider wrappers are) and the role's kwargs carry no
+    ``timeout``. An unmarked function only gets a ``timeout`` it is given in
+    ``kwargs``.
     """
 
     func: Callable[..., object] | None = None
@@ -225,6 +253,12 @@ class _RoleLLMMixin:
                 f"through this role would never run); got {max_async}"
             )
         spec = ROLES_BY_NAME[role_name]
+        call_kwargs = model_kwargs
+        if (
+            "timeout" not in model_kwargs
+            and getattr(raw_func, LLM_TIMEOUT_FORWARD_ATTR, False) is True
+        ):
+            call_kwargs = {**model_kwargs, "timeout": timeout}
         return priority_limit_async_func_call(
             max_async,
             llm_timeout=timeout,
@@ -234,7 +268,7 @@ class _RoleLLMMixin:
             partial(
                 raw_func,
                 hashing_kv=self.llm_response_cache,
-                **model_kwargs,
+                **call_kwargs,
             )
         )
 

@@ -509,25 +509,20 @@ async def test_bedrock_no_timeout_keeps_botocore_defaults(monkeypatch):
         # LLM_TIMEOUT=0 stays 0, which aiohttp treats as no timeout; None
         # would fall back to botocore's 60s.
         pytest.param(0, {}, 0, id="zero-means-no-read-timeout"),
-        pytest.param(60, {}, 60, id="fallback-at-botocore-default"),
-        # A base timeout under botocore's 60s must not shorten the client:
-        # a role with RoleLLMConfig(timeout=180) is still sent here with no
-        # timeout, and was cut at 60s rather than 30s before the fallback.
-        pytest.param(30, {}, None, id="short-default-keeps-botocore-default"),
-        pytest.param(30, {"timeout": 30}, 30, id="short-caller-timeout-wins"),
-        pytest.param(-1, {}, None, id="negative-default-keeps-botocore-default"),
+        # LLM_TIMEOUT is the client timeout even below botocore's 60s: role
+        # timeouts now reach the client, so nothing needs that floor.
+        pytest.param(30, {}, 30, id="short-default-applied"),
     ],
 )
 async def test_bedrock_complete_inherits_default_llm_timeout(
     monkeypatch, default_llm_timeout, call_kwargs, expected_read_timeout
 ):
-    """bedrock_complete must apply LightRAG's LLM timeout when none is passed.
+    """A direct bedrock_complete call must apply LightRAG's LLM timeout.
 
-    It is the llm_model_func of the library path, which never passes a
-    timeout. Without the fallback botocore's 60s read timeout cut any
-    attempt longer than that (GPT-6 Astra extraction on a dense chunk)
-    while the role queue waited default_llm_timeout * 2. The fallback must
-    never make the client stricter than botocore's own default.
+    Through a role queue the role wrapper passes the timeout; a direct call
+    that passes none would otherwise keep botocore's 60s read timeout, which
+    cut any attempt longer than that (GPT-6 Astra extraction on a dense
+    chunk).
     """
     monkeypatch.delenv("AWS_REGION", raising=False)
     client_kwargs_calls: list[dict] = []
@@ -551,6 +546,50 @@ async def test_bedrock_complete_inherits_default_llm_timeout(
     else:
         assert config.read_timeout == expected_read_timeout
         assert config.connect_timeout == expected_read_timeout
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_complete_uses_role_timeout_through_role_wrapper(
+    monkeypatch, tmp_path
+):
+    """Each role's effective timeout must size its Bedrock client.
+
+    An extract role at timeout=180 reaches the client as 180 rather than the
+    base 30s or botocore's 60s; a role without its own timeout gets the base
+    default_llm_timeout its queue is sized from.
+    """
+    import numpy as np
+
+    from lightrag import LightRAG, RoleLLMConfig
+    from lightrag.utils import EmbeddingFunc
+
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    async def _embed(texts):
+        return np.zeros((len(texts), 8))
+
+    rag = LightRAG(
+        working_dir=str(tmp_path / "bedrock-role-timeout"),
+        llm_model_func=bedrock_complete,
+        llm_model_name="bedrock-model",
+        embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=512, func=_embed),
+        default_llm_timeout=30,
+        role_llm_configs={"extract": RoleLLMConfig(timeout=180)},
+    )
+    client_kwargs_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession([], client_kwargs_calls),
+    ):
+        await rag.role_llm_funcs["extract"]("hello")
+        await rag.role_llm_funcs["query"]("hello")
+
+    assert len(client_kwargs_calls) == 2
+    assert client_kwargs_calls[0]["config"].read_timeout == 180
+    assert client_kwargs_calls[0]["config"].connect_timeout == 180
+    assert client_kwargs_calls[1]["config"].read_timeout == 30
 
 
 @pytest.mark.offline

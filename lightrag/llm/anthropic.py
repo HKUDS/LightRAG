@@ -21,6 +21,7 @@ from anthropic import (
     RateLimitError,
     APITimeoutError,
 )
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import (
     safe_unicode_decode,
     logger,
@@ -351,6 +352,7 @@ async def anthropic_complete_if_cache(
 
 
 # Generic Anthropic completion function
+@accepts_llm_timeout
 async def anthropic_complete(
     prompt: str,
     system_prompt: str | None = None,
@@ -372,6 +374,7 @@ async def anthropic_complete(
 
 
 # Claude 3 Opus specific completion
+@accepts_llm_timeout
 async def claude_3_opus_complete(
     prompt: str,
     system_prompt: str | None = None,
@@ -392,6 +395,7 @@ async def claude_3_opus_complete(
 
 
 # Claude 3 Sonnet specific completion
+@accepts_llm_timeout
 async def claude_3_sonnet_complete(
     prompt: str,
     system_prompt: str | None = None,
@@ -412,6 +416,7 @@ async def claude_3_sonnet_complete(
 
 
 # Claude 3 Haiku specific completion
+@accepts_llm_timeout
 async def claude_3_haiku_complete(
     prompt: str,
     system_prompt: str | None = None,

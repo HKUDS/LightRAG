@@ -25,6 +25,7 @@ from tenacity import (
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import (
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -702,6 +703,7 @@ async def gemini_complete_if_cache(
     return final_text
 
 
+@accepts_llm_timeout
 async def gemini_model_complete(
     prompt: str,
     system_prompt: str | None = None,

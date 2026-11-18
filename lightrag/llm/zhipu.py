@@ -22,6 +22,7 @@ from tenacity import (
     retry_if_exception,
 )
 
+from lightrag.llm_roles import accepts_llm_timeout
 from lightrag.utils import (
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
@@ -234,6 +235,7 @@ async def zhipu_complete_if_cache(
     return content
 
 
+@accepts_llm_timeout
 async def zhipu_complete(
     prompt,
     system_prompt=None,
