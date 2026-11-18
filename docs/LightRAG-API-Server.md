@@ -697,7 +697,7 @@ Passwords without a prefix are treated as plaintext. To store a bcrypt password,
 lightrag-hash-password --username admin
 ```
 
-The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`.
+The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`. bcrypt only uses the first 72 bytes of a password, so the command refuses a longer one (UTF-8 bytes, not characters); choose a shorter password instead.
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 

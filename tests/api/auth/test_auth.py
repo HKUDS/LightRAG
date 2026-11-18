@@ -434,3 +434,34 @@ def test_hash_password_cli_outputs_auth_accounts_entry(capsys):
     assert hashed.startswith(BCRYPT_PASSWORD_PREFIX)
     raw_hash = hashed[len(BCRYPT_PASSWORD_PREFIX) :]
     assert bcrypt.checkpw("secret".encode("utf-8"), raw_hash.encode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("a" * 73, id="ascii-73-bytes"),
+        # 37 two-byte characters: 37 characters but 74 bytes in UTF-8.
+        pytest.param("é" * 37, id="utf8-74-bytes"),
+    ],
+)
+def test_hash_password_rejects_password_over_bcrypt_limit(password):
+    with pytest.raises(ValueError, match="at most 72"):
+        hash_password(password)
+
+
+def test_hash_password_accepts_password_at_bcrypt_limit():
+    password = "a" * 72
+    hashed = hash_password(password)
+
+    raw_hash = hashed[len(BCRYPT_PASSWORD_PREFIX) :]
+    assert bcrypt.checkpw(password.encode("utf-8"), raw_hash.encode("utf-8"))
+
+
+def test_hash_password_cli_reports_password_over_bcrypt_limit(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        hash_password_main(["--username", "admin", "a" * 73])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "password is 73 bytes in UTF-8; bcrypt accepts at most 72" in captured.err
