@@ -893,10 +893,13 @@ class ClearTool:
         # Other embedding models' containers that match this workspace's
         # naming but carry no evidence of who owns them. The drop leaves them
         # in place and fails unless the operator vouches for them below.
+        # A storage that did not open is not asked: only a file-backed one
+        # ends up there, and those have one container and no siblings, so
+        # "could not be read" would be a line about nothing.
         unvouched: Dict[str, Any] = {}
         for label in VECTOR_LABELS:
             vdb = self.storages[label]
-            if vdb is None or label in self.refused_vdbs:
+            if vdb is None or label in self.refused_vdbs or label in self.unavailable:
                 continue
             listed = await self._read(label, vdb.unvouched_sibling_containers)
             if listed:
@@ -975,6 +978,9 @@ class ClearTool:
         for label, state in summary["vectors"].items():
             if isinstance(state, Unreadable):
                 name(label, f"{label} state")
+        for label, listed in summary["unvouched_siblings"].items():
+            if isinstance(listed, Unreadable):
+                name(label, f"{label} containers of other embedding models")
         for target, baseline in summary["baselines"].items():
             if isinstance(baseline, Unreadable):
                 items.append(f"{target} embedding baseline")

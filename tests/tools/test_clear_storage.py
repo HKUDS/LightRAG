@@ -1146,6 +1146,53 @@ class TestSiblingModelContainers:
         listing.assert_not_called()
         assert summary["unvouched_siblings"] == {}
 
+    async def test_a_storage_that_did_not_open_is_not_asked_for_its_siblings(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """Only a file-backed storage fails to open and still gets here, and
+        those have no siblings: a line saying theirs could not be read would
+        be about nothing."""
+        tool = make_tool(tmp_path)
+        tool.unavailable["chunks_vdb"] = "corrupt snapshot"
+        listing = AsyncMock(return_value=["ws_chunks_model_a_8d"])
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = listing
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        listing.assert_not_called()
+        assert summary["unvouched_siblings"] == {}
+        assert "other models' containers" not in plain(capsys.readouterr().out)
+
+    async def test_an_unreadable_sibling_listing_is_named_above_the_prompt(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = AsyncMock(
+            side_effect=ValueError("bad collection name")
+        )
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        assert isinstance(summary["unvouched_siblings"]["chunks_vdb"], Unreadable)
+        assert tool.unreadable_items(summary) == [
+            "chunks_vdb containers of other embedding models"
+        ]
+        out = plain(capsys.readouterr().out)
+        assert "1 item(s) above could not be read" in out
+        assert "chunks_vdb containers of other embedding models" in out
+
+    async def test_an_empty_sibling_listing_adds_nothing_unread(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+
+        summary = await tool.collect_summary()
+
+        assert summary["unvouched_siblings"] == {}
+        assert tool.unreadable_items(summary) == []
+
     @pytest.mark.parametrize(
         "answer, vouched",
         [
