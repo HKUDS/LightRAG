@@ -5,6 +5,7 @@ from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.utils import setup_logger, get_env_value
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_WORKING_DIR,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
 )
@@ -27,6 +28,13 @@ bind = None
 loglevel = None
 certfile = None
 keyfile = None
+# The PARSED working directory, which is not always what ``WORKING_DIR`` says:
+# ``--working-dir`` overrides it for the workers, so a master that read the
+# environment here would claim a directory nobody asks for (see on_starting).
+working_dir = None
+# The PARSED, normalized workspace, for the same reason: the master claims
+# that workspace's JSON configuration directory before forking.
+workspace = None
 
 # Enable preload_app option
 preload_app = True
@@ -93,6 +101,37 @@ logconfig_dict = {
 }
 
 
+def resolved_working_dir() -> str:
+    """The working directory the WORKERS will use.
+
+    ``--working-dir`` is parsed into ``global_args`` and handed to every
+    worker's ``LightRAG``; nothing writes it back to the environment. So a
+    master reading ``WORKING_DIR`` here would resolve one directory while its
+    workers resolve another -- the master's claim would then be on a path
+    nobody inherits, the first worker would take the real one for itself, and
+    every worker after it would be refused at startup. ``run_with_gunicorn``
+    sets the parsed value on this module before Gunicorn starts; the
+    environment is only the fallback for a master started another way.
+    """
+    if working_dir:
+        return working_dir
+    return get_env_value("WORKING_DIR", DEFAULT_WORKING_DIR)
+
+
+def resolved_workspace() -> str:
+    """The workspace the WORKERS will serve, normalized as the server does.
+
+    Set by ``run_with_gunicorn`` from the parsed arguments, like
+    ``working_dir``; the environment, normalized through the server's own
+    rule, is only the fallback for a master started another way.
+    """
+    if workspace is not None:
+        return workspace
+    from lightrag.utils import normalize_server_workspace
+
+    return normalize_server_workspace(get_env_value("WORKSPACE", "")) or ""
+
+
 def on_starting(server):
     """
     Executed when Gunicorn starts, before forking the first worker processes
@@ -119,6 +158,64 @@ def on_starting(server):
     # Log the location of the LightRAG log file
     print(f"LightRAG log file: {log_file_path}\n")
 
+    # Here rather than in a worker: the master is the one process every run
+    # has exactly one of, so the deprecation is said once per server start
+    # instead of once per worker.
+    from lightrag.utils import warn_about_workspace_overrides
+
+    warn_about_workspace_overrides()
+
+    # The anchor lock and the configuration directory claim, HERE in the
+    # master, before the fork. Both are held by an open file description,
+    # which forked workers inherit -- so they find them already taken by
+    # their own tree and count themselves in, instead of opening a second
+    # descriptor. Taken after the fork, the directory claim would admit
+    # exactly one worker.
+    #
+    # They must name the SAME directories the workers ask for, resolved the
+    # same way, or the master's claim is on a path nobody inherits and every
+    # worker after the first is refused at startup. Hence the shared resolver
+    # rather than a second reading of the environment here.
+    #
+    # And the anchor check (steps 0a-0c) runs here too: a backend type that
+    # differs from the anchor refuses the MASTER, instead of surfacing as
+    # every worker failing while the master respawns them. Workers still run
+    # 0b-1b themselves.
+    from lightrag.config_store import (
+        configuration_selection_from_env,
+        describe_configuration_container,
+        preflight_configuration_anchor,
+    )
+    from lightrag.kg.anchor_lock import (
+        acquire_anchor_lock_shared,
+        release_anchor_lock_shared,
+    )
+    from lightrag.kg.working_dir_lock import (
+        acquire_working_dir_lock,
+        uses_working_dir,
+    )
+
+    master_working_dir = resolved_working_dir()
+    config_storage, config_dir = configuration_selection_from_env(
+        kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+        working_dir=master_working_dir,
+        workspace=resolved_workspace(),
+    )
+    acquire_anchor_lock_shared(master_working_dir)
+    try:
+        preflight_configuration_anchor(
+            working_dir=master_working_dir,
+            backend=config_storage,
+            container=describe_configuration_container(config_storage, config_dir),
+        )
+        # The CONFIGURATION storage decides whether a directory is claimed at
+        # all; a server-backed one claims nothing.
+        if uses_working_dir(config_storage):
+            acquire_working_dir_lock(config_dir)
+    except BaseException:
+        release_anchor_lock_shared(master_working_dir)
+        raise
+
     print("Gunicorn initialization complete, forking workers...\n")
 
 
@@ -133,6 +230,34 @@ def on_exit(server):
 
     print("Finalizing shared storage...")
     finalize_share_data()
+
+    # The master took the directory claim before forking, so the master gives
+    # it back -- a worker's own finalize only decrements its inherited count.
+    # Resolved through the same helper ``on_starting`` used, so the release
+    # cannot name a different directory than the claim.
+    from lightrag.config_store import configuration_selection_from_env
+    from lightrag.kg.anchor_lock import release_anchor_lock_shared
+    from lightrag.kg.working_dir_lock import (
+        release_working_dir_lock,
+        uses_working_dir,
+    )
+
+    master_working_dir = resolved_working_dir()
+    try:
+        config_storage, config_dir = configuration_selection_from_env(
+            kv_storage=get_env_value("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+            working_dir=master_working_dir,
+            workspace=resolved_workspace(),
+        )
+    except ValueError:
+        # An unusable selection refused in ``on_starting``, so nothing was
+        # claimed and there is nothing to give back.
+        config_storage, config_dir = "", ""
+    if config_storage and uses_working_dir(config_storage):
+        release_working_dir_lock(config_dir)
+    # Taken before the directory claim, so given back after it. Safe without
+    # a hold: ``on_starting`` may have refused before taking it.
+    release_anchor_lock_shared(master_working_dir)
 
     print("Gunicorn shutdown complete")
     print("=" * 80)
