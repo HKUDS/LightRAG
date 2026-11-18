@@ -6516,11 +6516,13 @@ class PGDocStatusStorage(DocStatusStorage):
         ``datetime.fromisoformat`` (microseconds preserved) and is normalized
         back to the naive-UTC form the TIMESTAMP column stores, so the
         parameterized row-value comparison resumes at exactly the last
-        consumed key. A malformed cursor raises
+        consumed key. Any payload other than that two-element list raises
         :class:`~lightrag.exceptions.StorageControlPlaneError`.
         """
         try:
             decoded = json.loads(opaque)
+            if not isinstance(decoded, list) or len(decoded) != 2:
+                raise ValueError("cursor must be a two-element list")
             created_iso, doc_id = decoded
             if not isinstance(doc_id, str):
                 raise ValueError("cursor id must be a string")
