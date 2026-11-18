@@ -68,11 +68,12 @@ Notes:
 | **Parameter** | **Type** | **Explanation** | **Default** |
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `./rag_storage` |
-| **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
+| **workspace** | str | Workspace name for data isolation between different LightRAG Instances; names starting with `$` are reserved and rejected | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
 | **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`PGTableGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
+| **config_storage** | `str` | Storage type for the server's own configuration — the per-workspace embedding baselines, in one container named in code rather than by a workspace. Supported types: `JsonKVStorage`,`PGKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage`; anything else is refused at construction, by name. **Left unset it follows `kv_storage`**, which is where an existing deployment's records already are — except that a `RedisKVStorage` deployment defaults to `JsonKVStorage` with a warning, since Redis is not admitted here. Explicitly selecting Redis is still refused. The JSON backend keeps one snapshot per workspace at the fixed path `working_dir/<workspace>/kv_workspace_config.json` (`working_dir/kv_workspace_config.json` for the empty workspace); no parameter moves it, and a workspace registers itself in the group on its first start. Historical Redis configuration records are not migrated; missing baselines require a positive adoption probe or confirmed-empty data. The first `initialize_storages()` **binds** the deployment to the container it opened. The binding is recorded in `working_dir/config_storage_anchor.json` (backend type plus the container's UUID, and for JSON the registered workspaces; a fixed path). Every later start refuses another type or another UUID with a `ConfigurationIdentityError`, so changing `kv_storage` while this is unset is refused if it selects a different configuration container. Select the anchored backend explicitly, or move the container with `lightrag-migrate-config`. Deleting the anchor file is the sanctioned rebind, with every process using this `working_dir` (servers and SDK instances) stopped first: a running one never rereads the anchor, so a later start or worker respawn would bind the new selection while it keeps the old container. `working_dir` must persist whichever backends are selected. | follows `kv_storage`; JSON for Redis |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **embedding_chunk_overlap_token_size** | `int` | Overlap token size the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `chunk_overlap_token_size` (some chunking strategies, e.g. V, deliberately zero that one out for unrelated reasons); `0` disables the fallback's overlap; negative values raise `ValueError` at construction. Configured by env var `EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE`. | `100` |
@@ -85,12 +86,14 @@ Notes:
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
 | **embedding_batch_num** | `int` | Maximum batch size for embedding processes (multiple texts sent per batch) | `32` |
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
+| **default_embedding_timeout** | `int` | Embedding request timeout in seconds. It sizes the embedding queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the client's request timeout: the bundled embedding bindings (`openai_embed`, `azure_openai_embed`, `ollama_embed`, `gemini_embed`, `bedrock_embed`, `jina_embed`, `voyageai_embed`, `zhipu_embedding`, `nvidia_openai_embed`, `lollms_embed`) read it during the call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `embedding_func` as an argument; one that builds its own client can read it with `lightrag.utils.embedding_timeout()`. A binding's own positive `timeout` argument takes precedence, and a `timeout` in `openai_embed`'s `client_configs` outranks the LightRAG value. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and the client keeps its SDK default (or the `client_configs` timeout, if one is set). | `30` (configured by env var EMBEDDING_TIMEOUT) |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Base maximum LLM concurrency; also caps per-document chunk extraction tasks, while each entity/relation merge phase uses twice this task limit | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias; `EXTRACT_MAX_ASYNC_LLM` can independently limit actual Extract-role requests) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
+| **default_llm_timeout** | `int` | Base LLM request timeout in seconds. A role uses it unless its `RoleLLMConfig(timeout=...)` is set. The role's effective timeout sizes its queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the provider client's request timeout: the bundled `*_complete` provider wrappers read it during the role call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `llm_model_func` as an argument; one that calls a provider's `*_if_cache` function directly can apply it with `lightrag.llm_roles.apply_llm_timeout(kwargs)`. A `timeout` in `llm_model_kwargs`, in the role's kwargs or in `openai_client_configs` takes precedence. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and each provider client keeps its SDK default (for example 600 s for OpenAI, 60 s for Bedrock through botocore). | `240` (configured by env var LLM_TIMEOUT) |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
@@ -109,7 +112,7 @@ Notes:
 | `language` | Non-empty string. Defaults to `SUMMARY_LANGUAGE`, then `English`. | Output language used in entity and relationship extraction, entity/relation summaries, keyword extraction, and multimodal analysis prompts. |
 | `entity_type_prompt_file` | `.yml` or `.yaml` file name only. Loaded from `${PROMPT_DIR:-./prompts}/entity_type`. | Loads an entity extraction prompt profile. The profile can define `entity_types_guidance`, `entity_extraction_examples`, and `entity_extraction_json_examples`. The active extraction mode must have matching examples: text mode needs `entity_extraction_examples`; JSON mode needs `entity_extraction_json_examples`. |
 | `entity_types_guidance` | Non-empty string. | Inline entity type guidance injected into extraction prompts. This overrides both the prompt profile file and the built-in default guidance. |
-| `chunker` | Dict with F/R/V/P chunking settings (the `C` selector reuses the `fixed_token` sub-dictionary). | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
+| `chunker` | Dict with F/R/V/P chunking settings; `C` selects a custom chunker callback and reuses the `fixed_token` sub-dictionary for its fallback. | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
 
 Compact `chunker` shape:
 
@@ -301,6 +304,17 @@ class QueryParam:
 
 > The default value of `top_k` can be changed by the environment variable `TOP_K`.
 
+For graph query modes (`local`, `global`, `hybrid`, `mix`), `max_total_tokens`
+also caps the graph context when the entity and relationship limits are larger.
+Whole records are retained in ranking order before selecting their source chunks;
+the final check includes the rendered system prompt, user query, chunk references,
+and configured user instructions. If the required prompt and query alone cannot
+fit, the query returns no result without calling the answer model. Graph records
+are filled before chunks: when they use up the budget, no chunk is sent, the answer
+relies on the graph context alone, and a "Token budget left no room" warning is
+logged. Conversation history and provider-specific message framing are outside
+this context budget.
+
 
 ## LLM and Embedding Injection
 
@@ -474,6 +488,23 @@ async def initialize_rag():
     return rag
 ```
 
+**Embedding batch sizes:** `llama_index_embed` calls the model's public
+`aget_text_embedding_batch`, so the model's `embed_batch_size` and
+`embeddings_cache` apply. The two batch sizes stack:
+
+- LightRAG's `embedding_batch_num` (`EMBEDDING_BATCH_NUM`) sets how many texts
+  one `embedding_func` call hands to the adapter, and `embedding_func_max_async`
+  (`EMBEDDING_FUNC_MAX_ASYNC`) caps how many of those calls run at once.
+- The model's `embed_batch_size` (LlamaIndex default: 10) splits each call into
+  sub-batches of at most that many texts, one embedding request each, and
+  LlamaIndex sends a call's sub-batches concurrently. Up to
+  `embedding_func_max_async × ceil(embedding_batch_num / embed_batch_size)`
+  requests can therefore be in flight; with `EMBEDDING_BATCH_NUM=32` and the
+  default `embed_batch_size`, each call becomes four concurrent requests.
+- Set `embed_batch_size` to the provider's per-request input limit. To keep one
+  request per call, set `embed_batch_size >= embedding_batch_num`; to lower the
+  overall request concurrency, lower `embedding_func_max_async`.
+
 **Further reading:**
 - [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)
 - [Direct OpenAI Example](../examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
@@ -539,26 +570,30 @@ async def llm_model_func(
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model_name="gemini-2.0-flash",
+        model_name="gemini-flash-latest",
         **kwargs
     )
 
+# send_dimensions=True makes LightRAG pass embedding_dim to the wrapper, which
+# must accept it and forward it so Gemini returns vectors of that size.
 @wrap_embedding_func_with_attrs(
     embedding_dim=768,
+    send_dimensions=True,
     max_token_size=2048,
-    model_name="models/text-embedding-004"
+    model_name="gemini-embedding-001"
 )
-async def embedding_func(texts: list[str]) -> np.ndarray:
+async def embedding_func(texts: list[str], embedding_dim: int | None = None) -> np.ndarray:
     return await gemini_embed.func(
         texts,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model="models/text-embedding-004"
+        model="gemini-embedding-001",
+        embedding_dim=embedding_dim
     )
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
-    llm_model_name="gemini-2.0-flash",
+    llm_model_name="gemini-flash-latest",
     embedding_func=embedding_func
 )
 ```
@@ -615,6 +650,8 @@ To enhance retrieval quality, documents can be re-ranked based on a more effecti
 - **Aliyun**: `ali_rerank`
 
 Inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. For detailed usage, refer to `examples/rerank_example.py`.
+
+`default_rerank_timeout` (env var `RERANK_TIMEOUT`, default `30`) sizes the rerank queue the same way `default_embedding_timeout` sizes the embedding queue, and these three functions use it as their HTTP session's total timeout per attempt; a timed-out attempt is retried. A `timeout` argument passed to the function takes precedence, a custom `rerank_model_func` can read the value with `lightrag.utils.rerank_timeout()`, and `0` (or a negative value) keeps aiohttp's session default (300 s).
 
 ### Injecting a Custom Tokenizer
 
@@ -764,7 +801,10 @@ Contract:
   repeating the same call resumes the operation (roll-forward belongs to the
   SDK caller), while `/documents/scan` — through
   `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
-  assume a failed custom-chunk call left no recoverable state.
+  assume a failed custom-chunk call left no recoverable state. A chunk over
+  the embedding function's `max_token_size` is refused before any of this
+  (`ChunkTokenLimitExceededError`, nothing written), on every call, so a retry
+  after the limit was lowered is refused too and only the scan can clear it.
 - **A stateful validator keeps its identity.** A bound method or callable object
   that accumulates an audit log sees its own instance, not a per-document copy.
   As with a custom tokenizer, however, `LightRAG` builds its internal config
@@ -863,7 +903,7 @@ unchanged, so existing cache entries keep hitting.
 
 ## Storage Backends
 
-### Sotrage Types
+### Storage Types
 
 LightRAG uses 4 types of storage for different purposes:
 
@@ -896,7 +936,7 @@ OpenSearchKVStorage  OpenSearch
 ```
 NetworkXStorage          NetworkX (default)
 Neo4JStorage             Neo4J
-PGGraphStorage           PostgreSQL with AGE plugin
+PGGraphStorage           PostgreSQL with AGE plugin (deprecated)
 PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
@@ -908,7 +948,9 @@ OpenSearchGraphStorage   OpenSearch
 > JSONB, so it runs on any stock PostgreSQL 14+ — including managed instances
 > (RDS, Cloud SQL, Supabase, Neon) where the AGE extension cannot be installed.
 > It shares the same `POSTGRES_*` configuration and connection pool as the other
-> PG storages. Choose `PGGraphStorage` only if you specifically need AGE/Cypher.
+> PG storages. `PGGraphStorage` is deprecated and will be removed in a future
+> release; `python -m lightrag.tools.migrate_graph_storage --apply` moves an
+> existing AGE graph to `PGTableGraphStorage` without re-indexing.
 
 **VECTOR_STORAGE**
 ```
@@ -1054,7 +1096,7 @@ PostgreSQL can provide a one-stop solution as KV store, VectorDB (pgvector), and
 
 - PostgreSQL is lightweight; the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
 - If you prefer Docker and graph storage is `PGTableGraphStorage` (the recommended choice, which needs no Apache AGE), the official pgvector image `pgvector/pgvector:pg18` is all you need.
-- Only `PGGraphStorage` requires an AGE-bundled image; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
+- Only the deprecated `PGGraphStorage` requires an AGE-bundled image, which the setup wizard generates only for a deployment that already uses `PGGraphStorage`; to avoid hiccups there, start with https://hub.docker.com/r/gzdaniel/postgres-for-rag (published for `linux/amd64` and `linux/arm64`). The latest image no longer ships hardcoded credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables (these are set automatically when you deploy via the `scripts/setup/setup.sh` wizard, so you can pick any values).
 - How to start: see [examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
 - For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 
@@ -1268,6 +1310,18 @@ Storage-specific workspace environment variables override the common `WORKSPACE`
 
 For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](../examples/lightrag_gemini_workspace_demo.py).
 
+### Startup Checks
+
+`initialize_storages()` verifies that the stored vectors match the configured embedding function and that the working directory is not shared in a way that loses data. Each check refuses with a typed exception from `lightrag.exceptions` instead of serving wrong results:
+
+- **A failed `initialize_storages()` is final for that instance.** Calling it again raises the same error. To retry (for example while waiting for a database), call `finalize_storages()` and create a new `LightRAG` instance.
+- **An instance is not usable after `finalize_storages()`.** The file-backed KV and document status storages raise `StorageNotInitializedError` from then on.
+- **One process tree per workspace on the default file storages.** A second process that opens the same `working_dir` and workspace is refused with `WorkingDirectoryInUseError`: each process would rewrite the whole file from its own copy. Use one process, or a server storage backend.
+- **One `working_dir` per workspace within a process.** Two live instances with the same workspace and different `working_dir` are refused with `SharedNamespaceBackingConflictError`. Give them different workspaces, or finalize the first one.
+- **A changed embedding model or dimension is refused** (`EmbeddingBaselineMismatchError`, `VectorSpaceMismatchError`). Rebuild the vectors with `lightrag-rebuild-vdb`, or clear the workspace with `lightrag-clear-storage`.
+- **A vector storage that lost its vectors while the graph or the text chunks kept their data is refused** (`VectorStorageEmptyError`), for example after deleting only the `vdb_*.json` files. Rebuild with `lightrag-rebuild-vdb`, or pass `rebuilding_vector_storage=True` when the program itself repopulates them.
+- **To start over by deleting files, delete the configuration files too**: `kv_workspace_config.json` in the workspace directory and `config_storage_anchor.json` in `working_dir`. They record the embedding model the deleted vectors were written with. With no other workspace in that `working_dir`, deleting the whole directory is simplest.
+
 
 ## Insert
 
@@ -1312,9 +1366,9 @@ rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 
 ```python
 rag = LightRAG(..)
-await rag.apipeline_enqueue_documents(input)
+await rag.apipeline_enqueue_documents(["TEXT1", "TEXT2"])
 # Your routine in loop
-await rag.apipeline_process_enqueue_documents(input)
+await rag.apipeline_process_enqueue_documents()
 ```
 
 * Insert Multi-file Type Support
@@ -1393,13 +1447,36 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 
 Entity names supplied to `create_entity` and new names supplied during
 `edit_entity` renames use the same normalization rules as extracted entity
-names. When editing an existing entity, LightRAG first preserves an exact
-legacy name match and otherwise falls back to the normalized name.
+names. When editing an existing entity without renaming it, LightRAG first
+preserves an exact legacy name match and otherwise falls back to the
+normalized name.
 `insert_custom_kg` applies the same rules to declared entity names and both
 endpoints of every relationship before writing any custom KG data.
-`merge_entities` resolves existing exact legacy source/target names first and
-otherwise uses normalized names. The target may be an existing entity or a
-new normalized name created by the merge.
+`merge_entities` resolves its target the same way: an existing exact legacy
+name first, otherwise the normalized name. The target may be an existing
+entity or a new normalized name created by the merge.
+`create_relation`, `edit_relation` and `delete_by_relation` resolve both
+endpoints the same way, and `get_entity_info`, `get_relation_info` and
+`GET /graph/entity/exists` resolve their names the same way too. A spelling
+`create_entity` accepted therefore addresses that entity, even though the
+stored name differs. Two spellings that resolve to one entity form a
+self-loop, which `create_relation` and `edit_relation` refuse.
+`delete_by_relation` does not refuse it, because deleting is how a self-loop
+left by an older release gets removed.
+
+Operations that remove the entity they address are the exception. They are
+`delete_by_entity`, the source entities of `merge_entities`, and the entity
+an `edit_entity` call renames, with or without `allow_merge`. Each accepts
+only the name the entity is stored under, so a retry of the same request
+always targets the same node. Suppose an exact legacy name and its normalized
+spelling are two different entities. If such an operation on the legacy one
+fails after removing the node, and the name were resolved, the retry would
+fall through to the other entity and delete it, merge it away or rename it.
+The same happens when a client resends a request that had succeeded. When
+the exact name is absent but its normalized spelling is stored, the refusal
+names the stored spelling: a `not_found` (404) from `delete_by_entity`, a
+`ValueError` (400 through the API) from the other two. Look a name up with
+`get_entity_info` to learn its stored spelling first.
 
 ### Relation Weight Contract
 
@@ -1854,13 +1931,15 @@ What remains, and why it is tolerated:
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
 
-A workspace-wide admin lock was specified and dropped: it would not have changed
-what a crash can leave behind, since the same residue is reachable with no
-concurrency at all. If you drive the public Python admin API yourself
-(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
-their relation counterparts) **do not call them concurrently on a file-backed
-workspace** — one at a time, or use a server-backed graph and KV store.
-`ainsert_custom_kg` is subject to the same rule.
+Serializing admin writers would not remove any of these: they are what a crash
+can leave behind, and the same residue is reachable with no concurrency at all.
+Concurrency is handled separately and per storage: when the graph backend
+declares `requires_single_writer` (`NetworkXStorage`, the only one), public admin
+graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
+lock plus the pipeline `busy` reservation. Other graph backends do not take that
+gate and rely on the per-entity keyed locks. See
+[Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
+and recovery behavior.
 
 #### Repairing chunk tracking
 

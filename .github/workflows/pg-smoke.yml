@@ -3,9 +3,59 @@ name: PostgreSQL Smoke Tests
 on:
   push:
     branches: [ main, dev, 'dev-*' ]
+    # Keep both event filters aligned: PG code, shared dependencies, and CI inputs.
+    paths:
+      - 'lightrag/kg/pgtable_impl.py'
+      - 'lightrag/kg/postgres_impl.py'
+      - 'lightrag/kg/__init__.py'
+      - 'lightrag/kg/shared_storage.py'
+      - 'lightrag/kg/pipeline_ingress.py'
+      - 'lightrag/kg/scan_job_store.py'
+      - 'lightrag/base.py'
+      - 'lightrag/utils.py'
+      - 'lightrag/types.py'
+      - 'lightrag/constants.py'
+      - 'lightrag/exceptions.py'
+      - 'lightrag/namespace.py'
+      - 'lightrag/pipeline_metrics.py'
+      - 'lightrag/__init__.py'
+      - 'tests/kg/pgtable_impl/**'
+      - 'tests/kg/postgres_impl/**'
+      - 'conftest.py'
+      - 'tests/conftest.py'
+      - 'tests/kg/conftest.py'
+      - 'pyproject.toml'
+      - 'setup.py'
+      - 'MANIFEST.in'
+      - '.github/workflows/pg-smoke.yml'
   pull_request:
     branches: [ main, dev, 'dev-*' ]
     types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'lightrag/kg/pgtable_impl.py'
+      - 'lightrag/kg/postgres_impl.py'
+      - 'lightrag/kg/__init__.py'
+      - 'lightrag/kg/shared_storage.py'
+      - 'lightrag/kg/pipeline_ingress.py'
+      - 'lightrag/kg/scan_job_store.py'
+      - 'lightrag/base.py'
+      - 'lightrag/utils.py'
+      - 'lightrag/types.py'
+      - 'lightrag/constants.py'
+      - 'lightrag/exceptions.py'
+      - 'lightrag/namespace.py'
+      - 'lightrag/pipeline_metrics.py'
+      - 'lightrag/__init__.py'
+      - 'tests/kg/pgtable_impl/**'
+      - 'tests/kg/postgres_impl/**'
+      - 'conftest.py'
+      - 'tests/conftest.py'
+      - 'tests/kg/conftest.py'
+      - 'pyproject.toml'
+      - 'setup.py'
+      - 'MANIFEST.in'
+      - '.github/workflows/pg-smoke.yml'
+  workflow_dispatch:
 
 jobs:
   pg-smoke:

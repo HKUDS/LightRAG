@@ -6,6 +6,9 @@ import pytest
 from lightrag.kg.postgres_impl import ClientManager
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.fixture(autouse=True)
 def reset_client_manager_state():
     """Reset the process-wide pool state BEFORE and AFTER each test.
