@@ -115,10 +115,14 @@ def _ref_full_prefix_span(
 
 
 def _windows(n_tokens: int, chunk_size: int, overlap: int) -> list[tuple[int, int]]:
+    # Mirrors the chunker's stop rule: no window after one reaches the end.
     step = chunk_size - overlap
-    return [
-        (start, min(start + chunk_size, n_tokens)) for start in range(0, n_tokens, step)
-    ]
+    windows = []
+    for start in range(0, n_tokens, step):
+        windows.append((start, min(start + chunk_size, n_tokens)))
+        if start + chunk_size >= n_tokens:
+            break
+    return windows
 
 
 @pytest.mark.offline
@@ -577,7 +581,7 @@ def test_source_replacement_far_from_window_still_disables_recovery(tmp_path) ->
 
     blocks = [
         ("b0", "\ufffd" * 7 + "é" * 12 + "😀" * 25 + "é" * 6),
-        ("b1", "é" * 3),
+        ("b1", "é" * 6),
     ]
     text = "\n\n".join(content for _, content in blocks)
     chunks = chunking_by_fixed_token(
@@ -587,9 +591,11 @@ def test_source_replacement_far_from_window_still_disables_recovery(tmp_path) ->
         chunk_overlap_token_size=5,
         _emit_source_span=True,
     )
-    # Chunk 16 is bytes [160, 165): the tail of one "é" and two whole ones,
-    # all in b1 and more than 32 characters past the last source U+FFFD.
-    assert chunks[16]["content"] == "\ufffdéé"
+    # Chunk 16 is bytes [160, 171), the last window: the tail of one "é"
+    # and five whole ones, all in b1 and more than 32 characters past the
+    # last source U+FFFD.
+    assert len(chunks) == 17
+    assert chunks[16]["content"] == "\ufffdééééé"
     assert "_source_span" not in chunks[16]
 
     blocks_path = tmp_path / "doc.blocks.jsonl"
