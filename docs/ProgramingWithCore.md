@@ -61,6 +61,32 @@ Notes:
 **LightRAG requires explicit initialization before use.** You must call `await rag.initialize_storages()` after creating a LightRAG instance, otherwise you will encounter errors.
 
 
+## Streaming queries
+
+Use `aquery(..., QueryParam(stream=True))` from async code and consume the
+returned chunks with `async for`. A provider can still return a complete
+string, so handle both return values.
+
+```python
+from lightrag import QueryParam
+
+
+async def print_answer(rag, question):
+    answer = await rag.aquery(question, param=QueryParam(mode="hybrid", stream=True))
+    if isinstance(answer, str):
+        print(answer)
+        return
+
+    async for chunk in answer:
+        print(chunk, end="", flush=True)
+    print()
+```
+
+Call this helper on the event loop that initialized the LightRAG instance.
+The synchronous `query()` wrapper waits for the initial response. If the
+provider returns a stream, the wrapper currently hands back an async iterator.
+For synchronous scripts that need a string, use `QueryParam(stream=False)`.
+
 ## LightRAG Init Parameters
 
 **Parameters**
