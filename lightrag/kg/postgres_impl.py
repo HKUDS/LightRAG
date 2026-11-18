@@ -7731,7 +7731,6 @@ class PGGraphEdgeWriteLostError(PGGraphQueryException):
         target_node_id: str,
         missing_endpoints: Sequence[str] = (),
     ) -> None:
-        self.graph_name = graph_name
         self.source_node_id = source_node_id
         self.target_node_id = target_node_id
         self.missing_endpoints = tuple(missing_endpoints)
@@ -7748,67 +7747,72 @@ class PGGraphEdgeWriteLostError(PGGraphQueryException):
             f"PostgreSQL AGE: edge `{source_node_id}`-`{target_node_id}` was not "
             f"written to graph {graph_name} ({details})"
         )
-        super().__init__({"message": message, "details": details})
+        super().__init__(
+            {"message": message, "details": details, "graph_name": graph_name}
+        )
         # PGGraphQueryException does not populate Exception.args, which would
         # make str(exc) empty in logs and test output.
         self.args = (message,)
 
 
+# The labels PGGraphStorage creates plus AGE's default parents. A missing table
+# under one of these names is a real error, never the dangling-label defect.
 _AGE_REAL_LABEL_TABLES: frozenset[str] = frozenset(
     {"base", "DIRECTED", "_ag_label_vertex", "_ag_label_edge"}
 )
 
 
-def _is_age_dangling_label_error(
-    cause: BaseException, graph_name: str | None = None
-) -> bool:
-    """Return True when an error matches the Apache AGE label-cache dangling pointer defect.
+def _is_age_dangling_label_error(cause: BaseException, graph_name: str | None) -> bool:
+    """Return True when ``cause`` is the Apache AGE label-cache dangling pointer error.
 
     Rules:
     - Known Apache AGE 1.7.x defect: ``_label_name`` returns a pointer into the
-      backend-local label cache that cache invalidation can free during property detoast.
-    - Retried as an application-level mitigation; the root fix belongs upstream in AGE.
-    - Does not indicate graph or data corruption in LightRAG.
+      backend-local label cache, which a cache invalidation can free while the
+      vertex properties are detoasted. ``SET`` then opens ``<graph>.<garbage>``.
+    - Retried as a mitigation only; the real fix belongs upstream in AGE. It does
+      not mean LightRAG's graph or data is corrupted.
+    - Matches only a missing relation inside ``graph_name``'s schema that is not
+      one of ``_AGE_REAL_LABEL_TABLES``: as ``UndefinedTableError`` (SQLSTATE
+      42P01), or as the ``UnicodeDecodeError`` asyncpg raises when the garbage is
+      not valid UTF-8. Anything else, or no ``graph_name``, returns False.
     """
     if not graph_name:
         return False
+    prefix = f'relation "{graph_name}.'
+    suffix = '" does not exist'
 
     if isinstance(cause, UnicodeDecodeError):
-        blob = getattr(cause, "object", None)
+        blob = cause.object
         if not isinstance(blob, bytes):
             return False
-        schema_prefix = f'relation "{graph_name}.'.encode("utf-8")
-        return schema_prefix in blob and b"does not exist" in blob
+        return prefix.encode("utf-8") in blob and suffix.encode("utf-8") in blob
 
     if isinstance(cause, asyncpg.exceptions.UndefinedTableError):
         msg = str(cause)
-        prefix = f'relation "{graph_name}.'
-        suffix = '" does not exist'
-        idx_prefix = msg.find(prefix)
-        if idx_prefix == -1:
+        label_start = msg.find(prefix)
+        if label_start == -1:
             return False
-        idx_label_start = idx_prefix + len(prefix)
-        idx_suffix = msg.find(suffix, idx_label_start)
-        if idx_suffix == -1:
+        label_start += len(prefix)
+        label_end = msg.find(suffix, label_start)
+        if label_end == -1:
             return False
-        label_name = msg[idx_label_start:idx_suffix]
-        if label_name in _AGE_REAL_LABEL_TABLES:
-            return False
-        return True
+        return msg[label_start:label_end] not in _AGE_REAL_LABEL_TABLES
 
     return False
 
 
-def _is_transient_graph_write_error(
-    exc: BaseException, graph_name: str | None = None
-) -> bool:
+def _is_transient_graph_write_error(exc: BaseException) -> bool:
     """Return True when a PGGraphQueryException wraps a transient write-time error.
 
     The inner _run_with_retry already handles connection-level transient errors
     (pool reset, TCP failures, etc.).  This predicate covers query-level transient
     errors that survive the connection layer and surface as PGGraphQueryException:
-    deadlocks, serialization conflicts, lock-acquisition timeouts, and Apache AGE
-    label-cache dangling pointer errors that can occur during concurrent ingestion.
+    deadlocks, serialization conflicts, lock-acquisition timeouts, and the Apache
+    AGE label-cache dangling pointer error (``_is_age_dangling_label_error``).
+
+    The dangling-label match needs the graph name, so a write path that wraps its
+    error must put ``"graph_name": self.graph_name`` into the PGGraphQueryException
+    dict; without it the error is not retried.
     """
     if not isinstance(exc, PGGraphQueryException):
         return False
@@ -7825,8 +7829,7 @@ def _is_transient_graph_write_error(
         ),
     ):
         return True
-    resolved_graph_name = graph_name or getattr(exc, "graph_name", None)
-    return _is_age_dangling_label_error(cause, graph_name=resolved_graph_name)
+    return _is_age_dangling_label_error(cause, getattr(exc, "graph_name", None))
 
 
 # Transaction-scoped advisory lock that serialises concurrent upserts of the
