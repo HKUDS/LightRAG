@@ -500,6 +500,61 @@ async def test_bedrock_no_timeout_keeps_botocore_defaults(monkeypatch):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("default_llm_timeout", "call_kwargs", "expected_read_timeout"),
+    [
+        pytest.param(240, {}, 240, id="fallback-to-default-llm-timeout"),
+        # A caller-passed timeout (llm_model_kwargs, role kwargs) still wins.
+        pytest.param(240, {"timeout": 30}, 30, id="caller-timeout-wins"),
+        # LLM_TIMEOUT=0 stays 0, which aiohttp treats as no timeout; None
+        # would fall back to botocore's 60s.
+        pytest.param(0, {}, 0, id="zero-means-no-read-timeout"),
+        pytest.param(60, {}, 60, id="fallback-at-botocore-default"),
+        # A base timeout under botocore's 60s must not shorten the client:
+        # a role with RoleLLMConfig(timeout=180) is still sent here with no
+        # timeout, and was cut at 60s rather than 30s before the fallback.
+        pytest.param(30, {}, None, id="short-default-keeps-botocore-default"),
+        pytest.param(30, {"timeout": 30}, 30, id="short-caller-timeout-wins"),
+        pytest.param(-1, {}, None, id="negative-default-keeps-botocore-default"),
+    ],
+)
+async def test_bedrock_complete_inherits_default_llm_timeout(
+    monkeypatch, default_llm_timeout, call_kwargs, expected_read_timeout
+):
+    """bedrock_complete must apply LightRAG's LLM timeout when none is passed.
+
+    It is the llm_model_func of the library path, which never passes a
+    timeout. Without the fallback botocore's 60s read timeout cut any
+    attempt longer than that (GPT-6 Astra extraction on a dense chunk)
+    while the role queue waited default_llm_timeout * 2. The fallback must
+    never make the client stricter than botocore's own default.
+    """
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    client_kwargs_calls: list[dict] = []
+    hashing_kv = SimpleNamespace(
+        global_config={
+            "llm_model_name": "bedrock-model",
+            "default_llm_timeout": default_llm_timeout,
+        }
+    )
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession([], client_kwargs_calls),
+    ):
+        await bedrock_complete(prompt="hello", hashing_kv=hashing_kv, **call_kwargs)
+
+    assert len(client_kwargs_calls) == 1
+    config = client_kwargs_calls[0].get("config")
+    if expected_read_timeout is None:
+        assert config is None
+    else:
+        assert config.read_timeout == expected_read_timeout
+        assert config.connect_timeout == expected_read_timeout
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_bedrock_extra_fields_maps_to_additional_model_request_fields(
     monkeypatch,
 ):
