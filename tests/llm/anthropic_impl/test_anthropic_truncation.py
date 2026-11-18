@@ -27,7 +27,7 @@ async def test_anthropic_max_tokens_stop_reason_marks_result_truncated():
     client = _make_client(text=partial, stop_reason="max_tokens")
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        result = await anthropic_complete_if_cache.__wrapped__(
+        result = await anthropic_complete_if_cache(
             model="claude-test", prompt="Extract", api_key="test-key"
         )
 
@@ -42,7 +42,7 @@ async def test_anthropic_end_turn_stop_reason_remains_plain_string():
     client = _make_client(text=complete, stop_reason="end_turn")
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        result = await anthropic_complete_if_cache.__wrapped__(
+        result = await anthropic_complete_if_cache(
             model="claude-test", prompt="Extract", api_key="test-key"
         )
 

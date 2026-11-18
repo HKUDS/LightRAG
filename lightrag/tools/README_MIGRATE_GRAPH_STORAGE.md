@@ -111,12 +111,20 @@ Both modes print a dict to stdout, following the convention of the other
 tools:
 
 ```python
-{'mode': 'dry-run', 'source_backend': 'PGGraphStorage',
- 'target_backend': 'PGTableGraphStorage', 'workspace': 'default',
- 'nodes': 8123, 'edges': 41022,
- 'verified': False, 'compensated': False, 'target_non_empty': False,
- 'would_drop_target_slice': False,
- 'written_node_count': 8123, 'written_edge_count': 41022}
+{
+    "mode": "dry-run",
+    "source_backend": "PGGraphStorage",
+    "target_backend": "PGTableGraphStorage",
+    "workspace": "default",
+    "nodes": 8123,
+    "edges": 41022,
+    "verified": False,
+    "compensated": False,
+    "target_non_empty": False,
+    "would_drop_target_slice": False,
+    "written_node_count": 8123,
+    "written_edge_count": 41022,
+}
 ```
 
 `mode` is `dry-run` or `apply`. `verified` is true only when the post-write

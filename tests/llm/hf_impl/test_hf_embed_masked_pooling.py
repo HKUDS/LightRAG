@@ -180,7 +180,9 @@ class _FakeTokenizer:
     def __init__(self, encoded):
         self._encoded = encoded
 
-    def __call__(self, texts, return_tensors="pt", padding=True, truncation=True):
+    def __call__(
+        self, texts, return_tensors="pt", padding=True, truncation=True, max_length=None
+    ):
         return _FakeTokenizerOutput(self._encoded)
 
 

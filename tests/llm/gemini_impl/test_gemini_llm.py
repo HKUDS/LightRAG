@@ -199,11 +199,78 @@ def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch, request):
 
 
 @pytest.mark.offline
+def test_gemini_safety_settings_mapping_is_converted_to_sdk_list_shape(
+    monkeypatch, request
+):
+    """GeminiLLMOptions documents safety_settings as a JSON object (a plain
+    {category: threshold} mapping) and the server forwards that mapping into
+    generation_config unchanged. google.genai.types.GenerateContentConfig
+    requires safety_settings to be a list of {category, threshold} entries
+    and rejects a bare mapping outright, so every completion call made with
+    this documented option crashed before a request was ever sent."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    config = gemini_module._build_generation_config(
+        base_config={
+            "safety_settings": {
+                "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
+                "HARM_CATEGORY_HATE_SPEECH": "BLOCK_ONLY_HIGH",
+            }
+        },
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+    ]
+
+
+@pytest.mark.offline
+def test_gemini_safety_settings_list_shape_passes_through_unchanged(
+    monkeypatch, request
+):
+    """A caller already passing the SDK's native list shape must not be
+    altered by the dict-to-list normalization."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    native_shape = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}]
+    config = gemini_module._build_generation_config(
+        base_config={"safety_settings": native_shape},
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == native_shape
+
+
+@pytest.mark.offline
+def test_gemini_safety_settings_single_sdk_entry_is_wrapped_not_unpacked(
+    monkeypatch, request
+):
+    """A single SDK entry written as a dict must become a one-item list.
+    Read as a category-to-threshold mapping it would turn into the bogus
+    categories "category" and "threshold", which the SDK only warns about,
+    so the misconfiguration would reach the API instead of failing here."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    entry = {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}
+    config = gemini_module._build_generation_config(
+        base_config={"safety_settings": entry},
+        system_prompt=None,
+        response_format=None,
+    )
+
+    assert config.kwargs["safety_settings"] == [entry]
+
+
+@pytest.mark.offline
 def test_gemini_rejects_typed_response_format(monkeypatch, request):
     gemini_module = _load_gemini_module(monkeypatch, request)
 
     class FakeSchemaModel:
-        pass
+        """A class object where Gemini expects a dict schema (typed/Pydantic)."""
 
     with pytest.raises(TypeError, match="typed/Pydantic"):
         gemini_module._validate_gemini_response_format(FakeSchemaModel)

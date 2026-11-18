@@ -28,6 +28,9 @@ from lightrag.parser.routing import (
 )
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.fixture(autouse=True)
 def _clean_switch(monkeypatch):
     monkeypatch.delenv("DOCX_SMART_HEADING", raising=False)
