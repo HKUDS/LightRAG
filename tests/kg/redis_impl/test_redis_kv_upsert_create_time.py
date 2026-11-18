@@ -25,6 +25,7 @@ from lightrag.kg.shared_storage import finalize_share_data, initialize_share_dat
 from lightrag.namespace import NameSpace
 
 from .fake_redis import FakeRedis
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -259,15 +260,10 @@ async def test_empty_value_row_records_zero_not_a_new_timestamp(fake, caplog):
 
     fake.store[f"{storage.final_namespace}:empty"] = ""
 
-    logger = logging.getLogger("lightrag")
-    previous = logger.propagate
-    logger.propagate = True  # lightrag's logger does not propagate by default
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger="lightrag"):
             with patch("time.time", return_value=1_700_000_700):
                 await storage.upsert({"empty": {"x": 1}})
-    finally:
-        logger.propagate = previous
 
     stored = _stored(fake, storage, "empty")
     assert stored["create_time"] == 0
@@ -285,15 +281,10 @@ async def test_corrupt_row_records_zero_and_warns(fake, caplog):
 
     fake.store[f"{storage.final_namespace}:c"] = "}} not json {{"
 
-    logger = logging.getLogger("lightrag")
-    previous = logger.propagate
-    logger.propagate = True  # lightrag's logger does not propagate by default
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger="lightrag"):
             with patch("time.time", return_value=1_700_000_200):
                 await storage.upsert({"c": {"chunk_ids": ["c1"]}})
-    finally:
-        logger.propagate = previous
 
     assert _stored(fake, storage, "c")["create_time"] == 0
     assert any("not decodable JSON" in record.message for record in caplog.records)
