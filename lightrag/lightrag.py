@@ -221,6 +221,7 @@ from lightrag.utils import (
     generate_track_id,
     get_content_summary,
     get_extract_cache_fence,
+    graph_attribute_value_rejection,
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
@@ -5135,6 +5136,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Entity names and relationship endpoints are normalized with the same
         contract used by document extraction before any storage write begins.
+        Every ``file_path`` (on chunks, entities and relationships) is checked
+        in that same phase against the rule graph attributes follow
+        (``lightrag.utils.graph_attribute_value_rejection``): a value holding a
+        lone surrogate, U+FFFE / U+FFFF or a control character other than tab,
+        newline and carriage return raises ``ValueError`` and nothing is
+        written. A chunk's path never reaches the graph, but the same source
+        is stamped on the entities and relations taken from it.
         A relationship weight is bounded below by its number of distinct real
         evidence sources. Explicit weights may boost that baseline; omit the
         relationship ``source_id`` to use a fractional source-less weight.
@@ -5183,11 +5191,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                     return normalized_value
 
+                def _validate_custom_kg_file_path(value: Any, *, field: str) -> None:
+                    # Checked on the normalized value, the one the stores get.
+                    # Rejected rather than cleaned, like a REST document source:
+                    # the graph guard refuses these values on an entity or
+                    # relation anyway, and on a chunk some stores fail the
+                    # write while others silently store a cleaned name.
+                    rejection = graph_attribute_value_rejection(
+                        normalize_document_file_path(value)
+                    )
+                    if rejection is not None:
+                        raise ValueError(f"Custom KG {field} {rejection}")
+
                 # Validate and canonicalize the complete identifier set before
                 # chunks or graph objects are written. Copies keep the caller's
                 # custom_kg payload unchanged.
+                # Materialized once: the build below walks the chunks again,
+                # and a one-shot iterable would arrive there exhausted.
+                custom_chunks = list(custom_kg.get("chunks", []))
+                for index, chunk_data in enumerate(custom_chunks):
+                    _validate_custom_kg_file_path(
+                        chunk_data.get("file_path", "custom_kg"),
+                        field=f"chunks[{index}].file_path",
+                    )
+
                 normalized_entities: list[dict[str, Any]] = []
                 for index, entity_data in enumerate(custom_kg.get("entities", [])):
+                    _validate_custom_kg_file_path(
+                        entity_data.get("file_path", "custom_kg"),
+                        field=f"entities[{index}].file_path",
+                    )
                     normalized_entity_data = dict(entity_data)
                     normalized_entity_data["entity_name"] = (
                         _normalize_custom_kg_entity_name(
@@ -5201,6 +5234,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for index, relationship_data in enumerate(
                     custom_kg.get("relationships", [])
                 ):
+                    _validate_custom_kg_file_path(
+                        relationship_data.get("file_path", "custom_kg"),
+                        field=f"relationships[{index}].file_path",
+                    )
                     normalized_relationship_data = dict(relationship_data)
                     normalized_relationship_data["src_id"] = (
                         _normalize_custom_kg_entity_name(
@@ -5254,7 +5291,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline busy flag, so leaving the loop here would let it encode
                     concurrently with a document being chunked.
                     """
-                    for chunk_data in custom_kg.get("chunks", []):
+                    for chunk_data in custom_chunks:
                         chunk_content = sanitize_text_for_encoding(
                             chunk_data["content"]
                         )
