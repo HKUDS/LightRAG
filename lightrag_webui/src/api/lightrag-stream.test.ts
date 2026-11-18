@@ -41,7 +41,10 @@ Object.defineProperty(globalThis, 'sessionStorage', {
 // dependency where an overlay is sufficient (spread-real, pins the base URL).
 // axios is NOT module-mocked: the api module must keep a real axios instance
 // for later files, so the guest-token refresh is answered by swapping the
-// global axios adapter in beforeAll (restored in afterAll).
+// global axios adapter in beforeAll (restored in afterAll). The swap happens
+// only AFTER the api module is imported: axios.create() copies the global
+// adapter into the new instance by value, so an instance created while the
+// stub is installed would keep the stub after afterAll restores the global.
 // An OVERLAY on the real module, not a replacement. `mock.module` is global for
 // the whole `bun test` run and is never undone, so a factory returning only the
 // three exports this file needs also deletes every OTHER export of that module
@@ -120,14 +123,20 @@ let authStore: typeof import('@/stores/state').useAuthStore
 // the whole file and restore the originals afterwards.
 let restoreMocks: (() => void) | undefined
 let previousAxiosAdapter: typeof axios.defaults.adapter
+// The instance the api module created, if this file was the one that first
+// imported it (see the 'test isolation' suite at the bottom).
+let createdApiInstance: ReturnType<typeof axios.create> | undefined
 
-beforeAll(async () => {
-  // The guest-token refresh is the only axios call on these paths: it uses
-  // the GLOBAL axios.get('/auth-status'). Answer it at the adapter seam
-  // (restored in afterAll) rather than mocking the 'axios' module, which
-  // would leave a fake instance behind for every later test file.
-  previousAxiosAdapter = axios.defaults.adapter
-  axios.defaults.adapter = async (config) => ({
+// Answers the guest-token refresh, the only axios call on these paths: the
+// GLOBAL axios.get('/auth-status'). Anything else reaching it is a bug in this
+// file's isolation, so it fails loudly instead of returning a fake 200.
+const guestTokenAdapter: NonNullable<typeof axios.defaults.adapter> = async (config) => {
+  if (config.url !== '/auth-status') {
+    throw new Error(
+      `lightrag-stream.test.ts guest-token adapter got an unexpected request: ${config.url}`
+    )
+  }
+  return {
     data: {
       access_token: 'mock-guest-token',
       auth_configured: false,
@@ -138,15 +147,30 @@ beforeAll(async () => {
     statusText: 'OK',
     headers: {},
     config,
-  })
+  }
+}
 
+beforeAll(async () => {
   // Dynamic imports AFTER the constants mock above, so the api module sees
   // the pinned base URL. These are the REAL store and navigation modules —
-  // see the isolation note at the top of this file.
-  settingsStore = (await import('@/stores/settings')).useSettingsStore
-  authStore = (await import('@/stores/state')).useAuthStore
-  const { navigationService } = await import('@/services/navigation')
-  apiModule = await import('./lightrag')
+  // see the isolation note at the top of this file. The spy only records
+  // (it calls through) and is restored at once.
+  const createSpy = spyOn(axios, 'create')
+  let navigationService: typeof import('@/services/navigation').navigationService
+  try {
+    settingsStore = (await import('@/stores/settings')).useSettingsStore
+    authStore = (await import('@/stores/state')).useAuthStore
+    navigationService = (await import('@/services/navigation')).navigationService
+    apiModule = await import('./lightrag')
+    createdApiInstance = createSpy.mock.results[0]?.value as typeof createdApiInstance
+  } finally {
+    createSpy.mockRestore()
+  }
+
+  // Only now, with the api instance already created: axios.create() copies
+  // the global adapter by value (see the isolation note at the top).
+  previousAxiosAdapter = axios.defaults.adapter
+  axios.defaults.adapter = guestTokenAdapter
 
   // Restorable, not module-level: the 401 paths under test call this; a
   // module mock would leak a no-op service into every later test file.
@@ -703,9 +727,17 @@ describe('queryTextStream — auth termination (401)', () => {
 })
 
 describe('test isolation', () => {
-  // A module-level axios mock would leave the api module holding a fake
-  // instance for every later test file; it must stay a real one.
-  test('the api module keeps a real axios instance for later files', () => {
-    expect(() => apiModule.__setAxiosAdapterForTests(undefined)).not.toThrow()
+  // The api module's axios instance outlives this file, so it must not carry
+  // anything this file installs: no module-mocked axios (a stub instance has
+  // no `defaults`, so later files' __setAxiosAdapterForTests throws), and no
+  // guest-token stub copied in by axios.create(). Do not "check" this by
+  // calling __setAxiosAdapterForTests: resetting the adapter would repair the
+  // very leak the test exists to catch.
+  test('the api module keeps a real, unstubbed axios instance for later files', () => {
+    // Undefined when an earlier test file imported the api module first: its
+    // instance was then created before this file installed anything.
+    if (createdApiInstance === undefined) return
+    expect(typeof createdApiInstance.defaults).toBe('object')
+    expect(createdApiInstance.defaults.adapter === guestTokenAdapter).toBe(false)
   })
 })
