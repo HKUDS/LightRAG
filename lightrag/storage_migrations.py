@@ -4,8 +4,9 @@ Mixed into LightRAG. Server startup calls ``check_and_migrate_data`` after
 ``initialize_storages`` to upgrade legacy data layouts; SDK explicit creation
 also checks chunk tracking before writing its first new row:
 
-- Backfill ``full_entities`` / ``full_relations`` from the graph + doc_status
-  history when those KV stores are empty (entity-relation migration).
+- Backfill ``full_entities`` / ``full_relations`` from doc_status history and
+  each object's chunk tracking (graph ``source_id`` only when tracking is
+  absent) when those KV stores are empty (entity-relation migration).
 - Rebuild ``entity_chunks`` / ``relation_chunks`` indexes by walking nodes/
   edges in the graph storage when they are empty
   (chunk-tracking migration).
@@ -129,7 +130,23 @@ class _StorageMigrationMixin:
                 raise e
 
     async def _migrate_entity_relation_data(self, processed_docs: dict):
-        """Migrate existing entity and relation data to full_entities and full_relations storage"""
+        """Backfill the per-document recovery anchors from existing KG data.
+
+        Rules:
+
+        * The chunk list of each entity / relation comes from its
+          ``entity_chunks`` / ``relation_chunks`` row, read strictly; a present
+          row wins even when empty. Graph ``source_id`` is a capped view and is
+          used only when the row is confirmed absent. Anchors built from it
+          would under-name a document's objects and let a later purge leave
+          them behind, see "Chunk tracking authority" in
+          docs/design/PurgeRecoveryContract.md.
+        * Every read happens before the first anchor write, so a failed or
+          unsupported strict read aborts with nothing written.
+        * Reads are one point read per node and edge, issued serially. This
+          one-shot migration accepts that cost; batch it with bounded
+          concurrency if large-graph upgrades show slow startups.
+        """
         logger.info(f"Starting data migration for {len(processed_docs)} documents")
 
         # Create mapping from chunk_id to doc_id
