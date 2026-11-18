@@ -46,6 +46,7 @@ from lightrag.sidecar.ir import (
     IRPosition,
     IRTable,
 )
+from lightrag.sidecar.placeholders import PLACEHOLDER_TOKEN_RE
 
 
 def _placeholder_keyspace(reserved: set[str]) -> Callable[[str], str]:
@@ -84,12 +85,9 @@ class NativeMarkdownIRBuilder:
 
         # Reserve author-written IR token examples across the whole document.
         source_keys = {
-            key
+            match.group(2)
             for block in blocks
-            for key in re.findall(
-                r"\{\{(?:TBL|IMG|EQ|EQI):([A-Za-z0-9_\-]+)\}\}",
-                block.get("content") or "",
-            )
+            for match in PLACEHOLDER_TOKEN_RE.finditer(block.get("content") or "")
         }
         next_key = _placeholder_keyspace(source_keys)
         ir_blocks: list[IRBlock] = []
