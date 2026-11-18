@@ -1337,15 +1337,9 @@ class MongoDocStatusStorage(DocStatusStorage):
     def _decode_cursor(opaque: str) -> tuple[str | None, str]:
         """Decode an opaque scheduling cursor into its ``(created_at, id)`` key.
 
-        The cursor is this backend's own ``[created_at | null, id]`` list, so the
-        payload must BE a two-element list: unpacking alone is not a test of
-        shape, since a two-entry JSON object (a cursor minted by another
-        backend) or a two-character JSON string also unpacks to two strings.
-        Accepting one of those reads foreign data as a keyset position and
-        mis-positions the sweep — key ``('pending', 'failed')`` sorts after
-        every real row, so a strict page would end the sweep and report it
-        complete instead of failing. The sibling OpenSearch and Redis decoders
-        refuse any other container for the same reason; a malformed cursor
+        Only this backend's own ``[created_at | null, id]`` list is a cursor.
+        Any other payload -- including a two-entry object or a two-character
+        string, which would unpack to two strings and mis-position the sweep --
         raises :class:`~lightrag.exceptions.StorageControlPlaneError`.
         """
         try:

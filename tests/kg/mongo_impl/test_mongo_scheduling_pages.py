@@ -357,36 +357,39 @@ async def test_page_malformed_cursor_raises_control_plane_error():
         )
 
 
-async def test_page_cursor_payload_must_be_a_two_element_list():
-    """Only this backend's own ``[created_at | null, id]`` list is a cursor.
-
-    Unpacking is not a test of shape: a two-entry JSON object (what a cursor
-    minted by another backend looks like) or a two-character JSON string also
-    unpacks to two strings. Read as a keyset position, ``('pending', 'failed')``
-    sorts after every real row, so a strict page would report the sweep
-    complete — silently skipping the documents the sweep exists to find —
-    instead of raising the control-plane error the caller fails closed on.
-    """
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # A two-entry object (another backend's cursor shape) and a
+        # two-character string both unpack to two strings; read as a keyset
+        # position they would mis-position the sweep instead of failing closed.
+        pytest.param(
+            json.dumps({"pending": "doc-a", "failed": "doc-b"}), id="two-key-object"
+        ),
+        pytest.param(json.dumps("ab"), id="two-char-string"),
+    ],
+)
+async def test_page_cursor_payload_must_be_a_two_element_list(payload):
     storage = _storage()
 
-    for payload in (
-        json.dumps({"pending": "doc-a", "failed": "doc-b"}),
-        json.dumps("ab"),
-    ):
-        with pytest.raises(StorageControlPlaneError):
-            await storage.get_docs_by_statuses_page(
-                [DocStatus.FAILED], limit=2, position=CursorAfter(payload)
-            )
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page(
+            [DocStatus.FAILED], limit=2, position=CursorAfter(payload), strict=True
+        )
 
-    # Both genuine shapes are still accepted: a real key and the NULL
-    # created_at bucket the backend itself mints for legacy rows.
-    assert MongoDocStatusStorage._decode_cursor(
-        json.dumps(["2026-01-01T00:00:00+00:00", "doc-1"])
-    ) == ("2026-01-01T00:00:00+00:00", "doc-1")
-    assert MongoDocStatusStorage._decode_cursor(json.dumps([None, "doc-1"])) == (
-        None,
-        "doc-1",
-    )
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(("2026-01-01T00:00:00+00:00", "doc-1"), id="real-key"),
+        # The NULL created_at bucket the backend itself mints for legacy rows.
+        pytest.param((None, "doc-1"), id="null-bucket"),
+    ],
+)
+def test_decode_cursor_accepts_the_backends_own_shapes(key):
+    created, doc_id = key
+    opaque = MongoDocStatusStorage._encode_cursor(created, doc_id)
+    assert MongoDocStatusStorage._decode_cursor(opaque) == key
 
 
 async def test_page_transport_error_propagates():
