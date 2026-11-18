@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -140,13 +141,25 @@ class Neo4JStorage(BaseGraphStorage):
         return self._get_raw_workspace_label().replace("`", "``")
 
     def _normalize_index_suffix(self, workspace_label: str) -> str:
-        """Normalize workspace label for safe use in index names."""
+        """Normalize workspace label for safe, collision-free use in index names.
+
+        Collapsing every run of non-alphanumeric characters to a single
+        underscore is lossy by itself: "foo-bar", "foo_bar" and "foo bar"
+        would all normalize to the same string, so two different workspaces
+        would resolve to the same full-text index name. A short hash of the
+        original label is appended so distinct labels never collide; a
+        workspace that lost that disambiguation would skip creating its own
+        index (an existing index of that name already looks ONLINE) and
+        reuse one scoped to a different workspace's label, which silently
+        returns no matches for every search_labels call.
+        """
         normalized = re.sub(r"[^A-Za-z0-9_]+", "_", workspace_label).strip("_")
         if not normalized:
             normalized = "base"
         if not re.match(r"[A-Za-z_]", normalized[0]):
             normalized = f"ws_{normalized}"
-        return normalized
+        digest = hashlib.sha1(workspace_label.encode("utf-8")).hexdigest()[:8]
+        return f"{normalized}_{digest}"
 
     def _get_fulltext_index_name(self, workspace_label: str) -> str:
         """Return a full-text index name derived from the normalized workspace label."""
