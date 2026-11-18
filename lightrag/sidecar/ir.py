@@ -105,7 +105,9 @@ class IRTable:
     # the parser's original whitespace/escaping when byte-equivalence with a
     # pre-existing output is required. The ``tables.json`` ``content`` field
     # is unaffected and remains the canonical
-    # ``json.dumps(rows, ensure_ascii=False)`` encoding.
+    # ``json.dumps(rows, ensure_ascii=False)`` encoding. The one rewrite the
+    # writer applies to a verbatim JSON body is ``render_table_tag``'s escape
+    # of a cell text ``</table>``, which would otherwise end the tag.
     #
     # Coexistence with ``rows`` / ``html``: ``body_override`` does NOT replace
     # the structured body. ``rows`` (or ``html``) must still be populated for

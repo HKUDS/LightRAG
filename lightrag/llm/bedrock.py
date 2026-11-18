@@ -13,6 +13,7 @@ import numpy as np
 
 # botocore is a hard dependency of aioboto3, so this import is always safe.
 from botocore.config import Config as BotocoreConfig
+from botocore.endpoint import DEFAULT_TIMEOUT as BOTOCORE_DEFAULT_TIMEOUT
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -35,6 +36,7 @@ from lightrag.utils import (
 try:
     from botocore.exceptions import (
         ClientError,
+        ConnectionClosedError,
         ConnectionError as BotocoreConnectionError,
         ReadTimeoutError,
     )
@@ -42,6 +44,7 @@ except ImportError:
     # If botocore is not installed, define placeholders
     ClientError = Exception
     BotocoreConnectionError = Exception
+    ConnectionClosedError = Exception
     ReadTimeoutError = Exception
 
 
@@ -147,8 +150,13 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
             logging.error(f"{operation} client error: {error_msg}")
             raise BedrockError(f"Client error: {error_msg}")
 
-    # Connection errors (retryable)
-    elif isinstance(e, BotocoreConnectionError):
+    # Connection errors (retryable). ConnectionClosedError (raised when the
+    # server drops the connection mid-request, after botocore's own retries
+    # are spent) subclasses HTTPClientError, not botocore's ConnectionError,
+    # so it is checked for explicitly here rather than falling through to the
+    # generic, non-retryable branch below. A streamed response only gets the
+    # type: its generator runs outside @retry, so it is not retried.
+    elif isinstance(e, (BotocoreConnectionError, ConnectionClosedError)):
         logging.error(f"{operation} connection error: {error_message}")
         raise BedrockConnectionError(f"Connection error: {error_message}")
 
@@ -538,7 +546,21 @@ async def bedrock_complete(
     # Bedrock Converse API has no JSON mode; the shim booleans are absorbed
     # and forwarded so bedrock_complete_if_cache can emit DeprecationWarnings
     # with accurate stack frames.
-    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+    global_config = kwargs["hashing_kv"].global_config
+    model_name = global_config["llm_model_name"]
+    # Library callers usually pass no timeout. Fall back to LightRAG's LLM
+    # timeout, as the API server does, instead of botocore's 60s default --
+    # but only where that cannot shorten the client below botocore's default
+    # (0 means no read timeout). The fallback is the base timeout: a role's
+    # own RoleLLMConfig(timeout=...) sizes only its queue and never reaches
+    # this function, so a role that needs a longer client timeout passes it
+    # in its kwargs. A base timeout under botocore's default would otherwise
+    # cut such a role's calls sooner than leaving the client alone does.
+    fallback_timeout = global_config.get("default_llm_timeout")
+    if fallback_timeout is not None and (
+        fallback_timeout == 0 or fallback_timeout >= BOTOCORE_DEFAULT_TIMEOUT
+    ):
+        kwargs.setdefault("timeout", fallback_timeout)
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,
@@ -572,8 +594,14 @@ async def bedrock_embed(
     aws_region: str | None = None,
     api_key: str | None = None,
     endpoint_url: str | None = None,
+    *,
+    embedding_dim: int | None = None,
 ) -> np.ndarray:
     """Generate embeddings with Amazon Bedrock Runtime.
+
+    ``embedding_dim`` requests an output dimension for Titan V2 only.
+    Titan V1 and Cohere keep their model-defined dimensions. The API server
+    forwards this option when ``EMBEDDING_SEND_DIM=true``.
 
     Authentication note:
     - Bedrock does not use LightRAG's generic ``api_key`` fields.
@@ -614,13 +642,13 @@ async def bedrock_embed(
                 for text in texts:
                     try:
                         if "v2" in model:
-                            body = json.dumps(
-                                {
-                                    "inputText": text,
-                                    # 'dimensions': embedding_dim,
-                                    "embeddingTypes": ["float"],
-                                }
-                            )
+                            request_body: dict[str, Any] = {
+                                "inputText": text,
+                                "embeddingTypes": ["float"],
+                            }
+                            if embedding_dim is not None:
+                                request_body["dimensions"] = embedding_dim
+                            body = json.dumps(request_body)
                         elif "v1" in model:
                             body = json.dumps({"inputText": text})
                         else:

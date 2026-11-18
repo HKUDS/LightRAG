@@ -257,18 +257,15 @@ async def test_missing_tokenizer_short_circuits(monkeypatch):
     assert result["filtered_relations"] is relations
 
 
-async def test_unresolved_context_record_is_dropped_and_reported(monkeypatch, caplog):
-    """A record a selector invents cannot reach chunk selection -- warn, don't hide.
-
-    ``lightrag.utils.logger`` sets ``propagate = False``, so ``caplog`` sees
-    nothing unless propagation is turned back on for the assertion.
-    """
+async def test_unresolved_context_record_is_dropped_and_reported(
+    monkeypatch, caplog, lightrag_caplog
+):
+    """A record a selector invents cannot reach chunk selection -- warn, don't hide."""
     _install_selector(
         monkeypatch,
         lambda list_data: [{**list_data[0], "entity": "ghost"}] + list_data,
     )
 
-    monkeypatch.setattr(logger, "propagate", True)
     with caplog.at_level(logging.WARNING, logger=logger.name):
         result = await _apply_token_truncation(
             _search_result([_entity("alice"), _entity("bob")], []),
