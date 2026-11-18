@@ -1235,6 +1235,7 @@ class RebuildTool:
             return
         if not await self._vectors_are_durable(label, stats):
             return
+        previous = await self._previous_baseline(label)
         try:
             baseline = await record_embedding_baseline(
                 self.configuration_storage,
@@ -1257,6 +1258,59 @@ class RebuildTool:
             f"  ✓ {label}: baseline recorded (model={baseline.model!r} "
             f"dim={baseline.dim})"
         )
+        await self._drop_sibling_models(label, previous)
+
+    async def _previous_baseline(self, label: str) -> Any:
+        """``label``'s baseline as recorded BEFORE this rebuild replaces it.
+
+        ``None`` when there is none or it cannot be read: it only decides
+        which leftover container this run can vouch for, so an unreadable
+        record costs that voucher and nothing else. Whether the record can be
+        WRITTEN is ``record_embedding_baseline``'s question, asked next.
+        """
+        try:
+            recorded = await read_embedding_baselines(
+                self.configuration_storage, self.workspace
+            )
+        except ConfigurationStorageError:
+            return None
+        return recorded.get(label)
+
+    async def _drop_sibling_models(self, label: str, previous: Any) -> None:
+        """Clear this workspace out of every other model's container for ``label``.
+
+        Only AFTER the baseline moved. Until then the previous model's
+        container is what the operator falls back to by reverting the
+        configuration; from then on the server refuses that configuration, and
+        the only way back is another rebuild, which re-embeds from the sources
+        and reads nothing a leftover container holds. Left in place it is
+        adopted by the first start that finds no baseline and names its model
+        -- see *Workspace clear and sibling model containers* in
+        ``docs/design/VectorSpaceProvenance.md``.
+
+        The previous baseline names one container exactly, so this run vouches
+        for it on a backend that would otherwise want an ownership marker. A
+        failure here is reported and does NOT fail the rebuild: the vectors and
+        the baseline are both in place, and the leftover is cleared by the
+        next rebuild or workspace clear.
+        """
+        vdb = self.vector_targets().get(label)
+        if vdb is None:
+            return
+        vouched = []
+        if previous is not None and previous.dim is not None:
+            name = vdb.model_container_name(previous.model, previous.dim)
+            if name:
+                vouched.append(name)
+        try:
+            result = await vdb.drop_sibling_models(vouched=vouched)
+        except Exception as e:
+            result = {"status": "error", "message": f"{type(e).__name__}: {e}"}
+        if result.get("status") != "success":
+            print(
+                f"  ⚠️  {label}: other embedding models' containers were not "
+                f"all cleared: {result.get('message')}"
+            )
 
     async def _vectors_are_durable(self, label: str, stats: Dict[str, Any]) -> bool:
         """Whether ``label``'s vector storage retained nothing after its flush.

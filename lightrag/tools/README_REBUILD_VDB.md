@@ -143,6 +143,20 @@ Menu options:
   model or dimension — unless the backend recorded its embedding-space
   provenance, in which case the check reports the refusal and says the rebuild
   is mandatory rather than reporting every record as missing.
+- **The previous model's container is cleared once the rebuild succeeded.**
+  Qdrant, PostgreSQL and Milvus name the collection / table after the embedding
+  model, so a rebuild under a new model writes into a new container and leaves
+  the old one behind. While a target is being rebuilt that old container is
+  your fallback: if the rebuild fails, restore the previous embedding
+  configuration and the server starts on it. Once the target's baseline is
+  recorded the server refuses the previous model, so the tool then removes
+  this workspace's data from every other model's container for that target.
+  If that step cannot complete it prints a warning and the rebuild still
+  counts as successful; the next rebuild or workspace clear removes the rest.
+  On Milvus a rebuild also drops the legacy (unsuffixed) collection and the
+  `_old` / `_temp` backups of a schema migration, as it already did on Qdrant
+  and PostgreSQL: after a rebuild there is no going back to a LightRAG version
+  from before model-named containers without re-embedding.
 - **A refused target is dropped only after you confirm the rebuild.** Choosing
   the consistency check never destroys anything, so a refusal can be diagnosed
   before it is acted on. Options 2–4 recover exactly the targets they rebuild:

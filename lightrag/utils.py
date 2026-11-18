@@ -3113,6 +3113,23 @@ def mark_cancellation_deferred(exc: BaseException) -> None:
         setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, True)
 
 
+def retract_cancellation_deferred(exc: BaseException) -> None:
+    """Withdraw the stamp after the caller ROLLED BACK what the region wrote.
+
+    ``_wait_deferring_cancellation`` judges only the future it was given: a
+    write that finished after the cancel was requested is stamped as durable.
+    A caller that then undoes that write on its way out -- the upload route
+    unlinking the file it was copying -- must call this once the undo has
+    SUCCEEDED, or the cancellation it re-raises claims a write that no longer
+    exists. Do not call it when the undo failed: what was written is still
+    there, and the stamp is then the truthful report.
+
+    A no-op for anything that is not a stamped cancellation.
+    """
+    if isinstance(exc, asyncio.CancelledError) and cancellation_was_deferred(exc):
+        setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False)
+
+
 async def _wait_deferring_cancellation(
     future: "asyncio.Future",
     pending_cancel: Optional[asyncio.CancelledError],

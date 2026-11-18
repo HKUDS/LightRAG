@@ -321,10 +321,10 @@ other reason (a corrupt JSON or GraphML file): that file is the data being
 deleted, so it is shown as unreadable and dropped anyway. A SERVER backend
 that fails to open or to answer a read still refuses the run, because it
 would not serve the drop either and clearing its siblings would leave it
-populated. It never consults the coverage gate, and on a named-container
-backend it clears the container named by the CURRENT embedding configuration,
-leaving a container named by a previous one orphaned exactly as a rebuild
-would. It does reuse the gate's two source probes -- `chunk_source_is_populated`
+populated. It never consults the coverage gate. On a named-container backend
+it clears every embedding model's container for the workspace, not only the one
+the current configuration names -- see *Workspace clear and sibling model
+containers*. It does reuse the gate's two source probes -- `chunk_source_is_populated`
 and `graph_has_nodes` / `graph_has_edges`, public for that reason -- to show
 what the workspace holds before the confirmation, and for the same motive the
 gate has: each one raises on a backend failure rather than answering "empty",
@@ -922,3 +922,132 @@ Each row lands with its own change; a row is only true once that change is in.
 | PR 4 / 5 | FAISS, Nano | marker in a `.space.json` sidecar / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
 | PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant and PostgreSQL assign `_flush_lock` *after* their init block, the same shape as the OpenSearch bug) — see *The named-container backends' refusal* |
 | PR 9 | — | the coverage gate and the adoption probe in `LightRAG.initialize_storages()`, plus the two-method adoption surface on `BaseVectorStorage` and its implementations on the four marker backends — see *The coverage gate, and where it lives* |
+
+## Workspace clear and sibling model containers
+
+Milvus, Qdrant and PostgreSQL name the container after the embedding model, so
+a workspace that has ever changed model owns one container per model.
+`drop()` empties only the one the instance is configured for. Everything else
+that holds the workspace's vectors is a **sibling**, and a workspace clear has
+to empty those too.
+
+### Why a sibling left behind is not harmless
+
+A clear deletes the three embedding baselines once every data storage dropped
+(`docs/design/ConfigurationStorageContract.md`, *Workspace drop*). The next
+start that names a sibling's model then finds no baseline to refuse on, an
+empty source and a populated container: it records nothing, warns, and
+**serves**. Naive retrieval reads `content` straight from the vector payload,
+so text the operator deleted comes back in answers. After the next ingestion
+the source is no longer empty, the adoption probe samples the new rows, finds
+them consistent, and records `origin=probe` -- the leftover vectors are now
+adopted, and nothing reports them again.
+
+### Why `drop()` stays one container
+
+Not for the sake of a reversible model switch: once a baseline is recorded, a
+model change is refused until `lightrag-rebuild-vdb` runs, and a rebuild
+re-embeds from the sources and reads nothing a sibling holds. The reason is
+the rebuild's own failure path. A target's baseline moves only after its
+rebuild succeeded; until then the previous model's container is what the
+operator falls back to by reverting the configuration. `drop()` opens every
+rebuild, so a `drop()` that swept siblings would delete that fallback first.
+
+Hence two callers, each sweeping only once nothing can fall back to a sibling:
+
+| caller | sweep | when |
+| --- | --- | --- |
+| `/documents/clear`, `lightrag-clear-storage` | `BaseVectorStorage.drop_all_models()` = `drop()`, then `drop_sibling_models()` | a clear keeps no fallback; a failed `drop()` stops before the sweep |
+| `lightrag-rebuild-vdb` | `drop_sibling_models()` for that target | after that target's baseline was recorded and flushed |
+
+A sweep that leaves a candidate in place returns an **error**. In a clear that
+keeps all three baselines (data remains, so the configuration must). In a
+rebuild it is reported and does not fail the run: the vectors and the baseline
+are in place, and the next rebuild or clear sweeps again.
+
+### Evidence of ownership
+
+Siblings are selected by evidence, never by name pattern alone:
+
+| backend | sibling | evidence | removal |
+| --- | --- | --- | --- |
+| Qdrant | `lightrag_vdb_{ns}_*_{dim}d` | indexes `workspace_id` | this workspace's points |
+| PostgreSQL | `{base}_*_{dim}d`, visible on the search path | has `workspace` and `content_vector` columns | this workspace's rows |
+| Milvus | `{workspace}_{ns}_*_{dim}d`, with its `_old` / `_temp` backups | schema description carries `[lightrag:workspace=..;namespace=..]`, or the caller vouches for the name | whole collections |
+
+Qdrant and PostgreSQL containers are shared across workspaces, so the removal
+is workspace-scoped and cannot touch another workspace's data. Milvus
+collections are per workspace but their names are a plain prefix, so workspace
+`prod` matches every collection of a workspace named `prod_chunks_v2`; the
+marker is what tells them apart. It is an OWNERSHIP marker and says nothing
+about the embedding space -- on these three backends the container name is
+still the only provenance (*Where the marker lives*).
+
+A Milvus collection created before the marker existed carries none. It is
+left in place unless the caller **vouches** for it, and two callers can:
+
+- `lightrag-rebuild-vdb`: the baseline it is about to replace names the
+  previous model and dimension, so `model_container_name()` yields that one
+  collection's exact name -- the same trust `drop()` places in the active name.
+- `lightrag-clear-storage`: it lists the unmarked candidates
+  (`unvouched_sibling_containers()`) before the confirmation phrase and asks
+  once more whether they go.
+
+`/documents/clear` has nobody to ask, so there an unmarked candidate fails the
+clear. The collection names are in the server log, not the response, which
+carries a category only.
+
+### Milvus: a free collection name is refilled
+
+The other two backends empty a sibling and keep it. Milvus drops the whole
+collection, and `initialize()` refills a free name from whatever source it
+finds: the un-suffixed legacy collection (the suffix migration keeps it as a
+backup) through the legacy migration, or `{name}_old` / `{name}_temp` through
+the interrupted-migration recovery -- an in-place schema migration keeps
+`_old` for good. So every source goes with the clear:
+
+- `drop()` removes the legacy collection, its `_old` / `_temp`, and the active
+  collection's `_old` / `_temp`, **before** it rebuilds the active collection.
+  A crash after them leaves the active collection populated with nothing to
+  refill it from, which a re-run clears; the other order leaves a free name
+  beside a backup. This also ends a difference between the backends: Qdrant
+  and PostgreSQL already cleared the workspace out of the legacy container on
+  `drop()`, and Milvus kept a full copy of the cleared data.
+- A legacy collection with no `vector` field is left alone. That is the test
+  `initialize()` applies before migrating one, so it is exactly the
+  collections that could come back -- and one that fails it may not be
+  LightRAG's.
+- A backup of the active or legacy collection that is marked as another
+  owner's is left alone too, with a warning.
+- A sibling's `_temp` and `_old` are dropped before the sibling. An unmarked
+  one shares its verdict: `_old` keeps the description of the collection it
+  was renamed from, which may predate the marker its rebuilt successor
+  carries. One marked as another owner's never does (*Accepted residues*).
+- The active collection is still rebuilt empty rather than dropped. That was
+  never only about the legacy migration: a clear leaves the server running,
+  and nothing but `initialize()` creates a collection.
+
+What a rebuild gives up: `drop()` now removes the legacy collection in a
+rebuild too, and with it the way back to a LightRAG version from before model
+isolation. Qdrant and PostgreSQL rebuilds always did.
+
+No other vector backend has a path that refills a container after `drop()`.
+OpenSearch, MongoDB, FAISS and Nano have one container per workspace and
+namespace and migrate nothing into it.
+
+### Accepted residues
+
+- **An unmarked Milvus sibling nobody vouched for stays**, and every
+  `/documents/clear` fails on it, keeping the baselines, until it is dropped
+  through `lightrag-clear-storage` or by hand. Deleting on a name match could
+  remove another workspace's data, which is never acceptable; a clear that
+  keeps failing is loud and has a documented way out.
+- **A Milvus collection marked as another owner's is skipped silently.**
+- **A Milvus family carrying both this workspace's marker and another
+  owner's is left whole and reported as an error.** It means two workspaces
+  fold onto one collection name, and a schema migration by one left an `_old`
+  carrying the other's marker beside its own live collection. A voucher does
+  not override a marker; the operator inspects and drops by hand.
+- **A sweep that fails after a rebuild leaves the sibling** until the next
+  rebuild or clear. No baseline was deleted, so the server still refuses the
+  sibling's model, and that refusal is what keeps the leftover unread.

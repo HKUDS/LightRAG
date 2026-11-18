@@ -246,11 +246,24 @@ directory by hand and re-run.
   servable while refused. Nothing is backed up first: the operator is typing
   the phrase that deletes it. An outage or a bad credential on a server
   backend refuses the run untouched (see the table above).
-- **Named-container backends clear the container the current configuration
-  names.** Qdrant, PostgreSQL and Milvus derive the collection / table from the
-  embedding model and dimension, resolved through the server's factory. Run
-  the tool with the `.env` the server uses; a container named by a previous
-  embedding configuration is left orphaned, exactly as a rebuild leaves it.
+- **Named-container backends are cleared for every embedding model.** Qdrant,
+  PostgreSQL and Milvus derive the collection / table from the embedding model
+  and dimension, so a workspace that has changed model owns one container per
+  model. The tool clears the one the current configuration names and then the
+  workspace's data in every other one; left behind, those vectors would be
+  adopted by a later start that names their model. On Qdrant and PostgreSQL
+  only this workspace's rows are removed. On Milvus the collections are
+  dropped, together with the legacy (unsuffixed) collection and the `_old` /
+  `_temp` backups a schema migration leaves.
+- **A Milvus collection of another model whose owner is not recorded is
+  listed, and asked about.** Collections created by an older LightRAG carry no
+  ownership marker, and a Milvus name is only a prefix: workspace `prod` also
+  matches the collections of a workspace named `prod_chunks_v2`. Such
+  collections are shown in the summary, and after the confirmation phrase the
+  tool asks once whether they go as well. Answer `yes` only when they are this
+  workspace's. Any other answer leaves them in place; the clear then ends with
+  errors and keeps the configuration records, because vectors that may be this
+  workspace's are still there.
 - **The coverage gate is never consulted.** The tool drives the storages
   directly, like `lightrag-rebuild-vdb`, so the refusal that keeps the server
   from starting does not keep this tool from running.

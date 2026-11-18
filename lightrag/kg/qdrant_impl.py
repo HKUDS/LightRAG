@@ -3,11 +3,12 @@ import configparser
 import hashlib
 import json
 import os
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, final
+from typing import Any, Callable, Collection, List, Optional, final
 
 import numpy as np
 import pipmaster as pm
@@ -137,6 +138,8 @@ class _PendingVectorDoc:
 
 DEFAULT_WORKSPACE = "_"
 WORKSPACE_ID_FIELD = "workspace_id"
+# A model-suffixed collection name: ``..._{model}_{dim}d``.
+_MODEL_COLLECTION_RE = re.compile(r"_\d+d$")
 ENTITY_PREFIX = "ent-"
 CREATED_AT_FIELD = "created_at"
 ID_FIELD = "id"
@@ -1712,5 +1715,72 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error dropping workspace data from Qdrant collection {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        suffix = self._collection_suffix_for(model_name, embedding_dim)
+        return f"lightrag_vdb_{self.namespace}_{suffix}" if suffix else None
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
+        """Delete this workspace's points from every other model's collection.
+
+        A sibling is a collection named ``lightrag_vdb_{namespace}_{model}_{dim}d``
+        other than ``final_namespace`` that indexes ``workspace_id`` -- the
+        marker ``setup_collection`` writes -- so a same-named collection that
+        LightRAG did not provision is left alone. Only this workspace's points
+        are removed; the collections stay, because they are shared with other
+        workspaces. That evidence is always present, so ``vouched`` is unused.
+        Same preconditions as ``drop()``.
+
+        The legacy collection needs nothing here: ``drop()`` already cleared
+        this workspace out of it, so an emptied sibling has nothing to migrate
+        back on the next start.
+        """
+        prefix = f"lightrag_vdb_{self.namespace}_"
+
+        def _clear_siblings() -> list[str]:
+            """Every server-side step as ONE uninterruptible submission, as in
+            ``drop()``: a cancelled clear must not return while a delete is
+            still in flight."""
+            workspace_selector = models.FilterSelector(
+                filter=models.Filter(
+                    must=[workspace_filter_condition(self.effective_workspace)]
+                )
+            )
+            cleared: list[str] = []
+            for collection in self._client.get_collections().collections:
+                name = collection.name
+                if (
+                    name == self.final_namespace
+                    or not name.startswith(prefix)
+                    or not _MODEL_COLLECTION_RE.search(name)
+                ):
+                    continue
+                info = self._client.get_collection(name)
+                if WORKSPACE_ID_FIELD not in (info.payload_schema or {}):
+                    continue
+                self._client.delete(
+                    collection_name=name,
+                    points_selector=workspace_selector,
+                    wait=True,
+                )
+                cleared.append(name)
+            return cleared
+
+        try:
+            cleared = await run_in_qdrant_executor_uninterruptible(_clear_siblings)
+            if cleared:
+                logger.info(
+                    f"[{self.workspace}] Cleared workspace data from sibling "
+                    f"Qdrant model collections: {cleared}"
+                )
+            return {"status": "success", "message": "sibling models dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error clearing sibling model collections "
+                f"for Qdrant namespace {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
