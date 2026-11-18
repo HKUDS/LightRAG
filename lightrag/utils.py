@@ -1194,20 +1194,26 @@ class TokenBudgetError(Exception):
         )
 
 
-def timeout_disabled(timeout: object) -> bool:
-    """Whether ``timeout`` is LightRAG's "no timeout" value: a number <= 0.
+def provider_timeout(timeout: Any) -> Any:
+    """The timeout to hand a provider client, or None to keep the SDK default.
 
     ``LLM_TIMEOUT`` / ``{ROLE}_LLM_TIMEOUT`` / ``default_llm_timeout`` of 0 (or
-    a negative value) disable the timeout. ``None`` is not this value: it means
-    "not configured" (the caller's or the SDK's default applies). A provider
-    must translate a disabled timeout into its client's own spelling of "no
-    timeout" -- httpx-based SDKs time out at once on 0.
+    a negative value) mean "LightRAG sets no timeout; the provider SDK's own
+    default applies" -- never "wait forever". So a number <= 0 maps to None,
+    like an unset value; anything else (a positive number, an
+    ``httpx.Timeout``) is returned unchanged.
+
+    A provider must then OMIT the timeout when this returns None rather than
+    pass ``timeout=None`` on: OpenAI-style SDKs read an explicit None as "no
+    timeout at all", and httpx-based ones time out at once on 0.
     """
-    return (
+    if (
         isinstance(timeout, (int, float))
         and not isinstance(timeout, bool)
         and timeout <= 0
-    )
+    ):
+        return None
+    return timeout
 
 
 def priority_limit_async_func_call(
@@ -1234,8 +1240,9 @@ def priority_limit_async_func_call(
         max_size: Maximum number of concurrent calls
         max_queue_size: Maximum queue capacity to prevent memory overflow
         llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts.
-            A value <= 0 means no timeout (see ``timeout_disabled``): no
-            execution or health-check cap is derived from it.
+            A value <= 0 means the provider SDK's default timeout applies (see
+            ``provider_timeout``): no execution or health-check cap is derived
+            from it, since the client's own timeout bounds the call.
         max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
@@ -1275,13 +1282,13 @@ def priority_limit_async_func_call(
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
 
-        # A non-positive ``llm_timeout`` means "no provider timeout": env.example
-        # documents ``LLM_TIMEOUT=0`` that way and llm/ollama.py turns it into a
-        # None httpx timeout. Normalize it to the unset state here, otherwise the
-        # derivation below produces a 0s worker budget and ``asyncio.wait_for``
-        # fails every call before the wrapped function starts.
+        # A non-positive ``llm_timeout`` means "LightRAG sets no timeout; the
+        # provider SDK's default bounds the call" (see ``provider_timeout``).
+        # Normalize it to the unset state here, otherwise the derivation below
+        # produces a 0s worker budget and ``asyncio.wait_for`` fails every call
+        # before the wrapped function starts.
         nonlocal llm_timeout
-        if timeout_disabled(llm_timeout):
+        if provider_timeout(llm_timeout) is None:
             llm_timeout = None
 
         # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)

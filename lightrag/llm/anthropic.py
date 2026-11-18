@@ -23,7 +23,7 @@ from anthropic import (
 )
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
-    timeout_disabled,
+    provider_timeout,
     safe_unicode_decode,
     logger,
     TruncatedResponse,
@@ -122,10 +122,10 @@ async def anthropic_complete_if_cache(
             stacklevel=2,
         )
     kwargs.pop("response_format", None)
-    timeout = kwargs.pop("timeout", None)
-    # The SDK times out at once on 0; an explicit None means no timeout.
-    if timeout_disabled(timeout):
-        timeout = None
+    # <= 0 or unset means the SDK default. The SDK reads an explicit
+    # timeout=None as "no timeout at all", so it is only passed when set.
+    timeout = provider_timeout(kwargs.pop("timeout", None))
+    client_timeout = {} if timeout is None else {"timeout": timeout}
     # Client option, not a ``messages.create`` parameter.
     max_retries = kwargs.pop("max_retries", None)
     if max_retries is None:
@@ -141,16 +141,16 @@ async def anthropic_complete_if_cache(
         AsyncAnthropic(
             default_headers=default_headers,
             api_key=api_key,
-            timeout=timeout,
             max_retries=max_retries,
+            **client_timeout,
         )
         if base_url is None
         else AsyncAnthropic(
             base_url=base_url,
             default_headers=default_headers,
             api_key=api_key,
-            timeout=timeout,
             max_retries=max_retries,
+            **client_timeout,
         )
     )
 

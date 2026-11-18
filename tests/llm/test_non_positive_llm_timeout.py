@@ -1,8 +1,7 @@
 """Offline tests for a non-positive ``llm_timeout`` passed to the LLM queue.
 
-``env.example`` documents ``LLM_TIMEOUT=0`` as "no timeout", and the Ollama
-binding turns that value into a ``None`` HTTP client timeout. The queue
-decorator must agree with both: deriving ``0 * 2`` would hand
+``LLM_TIMEOUT=0`` means "LightRAG sets no timeout; the provider SDK's default
+applies", so the queue must not derive a cap from it: ``0 * 2`` would hand
 ``asyncio.wait_for`` a zero-second budget and reject every call before the
 wrapped function ever started.
 """

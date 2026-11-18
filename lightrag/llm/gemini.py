@@ -27,7 +27,7 @@ from tenacity import (
 from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
-    timeout_disabled,
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -416,9 +416,10 @@ async def gemini_complete_if_cache(
         ValueError: If API key is not provided or configured.
     """
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API; a disabled
-    # timeout (<= 0) leaves the client without one.
-    timeout_ms = None if not timeout or timeout_disabled(timeout) else timeout * 1000
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset leaves the SDK default in place.
+    timeout = provider_timeout(timeout)
+    timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 
     # Deprecation shims: map legacy boolean flags to response_format only when

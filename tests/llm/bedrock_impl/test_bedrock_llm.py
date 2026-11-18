@@ -507,9 +507,9 @@ async def test_bedrock_no_timeout_keeps_botocore_defaults(monkeypatch):
         pytest.param(240, {}, 240, id="fallback-to-default-llm-timeout"),
         # A caller-passed timeout (llm_model_kwargs, role kwargs) still wins.
         pytest.param(240, {"timeout": 30}, 30, id="caller-timeout-wins"),
-        # LLM_TIMEOUT=0 stays 0, which aiohttp treats as no timeout; None
-        # would fall back to botocore's 60s.
-        pytest.param(0, {}, 0, id="zero-means-no-read-timeout"),
+        # LLM_TIMEOUT=0 means the SDK default: botocore's own 60s, never an
+        # unbounded wait.
+        pytest.param(0, {}, None, id="zero-means-botocore-default"),
         # LLM_TIMEOUT is the client timeout even below botocore's 60s: role
         # timeouts now reach the client, so nothing needs that floor.
         pytest.param(30, {}, 30, id="short-default-applied"),

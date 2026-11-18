@@ -25,7 +25,7 @@ from typing import Any, Union
 
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
-    timeout_disabled,
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -100,10 +100,9 @@ def _bedrock_client_kwargs(
         client_kwargs["aws_secret_access_key"] = aws_secret_access_key
     if aws_session_token:
         client_kwargs["aws_session_token"] = aws_session_token
+    # <= 0 or unset keeps botocore's defaults (60s each).
+    timeout = provider_timeout(timeout)
     if timeout is not None:
-        # aiohttp reads 0 as "no timeout"; any disabled value becomes 0.
-        if timeout_disabled(timeout):
-            timeout = 0
         client_kwargs["config"] = BotocoreConfig(
             connect_timeout=timeout,
             read_timeout=timeout,

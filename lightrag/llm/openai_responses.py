@@ -59,8 +59,6 @@ from openai import (
     RateLimitError,
 )
 
-# httpx is a dependency of the openai SDK installed above.
-import httpx
 
 from tenacity import (
     retry,
@@ -73,7 +71,7 @@ from tenacity import (
 from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
-    timeout_disabled,
+    provider_timeout,
     VERBOSE_DEBUG,
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -489,10 +487,8 @@ async def openai_responses_complete_if_cache(
 
     client_configs = kwargs.pop("openai_client_configs", {})
     kwargs.pop("hashing_kv", None)
-    # A disabled timeout must reach the SDK as an explicit "no timeout": the
-    # SDK times out at once on 0, and None is dropped below (SDK default).
-    if timeout_disabled(timeout):
-        timeout = httpx.Timeout(None)
+    # <= 0 means the SDK default: None is not passed on below.
+    timeout = provider_timeout(timeout)
     # Accepted for signature parity with the Chat Completions driver, which
     # uses it only to pick a default response_format.
     entity_extraction = kwargs.pop("entity_extraction", False)

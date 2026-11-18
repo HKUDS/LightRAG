@@ -24,7 +24,7 @@ from tenacity import (
 
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
-    timeout_disabled,
+    provider_timeout,
     TruncatedResponse,
     wrap_embedding_func_with_attrs,
     logger,
@@ -169,9 +169,12 @@ async def zhipu_complete_if_cache(
     if kwargs.get("response_format") is not None:
         enable_cot = False
 
-    # zai-sdk (httpx) times out at once on 0; an explicit None means none.
-    if timeout_disabled(kwargs.get("timeout")):
-        kwargs["timeout"] = None
+    # <= 0 or unset means the SDK default. zai-sdk reads an explicit
+    # timeout=None as "no timeout at all", so it is only passed when set.
+    if "timeout" in kwargs:
+        timeout = provider_timeout(kwargs.pop("timeout"))
+        if timeout is not None:
+            kwargs["timeout"] = timeout
 
     # Remove unsupported kwargs
     kwargs = {
