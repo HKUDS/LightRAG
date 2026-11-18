@@ -236,6 +236,7 @@ from lightrag.utils import (
     TokenLimitTruncationTally,
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
+    reject_reasoning_only_answer,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -6059,6 +6060,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 enable_cot=True,
                 stream=param.stream,
             )
+            # A reasoning trace with no answer is a failed generation.
+            reject_reasoning_only_answer(response)
             # isinstance, not exact type: a truncated non-streaming
             # response arrives as TruncatedResponse (a str subclass) and
             # must not be misclassified as a streaming iterator.

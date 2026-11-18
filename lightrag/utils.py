@@ -48,6 +48,7 @@ from lightrag.exceptions import (
     ChunkBlockMatchError,
     CommitBookkeepingError,
     EmptyTruncatedResponseError,
+    ReasoningOnlyResponseError,
 )
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -5806,6 +5807,59 @@ def _reject_empty_truncated_response(
     )
     logger.error(message)
     raise EmptyTruncatedResponseError(message)
+
+
+def reject_reasoning_only_answer(response: Any) -> None:
+    """Fail a non-streaming query answer that is reasoning and nothing else.
+
+    The query paths (``kg_query``, ``naive_query``, bypass mode) call the LLM
+    with ``enable_cot=True``: bindings that surface reasoning (OpenAI-compatible
+    ``reasoning_content``, OpenAI Responses reasoning summaries, Gemini
+    thoughts, Zhipu) wrap it in ``<think>...</think>``. When the model returns
+    reasoning but no answer text, the wrapper turns an empty response -- which
+    the same binding rejects with ``enable_cot=False`` -- into a non-empty one.
+    It then passes every binding check, is returned to the caller as the
+    answer and, unless flagged truncated, is written to the query cache and
+    replayed on every identical query. An unclosed ``<think>`` block (inline
+    reasoning cut off mid-trace) is the same case.
+
+    This is the answer-path counterpart of ``_reject_empty_truncated_response``
+    on the extraction path. Streaming responses and answers that carry text
+    outside the think block pass through untouched: a reasoning trace shown
+    before an answer is the intended ``enable_cot`` behaviour. Only lengths
+    are logged, never content.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return
+    cleaned = remove_think_tags(response)
+    unclosed_think = cleaned.startswith("<think>") and "</think>" not in cleaned
+    if cleaned and not unclosed_think:
+        return
+    truncated = is_truncated_response(response)
+    diagnostics = format_response_diagnostics(
+        truncated=truncated,
+        response_len=len(response),
+        answer_len=0,
+    )
+    if truncated:
+        hint = empty_length_truncated_hint(
+            "consider raising the LLM's output token limit or disabling "
+            "thinking mode for the query role",
+            reasoning_consumed_budget=True,
+        )
+    else:
+        hint = (
+            "model returned reasoning-only output; consider disabling thinking "
+            "mode or lowering the reasoning effort for the query role"
+        )
+    message = (
+        "Query answer carried no text outside the reasoning trace "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    if truncated:
+        raise EmptyTruncatedResponseError(message)
+    raise ReasoningOnlyResponseError(message)
 
 
 def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:

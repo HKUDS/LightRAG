@@ -85,6 +85,20 @@ class EmptyTruncatedResponseError(RuntimeError):
     """
 
 
+class ReasoningOnlyResponseError(RuntimeError):
+    """A query answer that carried a reasoning trace and no answer text.
+
+    The query paths call the LLM with ``enable_cot=True``, so a binding that
+    surfaces reasoning wraps it in ``<think>...</think>``. When the model
+    returns reasoning but no answer, that wrapper makes the response
+    NON-empty: it passes the binding's own empty-content check (which rejects
+    the very same response when ``enable_cot=False``) and would otherwise be
+    returned, and cached, as the answer. Raised by
+    ``lightrag.utils.reject_reasoning_only_answer``; the token-limit variant
+    raises :class:`EmptyTruncatedResponseError` instead.
+    """
+
+
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
 

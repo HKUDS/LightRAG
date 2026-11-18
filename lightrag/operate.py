@@ -46,6 +46,7 @@ from lightrag.utils import (
     get_llm_cache_identity,
     serialize_llm_cache_identity,
     remove_think_tags,
+    reject_reasoning_only_answer,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
     process_chunks_unified,
@@ -4999,6 +5000,9 @@ async def kg_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+        # A reasoning trace with no answer is a failed generation, not an
+        # answer: never return it as one, never cache it.
+        reject_reasoning_only_answer(response)
 
         if (
             answer_cache_kv
@@ -7430,6 +7434,9 @@ async def naive_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+        # A reasoning trace with no answer is a failed generation, not an
+        # answer: never return it as one, never cache it.
+        reject_reasoning_only_answer(response)
 
         if (
             answer_cache_kv
