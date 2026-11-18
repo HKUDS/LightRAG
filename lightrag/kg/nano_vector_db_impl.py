@@ -13,6 +13,7 @@ import time
 from lightrag.exceptions import CommitBookkeepingError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
+    _sanitize_string_for_json,
     commit_in_storage_io,
     compute_mdhash_id,
     log_without_raising,
@@ -55,6 +56,34 @@ class _PendingNanoDoc:
 
     record: dict[str, Any]
     vector: np.ndarray | None = None
+
+
+def _sanitize_record_value(value: Any) -> Any:
+    """Strip characters the on-disk snapshot cannot hold from a record value.
+
+    The namespace file is written by the external ``NanoVectorDB.save`` with
+    ``json.dump(..., ensure_ascii=False)`` into a UTF-8 file, so a lone
+    surrogate anywhere in a record makes the commit raise
+    ``UnicodeEncodeError`` — and the poisoned row stays buffered, so every
+    later commit on that namespace fails the same way until the row is
+    deleted. Clean string values at upsert time (recursing into list, tuple
+    and dict values), mirroring what the sibling JSON stores get from
+    ``write_json``. Clean strings pass through unchanged.
+    """
+    if isinstance(value, str):
+        return _sanitize_string_for_json(value)
+    if isinstance(value, list):
+        return [_sanitize_record_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_record_value(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_record_value(k) if isinstance(k, str) else k: (
+                _sanitize_record_value(v)
+            )
+            for k, v in value.items()
+        }
+    return value
 
 
 @final
@@ -468,7 +497,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             them until that commit fires (see the contract doc,
             *Cross-process sync protocol*). Until the flush, an upserted id
             is observable only through the read-your-writes read paths, not
-            through ``query``.
+            through ``query``. Record string values are stripped of
+            characters the on-disk snapshot cannot hold (lone surrogates)
+            here, so a buffered record can never wedge the namespace's
+            commits.
         """
         # logger.debug(f"[{self.workspace}] Buffering {len(data)} to {self.namespace}")
         if not data:
@@ -487,7 +519,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     "__id__": k,
                     "__created_at__": current_time,
                     WRITE_SEQ_FIELD: write_seq,
-                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                    **{
+                        k1: _sanitize_record_value(v1)
+                        for k1, v1 in v.items()
+                        if k1 in self.meta_fields
+                    },
                 },
             )
             for k, v in data.items()
