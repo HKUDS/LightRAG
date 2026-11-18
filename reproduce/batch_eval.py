@@ -6,31 +6,57 @@ import jsonlines
 from openai import OpenAI
 
 
+def _preview(items, limit=3):
+    items = [repr(item) for item in items]
+    shown = ", ".join(items[:limit])
+    return shown + (f" (+{len(items) - limit} more)" if len(items) > limit else "")
+
+
 def _align_answers(queries, rows, source):
+    """Return the answers of ``rows`` in the order of ``queries``.
+
+    Step_3 leaves a failed query out of its result file, so answers must be
+    matched by their saved ``query``, never by position. Every question needs
+    exactly one answer; anything else raises before any request is built.
+    """
+    known = set(queries)
     answers = {}
-    for row in rows:
-        query = row.get("query")
-        if query not in queries or query in answers or "result" not in row:
+    for index, row in enumerate(rows):
+        query = row.get("query") if isinstance(row, dict) else None
+        if query not in known:
             raise ValueError(
-                f"{source}: unknown, duplicate, or incomplete query result"
+                f"{source}: entry {index} answers a question that is not in the "
+                f"question file: {query!r}"
             )
+        if query in answers:
+            raise ValueError(f"{source}: question answered twice: {query!r}")
+        if "result" not in row:
+            raise ValueError(f"{source}: entry {index} has no 'result': {query!r}")
         answers[query] = row["result"]
-    if set(answers) != set(queries):
+    missing = [query for query in queries if query not in answers]
+    if missing:
         raise ValueError(
-            f"{source}: missing query results; recover failed queries before evaluation"
+            f"{source}: {len(missing)} of {len(queries)} questions have no answer "
+            f"({_preview(missing)}); re-run the failed queries recorded in the "
+            "Step_3 error file before evaluating"
         )
     return [answers[query] for query in queries]
 
 
 def batch_eval(query_file, result1_file, result2_file, output_file_path):
-
     with open(query_file, "r") as f:
         data = f.read()
 
+    # Strip Markdown bold exactly as Step_3.extract_queries does, so the
+    # question text matches the "query" saved with each answer.
     queries = re.findall(r"- Question \d+: (.+)", data.replace("**", ""))
-    if not queries or len(set(queries)) != len(queries):
+    if not queries:
+        raise ValueError(f"{query_file}: no '- Question N: ...' lines found")
+    duplicates = sorted({query for query in queries if queries.count(query) > 1})
+    if duplicates:
         raise ValueError(
-            "Questions must be nonempty and unique for unambiguous evaluation"
+            f"{query_file}: questions must be unique to match answers to them; "
+            f"repeated: {_preview(duplicates)}"
         )
 
     with open(result1_file, "r") as f:
@@ -41,6 +67,7 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
         answers2 = json.load(f)
     answers2 = _align_answers(queries, answers2, result2_file)
 
+    # Created only after validation, so a bad input never reaches the API.
     client = OpenAI()
 
     requests = []
