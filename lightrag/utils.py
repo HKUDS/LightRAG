@@ -1194,6 +1194,22 @@ class TokenBudgetError(Exception):
         )
 
 
+def timeout_disabled(timeout: object) -> bool:
+    """Whether ``timeout`` is LightRAG's "no timeout" value: a number <= 0.
+
+    ``LLM_TIMEOUT`` / ``{ROLE}_LLM_TIMEOUT`` / ``default_llm_timeout`` of 0 (or
+    a negative value) disable the timeout. ``None`` is not this value: it means
+    "not configured" (the caller's or the SDK's default applies). A provider
+    must translate a disabled timeout into its client's own spelling of "no
+    timeout" -- httpx-based SDKs time out at once on 0.
+    """
+    return (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and timeout <= 0
+    )
+
+
 def priority_limit_async_func_call(
     max_size: int,
     llm_timeout: float = None,
@@ -1217,7 +1233,9 @@ def priority_limit_async_func_call(
     Args:
         max_size: Maximum number of concurrent calls
         max_queue_size: Maximum queue capacity to prevent memory overflow
-        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts
+        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts.
+            A value <= 0 means no timeout (see ``timeout_disabled``): no
+            execution or health-check cap is derived from it.
         max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
@@ -1263,7 +1281,7 @@ def priority_limit_async_func_call(
         # derivation below produces a 0s worker budget and ``asyncio.wait_for``
         # fails every call before the wrapped function starts.
         nonlocal llm_timeout
-        if llm_timeout is not None and llm_timeout <= 0:
+        if timeout_disabled(llm_timeout):
             llm_timeout = None
 
         # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)

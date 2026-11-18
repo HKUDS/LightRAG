@@ -8,7 +8,6 @@ wrapped function ever started.
 """
 
 import asyncio
-import logging
 
 import pytest
 
@@ -16,12 +15,6 @@ from lightrag.utils import priority_limit_async_func_call
 
 
 pytestmark = pytest.mark.offline
-
-
-@pytest.fixture
-def lightrag_logger_propagating(monkeypatch):
-    """Force the lightrag logger to propagate so caplog can capture records."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 @pytest.mark.parametrize("llm_timeout", [0, 0.0, -1])
@@ -55,9 +48,7 @@ async def test_unset_llm_timeout_runs_the_call():
 
 
 @pytest.mark.asyncio
-async def test_non_positive_llm_timeout_is_not_logged_as_enforced(
-    lightrag_logger_propagating, caplog
-):
+async def test_non_positive_llm_timeout_is_not_logged_as_enforced(lightrag_caplog):
     async def quick_func(value: str, **_kwargs):
         return value
 
@@ -65,12 +56,12 @@ async def test_non_positive_llm_timeout_is_not_logged_as_enforced(
         1, llm_timeout=0, queue_name="zero-timeout LLM func"
     )(quick_func)
     try:
-        with caplog.at_level("INFO", logger="lightrag"):
+        with lightrag_caplog.at_level("INFO", logger="lightrag"):
             assert await wrapped("hello") == "hello"
     finally:
         await wrapped.shutdown(graceful=True, timeout=1)
 
-    messages = [record.getMessage() for record in caplog.records]
+    messages = [record.getMessage() for record in lightrag_caplog.records]
     init_lines = [m for m in messages if "new workers initialized" in m]
     assert init_lines, messages
     # An enforced 0s budget would be advertised here and would fail the call.

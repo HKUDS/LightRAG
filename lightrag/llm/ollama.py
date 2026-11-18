@@ -30,6 +30,7 @@ import numpy as np
 from typing import Any, Optional, Union
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    timeout_disabled,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -292,7 +293,8 @@ async def _ollama_model_if_cache(
 
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
-    if timeout == 0:
+    # httpx times out at once on 0; None means no timeout.
+    if timeout_disabled(timeout):
         timeout = None
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)

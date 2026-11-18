@@ -23,6 +23,7 @@ from anthropic import (
 )
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    timeout_disabled,
     safe_unicode_decode,
     logger,
     TruncatedResponse,
@@ -122,6 +123,9 @@ async def anthropic_complete_if_cache(
         )
     kwargs.pop("response_format", None)
     timeout = kwargs.pop("timeout", None)
+    # The SDK times out at once on 0; an explicit None means no timeout.
+    if timeout_disabled(timeout):
+        timeout = None
     # Client option, not a ``messages.create`` parameter.
     max_retries = kwargs.pop("max_retries", None)
     if max_retries is None:
