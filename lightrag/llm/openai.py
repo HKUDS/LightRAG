@@ -1208,10 +1208,13 @@ async def openai_embed(
             when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
-        timeout: Request timeout in seconds. None (the default) uses LightRAG's
-            ``default_embedding_timeout`` inside a LightRAG embedding call,
-            unless ``client_configs`` sets ``"timeout"``; 0 or a negative
-            value, or None outside one, keeps the SDK default (600 s).
+        timeout: Request timeout in seconds. A positive value wins over a
+            ``"timeout"`` in ``client_configs``. None (the default) uses that
+            ``client_configs`` entry if set, else LightRAG's
+            ``default_embedding_timeout`` inside a LightRAG embedding call.
+            0 or a negative value means LightRAG sets no timeout: the
+            ``client_configs`` entry still applies if set, else the SDK
+            default (600 s), as in ``openai_complete_if_cache``.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -1267,8 +1270,9 @@ async def openai_embed(
 
         texts = truncated_texts
 
-    # A "timeout" in client_configs is the caller's explicit choice; only an
-    # explicit argument outranks it. None reaches the builder as "omit".
+    # A "timeout" in client_configs is the caller's explicit choice: only a
+    # positive argument outranks it, and LightRAG's own timeout never does.
+    # None reaches the builder as "omit", which leaves that entry in place.
     if timeout is not None or not (client_configs and "timeout" in client_configs):
         timeout = embedding_timeout(timeout)
 

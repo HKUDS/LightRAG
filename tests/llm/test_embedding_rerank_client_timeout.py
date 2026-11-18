@@ -342,17 +342,32 @@ async def test_rerank_binding_hands_timeout_to_client(
 
 
 @pytest.mark.asyncio
-async def test_openai_client_configs_timeout_outranks_lightrag_timeout(monkeypatch):
-    """A "timeout" in client_configs is explicit; only the argument beats it."""
+@pytest.mark.parametrize(
+    "probe", [_probe_openai, _probe_azure], ids=["openai", "azure"]
+)
+@pytest.mark.parametrize(
+    ("configured", "extra", "expected"),
+    [
+        pytest.param(7, {}, 5, id="beats-lightrag-timeout"),
+        pytest.param(0, {}, 5, id="applies-when-lightrag-sets-none"),
+        pytest.param(7, {"timeout": 3}, 3, id="positive-argument-beats-it"),
+        # Same as openai_complete_if_cache: a non-positive argument means
+        # "LightRAG sets no timeout", which leaves the caller's entry in place.
+        pytest.param(7, {"timeout": 0}, 5, id="non-positive-argument-keeps-it"),
+    ],
+)
+async def test_openai_client_configs_timeout_precedence(
+    monkeypatch, probe, configured, extra, expected
+):
     observed = await _run(
-        _probe_openai,
+        probe,
         bind_embedding_timeout,
         monkeypatch,
-        7,
-        {"client_configs": {"timeout": 5}},
+        configured,
+        {"client_configs": {"timeout": 5}, **extra},
     )
 
-    assert observed == 5
+    assert observed == expected
 
 
 @pytest.mark.asyncio
