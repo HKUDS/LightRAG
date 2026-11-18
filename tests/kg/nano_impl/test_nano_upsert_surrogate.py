@@ -39,7 +39,7 @@ async def _embed(texts, **kwargs):
     )
 
 
-def _make_storage(tmp_path) -> NanoVectorDBStorage:
+def _make_storage(tmp_path, meta_fields=None) -> NanoVectorDBStorage:
     return NanoVectorDBStorage(
         namespace="test_vectors",
         workspace="ws",
@@ -51,7 +51,7 @@ def _make_storage(tmp_path) -> NanoVectorDBStorage:
         embedding_func=EmbeddingFunc(
             embedding_dim=DIM, max_token_size=512, func=_embed
         ),
-        meta_fields={"content", "tags", "extra"},
+        meta_fields=meta_fields or {"content", "tags", "extra"},
     )
 
 
@@ -97,9 +97,7 @@ async def test_poisoned_row_no_longer_wedges_namespace(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_clean_content_and_nested_values_unchanged_except_stripped_chars(
-    tmp_path,
-):
+async def test_clean_content_and_nested_values_unchanged_except_surrogates(tmp_path):
     storage = _make_storage(tmp_path)
     await storage.initialize()
 
@@ -114,9 +112,35 @@ async def test_clean_content_and_nested_values_unchanged_except_stripped_chars(
     )
     await storage.index_done_callback()
 
+    # Clean strings pass through byte-identical; only the lone surrogates go.
+    # U+FFFE / U+FFFF are UTF-8-encodable and were always persisted, so they
+    # must survive the commit and a reload unchanged.
+    expected = {
+        "content": "plain text with emoji \U0001f600 and entity &amp;",
+        "tags": ["keep", "dropme"],
+        "extra": {"note": "xy", "count": 3, "nc": "a\ufffeb\uffffc"},
+    }
     row = await storage.get_by_id("id1")
-    # Clean strings pass through byte-identical; only lone surrogates and the
-    # non-characters U+FFFE / U+FFFF go (the same set ``write_json`` drops).
-    assert row["content"] == "plain text with emoji \U0001f600 and entity &amp;"
-    assert row["tags"] == ["keep", "dropme"]
-    assert row["extra"] == {"note": "xy", "count": 3, "nc": "abc"}
+    assert {k: row[k] for k in expected} == expected
+
+    reloaded = _make_storage(tmp_path)
+    await reloaded.initialize()
+    row = await reloaded.get_by_id("id1")
+    assert {k: row[k] for k in expected} == expected
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_encodable_identity_field_is_not_rewritten(tmp_path):
+    """An entity name holding U+FFFE must keep matching its graph key."""
+    storage = _make_storage(tmp_path, meta_fields={"entity_name", "content"})
+    await storage.initialize()
+
+    await storage.upsert(
+        {"ent-x": {"entity_name": "A\ufffeB", "content": "A\ufffeB\ndesc"}}
+    )
+    await storage.index_done_callback()
+
+    reloaded = _make_storage(tmp_path, meta_fields={"entity_name", "content"})
+    await reloaded.initialize()
+    assert (await reloaded.get_by_id("ent-x"))["entity_name"] == "A\ufffeB"

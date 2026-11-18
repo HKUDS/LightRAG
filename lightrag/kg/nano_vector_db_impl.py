@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import zlib
 from functools import partial
 from hashlib import md5
@@ -13,7 +14,6 @@ import time
 from lightrag.exceptions import CommitBookkeepingError, CorruptStorageSnapshotError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
-    _sanitize_string_for_json,
     commit_in_storage_io,
     compute_mdhash_id,
     log_without_raising,
@@ -58,22 +58,35 @@ class _PendingNanoDoc:
     vector: np.ndarray | None = None
 
 
+# Exactly the code points UTF-8 cannot encode. Deliberately narrower than
+# ``lightrag.utils._SURROGATE_PATTERN``: that one also drops U+FFFE / U+FFFF,
+# which this store has always persisted, and record values include identity
+# fields (``entity_name``, ``src_id`` / ``tgt_id``) that must keep matching
+# the graph keys they name.
+_LONE_SURROGATE_PATTERN = re.compile("[\ud800-\udfff]")
+
+
 def _sanitize_record_value(value: Any) -> Any:
-    """Strip lone surrogates and U+FFFE / U+FFFF from a record value.
+    """Strip lone surrogates from a record value; keep everything else.
 
     The namespace file is written by the external ``NanoVectorDB.save`` with
     ``json.dump(..., ensure_ascii=False)`` into a UTF-8 file, so a lone
     surrogate anywhere in a record makes the commit raise
     ``UnicodeEncodeError`` — and the poisoned row stays buffered, so every
     later commit on that namespace fails the same way until the row is
-    deleted. Clean string values at upsert time (recursing into list, tuple
-    and dict values) with ``_sanitize_string_for_json``, the helper behind
-    the sibling JSON stores' ``write_json``. It also drops the non-characters
-    U+FFFE / U+FFFF, which UTF-8 could encode, so this store keeps exactly
-    what the JSON stores keep. Clean strings pass through unchanged.
+    deleted. Clean string values at upsert time, recursing into list, tuple
+    and dict values.
+
+    Remove only what the save cannot encode. Every other character, U+FFFE /
+    U+FFFF included, was persisted unchanged before and must stay so: a
+    vector record's ``entity_name`` / ``src_id`` / ``tgt_id`` is looked up
+    as a graph key, so rewriting an encodable character would detach the
+    record from its graph object. Clean strings pass through unchanged.
     """
     if isinstance(value, str):
-        return _sanitize_string_for_json(value)
+        if not _LONE_SURROGATE_PATTERN.search(value):
+            return value
+        return _LONE_SURROGATE_PATTERN.sub("", value)
     if isinstance(value, list):
         return [_sanitize_record_value(item) for item in value]
     if isinstance(value, tuple):
@@ -535,10 +548,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
             *Cross-process sync protocol*). Until the flush, an upserted id
             is observable only through the read-your-writes read paths, not
             through ``query``. Record string values are stripped of lone
-            surrogates (which the on-disk snapshot cannot hold) and of
-            U+FFFE / U+FFFF here, as ``write_json`` does for the JSON
-            stores, so a buffered record can never wedge the namespace's
-            commits.
+            surrogates here -- the only characters the on-disk snapshot
+            cannot hold -- so a buffered record can never wedge the
+            namespace's commits; every other character is kept as given.
         """
         # logger.debug(f"[{self.workspace}] Buffering {len(data)} to {self.namespace}")
         if not data:
