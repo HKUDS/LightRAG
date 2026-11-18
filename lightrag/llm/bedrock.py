@@ -13,6 +13,7 @@ import numpy as np
 
 # botocore is a hard dependency of aioboto3, so this import is always safe.
 from botocore.config import Config as BotocoreConfig
+from botocore.endpoint import DEFAULT_TIMEOUT as BOTOCORE_DEFAULT_TIMEOUT
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -541,8 +542,18 @@ async def bedrock_complete(
     global_config = kwargs["hashing_kv"].global_config
     model_name = global_config["llm_model_name"]
     # Library callers usually pass no timeout. Fall back to LightRAG's LLM
-    # timeout, as the API server does, instead of botocore's 60s default.
-    kwargs.setdefault("timeout", global_config.get("default_llm_timeout"))
+    # timeout, as the API server does, instead of botocore's 60s default --
+    # but only where that cannot shorten the client below botocore's default
+    # (0 means no read timeout). The fallback is the base timeout: a role's
+    # own RoleLLMConfig(timeout=...) sizes only its queue and never reaches
+    # this function, so a role that needs a longer client timeout passes it
+    # in its kwargs. A base timeout under botocore's default would otherwise
+    # cut such a role's calls sooner than leaving the client alone does.
+    fallback_timeout = global_config.get("default_llm_timeout")
+    if fallback_timeout is not None and (
+        fallback_timeout == 0 or fallback_timeout >= BOTOCORE_DEFAULT_TIMEOUT
+    ):
+        kwargs.setdefault("timeout", fallback_timeout)
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,
