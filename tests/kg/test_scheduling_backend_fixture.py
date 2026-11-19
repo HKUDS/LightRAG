@@ -64,7 +64,7 @@ def test_isolation_restores_the_unique_workspace_and_puts_the_env_back(monkeypat
 def test_isolation_leaves_an_unset_variable_unset(monkeypatch):
     monkeypatch.delenv("REDIS_WORKSPACE", raising=False)
     with _workspace_env_isolated("REDIS_WORKSPACE"):
-        pass
+        assert "REDIS_WORKSPACE" not in os.environ
     assert "REDIS_WORKSPACE" not in os.environ
 
 

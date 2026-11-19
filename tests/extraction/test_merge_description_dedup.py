@@ -25,6 +25,9 @@ from lightrag.operate import (
 from lightrag.utils import Tokenizer, TokenizerInterface
 
 
+pytestmark = pytest.mark.offline
+
+
 class _DummyTokenizer(TokenizerInterface):
     """1:1 char-to-token mapping; keeps summary thresholds easy to reason about."""
 
