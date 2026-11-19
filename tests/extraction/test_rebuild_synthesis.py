@@ -1,5 +1,6 @@
 import pytest
 from lightrag.base import BaseGraphStorage, BaseVectorStorage, BaseKVStorage
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.operate import _rebuild_single_entity, _rebuild_single_relationship
 from lightrag.utils import Tokenizer, TokenizerInterface
 
@@ -286,3 +287,71 @@ async def test_rebuild_single_relationship_keyword_deduplication_and_formatting(
 
     updated_edge = await graph.get_edge("A", "B")
     assert updated_edge["keywords"] == "AI, Deep Learning, Machine Learning"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_single_entity_from_relationships_caps_file_paths():
+    """An entity with no cached extraction data is rebuilt from its edges'
+    file paths. That fallback must respect max_file_paths exactly like the
+    cached-data path and _rebuild_single_relationship's own degraded path --
+    it must not write every edge's file path unbounded.
+    """
+    graph = DummyGraph()
+    entities_vdb = DummyVector()
+    llm_cache = DummyKV()
+    global_config = {
+        "max_source_ids_per_entity": 10,
+        "max_file_paths": 2,
+        "file_path_more_placeholder": "truncated",
+        "source_ids_limit_method": "KEEP",
+        "tokenizer": Tokenizer("dummy", _DummyTokenizer()),
+        "summary_context_size": 1_000_000,
+        "summary_max_tokens": 1_000_000,
+        "force_llm_summary_on_merge": 6,
+    }
+    await graph.upsert_node(
+        "ALICE",
+        {
+            "description": "Initial description",
+            "entity_type": "PERSON",
+            "source_id": "c1",
+            "file_path": "f1.txt",
+        },
+    )
+    await graph.upsert_node("BOB", {"entity_type": "PERSON", "description": "Bob"})
+    await graph.upsert_node("CARL", {"entity_type": "PERSON", "description": "Carl"})
+    await graph.upsert_edge(
+        "ALICE",
+        "BOB",
+        {
+            "description": "Alice knows Bob",
+            "file_path": GRAPH_FIELD_SEP.join(["f1.txt", "f2.txt"]),
+        },
+    )
+    await graph.upsert_edge(
+        "ALICE",
+        "CARL",
+        {
+            "description": "Alice knows Carl",
+            "file_path": GRAPH_FIELD_SEP.join(["f3.txt", "f4.txt"]),
+        },
+    )
+
+    # No cached extraction names ALICE in any surviving chunk, so the
+    # function falls back to rebuilding her from her edges' data.
+    await _rebuild_single_entity(
+        knowledge_graph_inst=graph,
+        entities_vdb=entities_vdb,
+        entity_name="ALICE",
+        chunk_ids=["c5"],
+        chunk_entities={"c5": {}},
+        llm_response_cache=llm_cache,
+        global_config=global_config,
+    )
+
+    updated_node = await graph.get_node("ALICE")
+    stored_paths = updated_node["file_path"].split(GRAPH_FIELD_SEP)
+    # max_file_paths (2) distinct paths plus the "...truncated..." marker.
+    assert len(stored_paths) <= 3, (
+        f"file_path was not capped at max_file_paths: {stored_paths}"
+    )
