@@ -4621,19 +4621,34 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     # --- Batch operations ---
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
-        """Batch-fetch multiple nodes by ID."""
-        if not self._indices_ready:
+        """Batch-fetch multiple nodes by ID.
+
+        An id is left out only when its mget item says ``found: false``. An
+        item-level error or a short/malformed ``docs`` array raises (see
+        ``_interpret_mget_item``), as in :meth:`has_nodes_batch`: callers read
+        a missing key as "this node does not exist" and act on it.
+        """
+        if not node_ids or not self._indices_ready:
             return {}
+        requested = list(dict.fromkeys(node_ids))
         try:
             response = await self.client.mget(
-                index=self._nodes_index, body={"ids": node_ids}
+                index=self._nodes_index, body={"ids": requested}
             )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(requested):
+                raise RuntimeError(
+                    f"OpenSearch mget for {len(requested)} node ids returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items, "
+                    f"expected exactly {len(requested)}"
+                )
             result = {}
-            for doc in response["docs"]:
-                if doc.get("found"):
-                    data = doc["_source"]
-                    data["_id"] = doc["_id"]
-                    result[doc["_id"]] = data
+            for node_id, item in zip(requested, docs):
+                interpreted = _interpret_mget_item(item, node_id)
+                if interpreted is not None:
+                    data = interpreted["_source"]
+                    data["_id"] = interpreted["_id"]
+                    result[node_id] = data
             return result
         except OpenSearchException as e:
             if _is_missing_index_error(e):

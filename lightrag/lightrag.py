@@ -5277,6 +5277,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    _persist_graph_updates,
                     apply_relation_weight_floor,
                     relation_evidence_source_ids,
                     validate_relation_weight,
@@ -5791,20 +5792,39 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "file_path": stored.get("file_path") or "custom_kg",
                         }
 
+                    # Tracking rows are written AND committed under the keyed
+                    # lock, before the first graph mutation, as every admin
+                    # creation path does (see ``_persist_graph_updates``):
+                    # - committing after the lock is released would let the
+                    #   next writer of the same keys on another worker read the
+                    #   old row from a per-process-buffered KV backend and drop
+                    #   this call's addition when it merges its own;
+                    # - an immediate-write graph backend makes the node durable
+                    #   at once, so a row still in a buffer would leave an
+                    #   object durable without the row carrying its attribution.
+                    # The rows only GAIN chunks, so an interruption between here
+                    # and the graph writes leaves an object retained, never
+                    # lost, and a retry rewrites the same rows.
+                    if entity_tracking:
+                        await self.entity_chunks.upsert(entity_tracking)
+                    if relation_tracking:
+                        await self.relation_chunks.upsert(relation_tracking)
+                    if entity_tracking or relation_tracking:
+                        await _persist_graph_updates(
+                            entity_chunks_storage=self.entity_chunks
+                            if entity_tracking
+                            else None,
+                            relation_chunks_storage=self.relation_chunks
+                            if relation_tracking
+                            else None,
+                            context="ainsert_custom_kg",
+                        )
+
                     # Batch insert entities (reduces N serial awaits to 1).
                     # Writing entity_nodes here (before the relationship-endpoint
                     # discovery below) means has_nodes_batch naturally sees them,
                     # so a relationship endpoint that is also one of this batch's
                     # own explicit entities is never mistaken for a missing node.
-                    # Tracking rows go first and only ever GAIN this call's
-                    # chunks, which were written above: an interruption between
-                    # here and the graph writes leaves a row naming a live chunk
-                    # (the object is retained, never lost) that a retry rewrites.
-                    if entity_tracking:
-                        await self.entity_chunks.upsert(entity_tracking)
-                    if relation_tracking:
-                        await self.relation_chunks.upsert(relation_tracking)
-
                     if entity_nodes or endpoint_updates:
                         await self.chunk_entity_relation_graph.upsert_nodes_batch(
                             [*entity_nodes, *endpoint_updates]

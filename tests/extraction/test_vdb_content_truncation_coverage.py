@@ -205,6 +205,9 @@ class _MemKV:
     async def upsert(self, payload: dict):
         self.rows.update(payload)
 
+    async def index_done_callback(self):
+        return None
+
 
 class _MemVDB:
     """Minimal in-memory vector storage recording every upsert payload."""

@@ -293,3 +293,42 @@ async def test_all_new_pairs_issue_no_edge_reads(rag, monkeypatch):
 
     assert calls == []
     assert (await graph.get_edge("Foo", "Bar"))["source_id"] == CURATED_CHUNK
+
+
+@pytest.mark.asyncio
+async def test_tracking_rows_are_committed_before_the_graph_is_written(
+    rag, monkeypatch
+):
+    """Committed under the keyed lock, before the first graph mutation: a
+    per-process-buffered KV backend would otherwise show the next writer of
+    the same keys on another worker the old row, and an immediate-write graph
+    backend would make the node durable before the row carrying it."""
+    await _insert_doc(rag)
+    events: list[str] = []
+    graph = rag.chunk_entity_relation_graph
+
+    def _record(name, original):
+        async def wrapper(*args, **kwargs):
+            events.append(name)
+            return await original(*args, **kwargs)
+
+        return wrapper
+
+    for storage, name in (
+        (rag.entity_chunks, "entity_chunks"),
+        (rag.relation_chunks, "relation_chunks"),
+    ):
+        monkeypatch.setattr(
+            storage,
+            "index_done_callback",
+            _record(f"commit:{name}", storage.index_done_callback),
+        )
+    for method in ("upsert_nodes_batch", "upsert_edges_batch"):
+        monkeypatch.setattr(graph, method, _record(method, getattr(graph, method)))
+
+    await rag.ainsert_custom_kg(_custom_kg())
+
+    first_graph_write = events.index("upsert_nodes_batch")
+    assert {"commit:entity_chunks", "commit:relation_chunks"} <= set(
+        events[:first_graph_write]
+    )

@@ -574,6 +574,54 @@ async def test_graph_get_nodes_batch_raises_on_transient_error(global_config):
         await storage.get_nodes_batch(["Alice", "Bob"])
 
 
+async def test_graph_get_nodes_batch_raises_on_item_error(global_config):
+    """A per-item error must not read as "node absent": the custom KG
+    provenance merge treats a missing key as proof the node does not exist and
+    skips merging its stored edges."""
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {"_id": "Alice", "found": True, "_source": {"entity_id": "Alice"}},
+                {"_id": "Bob", "error": {"type": "shard_failure"}},
+            ]
+        }
+    )
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.get_nodes_batch(["Alice", "Bob"])
+
+
+async def test_graph_get_nodes_batch_raises_on_short_response(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [{"_id": "Alice", "found": True, "_source": {"entity_id": "Alice"}}]
+        }
+    )
+    with pytest.raises(RuntimeError, match="expected exactly 2"):
+        await storage.get_nodes_batch(["Alice", "Bob"])
+
+
+async def test_graph_get_nodes_batch_dedups_and_omits_confirmed_absent(
+    global_config,
+):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {"_id": "Alice", "found": True, "_source": {"entity_id": "Alice"}},
+                {"_id": "Bob", "found": False},
+            ]
+        }
+    )
+    result = await storage.get_nodes_batch(["Alice", "Bob", "Alice"])
+    assert client.mget.await_args.kwargs["body"] == {"ids": ["Alice", "Bob"]}
+    assert result == {"Alice": {"entity_id": "Alice", "_id": "Alice"}}
+
+
 def _edge_doc(edge_id, source=None, error=None):
     if error is not None:
         return {"_id": edge_id, "error": error}
