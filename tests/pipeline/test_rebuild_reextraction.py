@@ -550,3 +550,77 @@ async def test_retry_rebuilds_objects_whose_tracking_the_failed_attempt_narrowed
         assert edge["description"] == "Foo links Bar in SHARED"
     finally:
         await rag.finalize_storages()
+
+
+class _TaggingValidator:
+    """Tags every entity description, so a rebuilt description shows whether
+    the hook ran on the records it was rebuilt from. ``raise_next`` makes the
+    next call fail once."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+        self.raise_next = False
+
+    def __call__(self, chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        self.calls.append(chunk_text)
+        if self.raise_next:
+            self.raise_next = False
+            raise RuntimeError("validator rejected the chunk")
+        for records in maybe_nodes.values():
+            for record in records:
+                record["description"] = f"{record['description']} [checked]"
+        return maybe_nodes, maybe_edges
+
+
+@pytest.mark.asyncio
+async def test_cached_records_go_through_the_extraction_validator(tmp_path):
+    """A cache row holds the raw LLM output from before the hook ran, so the
+    rebuild applies the hook to it, as ingestion did."""
+    llm = _StubLLM()
+    validator = _TaggingValidator()
+    rag = await _make_rag(tmp_path, llm, kg_extraction_validator=validator)
+    try:
+        await _insert(rag, "doc-v2", "doc-v3")
+        validator.calls.clear()
+        llm.calls.clear()
+        await _delete_ok(rag, "doc-v3")
+        assert llm.calls == []
+        assert any("SHARED paragraph" in text for text in validator.calls)
+        foo = await rag.chunk_entity_relation_graph.get_node("Foo")
+        assert foo["description"] == "Foo shared fact [checked]"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_validator_failure_during_reextraction_is_revalidated_on_retry(
+    tmp_path,
+):
+    """The re-extraction caches the raw answer before the hook runs; when the
+    hook then raises, the retry finds that row and must still apply the hook
+    instead of rebuilding from the rejected records."""
+    llm = _StubLLM()
+    validator = _TaggingValidator()
+    rag = await _make_rag(tmp_path, llm, kg_extraction_validator=validator)
+    try:
+        await _insert(rag, "doc-v2", "doc-v3")
+        shared_id, shared_row = await _chunk_with(rag, "doc-v2", "SHARED")
+        (shared_key,) = shared_row["llm_cache_list"]
+        await rag.llm_response_cache.delete([shared_key])
+
+        validator.raise_next = True
+        result = await rag.adelete_by_doc_id("doc-v3")
+        assert result.status == "fail"
+        assert "validator rejected the chunk" in result.message
+        # The raw re-extraction is cached despite the failed hook.
+        assert await rag.llm_response_cache.get_by_id(shared_key) is not None
+
+        validator.calls.clear()
+        llm.calls.clear()
+        await _delete_ok(rag, "doc-v3")
+        assert llm.calls == []
+        assert any("SHARED paragraph" in text for text in validator.calls)
+        foo = await rag.chunk_entity_relation_graph.get_node("Foo")
+        assert foo["description"] == "Foo shared fact [checked]"
+    finally:
+        await rag.finalize_storages()

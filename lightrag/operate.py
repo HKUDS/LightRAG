@@ -1177,6 +1177,7 @@ async def rebuild_knowledge_from_chunks(
       rebuilt, which calls the LLM; a re-extraction failure raises. A missing
       or unparseable gleaning row is accepted as gleaning that did not run.
       Chunks written by ``ainsert_custom_kg`` are never re-extracted.
+      Cached records go through ``kg_extraction_validator`` like fresh ones.
     * ``rollback`` (custom-chunk patch rollback): never calls the extraction
       LLM; missing or unusable extraction data is recorded in the report.
 
@@ -1249,6 +1250,21 @@ async def rebuild_knowledge_from_chunks(
         else set()
     )
 
+    kg_extraction_validator = global_config.get("kg_extraction_validator")
+
+    async def _finish_cached_chunk(chunk_id, chunk_data, nodes, edges) -> None:
+        # Cached rows hold the raw LLM output, from before the validator ran
+        # (it runs after the cache write), so they get the same hook and the
+        # same core-generated multimodal records as a fresh extraction. A hook
+        # failure fails the rebuild, which is retryable.
+        if kg_extraction_validator is not None:
+            nodes, edges = await _apply_kg_extraction_validator(
+                kg_extraction_validator, chunk_id, chunk_data, nodes, edges
+            )
+        _inject_multimodal_records(chunk_id, chunk_data, nodes, edges)
+        chunk_entities[chunk_id] = nodes
+        chunk_relationships[chunk_id] = edges
+
     for chunk_id in sorted(all_referenced_chunk_ids):
         chunk_data = chunk_data_by_id.get(chunk_id)
         if chunk_data is None:
@@ -1278,9 +1294,7 @@ async def rebuild_knowledge_from_chunks(
                 status_message = f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
                 logger.warning(status_message)
                 status_logger.log(status_message)
-            _inject_multimodal_records(chunk_id, chunk_data, nodes, edges)
-            chunk_entities[chunk_id] = nodes
-            chunk_relationships[chunk_id] = edges
+            await _finish_cached_chunk(chunk_id, chunk_data, nodes, edges)
             continue
 
         if chunk_id in custom_kg_chunk_ids:
@@ -1323,9 +1337,7 @@ async def rebuild_knowledge_from_chunks(
                     f"Ignoring unparseable gleaning row {gleaning_key} for chunk "
                     f"{chunk_id}: {e}"
                 )
-        _inject_multimodal_records(chunk_id, chunk_data, nodes, edges)
-        chunk_entities[chunk_id] = nodes
-        chunk_relationships[chunk_id] = edges
+        await _finish_cached_chunk(chunk_id, chunk_data, nodes, edges)
 
     if to_reextract:
         reextracted = await _reextract_chunks(
@@ -4266,6 +4278,55 @@ async def merge_nodes_and_edges(
         append_pipeline_history(pipeline_status, log_message)
 
 
+async def _apply_kg_extraction_validator(
+    validator: Callable[..., Any],
+    chunk_key: str,
+    chunk_dp: dict[str, Any],
+    maybe_nodes: dict[str, list[dict]],
+    maybe_edges: dict[tuple[str, str], list[dict]],
+) -> tuple[dict[str, list[dict]], dict[tuple[str, str], list[dict]]]:
+    """Run ``kg_extraction_validator`` on one chunk's extracted records.
+
+    Shared by ingestion (``extract_entities``) and the deletion rebuild's
+    cache path, so a cached row is held to the same rules as a fresh
+    extraction. Caller-facing contract: "Extraction Quality Hook" in
+    docs/ProgramingWithCore.md. Call it before ``_inject_multimodal_records``.
+    """
+    validated = validator(
+        chunk_key,
+        # The EXTRACTION-VISIBLE text: parser-internal markup stripped, then
+        # the sanitize_text_for_encoding that use_llm_func_with_cache applies
+        # to the whole prompt. The invariant is that the hook sees
+        # byte-for-byte what sat between the ---Input Text--- fences of the
+        # prompt the provider received. strip=False follows from it: the chunk
+        # is a FRAGMENT sitting inside those fences, so its own boundary
+        # whitespace is interior to the prompt and stays model-visible, while
+        # the wrapper's strip only trims the template's ends.
+        sanitize_text_for_encoding(
+            strip_internal_multimodal_markup_for_extraction(chunk_dp["content"]),
+            strip=False,
+        ),
+        maybe_nodes,
+        maybe_edges,
+    )
+    if inspect.isawaitable(validated):
+        validated = await validated
+    # Validate the shape before unpacking: a bare unpack accepts a two-key
+    # dict and silently binds its KEYS as maybe_nodes / maybe_edges, surfacing
+    # much later inside the merge as an unrelated-looking failure.
+    if (
+        not isinstance(validated, (tuple, list))
+        or len(validated) != 2
+        or not all(isinstance(part, dict) for part in validated)
+    ):
+        raise TypeError(
+            "kg_extraction_validator must return a (maybe_nodes, "
+            "maybe_edges) pair of dicts; got "
+            f"{type(validated).__name__} for chunk {chunk_key}"
+        )
+    return validated[0], validated[1]
+
+
 def _inject_multimodal_records(
     chunk_key: str,
     chunk_dp: dict[str, Any],
@@ -4793,39 +4854,9 @@ async def extract_entities(
         # (multimodal_entity, rejected_entity) edges dangling, so the merge's
         # endpoint upsert would re-create the very entities the hook rejected.
         if kg_extraction_validator is not None:
-            validated = kg_extraction_validator(
-                chunk_key,
-                # The EXTRACTION-VISIBLE text: `content` already has the
-                # parser-internal markup stripped, and this reproduces the
-                # sanitize_text_for_encoding that use_llm_func_with_cache
-                # applies to the whole prompt. The invariant is that the hook
-                # sees byte-for-byte what sat between the ---Input Text---
-                # fences of the prompt the provider received. strip=False
-                # follows from it: the chunk is a FRAGMENT sitting inside those
-                # fences, so its own boundary whitespace is interior to the
-                # prompt and stays model-visible, while the wrapper's strip only
-                # trims the template's ends.
-                sanitize_text_for_encoding(content, strip=False),
-                maybe_nodes,
-                maybe_edges,
+            maybe_nodes, maybe_edges = await _apply_kg_extraction_validator(
+                kg_extraction_validator, chunk_key, chunk_dp, maybe_nodes, maybe_edges
             )
-            if inspect.isawaitable(validated):
-                validated = await validated
-            # Validate the shape before unpacking: a bare unpack accepts a
-            # two-key dict and silently binds its KEYS as maybe_nodes /
-            # maybe_edges, surfacing much later inside the merge as an
-            # unrelated-looking failure.
-            if (
-                not isinstance(validated, (tuple, list))
-                or len(validated) != 2
-                or not all(isinstance(part, dict) for part in validated)
-            ):
-                raise TypeError(
-                    "kg_extraction_validator must return a (maybe_nodes, "
-                    "maybe_edges) pair of dicts; got "
-                    f"{type(validated).__name__} for chunk {chunk_key}"
-                )
-            maybe_nodes, maybe_edges = validated
 
         # Inject multimodal entity + associations for drawing/table/equation
         # chunks. Placed inside the chunk's concurrency slot (rather than a

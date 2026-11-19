@@ -224,7 +224,7 @@ The custom KG test reads `doc_status` because the `source_id` alias does not sur
 
 The `rollback` policy (custom-chunk patch rollback) keeps its own contract: it never calls the extraction LLM, records missing and unusable rows in `KGRebuildReport`, and repairs provenance structurally.
 
-Multimodal (drawing, table, equation) chunks additionally get their core-generated entity and association edges from the chunk's `sidecar` block (`_inject_multimodal_records`), exactly as ingestion does, because no cache row can hold them.
+Cached records then go through `kg_extraction_validator`, as ingestion's do (`_apply_kg_extraction_validator`): a cache row holds the raw LLM answer, written before the hook runs, so without it a rebuild would bring back what the hook rejected at ingestion, and a re-extraction whose hook raised would be rebuilt unfiltered on the retry. A hook failure fails the rebuild. Multimodal (drawing, table, equation) chunks additionally get their core-generated entity and association edges from the chunk's `sidecar` block (`_inject_multimodal_records`), exactly as ingestion does, because no cache row can hold them.
 
 ### Re-extraction
 

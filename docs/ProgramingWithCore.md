@@ -771,6 +771,14 @@ Contract:
 - **Coverage.** Every path that extracts goes through it: the document pipeline
   and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
   caller supplies the graph directly — so it is not filtered.
+- **It also runs when a document is deleted.** The deletion rebuild re-reads
+  each surviving chunk's extraction cache, which stores the raw LLM answer from
+  *before* the hook ran, and passes those records through the hook again (or
+  through a fresh extraction, when the cache row is gone). So the hook is
+  called again for chunks it already filtered, once per chunk per rebuild: it
+  must give the same answer on a repeat call, and any state it keeps (an audit
+  log) sees the repeat. A hook that raises fails the deletion, which stays
+  retryable.
 - **Multimodal entities are not shown to the hook.** For a drawing / table /
   equation chunk, LightRAG synthesizes one entity from the sidecar and links it
   to the chunk's surviving entities. That injection happens *after* the hook, so
