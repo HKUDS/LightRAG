@@ -1,4 +1,3 @@
-import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -12,6 +11,7 @@ import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
 import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
 import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 
 /**
  * The workspace entry's public welcome page — the unauthenticated default of

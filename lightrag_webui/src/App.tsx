@@ -1,4 +1,3 @@
-import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
@@ -26,6 +25,7 @@ import RetrievalView from '@/features/RetrievalView'
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 
 function App() {
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()

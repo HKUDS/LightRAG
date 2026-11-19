@@ -1,4 +1,3 @@
-import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
@@ -31,6 +30,7 @@ import {
   splitConsentLabel,
   type LoginConsentTick
 } from '@/features/loginConsent'
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 
 interface LoginPageProps {
   /**

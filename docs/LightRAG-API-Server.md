@@ -732,10 +732,10 @@ The server still starts and serves programmatic clients in API-key-only mode.
 from the effective server key. Existing fields, including `auth_configured`
 (account configuration only), retain their meanings; `/login` is unchanged.
 The browser uses discovery to choose its supported flow, not to enforce a new
-backend authorization policy. Whitelisted routes retain their existing behavior.
+backend authorization policy. This migration does not change `WHITELIST_PATHS`
+handling either.
 
-
-> Although the server can be configured with **both** an API key and account credentials, a single programmatic request should normally send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. This WebUI migration does not change how the backend handles requests that contain both credentials; clients should avoid relying on dual-credential behavior.
+> Although the server can be configured with **both** an API key and account credentials, a single programmatic request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied. This WebUI migration does not change that behavior.
 
 ## For Azure OpenAI Backend
 

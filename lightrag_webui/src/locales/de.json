@@ -534,5 +534,13 @@
   },
   "retrievalHistory": {
     "quotaDropped": "Der Browser-Speicher ist voll: Der Chat-Verlauf wird nicht mehr gespeichert. Die aktuelle Unterhaltung bleibt sichtbar, bis Sie die Seite verlassen."
+  },
+  "webuiAuth": {
+    "checking": "WebUI-Zugriff wird geprüft…",
+    "title": "Benutzerkonten müssen konfiguriert werden",
+    "guidance": "Dieser Server verwendet einen API-Schlüssel ohne Benutzerkonten. Um die geschützte WebUI zu nutzen, konfigurieren Sie AUTH_ACCOUNTS und ein starkes, nicht standardmäßiges TOKEN_SECRET, starten Sie den Server neu und melden Sie sich an. Behalten Sie den API-Schlüssel für den programmatischen Zugriff; entfernen Sie ihn nicht, um Gastzugriff zu ermöglichen.",
+    "unavailableTitle": "WebUI-Zugriff konnte nicht ermittelt werden",
+    "unavailable": "Der Server hat nicht gemeldet, wie der WebUI-Zugriff konfiguriert ist: Er ist möglicherweise gerade nicht erreichbar, oder das Backend ist älter als diese WebUI. Prüfen Sie die Verbindung und ob Frontend- und Backend-Version zusammenpassen, und prüfen Sie dann erneut. Ohne diese Information wird nie Gastzugriff aktiviert.",
+    "retry": "Erneut prüfen"
   }
 }

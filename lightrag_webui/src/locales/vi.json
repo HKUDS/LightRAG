@@ -534,5 +534,13 @@
   },
   "retrievalHistory": {
     "quotaDropped": "Bộ nhớ trình duyệt đã đầy: lịch sử trò chuyện không còn được lưu. Cuộc trò chuyện hiện tại vẫn hiển thị cho đến khi bạn rời trang."
+  },
+  "webuiAuth": {
+    "checking": "Đang kiểm tra quyền truy cập WebUI…",
+    "title": "Cần cấu hình tài khoản người dùng",
+    "guidance": "Máy chủ này dùng API key mà không có tài khoản người dùng. Để dùng WebUI được bảo vệ, hãy cấu hình AUTH_ACCOUNTS và một TOKEN_SECRET mạnh, không phải giá trị mặc định, khởi động lại máy chủ rồi đăng nhập. Hãy giữ API key cho truy cập bằng chương trình; đừng xóa nó để bật truy cập khách.",
+    "unavailableTitle": "Không xác định được cách truy cập WebUI",
+    "unavailable": "Máy chủ không cho biết cách cấu hình truy cập WebUI: có thể hiện không kết nối được, hoặc backend cũ hơn WebUI này. Hãy kiểm tra kết nối và phiên bản frontend/backend có khớp nhau không, rồi kiểm tra lại. Truy cập khách không bao giờ được bật khi thiếu thông tin này.",
+    "retry": "Kiểm tra lại"
   }
 }

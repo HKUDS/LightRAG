@@ -416,6 +416,6 @@ metadata is not treated as permission for guest access. Known legacy browser
 settings have only their `apiKey` removed; future storage versions are untouched.
 
 Programmatic clients should continue to send one credential per request
-(`X-API-Key` or a bearer token). Backend credential acceptance, whitelist behavior,
-and token renewal are unchanged. See the [API server migration guide](LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access)
+(`X-API-Key` or a bearer token). This migration does not change backend credential
+acceptance, `WHITELIST_PATHS` handling, or token renewal. See the [API server migration guide](LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access)
 for the complete deployment-mode table.

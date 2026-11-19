@@ -717,10 +717,9 @@ lightrag-hash-password --username admin
 
 完全开放的 WebUI 仍使用 guest token；guest 并非已认证的用户账户。完全开放模式下的程序化请求仍可不携带 token。仅凭 guest token **不能**绕过受保护路由的 API Key 检查。API-key-only 服务器仍可正常启动并服务程序化客户端。
 
-`GET /auth-status` 仅新增非敏感布尔字段 `api_key_configured`，依据服务器实际生效的密钥计算。包括 `auth_configured`（仅表示账户配置）在内的原字段含义不变，`/login` 行为不变。前端据此选择支持的流程，不引入新的后端授权策略；白名单路由保持原有行为。
+`GET /auth-status` 仅新增非敏感布尔字段 `api_key_configured`，依据服务器实际生效的密钥计算。包括 `auth_configured`（仅表示账户配置）在内的原字段含义不变，`/login` 行为不变。前端据此选择支持的流程，不引入新的后端授权策略；本次迁移也不改变 `WHITELIST_PATHS` 的处理。
 
-
-> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个程序化请求通常应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。本次 WebUI 迁移不改变后端对同时携带两种凭据的处理方式；客户端不应依赖双凭据行为。
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个程序化请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。本次 WebUI 迁移不改变这一行为。
 
 ## Azure OpenAI 后端配置
 

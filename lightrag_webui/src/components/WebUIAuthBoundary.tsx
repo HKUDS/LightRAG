@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getAuthStatus } from '@/api/lightrag'
 import { useAuthStore } from '@/stores/state'
-import { applyWebUIAuthStatus, useWebUIAuthStore } from '@/stores/webuiAuth'
+import { useWebUIAuthStore } from '@/stores/webuiAuth'
 import Button from '@/components/ui/Button'
 
 /** Discover capabilities before either entry mounts protected screens or probes. */
@@ -13,8 +13,8 @@ export default function WebUIAuthBoundary({ children }: { children: ReactNode })
   const isGuest = useAuthStore((state) => state.isGuestMode)
   const check = useCallback(async () => {
     try {
+      // getAuthStatus() itself publishes the discovered mode to the store.
       const status = await getAuthStatus()
-      applyWebUIAuthStatus(status)
       if (status.auth_configured && useAuthStore.getState().isGuestMode) {
         // A guest token never becomes an account identity after a restart.
         useAuthStore.getState().logout()

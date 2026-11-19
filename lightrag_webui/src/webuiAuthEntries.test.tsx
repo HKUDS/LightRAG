@@ -119,7 +119,7 @@ if (process.env.LIGHTRAG_WEBUI_ENTRY_TEST_CHILD !== '1') {
         delete status.api_key_configured
         renderEntry()
         const alert = await screen.findByRole('alert')
-        expect(alert.textContent).toContain('matching')
+        expect(alert.textContent).toContain('could not be determined')
         expect(calls).toEqual(['/auth-status'])
         expect(useAuthStore.getState().isAuthenticated).toBe(false)
       })

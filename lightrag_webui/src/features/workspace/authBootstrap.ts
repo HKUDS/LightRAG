@@ -1,7 +1,7 @@
-import { webuiAuthMode } from '@/lib/webuiAuthMode'
 import type { AuthStatusResponse } from '@/api/lightrag'
 import { useAuthStore } from '@/stores/state'
 import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 
 /**
  * Reconcile the workspace session with what `/auth-status` reports, at the

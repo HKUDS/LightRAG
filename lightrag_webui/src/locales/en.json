@@ -540,7 +540,7 @@
     "title": "Account configuration required",
     "guidance": "This server uses an API key without user accounts. To use the protected WebUI, configure AUTH_ACCOUNTS and a strong, non-default TOKEN_SECRET, restart the server, and sign in. Keep your API key for programmatic access; do not remove it to enable guest access.",
     "unavailableTitle": "WebUI access could not be determined",
-    "unavailable": "Check the server connection and deploy matching frontend and backend versions. This WebUI needs authentication discovery metadata before enabling guest access.",
+    "unavailable": "The server did not report how WebUI access is configured: it may be unreachable right now, or its backend may be older than this WebUI. Check the connection and that the frontend and backend versions match, then check again. Guest access is never enabled without this information.",
     "retry": "Check again"
   }
 }

@@ -534,5 +534,13 @@
   },
   "retrievalHistory": {
     "quotaDropped": "Le stockage du navigateur est plein : l'historique de discussion n'est plus enregistré. La conversation en cours reste visible jusqu'à ce que vous quittiez la page."
+  },
+  "webuiAuth": {
+    "checking": "Vérification de l'accès à la WebUI…",
+    "title": "Configuration des comptes requise",
+    "guidance": "Ce serveur utilise une clé API sans comptes utilisateur. Pour utiliser la WebUI protégée, configurez AUTH_ACCOUNTS et un TOKEN_SECRET robuste et non par défaut, redémarrez le serveur, puis connectez-vous. Conservez votre clé API pour l'accès programmatique ; ne la supprimez pas pour activer l'accès invité.",
+    "unavailableTitle": "Impossible de déterminer l'accès à la WebUI",
+    "unavailable": "Le serveur n'a pas indiqué comment l'accès à la WebUI est configuré : il est peut-être injoignable pour le moment, ou son backend est plus ancien que cette WebUI. Vérifiez la connexion et la concordance des versions du frontend et du backend, puis vérifiez à nouveau. L'accès invité n'est jamais activé sans cette information.",
+    "retry": "Vérifier à nouveau"
   }
 }

@@ -534,5 +534,13 @@
   },
   "retrievalHistory": {
     "quotaDropped": "Storage browser penuh: riwayat chat tidak lagi disimpan. Percakapan saat ini tetap terlihat sampai Anda meninggalkan halaman."
+  },
+  "webuiAuth": {
+    "checking": "Memeriksa akses WebUI…",
+    "title": "Akun pengguna perlu dikonfigurasi",
+    "guidance": "Server ini memakai API key tanpa akun pengguna. Untuk memakai WebUI yang terlindungi, konfigurasikan AUTH_ACCOUNTS dan TOKEN_SECRET yang kuat serta bukan nilai bawaan, restart server, lalu masuk. Simpan API key untuk akses terprogram; jangan hapus untuk mengaktifkan akses tamu.",
+    "unavailableTitle": "Akses WebUI tidak dapat ditentukan",
+    "unavailable": "Server tidak melaporkan cara akses WebUI dikonfigurasi: mungkin sedang tidak dapat dijangkau, atau backend-nya lebih lama dari WebUI ini. Periksa koneksi dan kecocokan versi frontend dan backend, lalu periksa lagi. Akses tamu tidak pernah diaktifkan tanpa informasi ini.",
+    "retry": "Periksa lagi"
   }
 }

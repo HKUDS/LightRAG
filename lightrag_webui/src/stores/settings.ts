@@ -1,4 +1,3 @@
-import { withoutLegacyApiKey } from '@/migrations/removeLegacyApiKey'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
@@ -10,6 +9,7 @@ import {
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from '@/migrations/splitSettingsStorage'
 import { createFutureGuardedStorage } from '@/lib/guardedStorage'
+import { withoutLegacyApiKey } from '@/migrations/removeLegacyApiKey'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi' | 'id'
