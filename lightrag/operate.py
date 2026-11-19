@@ -46,6 +46,8 @@ from lightrag.utils import (
     get_llm_cache_identity,
     serialize_llm_cache_identity,
     remove_think_tags,
+    is_reasoning_only_answer,
+    reject_reasoning_only_answer,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
     process_chunks_unified,
@@ -4753,6 +4755,25 @@ def _answer_cache_kv(
     return hashing_kv
 
 
+def _drop_reasoning_only_cache_hit(
+    cached_result: tuple[str, int] | None,
+) -> tuple[str, int] | None:
+    """Treat a cached reasoning-only answer as a cache miss.
+
+    Entries written before ``reject_reasoning_only_answer`` guarded the cache
+    write can hold a ``<think>`` trace with no answer. Serving one would
+    replay it forever; a miss regenerates the answer, and the regenerated
+    one overwrites the entry (or the generation raises, as for a fresh miss).
+    """
+    if cached_result is not None and is_reasoning_only_answer(cached_result[0]):
+        logger.warning(
+            " == LLM cache == Ignoring a cached query answer that carries only "
+            "a reasoning trace; regenerating it"
+        )
+        return None
+    return cached_result
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -4979,8 +5000,10 @@ async def kg_query(
         serialize_llm_cache_identity(llm_cache_identity),
     )
 
-    cached_result = await handle_cache(
-        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    cached_result = _drop_reasoning_only_cache_hit(
+        await handle_cache(
+            answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        )
     )
 
     if cached_result is not None:
@@ -4999,6 +5022,9 @@ async def kg_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+        # A reasoning trace with no answer is a failed generation, not an
+        # answer: never return it as one, never cache it.
+        reject_reasoning_only_answer(response)
 
         if (
             answer_cache_kv
@@ -7413,8 +7439,10 @@ async def naive_query(
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
-    cached_result = await handle_cache(
-        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    cached_result = _drop_reasoning_only_cache_hit(
+        await handle_cache(
+            answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        )
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -7430,6 +7458,9 @@ async def naive_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+        # A reasoning trace with no answer is a failed generation, not an
+        # answer: never return it as one, never cache it.
+        reject_reasoning_only_answer(response)
 
         if (
             answer_cache_kv

@@ -252,15 +252,23 @@ async def test_unsupported_chat_completions_params_are_dropped(monkeypatch):
         assert dropped not in call, f"{dropped} would be rejected by the API"
 
 
-async def test_cot_wraps_reasoning_when_body_is_empty(monkeypatch):
-    _patch_client(
+async def test_reasoning_only_body_raises_retryable_even_with_cot(monkeypatch):
+    """A response with reasoning and no body text is empty whatever
+    enable_cot says: a <think> trace returned in its place used to skip the
+    retry that the same response gets with enable_cot=False, and the query
+    path then returned (and cached) the trace as the answer."""
+    client = _patch_client(
         monkeypatch,
         _response(output=[_reasoning("thinking hard"), _message("")]),
     )
 
-    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", enable_cot=True)
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await openai_responses_complete_if_cache("gpt-5.6", "hi", enable_cot=True)
 
-    assert result == "<think>thinking hard</think>"
+    assert not isinstance(excinfo.value, EmptyTruncatedResponseError)
+    assert "reasoning-only output" in str(excinfo.value)
+    assert "thinking hard" not in str(excinfo.value)
+    assert len(client.responses.calls) == 3, "a sampling artifact is retried"
 
 
 async def test_cot_is_ignored_when_body_text_present(monkeypatch):
