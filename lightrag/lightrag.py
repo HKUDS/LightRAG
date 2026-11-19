@@ -25,7 +25,6 @@ from typing import (
     Awaitable,
     Callable,
     Coroutine,
-    Iterator,
     NoReturn,
     TypeVar,
     cast,
@@ -5697,7 +5696,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | AsyncIterator[str]:
         """
         Perform a sync query.
 
@@ -5707,12 +5706,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
-            str: The result of the query execution.
+            str | AsyncIterator[str]: The same value :meth:`aquery` returns.
+                With ``param.stream=False`` this is always a ``str``. With
+                ``param.stream=True`` it is an ``AsyncIterator[str]`` when
+                the answer is streamed, and still a ``str`` on a query-cache
+                hit, when no context is found, or when the model does not
+                stream.
+
+            There is no synchronous stream: the iterator can only be consumed
+            with ``async for``. Streaming callers should use
+            ``await aquery(...)``; synchronous scripts that need text should
+            pass ``stream=False``.
 
         Raises:
             Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
-        return _run_sync(  # type: ignore
+        return _run_sync(
             lambda: self.aquery(query, param, system_prompt),
             sync_name="query",
             async_name="aquery",
