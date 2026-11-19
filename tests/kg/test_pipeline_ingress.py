@@ -15,6 +15,7 @@ import asyncio
 import multiprocessing as mp
 import os
 import signal
+import sys
 import threading
 from pathlib import Path
 
@@ -524,6 +525,11 @@ async def test_multiprocess_cross_process_publish_and_sticky_survival(
     assert again.counts()["terminal_manual_request_ids"] == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the child is killed with SIGKILL and observed through a POSIX exit "
+    "code, neither of which Windows provides",
+)
 async def test_multiprocess_resolution_survives_dead_lock_holder(
     multiprocess_share_data,
 ):
