@@ -1592,13 +1592,21 @@ async def _process_extraction_result(
         record = record.strip()
         if record is None:
             continue
-        entity_records = split_string_by_multi_markers(
-            record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
-        )
-        for entity_record in entity_records:
-            if not entity_record.startswith("entity") and not entity_record.startswith(
-                "relation"
-            ):
+        entity_marker = f"{tuple_delimiter}entity{tuple_delimiter}"
+        entity_records = split_string_by_multi_markers(record, [entity_marker])
+        # Every piece after the first, and the first one too when the line
+        # opens with the marker (the split drops the empty piece before it),
+        # lost its "entity<|#|>" prefix to the split. Put the whole prefix back
+        # by position, not by peeking at the text: a bare "entity<|" leaves the
+        # record one field short, and a name that itself starts with "entity"
+        # or "relation" must not decide what the record is.
+        first_piece_split = record.startswith(entity_marker)
+        for idx, entity_record in enumerate(entity_records):
+            if idx > 0 or first_piece_split:
+                entity_record = f"entity{tuple_delimiter}{entity_record}"
+            elif not entity_record.startswith(
+                "entity"
+            ) and not entity_record.startswith("relation"):
                 entity_record = f"entity<|{entity_record}"
             entity_relation_records = split_string_by_multi_markers(
                 # treat "relationship" and "relation" interchangeable
@@ -1608,10 +1616,13 @@ async def _process_extraction_result(
                     f"{tuple_delimiter}relation{tuple_delimiter}",
                 ],
             )
-            for entity_relation_record in entity_relation_records:
-                if not entity_relation_record.startswith(
-                    "entity"
-                ) and not entity_relation_record.startswith("relation"):
+            # entity_record now starts with a record keyword, never with a
+            # marker, so exactly the pieces after the first lost one.
+            for rel_idx, entity_relation_record in enumerate(entity_relation_records):
+                if rel_idx > 0 or (
+                    not entity_relation_record.startswith("entity")
+                    and not entity_relation_record.startswith("relation")
+                ):
                     entity_relation_record = (
                         f"relation{tuple_delimiter}{entity_relation_record}"
                     )
