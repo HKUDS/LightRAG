@@ -16,6 +16,10 @@ from lightrag.exceptions import (
     IndexFlushError,
     PipelineCancelledException,
 )
+from lightrag.entity_name_normalizer import (
+    EntityNameNormalizationError,
+    apply_entity_name_normalizer,
+)
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -252,19 +256,20 @@ def _truncate_entity_identifier(
 def _finalize_extracted_identifier(
     identifier: str, chunk_key: str, identifier_role: str
 ) -> str:
-    """Cap an extracted entity identifier, then run the final space pass.
+    """Cap an identifier, run the final space pass, then the selected plugin.
 
     ``identifier`` must come from ``normalize_entity_name(...,
     final_space_pass=False)``. The pass runs after the cap, never before it:
     the pass shortens a name, so cutting its output can give two spellings
     different keys where the cut of the previous rules gave them one, which
     breaks the merge-only rule of :func:`normalize_extracted_info`. Running it
-    on the capped key keeps the new key a function of the stored one.
+    on the capped key keeps the new key a function of the stored one. The
+    plugin follows both steps and must not return an oversized canonical key.
     """
     capped = _truncate_entity_identifier(
         identifier, DEFAULT_ENTITY_NAME_MAX_LENGTH, chunk_key, identifier_role
     )
-    return remove_spaces_next_to_chinese(capped)
+    return apply_entity_name_normalizer(remove_spaces_next_to_chinese(capped))
 
 
 def _truncate_section_context(
@@ -1042,6 +1047,8 @@ async def _process_json_extraction_result(
             )
             maybe_nodes[truncated_name].append(node_data)
 
+        except EntityNameNormalizationError:
+            raise
         except Exception as e:
             logger.warning(
                 f"{chunk_key}: Failed to process entity from JSON result: {e}"
@@ -1126,6 +1133,8 @@ async def _process_json_extraction_result(
             )
             maybe_edges[(truncated_source, truncated_target)].append(edge_data)
 
+        except EntityNameNormalizationError:
+            raise
         except Exception as e:
             logger.warning(
                 f"{chunk_key}: Failed to process relationship from JSON result: {e}"
@@ -1302,6 +1311,10 @@ async def rebuild_knowledge_from_chunks(
                             chunk_relationships[chunk_id][rel_key] = list(rel_list)
                         # Otherwise keep existing version
 
+        except EntityNameNormalizationError:
+            # A broken mapping is not unusable cache: skipping it could rebuild
+            # a stored entity from only some of its surviving records.
+            raise
         except Exception as e:
             report.unusable_cache_chunk_ids.add(chunk_id)
             status_message = (
