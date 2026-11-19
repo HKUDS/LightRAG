@@ -291,3 +291,67 @@ async def test_extract_keywords_only_partitions_cache_by_keyword_llm_identity():
     assert second_ll == ["rag"]
     assert calls == 2
     assert len(cache._store) == 2
+
+
+_SHORT_ANSWER = '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(f"{_SHORT_ANSWER}\n[1]", id="bracket-citation"),
+        pytest.param(
+            f"{_SHORT_ANSWER}\n"
+            'Note: I followed the {"high_level_keywords": [...]} format.',
+            id="brace-prose",
+        ),
+        pytest.param(
+            f'{_SHORT_ANSWER}\n\n{{"note": "a second object"}}',
+            id="trailing-unrelated-object",
+        ),
+    ],
+)
+def test_parse_keywords_payload_keeps_object_before_bracketed_prose(result):
+    """Trailing prose carrying a bracket or a brace must not lose the keywords."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(f"Result #1: {_SHORT_ANSWER}", id="hash-label"),
+        pytest.param(f"# Keywords\n{_SHORT_ANSWER}", id="markdown-heading"),
+        pytest.param(f"Result #1: {_SHORT_ANSWER} [1]", id="hash-label-citation"),
+    ],
+)
+def test_parse_keywords_payload_recovers_object_after_hash_lead_in(result):
+    """json_repair reads '#' as a comment to the end of the line and repairs a
+    '#' lead-in to an empty string; the object after it is still the answer."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param("no keywords here", id="plain-prose"),
+        pytest.param("Result #1: no keywords", id="hash-label-without-object"),
+        pytest.param(f"Result #1: [{_SHORT_ANSWER}]", id="hash-label-array"),
+    ],
+)
+def test_parse_keywords_payload_rejects_text_without_an_object(result):
+    with patch("lightrag.operate.logger.error") as mocked_error:
+        is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert (is_valid, hl_keywords, ll_keywords) == (False, [], [])
+    mocked_error.assert_called_once()
