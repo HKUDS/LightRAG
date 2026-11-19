@@ -920,6 +920,22 @@ def test_table_grid_span_past_the_grid_keeps_first_cell() -> None:
     assert TableExtractor.extract(table) == [["A", "", ""]]
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize("before_val", ["0", "-2", None, "", "abc"])
+def test_table_grid_before_below_zero_or_malformed_skips_nothing(
+    before_val,
+) -> None:
+    """``w:gridBefore`` shares the gridSpan parsing with a floor of 0."""
+    document = Document()
+    table = _filled_table(document, 1, 3)
+    node = OxmlElement("w:gridBefore")
+    if before_val is not None:
+        node.set(qn("w:val"), before_val)
+    table.rows[0]._tr.get_or_add_trPr().append(node)
+
+    assert _saved_table_metadata(document)["rows"] == [["r0c0", "r0c1", "r0c2"]]
+
+
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------
 
 
