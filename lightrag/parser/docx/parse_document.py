@@ -4,7 +4,6 @@ ABOUTME: Parses DOCX documents into text blocks using python-docx
 ABOUTME: Extracts automatic numbering, splits by headings, converts tables to JSON
 """
 
-import json
 import sys
 from dataclasses import dataclass
 
@@ -24,8 +23,16 @@ from lightrag.parser._markdown import (
     render_heading_line,
     strip_heading_markdown_prefix,
 )
+from lightrag.table_markup import dumps_json_table_body
 from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
+from .ooxml import is_on
+from .content_controls import (
+    in_bibliography,
+    is_bibliography_table,
+    is_hidden_inline_control,
+    iter_blocks,
+)
 from .table_extractor import TableExtractor
 from .drawing_image_extractor import (
     DrawingExtractionContext,
@@ -47,6 +54,10 @@ _SKIP_COMMENT_TAGS = frozenset(
     {"commentRangeStart", "commentRangeEnd", "commentReference", "annotationRef"}
 )
 _SKIP_PARAGRAPH_TAGS = _SKIP_REVISION_TAGS | _SKIP_COMMENT_TAGS
+_BODY_BLOCK_TAGS = frozenset(
+    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}" + tag
+    for tag in ("p", "tbl", "sectPr")
+)
 
 
 class DocxContentError(ValueError):
@@ -467,16 +478,23 @@ def extract_text_from_run(
         tag = child.tag.split("}")[-1]  # Remove namespace
         if tag == "t" and child.text:
             text += child.text
-        elif tag == "tab":
+        elif tag in ("tab", "ptab"):
+            # w:ptab is an absolute position tab, e.g. the one that moves a
+            # footer's page number to the right margin.
             text += "\t"
-        elif tag == "br":
-            # Handle line breaks - textWrapping or no type = soft line break
+        elif tag in ("br", "cr"):
+            # Handle line breaks - textWrapping or no type = soft line break.
+            # A w:cr (carriage return) has no type and breaks the line too.
             br_type = child.get(
                 "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type"
             )
             if br_type in (None, "textWrapping"):
                 text += "\n"
             # Skip page and column breaks (layout elements)
+        elif tag == "noBreakHyphen":
+            # A hyphen Word keeps on one line with its neighbours (COVID-19);
+            # written as a plain hyphen so the word reads as typed.
+            text += "-"
         elif tag == "drawing":
             text += extract_drawing_placeholder_from_element(
                 child,
@@ -509,7 +527,8 @@ def extract_paragraph_content(
 
     Handles w:r (text runs), m:oMath (inline equations), and m:oMathPara
     (block equations). Recurses into container elements (e.g., w:hyperlink,
-    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content.
+    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content, except
+    a content control still showing its placeholder (see content_controls).
 
     Args:
         element: lxml paragraph element (w:p)
@@ -525,7 +544,7 @@ def extract_paragraph_content(
         # Drop tracked-change deletions (w:del/w:moveFrom) and comment markers
         # (w:commentRangeStart/End, w:commentReference, w:annotationRef) so the
         # output only contains the final revised text without annotation glyphs.
-        if tag in _SKIP_PARAGRAPH_TAGS:
+        if tag in _SKIP_PARAGRAPH_TAGS or is_hidden_inline_control(node):
             return
         if tag == "r":
             parts.append(
@@ -579,6 +598,7 @@ def _build_unsplit_block(
     parent_headings: list,
     level: int,
     is_title_block: bool = False,
+    is_references: bool = False,
 ) -> dict:
     """Build a single block from paragraphs without size-based splitting."""
     last_para = paragraphs[-1]
@@ -593,6 +613,8 @@ def _build_unsplit_block(
     }
     if is_title_block:
         block["is_title_block"] = True
+    if is_references:
+        block["session_type"] = "references"
     table_headers = _collect_table_headers(paragraphs)
     if table_headers:
         block["table_headers"] = table_headers
@@ -606,6 +628,7 @@ def _flush_current_block(
     parent_headings: list,
     level: int,
     is_title_block: bool = False,
+    is_references: bool = False,
 ) -> None:
     """Flush accumulated paragraphs into a single heading-scoped block.
 
@@ -618,7 +641,7 @@ def _flush_current_block(
 
     blocks.append(
         _build_unsplit_block(
-            heading, paragraphs, parent_headings, level, is_title_block
+            heading, paragraphs, parent_headings, level, is_title_block, is_references
         )
     )
 
@@ -646,6 +669,9 @@ class ParagraphRecord:
     demoted_body_text: str | None = None  # oversize soft-break remainder
     table_header_rows: list | None = None
     ends_section: bool = False  # paragraph-level w:pPr/w:sectPr
+    # Inside a bibliography content control: the assemblers give such records
+    # their own block, marked session_type="references" (drop_references).
+    in_references: bool = False
     # --- smart-heading features (populated only when smart is enabled) ------
     full_text_raw: str | None = None  # pre-policy label+text (keeps "\n")
     label: str = ""  # auto-numbering label, if any
@@ -724,7 +750,17 @@ def _read_document_records(
 
     body = doc._element.body
 
-    for element in body:
+    # Blocks inside content controls and custom XML markup count like direct
+    # ones, except a table of contents or placeholder control (see
+    # content_controls). The records of a block inside a bibliography control
+    # are marked once the next block starts (the branches below ``continue``).
+    references_from = None
+    for element in iter_blocks(body, _BODY_BLOCK_TAGS):
+        _mark_references(records, references_from)
+        is_references = in_bibliography(element) or (
+            element.tag.endswith("}tbl") and is_bibliography_table(element)
+        )
+        references_from = len(records) if is_references else None
         tag = element.tag.split("}")[-1]  # Remove namespace
 
         if tag == "sectPr":  # Document-level section break
@@ -754,12 +790,7 @@ def _read_document_records(
                 pPr = element.find(f"{w_ns}pPr")
                 if pPr is not None:
                     pbb = pPr.find(f"{w_ns}pageBreakBefore")
-                    # OOXML on/off: absent val means on.
-                    if pbb is not None and pbb.get(f"{w_ns}val") not in (
-                        "0",
-                        "false",
-                        "none",
-                    ):
+                    if pbb is not None and is_on(pbb):
                         rec.page_break_before = True
                     if pPr.find(f"{w_ns}sectPr") is not None:
                         # Section boundary on a blank paragraph: same
@@ -907,8 +938,10 @@ def _read_document_records(
                     parse_warnings.get("missing_paraid_count", 0) + 1
                 )
 
-            # Convert table to JSON
-            table_json = json.dumps(table_rows, ensure_ascii=False)
+            # Convert table to JSON. The shared encoder keeps a cell holding
+            # the text "</table>" from ending the <table> tag that the IR
+            # builder later matches non-greedily.
+            table_json = dumps_json_table_body(table_rows)
 
             # Extract cross-page repeating header rows (w:tblHeader) once per
             # table so we can surface them to the sidecar via the block-level
@@ -938,7 +971,15 @@ def _read_document_records(
             # Reset numbering tracking after table (table end boundary)
             resolver.reset_tracking_state()
 
+    _mark_references(records, references_from)
     return records
+
+
+def _mark_references(records: list, start: int | None) -> None:
+    """Mark the records from ``start`` on as bibliography content."""
+    if start is not None:
+        for rec in records[start:]:
+            rec.in_references = True
 
 
 def _assemble_blocks_legacy(
@@ -958,6 +999,7 @@ def _assemble_blocks_legacy(
     current_heading_stack = {}  # {level: heading_text} - Use dict to correctly track heading hierarchy
     current_parent_headings = []  # Parent headings for current block
     current_paragraphs = []  # Track paragraphs with metadata for splitting
+    current_is_references = False
     first_heading_recorded = (
         False  # Track whether the document's first heading has been captured
     )
@@ -965,6 +1007,20 @@ def _assemble_blocks_legacy(
     for rec in records:
         if rec.kind in ("empty_para", "empty_table", "section_break"):
             continue
+
+        # Bibliography content gets its own block (session_type="references"),
+        # keeping the current heading when the bibliography brings none.
+        if rec.in_references != current_is_references:
+            _flush_current_block(
+                blocks,
+                current_heading,
+                current_paragraphs,
+                current_parent_headings,
+                current_heading_level,
+                is_references=current_is_references,
+            )
+            current_paragraphs = []
+            current_is_references = rec.in_references
 
         if rec.kind == "table":
             current_paragraphs.append(
@@ -1009,6 +1065,7 @@ def _assemble_blocks_legacy(
                     current_paragraphs,
                     current_parent_headings,
                     current_heading_level,
+                    is_references=current_is_references,
                 )
 
                 # Reset for new block
@@ -1068,6 +1125,7 @@ def _assemble_blocks_legacy(
         current_paragraphs,
         current_parent_headings,
         current_heading_level,
+        is_references=current_is_references,
     )
 
     return blocks
@@ -1307,6 +1365,7 @@ def _assemble_blocks_smart(
     current_parent_headings: list = []
     current_paragraphs: list = []
     current_is_title_block = False
+    current_is_references = False
     first_heading_recorded = False
 
     if parse_metadata is not None:
@@ -1330,10 +1389,23 @@ def _assemble_blocks_smart(
                 current_parent_headings,
                 current_heading_level,
                 current_is_title_block,
+                current_is_references,
             )
             current_paragraphs = []
 
     for i, rec in enumerate(records):
+        # Bibliography content gets its own block (session_type="references"),
+        # keeping the current heading when the bibliography brings none.
+        # Checked first, so it also governs retained TOC lines; a title-block
+        # member is never bibliography (heading_flow skips such records).
+        if (
+            rec.kind in ("para", "table")
+            and i not in title_member_skip
+            and rec.in_references != current_is_references
+        ):
+            _flush()
+            current_is_references = rec.in_references
+            current_is_title_block = False
         if i in toc_indices:
             # TOC retention: a TOC line is KEPT (first visible lines as
             # body), the ellipsis anchor also emits one ``……``, and the rest
@@ -1357,6 +1429,7 @@ def _assemble_blocks_smart(
         d = decisions.get(i)
         if d is not None and d.absorbed:
             continue  # text already merged into a preceding heading
+
         # The title-block lead branch must run BEFORE the plain-table branch:
         # a TABLE-channel lead is itself a table record — emitting it
         # as body content would discard the composed heading and drop every

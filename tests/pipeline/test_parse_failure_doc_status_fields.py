@@ -441,7 +441,7 @@ async def test_raw_document_failure_keeps_real_summary(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parse_worker_logs_when_failed_upsert_itself_fails(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
     """When the FAILED-status upsert raises (e.g. the storage backend is down
     during the same outage that failed the parse), the worker must log instead
@@ -489,9 +489,6 @@ async def test_parse_worker_logs_when_failed_upsert_itself_fails(
 
         monkeypatch.setattr(rag, "_upsert_doc_status_transition", _flaky_upsert)
 
-        # lightrag logger has propagate=False; enable it so caplog captures.
-        lightrag_logger = logging.getLogger("lightrag")
-        monkeypatch.setattr(lightrag_logger, "propagate", True)
         with caplog.at_level(logging.ERROR, logger="lightrag"):
             await rag.apipeline_process_enqueue_documents()
 

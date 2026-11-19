@@ -32,6 +32,67 @@ _RESERVED = frozenset(
         "c",
     }
 )
+_CHUNKING_CONTEXT_MARKER = "__lightrag_accepts_chunking_context__"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ChunkingContext:
+    """Document metadata made available to explicitly context-aware chunkers.
+
+    The context is intentionally separate from the chunk text and legacy
+    sizing arguments.  Chunkers can use it for source-aware policies without
+    changing the text that is embedded or requiring a second callback shape.
+    """
+
+    doc_id: str
+    file_path: str
+    sidecar_location: str | None
+    parse_format: str
+    parse_engine: str | None
+    process_options: str
+
+
+def accepts_chunking_context(callback: Callable[..., Any]) -> Callable[..., Any]:
+    """Mark a constructor-supplied callback as accepting ``context=``.
+
+    This is an explicit opt-in so legacy six-argument callbacks remain
+    indistinguishable from their historical invocation.  The marker is read
+    at dispatch time and is not inferred from a callback failure.
+    """
+
+    if not callable(callback):
+        raise TypeError("chunking callback must be callable")
+    setattr(callback, _CHUNKING_CONTEXT_MARKER, True)
+    return callback
+
+
+def callback_supports_context(callback: Callable[..., Any]) -> bool:
+    """Return whether a callback explicitly opted into ``context=``."""
+
+    return bool(
+        getattr(callback, _CHUNKING_CONTEXT_MARKER, False)
+        or getattr(callback, "supports_chunking_context", False)
+        or getattr(callback, "accepts_chunking_context", False)
+    )
+
+
+def invoke_chunker(
+    callback: Callable[..., Any],
+    *args: Any,
+    context: ChunkingContext,
+) -> Any:
+    """Invoke a legacy or context-aware callback exactly once.
+
+    Signature probing followed by a retry is deliberately avoided: a
+    ``TypeError`` raised inside a callback is a real callback failure and must
+    never cause the implementation to run a second time.
+    """
+
+    if isinstance(callback, ChunkerBinding):
+        return callback(*args, context=context)
+    if callback_supports_context(callback):
+        return callback(*args, context=context)
+    return callback(*args)
 
 
 @dataclass(frozen=True)
@@ -40,7 +101,9 @@ class ChunkerSpec:
 
     ``version`` is an opaque author-supplied observation. ``executor_safe``
     opts a synchronous, thread-safe implementation into the bounded chunking
-    executor; the default preserves the legacy on-event-loop contract.
+    executor; ``accepts_context`` opts into the keyword-only
+    :class:`ChunkingContext` argument. The defaults preserve the legacy
+    six-positional-argument, on-event-loop contract.
     Future optional fields can extend this spec without changing entry points.
     """
 
@@ -49,6 +112,7 @@ class ChunkerSpec:
     version: str
     description: str
     executor_safe: bool = False
+    accepts_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +166,8 @@ def register_chunker(spec: ChunkerSpec, *, origin: str | None = None) -> None:
         raise ValueError(f"chunker {spec.name!r} requires a one-line description")
     if not isinstance(spec.executor_safe, bool):
         raise ValueError(f"chunker {spec.name!r} executor_safe must be a bool")
+    if not isinstance(spec.accepts_context, bool):
+        raise ValueError(f"chunker {spec.name!r} accepts_context must be a bool")
     resolved_origin = _registration_origin or origin or spec.impl
     previous = _REGISTRY.get(spec.name)
     if previous is not None:
@@ -154,6 +220,8 @@ class ChunkerBinding:
         split_by_character_only: bool,
         chunk_overlap_token_size: int,
         chunk_token_size: int,
+        *,
+        context: ChunkingContext | None = None,
     ) -> Any:
         args = (
             tokenizer,
@@ -163,11 +231,12 @@ class ChunkerBinding:
             chunk_overlap_token_size,
             chunk_token_size,
         )
+        kwargs = {"context": context} if self.spec.accepts_context else {}
         if self.spec.executor_safe:
             from lightrag.utils import run_in_chunking_executor
 
-            return run_in_chunking_executor(self.implementation, *args)
-        return self.implementation(*args)
+            return run_in_chunking_executor(self.implementation, *args, **kwargs)
+        return self.implementation(*args, **kwargs)
 
 
 def resolve_chunker(name: str | None) -> ChunkerBinding | None:
@@ -210,12 +279,20 @@ def resolve_chunker(name: str | None) -> ChunkerBinding | None:
     except (ValueError, TypeError):
         pass  # Some native callables expose no signature; do not invent a fence.
     else:
-        try:
-            signature.bind(*([None] * 6))
-        except TypeError as exc:
-            raise ValueError(
-                f"selected chunker {name!r} must accept six positional arguments: {exc}"
-            ) from exc
+        if spec.accepts_context:
+            try:
+                signature.bind(*([None] * 6), context=None)
+            except TypeError as exc:
+                raise ValueError(
+                    f"selected context-aware chunker {name!r} must accept six positional arguments plus keyword-only context: {exc}"
+                ) from exc
+        else:
+            try:
+                signature.bind(*([None] * 6))
+            except TypeError as exc:
+                raise ValueError(
+                    f"selected chunker {name!r} must accept six positional arguments: {exc}"
+                ) from exc
     if spec.executor_safe and (
         inspect.iscoroutinefunction(implementation)
         or inspect.iscoroutinefunction(getattr(implementation, "__call__", None))

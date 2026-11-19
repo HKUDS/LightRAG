@@ -26,15 +26,9 @@ pytestmark = pytest.mark.offline
 
 
 @pytest.fixture(autouse=True)
-def _propagate_lightrag_logs():
-    """The ``lightrag`` logger sets propagate=False; caplog needs it on."""
-    lg = logging.getLogger("lightrag")
-    old = lg.propagate
-    lg.propagate = True
-    try:
-        yield
-    finally:
-        lg.propagate = old
+def _lightrag_records_reach_caplog(lightrag_caplog):
+    """Tests here assert on ``lightrag`` records through caplog."""
+    yield
 
 
 def _para(text: str, *, size: float = 12.0, **kw) -> ParagraphRecord:
@@ -4197,3 +4191,80 @@ def test_run_smart_heading_rejects_invalid_max_chars_env(monkeypatch) -> None:
     monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "abc")
     with pytest.raises(ValueError, match="DOCX_SMART_HEADING_MAX_CHARS"):
         run_smart_heading([], llm_judge=None, warnings={})
+
+
+def test_smart_assembly_gives_bibliography_its_own_references_block(monkeypatch):
+    """Records inside a bibliography control form a session_type=references
+    block in the smart assembler too, keeping the heading they continue."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = _body(20) + [
+        _para("1 结论", size=16.0, outline_level=0),
+        *_body(3),
+        _para("[1] 张三：知识图谱综述", in_references=True),
+        _para("[2] 李四：检索增强生成", in_references=True),
+        _para("以上为全文结束语。"),
+    ]
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_no_title_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+
+    refs = [b for b in blocks if b.get("session_type") == "references"]
+    assert len(refs) == 1
+    assert refs[0]["content"] == "[1] 张三：知识图谱综述\n[2] 李四：检索增强生成"
+    assert refs[0]["heading"] == "1 结论"
+    closing = next(b for b in blocks if "以上为全文结束语。" in b["content"])
+    assert "session_type" not in closing
+
+
+def test_title_block_never_takes_a_bibliography_record(monkeypatch):
+    """A bibliography entry right before the cover cannot join the title
+    block: drop_references would drop the title and author with it."""
+    import json
+
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = [
+        _para("[1] 张三：某论文", size=14.0, in_references=True),
+        _para("行业观察白皮书", size=14.0),
+        _para("某某研究院", size=12.0),
+    ]
+    records += _body(15, size=12.0)
+    records.append(_para("第一章 总则", size=12.0, outline_level=0))
+    records += _body(15, size=12.0)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "行业观察白皮书"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+
+    title = next(b for b in blocks if b.get("is_title_block"))
+    assert title["heading"] == "行业观察白皮书"
+    assert "session_type" not in title
+    assert "某某研究院" in title["content"]
+    refs = [b for b in blocks if b.get("session_type") == "references"]
+    assert [b["content"] for b in refs] == ["[1] 张三：某论文"]
