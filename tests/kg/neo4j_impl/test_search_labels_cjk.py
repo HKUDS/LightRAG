@@ -39,8 +39,9 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __init__(self, calls):
+    def __init__(self, calls, fail_fulltext=False):
         self._calls = calls
+        self._fail_fulltext = fail_fulltext
 
     async def __aenter__(self):
         return self
@@ -50,18 +51,21 @@ class _FakeSession:
 
     async def run(self, query, **params):
         self._calls.append((query, params))
+        if self._fail_fulltext and "db.index.fulltext.queryNodes" in query:
+            raise RuntimeError("full-text index unavailable")
         return _FakeResult([])
 
 
 class _FakeDriver:
-    def __init__(self, calls):
+    def __init__(self, calls, fail_fulltext=False):
         self._calls = calls
+        self._fail_fulltext = fail_fulltext
 
     def session(self, **kwargs):
-        return _FakeSession(self._calls)
+        return _FakeSession(self._calls, self._fail_fulltext)
 
 
-def _make_storage():
+def _make_storage(fail_fulltext=False):
     calls = []
     storage = Neo4JStorage(
         namespace="chunk_entity_relation",
@@ -69,7 +73,7 @@ def _make_storage():
         embedding_func=None,
         workspace="test",
     )
-    storage._driver = _FakeDriver(calls)
+    storage._driver = _FakeDriver(calls, fail_fulltext)
     storage._DATABASE = "neo4j"
     return storage, calls
 
@@ -116,3 +120,22 @@ async def test_search_labels_keeps_prefix_wildcard_for_latin_query():
 
     assert len(calls) == 1
     assert calls[0][1]["search_query"] == "Samsung*"
+
+
+@pytest.mark.parametrize("query", ["lg전자", "LGテレビ", "abc北京", "서울"])
+async def test_fallback_matches_case_insensitively_for_every_script(query):
+    """A mixed query routed to the CJK path keeps the lowercased CONTAINS.
+
+    Before Hangul and kana were routed to the CJK path, `lg전자` reached the
+    Latin fallback and matched a stored `LG전자` through toLower; the CJK
+    fallback compared the raw query and returned nothing.
+    """
+    storage, calls = _make_storage(fail_fulltext=True)
+
+    await storage.search_labels(query)
+
+    assert len(calls) == 2  # full-text attempt, then the CONTAINS fallback
+    fallback_query, fallback_params = calls[1]
+    assert "toLower(n.entity_id) AS label_lower" in fallback_query
+    assert "label_lower CONTAINS $query_lower" in fallback_query
+    assert fallback_params == {"query_lower": query.lower(), "limit": 50}

@@ -2004,7 +2004,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         # Strip Lucene reserved characters before handing the text to the
         # full-text query parser (see _sanitize_fulltext_query). The CASE-based
-        # scoring below still uses the raw query_strip / query_lower.
+        # scoring below uses the unsanitized query_lower.
         sanitized_query = self._sanitize_fulltext_query(query_strip)
         if not sanitized_query:
             # Query was composed entirely of reserved characters (e.g. "---").
@@ -2017,16 +2017,17 @@ class Neo4JStorage(BaseGraphStorage):
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
                 if is_cjk:
-                    # For CJK text, score on the raw (case-sensitive) query
+                    # For CJK text, boost any containing label, not just a
+                    # prefix; compare lowercased for mixed queries (`lg전자`)
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
                     WHERE node:`{workspace_label}`
-                    WITH node.entity_id AS label, score
+                    WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
                     WITH label, score,
                          CASE
-                             WHEN label = $query_strip THEN score + 1000
-                             WHEN label CONTAINS $query_strip THEN score + 500
+                             WHEN label_lower = $query_lower THEN score + 1000
+                             WHEN label_lower CONTAINS $query_lower THEN score + 500
                              ELSE score
                          END AS final_score
                     RETURN label
@@ -2060,7 +2061,6 @@ class Neo4JStorage(BaseGraphStorage):
                     index_name=index_name,
                     search_query=search_query,
                     query_lower=query_lower,
-                    query_strip=query_strip,
                     limit=limit,
                 )
                 labels = [record["label"] async for record in result]
@@ -2082,46 +2082,27 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                if is_cjk:
-                    # For CJK text, use direct CONTAINS without case conversion
-                    cypher_query = f"""
-                    MATCH (n:`{workspace_label}`)
-                    WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label
-                    WHERE label CONTAINS $query_strip
-                    WITH label,
-                         CASE
-                             WHEN label = $query_strip THEN 1000
-                             WHEN label STARTS WITH $query_strip THEN 500
-                             ELSE 100 - size(label)
-                         END AS score
-                    ORDER BY score DESC, label ASC
-                    LIMIT $limit
-                    RETURN label
-                    """
-                    result = await session.run(
-                        cypher_query, query_strip=query_strip, limit=limit
-                    )
-                else:
-                    # For non-CJK text, use the original fallback logic
-                    cypher_query = f"""
-                    MATCH (n:`{workspace_label}`)
-                    WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
-                    WHERE label_lower CONTAINS $query_lower
-                    WITH label, label_lower,
-                         CASE
-                             WHEN label_lower = $query_lower THEN 1000
-                             WHEN label_lower STARTS WITH $query_lower THEN 500
-                             ELSE 100 - size(label)
-                         END AS score
-                    ORDER BY score DESC, label ASC
-                    LIMIT $limit
-                    RETURN label
-                    """
-                    result = await session.run(
-                        cypher_query, query_lower=query_lower, limit=limit
-                    )
+                # One case-insensitive query for every script: toLower leaves
+                # CJK characters unchanged, and a mixed query such as
+                # `lg전자` must still match a stored `LG전자`.
+                cypher_query = f"""
+                MATCH (n:`{workspace_label}`)
+                WHERE n.entity_id IS NOT NULL
+                WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                WHERE label_lower CONTAINS $query_lower
+                WITH label, label_lower,
+                     CASE
+                         WHEN label_lower = $query_lower THEN 1000
+                         WHEN label_lower STARTS WITH $query_lower THEN 500
+                         ELSE 100 - size(label)
+                     END AS score
+                ORDER BY score DESC, label ASC
+                LIMIT $limit
+                RETURN label
+                """
+                result = await session.run(
+                    cypher_query, query_lower=query_lower, limit=limit
+                )
 
                 labels = [record["label"] async for record in result]
                 await result.consume()
