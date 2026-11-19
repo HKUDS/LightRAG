@@ -156,7 +156,9 @@ async def test_existing_sort_options_remain_supported(
     if mongo_field != "_id":
         # A non-id sort field is not unique, so get_docs_paginated appends
         # _id as a tie-breaker to keep multi-page results deterministic.
-        expected_criteria.append(("_id", 1))
+        # The tie-breaker follows the primary sort's own direction so a
+        # single compound index can serve both.
+        expected_criteria.append(("_id", direction))
     assert storage._data.sorts == [expected_criteria]
     assert storage._data.collations == (
         [{"locale": "zh", "numericOrdering": True}]

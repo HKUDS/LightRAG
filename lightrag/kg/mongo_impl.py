@@ -1011,6 +1011,22 @@ class MongoDocStatusStorage(DocStatusStorage):
                     "name": f"{workspace_prefix}status_created_at_id_asc",
                     "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
                 },
+                # Tie-breaker indexes for get_docs_paginated's default sort
+                # (updated_at, with _id appended so tied updated_at values
+                # resolve deterministically). A compound index can still
+                # serve the opposite scan direction (MongoDB reads it
+                # backwards), so one index per shape covers both asc and
+                # desc callers as long as the tie-breaker's direction
+                # matches the primary sort's, which get_docs_paginated
+                # guarantees.
+                {
+                    "name": f"{workspace_prefix}updated_at_id_tiebreak",
+                    "keys": [("updated_at", -1), ("_id", -1)],
+                },
+                {
+                    "name": f"{workspace_prefix}status_updated_at_id_tiebreak",
+                    "keys": [("status", 1), ("updated_at", -1), ("_id", -1)],
+                },
             ]
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
@@ -1137,11 +1153,16 @@ class MongoDocStatusStorage(DocStatusStorage):
         # unspecified and can differ between the page-1 and page-2 queries,
         # letting a document be skipped or repeated across pages. Append the
         # unique _id as a secondary key, unless it is already the primary
-        # sort field.
+        # sort field. The tie-breaker uses the SAME direction as the primary
+        # sort field (not a fixed ascending), because a compound index
+        # declaring both keys in one direction can serve either asc or desc
+        # callers (MongoDB scans such an index backwards for the opposite
+        # direction); a mismatched tie-breaker direction cannot use it at
+        # all and falls back to an in-memory sort over the full result set.
         sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
         sort_criteria = [(sort_field, sort_direction_value)]
         if sort_field != "_id":
-            sort_criteria.append(("_id", 1))
+            sort_criteria.append(("_id", sort_direction_value))
 
         # Query for paginated data with Chinese collation for file_path sorting
         if sort_field == "file_path":
