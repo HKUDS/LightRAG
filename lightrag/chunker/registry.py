@@ -10,6 +10,7 @@ import importlib
 import inspect
 import logging
 import re
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,21 @@ class ChunkingContext:
     process_options: str
 
 
+def _decode_uri_component(component: str) -> str:
+    """Percent-decode a URI component the way ``sidecar_uri_for()`` encoded it.
+
+    ``Path.as_uri()`` quotes the filesystem-encoded bytes of the path, so the
+    bytes are decoded back with the filesystem encoding and error handler. The
+    ``unquote`` default (UTF-8 with ``replace``) would turn a name that is not
+    valid UTF-8 into U+FFFD, naming a directory that does not exist.
+    """
+    return unquote(
+        component,
+        encoding=sys.getfilesystemencoding(),
+        errors=sys.getfilesystemencodeerrors(),
+    )
+
+
 def _windows_drive_path_in_netloc(netloc: str, path: str) -> str | None:
     """Read a legacy Windows sidecar URI whose whole path landed in ``netloc``.
 
@@ -68,7 +84,7 @@ def _windows_drive_path_in_netloc(netloc: str, path: str) -> str | None:
     """
     if path not in ("", "/"):
         return None
-    head = unquote(netloc)
+    head = _decode_uri_component(netloc)
     if not _WINDOWS_DRIVE_PATH.match(head):
         return None
     head = head.rstrip("/\\")
@@ -81,7 +97,7 @@ def _local_uri_path(path: str) -> str:
     In ``file:///C:/x`` the slash before the drive only separates authority
     from path, so it is dropped; any other path keeps its leading slash.
     """
-    decoded = unquote(path)
+    decoded = _decode_uri_component(path)
     if _URI_DRIVE_PREFIX.match(decoded.replace("\\", "/")):
         decoded = decoded[1:]
     stripped = decoded.rstrip("/\\")
@@ -94,7 +110,7 @@ def _local_uri_path_error(path: str) -> str | None:
     Checked on the percent-decoded URI path, with backslashes read as
     separators, so the answer is the same on every platform.
     """
-    normalized = unquote(path).replace("\\", "/")
+    normalized = _decode_uri_component(path).replace("\\", "/")
     if not normalized.strip("/"):
         return "the URI path names no directory"
     if not normalized.startswith("/"):
@@ -126,11 +142,16 @@ def resolve_sidecar_location(location: str | None) -> Path | None:
     drive path read on POSIX is relative there, and a POSIX path read on
     Windows would take its drive from the current directory.
 
-    One legacy form is accepted as local: a sidecar persisted on Windows
-    percent-encodes its separators, so ``C:\\tmp\\report.parsed`` becomes
+    The path is percent-decoded once, with the filesystem encoding that
+    ``sidecar_uri_for()`` encoded it with, and ``localhost`` matches in any
+    case -- the same reading as the pipeline's own sidecar reader.
+
+    One legacy form is accepted as local: before ``sidecar_uri_for()`` kept the
+    drive in the URI path, a sidecar persisted on Windows percent-encoded its
+    separators, so ``C:\\tmp\\report.parsed`` became
     ``file://C%3A%5Ctmp%5Creport.parsed/`` and the whole path parses as the
-    host. Such documents already exist, so on Windows the URI resolves rather
-    than being rejected as remote. The exception is narrow on purpose: it
+    host. Such rows still exist, so on Windows the URI resolves rather than
+    being rejected as remote. The exception is narrow on purpose: it
     applies only when the decoded host starts with a drive letter, a colon and
     a backslash, and the URI carries no path of its own. A decoded host with
     any other shape -- a forward slash, a longer prefix before the colon -- is
@@ -148,7 +169,7 @@ def resolve_sidecar_location(location: str | None) -> Path | None:
             f"unsupported sidecar location {location!r}: "
             "only local file:// URIs can be resolved"
         )
-    if parts.netloc not in ("", "localhost"):
+    if parts.netloc.lower() not in ("", "localhost"):
         candidate = _windows_drive_path_in_netloc(parts.netloc, parts.path)
         if candidate is None:
             raise ValueError(

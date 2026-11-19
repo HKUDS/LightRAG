@@ -85,20 +85,21 @@ sidecar_dir = resolve_sidecar_location(context.sidecar_location)
 It returns `None` when there is no known sidecar, and a `Path` for a local
 `file://` URI without checking that the directory still exists. The returned
 path is always absolute on the platform running LightRAG. On Windows both drive
-forms resolve to the drive path: the standard `file:///C:/...` and the
-percent-encoded form LightRAG writes there (`file://C%3A%5C...`). Any other
-scheme, a bare path, or a `file://` URI naming a remote host raises
-`ValueError` instead of being reinterpreted as a local path, and so does a
-local URI whose path is empty, relative, relative to a drive (`C:tmp`), or a
-network (UNC) path such as `file:////server/share/` — each would otherwise
-resolve to some other directory. A location that is absolute only on another
-platform raises too: a drive path read on Linux would be relative there, and a
-POSIX path read on Windows would take its drive from the current directory. A chunker must cope with `None` — raw inserts have no
+forms resolve to the drive path: the standard `file:///C:/...` that LightRAG
+writes today, and the percent-encoded form older Windows rows still carry
+(`file://C%3A%5C...`). Any other scheme, a bare path, or a `file://` URI naming
+a remote host raises `ValueError` instead of being reinterpreted as a local
+path, and so does a local URI whose path is empty, relative, relative to a
+drive (`C:tmp`), or a network (UNC) path such as `file:////server/share/` —
+each would otherwise resolve to some other directory. A location that is
+absolute only on another platform raises too: a drive path read on Linux would
+be relative there, and a POSIX path read on Windows would take its drive from
+the current directory. A chunker must cope with `None` — raw inserts have no
 sidecar — and decides for itself whether a location it cannot resolve is fatal.
 
 Two more fields need care. `parse_engine` is the persisted value verbatim, or
 `None`; an engine configured with parameters carries them, for example
-`mineru(lang=en)`, so treat it as opaque rather than comparing it with `==`
+`mineru(language=en)`, so treat it as opaque rather than comparing it with `==`
 against a bare engine name. `file_path` is the logical display/citation name,
 and is the literal `unknown_source` when LightRAG has no usable name.
 

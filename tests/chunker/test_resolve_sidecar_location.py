@@ -16,7 +16,11 @@ import pytest
 import lightrag.chunker as chunker
 from lightrag.chunker import registry
 from lightrag.chunker.registry import resolve_sidecar_location
-from lightrag.utils_pipeline import SIDECAR_LOCATION_UNKNOWN
+from lightrag.utils_pipeline import (
+    SIDECAR_LOCATION_UNKNOWN,
+    resolve_sidecar_uri,
+    sidecar_uri_for,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -72,6 +76,39 @@ def test_resolver_returns_a_native_absolute_path_end_to_end():
     assert not resolved.exists()  # Existence is the plugin's business.
 
 
+NATIVE_SIDECAR_NAMES = [
+    "report.pdf.parsed",
+    "in put/report.pdf.parsed",
+    "caf\u00e9/\u62a5\u544a.pdf.parsed",
+    # A literal percent sign must survive: the path is decoded exactly once.
+    "100%20done/report.pdf.parsed",
+    "hash#and?query/report.pdf.parsed",
+]
+
+
+@pytest.mark.parametrize("name", NATIVE_SIDECAR_NAMES)
+def test_resolver_round_trips_what_the_pipeline_writes(tmp_path, name):
+    # Whatever sidecar_uri_for() persists, the plugin-facing resolver must read
+    # back as the same directory the pipeline's own reader resolves.
+    directory = tmp_path / name
+    location = sidecar_uri_for(directory)
+    resolved = resolve_sidecar_location(location)
+    assert resolved == directory.resolve()
+    assert resolved == resolve_sidecar_uri(location)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX names may hold non-UTF-8 bytes")
+def test_resolver_keeps_a_non_utf8_posix_name(tmp_path):
+    # Path.as_uri() quotes the filesystem-encoded bytes; a UTF-8 'replace'
+    # decode would turn the 0xFF byte into U+FFFD, another directory.
+    directory = tmp_path / os.fsdecode(b"bad\xffname.parsed")
+    location = sidecar_uri_for(directory)
+    assert "%FF" in location
+    resolved = resolve_sidecar_location(location)
+    assert os.fsencode(resolved).endswith(b"/bad\xffname.parsed")
+    assert resolved == resolve_sidecar_uri(location)
+
+
 @pytest.mark.parametrize("location", [None, "", SIDECAR_LOCATION_UNKNOWN])
 def test_resolver_returns_none_without_a_known_sidecar(flavor, location):
     assert resolve_sidecar_location(location) is None
@@ -80,6 +117,8 @@ def test_resolver_returns_none_without_a_known_sidecar(flavor, location):
 POSIX_LOCATIONS = [
     "file:///nonexistent-lightrag-sidecar/in%20put/report.pdf.parsed/",
     "file://localhost/nonexistent-lightrag-sidecar/in%20put/report.pdf.parsed/",
+    # A host name matches in any case, as in the pipeline's own reader.
+    "file://LocalHost/nonexistent-lightrag-sidecar/in%20put/report.pdf.parsed/",
 ]
 
 
@@ -106,8 +145,9 @@ DRIVE_LOCATIONS = [
         "D:/inputs/in put/report.pdf.parsed",
     ),
     ("file:///Z:/", "Z:/"),
-    # The legacy form sidecar_uri_for() writes on Windows: the whole
-    # percent-encoded drive path lands in the netloc.
+    # The legacy form older Windows rows carry, from before sidecar_uri_for()
+    # kept the drive in the path: the whole percent-encoded drive path lands
+    # in the netloc.
     ("file://C%3A%5Ctmp%5Cexample.parsed/", "C:\\tmp\\example.parsed"),
     (
         "file://D%3A%5Cinputs%5Cin%20put%5Creport.pdf.parsed/",
