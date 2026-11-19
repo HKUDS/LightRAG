@@ -97,6 +97,17 @@ class ReasoningOnlyResponseError(RuntimeError):
     """
 
 
+class EmptySummaryResponseError(RuntimeError):
+    """An entity or relation description summary that came back empty.
+
+    The summary replaces every description fragment it was asked to merge, so
+    storing an empty one would erase them. Raised by the summary step for an
+    answer that is empty after think-tag removal and sanitization, including
+    ``<think>...</think>`` with nothing after it; the token-limit variant
+    raises :class:`EmptyTruncatedResponseError` before it gets there.
+    """
+
+
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
 
