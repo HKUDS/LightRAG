@@ -119,6 +119,7 @@ from lightrag.parser.routing import (
     parse_process_options,
     resolve_chunk_options,
     resolve_parser_directives,
+    validate_new_hint_chunk_sizes,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -2521,6 +2522,7 @@ async def pipeline_enqueue_file(
 
         try:
             directives = resolve_parser_directives(file_path)
+            validate_new_hint_chunk_sizes(file_path, directives.chunk_params)
         except FilenameParserHintError as e:
             error_files = [
                 {
@@ -5456,6 +5458,9 @@ def create_document_routes(
             # LIGHTRAG_PARSER rule scan.
             try:
                 upload_directives = resolve_parser_directives(safe_filename)
+                validate_new_hint_chunk_sizes(
+                    safe_filename, upload_directives.chunk_params
+                )
             except FilenameParserHintError as hint_error:
                 # Reject malformed hints synchronously with the detailed
                 # message (previously surfaced asynchronously as an error

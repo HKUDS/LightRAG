@@ -43,6 +43,7 @@ from lightrag.parser.registry import (
 )
 from lightrag.parser.param_schema import (
     _parse_bool,
+    chunk_param_minimum_error,
     parse_chunk_params,
     parse_engine_params,
     render_engine_params,
@@ -832,6 +833,42 @@ def _parse_chunk_param_texts(
     return chunk_params, errors
 
 
+def _chunk_param_minimum_errors(
+    chunk_params: Mapping[str, Mapping[str, Any]], *, label: str
+) -> list[str]:
+    """Ingress-only ``MIN_CHUNK_TOKEN_SIZE`` check over parsed per-selector params."""
+    errors: list[str] = []
+    for selector, params in chunk_params.items():
+        error = chunk_param_minimum_error(params)
+        if error is not None:
+            errors.append(f"{label} chunk strategy {selector!r}: {error}")
+    return errors
+
+
+def validate_new_hint_chunk_sizes(
+    file_path: str | Path, chunk_params: Mapping[str, Mapping[str, Any]]
+) -> None:
+    """Reject a NEW file whose hint sets a size below ``MIN_CHUNK_TOKEN_SIZE``.
+
+    Call it on the upload and scan-enqueue paths, after
+    :func:`resolve_parser_directives`. :func:`resolve_parser_directives`
+    itself does not apply the minimum: it also runs when an already ingested
+    document is resumed, and a hint accepted under the old floor must stay
+    resumable.
+
+    Raises:
+        FilenameParserHintError: naming the selector and value.
+    """
+    basename = Path(file_path).name
+    errors = _chunk_param_minimum_errors(
+        chunk_params, label=f"filename hint in {basename!r}"
+    )
+    if errors:
+        raise FilenameParserHintError(
+            f"Invalid filename parser hint in {basename!r}: " + "; ".join(errors)
+        )
+
+
 def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:
     """Decompose a bracket-hint inner string into ``(engine, options)``.
 
@@ -1252,8 +1289,13 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
                     options_str, label="process options"
                 )
             )
-        _, param_errors = _parse_chunk_param_texts(chunk_param_texts, label=label)
+        rule_chunk_params, param_errors = _parse_chunk_param_texts(
+            chunk_param_texts, label=label
+        )
         errors.extend(param_errors)
+        # Rules are configuration read at startup, so the ingress minimum
+        # applies here (runtime rule matching ignores parse errors).
+        errors.extend(_chunk_param_minimum_errors(rule_chunk_params, label=label))
 
     if errors:
         raise ParserRoutingConfigError(

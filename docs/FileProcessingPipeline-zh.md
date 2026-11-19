@@ -613,7 +613,7 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 下面按各变量配置的策略分组。同一个槽位上，strategy 特定变量始终高于全局兜底。
 
-**最小分块大小。** 每个 `chunk_token_size` 槽位（顶层和各策略）都必须不小于 `MIN_CHUNK_TOKEN_SIZE`（64）。更小的值被视为配置错误，在它进入的地方被拒绝：`LightRAG` 实例化时的 env 与构造字段（因此服务器启动失败）、替换 `addon_params`（原配置保持生效）、入队（调用方传入的 `chunk_options=` 或嵌套修改 `addon_params`）、REST `chunking.params`，以及文件名/规则 hint。此规则之前持久化的快照在处理时不再重新校验，已入队的文档仍可重试。直接调用分块函数时只拒绝小于 1 的值。
+**最小分块大小。** 每个 `chunk_token_size` 槽位（顶层和各策略）都必须不小于 `MIN_CHUNK_TOKEN_SIZE`（64）。更小的值被视为配置错误，在它进入的地方被拒绝：`LightRAG` 实例化时的 env 与构造字段（因此服务器启动失败）、替换 `addon_params`（原配置保持生效）、入队（调用方传入的 `chunk_options=` 或嵌套修改 `addon_params`）、REST `chunking.params`、启动时的 `LIGHTRAG_PARSER` 规则，以及新上传或扫描到的文件的文件名 hint。hint 解析本身仍接受低至 1 的值，因此用旧的较小 hint 入库的文件仍能还原为规范文件名（删除和扫描去重照常能找到它），恢复该文档也不会失败。此规则之前持久化的快照在处理时不再重新校验，已入队的文档仍可重试。直接调用分块函数时只拒绝小于 1 的值。
 
 #### 全局兜底
 

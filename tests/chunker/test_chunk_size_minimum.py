@@ -1,9 +1,11 @@
-"""``MIN_CHUNK_TOKEN_SIZE`` at every configuration ingress.
+"""``MIN_CHUNK_TOKEN_SIZE`` at the configuration ingress of the core.
 
 A chunk size below the minimum is a misconfiguration: it is rejected at the
 LightRAG constructor (env, legacy fields, addon_params), the ``addon_params``
-setter, enqueue, REST params and filename/rule hints. Chunker functions
-called directly keep a floor of 1 (see test_recursive_character_floor_clamp).
+setter and enqueue. REST params are covered in
+tests/api/routes/test_document_routes_chunking.py, filename/rule hints in
+tests/parser/test_hint_params.py. Chunker functions called directly keep a
+floor of 1 (see test_recursive_character_floor_clamp).
 """
 
 from __future__ import annotations
@@ -16,7 +18,6 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.constants import MIN_CHUNK_TOKEN_SIZE
-from lightrag.parser.param_schema import parse_chunk_params
 from lightrag.parser.routing import validate_chunk_token_sizes
 from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
@@ -234,20 +235,3 @@ def test_enqueue_rejects_a_nested_addon_params_mutation(tmp_path):
 
     assert "chunker.recursive_character.chunk_token_size" in str(error)
     assert row is None
-
-
-# --------------------------------------------------------------------------- #
-# filename / rule hint params
-# --------------------------------------------------------------------------- #
-
-
-def test_hint_accepts_the_minimum():
-    parsed, errors = parse_chunk_params(
-        f"chunk_ts={MIN_CHUNK_TOKEN_SIZE},chunk_ol=0", selector="R", label="x"
-    )
-
-    assert errors == []
-    assert parsed == {
-        "chunk_token_size": MIN_CHUNK_TOKEN_SIZE,
-        "chunk_overlap_token_size": 0,
-    }

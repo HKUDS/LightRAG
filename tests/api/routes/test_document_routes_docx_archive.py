@@ -1670,6 +1670,32 @@ async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     assert "multiple chunking modes" in excinfo.value.detail
 
 
+async def test_upload_rejects_hint_chunk_size_below_minimum(tmp_path, monkeypatch):
+    """A new upload whose hint sets a chunk size below MIN_CHUNK_TOKEN_SIZE is
+    rejected before the file is written, although such a hint still parses."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    name = "small.[-R(chunk_ts=32,chunk_ol=0)].md"
+    upload_file = _document_routes.UploadFile(
+        filename=name, file=BytesIO(b"markdown body")
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+    assert excinfo.value.status_code == 400
+    assert "must be >= 64, got 32" in excinfo.value.detail
+    assert not (tmp_path / name).exists()
+
+
 async def test_upload_rejects_c_without_custom_callback_before_writing(
     tmp_path, monkeypatch
 ):
