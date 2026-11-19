@@ -153,6 +153,7 @@
         "parse": "تحليل ملف",
         "analyze": "وسائط",
         "process": "استخراج",
+        "deleting": "جارٍ الحذف",
         "failed": "فشل"
       },
       "status": {
@@ -163,6 +164,7 @@
         "analyzing": "وسائط",
         "processing": "استخراج",
         "pending": "معلق",
+        "deleting": "جارٍ الحذف",
         "failed": "فشل"
       },
       "errors": {
