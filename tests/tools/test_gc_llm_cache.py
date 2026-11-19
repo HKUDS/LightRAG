@@ -2,9 +2,11 @@
 
 The sweep deletes data, so the tests pin the two halves that decide what may
 go: the candidate filter (a row must name a chunk) and the liveness check (the
-chunk must be gone). A row whose chunk still exists must survive even when no
-chunk lists it — deleting it would only re-bill the next reprocess — and a
-deletion that reports success while the rows are still present must raise.
+chunk must be gone, and no live chunk may still reference the row — a shared
+row's ``chunk_id`` names only its first writer). A row whose chunk still
+exists must survive even when no chunk lists it — deleting it would only
+re-bill the next reprocess — and a deletion that reports success while the
+rows are still present must raise.
 """
 
 import types
@@ -58,10 +60,22 @@ class FakeChunksKV:
 
     supports_strict_point_reads = True
 
-    def __init__(self, chunk_ids):
+    def __init__(self, chunk_ids, *, cache_lists=None):
         self.chunk_ids = set(chunk_ids)
+        # chunk_id -> llm_cache_list, for the live chunks that reference rows.
+        self.cache_lists = dict(cache_lists or {})
         self.filter_calls: list[set[str]] = []
         self.strict_calls: list[str] = []
+        self.scans = 0
+
+    async def iter_rows(self, *, page_size):
+        self.scans += 1
+        for chunk_id in sorted(self.chunk_ids):
+            yield {
+                "_id": chunk_id,
+                "content": "chunk text",
+                "llm_cache_list": list(self.cache_lists.get(chunk_id, [])),
+            }
 
     async def filter_keys(self, keys):
         self.filter_calls.append(set(keys))
@@ -438,6 +452,7 @@ async def test_apply_on_an_empty_namespace_deletes_nothing():
         "chunk_scoped_rows": 0,
         "unscoped_rows": 0,
         "orphan_rows": 0,
+        "referenced_rows": 0,
         "live_rows": 0,
         "deleted_rows": 0,
         "orphan_keys_sample": [],
@@ -448,6 +463,7 @@ async def test_apply_on_an_empty_namespace_deletes_nothing():
     # Nothing chunk-scoped was seen, so liveness was never asked.
     assert chunks.filter_calls == []
     assert chunks.strict_calls == []
+    assert chunks.scans == 0
 
 
 async def test_the_key_sample_is_bounded_while_the_counts_stay_exact():
@@ -525,3 +541,104 @@ async def test_a_chunks_backend_without_strict_reads_is_refused():
 
     assert cache.deleted == []
     assert "default:extract:aaa" in cache.rows
+
+
+async def test_a_shared_row_a_live_chunk_references_survives_its_writers_deletion():
+    """Two documents with one identical paragraph are two chunks sharing one
+    row, and the row's ``chunk_id`` names only its first writer. Once that
+    writer is deleted, the surviving chunk still lists the key and the
+    deletion rebuild reads it as that chunk's evidence: losing an initial row
+    costs a re-extraction, losing a gleaning row silently drops what only it
+    named. Both kinds are kept; the unshared orphan beside them still goes."""
+    cache = FakeCacheKV(
+        {
+            "default:extract:shared-initial": _extract_row("doc-1-chunk-0"),
+            "default:extract:shared-gleaning": _extract_row("doc-1-chunk-0"),
+            "default:extract:unshared": _extract_row("doc-1-chunk-1"),
+        }
+    )
+    chunks = FakeChunksKV(
+        {"doc-2-chunk-0"},
+        cache_lists={
+            "doc-2-chunk-0": [
+                "default:extract:shared-initial",
+                "default:extract:shared-gleaning",
+            ]
+        },
+    )
+
+    report = await gc_orphan_llm_cache(_rag(cache, chunks), apply=True)
+
+    assert report["referenced_rows"] == 2
+    assert report["orphan_rows"] == 1
+    assert report["live_rows"] == 0
+    assert report["orphan_keys_sample"] == ["default:extract:unshared"]
+    assert cache.deleted == ["default:extract:unshared"]
+    assert set(cache.rows) == {
+        "default:extract:shared-initial",
+        "default:extract:shared-gleaning",
+    }
+
+
+async def test_a_failed_reference_scan_deletes_nothing():
+    """``iter_rows`` raises instead of ending early; a scan that cannot finish
+    cannot prove a row unreferenced, so the sweep stops before any delete."""
+
+    class _BrokenScan(FakeChunksKV):
+        async def iter_rows(self, *, page_size):
+            yield {"_id": "doc-2-chunk-0", "llm_cache_list": []}
+            raise ConnectionError("chunks namespace unreachable")
+
+    cache = FakeCacheKV({"default:extract:aaa": _extract_row("chunk-gone")})
+
+    with pytest.raises(ConnectionError):
+        await gc_orphan_llm_cache(
+            _rag(cache, _BrokenScan({"doc-2-chunk-0"})), apply=True
+        )
+
+    assert cache.deleted == []
+    assert cache.commits == 0
+    assert set(cache.rows) == {"default:extract:aaa"}
+
+
+async def test_no_reference_scan_when_no_row_names_a_dead_chunk():
+    """The chunks scan is only paid when there is something it could save."""
+    cache = FakeCacheKV({"default:extract:aaa": _extract_row("chunk-alive")})
+    chunks = FakeChunksKV({"chunk-alive"})
+
+    report = await gc_orphan_llm_cache(_rag(cache, chunks), apply=True)
+
+    assert report["live_rows"] == 1
+    assert report["deleted_rows"] == 0
+    assert chunks.scans == 0
+
+
+async def test_a_superseded_row_is_kept_while_its_chunk_lives_then_reclaimed():
+    """A re-extraction drops the chunk's old extract keys from its
+    ``llm_cache_list``. While the chunk lives the row stays (a later
+    re-extraction of the same prompt hits it by key); once the chunk's
+    document is deleted, ``delete_llm_cache=True`` cannot reach it, and the
+    sweep reclaims it."""
+    rows = {
+        "default:extract:superseded": _extract_row("doc-1-chunk-0"),
+        "default:extract:current": _extract_row("doc-1-chunk-0"),
+    }
+    cache = FakeCacheKV(rows)
+    alive = FakeChunksKV(
+        {"doc-1-chunk-0"},
+        cache_lists={"doc-1-chunk-0": ["default:extract:current"]},
+    )
+
+    report = await gc_orphan_llm_cache(_rag(cache, alive), apply=True)
+
+    assert report["live_rows"] == 2
+    assert cache.deleted == []
+
+    # The document is deleted with delete_llm_cache=True: its chunk and the
+    # row it still listed go; the superseded row is what is left behind.
+    del cache.rows["default:extract:current"]
+    report = await gc_orphan_llm_cache(_rag(cache, FakeChunksKV(set())), apply=True)
+
+    assert report["orphan_rows"] == 1
+    assert cache.deleted == ["default:extract:superseded"]
+    assert cache.rows == {}

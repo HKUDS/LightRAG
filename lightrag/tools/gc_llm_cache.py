@@ -47,12 +47,18 @@ Scope rules
   which would empty the cache. A backend without
   ``supports_strict_point_reads`` is refused, and a strict read that cannot
   confirm absence aborts the sweep before the first delete.
+- A row that a live chunk's ``llm_cache_list`` references is kept, whatever
+  its ``chunk_id`` says: that field names only the row's first writer, and a
+  shared row is a surviving chunk's deletion-rebuild evidence. Losing it costs
+  a re-extraction or silently drops what only its gleaning named.
 - A row whose chunk still exists is left alone even when no chunk references
-  it: its owning document is alive, and deleting the row would re-bill the
-  next reprocess for nothing.
+  it: a reprocess, or a deletion rebuild re-extracting that chunk, hits it by
+  key, and deleting it would re-bill that call for nothing.
 - Rows a document deletion deliberately retained count as dead here, because
   the chunk they name is gone. That is the operator's call, which is why the
-  default is a report and ``--apply`` must be asked for.
+  default is a report and ``--apply`` must be asked for. Never sweep between
+  the two steps of the name-drift recovery (delete with
+  ``delete_llm_cache=False``, then re-ingest): it relies on exactly those rows.
 - A sweep that fails part-way is safe to re-run: deleted batches stay deleted
   (nothing is restored), and the rows that remain are still orphans.
 
@@ -98,7 +104,10 @@ async def gc_orphan_llm_cache(
           (``lightrag-clean-llmqc`` owns those), the summary/smartheading/
           analysis artifacts that carry no chunk reference, and rows predating
           the field — counted and left alone;
-        - ``orphan_rows``: candidates whose chunk is missing;
+        - ``orphan_rows``: candidates whose chunk is missing and that no live
+          chunk references (what ``apply=True`` deletes);
+        - ``referenced_rows``: candidates whose chunk is missing but that a
+          live chunk's ``llm_cache_list`` still references (kept);
         - ``live_rows``: candidates whose chunk still exists;
         - ``deleted_rows``: rows removed (``apply=True`` only);
         - ``orphan_keys_sample`` / ``deleted_keys_sample``: up to
@@ -126,6 +135,7 @@ async def gc_orphan_llm_cache(
         "chunk_scoped_rows": 0,
         "unscoped_rows": 0,
         "orphan_rows": 0,
+        "referenced_rows": 0,
         "live_rows": 0,
         "deleted_rows": 0,
         "orphan_keys_sample": [],
@@ -195,9 +205,28 @@ async def gc_orphan_llm_cache(
             "existing chunk(s) as absent; they were confirmed present and kept"
         )
 
-    orphan_keys = [key for chunk_id in orphan_ids for key in scoped[chunk_id]]
+    dead_chunk_keys = [key for chunk_id in orphan_ids for key in scoped[chunk_id]]
+    del scoped
+
+    # A row's ``chunk_id`` names only its first writer: chunks of different
+    # documents with identical text share one row, and the deletion rebuild
+    # attributes it through ``llm_cache_list`` alone. A row whose writer is
+    # gone but which a live chunk still references is that chunk's evidence,
+    # so every reference is collected before the first delete. ``iter_rows``
+    # raises instead of ending early, so a failed scan deletes nothing.
+    referenced: set[str] = set()
+    if dead_chunk_keys:
+        wanted = set(dead_chunk_keys)
+        async for chunk in chunks_kv.iter_rows(page_size=batch_size):
+            cache_keys = chunk.get("llm_cache_list") or []
+            if isinstance(cache_keys, (list, tuple)):
+                referenced.update(key for key in cache_keys if key in wanted)
+        del wanted
+
+    orphan_keys = [key for key in dead_chunk_keys if key not in referenced]
+    report["referenced_rows"] = len(dead_chunk_keys) - len(orphan_keys)
     report["orphan_rows"] = len(orphan_keys)
-    report["live_rows"] = report["chunk_scoped_rows"] - report["orphan_rows"]
+    report["live_rows"] = report["chunk_scoped_rows"] - len(dead_chunk_keys)
     report["orphan_keys_sample"] = sorted(orphan_keys)[:SAMPLE_LIMIT]
 
     if not apply or not orphan_keys:
@@ -241,7 +270,11 @@ def _print_report(report: dict[str, Any], verbose: bool) -> None:
         f"({report['chunk_scoped_rows']} chunk-scoped, "
         f"{report['unscoped_rows']} without a chunk_id)"
     )
-    print(f"Chunk-scoped: {report['live_rows']} live, {report['orphan_rows']} orphaned")
+    print(
+        f"Chunk-scoped: {report['live_rows']} live, "
+        f"{report['referenced_rows']} referenced by another live chunk, "
+        f"{report['orphan_rows']} orphaned"
+    )
     if report["deleted_rows"]:
         print(f"Deleted: {report['deleted_rows']}")
     if report["orphan_rows"] and not report["deleted_rows"]:

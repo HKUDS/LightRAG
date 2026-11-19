@@ -45,14 +45,45 @@ python -m lightrag.tools.gc_llm_cache --apply    # delete the orphans
   ready — it reports every key absent — which would classify every
   chunk-scoped row as an orphan. A backend without
   `supports_strict_point_reads` is refused, and a strict read that cannot
-  confirm absence stops the sweep before the first delete. A row whose chunk
-  still exists is left alone even when no chunk references it: its owning
-  document is alive, and deleting it would only re-bill the next reprocess.
+  confirm absence stops the sweep before the first delete.
+- **A row that a live chunk references is kept, whatever its `chunk_id`
+  says.** The cache key hashes the prompt, which carries the chunk text but no
+  document identity, so two documents with one identical paragraph are two
+  chunks sharing one row, and the row's `chunk_id` names only its first
+  writer. When that writer is deleted, the other chunk still lists the key in
+  its `llm_cache_list`, and the deletion rebuild reads it as that chunk's
+  evidence (see *Deletion rebuild evidence* in
+  `docs/design/PurgeRecoveryContract.md`). Removing a shared initial row makes
+  the next rebuild re-extract the chunk (an LLM call, and possibly different
+  names); removing a shared gleaning row silently drops what only that
+  gleaning named. So before the first delete the sweep reads every live
+  chunk's `llm_cache_list` once (`text_chunks.iter_rows`, which raises rather
+  than ending early) and keeps each referenced key; the report counts them as
+  `referenced_rows`.
+- **A row whose chunk still exists is left alone even when no chunk
+  references it.** Its owning document is alive, and the row is still
+  reachable by key: a reprocess, or a deletion rebuild that re-extracts that
+  chunk, hits it and re-attaches it instead of calling the LLM. Chunks written
+  before `llm_cache_list` existed reference nothing at all, so a "delete what
+  no chunk references" rule would empty their cache. Rows a re-extraction
+  stopped referencing (superseded gleaning, a key from an older configuration)
+  are therefore kept while their chunk lives, and reclaimed by a sweep once
+  its document is deleted.
 - **Rows a document deletion deliberately retained count as dead**, because
   the chunk they name is gone. `delete_llm_cache=False` keeps extraction cache
   rows so a re-ingest is cheap; a sweep deletes them. That trade is the
   operator's call, which is why the default is a report and `--apply` must be
-  asked for.
+  asked for. In particular, **never sweep in the middle of the name-drift
+  recovery** (*Recovery from name drift* in
+  `docs/design/PurgeRecoveryContract.md`): it deletes a document with
+  `delete_llm_cache=false` and then ingests the same content again, relying on
+  exactly those rows to answer from the cache. Swept in between, the re-ingest
+  calls the LLM for every chunk and may drift again.
+- **A document whose resume purge was interrupted** (its chunk rows deleted,
+  the re-chunking not yet done — a hard kill or a failure in between) leaves
+  its rows naming chunks that no longer exist, so the sweep counts them as
+  orphans. Its retry would otherwise hit them; swept, it calls the LLM for
+  every chunk. Finish or retry such documents before an `--apply` run.
 
 ## Usage
 
@@ -100,7 +131,7 @@ KV stores, so a CLI run cannot see an ingestion happening in another process.
 ```
 Cache storage: PGKVStorage (workspace='acme')
 Cache rows: 412 (318 chunk-scoped, 94 without a chunk_id)
-Chunk-scoped: 311 live, 7 orphaned
+Chunk-scoped: 309 live, 2 referenced by another live chunk, 7 orphaned
 Report only — re-run with --apply to delete the orphans.
 ```
 

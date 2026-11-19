@@ -583,7 +583,7 @@ Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`
 
 **`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
 
-Deletes chunk-scoped LLM cache rows whose owning chunk no longer exists — rows a document deletion could not reach, still holding the extraction prompt and its result. Reports by default; `--apply` deletes, and only after a strict read confirms the chunk is gone.
+Deletes chunk-scoped LLM cache rows whose owning chunk no longer exists and that no live chunk still references — rows a document deletion could not reach, still holding the extraction prompt and its result. Reports by default; `--apply` deletes, and only after a strict read confirms the chunk is gone.
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
