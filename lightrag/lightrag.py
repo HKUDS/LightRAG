@@ -6382,6 +6382,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             destructive reservation. There is deliberately no endpoint that
             calls it without one.
 
+        Gotcha: clearing the cache beside documents that stay makes every
+        later deletion re-extract, with the LLM, the surviving chunks it
+        rebuilds from, and a re-extraction may name things differently. See
+        *Deletion rebuild evidence* in
+        ``docs/design/PurgeRecoveryContract.md``.
+
         Raises:
             Exception: propagated from the storage; the cache may be partly
                 dropped. Re-run to finish it.
@@ -6977,7 +6983,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Does NOT touch:
             - ``doc_status`` / ``full_docs`` records — caller manages those.
-            - ``llm_response_cache`` — orthogonal to KG cleanup.
+            - ``llm_response_cache``, except that a rebuild which re-extracts a
+              surviving chunk replaces that chunk's unusable extract row and
+              writes the new rows through the usual reference-before-row path.
             - Pipeline busy-flag — assumes the caller already holds the
               pipeline (i.e. this runs inside a pipeline run).
 
@@ -7089,6 +7097,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 rebuild_policy=rebuild_policy,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
+                # A journal from an earlier attempt means its step 2 may have
+                # persisted narrowed tracking before its rebuild failed.
+                resuming=proof is not None and proof.journal_phase is not None,
             )
             if journaled and proof is not None:
                 await self._write_kg_purge_phase(
@@ -7193,6 +7204,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         rebuild_policy: Literal["best_effort", "rollback"],
         pipeline_status: dict,
         pipeline_status_lock: Any,
+        resuming: bool = False,
     ) -> KGRebuildReport:
         """Steps 1-6 of :py:meth:`_purge_kg_contributions`.
 
@@ -7213,8 +7225,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         the anchor rows cannot name yet (an in-flight custom-chunk patch
         journal). They are additive only, so they can never mask a missing
         anchor: an empty union with absent anchors still resolves to nothing.
+
+        ``resuming``: an earlier attempt of this journaled purge may already
+        have persisted step 2's narrowed tracking and then failed in its
+        rebuild. Its candidates then show no tracking delta, and a capped graph
+        ``source_id`` need not name the deleted chunks either, so every
+        candidate with remaining sources is rebuilt, as under ``rollback``.
         """
         rebuild_report = KGRebuildReport()
+        rebuild_every_survivor = resuming or rebuild_policy == "rollback"
 
         # Set view for membership/intersection checks below (chunk_ids stays a list
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
@@ -7354,7 +7373,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     entities_to_rebuild[node_label] = remaining_sources
                     entity_chunk_updates[node_label] = remaining_sources
@@ -7424,7 +7443,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     relationships_to_rebuild[edge_tuple] = remaining_sources
                     relation_chunk_updates[edge_tuple] = remaining_sources
@@ -7620,6 +7639,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     entity_chunks_storage=self.entity_chunks,
                     relation_chunks_storage=self.relation_chunks,
                     rebuild_policy=rebuild_policy,
+                    doc_status_storage=self.doc_status,
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
@@ -7650,8 +7670,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         This method orchestrates a comprehensive deletion process for a given document ID.
         It ensures that not only the document itself but also all its derived and associated
-        data across different storage layers are removed or rebuiled. If entities or relationships
-        are partially affected, they will be rebuilded using LLM cached from remaining documents.
+        data across different storage layers are removed or rebuilt. If entities or relationships
+        are partially affected, they are rebuilt from the extraction cache of the remaining
+        documents' chunks; a surviving chunk whose initial extraction is not cached is
+        re-extracted with the LLM, and a failure leaves the document ``DELETING`` for a retry
+        (*Deletion rebuild evidence* in ``docs/design/PurgeRecoveryContract.md``).
 
         **Concurrency Control Design:**
 

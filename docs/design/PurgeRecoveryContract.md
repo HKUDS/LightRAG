@@ -1,6 +1,6 @@
 # Purge Recovery Contract
 
-Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`, or what `normalize_entity_name` produces (see [Entity name normalization changes](#entity-name-normalization-changes)). Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
+Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`, what `normalize_entity_name` produces (see [Entity name normalization changes](#entity-name-normalization-changes)), or how the deletion rebuild reads its evidence (see [Deletion rebuild evidence](#deletion-rebuild-evidence)). Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
 
 The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
 
@@ -154,7 +154,7 @@ What the answer buys each caller:
 | At `finalize_storages`, a cache flush publishing extract rows whose references did not reach disk, on a **snapshot** backend | The gate before the cache's `finalize` discards the buffered extract rows, and on `JsonKVStorage` that discard is a base-class no-op: its data is the shared dict itself, not a buffer of pending operations, so there is nothing to separate out. Reaching it needs the ordered pair before the loop to have failed for `text_chunks` while the cache's own file write still succeeds — both are writes into one working directory, so they usually fail together. This is the one site with **no heal path**: the process is exiting, and the shared dict dies with it. It is logged at ERROR naming the consequence. Closing it needs either a way to finalize without flushing (no such API, and skipping `finalize` leaks the client on every backend that does not need the gate) or per-key dirty tracking in `JsonKVStorage` so the discard becomes real — which would also make the over-discard above bite the default backend, so it is only worth doing on top of the cache-type narrowing. |
 | A commit pair run in ANOTHER process straddling a writer's pair, on `JsonKVStorage` under multiple workers | Its data is a `Manager().dict()` every process shares and a commit publishes the whole namespace, so a query process committing `text_chunks` and then `llm_response_cache` can publish a row the pipeline process wrote in between. The fence is per-process, so the two never meet. No other KV backend is exposed: OpenSearch buffers per process, so a query process flushes only its own operations, and PG/Redis/Mongo make both writes durable in order on the write path. It heals on the pipeline's next `text_chunks` commit, one document later. Closing it needs a cross-process fence held across a whole-namespace file rewrite, on the query path and once per LLM call, for every backend — a throughput cost on the production ones to protect a backend supported for small-scale testing and validation only. |
 
-Dangling references already occur independently of this ordering: two chunks whose prompts are byte-identical share one cache row, so deleting one document leaves the other's reference dangling.
+Dangling references already occur independently of this ordering: two chunks whose prompts are byte-identical share one cache row, so deleting one document with `delete_llm_cache=True` leaves the other's reference dangling. The next deletion rebuild that needs that chunk re-extracts it ([Deletion rebuild evidence](#deletion-rebuild-evidence)).
 
 ### What the OpenSearch KV refresh actually protects
 
@@ -194,6 +194,74 @@ The generation is bumped before the bulk rather than from its reported success c
 A resume purge deletes a document's chunk rows — and with them every reference to its cache rows — before re-chunking, and deliberately does not touch `llm_response_cache`. Re-extraction hits those rows and the cache-hit branch re-attaches them to the freshly written chunk rows, so the loop closes on its own; a run that dies in between leaves them unreferenced until the next attempt.
 
 Reprocessing under **changed** chunking never closes it at all: the chunk text differs, so the old prompts are never reissued and no hit occurs. That is unreachable by any ordering — the prompt is gone. Reclaiming those rows needs an operator-invoked sweep that deletes cache rows whose owning chunk no longer exists, which is also the only thing that can reach `summary`, `smartheading` and multimodal analysis rows: they carry no chunk reference in the first place.
+
+## Deletion rebuild evidence
+
+Read this before changing `rebuild_knowledge_from_chunks`, `_load_chunk_extract_rows`, `_rebuild_single_entity` / `_rebuild_single_relationship`, or what the order of a chunk's `llm_cache_list` means.
+
+Deleting a document rebuilds every entity and relation that another document still supports, from the surviving chunks named in its chunk tracking. The rebuild's only source of per-chunk facts is each surviving chunk's extraction cache rows; it rewrites the objects it was asked to rebuild and nothing else. Until this section was written, a surviving chunk without a usable row contributed nothing, and two fallbacks then wrote nothing at all: the deleted document's description, `source_id` and `file_path` stayed in the graph behind a `success`, and nothing ever repaired them.
+
+### Attribution
+
+A row is attributed to **every** requested chunk whose `llm_cache_list` references it, never through the row's own `chunk_id`. The cache key hashes the prompt, which carries the chunk text but no document identity, while chunk ids carry the document id, so two documents with one identical paragraph are two chunks sharing one row, and the row's `chunk_id` names only its first writer. Grouping by `chunk_id` dropped the shared row whenever its first writer was the deleted document. Attribution through the reference is safe because a chunk references a row only if its own prompt hashed to that key.
+
+### What counts as evidence
+
+A chunk's extraction is one initial call plus optional gleaning, each with its own row, attached to `llm_cache_list` in call order. The rebuild decides per surviving chunk, under the `best_effort` policy (deletion and the pipeline's resume purge):
+
+| State of the chunk | Treatment |
+|---|---|
+| First extract row present, an initial extraction, and parseable | Complete. No LLM call. |
+| No extract key, first extract row absent, or first extract row is a gleaning row | Re-extract. |
+| First extract row present but unparseable (no text) | Delete that row, then re-extract; re-extracting alone would hit it again. |
+| A later (gleaning) row absent or unparseable | Accepted as gleaning that did not run. No LLM call. |
+| Chunk written by `ainsert_custom_kg`: no extract key, and its row carries `source_id` or its `full_doc_id` has no `doc_status` row | Never re-extracted: user-supplied text is not sent to the LLM on another document's deletion. Contributes nothing. |
+| Chunk row missing | Nothing to read or re-extract. Contributes nothing. |
+
+"First extract row" is not simply the first key: a **truncated** initial response is never cached, while the gleaning call after it is, so such a chunk's first extract key is a gleaning row. `_is_gleaning_extract_row` recognizes one by its stored prompt, whose last line is the serialized history only the gleaning call passes. The decision never recomputes a key from the current configuration, so a prompt or model change alone re-extracts nothing. A legacy key that does not parse as `{mode}:{cache_type}:{hash}` counts only when its row is an extract row.
+
+The custom KG test reads `doc_status` because the `source_id` alias does not survive every backend: `PGKVStorage` stores only the pipeline's chunk columns. A pipeline chunk always belongs to a document with a status record, and `ainsert_custom_kg` creates none (`_find_custom_kg_chunks`).
+
+The `rollback` policy (custom-chunk patch rollback) keeps its own contract: it never calls the extraction LLM, records missing and unusable rows in `KGRebuildReport`, and repairs provenance structurally.
+
+Cached records then go through `kg_extraction_validator`, as ingestion's do (`_apply_kg_extraction_validator`): a cache row holds the raw LLM answer, written before the hook runs, so without it a rebuild would bring back what the hook rejected at ingestion, and a re-extraction whose hook raised would be rebuilt unfiltered on the retry. A hook failure fails the rebuild. Multimodal (drawing, table, equation) chunks additionally get their core-generated entity and association edges from the chunk's `sidecar` block (`_inject_multimodal_records`), exactly as ingestion does, because no cache row can hold them.
+
+### Re-extraction
+
+Chunks marked for re-extraction go through `extract_entities`, the function ingestion uses: the same prompts, gleaning, `kg_extraction_validator`, multimodal injection and reference-before-row cache ordering. It runs once per chunk per rebuild, before any object is rewritten and outside the per-entity keyed locks, bounded by `llm_model_max_async`. Before the call the chunk's extract keys are dropped from its `llm_cache_list`, so the keys the new run attaches make the new initial extraction first again; without that, a configuration change would leave a dead first key and re-extract the chunk on every later rebuild. With the cache enabled the new row satisfies every later rebuild; with `enable_llm_cache_for_entity_extract=False` the run is uncached and the next rebuild that needs the chunk pays again.
+
+A failed re-extraction raises. The purge fails at stage `rebuild_knowledge_graph`, the document stays `DELETING` with its journal, its chunks are still present, and a retry repeats the step. The retry cannot rely on classification to find the work: the failed attempt has already persisted the narrowed tracking rows (step 2), and a capped graph `source_id` (`SOURCE_IDS_LIMIT_METHOD=FIFO`, or more chunks than the cap) need not name the deleted chunks, so its candidates show no reference to the document. A purge that resumes a journal therefore rebuilds every anchored candidate that still has sources (`_purge_derived_kg_contributions(resuming=True)`), as the rollback policy always does. The cost is an idempotent rebuild of candidates that needed none. The pipeline history names the surviving documents whose chunks were re-extracted, because those are the documents to reprocess if the graph lost facts (see *Recovery* below).
+
+### Objects no surviving record names
+
+An object every surviving chunk was read for, but none of whose records name it, is **kept**: its semantic fields stay as they are and its `source_id` / `file_path` are rewritten to the surviving chunks. Under `best_effort` the one exception is an entity a surviving chunk's relation records still name as an endpoint (an LLM often emits a relation without declaring its endpoint): it is re-summarized from its edges, which are already rebuilt. Kept objects are listed in `KGRebuildReport.degraded_*` and in one pipeline-history line.
+
+Removing such an object was proposed and rejected. Absence of a record under the stored name is not evidence that only deleted chunks supported it: it is also what an admin rename (`aedit_entity`) leaves behind, what `amerge_entities` leaves for a target supported only by its sources' chunks, what an object stored under an older `normalize_entity_name` rule sees (see [Entity name normalization changes](#entity-name-normalization-changes)), and what an `ainsert_custom_kg` entity sees. Each of those would be deleted, and losing data outranks retaining text. Re-summarizing a kept entity from its edges was rejected for the same reason: it replaces a curated description with its relations' text, which a kept relation may still carry from the deleted document.
+
+### Failure propagation
+
+Relations are rebuilt first, and entities only after every relation task succeeded; within a phase the first failure cancels and drains its siblings (`wait_tasks_with_drain`). Any per-object failure is raised under both policies, after a `KG rebuild failed: ...` summary reaches the pipeline history, and surfaces through the same `rebuild_knowledge_graph` purge stage. Logging it and reporting the deletion as `success` left the same stale state as a missing extraction.
+
+### Accepted residues
+
+| State | Direction and recovery |
+|---|---|
+| A kept object's description still holds the deleted document's text | Retains text, deletes nothing. Healed when the object is next rewritten from records naming it (a later rebuild from fresh rows, a reprocess), or by an admin edit. |
+| **Name drift**: a re-extraction names things differently from the extraction the graph was built from (LLM output is not deterministic, and the configuration may have changed) | A rebuilt object still named is rebuilt from the new wording; one no longer named by this chunk loses its facts if other chunks attest it, and is kept as above if none does; a new name is not merged, because the rebuild rewrites only the objects it was asked to rebuild. The graph may hold *fewer* facts of a *surviving* document, never facts of a deleted one. Recovery below. |
+| Lost gleaning: an object only a lost gleaning row named | Kept as above; nothing re-extracts it, because gleaning is optional and the chunk's evidence is complete without it. |
+| `adelete_by_doc_id(delete_llm_cache=True)` removes a row another document's chunk shares | There is no reverse index from a row to its referencing chunks. The next rebuild that needs it re-extracts, at one LLM call per chunk, or loses that chunk's gleaning. |
+| Old extract rows a re-extraction stopped referencing (superseded gleaning, a key from an older configuration) | Unreachable from `llm_cache_list`, so `delete_llm_cache=True` no longer finds them. Retains rows; an offline cache sweep that excludes live-referenced keys reclaims them. |
+| `aclear_cache` beside surviving documents (SDK only; the REST surface clears the cache only with every document) | Every later deletion re-extracts the chunks it touches: the graph slowly thins and mixes two generations of names, more so after a model or entity-type change. |
+| A deletion whose rebuild needs re-extraction while the LLM is unavailable | A retryable failure instead of a silent degradation. |
+| An `ainsert_custom_kg` call given the `full_doc_id` of an existing document, on a backend that drops `source_id` | Its chunks look like that document's pipeline chunks and are re-extracted when a rebuild needs them. A missing `doc_status` row on a pipeline chunk errs the other way: the chunk is not re-extracted and its objects are kept. |
+
+### Recovery from name drift
+
+The pipeline history of the deletion says `Re-extracting N surviving chunk(s) ... from document(s): <ids>. Reprocess these documents if the knowledge graph lost facts.` No endpoint reprocesses a successfully processed document (a scan archives it, `/documents/reprocess_failed` takes failed ones), so the procedure is a delete and a new ingestion, run end to end by `tests/pipeline/test_rebuild_reextraction.py::test_name_drift_is_reported_and_recovered_by_reprocessing`:
+
+1. Delete each listed document **keeping its cache rows and its source**: `DELETE /documents/delete_document` with `delete_llm_cache=false` and `delete_file=false` (SDK: `adelete_by_doc_id(doc_id)`).
+2. Ingest the same content again: upload the file, or put it back in `INPUT_DIR` and scan (SDK: `ainsert` with the same id). The re-extracted rows answer the extraction from the cache, so with the cache enabled no LLM call is made.
+3. Confirm the new names reached the graph: `GET /graph/entity/exists?name=<new name>` returns `true`, and the old name is gone unless another document still supports it.
 
 ## Merge and rename failure model
 
@@ -254,7 +322,7 @@ A rebuild takes the names it rebuilds from the stored objects, but their content
 | Direction | Example | What the next rebuild of a stored object sees |
 |---|---|---|
 | split | `<br>` becoming a space: `AcmeCorp` and `Acme<br>Corp` were both stored as `AcmeCorp`, and now normalize to `AcmeCorp` and `Acme Corp` | **Some** records still match. The object is rebuilt from those alone, the no-data fallback never runs, and the facts of the other records are dropped from its description. **Data is lost.** |
-| merge | collapsing whitespace: `Acme\nCorp` and `Acme  Corp` were two stored names, and now both normalize to `Acme Corp` | Each old object matches **all** of its records or **none** of them, because every raw spelling that produced its name moves to the same new name. "None" takes the existing no-data path (`structural_fallback` keeps the stored semantic fields under the rollback policy; otherwise the entity is re-summarized from its relations). |
+| merge | collapsing whitespace: `Acme\nCorp` and `Acme  Corp` were two stored names, and now both normalize to `Acme Corp` | Each old object matches **all** of its records or **none** of them, because every raw spelling that produced its name moves to the same new name. "None" takes the no-data path: the object keeps its stored semantic fields and gets its provenance rewritten, unless a surviving relation record still names the entity as an endpoint, in which case it is re-summarized from its relations ([Deletion rebuild evidence](#deletion-rebuild-evidence)). |
 
 A split also breaks the agreement between extraction paths in a fresh graph: an entity and a relation endpoint that spelled the same name differently land on different nodes. That was the case when whitespace was collapsed *before* the non-breaking space conversion, so `Acme&nbsp;&nbsp;Corp` kept two spaces while `Acme  Corp` got one; the collapse now runs after it.
 
