@@ -215,16 +215,25 @@ _ROW_TAGS = frozenset({qn("w:tr")})
 _PARAGRAPH_TAGS = frozenset({qn("w:p")})
 
 
+def _grid_count(node, minimum: int) -> int:
+    """Return a grid-column count from ``node``'s ``w:val``, at least ``minimum``.
+
+    The DOCX is untrusted input: a missing element, a missing or non-integer
+    ``w:val``, or a value below ``minimum`` all yield ``minimum``, so a bad
+    attribute can neither shift cells nor fail the document.
+    """
+    if node is None:
+        return minimum
+    try:
+        return max(int(node.get(qn("w:val"))), minimum)
+    except (TypeError, ValueError):
+        return minimum
+
+
 def _grid_before(tr) -> int:
     """Return how many leading grid columns a ``w:tr`` leaves without a cell."""
     tr_pr = tr.find(qn("w:trPr"))
-    node = tr_pr.find(qn("w:gridBefore")) if tr_pr is not None else None
-    if node is None:
-        return 0
-    try:
-        return max(int(node.get(qn("w:val"), "0")), 0)
-    except ValueError:
-        return 0
+    return _grid_count(tr_pr.find(qn("w:gridBefore")) if tr_pr is not None else None, 0)
 
 
 class TableExtractor:
@@ -379,11 +388,10 @@ class TableExtractor:
                 tcPr = tc.find(qn("w:tcPr"))
 
                 # Check gridSpan (horizontal merge)
-                grid_span = 1
-                if tcPr is not None:
-                    gs = tcPr.find(qn("w:gridSpan"))
-                    if gs is not None:
-                        grid_span = int(gs.get(qn("w:val")))
+                # A span below 1 would stall or rewind grid_col: count it as 1.
+                grid_span = _grid_count(
+                    tcPr.find(qn("w:gridSpan")) if tcPr is not None else None, 1
+                )
 
                 # Check vMerge (vertical merge)
                 vmerge_elem = None

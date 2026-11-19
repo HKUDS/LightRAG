@@ -567,11 +567,11 @@ def get_combined_auth_dependency(
         # 4. Validate API key if provided and API-Key authentication is configured
         if api_key_configured and api_key_matches(api_key_header_value, api_key):
             # The API key authenticated this request. If the caller ALSO presented
-            # a valid token, renew it here. The WebUI sends Authorization and
-            # X-API-Key together, and in API-key-only mode its guest token
-            # authenticates nothing (see step 2), so this is the only exit that can
-            # keep it fresh -- letting it lapse makes step 2 reject every request
-            # with 401 until the client notices and re-fetches /auth-status.
+            # a valid token, renew it here. The bundled WebUI no longer sends
+            # X-API-Key, but other clients may send both credentials, and in
+            # API-key-only mode a guest token authenticates nothing (see step 2),
+            # so this is the only exit that can keep it fresh -- letting it lapse
+            # makes step 2 reject every request with 401.
             # Still strictly post-authorization, so no unauthenticated caller
             # reaches the bookkeeping (GHSA-3wg5-5w54-3rfm).
             if token_info is not None:

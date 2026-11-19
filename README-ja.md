@@ -432,6 +432,8 @@ LightRAG は4種類のバックエンドストレージを必要とします:
 
 エンドユーザーを `/workspace` に誘導する前に知っておくべきことが 2 つあります。1 つ目は、そこでのクエリパラメータが**継承のみで編集不可**である点です。各クエリは同じブラウザーで `/webui` が保存した設定（未保存の場合はフロントエンドのデフォルト値）を使用します。これはブラウザーごとのローカル状態であり、サーバー全体のポリシーではありません。2 つ目は、管理 UI を隠すことは UX 上の分離であって**セキュリティ境界ではない**点です。API は引き続きサーバー側ですべてのエンドポイントを認可します。クエリエントリの完全な挙動については [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry) を参照してください。
 
+**WebUI 認証の移行：** 保護された `/webui` と `/workspace` へのアクセスには、`AUTH_ACCOUNTS` と強力でデフォルト以外の `TOKEN_SECRET` が必要です。API キーはプログラムからのアクセス用で、WebUI では入力も送信もされなくなりました。既存の API-key-only の WebUI ユーザーはキーを残したまま、アカウントとシークレットを設定し、再起動してすべてのタブを再読み込みしてからサインインしてください。完全にオープンなデプロイ（アカウントも有効な API キーもない）では guest トークンのフローが維持されます。詳細は[移行の説明](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access)を参照してください。
+
 ## SDK としての LightRAG の利用
 
 > ⚠️ **プロジェクトへの統合には、LightRAG サーバーが提供する REST API の使用を強く推奨します。** LightRAG SDK は主に組み込みアプリケーションや学術研究・評価目的を想定しています。
@@ -580,6 +582,10 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 クエリモードの LLM キャッシュ（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`）を削除し、コストの高い抽出キャッシュは保持します。
+
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+所有元のチャンクが存在せず、現存するどのチャンクからも参照されていない LLM キャッシュレコードを削除します。これらのレコードはドキュメントの削除では消去されず、抽出プロンプトとその結果を保持しています。既定では報告のみを行い、`--apply` を指定すると、厳密な読み取りでチャンクが存在しないことを確認してから削除します。
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 

@@ -272,8 +272,6 @@
         "node": "Knoten",
         "edge": "Kante",
         "degree": "Grad",
-        "apiKey": "API-Schlüssel",
-        "enterYourAPIkey": "Geben Sie Ihren API-Schlüssel ein",
         "save": "Speichern",
         "refreshLayout": "Layout aktualisieren"
       },
@@ -505,12 +503,6 @@
       "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
     }
   },
-  "apiKeyAlert": {
-    "title": "API-Schlüssel ist erforderlich",
-    "description": "Bitte geben Sie Ihren API-Schlüssel ein, um auf den Dienst zuzugreifen",
-    "placeholder": "API-Schlüssel eingeben",
-    "save": "Speichern"
-  },
   "pagination": {
     "showing": "Zeige {{start}} bis {{end}} von {{total}} Einträgen",
     "page": "Seite",
@@ -535,12 +527,20 @@
     "failedTitle": "Lokale Einstellungen konnten nicht vorbereitet werden",
     "failedBody": "Ihre gespeicherten Einstellungen konnten nicht in das neue Speicherformat migriert werden. Nichts ging verloren — laden Sie die Seite neu, um es erneut zu versuchen.",
     "dataLostTitle": "Einige gespeicherte Einstellungen konnten nicht wiederhergestellt werden",
-    "dataLostBody": "Der Browser-Speicher war voll, daher konnten einige Ihrer Einstellungen (Design, Sprache, API-Schlüssel) nicht erhalten werden und sind nicht mehr wiederherstellbar. Beim Fortfahren bleiben die erhaltenen Einstellungen bestehen; für die übrigen werden Standardwerte verwendet.",
+    "dataLostBody": "Der Browser-Speicher war voll, daher konnten einige Ihrer Einstellungen (Design, Sprache) nicht erhalten werden und sind nicht mehr wiederherstellbar. Beim Fortfahren bleiben die erhaltenen Einstellungen bestehen; für die übrigen werden Standardwerte verwendet.",
     "continueAfterLoss": "Fortfahren",
     "retry": "Neu laden",
     "historyDropped": "Der Chat-Verlauf passte beim Upgrade nicht in den Browser-Speicher und wurde verworfen. Die Einstellungen wurden normal migriert."
   },
   "retrievalHistory": {
     "quotaDropped": "Der Browser-Speicher ist voll: Der Chat-Verlauf wird nicht mehr gespeichert. Die aktuelle Unterhaltung bleibt sichtbar, bis Sie die Seite verlassen."
+  },
+  "webuiAuth": {
+    "checking": "WebUI-Zugriff wird geprüft…",
+    "title": "Benutzerkonten müssen konfiguriert werden",
+    "guidance": "Dieser Server verwendet einen API-Schlüssel ohne Benutzerkonten. Um die geschützte WebUI zu nutzen, konfigurieren Sie AUTH_ACCOUNTS und ein starkes, nicht standardmäßiges TOKEN_SECRET, starten Sie den Server neu und melden Sie sich an. Behalten Sie den API-Schlüssel für den programmatischen Zugriff; entfernen Sie ihn nicht, um Gastzugriff zu ermöglichen.",
+    "unavailableTitle": "WebUI-Zugriff konnte nicht ermittelt werden",
+    "unavailable": "Der Server hat nicht gemeldet, wie der WebUI-Zugriff konfiguriert ist: Er ist möglicherweise gerade nicht erreichbar, oder das Backend ist älter als diese WebUI. Prüfen Sie die Verbindung und ob Frontend- und Backend-Version zusammenpassen, und prüfen Sie dann erneut. Ohne diese Information wird nie Gastzugriff aktiviert.",
+    "retry": "Erneut prüfen"
   }
 }

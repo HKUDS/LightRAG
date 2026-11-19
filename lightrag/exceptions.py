@@ -85,6 +85,18 @@ class EmptyTruncatedResponseError(RuntimeError):
     """
 
 
+class ReasoningOnlyResponseError(RuntimeError):
+    """A query answer that carried a reasoning trace and no answer text.
+
+    A ``<think>...</think>`` trace with nothing after it is a NON-empty
+    string, so it would otherwise be returned, and cached, as the answer.
+    Raised by ``lightrag.utils.reject_reasoning_only_answer`` for the sources
+    no binding check sees (inline ``<think>`` in ``content``, Zhipu, custom
+    LLM functions); the token-limit variant raises
+    :class:`EmptyTruncatedResponseError` instead.
+    """
+
+
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
 

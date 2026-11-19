@@ -151,6 +151,16 @@ DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
 # the strategy's purpose.
 DEFAULT_CHUNK_P_SIZE = 2000
 
+# MIN_CHUNK_TOKEN_SIZE: smallest chunk_token_size any configuration ingress
+# accepts, for every strategy (top level and F/R/V/P sub-dicts): env
+# (CHUNK_SIZE, CHUNK_{F,R,V,P}_SIZE), the LightRAG constructor,
+# addon_params['chunker'], REST chunking params and filename/rule hints.
+# A chunk this small carries no retrievable context and multiplies the
+# extraction LLM calls, so a smaller value is treated as a misconfiguration
+# and rejected rather than run. Chunker functions called directly only
+# reject values below 1, so tests and SDK callers can still use tiny sizes.
+MIN_CHUNK_TOKEN_SIZE = 64
+
 # Paragraph-semantic "drop references" detection defaults (the chunking="P"
 # drop_references option).  DEFAULT_P_REFERENCES_TAIL_N: 0 scans all content
 # blocks for reference headings; a positive value restricts detection to the

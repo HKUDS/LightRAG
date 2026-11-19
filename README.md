@@ -432,6 +432,8 @@ The server mounts two WebUI entries from a single frontend build. **`/webui`** i
 
 Two things to know before pointing end users at `/workspace`. First, query parameters there are **inherited, not editable**: each query uses the settings `/webui` saved in the **same browser** (frontend defaults when none were saved), which is per-browser local state, not a server-wide policy. Second, hiding the admin UI is a UX split, **not** a security boundary — the API still authorizes every endpoint server-side. For the complete behavior of the query entry, see [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
 
+**WebUI authentication migration:** Protected `/webui` and `/workspace` access requires `AUTH_ACCOUNTS` and a strong, non-default `TOKEN_SECRET`. API keys are for programmatic access, no longer entered or sent by the WebUI. Existing API-key-only WebUI users must keep their key, configure accounts and the secret, restart, reload all tabs, and sign in. Fully open deployments (neither accounts nor an effective API key) keep the guest-token flow. See [migration details](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access).
+
 ## Using LightRAG As SDK
 
 > ⚠️ **For integration into your project, we strongly recommend using the REST API provided by the LightRAG Server.** The LightRAG SDK is primarily intended for embedded applications or academic research and evaluation purposes.
@@ -580,6 +582,10 @@ Drops every data storage of one workspace offline, exactly as the WebUI *Clear* 
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) while preserving the expensive extraction cache.
+
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+Deletes chunk-scoped LLM cache rows whose owning chunk no longer exists and that no live chunk still references — rows a document deletion could not reach, still holding the extraction prompt and its result. Reports by default; `--apply` deletes, and only after a strict read confirms the chunk is gone.
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 

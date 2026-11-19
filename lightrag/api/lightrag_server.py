@@ -2844,10 +2844,9 @@ def create_app(args):
         unauthenticated liveness probe, so it can never distinguish valid,
         invalid and missing credentials. This endpoint ALWAYS runs the
         combined dependency — WHITELIST_PATHS is deliberately ignored here —
-        so a missing or wrong X-API-Key fails with the standard 403 detail
-        ("API Key required" / "Invalid API Key"), which the WebUI's API-key
-        dialogs key on, while valid credentials get a trivial 200. No data is
-        exposed.
+        so a missing or wrong credential fails with the standard authentication
+        detail, while valid credentials get a trivial 200. The WebUI uses this
+        endpoint to verify its current bearer credential; no data is exposed.
         """
         return {"status": "ok"}
 
@@ -2862,6 +2861,7 @@ def create_app(args):
             )
             return {
                 "auth_configured": False,
+                "api_key_configured": bool(api_key),
                 "access_token": guest_token,
                 "token_type": "bearer",
                 "auth_mode": "disabled",
@@ -2875,6 +2875,7 @@ def create_app(args):
 
         return {
             "auth_configured": True,
+            "api_key_configured": bool(api_key),
             "auth_mode": "enabled",
             "core_version": core_version,
             "api_version": api_version_display,

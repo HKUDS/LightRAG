@@ -800,3 +800,338 @@ def test_reprocess_persisted_c_after_callback_removal_uses_observable_fallback(
         assert len(warnings) == 1
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Document context: where it is built, and what absent values arrive as
+# ---------------------------------------------------------------------------
+
+
+def _context_recorder(seen: list):
+    """A declared plugin implementation that records every context it sees."""
+
+    def callback(tokenizer, content, *args, context=None):
+        seen.append(context)
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    return callback
+
+
+def _no_context_allowed(monkeypatch, built: list) -> None:
+    """Fail the run if the pipeline constructs a ChunkingContext at all.
+
+    Watching the constructor the pipeline actually calls is what pins a branch
+    that must not build one; assuming it does not is not a test.
+    """
+    import lightrag.pipeline as pipeline_mod
+
+    def _forbidden(**kwargs):
+        built.append(kwargs)
+        raise AssertionError(
+            "a ChunkingContext was built for a branch that runs no user code"
+        )
+
+    monkeypatch.setattr(pipeline_mod, "ChunkingContext", _forbidden)
+
+
+async def _ingest_with_persisted_row(
+    rag: LightRAG,
+    *,
+    doc_id: str,
+    process_options: str,
+    row_extra: dict,
+    body: str = "Body for explicit custom chunking.",
+) -> dict:
+    """Enqueue, rewrite the ``full_docs`` row, then process.
+
+    ``apipeline_enqueue_documents`` has no ``sidecar_location`` parameter, and
+    the chunker dispatch reads the persisted row, so a document modelling a
+    parsed artifact has to have that row written before processing starts.
+    """
+    await rag.apipeline_enqueue_documents(
+        body,
+        ids=[doc_id],
+        file_paths=[f"{doc_id}.txt"],
+        track_id=f"track-{doc_id}",
+        process_options=process_options,
+    )
+    persisted = await rag.full_docs.get_by_id(doc_id)
+    assert isinstance(persisted, dict)
+    await rag.full_docs.upsert({doc_id: {**persisted, **row_extra}})
+    await rag.full_docs.index_done_callback()
+    await rag.apipeline_process_enqueue_documents()
+    row = await rag.doc_status.get_by_id(doc_id)
+    assert isinstance(row, dict)
+    return row
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "persisted,expected_sidecar,expected_engine",
+    [
+        ({}, None, None),
+        ({"sidecar_location": "", "parse_engine": ""}, None, None),
+        ({"sidecar_location": "unknown_source"}, None, None),
+        (
+            {"sidecar_location": "file:///tmp/doc.parsed/", "parse_engine": "docx"},
+            "file:///tmp/doc.parsed/",
+            "docx",
+        ),
+    ],
+)
+def test_context_reports_absent_persisted_values_as_none(
+    tmp_path, monkeypatch, persisted, expected_sidecar, expected_engine
+):
+    """Absent, empty and the unknown-source sentinel all read as no value.
+
+    Anything else is handed over verbatim: the context resolves nothing.
+    """
+    from lightrag.utils_pipeline import SIDECAR_LOCATION_UNKNOWN
+
+    assert SIDECAR_LOCATION_UNKNOWN == "unknown_source"
+    seen: list = []
+
+    async def run():
+        bound = _registered_callback(
+            monkeypatch, _context_recorder(seen), accepts_context=True
+        )
+        rag = _new_rag(tmp_path, chunking_func=bound)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest_with_persisted_row(
+                rag,
+                doc_id="ctx-absent",
+                process_options="C!",
+                row_extra=persisted,
+            )
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+        assert len(seen) == 1
+        assert seen[0].sidecar_location == expected_sidecar
+        assert seen[0].parse_engine == expected_engine
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+def test_context_reports_the_persisted_format_and_engine_for_a_lightrag_doc(
+    tmp_path, monkeypatch
+):
+    """A lightrag row reports its own format, and its engine verbatim.
+
+    ``parse_engine`` is the persisted value, NOT the doc_status resolver's
+    synthesized ``native`` / ``legacy``: that synthesis is an observability
+    default, not a fact about the document.
+    """
+    from lightrag.constants import FULL_DOCS_FORMAT_LIGHTRAG
+    from lightrag.utils_pipeline import make_lightrag_doc_content
+
+    body = "Body for explicit custom chunking."
+    seen: list = []
+
+    async def run():
+        bound = _registered_callback(
+            monkeypatch, _context_recorder(seen), accepts_context=True
+        )
+        rag = _new_rag(tmp_path, chunking_func=bound)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest_with_persisted_row(
+                rag,
+                doc_id="ctx-lightrag",
+                process_options="C!",
+                body=body,
+                row_extra={
+                    "content": make_lightrag_doc_content(body),
+                    "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                    "parse_engine": "mineru",
+                    "sidecar_location": "file:///tmp/ctx-lightrag.parsed/",
+                },
+            )
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+        assert len(seen) == 1
+        context = seen[0]
+        assert context.parse_format == FULL_DOCS_FORMAT_LIGHTRAG
+        assert context.parse_engine == "mineru"
+        assert context.sidecar_location == "file:///tmp/ctx-lightrag.parsed/"
+        assert _metadata(row)["parse_format"] == FULL_DOCS_FORMAT_LIGHTRAG
+        assert _metadata(row)["parse_engine"] == "mineru"
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("selector", ["F", "R", "V", "P"])
+def test_explicit_builtin_selectors_build_no_context(tmp_path, monkeypatch, selector):
+    """An explicit built-in runs no user code, so it constructs no context."""
+    import lightrag.chunker as chunker_pkg
+
+    built: list = []
+
+    def builtin(tokenizer, content, *args, **kwargs):
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def async_builtin(*args, **kwargs):
+        return builtin(*args, **kwargs)
+
+    method = {
+        "F": "chunking_by_fixed_token",
+        "R": "chunking_by_recursive_character",
+        "V": "chunking_by_semantic_vector",
+        "P": "chunking_by_paragraph_semantic",
+    }[selector]
+    monkeypatch.setattr(
+        chunker_pkg, method, async_builtin if selector == "V" else builtin
+    )
+
+    def unreachable(tokenizer, content, *args, context=None):
+        pytest.fail("explicit built-in dispatched to the custom callback")
+
+    async def run():
+        bound = _registered_callback(monkeypatch, unreachable, accepts_context=True)
+        rag = _new_rag(tmp_path, chunking_func=bound)
+        _no_context_allowed(monkeypatch, built)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(
+                rag, doc_id="ctx-builtin", process_options=f"{selector}!"
+            )
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+        assert built == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "options,method",
+    [
+        ("C!", "custom_chunking_fallback_fixed_token"),
+        ("!", "legacy_chunking_func"),
+    ],
+)
+def test_builtin_default_callback_builds_no_context(
+    tmp_path, monkeypatch, options, method
+):
+    """The C fallback and the no-selector built-in run no user code either."""
+    built: list = []
+
+    async def run():
+        rag = _new_rag(tmp_path, chunking_func=chunking_by_token_size)
+        _no_context_allowed(monkeypatch, built)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="ctx-default", process_options=options)
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+        assert _metadata(row)["chunk_method"] == method
+        assert built == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+def test_reprocessing_a_persisted_c_under_a_new_declared_plugin_rebuilds_context(
+    tmp_path, monkeypatch
+):
+    """The context follows the CURRENT configuration, never a persisted one.
+
+    A document first chunked by an undeclared plugin and re-run under a
+    declared one gets a context on the second attempt, built from its own
+    persisted row, and the first callback is not called again.
+    """
+    from lightrag.utils_pipeline import doc_status_reset_metadata
+
+    legacy_calls: list = []
+    seen: list = []
+
+    def legacy(tokenizer, content, split_by, split_only, overlap, size):
+        legacy_calls.append(size)
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def run():
+        rag = _new_rag(
+            tmp_path,
+            chunking_func=_registered_callback(
+                monkeypatch, legacy, "acme", "1", accepts_context=False
+            ),
+        )
+        await rag.initialize_storages()
+        try:
+            first = await _ingest(rag, doc_id="ctx-reprocess", process_options="C!")
+            assert DocStatus(first["status"]) is DocStatus.PROCESSED
+            assert len(legacy_calls) == 1
+
+            rag.chunking_func = _registered_callback(
+                monkeypatch,
+                _context_recorder(seen),
+                "acme",
+                "2",
+                accepts_context=True,
+            )
+            await rag.doc_status.upsert(
+                {
+                    "ctx-reprocess": dict(
+                        first,
+                        status=DocStatus.PENDING.value,
+                        metadata=doc_status_reset_metadata(first),
+                    )
+                }
+            )
+            await rag.apipeline_process_enqueue_documents()
+            second = await rag.doc_status.get_by_id("ctx-reprocess")
+        finally:
+            await rag.finalize_storages()
+
+        assert DocStatus(second["status"]) is DocStatus.PROCESSED
+        assert len(legacy_calls) == 1
+        assert len(seen) == 1
+        assert seen[0].doc_id == "ctx-reprocess"
+        assert seen[0].process_options == "C!"
+        assert seen[0].parse_format == "raw"
+        assert _metadata(second)["custom_chunker"]["version"] == "2"
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+def test_c_context_build_failure_is_not_reported_as_a_callback_failure(
+    tmp_path, monkeypatch
+):
+    """The context is built OUTSIDE the C try, so its failure keeps its own name.
+
+    Wrapping the build in the same try would blame a callback that never ran
+    for an error it did not raise.
+    """
+    import lightrag.pipeline as pipeline_mod
+
+    calls: list = []
+
+    def callback(tokenizer, content, *args, context=None):
+        calls.append(context)
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    def _exploding_context(**kwargs):
+        raise RuntimeError("context build exploded")
+
+    async def run():
+        bound = _registered_callback(monkeypatch, callback, accepts_context=True)
+        rag = _new_rag(tmp_path, chunking_func=bound)
+        monkeypatch.setattr(pipeline_mod, "ChunkingContext", _exploding_context)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="ctx-build-fail", process_options="C!")
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.FAILED
+        assert "context build exploded" in row["error_msg"]
+        assert "C custom chunking_func failed" not in row["error_msg"]
+        assert calls == []
+
+    asyncio.run(run())

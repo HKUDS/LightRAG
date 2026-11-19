@@ -432,6 +432,8 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 
 把最终用户引导到 `/workspace` 之前有两点需要了解。其一，那里的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的设置（未保存时使用前端默认值），这是按浏览器的本地状态，不是服务端全局策略。其二，隐藏后台界面是使用体验上的划分，**不是**安全边界——服务端仍会对每个接口执行鉴权。查询入口的完整行为参见 [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md#workspace-查询入口)。
 
+**WebUI 认证迁移：** 受保护的 `/webui` 与 `/workspace` 需要配置 `AUTH_ACCOUNTS` 和高强度、非默认的 `TOKEN_SECRET`。API Key 继续用于程序化访问，WebUI 不再输入或发送密钥。原 API-key-only WebUI 用户应保留密钥、配置账户与 secret、重启并刷新所有标签页后登录。完全开放部署（账户和有效 API Key 均未配置）保留 guest token 流程。详见 [迁移说明](docs/LightRAG-API-Server-zh.md#webui-兼容性变更受保护访问仅使用账户登录)。
+
 ## 使用LightRAG SDK
 
 > ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG SDK通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
@@ -580,6 +582,10 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 删除查询模式的 LLM 缓存条目（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`），同时保留成本高昂的抽取缓存。
+
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+删除所属文本块已不存在、且没有任何现存文本块仍在引用的 LLM 缓存记录。这些记录无法通过删除文档清除，仍保留抽取提示词及结果。默认仅报告，指定 `--apply` 后才删除，且必须先通过严格读取确认文本块已不存在。
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 

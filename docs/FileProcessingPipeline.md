@@ -239,7 +239,7 @@ Currently supported parameters (canonical name / short alias):
 
 | Parameter | Alias | Strategies | Type | Meaning |
 | --- | --- | --- | --- | --- |
-| `chunk_token_size` | `chunk_ts` | F / R / V / P / C | int (≥ 1) | Per-strategy chunk size |
+| `chunk_token_size` | `chunk_ts` | F / R / V / P / C | int (≥ 64) | Per-strategy chunk size |
 | `chunk_overlap_token_size` | `chunk_ol` | F / R / P / C | int (≥ 0) | Overlap between chunks (V has no overlap) |
 | `drop_references` | `drop_rf` | P | bool | Drop matching reference blocks before chunking, e.g. `paper.[-P(drop_rf=true)].pdf`. As a boolean it may be written bare: `paper.[-P(drop_rf)].pdf` means `drop_rf=true` |
 
@@ -612,6 +612,8 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (dispatched b
 All variables below are read into `addon_params["chunker"]` once when `LightRAG` is instantiated: strategy-specific env is read by `default_chunker_config()`, while legacy env (`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`) is filled in by `_apply_chunk_size_overlay` into slots that neither strategy env nor legacy constructor fields filled. After modifying env, the service must be restarted (or a new `LightRAG` instance created) for it to take effect; documents already enqueued hold the frozen snapshot and are unaffected.
 
 They are grouped by the strategy they configure. A strategy-specific variable always outranks the global fallback for the same slot.
+
+**Minimum chunk size.** Every `chunk_token_size` slot, top-level and per strategy, must be at least `MIN_CHUNK_TOKEN_SIZE` (64). A smaller value is rejected as a misconfiguration wherever it enters: env and constructor fields when `LightRAG` is instantiated (so the server fails at startup), an `addon_params` replacement (the previous configuration stays in force), enqueue (caller-supplied `chunk_options=` or a nested `addon_params` edit), REST `chunking.params`, `LIGHTRAG_PARSER` rules at startup, and the filename hint of a new upload or scanned file. Hint parsing itself still accepts sizes down to 1, so a file ingested with an older, smaller hint keeps its canonical name (deletion and scan dedup still find it), and resuming that document does not fail. A snapshot persisted before this rule is not re-checked when it is processed, so an already enqueued document stays retryable. The chunker functions called directly only reject sizes below 1.
 
 #### Global fallbacks
 
