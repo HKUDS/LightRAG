@@ -802,6 +802,14 @@ Contract:
 - **Coverage.** Every path that extracts goes through it: the document pipeline
   and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
   caller supplies the graph directly — so it is not filtered.
+- **It also runs when a document is deleted.** The deletion rebuild re-reads
+  each surviving chunk's extraction cache, which stores the raw LLM answer from
+  *before* the hook ran, and passes those records through the hook again (or
+  through a fresh extraction, when the cache row is gone). So the hook is
+  called again for chunks it already filtered, once per chunk per rebuild: it
+  must give the same answer on a repeat call, and any state it keeps (an audit
+  log) sees the repeat. A hook that raises fails the deletion, which stays
+  retryable.
 - **Multimodal entities are not shown to the hook.** For a drawing / table /
   equation chunk, LightRAG synthesizes one entity from the sidecar and links it
   to the chunk's surviving entities. That injection happens *after* the hook, so
@@ -2089,6 +2097,19 @@ The deletion process:
 3. Rebuild entities/relationships that still exist in other documents
 4. Update all related vector indexes
 5. Clean up document status records
+
+Step 3 rebuilds each shared entity and relation from the extraction cache of
+the surviving chunks. A surviving chunk whose initial extraction is no longer
+cached (the cache was cleared, the row was shared with a document deleted with
+`delete_llm_cache=True`, or `enable_llm_cache_for_entity_extract` was off) is
+**re-extracted with the LLM** during the deletion, so a deletion can make LLM
+calls and fails, retryably, when the LLM is unavailable. A re-extraction may
+name things differently from the original one: the pipeline history then lists
+the surviving documents involved, and reprocessing them (delete with
+`delete_llm_cache=False`, then insert the same content again) merges the new
+names. An entity or relation that no surviving chunk's extraction names is
+kept, with its `source_id` / `file_path` rewritten to the surviving chunks. See
+[Deletion rebuild evidence](design/PurgeRecoveryContract.md#deletion-rebuild-evidence).
 
 **Important Reminders:**
 1. All deletion operations are **irreversible** — use with caution
