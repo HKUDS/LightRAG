@@ -302,7 +302,13 @@ async def test_every_row_of_an_orphaned_chunk_is_deleted():
     assert set(cache.rows) == {"default:extract:ccc"}
 
 
-async def test_the_cli_opens_the_backends_the_environment_names(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("workspace", "expected_workspace"),
+    [("", ""), ("acme", "acme"), ("team-a.prod", "team_a_prod")],
+)
+async def test_the_cli_opens_the_backends_the_environment_names(
+    monkeypatch, capsys, workspace, expected_workspace
+):
     """LightRAG's constructor defaults are file-backed, so a CLI that named no
     storage classes would open a fresh local directory against a
     ``LIGHTRAG_KV_STORAGE=PGKVStorage`` deployment and report it as empty: a
@@ -331,7 +337,7 @@ async def test_the_cli_opens_the_backends_the_environment_names(monkeypatch, cap
     monkeypatch.setenv("LIGHTRAG_KV_STORAGE", "PGKVStorage")
     monkeypatch.setenv("LIGHTRAG_GRAPH_STORAGE", "Neo4JStorage")
     monkeypatch.setenv("LIGHTRAG_DOC_STATUS_STORAGE", "PGDocStatusStorage")
-    monkeypatch.setenv("WORKSPACE", "acme")
+    monkeypatch.setenv("WORKSPACE", workspace)
     monkeypatch.setenv("WORKING_DIR", "/tmp/gc-cli-ws")
 
     assert (
@@ -342,7 +348,7 @@ async def test_the_cli_opens_the_backends_the_environment_names(monkeypatch, cap
     assert opened["kv_storage"] == "PGKVStorage"
     assert opened["graph_storage"] == "Neo4JStorage"
     assert opened["doc_status_storage"] == "PGDocStatusStorage"
-    assert opened["workspace"] == "acme"
+    assert opened["workspace"] == expected_workspace
     assert opened["working_dir"] == "/tmp/gc-cli-ws"
     # The sweep never reads vectors, so the CLI must not build a real store.
     assert opened["vector_storage"] == "NoopVectorDBStorage"

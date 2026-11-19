@@ -68,7 +68,7 @@ import asyncio
 import os
 from typing import Any
 
-from lightrag.utils import logger
+from lightrag.utils import logger, normalize_server_workspace
 
 DEFAULT_BATCH_SIZE = 500
 
@@ -265,7 +265,7 @@ async def _async_main(apply: bool, batch_size: int, verbose: bool) -> None:
 
     rag = LightRAG(
         working_dir=os.getenv("WORKING_DIR", "./rag_storage"),
-        workspace=os.getenv("WORKSPACE", ""),
+        workspace=normalize_server_workspace(os.getenv("WORKSPACE", "")) or "",
         # The constructor's defaults are file-backed, so a server deployment's
         # backends have to be named here or the sweep would open a fresh local
         # directory and report an empty namespace instead of looking at the
