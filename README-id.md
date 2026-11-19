@@ -432,6 +432,8 @@ Server memasang dua entri WebUI dari satu build frontend. **`/webui`** adalah ko
 
 Dua hal yang perlu diketahui sebelum mengarahkan end user ke `/workspace`. Pertama, parameter query di sana **diwarisi, tidak dapat diedit**: setiap query menggunakan pengaturan yang disimpan `/webui` di **browser yang sama** (default frontend jika belum ada yang disimpan), yang merupakan local state per browser, bukan kebijakan server-wide. Kedua, menyembunyikan UI admin adalah pemisahan UX, **bukan** batas keamanan — API tetap melakukan otorisasi untuk setiap endpoint di sisi server. Untuk perilaku lengkap entri query, lihat [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
 
+**Migrasi autentikasi WebUI:** Akses `/webui` dan `/workspace` yang terlindungi memerlukan `AUTH_ACCOUNTS` serta `TOKEN_SECRET` yang kuat dan bukan nilai bawaan. API key ditujukan untuk akses terprogram dan tidak lagi dimasukkan atau dikirim oleh WebUI. Pengguna WebUI API-key-only yang sudah ada harus mempertahankan key-nya, mengonfigurasi akun dan secret, me-restart, memuat ulang semua tab, lalu masuk. Deployment yang sepenuhnya terbuka (tanpa akun maupun API key efektif) tetap memakai alur token guest. Lihat [detail migrasi](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access).
+
 ## Menggunakan LightRAG sebagai SDK
 
 > ⚠️ **Untuk integrasi ke proyek Anda, kami sangat merekomendasikan menggunakan REST API yang disediakan LightRAG Server.** LightRAG SDK terutama ditujukan untuk aplikasi embedded atau kebutuhan riset akademik dan evaluasi.

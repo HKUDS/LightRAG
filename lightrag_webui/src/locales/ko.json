@@ -272,8 +272,6 @@
         "node": "노드",
         "edge": "엣지",
         "degree": "차수",
-        "apiKey": "API 키",
-        "enterYourAPIkey": "API 키를 입력하세요",
         "save": "저장",
         "refreshLayout": "레이아웃 새로고침"
       },
@@ -505,12 +503,6 @@
       "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다."
     }
   },
-  "apiKeyAlert": {
-    "title": "API 키가 필요합니다",
-    "description": "서비스에 액세스하려면 API 키를 입력하세요",
-    "placeholder": "API 키 입력",
-    "save": "저장"
-  },
   "pagination": {
     "showing": "전체 {{total}}개 중 {{start}}-{{end}}",
     "page": "페이지",
@@ -535,12 +527,20 @@
     "failedTitle": "로컬 설정 준비 실패",
     "failedBody": "저장된 설정을 새 저장 형식으로 마이그레이션하지 못했습니다. 데이터는 손실되지 않았습니다. 새로고침하여 다시 시도하세요.",
     "dataLostTitle": "일부 저장된 설정을 복구할 수 없습니다",
-    "dataLostBody": "브라우저 저장 공간이 가득 차서 일부 설정(테마, 언어, API 키)을 보존하지 못했으며 더 이상 복구할 수 없습니다. 계속하면 남아 있는 설정은 유지하고 나머지는 기본값을 사용합니다.",
+    "dataLostBody": "브라우저 저장 공간이 가득 차서 일부 설정(테마, 언어)을 보존하지 못했으며 더 이상 복구할 수 없습니다. 계속하면 남아 있는 설정은 유지하고 나머지는 기본값을 사용합니다.",
     "continueAfterLoss": "계속",
     "retry": "새로고침",
     "historyDropped": "업그레이드 중 채팅 기록이 브라우저 저장 공간을 초과하여 삭제되었습니다. 설정은 정상적으로 이전되었습니다."
   },
   "retrievalHistory": {
     "quotaDropped": "브라우저 저장 공간이 가득 찼습니다. 채팅 기록이 더 이상 저장되지 않습니다. 현재 대화는 페이지를 떠나기 전까지 계속 표시됩니다."
+  },
+  "webuiAuth": {
+    "checking": "WebUI 접근 방식을 확인하는 중…",
+    "title": "사용자 계정 설정이 필요합니다",
+    "guidance": "이 서버는 사용자 계정 없이 API 키만 사용합니다. 보호된 WebUI를 사용하려면 AUTH_ACCOUNTS와 강력하고 기본값이 아닌 TOKEN_SECRET을 설정하고 서버를 다시 시작한 뒤 로그인하세요. API 키는 프로그램 방식 접근을 위해 유지하고, 게스트 접근을 위해 제거하지 마세요.",
+    "unavailableTitle": "WebUI 접근 방식을 확인할 수 없습니다",
+    "unavailable": "서버가 WebUI 접근 방식을 알려 주지 않았습니다. 지금 연결할 수 없거나 백엔드가 이 WebUI보다 오래된 버전일 수 있습니다. 연결 상태와 프런트엔드/백엔드 버전이 일치하는지 확인한 뒤 다시 확인하세요. 이 정보가 없으면 게스트 접근은 활성화되지 않습니다.",
+    "retry": "다시 확인"
   }
 }
