@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 import asyncio
+import math
 import contextvars
 import os
 import threading
@@ -77,6 +78,7 @@ from lightrag.constants import (
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_RERANK_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
@@ -228,6 +230,9 @@ from lightrag.utils import (
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
+    apply_source_ids_limit,
+    has_chunk_tracking_row,
+    merge_source_ids,
     normalize_entity_name,
     normalize_source_ids_limit_method,
     normalize_string_list,
@@ -747,6 +752,62 @@ def _run_sync(
 # of a chunk-commit failure on the rows it can actually strand. See *LLM
 # extraction cache reachability* in ``docs/design/PurgeRecoveryContract.md``.
 _REFERENCE_CARRYING_CACHE_TYPES: frozenset[str] = frozenset({"extract"})
+
+
+def _custom_kg_chunk_ids(source_id: Any) -> list[str]:
+    """Split a stored ``source_id`` into real chunk ids, dropping the
+    no-source placeholders (``UNKNOWN`` / ``manual_creation``)."""
+    if not isinstance(source_id, str):
+        return []
+    return [
+        chunk_id
+        for chunk_id in (part.strip() for part in source_id.split(GRAPH_FIELD_SEP))
+        if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+    ]
+
+
+def _custom_kg_tracking_baseline(stored_row: Any, existing_source_id: Any) -> list[str]:
+    """The chunk list an ``ainsert_custom_kg`` write merges its chunk into.
+
+    The tracking row is authoritative whenever it is present, even empty; the
+    graph object's ``source_id`` is the baseline only when no row exists, the
+    same order the pipeline merge and the purge read them in.
+    """
+    if has_chunk_tracking_row(stored_row):
+        return [
+            chunk_id
+            for chunk_id in stored_row["chunk_ids"]
+            if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+        ]
+    return _custom_kg_chunk_ids(existing_source_id)
+
+
+def _merge_custom_kg_file_paths(
+    existing_file_path: Any,
+    new_file_path: str,
+    *,
+    max_file_paths: int,
+    placeholder: str,
+    limit_method: str,
+) -> str:
+    """Union an existing ``file_path`` with a custom KG one, capped the way the
+    pipeline merge caps it (``max_file_paths`` plus a ``...placeholder...``
+    marker)."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    existing = existing_file_path if isinstance(existing_file_path, str) else ""
+    for path in [*existing.split(GRAPH_FIELD_SEP), new_file_path]:
+        path = path.strip()
+        if not path or path.startswith(f"...{placeholder}") or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    if len(paths) > max_file_paths:
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            paths = paths[-max_file_paths:] + [f"...{placeholder}...(FIFO)"]
+        else:
+            paths = paths[:max_file_paths] + [f"...{placeholder}...(KEEP Old)"]
+    return GRAPH_FIELD_SEP.join(paths)
 
 
 @final
@@ -5177,6 +5238,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         evidence sources. Explicit weights may boost that baseline; omit the
         relationship ``source_id`` to use a fractional source-less weight.
 
+        Writing an entity or relation that already exists replaces its
+        description, type and keywords but MERGES its provenance: the custom
+        chunk joins the ``entity_chunks`` / ``relation_chunks`` row, the graph
+        ``source_id`` and ``file_path``, and an existing relationship endpoint
+        gains the relationship's chunk. A merged relation keeps
+        ``max(custom weight, stored weight, evidence count)``. Without the
+        merge, deleting an earlier document would delete the curated object
+        with it (see ``docs/ProgramingWithCore.md``, *Insert Custom KG*).
+
         .. warning:: (direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
            no durable operation journal and does not prewrite
@@ -5207,6 +5277,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    apply_relation_weight_floor,
                     relation_evidence_source_ids,
                     validate_relation_weight,
                 )
@@ -5450,22 +5521,229 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 workspace = self.workspace or ""
                 namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
+                async def _merge_existing_provenance(
+                    global_config: dict[str, Any],
+                ) -> dict[str, Any]:
+                    """Fold this call's chunks into the objects already stored.
+
+                    The caller's description, type and keywords replace the
+                    stored ones, but provenance is MERGED the way the pipeline
+                    merge does it: each tracking row (the purge's authority)
+                    gains the custom chunks, an entity also gains the chunks of
+                    the relationships naming it, and the graph ``source_id`` /
+                    ``file_path`` keep what earlier documents contributed.
+                    Without this, deleting an earlier document finds no
+                    remaining source in the tracking row and deletes the
+                    curated object with it.
+
+                    Mutates ``entity_nodes`` / ``all_entities_data`` in place
+                    and returns what the writes below need: the tracking rows,
+                    the merged edge fields keyed by the sorted endpoint pair,
+                    the updated stored endpoints, and the ``source_id`` of each
+                    placeholder endpoint.
+                    """
+                    limit_method = global_config["source_ids_limit_method"]
+
+                    def _merge_paths(existing: Any, new: str) -> str:
+                        return _merge_custom_kg_file_paths(
+                            existing,
+                            new,
+                            max_file_paths=global_config["max_file_paths"],
+                            placeholder=global_config["file_path_more_placeholder"],
+                            limit_method=limit_method,
+                        )
+
+                    def _merge_tracking(
+                        stored_row: Any, stored_source_id: Any, new_ids: list[str]
+                    ) -> tuple[list[str], bool]:
+                        baseline = _custom_kg_tracking_baseline(
+                            stored_row, stored_source_id
+                        )
+                        full = merge_source_ids(baseline, new_ids)
+                        changed = bool(full) and (
+                            not has_chunk_tracking_row(stored_row) or full != baseline
+                        )
+                        return full, changed
+
+                    # Every chunk this call attributes to each entity: its own
+                    # declaration first, then each relationship naming it.
+                    entity_new_ids: dict[str, list[str]] = {
+                        name: _custom_kg_chunk_ids(node_data["source_id"])
+                        for name, node_data in entity_nodes
+                    }
+                    first_relation_source: dict[str, str] = {}
+                    for relationship_data in deduped_relationships.values():
+                        for name in (
+                            relationship_data["src_id"],
+                            relationship_data["tgt_id"],
+                        ):
+                            entity_new_ids.setdefault(name, []).extend(
+                                _custom_kg_chunk_ids(relationship_data["source_id"])
+                            )
+                            first_relation_source.setdefault(
+                                name, relationship_data["source_id"]
+                            )
+
+                    names = sorted(entity_new_ids)
+                    stored_nodes: dict[str, dict] = {}
+                    entity_rows: dict[str, Any] = {}
+                    if names:
+                        stored_nodes = (
+                            await self.chunk_entity_relation_graph.get_nodes_batch(
+                                names
+                            )
+                        )
+                        entity_rows = dict(
+                            zip(names, await self.entity_chunks.get_by_ids(names))
+                        )
+
+                    explicit = {name: node_data for name, node_data in entity_nodes}
+                    entity_vdb_data = {
+                        dp["entity_name"]: dp for dp in all_entities_data
+                    }
+                    entity_tracking: dict[str, dict[str, Any]] = {}
+                    endpoint_updates: list[tuple[str, dict[str, Any]]] = []
+                    placeholder_source_ids: dict[str, str] = {}
+                    for name in names:
+                        stored = stored_nodes.get(name)
+                        full, changed = _merge_tracking(
+                            entity_rows.get(name),
+                            stored.get("source_id") if stored else None,
+                            entity_new_ids[name],
+                        )
+                        if changed:
+                            entity_tracking[name] = {
+                                "chunk_ids": full,
+                                "count": len(full),
+                            }
+                        limited = apply_source_ids_limit(
+                            full,
+                            global_config["max_source_ids_per_entity"],
+                            limit_method,
+                            identifier=f"`{name}`",
+                        )
+                        merged_source_id = GRAPH_FIELD_SEP.join(limited)
+                        node_data = explicit.get(name)
+                        if node_data is not None:
+                            if merged_source_id:
+                                node_data["source_id"] = merged_source_id
+                            if stored is not None:
+                                node_data["file_path"] = _merge_paths(
+                                    stored.get("file_path"), node_data["file_path"]
+                                )
+                            entity_vdb_data[name]["source_id"] = node_data["source_id"]
+                            entity_vdb_data[name]["file_path"] = node_data["file_path"]
+                        elif stored is not None:
+                            # An existing endpoint keeps its own fields and
+                            # only gains the relationships' chunks.
+                            if merged_source_id and merged_source_id != stored.get(
+                                "source_id"
+                            ):
+                                endpoint_updates.append(
+                                    (name, {**stored, "source_id": merged_source_id})
+                                )
+                        else:
+                            placeholder_source_ids[name] = (
+                                merged_source_id or first_relation_source[name]
+                            )
+
+                    relation_tracking: dict[str, dict[str, Any]] = {}
+                    merged_edges: dict[tuple[str, str], dict[str, Any]] = {}
+                    pairs = list(deduped_relationships)
+                    if pairs:
+                        stored_edges = (
+                            await self.chunk_entity_relation_graph.get_edges_batch(
+                                [{"src": src, "tgt": tgt} for src, tgt in pairs]
+                            )
+                        )
+                        row_keys = [make_relation_chunk_key(*pair) for pair in pairs]
+                        relation_rows = dict(
+                            zip(
+                                row_keys,
+                                await self.relation_chunks.get_by_ids(row_keys),
+                            )
+                        )
+                    for pair in pairs:
+                        relationship_data = deduped_relationships[pair]
+                        row_key = make_relation_chunk_key(*pair)
+                        stored_edge = stored_edges.get(pair) or stored_edges.get(
+                            (pair[1], pair[0])
+                        )
+                        full, changed = _merge_tracking(
+                            relation_rows.get(row_key),
+                            stored_edge.get("source_id") if stored_edge else None,
+                            _custom_kg_chunk_ids(relationship_data["source_id"]),
+                        )
+                        if changed:
+                            relation_tracking[row_key] = {
+                                "chunk_ids": full,
+                                "count": len(full),
+                            }
+                        if stored_edge is None:
+                            continue
+                        limited = apply_source_ids_limit(
+                            full,
+                            global_config["max_source_ids_per_relation"],
+                            limit_method,
+                            identifier=f"`{pair[0]}`~`{pair[1]}`",
+                        )
+                        source_id = (
+                            GRAPH_FIELD_SEP.join(limited)
+                            if limited
+                            else relationship_data["source_id"]
+                        )
+                        # The weight contract: never below the evidence count of
+                        # the stored edge, and an existing weight (accumulated
+                        # by earlier merges) is not lowered by a curated one.
+                        try:
+                            stored_weight = float(stored_edge.get("weight"))
+                        except (TypeError, ValueError):
+                            stored_weight = 0.0
+                        if not math.isfinite(stored_weight) or stored_weight < 0:
+                            stored_weight = 0.0
+                        merged_edges[pair] = {
+                            "source_id": source_id,
+                            "weight": apply_relation_weight_floor(
+                                max(relationship_data["weight"], stored_weight),
+                                source_id,
+                            ),
+                            "file_path": _merge_paths(
+                                stored_edge.get("file_path"),
+                                normalize_document_file_path(
+                                    relationship_data.get("file_path", "custom_kg")
+                                ),
+                            ),
+                        }
+                    return {
+                        "entity_tracking": entity_tracking,
+                        "relation_tracking": relation_tracking,
+                        "merged_edges": merged_edges,
+                        "endpoint_updates": endpoint_updates,
+                        "placeholder_source_ids": placeholder_source_ids,
+                    }
+
                 async def _do_graph_and_vdb_writes() -> None:
+                    # Skipped entirely when there is nothing to insert (e.g. a
+                    # chunks-only custom_kg) — _build_global_config is real
+                    # work callers with no entities/relationships should not
+                    # pay for. Built at most once per call and shared by the
+                    # provenance merge and both VDB payloads below.
+                    if not (all_entities_data or deduped_relationships):
+                        return
+                    global_config = self._build_global_config()
+                    provenance = await _merge_existing_provenance(global_config)
+                    entity_tracking = provenance["entity_tracking"]
+                    relation_tracking = provenance["relation_tracking"]
+                    merged_edges = provenance["merged_edges"]
+                    endpoint_updates = provenance["endpoint_updates"]
+                    placeholder_source_ids = provenance["placeholder_source_ids"]
                     # Construct and verify the entity VDB payload BEFORE the
                     # first graph mutation below (entity_nodes batch upsert): if
                     # truncation fails (a deterministic, non-retryable
                     # content-shape problem), nothing has been written yet. The
                     # actual VDB upsert I/O still happens after all graph writes,
-                    # at the end of this function. Skipped entirely when there is
-                    # nothing to insert (e.g. a chunks-only custom_kg) —
-                    # _build_global_config is real work callers with no
-                    # entities/relationships should not pay for. Shared with the
-                    # relationship VDB payload built further below in this same
-                    # function, so it is built at most once per call.
-                    global_config: dict[str, Any] | None = None
+                    # at the end of this function.
                     data_for_entities_vdb: dict[str, Any] = {}
-                    if all_entities_data or deduped_relationships:
-                        global_config = self._build_global_config()
                     if all_entities_data:
                         data_for_entities_vdb = {
                             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
@@ -5482,15 +5760,42 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             }
                             for dp in all_entities_data
                         }
+                    # A stored endpoint that only gains chunks keeps its vector
+                    # in step with its node, as the pipeline's relation merge
+                    # does.
+                    for name, stored in endpoint_updates:
+                        data_for_entities_vdb[
+                            compute_mdhash_id(name, prefix="ent-")
+                        ] = {
+                            "content": _truncate_vdb_content(
+                                f"{name}\n{stored.get('description') or ''}",
+                                global_config,
+                                f"entity:{name}",
+                            ),
+                            "entity_name": name,
+                            "source_id": stored["source_id"],
+                            "description": stored.get("description") or "",
+                            "entity_type": stored.get("entity_type") or "UNKNOWN",
+                            "file_path": stored.get("file_path") or "custom_kg",
+                        }
 
                     # Batch insert entities (reduces N serial awaits to 1).
                     # Writing entity_nodes here (before the relationship-endpoint
                     # discovery below) means has_nodes_batch naturally sees them,
                     # so a relationship endpoint that is also one of this batch's
                     # own explicit entities is never mistaken for a missing node.
-                    if entity_nodes:
+                    # Tracking rows go first and only ever GAIN this call's
+                    # chunks, which were written above: an interruption between
+                    # here and the graph writes leaves a row naming a live chunk
+                    # (the object is retained, never lost) that a retry rewrites.
+                    if entity_tracking:
+                        await self.entity_chunks.upsert(entity_tracking)
+                    if relation_tracking:
+                        await self.relation_chunks.upsert(relation_tracking)
+
+                    if entity_nodes or endpoint_updates:
                         await self.chunk_entity_relation_graph.upsert_nodes_batch(
-                            entity_nodes
+                            [*entity_nodes, *endpoint_updates]
                         )
 
                     # Insert relationships into knowledge graph (batch for performance)
@@ -5518,6 +5823,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         file_path = normalize_document_file_path(
                             relationship_data.get("file_path", "custom_kg")
                         )
+                        # An existing edge keeps the provenance merged above;
+                        # placeholder endpoints still get this call's source.
+                        merged_edge = merged_edges.get(tuple(sorted((src_id, tgt_id))))
+                        edge_source_id = (
+                            merged_edge["source_id"] if merged_edge else source_id
+                        )
+                        edge_file_path = (
+                            merged_edge["file_path"] if merged_edge else file_path
+                        )
+                        edge_weight = (
+                            merged_edge["weight"]
+                            if merged_edge
+                            else relationship_data["weight"]
+                        )
 
                         if source_id == "UNKNOWN":
                             logger.warning(
@@ -5526,12 +5845,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                         for need_insert_id in [src_id, tgt_id]:
                             if need_insert_id not in existing_nodes:
+                                node_source_id = placeholder_source_ids.get(
+                                    need_insert_id, source_id
+                                )
                                 missing_nodes.append(
                                     (
                                         need_insert_id,
                                         {
                                             "entity_id": need_insert_id,
-                                            "source_id": source_id,
+                                            "source_id": node_source_id,
                                             "description": "UNKNOWN",
                                             "entity_type": "UNKNOWN",
                                             "file_path": file_path,
@@ -5553,7 +5875,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                         f"entity:{need_insert_id}",
                                     ),
                                     "entity_name": need_insert_id,
-                                    "source_id": source_id,
+                                    "source_id": node_source_id,
                                     "description": "UNKNOWN",
                                     "entity_type": "UNKNOWN",
                                     "file_path": file_path,
@@ -5563,11 +5885,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
                         edge_data = {
-                            "weight": relationship_data["weight"],
+                            "weight": edge_weight,
                             "description": relationship_data["description"],
                             "keywords": relationship_data["keywords"],
-                            "source_id": source_id,
-                            "file_path": file_path,
+                            "source_id": edge_source_id,
+                            "file_path": edge_file_path,
                             "created_at": int(time.time()),
                         }
                         edge_list.append((src_id, tgt_id, edge_data))
@@ -5578,9 +5900,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 "tgt_id": normalized_tgt_id,
                                 "description": relationship_data["description"],
                                 "keywords": relationship_data["keywords"],
-                                "source_id": source_id,
-                                "weight": relationship_data["weight"],
-                                "file_path": file_path,
+                                "source_id": edge_source_id,
+                                "weight": edge_weight,
+                                "file_path": edge_file_path,
                                 "created_at": int(time.time()),
                             }
                         )

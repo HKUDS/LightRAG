@@ -1567,6 +1567,13 @@ merged weight = max(all input weights, distinct merged real source IDs)
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
 
+When `insert_custom_kg` writes a relation that already exists, the same rule
+applies to the stored edge and the custom one:
+
+```text
+weight = max(custom weight, stored weight, distinct merged real source IDs)
+```
+
 ### Chunk tracking across a rename or merge
 
 A rename and a merge do not drop chunk tracking, they migrate it: the row moves
@@ -1660,6 +1667,14 @@ custom_kg = {
 
 rag.insert_custom_kg(custom_kg)
 ```
+
+Writing an entity or relation that already exists replaces its `description`,
+`entity_type` and `keywords` with the custom values but **merges** its
+provenance: the custom chunk is added to the chunk tracking rows
+(`entity_chunks` / `relation_chunks`), to `source_id` and to `file_path`, and
+an existing relationship endpoint gains the relationship's chunk, as a document
+merge does. Deleting a document that contributed to the object therefore keeps
+it, attributed to the custom chunk.
 
 * Other Entity and Relation Operations
   - **create_entity**: Creates a new entity with specified attributes
