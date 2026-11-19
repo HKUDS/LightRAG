@@ -216,6 +216,32 @@ def test_host_is_public_rejects_rfc8215_local_use_nat64_slash48(monkeypatch):
     assert _host_is_public("64:ff9b:1::808:808") is False
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "::ffff:0:7f00:1",  # 127.0.0.1 (loopback)
+        "::ffff:0:a00:1",  # 10.0.0.1 (RFC1918)
+        "::ffff:0:a9fe:a9fe",  # 169.254.169.254 (cloud metadata)
+        "::ffff:0:808:808",  # 8.8.8.8 (public: the whole block is denied)
+    ],
+)
+def test_host_is_public_rejects_ipv4_translated_siit_block(monkeypatch, host):
+    # The RFC 2765 IPv4-translated SIIT prefix ::ffff:0:0:0/96 carries the IPv4
+    # in the low 32 bits but is neither IPv4-mapped (``ipv4_mapped`` is None)
+    # nor IPv4-compatible, and CPython classifies it globally routable. A host
+    # whose SIIT translator still uses it would deliver the request to the
+    # embedded IPv4, so the whole reserved block is default-denied.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    assert _host_is_public(host) is False
+
+
+def test_ipv4_translated_siit_block_permitted_only_via_allowlist(monkeypatch):
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "::ffff:0:0:0/96")
+    assert _host_is_public("::ffff:0:808:808") is True
+    # The IPv4-mapped form (a different prefix) is unaffected by the allowlist.
+    assert _host_is_public("::ffff:7f00:1") is False
+
+
 def test_rfc8215_slash48_permitted_only_via_allowlist(monkeypatch):
     # An operator running a genuine local NAT64 in 64:ff9b:1::/48 can still opt
     # in explicitly; nothing outside the configured block is affected.
