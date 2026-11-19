@@ -192,9 +192,7 @@ def test_posix_resolves_a_rooted_uri_path(posix, location):
         ("file:///", "/"),
     ],
 )
-def test_posix_reads_windows_lookalike_paths_as_posix_names(
-    posix, location, expected
-):
+def test_posix_reads_windows_lookalike_paths_as_posix_names(posix, location, expected):
     assert resolve_sidecar_location(location) == PurePosixPath(expected)
 
 
@@ -293,9 +291,7 @@ def test_resolver_rejects_an_empty_or_relative_uri_path(flavor, location):
         "file:///%5C%5Cfileserver/share/report.parsed/",
     ],
 )
-def test_windows_rejects_a_uri_path_that_names_no_local_directory(
-    windows, location
-):
+def test_windows_rejects_a_uri_path_that_names_no_local_directory(windows, location):
     with pytest.raises(ValueError, match=UNSUPPORTED):
         resolve_sidecar_location(location)
 
