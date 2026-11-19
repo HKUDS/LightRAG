@@ -239,7 +239,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 | 参数 | 别名 | 适用策略 | 类型 | 含义 |
 | --- | --- | --- | --- | --- |
-| `chunk_token_size` | `chunk_ts` | F / R / V / P / C | int（≥ 1） | 各策略的块大小 |
+| `chunk_token_size` | `chunk_ts` | F / R / V / P / C | int（≥ 64） | 各策略的块大小 |
 | `chunk_overlap_token_size` | `chunk_ol` | F / R / P / C | int（≥ 0） | 块间重叠（V 无重叠） |
 | `drop_references` | `drop_rf` | P | bool | 分块前丢弃匹配的参考文献块，如 `paper.[-P(drop_rf=true)].pdf`；布尔参数可省略取值，`paper.[-P(drop_rf)].pdf` 等价于 `drop_rf=true` |
 
@@ -612,6 +612,8 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 以下变量都在 `LightRAG` 实例化时一次性读入 `addon_params["chunker"]`：strategy 特定 env 由 `default_chunker_config()` 读取，legacy env（`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`）由 `_apply_chunk_size_overlay` 在 strategy env 与 legacy 构造字段都没填的槽位上兜底。修改 env 后需要重启服务（或新建 `LightRAG` 实例）才生效；已入队的文档持有冻结快照不受影响。
 
 下面按各变量配置的策略分组。同一个槽位上，strategy 特定变量始终高于全局兜底。
+
+**最小分块大小。** 每个 `chunk_token_size` 槽位（顶层和各策略）都必须不小于 `MIN_CHUNK_TOKEN_SIZE`（64）。更小的值被视为配置错误，在它进入的地方被拒绝：`LightRAG` 实例化时的 env 与构造字段（因此服务器启动失败）、替换 `addon_params`（原配置保持生效）、入队（调用方传入的 `chunk_options=` 或嵌套修改 `addon_params`）、REST `chunking.params`、启动时的 `LIGHTRAG_PARSER` 规则，以及新上传或扫描到的文件的文件名 hint。hint 解析本身仍接受低至 1 的值，因此用旧的较小 hint 入库的文件仍能还原为规范文件名（删除和扫描去重照常能找到它），恢复该文档也不会失败。此规则之前持久化的快照在处理时不再重新校验，已入队的文档仍可重试。直接调用分块函数时只拒绝小于 1 的值。
 
 #### 全局兜底
 

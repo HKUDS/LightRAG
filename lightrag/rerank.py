@@ -286,9 +286,14 @@ async def generic_rerank_api(
             are retried up to three attempts first; the last attempt's
             exception is raised as-is, never wrapped in ``tenacity.RetryError``.
         TimeoutError: If an attempt exceeds ``timeout``; retried the same way.
+        ValueError: If ``top_n`` is negative.
     """
     if not base_url:
         raise ValueError("Base URL is required")
+
+    if top_n is not None and top_n < 0:
+        # A negative slice stop would silently drop the last |top_n| results.
+        raise ValueError(f"top_n must be non-negative, got {top_n}")
 
     headers = {"Content-Type": "application/json"}
     if api_key is not None:

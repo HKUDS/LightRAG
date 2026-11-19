@@ -88,6 +88,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     MAX_R_SEPARATOR_CHARS,
     MAX_R_SEPARATORS,
+    MIN_CHUNK_TOKEN_SIZE,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_CUSTOM,
@@ -118,6 +119,7 @@ from lightrag.parser.routing import (
     parse_process_options,
     resolve_chunk_options,
     resolve_parser_directives,
+    validate_new_hint_chunk_sizes,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -639,7 +641,7 @@ class _StrictChunkParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    chunk_token_size: Optional[int] = Field(default=None, ge=1)
+    chunk_token_size: Optional[int] = Field(default=None, ge=MIN_CHUNK_TOKEN_SIZE)
 
 
 class _OverlapChunkParams(_StrictChunkParams):
@@ -2520,6 +2522,7 @@ async def pipeline_enqueue_file(
 
         try:
             directives = resolve_parser_directives(file_path)
+            validate_new_hint_chunk_sizes(file_path, directives.chunk_params)
         except FilenameParserHintError as e:
             error_files = [
                 {
@@ -5455,6 +5458,9 @@ def create_document_routes(
             # LIGHTRAG_PARSER rule scan.
             try:
                 upload_directives = resolve_parser_directives(safe_filename)
+                validate_new_hint_chunk_sizes(
+                    safe_filename, upload_directives.chunk_params
+                )
             except FilenameParserHintError as hint_error:
                 # Reject malformed hints synchronously with the detailed
                 # message (previously surfaced asynchronously as an error
@@ -6751,6 +6757,14 @@ def create_document_routes(
         The deletion process runs in the background to avoid blocking the client connection.
 
         This operation is irreversible and will interact with the pipeline status.
+
+        Entities and relations another document still supports are rebuilt from
+        the surviving chunks' extraction cache. A surviving chunk whose initial
+        extraction is no longer cached is re-extracted with the LLM, so the
+        deletion can call the LLM and fails, retryably, without it; the pipeline
+        history lists the surviving documents re-extracted this way.
+        ``delete_llm_cache=true`` can remove a cache row another document's
+        chunk shares, which costs that re-extraction later.
 
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``

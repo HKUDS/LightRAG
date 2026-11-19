@@ -25,7 +25,6 @@ from typing import (
     Awaitable,
     Callable,
     Coroutine,
-    Iterator,
     NoReturn,
     TypeVar,
     cast,
@@ -99,7 +98,7 @@ from lightrag.constants import (
     KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.utils import get_env_value
-from lightrag.parser.routing import _chunk_env_int
+from lightrag.parser.routing import _chunk_env_int, validate_chunk_token_sizes
 
 from lightrag.kg import (
     deprecated_storage_message,
@@ -236,6 +235,7 @@ from lightrag.utils import (
     TokenLimitTruncationTally,
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
+    reject_reasoning_only_answer,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -1556,8 +1556,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         return self._addon_params
 
     def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
-        self._replace_addon_params(addon_params, mark_dirty=True)
-        self._apply_chunk_size_overlay()
+        # All-or-nothing: a replacement the overlay rejects (a chunk size
+        # below MIN_CHUNK_TOKEN_SIZE) must leave the previous configuration
+        # in force, not a half-applied one.
+        previous = (
+            self._addon_params,
+            self.chunk_token_size,
+            self.chunk_overlap_token_size,
+        )
+        try:
+            self._replace_addon_params(addon_params, mark_dirty=True)
+            self._apply_chunk_size_overlay()
+        except BaseException:
+            (
+                self._addon_params,
+                self.chunk_token_size,
+                self.chunk_overlap_token_size,
+            ) = previous
+            self._mark_addon_params_dirty()
+            raise
 
     def _apply_chunk_size_overlay(self) -> None:
         """Reconcile chunk-size config across all four configuration tiers.
@@ -1668,6 +1685,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 sub = {}
                 chunker_cfg[strategy_key] = sub
             sub.setdefault("chunk_token_size", size_val)
+
+        # Every slot is resolved now, so this one check covers env, the
+        # legacy constructor fields and addon_params alike.
+        validate_chunk_token_sizes(chunker_cfg)
 
         # Back-fill legacy instance fields → always int afterwards.
         # Overlap mirrors the F-strategy resolved value, matching the
@@ -5675,7 +5696,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | AsyncIterator[str]:
         """
         Perform a sync query.
 
@@ -5685,12 +5706,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
-            str: The result of the query execution.
+            str | AsyncIterator[str]: The same value :meth:`aquery` returns.
+                With ``param.stream=False`` this is always a ``str``. With
+                ``param.stream=True`` it is an ``AsyncIterator[str]`` when
+                the answer is streamed, and still a ``str`` on a query-cache
+                hit, when no context is found, or when the model does not
+                stream.
+
+            There is no synchronous stream: the iterator can only be consumed
+            with ``async for``. Streaming callers should use
+            ``await aquery(...)``; synchronous scripts that need text should
+            pass ``stream=False``.
 
         Raises:
             Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
-        return _run_sync(  # type: ignore
+        return _run_sync(
             lambda: self.aquery(query, param, system_prompt),
             sync_name="query",
             async_name="aquery",
@@ -6059,6 +6090,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 enable_cot=True,
                 stream=param.stream,
             )
+            # A reasoning trace with no answer is a failed generation.
+            reject_reasoning_only_answer(response)
             # isinstance, not exact type: a truncated non-streaming
             # response arrives as TruncatedResponse (a str subclass) and
             # must not be misclassified as a streaming iterator.
@@ -6348,6 +6381,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ``DELETE /documents?clear_llm_cache=true``, which runs inside the
             destructive reservation. There is deliberately no endpoint that
             calls it without one.
+
+        Gotcha: clearing the cache beside documents that stay makes every
+        later deletion re-extract, with the LLM, the surviving chunks it
+        rebuilds from, and a re-extraction may name things differently. See
+        *Deletion rebuild evidence* in
+        ``docs/design/PurgeRecoveryContract.md``.
 
         Raises:
             Exception: propagated from the storage; the cache may be partly
@@ -6944,7 +6983,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Does NOT touch:
             - ``doc_status`` / ``full_docs`` records — caller manages those.
-            - ``llm_response_cache`` — orthogonal to KG cleanup.
+            - ``llm_response_cache``, except that a rebuild which re-extracts a
+              surviving chunk replaces that chunk's unusable extract row and
+              writes the new rows through the usual reference-before-row path.
             - Pipeline busy-flag — assumes the caller already holds the
               pipeline (i.e. this runs inside a pipeline run).
 
@@ -7056,6 +7097,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 rebuild_policy=rebuild_policy,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
+                # A journal from an earlier attempt means its step 2 may have
+                # persisted narrowed tracking before its rebuild failed.
+                resuming=proof is not None and proof.journal_phase is not None,
             )
             if journaled and proof is not None:
                 await self._write_kg_purge_phase(
@@ -7160,6 +7204,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         rebuild_policy: Literal["best_effort", "rollback"],
         pipeline_status: dict,
         pipeline_status_lock: Any,
+        resuming: bool = False,
     ) -> KGRebuildReport:
         """Steps 1-6 of :py:meth:`_purge_kg_contributions`.
 
@@ -7180,8 +7225,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         the anchor rows cannot name yet (an in-flight custom-chunk patch
         journal). They are additive only, so they can never mask a missing
         anchor: an empty union with absent anchors still resolves to nothing.
+
+        ``resuming``: an earlier attempt of this journaled purge may already
+        have persisted step 2's narrowed tracking and then failed in its
+        rebuild. Its candidates then show no tracking delta, and a capped graph
+        ``source_id`` need not name the deleted chunks either, so every
+        candidate with remaining sources is rebuilt, as under ``rollback``.
         """
         rebuild_report = KGRebuildReport()
+        rebuild_every_survivor = resuming or rebuild_policy == "rollback"
 
         # Set view for membership/intersection checks below (chunk_ids stays a list
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
@@ -7321,7 +7373,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     entities_to_rebuild[node_label] = remaining_sources
                     entity_chunk_updates[node_label] = remaining_sources
@@ -7391,7 +7443,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     relationships_to_rebuild[edge_tuple] = remaining_sources
                     relation_chunk_updates[edge_tuple] = remaining_sources
@@ -7587,6 +7639,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     entity_chunks_storage=self.entity_chunks,
                     relation_chunks_storage=self.relation_chunks,
                     rebuild_policy=rebuild_policy,
+                    doc_status_storage=self.doc_status,
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
@@ -7617,8 +7670,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         This method orchestrates a comprehensive deletion process for a given document ID.
         It ensures that not only the document itself but also all its derived and associated
-        data across different storage layers are removed or rebuiled. If entities or relationships
-        are partially affected, they will be rebuilded using LLM cached from remaining documents.
+        data across different storage layers are removed or rebuilt. If entities or relationships
+        are partially affected, they are rebuilt from the extraction cache of the remaining
+        documents' chunks; a surviving chunk whose initial extraction is not cached is
+        re-extracted with the LLM, and a failure leaves the document ``DELETING`` for a retry
+        (*Deletion rebuild evidence* in ``docs/design/PurgeRecoveryContract.md``).
 
         **Concurrency Control Design:**
 

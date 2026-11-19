@@ -455,7 +455,11 @@ async def openai_complete_if_cache(
     3. If both `content` and `reasoning_content` are present simultaneously, reasoning is ignored.
     4. If both fields have content from the start, COT is never activated.
     5. For streaming: COT content is inserted into the content stream with <think> tags.
-    6. For non-streaming: COT content is prepended to regular content with <think> tags.
+    6. For non-streaming: reasoning is never returned. Rules 1 and 3 leave it
+       only one place, a response with no answer text, and that response is
+       empty whatever `enable_cot` says: it raises like any empty response
+       (retryable `InvalidResponseError`, or `EmptyTruncatedResponseError`
+       when the token limit stopped generation).
 
     Args:
         model: The OpenAI model to use. For Azure, this can be the deployment name.
@@ -908,39 +912,14 @@ async def openai_complete_if_cache(
                 content = getattr(message, "content", None)
                 reasoning_content = getattr(message, "reasoning_content", "")
 
-                # Handle COT logic for non-streaming responses (only if enabled)
-                final_content = ""
-
-                if enable_cot:
-                    # Check if we should include reasoning content
-                    should_include_reasoning = False
-                    if reasoning_content and reasoning_content.strip():
-                        if not content or content.strip() == "":
-                            # Case 1: Only reasoning content, should include COT
-                            should_include_reasoning = True
-                            final_content = (
-                                content or ""
-                            )  # Use empty string if content is None
-                        else:
-                            # Case 3: Both content and reasoning_content present, ignore reasoning
-                            should_include_reasoning = False
-                            final_content = content
-                    else:
-                        # No reasoning content, use regular content
-                        final_content = content or ""
-
-                    # Apply COT wrapping if needed
-                    if should_include_reasoning:
-                        if r"\u" in reasoning_content:
-                            reasoning_content = safe_unicode_decode(
-                                reasoning_content.encode("utf-8")
-                            )
-                        final_content = (
-                            f"<think>{reasoning_content}</think>{final_content}"
-                        )
-                else:
-                    # COT disabled, only use regular content
-                    final_content = content or ""
+                # Non-streaming never returns reasoning, whatever enable_cot
+                # says: it is ignored once content exists, so the only place
+                # it could go is a response with NO answer, where a
+                # <think>...</think> wrapper would turn a failed generation
+                # into a non-empty "answer" and skip the retry below. A
+                # reasoning-only response is therefore validated as the empty
+                # response it is (see the docstring, rule 6).
+                final_content = content or ""
 
                 # Validate final content
                 if not final_content or final_content.strip() == "":

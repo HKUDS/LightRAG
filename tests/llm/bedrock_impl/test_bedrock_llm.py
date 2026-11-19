@@ -121,6 +121,37 @@ class _FakeReasoningSession(_FakeSession):
         return _FakeReasoningClient(self._captured_calls)
 
 
+class _FakeInterleavedClient(_FakeBedrockClient):
+    async def converse(self, **kwargs):
+        self._captured_calls.append(kwargs)
+        return {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "reasoningContent": {
+                                "reasoningText": {"text": "first thought"}
+                            }
+                        },
+                        {"text": "first part. "},
+                        {
+                            "reasoningContent": {
+                                "reasoningText": {"text": "second thought"}
+                            }
+                        },
+                        {"text": "second part."},
+                    ]
+                }
+            }
+        }
+
+
+class _FakeInterleavedSession(_FakeSession):
+    def client(self, *_args, **kwargs):
+        self._client_kwargs_calls.append(dict(kwargs))
+        return _FakeInterleavedClient(self._captured_calls)
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_bedrock_complete_skips_reasoning_content_block(monkeypatch):
@@ -138,6 +169,29 @@ async def test_bedrock_complete_skips_reasoning_content_block(monkeypatch):
         )
 
     assert result == "final answer"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_complete_joins_interleaved_text_blocks(monkeypatch):
+    """Extended thinking can interleave reasoning and text blocks as
+    [reasoning, text, reasoning, text]; every text block must be joined,
+    not just the first one found.
+    """
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeInterleavedSession(captured_calls, []),
+    ):
+        result = await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            extra_fields={"reasoning_config": {"type": "enabled"}},
+        )
+
+    assert result == "first part. second part."
 
 
 @pytest.mark.offline

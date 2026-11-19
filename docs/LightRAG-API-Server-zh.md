@@ -697,7 +697,7 @@ TOKEN_EXPIRE_HOURS=4
 lightrag-hash-password --username admin
 ```
 
-该命令会安全提示输入密码，并输出可直接粘贴到 `.env` 的 `admin:{bcrypt}...` 条目。
+该命令会安全提示输入密码，并输出可直接粘贴到 `.env` 的 `admin:{bcrypt}...` 条目。bcrypt 只使用密码的前 72 个字节，因此该命令会拒绝更长的密码（按 UTF-8 字节计算，而非字符数）；请改用更短的密码。
 
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
 

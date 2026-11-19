@@ -48,6 +48,7 @@ from lightrag.exceptions import (
     ChunkBlockMatchError,
     CommitBookkeepingError,
     EmptyTruncatedResponseError,
+    ReasoningOnlyResponseError,
 )
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -1029,7 +1030,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
     """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
 
     Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
-    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    falling back to `{stem}_{unix_seconds}{ext}` if all numeric slots are taken;
+    an occupied timestamp name advances the suffix by one until a free name is
+    found, so the suffix may run ahead of the clock.
+
+    The name is only free when checked: the caller renames separately, so two
+    concurrent callers can still pick the same name.
     """
     original_path = Path(original_name)
     base_name = original_path.stem
@@ -1043,7 +1049,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
         if not (target_dir / new_name).exists():
             return new_name
 
-    return f"{base_name}_{int(time.time())}{extension}"
+    # Probe existing timestamp names too. The caller still chooses and renames
+    # separately, so this only avoids overwriting a file already on disk.
+    suffix = int(time.time())
+    while (target_dir / f"{base_name}_{suffix}{extension}").exists():
+        suffix += 1
+    return f"{base_name}_{suffix}{extension}"
 
 
 async def move_file_to_parsed_dir(
@@ -5808,6 +5819,67 @@ def _reject_empty_truncated_response(
     raise EmptyTruncatedResponseError(message)
 
 
+def is_reasoning_only_answer(response: Any) -> bool:
+    """Return True for a non-streaming answer that is a reasoning trace only.
+
+    True when nothing is left after ``remove_think_tags``, or when what is
+    left is an unclosed ``<think>`` block (inline reasoning cut off
+    mid-trace). False for streaming iterators, empty strings and any answer
+    that carries text outside the think block. Never raises.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return False
+    cleaned = remove_think_tags(response)
+    unclosed_think = cleaned.startswith("<think>") and "</think>" not in cleaned
+    return not cleaned or unclosed_think
+
+
+def reject_reasoning_only_answer(response: Any) -> None:
+    """Fail a non-streaming query answer that is reasoning and nothing else.
+
+    Call it on the answering LLM's result BEFORE the query-cache write
+    (``kg_query``, ``naive_query``, bypass mode). The query paths pass
+    ``enable_cot=True``, and a ``<think>...</think>`` wrapper with no answer
+    after it is a NON-empty string, so without this check it is returned and
+    cached as the answer. The bindings with a retry policy (OpenAI, OpenAI
+    Responses, Gemini) already raise on that shape in their non-streaming
+    path; this is the safety net for every other source of it: Zhipu, models
+    that put the trace inline in ``content``, and custom LLM functions.
+
+    Raises :class:`EmptyTruncatedResponseError` for a ``TruncatedResponse``
+    and :class:`ReasoningOnlyResponseError` otherwise. Streaming responses and
+    answers with text outside the think block pass through. Only lengths are
+    logged, never content.
+    """
+    if not is_reasoning_only_answer(response):
+        return
+    truncated = is_truncated_response(response)
+    diagnostics = format_response_diagnostics(
+        truncated=truncated,
+        response_len=len(response),
+        answer_len=0,
+    )
+    if truncated:
+        hint = empty_length_truncated_hint(
+            "consider raising the LLM's output token limit or disabling "
+            "thinking mode for the query role",
+            reasoning_consumed_budget=True,
+        )
+    else:
+        hint = (
+            "model returned reasoning-only output; consider disabling thinking "
+            "mode or lowering the reasoning effort for the query role"
+        )
+    message = (
+        "Query answer carried no text outside the reasoning trace "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    if truncated:
+        raise EmptyTruncatedResponseError(message)
+    raise ReasoningOnlyResponseError(message)
+
+
 def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
     """Mutual exclusion between an extract cache attach+write and its commit.
 
@@ -7418,6 +7490,11 @@ async def apply_rerank_if_enabled(
                 or str(doc)
             )
             document_texts.append(content)
+
+        # Custom rerank functions bypass generic_rerank_api's check, and the
+        # legacy-format slice below would treat a negative top_n as "drop N".
+        if top_n is not None and top_n < 0:
+            raise ValueError(f"top_n must be non-negative, got {top_n}")
 
         # Call the new rerank function that returns index-based results
         rerank_results = await rerank_func(
