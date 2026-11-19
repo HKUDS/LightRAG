@@ -109,6 +109,22 @@ def test_resolver_keeps_a_non_utf8_posix_name(tmp_path):
     assert resolved == resolve_sidecar_uri(location)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a POSIX name may end in a backslash")
+def test_resolver_keeps_a_trailing_backslash_in_a_posix_name(tmp_path):
+    # Only the URI separator is stripped; the backslash belongs to the name.
+    directory = tmp_path / "sidecar-store\\"
+    location = sidecar_uri_for(directory)
+    assert location.endswith("%5C/")
+    resolved = resolve_sidecar_location(location)
+    assert resolved == directory.resolve()
+    assert resolved == resolve_sidecar_uri(location)
+
+
+def test_windows_drops_a_trailing_backslash_in_the_uri_path(windows):
+    resolved = resolve_sidecar_location("file:///C:/tmp/report.parsed%5C/")
+    assert resolved == PureWindowsPath("C:/tmp/report.parsed")
+
+
 @pytest.mark.parametrize("location", [None, "", SIDECAR_LOCATION_UNKNOWN])
 def test_resolver_returns_none_without_a_known_sidecar(flavor, location):
     assert resolve_sidecar_location(location) is None

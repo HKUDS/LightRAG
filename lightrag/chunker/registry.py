@@ -95,12 +95,15 @@ def _local_uri_path(path: str) -> str:
     """Turn a validated local ``file://`` URI path into a filesystem path.
 
     In ``file:///C:/x`` the slash before the drive only separates authority
-    from path, so it is dropped; any other path keeps its leading slash.
+    from path, so it is dropped; any other path keeps its leading slash. Only
+    the URI separator ``/`` is stripped from the end: on POSIX a backslash is
+    an ordinary filename character (``sidecar_uri_for()`` writes it as
+    ``%5C``), and on Windows ``Path`` drops a trailing one by itself.
     """
     decoded = _decode_uri_component(path)
     if _URI_DRIVE_PREFIX.match(decoded.replace("\\", "/")):
         decoded = decoded[1:]
-    stripped = decoded.rstrip("/\\")
+    stripped = decoded.rstrip("/")
     return stripped + "/" if stripped.endswith(":") else stripped
 
 
