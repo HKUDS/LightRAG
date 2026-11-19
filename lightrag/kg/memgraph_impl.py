@@ -438,6 +438,7 @@ class MemgraphStorage(BaseGraphStorage):
                     results = await session.run(query, entity_id=source_node_id)
 
                     edges = []
+                    seen_edges = set()
                     # Any row at all means the anchor MATCH bound n, i.e. the
                     # node exists: an isolated node still yields exactly one row
                     # (via OPTIONAL MATCH) carrying a NULL connected_entity_id.
@@ -455,9 +456,22 @@ class MemgraphStorage(BaseGraphStorage):
 
                         # Preserve the original edge direction via startNode(r)
                         if start_entity_id == node_entity_id:
-                            edges.append((node_entity_id, connected_entity_id))
+                            edge = (node_entity_id, connected_entity_id)
                         else:
-                            edges.append((connected_entity_id, node_entity_id))
+                            edge = (connected_entity_id, node_entity_id)
+
+                        # A self-loop has both endpoints equal to n, so the
+                        # undirected `(n)-[r]-(connected)` pattern matches it
+                        # from both sides and the server returns the single
+                        # relationship as two identical rows. An ordinary
+                        # neighbor binds to exactly one row (only `connected`
+                        # is free), so this guard is a no-op for every edge
+                        # but the self-loop, and stays bounded by this node's
+                        # own degree rather than the whole graph.
+                        if edge in seen_edges:
+                            continue
+                        seen_edges.add(edge)
+                        edges.append(edge)
 
                     await results.consume()  # Ensure results are consumed
                     return edges if node_matched else None
