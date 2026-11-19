@@ -6,8 +6,9 @@ reads it and errors must remain visible there. Per-item SUCCESS/completion
 detail ("Rebuild `X` from N chunks") goes to the backend logger only: on
 large rebuilds one line per item swamps the history. History also keeps the
 operation-level and summary messages ("Rebuilding knowledge from ...",
-"Starting parallel rebuild ...", "KG rebuild completed: ..." including
-failure counts, cache-miss notices).
+"Starting parallel rebuild ...", "KG rebuild completed: ..." or, when a
+per-item failure is raised, "KG rebuild failed: ..." with the failure counts,
+cache-miss notices).
 
 Coverage:
 - parameterized behavioral tests drive the three per-item failure paths
@@ -122,7 +123,12 @@ async def _boom_parse(**_kwargs):
     [
         # Cache parse failure (patched in the test body): the per-chunk
         # "Failed to parse cached extraction result ..." error must be visible.
-        ("parse_failure", {}, "Failed to parse cached extraction"),
+        # Only the rollback policy reports it; best_effort re-extracts instead.
+        (
+            "parse_failure",
+            {"rebuild_policy": "rollback"},
+            "Failed to parse cached extraction",
+        ),
         # Entity rebuild failure: "Failed to rebuild `ALICE`: ..." must be
         # visible; the summary additionally reports the failure counts.
         (
@@ -154,7 +160,14 @@ async def test_per_item_rebuild_failures_reach_history_but_completions_do_not(
 
     kwargs = _rebuild_kwargs(**overrides)
     history = kwargs["pipeline_status"]["history_messages"]
-    await rebuild_knowledge_from_chunks(**kwargs)
+    if case == "parse_failure":
+        await rebuild_knowledge_from_chunks(**kwargs)
+        summary_prefix = "KG rebuild completed:"
+    else:
+        # A per-item rebuild failure is raised, not swallowed.
+        with pytest.raises(RuntimeError, match="lookup boom"):
+            await rebuild_knowledge_from_chunks(**kwargs)
+        summary_prefix = "KG rebuild failed:"
 
     # Per-item FAILURE detail must reach pipeline history (the WebUI reads it),
     assert any(failure_fragment in message for message in history), history
@@ -167,20 +180,21 @@ async def test_per_item_rebuild_failures_reach_history_but_completions_do_not(
     assert any(
         message.startswith("Starting parallel rebuild") for message in history
     ), history
-    assert any(message.startswith("KG rebuild completed:") for message in history), (
-        history
-    )
+    assert any(message.startswith(summary_prefix) for message in history), history
 
 
 @pytest.mark.asyncio
 async def test_failure_counts_still_reach_the_summary():
-    """Besides the per-item failure lines, the completion summary carries the
-    aggregated failure counts into history."""
+    """Besides the per-item failure lines, the failure summary carries the
+    aggregated failure counts into history before the failure propagates."""
     kwargs = _rebuild_kwargs(knowledge_graph_inst=_FailingNodeGraph())
     history = kwargs["pipeline_status"]["history_messages"]
-    await rebuild_knowledge_from_chunks(**kwargs)
+    with pytest.raises(RuntimeError, match="node lookup boom"):
+        await rebuild_knowledge_from_chunks(**kwargs)
     assert any(
-        "Failed: 1 entities, 0 relationships" in message for message in history
+        message.startswith("KG rebuild failed:")
+        and "Failed: 1 entities, 0 relationships" in message
+        for message in history
     ), history
 
 

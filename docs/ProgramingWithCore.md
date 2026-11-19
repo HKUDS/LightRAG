@@ -2059,6 +2059,19 @@ The deletion process:
 4. Update all related vector indexes
 5. Clean up document status records
 
+Step 3 rebuilds each shared entity and relation from the extraction cache of
+the surviving chunks. A surviving chunk whose initial extraction is no longer
+cached (the cache was cleared, the row was shared with a document deleted with
+`delete_llm_cache=True`, or `enable_llm_cache_for_entity_extract` was off) is
+**re-extracted with the LLM** during the deletion, so a deletion can make LLM
+calls and fails, retryably, when the LLM is unavailable. A re-extraction may
+name things differently from the original one: the pipeline history then lists
+the surviving documents involved, and reprocessing them (delete with
+`delete_llm_cache=False`, then insert the same content again) merges the new
+names. An entity or relation that no surviving chunk's extraction names is
+kept, with its `source_id` / `file_path` rewritten to the surviving chunks. See
+[Deletion rebuild evidence](design/PurgeRecoveryContract.md#deletion-rebuild-evidence).
+
 **Important Reminders:**
 1. All deletion operations are **irreversible** — use with caution
 2. Deleting large amounts of data may take time, especially deletion by document ID

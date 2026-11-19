@@ -6349,6 +6349,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             destructive reservation. There is deliberately no endpoint that
             calls it without one.
 
+        Gotcha: clearing the cache beside documents that stay makes every
+        later deletion re-extract, with the LLM, the surviving chunks it
+        rebuilds from, and a re-extraction may name things differently. See
+        *Deletion rebuild evidence* in
+        ``docs/design/PurgeRecoveryContract.md``.
+
         Raises:
             Exception: propagated from the storage; the cache may be partly
                 dropped. Re-run to finish it.
@@ -6944,7 +6950,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Does NOT touch:
             - ``doc_status`` / ``full_docs`` records — caller manages those.
-            - ``llm_response_cache`` — orthogonal to KG cleanup.
+            - ``llm_response_cache``, except that a rebuild which re-extracts a
+              surviving chunk replaces that chunk's unusable extract row and
+              writes the new rows through the usual reference-before-row path.
             - Pipeline busy-flag — assumes the caller already holds the
               pipeline (i.e. this runs inside a pipeline run).
 
@@ -7617,8 +7625,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         This method orchestrates a comprehensive deletion process for a given document ID.
         It ensures that not only the document itself but also all its derived and associated
-        data across different storage layers are removed or rebuiled. If entities or relationships
-        are partially affected, they will be rebuilded using LLM cached from remaining documents.
+        data across different storage layers are removed or rebuilt. If entities or relationships
+        are partially affected, they are rebuilt from the extraction cache of the remaining
+        documents' chunks; a surviving chunk whose initial extraction is not cached is
+        re-extracted with the LLM, and a failure leaves the document ``DELETING`` for a retry
+        (*Deletion rebuild evidence* in ``docs/design/PurgeRecoveryContract.md``).
 
         **Concurrency Control Design:**
 

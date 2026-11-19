@@ -713,9 +713,33 @@ async def test_rollback_relation_vdb_delete_failure_retries_to_convergence(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_best_effort_rebuild_keeps_historical_behavior():
-    """Same partial-cache scenario with default policy: historical
-    best-effort behavior (warn + continue) is preserved for existing callers."""
+async def test_best_effort_rebuild_reextracts_surviving_chunk(monkeypatch):
+    """Same partial-cache scenario with the default policy: the surviving
+    chunk without an initial extraction is re-extracted (RFC #4491), and its
+    records drive the rebuild."""
+    calls = []
+
+    async def fake_extract(chunks, global_config, **kwargs):
+        calls.append(sorted(chunks))
+        return [
+            (
+                {
+                    "ALICE": [
+                        {
+                            "entity_name": "ALICE",
+                            "entity_type": "person",
+                            "description": "Alice re-extracted",
+                            "source_id": chunk_id,
+                            "file_path": "base.txt",
+                        }
+                    ]
+                },
+                {},
+            )
+            for chunk_id in chunks
+        ]
+
+    monkeypatch.setattr(operate_module, "extract_entities", fake_extract)
     graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1", "c2"])})
     rag = _make_rag(
         graph=graph,
@@ -734,6 +758,9 @@ async def test_best_effort_rebuild_keeps_historical_behavior():
     )
     # Tracking narrowed to the surviving source.
     assert rag.entity_chunks.data["ALICE"]["chunk_ids"] == ["c2"]
+    assert calls == [["c2"]]
+    assert graph.nodes["ALICE"]["description"] == "Alice re-extracted"
+    assert graph.nodes["ALICE"]["source_id"] == "c2"
 
 
 @pytest.mark.offline

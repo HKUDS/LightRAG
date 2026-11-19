@@ -6752,6 +6752,14 @@ def create_document_routes(
 
         This operation is irreversible and will interact with the pipeline status.
 
+        Entities and relations another document still supports are rebuilt from
+        the surviving chunks' extraction cache. A surviving chunk whose initial
+        extraction is no longer cached is re-extracted with the LLM, so the
+        deletion can call the LLM and fails, retryably, without it; the pipeline
+        history lists the surviving documents re-extracted this way.
+        ``delete_llm_cache=true`` can remove a cache row another document's
+        chunk shares, which costs that re-extraction later.
+
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``
           and ``destructive_busy=True``) **synchronously** before
