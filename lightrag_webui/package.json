@@ -72,7 +72,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "seedrandom": "^3.0.5",
-    "sigma": "^3.0.3",
+    "sigma": "^4.0.3",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.7.0",
     "tailwind-scrollbar": "^4.0.2",
