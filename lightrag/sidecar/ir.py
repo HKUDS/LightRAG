@@ -25,6 +25,14 @@ Placeholder convention used by :attr:`IRBlock.content_template`:
 The writer expands these templates after id allocation. Adapters MUST emit
 exactly one placeholder per item; multiple in-content placeholders sharing
 the same key are not supported.
+
+A token whose key is not declared on the same block is source text, not a
+placeholder: the writer leaves it verbatim (it used to render it as an empty
+string). The writer cannot tell an author-written token from a generated one
+whose key collides with it, so an adapter that copies source text into
+``content_template`` must allocate keys that avoid every token already in
+that text; the native Markdown builder reserves them document-wide with
+:data:`lightrag.sidecar.placeholders.PLACEHOLDER_TOKEN_RE`.
 """
 
 from __future__ import annotations

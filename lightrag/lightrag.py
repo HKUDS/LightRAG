@@ -216,6 +216,8 @@ from lightrag.utils import (
     always_get_an_event_loop,
     compute_mdhash_id,
     priority_limit_async_func_call,
+    bind_embedding_timeout,
+    bind_rerank_timeout,
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
@@ -1998,13 +2000,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"summary_max_tokens({self.summary_max_tokens}) should be greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
+        # The queue is sized from the timeout, and bind_*_timeout hands the
+        # same value to the bundled bindings' clients (see embedding_timeout /
+        # rerank_timeout in lightrag.utils) without passing it as an argument.
         if self.rerank_model_func is not None:
             self.rerank_model_func = priority_limit_async_func_call(
                 self.rerank_model_max_async,
                 llm_timeout=self.default_rerank_timeout,
                 queue_name="Rerank func",
                 concurrency_group="rerank",
-            )(self.rerank_model_func)
+            )(bind_rerank_timeout(self.rerank_model_func, self.default_rerank_timeout))
 
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
@@ -2035,7 +2040,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 llm_timeout=self.default_embedding_timeout,
                 queue_name="Embedding func",
                 concurrency_group="embedding",
-            )(self.embedding_func.func)
+            )(
+                bind_embedding_timeout(
+                    self.embedding_func.func, self.default_embedding_timeout
+                )
+            )
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)
 
@@ -5677,6 +5686,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             str: The result of the query execution.
+
+        Raises:
+            Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
         return _run_sync(  # type: ignore
             lambda: self.aquery(query, param, system_prompt),
@@ -5706,6 +5718,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             str | AsyncIterator[str]: The LLM response content.
                 - Non-streaming: Returns str
                 - Streaming: Returns AsyncIterator[str]
+
+        Raises:
+            Exception: a failed query raises, as in :meth:`aquery_llm`; it is
+            never returned as ``None`` or an empty string.
         """
         # Call the new aquery_llm function to get complete results
         result = await self.aquery_llm(query, param, system_prompt)
@@ -5979,6 +5995,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
+            A query that finds nothing returns ``status == "failure"`` with
+            ``metadata["failure_reason"] == "no_results"`` and the canned
+            ``PROMPTS["fail_response"]`` as content.
+
+        Raises:
+            Exception: whatever retrieval or the answering LLM call raised (a
+            timeout, a connection or provider error). A failed query is never
+            returned as a result, so it cannot be mistaken for an empty answer.
+            A streamed answer can still fail while it is being iterated; that
+            error is raised by the iterator.
         """
         # `bypass` skips retrieval, so the RAG minimum does not apply to it —
         # but no mode may forward an empty prompt to the LLM.
@@ -5990,136 +6016,117 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         global_config = self._build_global_config()
 
-        try:
-            query_result = None
+        query_result = None
 
-            if param.mode in ["local", "global", "hybrid", "mix"]:
-                query_result = await kg_query(
-                    query,
-                    self.chunk_entity_relation_graph,
-                    self.entities_vdb,
-                    self.relationships_vdb,
-                    self.text_chunks,
-                    param,
-                    global_config,
-                    hashing_kv=self.llm_response_cache,
-                    system_prompt=system_prompt,
-                    chunks_vdb=self.chunks_vdb,
-                    progress_callback=progress_callback,
-                )
-            elif param.mode == "naive":
-                query_result = await naive_query(
-                    query,
-                    self.chunks_vdb,
-                    param,
-                    global_config,
-                    hashing_kv=self.llm_response_cache,
-                    system_prompt=system_prompt,
-                    text_chunks_db=self.text_chunks,
-                    progress_callback=progress_callback,
-                )
-            elif param.mode == "bypass":
-                # Bypass mode: directly use LLM without knowledge retrieval
-                # Apply higher priority to entity/relation summary tasks
-                use_llm_func = partial(
-                    global_config["role_llm_funcs"]["query"],
-                    _priority=DEFAULT_SUMMARY_PRIORITY,
-                )
+        if param.mode in ["local", "global", "hybrid", "mix"]:
+            query_result = await kg_query(
+                query,
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=system_prompt,
+                chunks_vdb=self.chunks_vdb,
+                progress_callback=progress_callback,
+            )
+        elif param.mode == "naive":
+            query_result = await naive_query(
+                query,
+                self.chunks_vdb,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=system_prompt,
+                text_chunks_db=self.text_chunks,
+                progress_callback=progress_callback,
+            )
+        elif param.mode == "bypass":
+            # Bypass mode: directly use LLM without knowledge retrieval
+            # Apply higher priority to entity/relation summary tasks
+            use_llm_func = partial(
+                global_config["role_llm_funcs"]["query"],
+                _priority=DEFAULT_SUMMARY_PRIORITY,
+            )
 
-                param.stream = True if param.stream is None else param.stream
-                response = await use_llm_func(
-                    query,
-                    system_prompt=system_prompt,
-                    history_messages=param.conversation_history,
-                    enable_cot=True,
-                    stream=param.stream,
-                )
-                # isinstance, not exact type: a truncated non-streaming
-                # response arrives as TruncatedResponse (a str subclass) and
-                # must not be misclassified as a streaming iterator.
-                if isinstance(response, str):
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM non streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": response,
-                            "response_iterator": None,
-                            "is_streaming": False,
-                            "llm_generated": True,
-                        },
-                    }
-                else:
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": None,
-                            "response_iterator": response,
-                            "is_streaming": True,
-                            "llm_generated": True,
-                        },
-                    }
-            else:
-                raise ValueError(f"Unknown mode {param.mode}")
-
-            await self._query_done()
-
-            # A result without raw_data is the canned fail_response that
-            # kg_query and naive_query return before any retrieval runs (e.g.
-            # no keywords could be extracted); report it like an empty result,
-            # the same way aquery_data does.
-            if query_result is None or not query_result.raw_data:
+            param.stream = True if param.stream is None else param.stream
+            response = await use_llm_func(
+                query,
+                system_prompt=system_prompt,
+                history_messages=param.conversation_history,
+                enable_cot=True,
+                stream=param.stream,
+            )
+            # isinstance, not exact type: a truncated non-streaming
+            # response arrives as TruncatedResponse (a str subclass) and
+            # must not be misclassified as a streaming iterator.
+            if isinstance(response, str):
                 return {
-                    "status": "failure",
-                    "message": "Query returned no results",
+                    "status": "success",
+                    "message": "Bypass mode LLM non streaming response",
                     "data": {},
-                    "metadata": {
-                        "failure_reason": "no_results",
-                        "mode": param.mode,
-                    },
+                    "metadata": {},
                     "llm_response": {
-                        "content": PROMPTS["fail_response"],
+                        "content": response,
                         "response_iterator": None,
                         "is_streaming": False,
-                        # Canned text: no answering LLM was invoked.
-                        "llm_generated": False,
+                        "llm_generated": True,
                     },
                 }
+            else:
+                return {
+                    "status": "success",
+                    "message": "Bypass mode LLM streaming response",
+                    "data": {},
+                    "metadata": {},
+                    "llm_response": {
+                        "content": None,
+                        "response_iterator": response,
+                        "is_streaming": True,
+                        "llm_generated": True,
+                    },
+                }
+        else:
+            raise ValueError(f"Unknown mode {param.mode}")
 
-            # Extract structured data from query result
-            raw_data = query_result.raw_data
-            raw_data["llm_response"] = {
-                "content": query_result.content
-                if not query_result.is_streaming
-                else None,
-                "response_iterator": query_result.response_iterator
-                if query_result.is_streaming
-                else None,
-                "is_streaming": query_result.is_streaming,
-                "llm_generated": query_result.llm_generated,
-            }
+        await self._query_done()
 
-            return raw_data
-
-        except Exception as e:
-            logger.error(f"Query failed: {e}")
-            # Return error response
+        # A result without raw_data is the canned fail_response that
+        # kg_query and naive_query return before any retrieval runs (e.g.
+        # no keywords could be extracted); report it like an empty result,
+        # the same way aquery_data does.
+        if query_result is None or not query_result.raw_data:
             return {
                 "status": "failure",
-                "message": f"Query failed: {str(e)}",
+                "message": "Query returned no results",
                 "data": {},
-                "metadata": {},
+                "metadata": {
+                    "failure_reason": "no_results",
+                    "mode": param.mode,
+                },
                 "llm_response": {
-                    "content": None,
+                    "content": PROMPTS["fail_response"],
                     "response_iterator": None,
                     "is_streaming": False,
+                    # Canned text: no answering LLM was invoked.
                     "llm_generated": False,
                 },
             }
+
+        # Extract structured data from query result
+        raw_data = query_result.raw_data
+        raw_data["llm_response"] = {
+            "content": query_result.content if not query_result.is_streaming else None,
+            "response_iterator": query_result.response_iterator
+            if query_result.is_streaming
+            else None,
+            "is_streaming": query_result.is_streaming,
+            "llm_generated": query_result.llm_generated,
+        }
+
+        return raw_data
 
     def query_llm(
         self,
@@ -6140,6 +6147,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             dict[str, Any]: Same complete response format as aquery_llm.
+
+        Raises:
+            Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
         return _run_sync(
             lambda: self.aquery_llm(query, param, system_prompt),

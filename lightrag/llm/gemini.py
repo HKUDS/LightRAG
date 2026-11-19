@@ -27,6 +27,7 @@ from tenacity import (
 from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
     provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -339,6 +340,10 @@ def _extract_response_text(
         | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Gemini's message and callers can
+    # still catch google.genai.errors.APIError.
+    reraise=True,
 )
 async def gemini_complete_if_cache(
     model: str,
@@ -414,6 +419,10 @@ async def gemini_complete_if_cache(
     Raises:
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
     """
     key = _ensure_api_key(api_key)
     # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
@@ -760,6 +769,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_genai_errors.ServerError)
         | retry_if_exception(_is_retryable_gemini_client_error)
     ),
+    # Same as gemini_complete_if_cache: raise the last attempt's exception.
+    reraise=True,
 )
 async def gemini_embed(
     texts: list[str],
@@ -800,6 +811,9 @@ async def gemini_embed(
             RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, CODE_RETRIEVAL_QUERY,
             QUESTION_ANSWERING, FACT_VERIFICATION.
         timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
+            None (the default) uses LightRAG's ``default_embedding_timeout``
+            inside a LightRAG embedding call; 0 or a negative value, or None
+            outside one, keeps the SDK default.
         token_tracker: Optional token usage tracker for monitoring API usage.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
@@ -812,6 +826,10 @@ async def gemini_embed(
     Raises:
         ValueError: If API key is not provided or configured.
         RuntimeError: If the response from Gemini is invalid or empty.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
 
     Note:
         - For dimension 3072: Embeddings are already normalized by the API
@@ -824,7 +842,9 @@ async def gemini_embed(
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
 
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset keeps the SDK default (no http_options timeout).
+    timeout = embedding_timeout(timeout)
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 

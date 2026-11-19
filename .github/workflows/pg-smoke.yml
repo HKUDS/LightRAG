@@ -7,6 +7,7 @@ on:
     paths:
       - 'lightrag/kg/pgtable_impl.py'
       - 'lightrag/kg/postgres_impl.py'
+      - 'lightrag/storage_migrations.py'
       - 'lightrag/kg/__init__.py'
       - 'lightrag/kg/shared_storage.py'
       - 'lightrag/kg/pipeline_ingress.py'
@@ -34,6 +35,7 @@ on:
     paths:
       - 'lightrag/kg/pgtable_impl.py'
       - 'lightrag/kg/postgres_impl.py'
+      - 'lightrag/storage_migrations.py'
       - 'lightrag/kg/__init__.py'
       - 'lightrag/kg/shared_storage.py'
       - 'lightrag/kg/pipeline_ingress.py'
@@ -110,4 +112,6 @@ jobs:
 
       - name: Run pg_smoke tests
         run: |
-          pytest tests/kg/pgtable_impl/test_pgtable_smoke.py -m pg_smoke --run-integration -v --tb=short
+          pytest tests/kg/pgtable_impl/test_pgtable_smoke.py \
+            tests/kg/postgres_impl/test_postgres_anchor_migration_smoke.py \
+            -m pg_smoke --run-integration -v --tb=short

@@ -40,7 +40,7 @@ async def _call_count_for(exc: BaseException) -> tuple[int, BaseException]:
     """Run jina_embed with fetch_data always raising ``exc``."""
     call_count = 0
 
-    async def fake_fetch_data(url, headers, data):
+    async def fake_fetch_data(url, headers, data, timeout=None):
         nonlocal call_count
         call_count += 1
         raise exc
