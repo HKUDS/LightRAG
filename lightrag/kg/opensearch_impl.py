@@ -4642,6 +4642,53 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error batch-getting nodes: {e}")
             raise
 
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Batch-fetch edges with one mget of their canonical ``_id``.
+
+        Same contract as :meth:`get_edge` for every pair: keyed by the pair as
+        requested, a direction-independent lookup, and an absent edge left out.
+        A per-item error or a short/malformed ``docs`` array raises (see
+        ``_interpret_mget_item``) rather than reading as absent.
+        """
+        if not pairs or not self._indices_ready:
+            return {}
+        edge_ids = list(
+            dict.fromkeys(_canonical_edge_id(p["src"], p["tgt"]) for p in pairs)
+        )
+        try:
+            response = await self.client.mget(
+                index=self._edges_index, body={"ids": edge_ids}
+            )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(edge_ids):
+                raise RuntimeError(
+                    f"OpenSearch mget for {len(edge_ids)} edge ids returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items, "
+                    f"expected exactly {len(edge_ids)}"
+                )
+            found: dict[str, dict] = {}
+            for edge_id, item in zip(edge_ids, docs):
+                interpreted = _interpret_mget_item(item, edge_id)
+                if interpreted is not None:
+                    found[edge_id] = {
+                        **interpreted["_source"],
+                        "_id": interpreted["_id"],
+                    }
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting edges: {e}")
+            raise
+        result: dict[tuple[str, str], dict] = {}
+        for pair in pairs:
+            edge = found.get(_canonical_edge_id(pair["src"], pair["tgt"]))
+            if edge is not None:
+                result[(pair["src"], pair["tgt"])] = dict(edge)
+        return result
+
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Batch-fetch edge counts for multiple nodes using aggregations."""
         if not node_ids:

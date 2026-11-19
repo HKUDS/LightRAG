@@ -574,6 +574,82 @@ async def test_graph_get_nodes_batch_raises_on_transient_error(global_config):
         await storage.get_nodes_batch(["Alice", "Bob"])
 
 
+def _edge_doc(edge_id, source=None, error=None):
+    if error is not None:
+        return {"_id": edge_id, "error": error}
+    if source is None:
+        return {"_id": edge_id, "found": False}
+    return {"_id": edge_id, "found": True, "_source": source}
+
+
+async def test_graph_get_edges_batch_is_one_mget_keyed_as_requested(global_config):
+    """One mget of the canonical ids for the whole batch; each found edge is
+    keyed by the pair exactly as requested (either direction), and a
+    confirmed-absent edge is left out."""
+    from lightrag.kg.opensearch_impl import _canonical_edge_id
+
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    ab = _canonical_edge_id("A", "B")
+    ac = _canonical_edge_id("A", "C")
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                _edge_doc(ab, {"source_id": "chunk-1", "weight": 1.0}),
+                _edge_doc(ac),
+            ]
+        }
+    )
+
+    result = await storage.get_edges_batch(
+        [{"src": "B", "tgt": "A"}, {"src": "A", "tgt": "C"}, {"src": "A", "tgt": "B"}]
+    )
+
+    assert client.mget.await_count == 1
+    assert client.mget.await_args.kwargs["body"] == {"ids": [ab, ac]}
+    assert sorted(result) == [("A", "B"), ("B", "A")]
+    assert result[("B", "A")] == {"source_id": "chunk-1", "weight": 1.0, "_id": ab}
+    # Each pair gets its own dict: a caller mutating one must not change the other.
+    assert result[("A", "B")] is not result[("B", "A")]
+
+
+async def test_graph_get_edges_batch_raises_on_item_error(global_config):
+    from lightrag.kg.opensearch_impl import _canonical_edge_id
+
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    ab = _canonical_edge_id("A", "B")
+    client.mget = AsyncMock(
+        return_value={"docs": [_edge_doc(ab, error={"type": "shard_failure"})]}
+    )
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.get_edges_batch([{"src": "A", "tgt": "B"}])
+
+
+async def test_graph_get_edges_batch_raises_on_short_response(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(return_value={"docs": []})
+    with pytest.raises(RuntimeError, match="expected exactly 1"):
+        await storage.get_edges_batch([{"src": "A", "tgt": "B"}])
+
+
+async def test_graph_get_edges_batch_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_edges_batch([{"src": "A", "tgt": "B"}])
+
+
+async def test_graph_get_edges_batch_empty_input_reads_nothing(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(side_effect=AssertionError("must not be called"))
+    assert await storage.get_edges_batch([]) == {}
+    assert client.mget.await_count == 0
+
+
 async def test_graph_has_nodes_batch_raises_on_transient_error(global_config):
     client = _make_graph_client()
     storage = await _make_graph(global_config, client)
