@@ -540,7 +540,7 @@ def _child_entry(
         connection.close()
 
 
-def _measure_in_child(kind: str, total: int, working_dir: Path) -> dict[str, int]:
+def _start_child(kind: str, total: int, working_dir: Path):
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
     process = context.Process(
@@ -550,10 +550,12 @@ def _measure_in_child(kind: str, total: int, working_dir: Path) -> dict[str, int
     )
     process.start()
     child.close()
+    return process, parent
+
+
+def _collect_child(kind: str, total: int, process, parent) -> dict[str, int]:
     try:
         if not parent.poll(180):
-            process.terminate()
-            process.join(timeout=10)
             pytest.fail(f"{kind} RSS child timed out at backlog {total}")
         status, payload = parent.recv()
     finally:
@@ -565,6 +567,34 @@ def _measure_in_child(kind: str, total: int, working_dir: Path) -> dict[str, int
     )
     assert status == "ok", payload
     return payload
+
+
+def _measure_small_and_large(
+    kind: str, working_dir: Path
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Measure the 1x and 10x backlogs in two concurrently running children.
+
+    Each child samples only its own RSS, so running them side by side changes
+    no measurement, while the wall time drops to the slower child's. CPU
+    contention can only thin out the 1 ms sampling; the backlog-proportional
+    retention this test exists to catch persists until the child's final
+    sample, which ``_PeakRSS.stop`` always takes.
+    """
+    sizes = (1_000, 10_000)
+    children = [
+        _start_child(kind, total, working_dir / f"{kind}-{total}") for total in sizes
+    ]
+    try:
+        small, large = (
+            _collect_child(kind, total, process, parent)
+            for total, (process, parent) in zip(sizes, children)
+        )
+    finally:
+        for process, _ in children:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+    return small, large
 
 
 def _assert_rss_does_not_track_backlog(
@@ -585,8 +615,7 @@ def _assert_rss_does_not_track_backlog(
 def test_full_worker_feeder_pipeline_rss_does_not_track_backlog(tmp_path):
     """The production supervisor + feeder + three worker layers stay bounded."""
 
-    small = _measure_in_child("pipeline", 1_000, tmp_path / "pipeline-small")
-    large = _measure_in_child("pipeline", 10_000, tmp_path / "pipeline-large")
+    small, large = _measure_small_and_large("pipeline", tmp_path)
 
     assert large["completed"] == 10 * small["completed"]
     assert large["pages"] > 10
@@ -596,8 +625,7 @@ def test_full_worker_feeder_pipeline_rss_does_not_track_backlog(tmp_path):
 def test_real_directory_scan_rss_does_not_track_file_count(tmp_path):
     """Production discovery/classification/enqueue over a real directory is flat."""
 
-    small = _measure_in_child("scan", 1_000, tmp_path / "scan-small")
-    large = _measure_in_child("scan", 10_000, tmp_path / "scan-large")
+    small, large = _measure_small_and_large("scan", tmp_path)
 
     assert large["enqueued"] == 10 * small["enqueued"]
     _assert_rss_does_not_track_backlog("real-directory scan", small, large)

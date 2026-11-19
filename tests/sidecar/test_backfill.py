@@ -6,8 +6,9 @@ no real chunker, tokenizer, or embedding is needed.
 
 Backfill is span-first: each F/R/V chunk carries a private ``_source_span`` (char
 offsets into the reconstructed merged text) and is mapped to the block(s) that span
-overlaps. A chunk without a usable span FAILs the document, except the inherently
-unlocatable replacement-char case, which degrades to no-sidecar.
+overlaps. A chunk without a usable span FAILs the document, except a span-less
+replacement-char chunk, which degrades to no-sidecar. A span located with boundary
+U+FFFD stripped is accepted against a body that still carries them at its edges.
 """
 
 from __future__ import annotations
@@ -306,8 +307,8 @@ def test_empty_chunk_skipped_then_following_matches(tmp_path: Path) -> None:
 @pytest.mark.offline
 def test_replacement_char_chunk_skipped_not_failed(tmp_path: Path) -> None:
     # A multi-byte UTF-8 char split at a token-window boundary decodes to U+FFFD in
-    # both the chunk content and its span probe, so the chunk is unlocatable by any
-    # means. It must be SKIPPED (no sidecar), not raise and FAIL the whole document;
+    # the chunk content; when the chunker could not locate the window it carries no
+    # span. It must be SKIPPED (no sidecar), not raise and FAIL the whole document;
     # the following clean chunk (with a valid span) still maps correctly.
     b1, b2 = "Status update 🎉 done.", "Clean tail block."
     blocks_path = _write_blocks(tmp_path, [("b1", b1), ("b2", b2)])
@@ -323,3 +324,39 @@ def test_replacement_char_chunk_skipped_not_failed(tmp_path: Path) -> None:
 
     assert "sidecar" not in chunks[0]  # provenance degraded for the corrupt chunk
     assert _refs(chunks[1]) == ["b2"]  # clean chunk still resolves
+
+
+@pytest.mark.offline
+def test_boundary_replacement_span_attached_with_literal_interior_fffd(
+    tmp_path: Path,
+) -> None:
+    # The chunker located this window with its boundary U+FFFD stripped. The
+    # source itself contains a literal U+FFFD; only the edge one is an artifact,
+    # so stripping the edges (not removing every U+FFFD) must reconcile them.
+    lead = "Status 🎉 "
+    b1 = lead + "garbled \ufffd text."
+    blocks_path = _write_blocks(tmp_path, [("b1", b1)])
+    start = len(lead)
+    # The window began inside the emoji: its tail bytes decoded to U+FFFD.
+    body = "\ufffd " + b1[start:]
+    chunks = [_span_chunk(body, 0, start, len(b1))]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1"]
+
+
+@pytest.mark.offline
+def test_interior_replacement_absent_from_source_is_not_accepted(
+    tmp_path: Path,
+) -> None:
+    # An interior U+FFFD is not a boundary artifact. A span whose text matches
+    # the body only after deleting it does not prove the chunk sits there; the
+    # chunk degrades through the span-less replacement path instead.
+    b1 = "abcd efgh"
+    blocks_path = _write_blocks(tmp_path, [("b1", b1)])
+    chunks = [_span_chunk("abcd \ufffdefgh", 0, 0, len(b1))]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert "sidecar" not in chunks[0]

@@ -1,6 +1,6 @@
 # 第三方分块器
 
-已安装的 Python 包可以注册六参数分块回调，无需修改 LightRAG。Server 启动时发现注册信息并注入选中的一个回调。本功能对应 [#3868](https://github.com/HKUDS/LightRAG/issues/3868)，不包含 `C(name=...)`、上下文契约、身份强制校验、多活动分块器或 F/R/V/P 的 transform hook。
+已安装的 Python 包可以注册六参数分块回调，无需修改 LightRAG。Server 启动时发现注册信息并注入选中的一个回调。本功能对应 [#3868](https://github.com/HKUDS/LightRAG/issues/3868)，并支持显式声明的上下文回调契约；不包含 `C(name=...)`、身份强制校验、多活动分块器或 F/R/V/P 的 transform hook。
 
 ## 发布轻量注册入口
 
@@ -24,6 +24,7 @@ def register():
         version="1",
         description="Organization-specific document splitting",
         executor_safe=False,
+        accepts_context=False,
     ))
 ```
 
@@ -46,7 +47,33 @@ def chunk(tokenizer, content, split_by_character, split_by_character_only,
 
 CPU 密集、同步且线程安全的实现可以声明 `executor_safe=True`，复用 LightRAG 有界分块线程池。该实现不得依赖当前事件循环或返回 awaitable。异步函数/异步可调用对象声明该选项会在启动时被拒绝。依赖事件循环的实现保持默认，或在异步回调中自行 offload；这个声明是作者承诺，不是线程安全证明或隔离机制。
 
-该线程池是与内置策略共用的**单 worker** 池，因此这个开关换回来的是事件循环，不是并行度：慢插件会排在其它文档分块之前，而不再阻塞循环。CPU 密集的实现仍应打开它——循环卡住会导致 HTTP 停止响应——但不要把它当作扩容。
+该线程池是与内置策略共用的**单 worker** 池，因此这个开关换回来的是事件循环，不是并行度：慢插件会排在其它文档分块之前，而不再阻塞循环。CPU 密集的实现仍应打开它，但不要把它当作额外并行容量。
+
+## 接收文档上下文
+
+旧回调始终接收六个位置参数。需要文档元数据时必须显式 opt-in；LightRAG
+不会在捕获 `TypeError` 后重试来猜测回调签名。
+
+构造 `LightRAG` 时传入的回调可使用标记装饰器：
+
+```python
+from lightrag.chunker import ChunkingContext, accepts_chunking_context
+
+@accepts_chunking_context
+def chunk(tokenizer, content, split_by_character, split_by_character_only,
+          chunk_overlap_token_size, chunk_token_size, *, context: ChunkingContext):
+    # context.doc_id、file_path、sidecar_location、parse_format、
+    # parse_engine 和 process_options 描述当前文档。
+    ...
+```
+
+`sidecar_location` 是解析 sidecar 目录的持久 URI。需要本地路径时，请使用
+`lightrag.utils_pipeline.resolve_sidecar_uri` 解析，不要直接把任意 URI scheme
+转换为 `pathlib.Path`。
+
+entry-point 插件则在 `ChunkerSpec` 中设置 `accepts_context=True`，并接收同
+样的 keyword-only `context` 参数。六个旧参数和上下文只会传入一次；上下文
+在回调期间不可变。
 
 ## Server 选择
 

@@ -38,6 +38,7 @@ from lightrag.api.utils_api import (
     internal_server_error,
 )
 from lightrag.api.admission_middleware import AdmissionMiddleware
+from lightrag.api.startup_errors import StartupErrorMiddleware
 from lightrag.api.body_limit_middleware import BodyLimitMiddleware, resolve_body_limits
 from .config import (
     global_args,
@@ -80,7 +81,7 @@ from lightrag.api.ui_customization import (
     resolve_ui_customization_snapshot,
 )
 
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.utils import logger, set_verbose_debug, warn_about_workspace_overrides
 from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
@@ -543,18 +544,41 @@ def _build_docling_status() -> dict[str, Any]:
     endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
     if not endpoint:
         return {"endpoint": "", "options": {}}
-    return {
-        "endpoint": endpoint,
-        "options": {
-            "do_ocr": get_env_value("DOCLING_DO_OCR", True, bool),
-            "force_ocr": get_env_value("DOCLING_FORCE_OCR", True, bool),
-            "ocr_engine": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
-            "ocr_lang": os.getenv("DOCLING_OCR_LANG", "").strip(),
-            "do_formula_enrichment": get_env_value(
-                "DOCLING_DO_FORMULA_ENRICHMENT", False, bool
-            ),
-        },
-    }
+    from lightrag.parser.external.docling.cache import (
+        current_vlm_preset,
+        resolve_docling_pipeline,
+    )
+
+    try:
+        pipeline = resolve_docling_pipeline()
+    except ValueError as exc:
+        return {"endpoint": endpoint, "options": {"pipeline_error": str(exc)}}
+
+    options: dict[str, Any] = {"pipeline": pipeline}
+    if pipeline == "vlm":
+        # The VLM pipeline ignores the standard OCR options, so don't report
+        # them as if they were in effect.
+        preset = current_vlm_preset()
+        options["vlm_pipeline_preset"] = preset
+        if not preset:
+            # The client refuses to parse in this state; surface it here rather
+            # than reporting a clean pipeline with an empty preset.
+            options["pipeline_error"] = (
+                "DOCLING_PIPELINE=vlm requires DOCLING_VLM_PRESET"
+            )
+    else:
+        options.update(
+            {
+                "do_ocr": get_env_value("DOCLING_DO_OCR", True, bool),
+                "force_ocr": get_env_value("DOCLING_FORCE_OCR", True, bool),
+                "ocr_engine": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
+                "ocr_lang": os.getenv("DOCLING_OCR_LANG", "").strip(),
+                "do_formula_enrichment": get_env_value(
+                    "DOCLING_DO_FORMULA_ENRICHMENT", False, bool
+                ),
+            }
+        )
+    return {"endpoint": endpoint, "options": options}
 
 
 class LLMConfigCache:
@@ -570,6 +594,7 @@ class LLMConfigCache:
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
         self.bedrock_llm_options = None
+        self.openai_responses_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -577,6 +602,18 @@ class LLMConfigCache:
 
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
             logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
+
+        # Responses keeps its own namespace so Chat Completions options
+        # (max_completion_tokens, flat reasoning_effort) cannot leak into it.
+        if args.llm_binding == "openai_responses":
+            from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
+
+            self.openai_responses_llm_options = OpenAIResponsesLLMOptions.options_dict(
+                args
+            )
+            logger.info(
+                f"OpenAI Responses LLM Options: {self.openai_responses_llm_options}"
+            )
 
         if args.llm_binding == "gemini":
             from lightrag.llm.binding_options import GeminiLLMOptions
@@ -645,6 +682,7 @@ _PROVIDER_LOG_LABELS = {
     "lollms": "Lollms",
     "ollama": "Ollama",
     "openai": "OpenAI",
+    "openai_responses": "OpenAI Responses",
 }
 
 
@@ -894,6 +932,7 @@ def create_optimized_embedding_function(
                 # Pass model only if provided, let function use its default otherwise
                 kwargs = {
                     "texts": texts,
+                    "embedding_dim": embedding_dim,
                     "aws_region": getattr(args, "aws_region", None),
                     "aws_access_key_id": getattr(args, "aws_access_key_id", None),
                     "aws_secret_access_key": getattr(
@@ -1434,6 +1473,40 @@ async def validation_exception_handler(
 
 
 def create_app(args):
+    # A server with no configured embedding model cannot protect its vectors.
+    # The marker every vector backend records is what detects a swap to a
+    # DIFFERENT model of the same dimension -- the one change no dimension
+    # check can see -- and with no name to record, every container this server
+    # provisions is unprotected for life.
+    #
+    # Refusing at startup rather than degrading is the same call the rest of
+    # this feature makes: LightRAG supports neither multi-process configuration
+    # propagation nor rolling updates, so an embedding-model change means
+    # stopping the server and rebuilding the indexes with lightrag-rebuild-vdb.
+    # A deployment that cannot tell which model wrote its vectors has no safe
+    # way through that, and finding out at query time means wrong answers, not
+    # an error. Only the SERVER refuses: the library stays usable without a
+    # model name, and lightrag-rebuild-vdb in particular must keep running,
+    # since it is the way out.
+    #
+    # An args object that never carried the field is refused the same way. The
+    # ``default_ui`` tolerance below is for a cosmetic default; a safety guard
+    # with an exemption for "the attribute was never set" is a guard with a
+    # bypass, and the server's own parser always sets this one.
+    if not (getattr(args, "embedding_model", None) or "").strip():
+        raise SystemExit(
+            "EMBEDDING_MODEL is not set. The server refuses to start without it: "
+            "the embedding model's name is what every vector storage records "
+            "alongside its vectors, and it is the only thing that detects a later "
+            "switch to a different model of the same dimension -- which otherwise "
+            "returns confidently wrong results with no error anywhere. Set "
+            "EMBEDDING_MODEL to the model this deployment embeds with (and "
+            "EMBEDDING_DIM when it is not the binding's default). Changing it "
+            "later requires stopping the server and running lightrag-rebuild-vdb; "
+            "rolling an embedding-model change through a live deployment is not "
+            "supported."
+        )
+
     # Check frontend build first and get status. The two entries are checked
     # independently: an old build directory may carry only index.html, which
     # degrades /workspace alone (see check_workspace_frontend_build).
@@ -1561,6 +1634,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "openai_responses",
         "azure_openai",
         "bedrock",
         "gemini",
@@ -1655,7 +1729,7 @@ def create_app(args):
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
-                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                logger.debug("Uvicorn Mode: finalizing shared storage...")
                 finalize_share_data()
             else:
                 # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
@@ -1703,7 +1777,6 @@ def create_app(args):
         "openapi_url": "/openapi.json" if api_docs_enabled else None,
         "docs_url": None,  # custom endpoint for offline Swagger support
         "redoc_url": "/redoc" if api_docs_enabled else None,
-        "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
 
@@ -1715,6 +1788,19 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
+    # Assigned after construction: FastAPI deprecated the ``root_path``
+    # constructor argument but still applies ``app.root_path`` to every
+    # request scope in ``__call__``, which the prefix routing relies on.
+    # Moving the prefix to the ASGI server is not equivalent here; see
+    # docs/MultiSiteDeployment.md.
+    if api_prefix:
+        app.root_path = api_prefix
+
+    app.add_middleware(
+        StartupErrorMiddleware,
+        workspace=args.workspace,
+        vector_storage=args.vector_storage,
+    )
 
     # Custom validation error handler, shaped per endpoint (see the
     # module-level function for why it is not a closure).
@@ -1931,6 +2017,40 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
+    def create_optimized_openai_responses_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized OpenAI Responses LLM function with pre-processed configuration"""
+
+        async def optimized_openai_responses_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            **kwargs,
+        ):
+            from lightrag.llm.openai_responses import (
+                openai_responses_complete_if_cache,
+            )
+
+            if history_messages is None:
+                history_messages = []
+
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_responses_llm_options:
+                kwargs.update(config_cache.openai_responses_llm_options)
+
+            return await openai_responses_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=args.llm_binding_api_key,
+                **kwargs,
+            )
+
+        return optimized_openai_responses_model_complete
+
     def create_optimized_gemini_llm_func(
         config_cache: LLMConfigCache, args, llm_timeout: int
     ):
@@ -1991,6 +2111,13 @@ def create_app(args):
                 )
             elif binding == "gemini":
                 return create_optimized_gemini_llm_func(config_cache, args, llm_timeout)
+            elif binding == "openai_responses":
+                # Explicit branch: the bare `else` below routes to Chat
+                # Completions, so omitting this would silently send Responses
+                # traffic to /v1/chat/completions with no error.
+                return create_optimized_openai_responses_llm_func(
+                    config_cache, args, llm_timeout
+                )
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
@@ -2031,11 +2158,13 @@ def create_app(args):
             role_apikey = None
         else:
             role_apikey = explicit_role_apikey or args.llm_binding_api_key
-        role_timeout = (
-            override_meta.get("timeout")
-            or getattr(args, f"{attr}_llm_timeout", None)
-            or llm_timeout
-        )
+        # ``is None`` rather than ``or``: an explicit 0 means "no timeout" and
+        # must not fall through to the base LLM_TIMEOUT.
+        role_timeout = override_meta.get("timeout")
+        if role_timeout is None:
+            role_timeout = getattr(args, f"{attr}_llm_timeout", None)
+        if role_timeout is None:
+            role_timeout = llm_timeout
         role_max_async = override_meta.get("max_async")
         if role_max_async is None:
             role_max_async = getattr(args, f"{attr}_llm_max_async", None)
@@ -2047,6 +2176,12 @@ def create_app(args):
                 from lightrag.llm.binding_options import OpenAILLMOptions
 
                 role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "openai_responses":
+                from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
+
+                role_provider_options = OpenAIResponsesLLMOptions.options_dict_for_role(
                     args, role, is_cross_provider
                 )
             elif role_binding == "gemini":
@@ -2242,6 +2377,33 @@ def create_app(args):
                     )
 
                 return role_azure_openai_complete
+            if role_binding == "openai_responses":
+                from lightrag.llm.openai_responses import (
+                    openai_responses_complete_if_cache,
+                )
+
+                async def role_openai_responses_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ):
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options:
+                        kwargs.update(role_provider_options)
+                    return await openai_responses_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_openai_responses_complete
             if role_binding == "gemini":
                 from lightrag.llm.gemini import gemini_complete_if_cache
 
@@ -2500,6 +2662,7 @@ def create_app(args):
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
+            config_storage=args.config_storage,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -2976,6 +3139,15 @@ def create_app(args):
                         "doc_status_storage": args.doc_status_storage,
                         "graph_storage": args.graph_storage,
                         "vector_storage": args.vector_storage,
+                        # The RESOLVED selection, not the raw setting: unset
+                        # follows kv_storage, and an operator checking where
+                        # the baselines live wants the answer, not the input.
+                        "config_storage": getattr(rag, "config_storage", None),
+                        # Derived, never configured: the directory of this
+                        # workspace's JSON configuration snapshot ("" for a
+                        # database backend). Not named after the removed
+                        # LIGHTRAG_CONFIG_DIR setting.
+                        "config_snapshot_dir": getattr(rag, "config_dir", None),
                         "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                         "enable_llm_cache": args.enable_llm_cache,
                         "vlm_process_enable": args.vlm_process_enable,
@@ -3286,7 +3458,7 @@ def configure_logging():
     log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
@@ -3298,6 +3470,10 @@ def configure_logging():
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {
+                    # Console only: highlights startup refusals on a terminal.
+                    # The file handler keeps "detailed", so no escape reaches
+                    # the log file.
+                    "class": "lightrag.api.startup_errors.ConsoleFormatter",
                     "format": "%(levelname)s: %(message)s",
                 },
                 "detailed": {
@@ -3405,6 +3581,7 @@ def main():
 
     # Configure logging before parsing args
     configure_logging()
+    warn_about_workspace_overrides()
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
 

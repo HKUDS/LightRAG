@@ -33,6 +33,9 @@ import pytest
 from fastapi import APIRouter, HTTPException
 from fastapi.testclient import TestClient
 
+
+pytestmark = pytest.mark.offline
+
 # A stand-in exception message stuffed with the kind of internal detail that
 # must never reach a client (mirrors a real asyncpg connection failure).
 _SECRET = (
@@ -66,6 +69,10 @@ def _init_config(monkeypatch):
     monkeypatch.setenv("WHITELIST_PATHS", "/_sanitization_probe/*")
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    # Part of the minimal viable server config since create_app began
+    # refusing to start without a named embedding model. The ollama
+    # binding's own default, so no EMBEDDING_DIM is implied.
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
 
     import lightrag.api.config as config
 

@@ -250,7 +250,9 @@ class TestMilvusIndexCreation:
         assert client.create_collection.call_args.kwargs["collection_name"] == (
             storage.final_namespace
         )
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_model_suffix_collection_naming_with_workspace(self):
         storage = MilvusVectorDBStorage(
@@ -321,7 +323,9 @@ class TestMilvusIndexCreation:
             storage.final_namespace
         )
         client.query_iterator.assert_not_called()
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_existing_suffixed_collection_is_validated_and_used(self):
         storage = _make_model_storage()
@@ -340,7 +344,9 @@ class TestMilvusIndexCreation:
 
         migrate.assert_not_called()
         client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_legacy_old_meta_schema_migrates_to_suffixed_collection(self):
         storage = _make_model_storage()
@@ -373,7 +379,9 @@ class TestMilvusIndexCreation:
         client.query_iterator.assert_not_called()
         client.insert.assert_not_called()
         client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_legacy_new_schema_migrates_to_suffixed_collection(self):
         storage = _make_model_storage(namespace="chunks")
@@ -407,7 +415,9 @@ class TestMilvusIndexCreation:
         client.insert.assert_not_called()
         client.rename_collection.assert_not_called()
         client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_legacy_same_dimension_migrates_to_suffixed_collection(self):
         storage = _make_model_storage()
@@ -437,7 +447,9 @@ class TestMilvusIndexCreation:
         client.describe_collection.assert_called_once_with(storage.legacy_namespace)
         client.query_iterator.assert_not_called()
         client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_no_model_suffix_old_meta_schema_migrates_in_place(self):
         storage = _make_storage(namespace="entities")
@@ -454,7 +466,9 @@ class TestMilvusIndexCreation:
 
         migrate.assert_called_once_with()
         client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(storage.final_namespace)
+        client.load_collection.assert_called_with(
+            storage.final_namespace, timeout=storage._load_timeout
+        )
 
     def test_legacy_dimension_mismatch_creates_suffixed_collection_without_migration(
         self,

@@ -39,18 +39,26 @@ async def llm_model_func(
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model_name="gemini-2.0-flash-exp",
+        model_name="gemini-flash-latest",
         **kwargs,
     )
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=768, max_token_size=2048, model_name="models/text-embedding-004"
+    embedding_dim=768,
+    send_dimensions=True,
+    max_token_size=2048,
+    model_name="gemini-embedding-001",
 )
-async def embedding_func(texts: list[str]) -> np.ndarray:
+async def embedding_func(
+    texts: list[str], embedding_dim: int | None = None
+) -> np.ndarray:
     """Wrapper for Gemini embedding model."""
     return await gemini_embed.func(
-        texts, api_key=os.getenv("GEMINI_API_KEY"), model="models/text-embedding-004"
+        texts,
+        api_key=os.getenv("GEMINI_API_KEY"),
+        model="gemini-embedding-001",
+        embedding_dim=embedding_dim,
     )
 
 
@@ -66,7 +74,7 @@ async def initialize_rag(
 
     rag = LightRAG(
         workspace=workspace,
-        llm_model_name="gemini-2.0-flash",
+        llm_model_name="gemini-flash-latest",
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
         embedding_func_max_async=4,

@@ -18,6 +18,7 @@ import pytest
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import DocStatus
 from lightrag.chunker import chunking_by_token_size
+from lightrag.chunker import ChunkingContext, accepts_chunking_context
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
@@ -73,6 +74,69 @@ def test_registered_chunker_records_identity_and_preserves_six_args(
         )
 
     asyncio.run(run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("options", ["C!", "!"])
+def test_constructor_callback_can_receive_document_context(tmp_path, options):
+    seen = {}
+
+    @accepts_chunking_context
+    def callback(tokenizer, content, *args, context):
+        seen["context"] = context
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def run():
+        rag = _new_rag(tmp_path, chunking_func=callback)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="context-aware", process_options=options)
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+
+    asyncio.run(run())
+    assert seen["context"] == ChunkingContext(
+        doc_id="context-aware",
+        file_path="context-aware.txt",
+        sidecar_location=None,
+        parse_format="raw",
+        parse_engine=None,
+        process_options=options,
+    )
+
+
+@pytest.mark.offline
+def test_constructor_callback_receives_durable_nonlocal_sidecar_uri(tmp_path):
+    seen = {}
+
+    @accepts_chunking_context
+    def callback(tokenizer, content, *args, context):
+        seen["context"] = context
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def run():
+        rag = _new_rag(tmp_path, chunking_func=callback)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "body text",
+                ids=["sidecar-context"],
+                file_paths=["sidecar-context.txt"],
+                track_id="track-sidecar-context",
+                process_options="C!",
+            )
+            record = await rag.full_docs.get_by_id("sidecar-context")
+            assert record is not None
+            record["sidecar_location"] = "s3://bucket/sidecar-context.parsed/"
+            await rag.full_docs.upsert({"sidecar-context": record})
+            await rag.full_docs.index_done_callback()
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(run())
+    assert seen["context"].sidecar_location == "s3://bucket/sidecar-context.parsed/"
 
 
 @pytest.mark.offline
