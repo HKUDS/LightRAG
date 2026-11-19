@@ -77,7 +77,8 @@ write and delete each other's data without an error.
 
 | backend | workspaces that share a partition | detected |
 | --- | --- | --- |
-| `Neo4JStorage`, `MemgraphStorage` | the empty workspace and `base` (both become the graph label `base`). `Neo4JStorage` also derives its full-text index name by stripping leading and trailing `_` and prefixing `ws_` to a name that starts with a digit, so `foo` / `_foo_`, `_` / `base` and `1abc` / `ws_1abc` share an index, and label search in the second of each pair silently finds nothing | no |
+| `Neo4JStorage`, `MemgraphStorage` | the empty workspace and `base` (both become the graph label `base`) | no |
+| `Neo4JStorage` full-text index | `_get_fulltext_index_name` derives the index name by stripping leading and trailing `_` from the workspace label and prefixing `ws_` to a name that starts with a digit, so `foo` / `_foo_`, `_` / `base` and `1abc` / `ws_1abc` resolve to the same index name | **refused** at startup when the existing index's `labelsOrTypes` names a different workspace (`WorkspaceIndexCollisionError`); an index predating this check that already matches (same name, same label) is adopted silently, same as any other same-workspace restart |
 | `QdrantVectorDBStorage` | the empty workspace and `_` (the payload value it stores for the empty one) | no |
 | `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`, `PGTableGraphStorage` | the empty workspace and `default` (the column value stored for the empty one) | no |
 | `PGGraphStorage` | the empty workspace and `default` **in any letter case** (so `Default` shares only the graph with the empty workspace, and its other PostgreSQL rows stay apart); two workspaces whose `<workspace>_chunk_entity_relation` agree in the first 63 bytes, which PostgreSQL keeps of a graph name (any two longer than 41 bytes that share their first 41); and a mixed-case workspace with its lowercase twin, on the raw SQL paths that name the graph unquoted | no |

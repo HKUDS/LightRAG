@@ -1,4 +1,3 @@
-import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -62,6 +61,22 @@ READ_RETRY = retry(
     retry=retry_if_exception_type(READ_RETRY_EXCEPTIONS),
     reraise=True,
 )
+
+
+class WorkspaceIndexCollisionError(ValueError):
+    """A full-text index name is already claimed by a different workspace.
+
+    ``_get_fulltext_index_name`` derives the index name from a lossy
+    normalization of the workspace label (every run of non-alphanumeric
+    characters folds to one underscore), so two distinct workspace labels
+    -- e.g. "foo-bar" and "foo_bar" -- can resolve to the same index name.
+    Renaming the index to disambiguate is deliberately not done here: it
+    would force a migration on every existing deployment, including the
+    overwhelming majority that never collide. Raised from index
+    initialization instead, so a colliding deployment fails to start rather
+    than silently attaching to -- and, on recreation, dropping -- another
+    workspace's index.
+    """
 
 
 # Deliberately NOT ``@final``, unlike every other storage class in this package:
@@ -141,25 +156,13 @@ class Neo4JStorage(BaseGraphStorage):
         return self._get_raw_workspace_label().replace("`", "``")
 
     def _normalize_index_suffix(self, workspace_label: str) -> str:
-        """Normalize workspace label for safe, collision-free use in index names.
-
-        Collapsing every run of non-alphanumeric characters to a single
-        underscore is lossy by itself: "foo-bar", "foo_bar" and "foo bar"
-        would all normalize to the same string, so two different workspaces
-        would resolve to the same full-text index name. A short hash of the
-        original label is appended so distinct labels never collide; a
-        workspace that lost that disambiguation would skip creating its own
-        index (an existing index of that name already looks ONLINE) and
-        reuse one scoped to a different workspace's label, which silently
-        returns no matches for every search_labels call.
-        """
+        """Normalize workspace label for safe use in index names."""
         normalized = re.sub(r"[^A-Za-z0-9_]+", "_", workspace_label).strip("_")
         if not normalized:
             normalized = "base"
         if not re.match(r"[A-Za-z_]", normalized[0]):
             normalized = f"ws_{normalized}"
-        digest = hashlib.sha1(workspace_label.encode("utf-8")).hexdigest()[:8]
-        return f"{normalized}_{digest}"
+        return normalized
 
     def _get_fulltext_index_name(self, workspace_label: str) -> str:
         """Return a full-text index name derived from the normalized workspace label."""
@@ -361,7 +364,13 @@ class Neo4JStorage(BaseGraphStorage):
     async def _create_fulltext_index(
         self, driver: AsyncDriver, database: str, workspace_label: str
     ):
-        """Create a full-text index on the entity_id property with the CJK analyzer."""
+        """Create a full-text index on the entity_id property with the CJK analyzer.
+
+        Raises:
+            WorkspaceIndexCollisionError: an index of this name already exists
+                and is scoped to a different workspace's label. See the
+                Neo4JStorage row in docs/design/ServerInstanceContract.md.
+        """
         index_name = self._get_fulltext_index_name(workspace_label)
         legacy_index_name = "entity_id_fulltext_idx"
         try:
@@ -399,6 +408,29 @@ class Neo4JStorage(BaseGraphStorage):
                     except Exception as drop_error:
                         logger.warning(
                             f"[{self.workspace}] Failed to drop legacy index: {str(drop_error)}"
+                        )
+
+                # An index of this name may belong to a different workspace:
+                # _get_fulltext_index_name's normalization is lossy, so two
+                # distinct workspace labels can resolve to the same index
+                # name. Compare the index's actual labels against this
+                # workspace's BEFORE deciding to skip (ONLINE) or recreate
+                # (not ONLINE) it below -- either path would otherwise reuse
+                # or drop an index that holds another workspace's data.
+                if existing_index is not None:
+                    raw_label = self._get_raw_workspace_label()
+                    stored_labels = existing_index.get("labelsOrTypes") or []
+                    if list(stored_labels) != [raw_label]:
+                        raise WorkspaceIndexCollisionError(
+                            f"Full-text index '{index_name}' is scoped to label(s) "
+                            f"{list(stored_labels)!r}, but this instance's workspace "
+                            f"resolves to label {raw_label!r}. Both labels normalize to "
+                            f"the same index name, so this instance would reuse -- or, "
+                            f"if the index is not ONLINE, drop and recreate -- an index "
+                            f"that holds a different workspace's data. Rename one of the "
+                            f"workspaces so they no longer normalize to the same index "
+                            f"name, or point this instance at a different Neo4j database. "
+                            f"Do NOT drop the index -- it holds the other workspace's data."
                         )
 
                 # Check if index exists and is online
@@ -481,6 +513,10 @@ class Neo4JStorage(BaseGraphStorage):
                             f"[{self.workspace}] Successfully created full-text index '{index_name}' with standard analyzer."
                         )
 
+        except WorkspaceIndexCollisionError:
+            # Must propagate: this is a refusal to start, not a verification
+            # failure the caller can fall back from.
+            raise
         except Exception as e:
             # Handle cases where the command might not be supported
             if "Unknown command" in str(e) or "invalid syntax" in str(e).lower():
