@@ -59,12 +59,16 @@ python -m lightrag.tools.gc_llm_cache --apply    # delete the orphans
 Library (see supported backends below):
 
 ```python
+from lightrag import LightRAG
 from lightrag.tools.gc_llm_cache import gc_orphan_llm_cache
 
-rag = LightRAG(...)
+rag = LightRAG(...)  # Use your deployment's storage configuration.
 await rag.initialize_storages()
-report = await gc_orphan_llm_cache(rag)              # report only
-report = await gc_orphan_llm_cache(rag, apply=True)  # delete the orphans
+try:
+    report = await gc_orphan_llm_cache(rag)  # Report only.
+    # Pass apply=True to delete the orphans after reviewing the report.
+finally:
+    await rag.finalize_storages()
 ```
 
 CLI — the console script `lightrag-gc-llm-cache`, or `python -m
@@ -72,7 +76,9 @@ lightrag.tools.gc_llm_cache` — with env-driven construction (`WORKING_DIR`,
 `WORKSPACE`, `LIGHTRAG_KV_STORAGE` / `LIGHTRAG_GRAPH_STORAGE` /
 `LIGHTRAG_DOC_STATUS_STORAGE`, each backend's own connection variables, and
 `EMBEDDING_DIM`; the vector store is a no-op, and neither the LLM nor the
-embedder is ever called):
+embedder is ever called). The CLI loads `.env` from the current working
+directory. Environment variables already set in the process take precedence
+over values from that file.
 
 ```bash
 python -m lightrag.tools.gc_llm_cache                    # report
