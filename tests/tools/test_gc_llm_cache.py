@@ -17,22 +17,6 @@ from lightrag.tools.gc_llm_cache import SAMPLE_LIMIT, gc_orphan_llm_cache
 pytestmark = pytest.mark.offline
 
 
-@pytest.fixture(autouse=True)
-def _stub_key_enumeration(monkeypatch):
-    """Route the sweep's fake KVs through the shared enumeration seam.
-
-    The real per-backend scans belong to the rebuild tool's tests; this tool
-    only has to consume the seam, which
-    ``test_key_enumeration_delegates_to_the_shared_backend_scan`` pins.
-    """
-    import lightrag.tools.rebuild_vdb as rebuild_vdb
-
-    async def fake_enumerate(kv):
-        return list(kv.rows)
-
-    monkeypatch.setattr(rebuild_vdb, "enumerate_kv_keys", fake_enumerate)
-
-
 class FakeCacheKV:
     """Cache namespace with just enough surface for the sweep."""
 
@@ -43,8 +27,9 @@ class FakeCacheKV:
         self.delete_batches: list[int] = []
         self.commits = 0
 
-    async def get_by_ids(self, ids):
-        return [self.rows.get(key) for key in ids]
+    async def iter_rows(self, *, page_size):
+        for key, row in self.rows.items():
+            yield {**row, "_id": key}
 
     async def filter_keys(self, keys):
         return {key for key in keys if key not in self.rows}
@@ -258,25 +243,19 @@ async def test_non_positive_batch_size_raises():
         await gc_orphan_llm_cache(_rag(cache, chunks), batch_size=0)
 
 
-async def test_key_enumeration_delegates_to_the_shared_backend_scan(monkeypatch):
-    """The sweep must not grow its own copy of the per-backend scans."""
-    calls: list[object] = []
+async def test_row_enumeration_uses_the_requested_page_size(monkeypatch):
+    cache = FakeCacheKV({})
+    page_sizes: list[int] = []
 
-    async def fake_enumerate(kv):
-        calls.append(kv)
-        return ["default:extract:aaa"]
+    async def scan(*, page_size):
+        page_sizes.append(page_size)
+        yield {**_extract_row("chunk-gone"), "_id": "default:extract:aaa"}
 
-    import lightrag.tools.rebuild_vdb as rebuild_vdb
+    monkeypatch.setattr(cache, "iter_rows", scan)
+    report = await gc_orphan_llm_cache(_rag(cache, FakeChunksKV(set())), batch_size=7)
 
-    monkeypatch.setattr(rebuild_vdb, "enumerate_kv_keys", fake_enumerate)
-
-    cache = FakeCacheKV({"default:extract:aaa": _extract_row("chunk-gone")})
-    chunks = FakeChunksKV(set())
-
-    report = await gc_orphan_llm_cache(_rag(cache, chunks))
-
-    assert calls == [cache]
-    assert report["orphan_rows"] == 1
+    assert page_sizes == [7]
+    assert report["orphan_keys_sample"] == ["default:extract:aaa"]
 
 
 async def test_every_row_of_an_orphaned_chunk_is_deleted():
@@ -361,14 +340,15 @@ async def test_a_scan_that_repeats_a_key_reports_the_row_once(monkeypatch):
     """A repeated key used to be counted twice and "deleted" twice, so the
     report stopped describing the namespace it claimed to describe."""
 
-    async def repeating_scan(kv):
-        return ["default:extract:aaa", "default:extract:aaa"]
-
-    import lightrag.tools.rebuild_vdb as rebuild_vdb
-
-    monkeypatch.setattr(rebuild_vdb, "enumerate_kv_keys", repeating_scan)
-
     cache = FakeCacheKV({"default:extract:aaa": _extract_row("chunk-gone")})
+    scan = cache.iter_rows
+
+    async def repeating_scan(*, page_size):
+        async for row in scan(page_size=page_size):
+            yield row
+            yield row
+
+    monkeypatch.setattr(cache, "iter_rows", repeating_scan)
 
     report = await gc_orphan_llm_cache(_rag(cache, FakeChunksKV(set())), apply=True)
 

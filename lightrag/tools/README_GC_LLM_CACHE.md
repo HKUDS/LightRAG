@@ -56,7 +56,7 @@ python -m lightrag.tools.gc_llm_cache --apply    # delete the orphans
 
 ## Usage
 
-Library (works with every configured backend combination):
+Library (see supported backends below):
 
 ```python
 from lightrag.tools.gc_llm_cache import gc_orphan_llm_cache
@@ -81,8 +81,8 @@ python -m lightrag.tools.gc_llm_cache --verbose          # sample keys
 python -m lightrag.tools.gc_llm_cache --batch-size 1000  # storage round trips
 ```
 
-A sweep is a full namespace read (keys are materialized by the shared
-per-backend scan; rows are fetched and deleted in batches), one `filter_keys`
+A sweep reads the cache namespace through `iter_rows` in pages, retains keys
+for deduplication and orphan classification, makes one `filter_keys`
 call per batch of distinct chunk ids, and one confirming `get_by_id_strict`
 read per candidate chunk. Like the other offline
 tools, run it while the server is stopped: the shared pipeline status that
@@ -135,9 +135,6 @@ running it again: the rows that remain are still orphans.
 
 ## Backend support
 
-Key enumeration is not part of `BaseKVStorage` yet. The sweep uses the same
-per-backend scans as the other offline tools — `JsonKVStorage`,
-`RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` — and
-refuses with a clear error on a backend it cannot list. When bounded KV
-iteration reaches `BaseKVStorage`, `_iter_key_batches` in the tool is the one
-function that has to change.
+The cache backend must implement `BaseKVStorage.iter_rows`. The supported
+backends are `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`,
+`MongoKVStorage` and `OpenSearchKVStorage`.

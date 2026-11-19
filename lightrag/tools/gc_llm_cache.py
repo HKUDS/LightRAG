@@ -66,7 +66,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from typing import Any, AsyncIterator
+from typing import Any
 
 from lightrag.utils import logger
 
@@ -75,28 +75,6 @@ DEFAULT_BATCH_SIZE = 500
 # Bounded sample carried in the report so a huge workspace cannot turn a dry
 # run into an unbounded print. The counts are exact either way.
 SAMPLE_LIMIT = 20
-
-
-async def _iter_key_batches(kv, batch_size: int) -> AsyncIterator[list[str]]:
-    """Yield the storage's namespace keys in batches.
-
-    ``BaseKVStorage`` has no enumeration API today, so this delegates to the
-    shared per-backend scan the other offline tools use; that scan materializes
-    the key list, and the batches bound the row round trips that follow. The
-    indirection is deliberate: when bounded KV iteration lands on
-    ``BaseKVStorage``, this is the one function that has to change.
-
-    A key the scan repeats is collapsed: it would otherwise be counted twice
-    and "deleted" twice, so ``cache_rows`` and ``deleted_rows`` would stop
-    describing the namespace. Key identity belongs to the namespace, not to the
-    scan.
-    """
-    from lightrag.tools.rebuild_vdb import enumerate_kv_keys
-
-    keys = await enumerate_kv_keys(kv)
-    keys = list(dict.fromkeys(keys))
-    for start in range(0, len(keys), batch_size):
-        yield keys[start : start + batch_size]
 
 
 async def gc_orphan_llm_cache(
@@ -167,19 +145,21 @@ async def gc_orphan_llm_cache(
     # cost the offline-only contract exists to bound.
     scoped: dict[str, list[str]] = {}
 
-    async for batch in _iter_key_batches(cache_kv, batch_size):
-        rows = await cache_kv.get_by_ids(batch)
-        for key, row in zip(batch, rows):
-            if not isinstance(row, dict):
-                # Concurrently dropped, or a backend that never had it.
-                continue
-            report["cache_rows"] += 1
-            chunk_id = row.get("chunk_id")
-            if not isinstance(chunk_id, str) or not chunk_id:
-                report["unscoped_rows"] += 1
-                continue
-            report["chunk_scoped_rows"] += 1
-            scoped.setdefault(chunk_id, []).append(key)
+    # Redis SCAN can yield the same ID more than once.
+    seen_keys: set[str] = set()
+    async for row in cache_kv.iter_rows(page_size=batch_size):
+        key = row["_id"]
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        report["cache_rows"] += 1
+        chunk_id = row.get("chunk_id")
+        if not isinstance(chunk_id, str) or not chunk_id:
+            report["unscoped_rows"] += 1
+            continue
+        report["chunk_scoped_rows"] += 1
+        scoped.setdefault(chunk_id, []).append(key)
+    del seen_keys
 
     # A "missing" answer from ``filter_keys`` is only a candidate: that read
     # fails open on a backend whose index is not ready (OpenSearch reports
