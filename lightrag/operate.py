@@ -5555,6 +5555,12 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
                 )
                 if isinstance(payload, list):
                     payload = _select_keywords_object(cleaned_result, payload)
+                elif not isinstance(payload, dict):
+                    # json_repair reads '#' as a comment to the end of the line,
+                    # so a "Result #1: {...}" lead-in repairs to ''. Recover the
+                    # first object instead; keep the scalar (and so the
+                    # rejection below) when there is none.
+                    payload = tolerant_load_json_dict(cleaned_result) or payload
             except Exception as repair_error:
                 logger.error(
                     "JSON parsing error: %s; repair failed: %s; response: %r",
