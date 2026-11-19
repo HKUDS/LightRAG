@@ -292,11 +292,7 @@ async def generic_rerank_api(
         raise ValueError("Base URL is required")
 
     if top_n is not None and top_n < 0:
-        # Checked up front, before any request or the chunking/aggregation
-        # branching below: a negative top_n has no sensible meaning as a
-        # result count, and the aggregation path below slices with it
-        # (standardized_results[:top_n]) -- Python's negative-slice semantics
-        # would silently drop the last |top_n| results instead of raising.
+        # A negative slice stop would silently drop the last |top_n| results.
         raise ValueError(f"top_n must be non-negative, got {top_n}")
 
     headers = {"Content-Type": "application/json"}

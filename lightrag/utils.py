@@ -7419,6 +7419,11 @@ async def apply_rerank_if_enabled(
             )
             document_texts.append(content)
 
+        # Custom rerank functions bypass generic_rerank_api's check, and the
+        # legacy-format slice below would treat a negative top_n as "drop N".
+        if top_n is not None and top_n < 0:
+            raise ValueError(f"top_n must be non-negative, got {top_n}")
+
         # Call the new rerank function that returns index-based results
         rerank_results = await rerank_func(
             query=query,
