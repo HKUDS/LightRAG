@@ -322,7 +322,7 @@ def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
     async def _run():
         rag = _new_rag(
             tmp_path,
-            chunk_token_size=7,
+            chunk_token_size=77,
             chunk_overlap_token_size=2,
         )
         await rag.initialize_storages()
@@ -342,7 +342,7 @@ def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
     assert row is not None
     chunk_opts = row["chunk_options"]
     # Top-level chunk_token_size carries the constructor value.
-    assert chunk_opts["chunk_token_size"] == 7
+    assert chunk_opts["chunk_token_size"] == 77
     # Default-F doc: the persisted slim snapshot only carries F's slot.
     assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 2
     assert "recursive_character" not in chunk_opts
@@ -352,7 +352,7 @@ def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
     # strategy so subsequent enqueues with other selectors pick up the
     # same baseline.  V doesn't have chunk_overlap_token_size and must
     # remain unchanged.
-    assert addon_params["chunker"]["chunk_token_size"] == 7
+    assert addon_params["chunker"]["chunk_token_size"] == 77
     assert addon_params["chunker"]["fixed_token"]["chunk_overlap_token_size"] == 2
     assert (
         addon_params["chunker"]["recursive_character"]["chunk_overlap_token_size"] == 2

@@ -25,6 +25,8 @@ import pytest
 from lightrag.api import config as api_config
 
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # wrap_embedding_func_with_attrs auto-detection
 # ---------------------------------------------------------------------------
@@ -268,7 +270,7 @@ async def test_jina_default_task_is_query_when_context_query(monkeypatch):
 
     captured: list[dict] = []
 
-    async def fake_fetch(url, headers, data):
+    async def fake_fetch(url, headers, data, timeout=None):
         captured.append(data)
         return _fake_jina_response(len(data["input"]))
 
@@ -284,7 +286,7 @@ async def test_jina_default_task_is_passage_when_context_document(monkeypatch):
 
     captured: list[dict] = []
 
-    async def fake_fetch(url, headers, data):
+    async def fake_fetch(url, headers, data, timeout=None):
         captured.append(data)
         return _fake_jina_response(len(data["input"]))
 
@@ -300,7 +302,7 @@ async def test_jina_explicit_task_overrides_context(monkeypatch):
 
     captured: list[dict] = []
 
-    async def fake_fetch(url, headers, data):
+    async def fake_fetch(url, headers, data, timeout=None):
         captured.append(data)
         return _fake_jina_response(len(data["input"]))
 
