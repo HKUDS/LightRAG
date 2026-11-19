@@ -1,19 +1,24 @@
 """The plugin-facing sidecar resolver: what resolves, and what fails loudly.
 
-Whether a path is absolute depends on the platform, so most cases run under
-both path flavors by swapping the resolver's ``Path`` for ``PurePosixPath`` or
-``PureWindowsPath``; the outcome is then the same on any CI host. One native
-case per run exercises the real ``Path`` class end to end.
+The resolver delegates decoding to the pipeline's own reader
+(``resolve_sidecar_uri``) and only adds refusals. Both branch on ``os.name``,
+so each platform is exercised on any CI host by switching ``os.name`` in both
+modules and giving the reader that platform's ``Path`` flavor and, for
+Windows, the real Windows ``url2pathname`` (``nturl2path``). Native cases
+exercise the real classes end to end.
 """
 
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 
 import pytest
 
 import lightrag.chunker as chunker
+from lightrag import utils_pipeline
 from lightrag.chunker import registry
 from lightrag.chunker.registry import resolve_sidecar_location
 from lightrag.utils_pipeline import (
@@ -22,25 +27,48 @@ from lightrag.utils_pipeline import (
     sidecar_uri_for,
 )
 
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)  # Deprecated in 3.14.
+    try:
+        import nturl2path
+    except ImportError:  # pragma: no cover - removal is scheduled for 3.19
+        nturl2path = None
+
 pytestmark = pytest.mark.offline
 
 FOREIGN = "not an absolute local path on this platform"
+UNSUPPORTED = "unsupported sidecar location"
 
 
-@pytest.fixture(params=[PurePosixPath, PureWindowsPath], ids=["posix", "windows"])
+def _emulate(monkeypatch, platform):
+    name, flavor = platform
+    if name == "nt" and nturl2path is None:
+        pytest.skip("nturl2path is unavailable on this Python")
+    fake_os = SimpleNamespace(name=name)
+    monkeypatch.setattr(registry, "os", fake_os)
+    monkeypatch.setattr(utils_pipeline, "os", fake_os)
+    monkeypatch.setattr(utils_pipeline, "Path", flavor)
+    if name == "nt":
+        monkeypatch.setattr(utils_pipeline, "url2pathname", nturl2path.url2pathname)
+
+
+POSIX = ("posix", PurePosixPath)
+WINDOWS = ("nt", PureWindowsPath)
+
+
+@pytest.fixture(params=[POSIX, WINDOWS], ids=["posix", "windows"])
 def flavor(request, monkeypatch):
-    monkeypatch.setattr(registry, "Path", request.param)
-    return request.param
+    _emulate(monkeypatch, request.param)
 
 
 @pytest.fixture
 def posix(monkeypatch):
-    monkeypatch.setattr(registry, "Path", PurePosixPath)
+    _emulate(monkeypatch, POSIX)
 
 
 @pytest.fixture
 def windows(monkeypatch):
-    monkeypatch.setattr(registry, "Path", PureWindowsPath)
+    _emulate(monkeypatch, WINDOWS)
 
 
 def test_resolver_is_exported_from_the_chunker_package():
@@ -109,20 +137,26 @@ def test_resolver_keeps_a_non_utf8_posix_name(tmp_path):
     assert resolved == resolve_sidecar_uri(location)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="a POSIX name may end in a backslash")
-def test_resolver_keeps_a_trailing_backslash_in_a_posix_name(tmp_path):
-    # Only the URI separator is stripped; the backslash belongs to the name.
-    directory = tmp_path / "sidecar-store\\"
-    location = sidecar_uri_for(directory)
-    assert location.endswith("%5C/")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only file names")
+@pytest.mark.parametrize(
+    "path",
+    [
+        # A backslash and a colon are ordinary POSIX filename characters, in
+        # any position; neither may be read as Windows syntax.
+        "/tmp/sidecar-store\\",
+        "/C:/inputs/__parsed__/doc.parsed",
+        "/a:/b",
+        "/C:tmp/doc.parsed",
+        "/\\\\fileserver/share/doc.parsed",
+        "/\\@/doc.parsed",
+        "/\\",
+    ],
+)
+def test_resolver_keeps_windows_lookalike_posix_names(path):
+    location = sidecar_uri_for(path)
     resolved = resolve_sidecar_location(location)
-    assert resolved == directory.resolve()
+    assert resolved == Path(os.path.realpath(path))
     assert resolved == resolve_sidecar_uri(location)
-
-
-def test_windows_drops_a_trailing_backslash_in_the_uri_path(windows):
-    resolved = resolve_sidecar_location("file:///C:/tmp/report.parsed%5C/")
-    assert resolved == PureWindowsPath("C:/tmp/report.parsed")
 
 
 @pytest.mark.parametrize("location", [None, "", SIDECAR_LOCATION_UNKNOWN])
@@ -145,6 +179,25 @@ def test_posix_resolves_a_rooted_uri_path(posix, location):
     )
 
 
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        # What a POSIX writer emits for names that look like Windows syntax:
+        # ':' and '\' are percent-encoded, and the reader decodes them back.
+        ("file:///C%3A/inputs/doc.parsed/", "/C:/inputs/doc.parsed"),
+        ("file:///tmp/sidecar-store%5C/", "/tmp/sidecar-store\\"),
+        ("file:///%5C%5Cfileserver/share/", "/\\\\fileserver/share"),
+        # A leading double slash is still a local POSIX path.
+        ("file:////srv/share/", "//srv/share"),
+        ("file:///", "/"),
+    ],
+)
+def test_posix_reads_windows_lookalike_paths_as_posix_names(
+    posix, location, expected
+):
+    assert resolve_sidecar_location(location) == PurePosixPath(expected)
+
+
 @pytest.mark.parametrize("location", POSIX_LOCATIONS)
 def test_windows_rejects_a_drive_less_uri_path(windows, location):
     # Read on Windows, /srv/x would take its drive from the current directory.
@@ -153,8 +206,8 @@ def test_windows_rejects_a_drive_less_uri_path(windows, location):
 
 
 DRIVE_LOCATIONS = [
-    # The standard form: the slash before the drive only separates authority
-    # from path, and is dropped.
+    # The standard form sidecar_uri_for() writes on Windows: the slash before
+    # the drive only separates authority from path.
     ("file:///C:/tmp/report.parsed/", "C:/tmp/report.parsed"),
     (
         "file://localhost/D:/inputs/in%20put/report.pdf.parsed/",
@@ -181,9 +234,14 @@ def test_windows_resolves_both_drive_uri_forms(windows, location, expected):
     assert resolved.is_absolute()
 
 
+def test_windows_drops_a_trailing_backslash_in_the_uri_path(windows):
+    resolved = resolve_sidecar_location("file:///C:/tmp/report.parsed%5C/")
+    assert resolved == PureWindowsPath("C:/tmp/report.parsed")
+
+
 @pytest.mark.parametrize(("location", "expected"), DRIVE_LOCATIONS)
 def test_posix_rejects_both_drive_uri_forms(posix, location, expected):
-    # Read on POSIX, C:/tmp would be a path relative to the current directory.
+    # Written on Windows: read on POSIX, C:/tmp would be another directory.
     with pytest.raises(ValueError, match=FOREIGN):
         resolve_sidecar_location(location)
 
@@ -204,7 +262,7 @@ def test_posix_rejects_both_drive_uri_forms(posix, location, expected):
 def test_resolver_rejects_a_netloc_that_only_looks_like_a_windows_path(
     flavor, location
 ):
-    with pytest.raises(ValueError, match="unsupported sidecar location"):
+    with pytest.raises(ValueError, match=UNSUPPORTED):
         resolve_sidecar_location(location)
 
 
@@ -214,9 +272,18 @@ def test_resolver_rejects_a_netloc_that_only_looks_like_a_windows_path(
         # Empty: would resolve to the current working directory.
         "file:",
         "file://",
-        "file:///",
         # Relative: would resolve against the current working directory.
         "file:relative/sidecar/",
+    ],
+)
+def test_resolver_rejects_an_empty_or_relative_uri_path(flavor, location):
+    with pytest.raises(ValueError, match=FOREIGN):
+        resolve_sidecar_location(location)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
         # Drive-relative: C:tmp depends on the drive's current directory.
         "file:///C:tmp/report.parsed/",
         # UNC through an empty or localhost authority: a network share, not a
@@ -226,11 +293,17 @@ def test_resolver_rejects_a_netloc_that_only_looks_like_a_windows_path(
         "file:///%5C%5Cfileserver/share/report.parsed/",
     ],
 )
-def test_resolver_rejects_a_local_uri_path_that_names_no_local_directory(
-    flavor, location
+def test_windows_rejects_a_uri_path_that_names_no_local_directory(
+    windows, location
 ):
-    with pytest.raises(ValueError, match="unsupported sidecar location"):
+    with pytest.raises(ValueError, match=UNSUPPORTED):
         resolve_sidecar_location(location)
+
+
+def test_posix_rejects_a_literal_drive_relative_uri(posix):
+    # A POSIX writer encodes ':' as %3A; a literal one was written on Windows.
+    with pytest.raises(ValueError, match=FOREIGN):
+        resolve_sidecar_location("file:///C:tmp/report.parsed/")
 
 
 @pytest.mark.parametrize(
@@ -247,5 +320,5 @@ def test_resolver_rejects_a_local_uri_path_that_names_no_local_directory(
 def test_resolver_rejects_locations_it_cannot_resolve_locally(flavor, location):
     # Where the internal helper would return None and let a plugin skip the
     # sidecar silently, the public entry point fails loudly instead.
-    with pytest.raises(ValueError, match="unsupported sidecar location"):
+    with pytest.raises(ValueError, match=UNSUPPORTED):
         resolve_sidecar_location(location)

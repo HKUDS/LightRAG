@@ -78,16 +78,17 @@ from lightrag.chunker import resolve_sidecar_location
 sidecar_dir = resolve_sidecar_location(context.sidecar_location)
 ```
 
-没有已知 sidecar 时返回 `None`；本地 `file://` URI 返回对应的 `Path`，不检查
-目录是否仍然存在。返回的路径在运行 LightRAG 的平台上始终是绝对路径。在
-Windows 上，两种盘符形式都会解析为对应的盘符路径：LightRAG 当前写入的标准形式
-`file:///C:/...`，以及较早的 Windows 记录中仍然存在的百分号编码形式
-（`file://C%3A%5C...`）。其它 scheme、裸路径，或指向远程主机的 `file://` URI
-会抛出 `ValueError`，而不会被重新解释为本地路径；路径为空、为相对路径、相对于
-盘符（`C:tmp`），或为网络（UNC）路径（例如 `file:////server/share/`）的本地 URI
-同样会抛出，因为它们都会被解析成另一个目录。只在其它平台上才是绝对路径的位置
-也会抛出：盘符路径在 Linux 上读取时是相对路径，POSIX 路径在 Windows 上读取时
-会从当前目录获取盘符。分块器必须能处理 `None`（原始文本插入没有 sidecar），
+没有已知 sidecar 时返回 `None`；本地 `file://` URI 返回与 pipeline 自身读取
+结果相同的 `Path`，不检查目录是否仍然存在。返回的路径在运行 LightRAG 的平台上
+始终是绝对路径。在 Windows 上，两种盘符形式都会解析为对应的盘符路径：LightRAG
+当前写入的标准形式 `file:///C:/...`，以及较早的 Windows 记录中仍然存在的百分号
+编码形式（`file://C%3A%5C...`）。其它 scheme、裸路径，或指向远程主机的
+`file://` URI 会抛出 `ValueError`，而不会被重新解释为本地路径；路径为空或为相对
+路径的本地 URI，以及在 Windows 上相对于盘符（`C:tmp`）或为网络（UNC）路径（例如
+`file:////server/share/`）的本地 URI 同样会抛出，因为它们都会被解析成另一个目录。
+在其它平台上写入的位置也会抛出：盘符路径在 Linux 上读取时是相对路径，POSIX 路径
+在 Windows 上读取时会从当前目录获取盘符。在 POSIX 上，目录名中的反斜杠或冒号是
+普通字符，会原样解析。分块器必须能处理 `None`（原始文本插入没有 sidecar），
 并自行决定无法解析的位置是否属于致命错误。
 
 另有两个字段需要注意。`parse_engine` 是原样传入的持久化值，或为 `None`；带参
