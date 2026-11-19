@@ -138,6 +138,11 @@ async def test_pg_vector_storage_declares_its_own_pgvector_requirement() -> None
         ) as get_client,
         patch("lightrag.kg.postgres_impl.get_data_init_lock", return_value=_lock()),
         patch.object(PGVectorStorage, "setup_table", new=AsyncMock(), create=True),
+        # The lexical schema step needs a real awaitable db; this test pins
+        # only the pgvector requirement declaration, so stub the step out.
+        patch.object(
+            PGVectorStorage, "_ensure_lexical_readiness", new=AsyncMock(), create=True
+        ),
     ):
         await PGVectorStorage.initialize(storage)
 
