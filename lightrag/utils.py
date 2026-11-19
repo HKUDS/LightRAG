@@ -1043,7 +1043,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
         if not (target_dir / new_name).exists():
             return new_name
 
-    return f"{base_name}_{int(time.time())}{extension}"
+    # Probe existing timestamp names too. The caller still chooses and renames
+    # separately, so this only avoids overwriting a file already on disk.
+    suffix = int(time.time())
+    while (target_dir / f"{base_name}_{suffix}{extension}").exists():
+        suffix += 1
+    return f"{base_name}_{suffix}{extension}"
 
 
 async def move_file_to_parsed_dir(
