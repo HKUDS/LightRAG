@@ -1029,7 +1029,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
     """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
 
     Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
-    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    falling back to `{stem}_{unix_seconds}{ext}` if all numeric slots are taken;
+    an occupied timestamp name advances the suffix by one until a free name is
+    found, so the suffix may run ahead of the clock.
+
+    The name is only free when checked: the caller renames separately, so two
+    concurrent callers can still pick the same name.
     """
     original_path = Path(original_name)
     base_name = original_path.stem
