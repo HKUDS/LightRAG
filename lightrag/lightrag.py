@@ -7064,6 +7064,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 rebuild_policy=rebuild_policy,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
+                # A journal from an earlier attempt means its step 2 may have
+                # persisted narrowed tracking before its rebuild failed.
+                resuming=proof is not None and proof.journal_phase is not None,
             )
             if journaled and proof is not None:
                 await self._write_kg_purge_phase(
@@ -7168,6 +7171,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         rebuild_policy: Literal["best_effort", "rollback"],
         pipeline_status: dict,
         pipeline_status_lock: Any,
+        resuming: bool = False,
     ) -> KGRebuildReport:
         """Steps 1-6 of :py:meth:`_purge_kg_contributions`.
 
@@ -7188,8 +7192,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         the anchor rows cannot name yet (an in-flight custom-chunk patch
         journal). They are additive only, so they can never mask a missing
         anchor: an empty union with absent anchors still resolves to nothing.
+
+        ``resuming``: an earlier attempt of this journaled purge may already
+        have persisted step 2's narrowed tracking and then failed in its
+        rebuild. Its candidates then show no tracking delta, and a capped graph
+        ``source_id`` need not name the deleted chunks either, so every
+        candidate with remaining sources is rebuilt, as under ``rollback``.
         """
         rebuild_report = KGRebuildReport()
+        rebuild_every_survivor = resuming or rebuild_policy == "rollback"
 
         # Set view for membership/intersection checks below (chunk_ids stays a list
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
@@ -7329,7 +7340,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     entities_to_rebuild[node_label] = remaining_sources
                     entity_chunk_updates[node_label] = remaining_sources
@@ -7399,7 +7410,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     relationships_to_rebuild[edge_tuple] = remaining_sources
                     relation_chunk_updates[edge_tuple] = remaining_sources

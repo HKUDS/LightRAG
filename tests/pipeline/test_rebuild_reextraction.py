@@ -507,3 +507,46 @@ async def test_entity_named_only_as_endpoint_is_resummarized_from_its_edges(
         assert qux["file_path"] == "doc-qb.txt"
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_retry_rebuilds_objects_whose_tracking_the_failed_attempt_narrowed(
+    tmp_path,
+):
+    """The failed attempt already persisted the narrowed tracking rows, and a
+    FIFO-capped graph ``source_id`` no longer names the deleted chunk, so a
+    retry sees no reference to the deleted document. Resuming the purge must
+    still rebuild the anchored objects instead of reporting success over the
+    deleted document's text."""
+    llm = _StubLLM()
+    rag = await _make_rag(
+        tmp_path,
+        llm,
+        source_ids_limit_method="FIFO",
+        max_source_ids_per_entity=1,
+        max_source_ids_per_relation=1,
+    )
+    try:
+        await _insert(rag, "doc-v3", "doc-v2")
+        shared_id, shared_row = await _chunk_with(rag, "doc-v2", "SHARED")
+        (shared_key,) = shared_row["llm_cache_list"]
+        graph = rag.chunk_entity_relation_graph
+        # FIFO keeps the newest chunk only: the graph no longer names v3's.
+        assert _ids((await graph.get_node("Foo"))["source_id"]) == {shared_id}
+        await rag.llm_response_cache.delete([shared_key])
+
+        llm.fail = True
+        result = await rag.adelete_by_doc_id("doc-v3")
+        assert result.status == "fail"
+        assert "Foo fact from v3" in (await graph.get_node("Foo"))["description"]
+
+        llm.fail = False
+        llm.calls.clear()
+        await _delete_ok(rag, "doc-v3")
+        assert llm.calls == [("SHARED", False)]
+        foo = await graph.get_node("Foo")
+        assert foo["description"] == "Foo shared fact"
+        edge = await graph.get_edge("Foo", "Bar")
+        assert edge["description"] == "Foo links Bar in SHARED"
+    finally:
+        await rag.finalize_storages()
