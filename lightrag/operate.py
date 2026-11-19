@@ -1158,6 +1158,7 @@ async def rebuild_knowledge_from_chunks(
     entity_chunks_storage: BaseKVStorage | None = None,
     relation_chunks_storage: BaseKVStorage | None = None,
     rebuild_policy: KGRebuildPolicy = "best_effort",
+    doc_status_storage: BaseKVStorage | None = None,
 ) -> KGRebuildReport:
     """Rebuild entities and relations from their surviving chunks' extractions.
 
@@ -1194,6 +1195,10 @@ async def rebuild_knowledge_from_chunks(
             ``best_effort`` policy may re-extract (``LightRAG._build_global_config``).
         entity_chunks_storage / relation_chunks_storage: chunk tracking.
         rebuild_policy: see above.
+        doc_status_storage: tells ``ainsert_custom_kg`` chunks from pipeline
+            chunks on backends that do not keep the chunk row's ``source_id``
+            (see ``_find_custom_kg_chunks``). Pass it whenever the
+            ``best_effort`` policy may re-extract.
     """
     if rebuild_policy not in ("best_effort", "rollback"):
         raise ValueError(f"Unsupported KG rebuild policy: {rebuild_policy}")
@@ -1238,6 +1243,11 @@ async def rebuild_knowledge_from_chunks(
     chunk_relationships: dict[str, dict[tuple[str, str], list[dict]]] = {}
     # chunk_id -> unparseable initial row to delete before re-extracting it
     to_reextract: dict[str, str | None] = {}
+    custom_kg_chunk_ids = (
+        await _find_custom_kg_chunks(chunk_data_by_id, extract_rows, doc_status_storage)
+        if rebuild_policy == "best_effort"
+        else set()
+    )
 
     for chunk_id in sorted(all_referenced_chunk_ids):
         chunk_data = chunk_data_by_id.get(chunk_id)
@@ -1273,7 +1283,7 @@ async def rebuild_knowledge_from_chunks(
             chunk_relationships[chunk_id] = edges
             continue
 
-        if not entries and _is_custom_kg_chunk(chunk_data):
+        if chunk_id in custom_kg_chunk_ids:
             # User-supplied content: never sent to the LLM on someone else's
             # deletion. Its objects fall back like any unattested object.
             report.missing_cache_chunk_ids.add(chunk_id)
@@ -1552,13 +1562,37 @@ def _is_gleaning_extract_row(row: dict[str, Any]) -> bool:
     )
 
 
-def _is_custom_kg_chunk(chunk_data: dict[str, Any]) -> bool:
-    """True for a chunk row written by ``ainsert_custom_kg``.
+async def _find_custom_kg_chunks(
+    chunk_data_by_id: dict[str, dict[str, Any]],
+    extract_rows: dict[str, list[tuple[str, dict[str, Any] | None]]],
+    doc_status_storage: BaseKVStorage | None,
+) -> set[str]:
+    """Chunks written by ``ainsert_custom_kg``, which are never re-extracted.
 
-    Only that path stores the caller's ``source_id`` alias on the chunk row;
-    pipeline chunks never carry the field.
+    Only chunks without any extract key qualify. Such a chunk is custom KG
+    when its row carries the caller's ``source_id`` alias, or when its
+    ``full_doc_id`` names no ``doc_status`` row: pipeline chunks always belong
+    to a document with a status record, while ``ainsert_custom_kg`` creates
+    none. The second test is what works on backends that store only the
+    pipeline's chunk columns (PostgreSQL drops ``source_id``). A read failure
+    raises rather than sending user-supplied text to the LLM.
     """
-    return "source_id" in chunk_data
+    custom: set[str] = set()
+    undecided: dict[str, str] = {}
+    for chunk_id, row in chunk_data_by_id.items():
+        if extract_rows.get(chunk_id):
+            continue
+        doc_id = row.get("full_doc_id")
+        if "source_id" in row or not isinstance(doc_id, str) or not doc_id:
+            custom.add(chunk_id)
+        elif doc_status_storage is not None:
+            undecided[chunk_id] = doc_id
+    if undecided:
+        doc_ids = sorted(set(undecided.values()))
+        statuses = await doc_status_storage.get_by_ids(doc_ids)
+        known = {doc_id for doc_id, status in zip(doc_ids, statuses) if status}
+        custom.update(c for c, d in undecided.items() if d not in known)
+    return custom
 
 
 async def _parse_extract_row(

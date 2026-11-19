@@ -307,7 +307,8 @@ async def test_disabled_extraction_cache_reextracts_on_every_rebuild(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_custom_kg_chunk_is_never_reextracted(tmp_path):
+@pytest.mark.parametrize("keeps_source_id", [True, False], ids=["json", "pg-row"])
+async def test_custom_kg_chunk_is_never_reextracted(tmp_path, keeps_source_id):
     """User-supplied custom KG text is not sent to the LLM on another
     document's deletion. Its entity is kept with repaired provenance; the
     description keeps the deleted document's text (documented residue)."""
@@ -336,6 +337,14 @@ async def test_custom_kg_chunk_is_never_reextracted(tmp_path):
         )
         await _insert(rag, "doc-v3")
         (curated_id,) = (await rag.entity_chunks.get_by_id("Foo"))["chunk_ids"][:1]
+        if not keeps_source_id:
+            # PGKVStorage stores only the pipeline's chunk columns, so a
+            # custom KG chunk comes back without its source_id alias.
+            (row,) = await rag.text_chunks.get_by_ids([curated_id])
+            row = {k: v for k, v in row.items() if k != "source_id"}
+            await rag.text_chunks.upsert({curated_id: row})
+            (stored,) = await rag.text_chunks.get_by_ids([curated_id])
+            assert "source_id" not in stored
 
         llm.calls.clear()
         await _delete_ok(rag, "doc-v3")

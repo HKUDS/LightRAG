@@ -215,10 +215,12 @@ A chunk's extraction is one initial call plus optional gleaning, each with its o
 | No extract key, first extract row absent, or first extract row is a gleaning row | Re-extract. |
 | First extract row present but unparseable (no text) | Delete that row, then re-extract; re-extracting alone would hit it again. |
 | A later (gleaning) row absent or unparseable | Accepted as gleaning that did not run. No LLM call. |
-| Chunk written by `ainsert_custom_kg` (its row carries `source_id`) | Never re-extracted: user-supplied text is not sent to the LLM on another document's deletion. Contributes nothing. |
+| Chunk written by `ainsert_custom_kg`: no extract key, and its row carries `source_id` or its `full_doc_id` has no `doc_status` row | Never re-extracted: user-supplied text is not sent to the LLM on another document's deletion. Contributes nothing. |
 | Chunk row missing | Nothing to read or re-extract. Contributes nothing. |
 
 "First extract row" is not simply the first key: a **truncated** initial response is never cached, while the gleaning call after it is, so such a chunk's first extract key is a gleaning row. `_is_gleaning_extract_row` recognizes one by its stored prompt, whose last line is the serialized history only the gleaning call passes. The decision never recomputes a key from the current configuration, so a prompt or model change alone re-extracts nothing. A legacy key that does not parse as `{mode}:{cache_type}:{hash}` counts only when its row is an extract row.
+
+The custom KG test reads `doc_status` because the `source_id` alias does not survive every backend: `PGKVStorage` stores only the pipeline's chunk columns. A pipeline chunk always belongs to a document with a status record, and `ainsert_custom_kg` creates none (`_find_custom_kg_chunks`).
 
 The `rollback` policy (custom-chunk patch rollback) keeps its own contract: it never calls the extraction LLM, records missing and unusable rows in `KGRebuildReport`, and repairs provenance structurally.
 
@@ -251,6 +253,7 @@ Relations are rebuilt first, and entities only after every relation task succeed
 | Old extract rows a re-extraction stopped referencing (superseded gleaning, a key from an older configuration) | Unreachable from `llm_cache_list`, so `delete_llm_cache=True` no longer finds them. Retains rows; an offline cache sweep that excludes live-referenced keys reclaims them. |
 | `aclear_cache` beside surviving documents (SDK only; the REST surface clears the cache only with every document) | Every later deletion re-extracts the chunks it touches: the graph slowly thins and mixes two generations of names, more so after a model or entity-type change. |
 | A deletion whose rebuild needs re-extraction while the LLM is unavailable | A retryable failure instead of a silent degradation. |
+| An `ainsert_custom_kg` call given the `full_doc_id` of an existing document, on a backend that drops `source_id` | Its chunks look like that document's pipeline chunks and are re-extracted when a rebuild needs them. A missing `doc_status` row on a pipeline chunk errs the other way: the chunk is not re-extracted and its objects are kept. |
 
 ### Recovery from name drift
 

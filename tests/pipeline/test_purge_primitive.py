@@ -744,7 +744,12 @@ async def test_best_effort_rebuild_reextracts_surviving_chunk(monkeypatch):
     rag = _make_rag(
         graph=graph,
         entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1", "c2"]}}),
-        text_chunks=_KV({"c2": {"content": "x", "llm_cache_list": []}}),
+        # c2 belongs to a surviving document with a status record, which is
+        # what marks it as a pipeline chunk rather than custom KG content.
+        text_chunks=_KV(
+            {"c2": {"content": "x", "full_doc_id": "d2", "llm_cache_list": []}}
+        ),
+        doc_status=_DocStatus({"d1": {"metadata": {}}, "d2": {"metadata": {}}}),
     )
     status, lock = _status()
 
