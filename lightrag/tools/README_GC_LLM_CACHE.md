@@ -106,20 +106,10 @@ The report carries a bounded key sample (`orphan_keys_sample`,
 `deleted_keys_sample` — 20 keys) so a large workspace cannot turn a dry run
 into an unbounded print. Counts are exact either way.
 
-A batch whose rows are still present after `delete` and
-`index_done_callback` raises instead of reporting a successful deletion:
-"deleted but still there" is the mirror image of the silent incomplete
-deletion this tool exists to fix. One soft spot remains, on a backend whose
-read path is buffer-aware: OpenSearch stages deletes and reports a staged one
-as absent, so a batch whose tombstone a retryable per-item failure left in the
-flush buffer still passes — there the check proves the delete was **accepted**,
-not published. When the flush succeeds the tombstone is gone and publication
-really is confirmed. That leftover tombstone is not loud at exit: the cache
-storage's own `finalize()` is what raises "these writes have been lost", and
-`LightRAG.finalize_storages()` catches a per-storage failure, logs it and
-finalizes the rest rather than re-raising, so the CLI can exit 0 with
-`Deleted:` already printed. On a staging backend read that count as accepted,
-not published, and check the log for `Failed to finalize llm_response_cache`.
+After each batch, the sweep verifies that no cache operations remain buffered
+and that the deleted keys are absent. If either check fails, the sweep raises
+and the CLI exits with an error. This includes a retryable OpenSearch bulk
+failure that leaves a buffered deletion hiding a row still on disk.
 
 A chunks namespace destroyed between runs is not detectable either: a missing
 OpenSearch index or Mongo collection is recreated empty at `initialize()`, and

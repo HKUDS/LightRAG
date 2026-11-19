@@ -44,6 +44,9 @@ class FakeCacheKV:
     async def index_done_callback(self):
         self.commits += 1
 
+    async def has_pending_index_ops(self, *, include_deletes=False):
+        return False
+
 
 class FakeChunksKV:
     """Text chunks namespace reduced to the liveness question.
@@ -202,6 +205,27 @@ async def test_a_delete_that_did_not_stick_raises():
 
     with pytest.raises(RuntimeError, match="still present"):
         await gc_orphan_llm_cache(_rag(cache, chunks), apply=True)
+
+
+async def test_buffered_delete_that_hides_a_persisted_row_raises():
+    class BufferedCacheKV(FakeCacheKV):
+        """A retryable flush failure leaves deletions visible only to reads."""
+
+        async def filter_keys(self, keys):
+            return keys.intersection(self.deleted)
+
+        async def has_pending_index_ops(self, *, include_deletes=False):
+            return include_deletes and bool(self.deleted)
+
+    key = "default:extract:aaa"
+    cache = BufferedCacheKV({key: _extract_row("chunk-gone")}, delete_removes=False)
+
+    with pytest.raises(RuntimeError, match="still buffered after commit"):
+        await gc_orphan_llm_cache(_rag(cache, FakeChunksKV(set())), apply=True)
+
+    assert cache.commits == 1
+    assert cache.deleted == [key]
+    assert key in cache.rows
 
 
 async def test_batching_preserves_every_orphan():

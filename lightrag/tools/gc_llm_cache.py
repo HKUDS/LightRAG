@@ -108,15 +108,8 @@ async def gc_orphan_llm_cache(
         ValueError: ``batch_size`` is below 1, the cache / text-chunks storage
             is not configured, or the chunks backend cannot confirm absence
             (``supports_strict_point_reads`` is false).
-        RuntimeError: A batch reported success but its rows are still present,
-            so the sweep did not actually delete what it said it did. Where a
-            backend stages deletes (OpenSearch) a tombstone that a retryable
-            flush failure left buffered still reads as absent, so in that case
-            the check proves acceptance rather than publication; the storage's
-            own ``finalize()`` raises when operations remain buffered, but
-            ``LightRAG.finalize_storages()`` logs a per-storage failure instead
-            of re-raising, so the count can be printed with the CLI still
-            exiting 0.
+        RuntimeError: A batch remains buffered after commit or its rows are
+            still present after verification.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
@@ -217,6 +210,12 @@ async def gc_orphan_llm_cache(
         # itself reports nothing, so a backend whose delete is a no-op would
         # otherwise be indistinguishable from one that worked.
         await cache_kv.index_done_callback()
+        # A buffered tombstone hides the persisted row from filter_keys.
+        if await cache_kv.has_pending_index_ops(include_deletes=True):
+            raise RuntimeError(
+                "Cache GC could not confirm deletion: cache operations are "
+                "still buffered after commit"
+            )
         # ``filter_keys`` answers with the keys that are ABSENT, so the keys
         # still present are what is left of the batch after subtracting them.
         absent = await cache_kv.filter_keys(set(batch_keys))
