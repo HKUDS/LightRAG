@@ -997,9 +997,11 @@ def _filename_hint_match(
         return None
     if engine in supported_parser_engines():
         return m, engine, options, chunk_params, engine_params
-    # Without a recognised engine only the ``-OPTIONS`` form is a hint;
-    # ``xyz-R(...)`` must stay unrecognised just like ``xyz-R``.
-    if engine is None and inner.startswith("-") and (options or chunk_params):
+    # Without a recognised engine only the ``-OPTIONS`` form is a hint, and
+    # ``split_engine_and_options`` returns options for nothing else. A chunk
+    # parameter block alone must not qualify: ``xyz-R(...)`` stays
+    # unrecognised just like ``xyz-R``.
+    if engine is None and options:
         return m, "", options, chunk_params, engine_params
     return None
 
