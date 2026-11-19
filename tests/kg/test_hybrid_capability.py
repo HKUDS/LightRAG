@@ -7,10 +7,11 @@ signature moves -- the ``requires_single_writer`` precedent), and an
 ``enable_hybrid=True`` request through the real retrieval entry point
 ``_get_vector_context`` leaves an unsupported backend on its plain vector path.
 
-The graceful cases pin CURRENT behavior today and become the real gate once P3
-wires ``hybrid_query``: a consumer must check the flag and fall back to
-vector-only, never crash or change results on a backend that does not support
-hybrid retrieval. ``NoopVectorDBStorage``'s vector-only path IS its designed
+The graceful cases are the real gate now that P3 wires ``hybrid_query``: a
+consumer must check the flag and fall back to vector-only, never crash or
+change results on a backend that does not support hybrid retrieval, and
+never reach a ``hybrid_query`` method on such a backend.
+``NoopVectorDBStorage``'s vector-only path IS its designed
 ``StorageCapabilityError`` refusal, so "graceful" there means the flag adds no
 new failure mode on top of that refusal.
 """
@@ -127,3 +128,56 @@ async def test_noop_backend_hybrid_request_keeps_its_capability_refusal():
             QueryParam(enable_hybrid=True),
             query_embedding=[0.1] * DIM,
         )
+
+
+_UNSUPPORTED_BACKENDS = [b for b in _VECTOR_BACKENDS if b != "PGVectorStorage"]
+
+
+@pytest.mark.parametrize("backend_name", _UNSUPPORTED_BACKENDS)
+async def test_dispatch_guard_never_reaches_hybrid_query(backend_name):
+    """With a consumer wired (P3), enable_hybrid=True on ANY unsupported
+    backend must never reach a hybrid_query method, even one attached to the
+    instance: the dispatch gate checks the capability flag first. Service
+    backends are exercised through ``__new__`` (no connection needed at this
+    seam); Noop keeps its real designed refusal. The recording fake raises
+    AND records, so a swallowed AssertionError cannot hide a dispatch leak.
+    """
+    cls = get_storage_class(backend_name)
+    storage = cls.__new__(cls)
+    storage.cosine_better_than_threshold = 0.2
+    hybrid_calls: list[tuple] = []
+
+    async def recording_hybrid(query, top_k, query_embedding=None):
+        hybrid_calls.append((query, top_k))
+        raise AssertionError("hybrid_query reached on an unsupported backend")
+
+    storage.hybrid_query = recording_hybrid
+
+    if backend_name == "NoopVectorDBStorage":
+        with pytest.raises(
+            StorageCapabilityError, match="Vector retrieval is disabled"
+        ):
+            await _get_vector_context(
+                "hello",
+                storage,
+                QueryParam(enable_hybrid=True),
+                query_embedding=[0.1] * DIM,
+            )
+    else:
+        query_calls: list[tuple] = []
+
+        async def fake_query(query, top_k, query_embedding=None):
+            query_calls.append((query, top_k))
+            return [{"content": "vector hit", "id": "c-1", "file_path": "a.txt"}]
+
+        storage.query = fake_query
+        chunks = await _get_vector_context(
+            "hello",
+            storage,
+            QueryParam(enable_hybrid=True),
+            query_embedding=[0.1] * DIM,
+        )
+        assert [c["chunk_id"] for c in chunks] == ["c-1"]
+        assert query_calls == [("hello", 20)]
+
+    assert hybrid_calls == []

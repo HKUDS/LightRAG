@@ -78,7 +78,7 @@ from ..utils import (
     validate_workspace_override,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
-from ..kg.lexical_tokenizer import tokenize_for_index
+from ..kg.lexical_tokenizer import tokenize_for_index, tokenize_for_query
 
 import pipmaster as pm
 
@@ -392,6 +392,58 @@ def _lexical_source_column(namespace: str) -> str:
     ):
         return "content"
     raise ValueError(f"{namespace} is not supported")
+
+
+# Reciprocal-rank fusion constant: a record's score is the sum over the legs
+# it appears in of 1 / (RRF_K + rank), ranks 1-based. k=60 is the standard
+# RRF default; fusion happens application-side, never in SQL.
+RRF_K = 60
+
+
+def rrf_fuse(
+    vector_results: list[dict[str, Any]],
+    lexical_results: list[dict[str, Any]],
+    key_field: str,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Fuse two ranked result lists by reciprocal rank, best first.
+
+    Rules:
+    - Each leg contributes ``1 / (RRF_K + rank)`` per record, ranks 1-based
+      in the order the leg returned them; a record in both legs sums both.
+    - Records union by ``key_field``; on overlap the VECTOR leg's record
+      object wins, so its original fields reach the caller untouched.
+    - Ties break by vector-leg rank first (a record absent from that leg
+      sorts last), then lexical-leg rank, then key ascending. The order is
+      deterministic for any input.
+    - Returns at most ``top_k`` records in fusion order. Inputs are never
+      mutated; the returned list shares record objects with the inputs, so
+      any further annotation is the caller's to make.
+    """
+    scores: dict[str, float] = {}
+    vector_ranks: dict[str, int] = {}
+    lexical_ranks: dict[str, int] = {}
+    records: dict[str, dict[str, Any]] = {}
+    for rank, record in enumerate(vector_results, start=1):
+        key = record[key_field]
+        scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
+        vector_ranks[key] = rank
+        records[key] = record
+    for rank, record in enumerate(lexical_results, start=1):
+        key = record[key_field]
+        scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
+        lexical_ranks[key] = rank
+        records.setdefault(key, record)
+    ordered = sorted(
+        records,
+        key=lambda key: (
+            -scores[key],
+            vector_ranks.get(key, float("inf")),
+            lexical_ranks.get(key, float("inf")),
+            key,
+        ),
+    )
+    return [records[key] for key in ordered[:top_k]]
 
 
 # Transaction-local statement that lets a filtered ANN scan continue past
@@ -4385,6 +4437,9 @@ class PGVectorStorage(BaseVectorStorage):
         self._flush_lock = None
         self._lexical_backfill_batch_size = _resolve_lexical_backfill_batch_size()
         self._lexical_backfill_task: asyncio.Task | None = None
+        # Warn once per lexical-degrade failure streak; the next successful
+        # lexical leg re-arms it (see hybrid_query).
+        self._lexical_degrade_warned = False
 
     @staticmethod
     async def _pg_create_table(
@@ -5711,6 +5766,95 @@ class PGVectorStorage(BaseVectorStorage):
             for row in results:
                 row.pop(_DISTANCE_COLUMN, None)
         return results
+
+    async def hybrid_query(
+        self, query: str, top_k: int, query_embedding: list[float] = None
+    ) -> list[dict[str, Any]]:
+        """Hybrid (vector + lexical) retrieval fused by reciprocal rank.
+
+        Rules:
+        - Same call contract as ``query``. Only backends whose
+          ``supports_hybrid_query`` is True implement it; callers gate on
+          that flag plus ``QueryParam.enable_hybrid``.
+        - The vector leg is ``query`` unchanged (cosine threshold, top_k).
+          The lexical leg ranks by ts_rank_cd over content_tsv, takes
+          top_k, and applies NO cosine threshold. Vector-leg records keep
+          their original fields; a lexical-only record gains ``distance``
+          equal to ``cosine_better_than_threshold`` so a downstream
+          similarity threshold admits it.
+        - Returns at most top_k records in RRF fusion order (``rrf_fuse``).
+          Downstream must consume that order, never re-sort by distance.
+        - Empty tokenization skips the lexical leg: vector-only, no
+          warning. A missing or invalid lexical index, or a lexical query
+          error, degrades THIS query to vector-only with one warning per
+          failure streak (fail-open). The vector leg's own errors still
+          propagate. Only the entities and chunks namespaces are covered.
+
+        Raises:
+            ValueError: the namespace has no hybrid lexical path.
+        """
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
+            key_field = "entity_name"
+            lexical_template = SQL_TEMPLATES["lexical_entities"]
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
+            key_field = "id"
+            lexical_template = SQL_TEMPLATES["lexical_chunks"]
+        else:
+            raise ValueError(
+                f"hybrid_query covers entities and chunks, not {self.namespace}"
+            )
+
+        vector_results = await self.query(
+            query, top_k, query_embedding=query_embedding
+        )
+        tsquery_text = tokenize_for_query(query)
+        if not tsquery_text:
+            return vector_results
+
+        index_name = _safe_index_name(
+            self.table_name, f"{LEXICAL_TSV_COLUMN}_gin"
+        )
+        lexical_results = None
+        degrade_reason = ""
+        try:
+            # PG would happily seqscan without the index, so absence or
+            # invalidity must be detected, not inferred from a query error.
+            # One catalog probe per hybrid query; no cached state to stale.
+            validity = await self.db.query(
+                "SELECT i.indisvalid FROM pg_index i "
+                "WHERE i.indexrelid = to_regclass($1)",
+                [index_name],
+            )
+            if validity is not None and validity["indisvalid"]:
+                lexical_results = await self.db.query(
+                    lexical_template.format(table_name=self.table_name),
+                    [self.workspace, tsquery_text, top_k],
+                    multirows=True,
+                )
+            else:
+                degrade_reason = (
+                    f"lexical index {index_name} is missing or invalid"
+                )
+        except Exception as e:
+            degrade_reason = f"lexical query failed: {e}"
+
+        if lexical_results is None:
+            if not self._lexical_degrade_warned:
+                logger.warning(
+                    f"[{self.workspace}] hybrid lexical leg on {self.table_name} "
+                    f"degraded to vector-only: {degrade_reason}; further "
+                    "failures stay silent until a lexical query succeeds"
+                )
+                self._lexical_degrade_warned = True
+            return vector_results
+        self._lexical_degrade_warned = False
+
+        fused = rrf_fuse(vector_results, lexical_results, key_field, top_k)
+        vector_keys = {record[key_field] for record in vector_results}
+        for record in fused:
+            if record[key_field] not in vector_keys:
+                record["distance"] = self.cosine_better_than_threshold
+        return fused
 
     async def index_done_callback(self) -> None:
         await self._flush_pending_vector_ops()
@@ -11113,6 +11257,32 @@ SQL_TEMPLATES = {
               WHERE workspace = $1
                 AND content_vector <=> $4::{vector_cast} < $2
               ORDER BY content_vector <=> $4::{vector_cast}
+              LIMIT $3;
+              """,
+    # Lexical legs for hybrid_query: same row shape as the vector templates
+    # above, ranked by ts_rank_cd over the maintained content_tsv column.
+    # The secondary id/name order keeps ranks deterministic when ts_rank_cd
+    # ties. $1=workspace, $2=tokenized tsquery text, $3=top_k.
+    "lexical_entities": """
+                SELECT entity_name,
+                       EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+                FROM {table_name}
+                WHERE workspace = $1
+                  AND content_tsv @@ to_tsquery('simple', $2)
+                ORDER BY ts_rank_cd(content_tsv, to_tsquery('simple', $2)) DESC,
+                         entity_name
+                LIMIT $3;
+                """,
+    "lexical_chunks": """
+              SELECT id,
+                     content,
+                     file_path,
+                     EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+              FROM {table_name}
+              WHERE workspace = $1
+                AND content_tsv @@ to_tsquery('simple', $2)
+              ORDER BY ts_rank_cd(content_tsv, to_tsquery('simple', $2)) DESC,
+                       id
               LIMIT $3;
               """,
     # DROP tables
