@@ -14,9 +14,11 @@ See docs/design/ConfigurationStorageContract.md.
 from __future__ import annotations
 
 import logging
+import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
-from types import SimpleNamespace
 
 from lightrag.namespace import CONFIG_CONTAINER_TAG
 from lightrag.utils import (
@@ -454,26 +456,51 @@ class TestWorkspaceOverridesAreDeprecatedAndAnnounced:
             "the warning was moved out of LightRAG and into the launchers"
         )
 
-    def test_both_launchers_warn_before_serving(self, monkeypatch):
-        """uvicorn's single process and the Gunicorn MASTER (which runs
-        on_starting before forking) are the two once-per-server-start points."""
-        import inspect
-        import sys
-
-        # Both modules parse argv at import time; pytest's would fail them.
+    def test_uvicorn_warns_before_the_splash(self, monkeypatch, warnings_seen):
         monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-        from lightrag.api import gunicorn_config, lightrag_server
+        from lightrag.api import config, lightrag_server
 
-        uvicorn_main = inspect.getsource(lightrag_server.main)
-        assert "warn_about_workspace_overrides()" in uvicorn_main
-        # Ahead of the splash screen, so it is not buried under it.
-        assert uvicorn_main.index(
-            "warn_about_workspace_overrides()"
-        ) < uvicorn_main.index("display_splash_screen")
+        def check_splash(_args):
+            assert sum("REDIS_WORKSPACE" in message for message in warnings_seen) == 1
 
-        master_hook = inspect.getsource(gunicorn_config.on_starting)
-        assert "warn_about_workspace_overrides()" in master_hook
-        assert "forking workers" in master_hook, (
-            "on_starting must still be the pre-fork hook for this to be once "
-            "per server start"
+        splash = Mock(side_effect=check_splash)
+        run = Mock()
+        monkeypatch.setenv("REDIS_WORKSPACE", "legacy_container")
+        monkeypatch.delenv("GUNICORN_CMD_ARGS", raising=False)
+        monkeypatch.setattr(config, "initialize_config", Mock())
+        monkeypatch.setattr(
+            lightrag_server,
+            "global_args",
+            SimpleNamespace(host="127.0.0.1", port=9621, ssl=False),
         )
+        monkeypatch.setattr(lightrag_server, "check_env_file", lambda: True)
+        monkeypatch.setattr(lightrag_server, "check_and_install_dependencies", Mock())
+        monkeypatch.setattr(lightrag_server, "configure_logging", Mock())
+        monkeypatch.setattr(lightrag_server, "update_uvicorn_mode_config", Mock())
+        monkeypatch.setattr(lightrag_server, "display_splash_screen", splash)
+        monkeypatch.setattr(lightrag_server, "create_app", Mock())
+        monkeypatch.setattr(lightrag_server.uvicorn, "run", run)
+
+        lightrag_server.main()
+
+        splash.assert_called_once()
+        run.assert_called_once()
+
+    def test_gunicorn_warns_before_forking(self, monkeypatch, tmp_path, warnings_seen):
+        monkeypatch.setattr(sys, "argv", ["lightrag-gunicorn"])
+        from lightrag import config_store
+        from lightrag.api import gunicorn_config
+        from lightrag.kg import anchor_lock, working_dir_lock
+
+        monkeypatch.setenv("REDIS_WORKSPACE", "legacy_container")
+        monkeypatch.setenv("LIGHTRAG_CONFIG_STORAGE", "JsonKVStorage")
+        monkeypatch.setattr(gunicorn_config, "working_dir", str(tmp_path))
+        monkeypatch.setattr(gunicorn_config, "workspace", "")
+        monkeypatch.setattr(anchor_lock, "acquire_anchor_lock_shared", Mock())
+        monkeypatch.setattr(config_store, "preflight_configuration_anchor", Mock())
+        monkeypatch.setattr(working_dir_lock, "acquire_working_dir_lock", Mock())
+
+        gunicorn_config.on_starting(object())
+
+        # Gunicorn calls on_starting in the master before it forks workers.
+        assert sum("REDIS_WORKSPACE" in message for message in warnings_seen) == 1
