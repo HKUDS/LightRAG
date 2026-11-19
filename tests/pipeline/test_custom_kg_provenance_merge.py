@@ -246,3 +246,50 @@ async def test_unmapped_source_writes_no_tracking_row(rag):
     foo = await rag.chunk_entity_relation_graph.get_node("Foo")
     assert foo["source_id"] == "UNKNOWN"
     assert await rag.entity_chunks.get_by_ids(["Foo"]) == [None]
+
+
+@pytest.mark.asyncio
+async def test_edges_are_read_only_between_stored_endpoints(rag, monkeypatch):
+    """A pair with a new endpoint cannot have an edge yet, so it is not read:
+    backends without a native get_edges_batch read one edge per round trip."""
+    await _insert_doc(rag)
+    graph = rag.chunk_entity_relation_graph
+    requested: list[list[dict]] = []
+    original = graph.get_edges_batch
+
+    async def _recording(pairs):
+        requested.append(list(pairs))
+        return await original(pairs)
+
+    monkeypatch.setattr(graph, "get_edges_batch", _recording)
+    custom_kg = _custom_kg()
+    custom_kg["relationships"].append(
+        {
+            "src_id": "Foo",
+            "tgt_id": "Newcomer",
+            "description": "Curated newcomer",
+            "keywords": "curated",
+            "source_id": "curated",
+        }
+    )
+    await rag.ainsert_custom_kg(custom_kg)
+
+    assert requested == [[{"src": "Bar", "tgt": "Foo"}]]
+    # The skipped pair is still written, as a new edge.
+    assert (await graph.get_edge("Foo", "Newcomer"))["source_id"] == CURATED_CHUNK
+
+
+@pytest.mark.asyncio
+async def test_all_new_pairs_issue_no_edge_reads(rag, monkeypatch):
+    graph = rag.chunk_entity_relation_graph
+    calls: list[list[dict]] = []
+
+    async def _recording(pairs):
+        calls.append(list(pairs))
+        return {}
+
+    monkeypatch.setattr(graph, "get_edges_batch", _recording)
+    await rag.ainsert_custom_kg(_custom_kg())
+
+    assert calls == []
+    assert (await graph.get_edge("Foo", "Bar"))["source_id"] == CURATED_CHUNK

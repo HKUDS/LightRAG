@@ -5651,10 +5651,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     merged_edges: dict[tuple[str, str], dict[str, Any]] = {}
                     pairs = list(deduped_relationships)
                     if pairs:
+                        # Only a pair whose endpoints both exist can already
+                        # have an edge. Skipping the rest matters: a backend
+                        # without a native get_edges_batch (OpenSearch,
+                        # Memgraph) reads one edge per round trip, serially,
+                        # with every touched key lock held.
+                        candidate_pairs = [
+                            {"src": src, "tgt": tgt}
+                            for src, tgt in pairs
+                            if src in stored_nodes and tgt in stored_nodes
+                        ]
                         stored_edges = (
                             await self.chunk_entity_relation_graph.get_edges_batch(
-                                [{"src": src, "tgt": tgt} for src, tgt in pairs]
+                                candidate_pairs
                             )
+                            if candidate_pairs
+                            else {}
                         )
                         row_keys = [make_relation_chunk_key(*pair) for pair in pairs]
                         relation_rows = dict(
