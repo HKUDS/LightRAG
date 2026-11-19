@@ -7,6 +7,7 @@ import pytest
 from lightrag.parser.markdown.extract import (
     drawing_marker,
     equation_marker,
+    extract_markdown,
     table_marker,
 )
 from lightrag.parser.markdown.ir_builder import NativeMarkdownIRBuilder
@@ -97,6 +98,29 @@ def test_pipe_table_becomes_json_irtable_with_header_grid():
     assert table.html is None
     assert table.table_header == [["H1", "H2"]]
     assert (table.num_rows, table.num_cols) == (2, 2)
+
+
+def test_pipe_table_rows_match_header_width():
+    ex = extract_markdown(
+        "| A | B |\n|---|---|\n| x |\n| y | z | EXTRA |", image_resolver=None
+    )
+    ir = _normalize(ex.blocks, {"md_tables": ex.tables})
+    (table,) = ir.blocks[0].tables
+    assert table.rows == [["A", "B"], ["x", ""], ["y", "z"]]
+    assert table.table_header == [["A", "B"]]
+    assert (table.num_rows, table.num_cols) == (3, 2)
+
+
+def test_pipe_table_without_header_keeps_ragged_rows():
+    rows = [["x"], ["y", "z", "EXTRA"]]
+    ir = _normalize(
+        [{"content": table_marker("t1")}],
+        {"md_tables": {"t1": {"kind": "pipe", "rows": rows}}},
+    )
+    (table,) = ir.blocks[0].tables
+    assert table.rows == rows
+    assert table.table_header is None
+    assert (table.num_rows, table.num_cols) == (2, 3)
 
 
 def test_html_table_becomes_html_irtable_with_thead_and_dims():

@@ -197,6 +197,10 @@ def _build_table(placeholder: str, spec: dict) -> IRTable:
         [str(c) for c in row]
         for row in itertools.chain(header or [], spec.get("rows") or [])
     ]
+    if header:
+        # GFM pads short rows and ignores cells past the header width.
+        width = len(header[0])
+        rows = [(row + [""] * (width - len(row)))[:width] for row in rows]
     num_rows = len(rows)
     num_cols = max((len(r) for r in rows), default=0)
     return IRTable(
