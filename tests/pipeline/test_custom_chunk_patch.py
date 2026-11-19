@@ -57,6 +57,10 @@ async def _dummy_llm(*args, **kwargs) -> str:
     return "ok"
 
 
+# 81 char-tokens: one over the 80-token embedding limit used below.
+_OVER_LIMIT_CHUNK = "1" * 81
+
+
 async def _build_rag(tmp_path, **overrides) -> LightRAG:
     rag = LightRAG(
         working_dir=str(tmp_path / "wd"),
@@ -79,17 +83,17 @@ def _embedding_func(max_token_size: int | None) -> EmbeddingFunc:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["create", "patch"])
-@pytest.mark.parametrize("chunk_token_size", [4, 16])
+@pytest.mark.parametrize("chunk_token_size", [64, 128])
 async def test_oversized_custom_chunk_rejected_before_journal(
     tmp_path, monkeypatch, mode, chunk_token_size
 ):
     """A chunk over the embedding limit is refused before anything is written,
-    whatever ``chunk_token_size`` is."""
+    whatever ``chunk_token_size`` is (below or above the chunk's size)."""
     rag = await _build_rag(
         tmp_path,
         chunk_token_size=chunk_token_size,
         chunk_overlap_token_size=0,
-        embedding_func=_embedding_func(8),
+        embedding_func=_embedding_func(80),
     )
     try:
         _fake_extraction(rag, monkeypatch)
@@ -104,15 +108,15 @@ async def test_oversized_custom_chunk_rejected_before_journal(
         monkeypatch.setattr(rag, "_process_extract_entities", unexpected_extraction)
         with pytest.raises(ChunkTokenLimitExceededError) as exc:
             await rag.ainsert_custom_chunks(
-                "changed", ["bob", "123456789"], doc_id="doc-1"
+                "changed", ["bob", _OVER_LIMIT_CHUNK], doc_id="doc-1"
             )
 
-        assert exc.value.chunk_tokens == 9
-        assert exc.value.chunk_token_limit == 8
+        assert exc.value.chunk_tokens == 81
+        assert exc.value.chunk_token_limit == 80
         assert "embedding token limit" in str(exc.value)
         assert await rag.doc_status.get_by_id("doc-1") == before
         assert await rag.full_docs.get_by_id("doc-1") == full_doc_before
-        for text in ("bob", "123456789"):
+        for text in ("bob", _OVER_LIMIT_CHUNK):
             assert await rag.text_chunks.get_by_id(_chunk_id("doc-1", text)) is None
     finally:
         await rag.finalize_storages()
@@ -127,30 +131,32 @@ async def test_chunk_over_chunk_token_size_is_accepted(
     chunkers; only a positive embedding limit bounds them."""
     rag = await _build_rag(
         tmp_path,
-        chunk_token_size=4,
+        chunk_token_size=64,
         chunk_overlap_token_size=0,
         embedding_func=_embedding_func(embedding_limit),
     )
+    big = "alice " + "1" * 70
     try:
         _fake_extraction(rag, monkeypatch)
-        await rag.ainsert_custom_chunks("base", ["alice 123456789"], doc_id="doc-1")
+        await rag.ainsert_custom_chunks("base", [big], doc_id="doc-1")
 
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value
-        chunk = await rag.text_chunks.get_by_id(_chunk_id("doc-1", "alice 123456789"))
-        assert chunk["content"] == "alice 123456789"
-        assert chunk["tokens"] == 15
+        chunk = await rag.text_chunks.get_by_id(_chunk_id("doc-1", big))
+        assert chunk["content"] == big
+        assert chunk["tokens"] == 76
     finally:
         await rag.finalize_storages()
 
 
 @pytest.mark.asyncio
 async def test_exact_limit_custom_chunk_keeps_caller_boundaries(tmp_path, monkeypatch):
+    exact = "alice " + "x" * 66  # 72 tokens: above chunk_token_size, at the limit
     rag = await _build_rag(
         tmp_path,
-        chunk_token_size=4,
+        chunk_token_size=64,
         chunk_overlap_token_size=0,
-        embedding_func=_embedding_func(8),
+        embedding_func=_embedding_func(72),
     )
     try:
         _fake_extraction(rag, monkeypatch)
@@ -164,22 +170,22 @@ async def test_exact_limit_custom_chunk_keeps_caller_boundaries(tmp_path, monkey
 
         monkeypatch.setattr(rag.tokenizer, "encode", recording_encode)
         await rag.ainsert_custom_chunks(
-            "base", ["alice xx", "", "alice xx", "bob"], doc_id="doc-1"
+            "base", [exact, "", exact, "bob"], doc_id="doc-1"
         )
 
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value
         assert row["chunks_list"] == [
-            _chunk_id("doc-1", "alice xx"),
+            _chunk_id("doc-1", exact),
             _chunk_id("doc-1", "bob"),
         ]
-        chunk = await rag.text_chunks.get_by_id(_chunk_id("doc-1", "alice xx"))
-        assert chunk["content"] == "alice xx"
-        assert chunk["tokens"] == 8
+        chunk = await rag.text_chunks.get_by_id(_chunk_id("doc-1", exact))
+        assert chunk["content"] == exact
+        assert chunk["tokens"] == 72
         custom_encodes = [
-            (text, thread) for text, thread in encoded if text in ("alice xx", "bob")
+            (text, thread) for text, thread in encoded if text in (exact, "bob")
         ]
-        assert [text for text, _ in custom_encodes] == ["alice xx", "bob"]
+        assert [text for text, _ in custom_encodes] == [exact, "bob"]
         assert all(thread != loop_thread for _, thread in custom_encodes)
     finally:
         await rag.finalize_storages()

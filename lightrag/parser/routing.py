@@ -16,6 +16,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
+    MIN_CHUNK_TOKEN_SIZE,
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_NATIVE,
     PROCESS_OPTION_CHUNK_CHARS,
@@ -285,6 +286,43 @@ def chunk_strategy_key(process_options: Any) -> str:
     else:
         strategy = parse_process_options(process_options).chunking
     return _CHUNK_STRATEGY_KEYS.get(strategy, "fixed_token")
+
+
+def validate_chunk_token_sizes(chunk_config: Mapping[str, Any] | None) -> None:
+    """Reject any ``chunk_token_size`` below :data:`MIN_CHUNK_TOKEN_SIZE`.
+
+    Checks the top-level slot and every strategy sub-dict present in
+    ``chunk_config`` (a full ``addon_params['chunker']`` dict or a slim
+    per-document snapshot). Absent and ``None`` slots are skipped: they
+    inherit a value that is checked where it is set.
+
+    Call it where configuration ENTERS the system (``LightRAG`` init, the
+    ``addon_params`` setter, enqueue). Do not call it when processing an
+    already persisted snapshot: a document accepted under an older rule
+    must stay processable on retry.
+
+    Raises:
+        ValueError: naming the offending slot and value.
+    """
+    if not chunk_config:
+        return
+    slots: list[tuple[str, Any]] = [("chunker", chunk_config)]
+    for key in dict.fromkeys(_CHUNK_STRATEGY_KEYS.values()):
+        sub = chunk_config.get(key)
+        if isinstance(sub, Mapping):
+            slots.append((f"chunker.{key}", sub))
+    for label, slot in slots:
+        value = slot.get("chunk_token_size")
+        if value is None:
+            continue
+        if int(value) < MIN_CHUNK_TOKEN_SIZE:
+            raise ValueError(
+                f"{label}.chunk_token_size must be >= {MIN_CHUNK_TOKEN_SIZE}, "
+                f"got {value!r}; a chunk this small is a misconfiguration "
+                "(check CHUNK_SIZE / CHUNK_F_SIZE / CHUNK_R_SIZE / "
+                "CHUNK_V_SIZE / CHUNK_P_SIZE, LightRAG(chunk_token_size=...) "
+                "and addon_params['chunker'])"
+            )
 
 
 def slim_chunk_options(

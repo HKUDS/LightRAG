@@ -99,7 +99,7 @@ from lightrag.constants import (
     KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.utils import get_env_value
-from lightrag.parser.routing import _chunk_env_int
+from lightrag.parser.routing import _chunk_env_int, validate_chunk_token_sizes
 
 from lightrag.kg import (
     deprecated_storage_message,
@@ -1556,8 +1556,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         return self._addon_params
 
     def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
-        self._replace_addon_params(addon_params, mark_dirty=True)
-        self._apply_chunk_size_overlay()
+        # All-or-nothing: a replacement the overlay rejects (a chunk size
+        # below MIN_CHUNK_TOKEN_SIZE) must leave the previous configuration
+        # in force, not a half-applied one.
+        previous = (
+            self._addon_params,
+            self.chunk_token_size,
+            self.chunk_overlap_token_size,
+        )
+        try:
+            self._replace_addon_params(addon_params, mark_dirty=True)
+            self._apply_chunk_size_overlay()
+        except BaseException:
+            (
+                self._addon_params,
+                self.chunk_token_size,
+                self.chunk_overlap_token_size,
+            ) = previous
+            self._mark_addon_params_dirty()
+            raise
 
     def _apply_chunk_size_overlay(self) -> None:
         """Reconcile chunk-size config across all four configuration tiers.
@@ -1668,6 +1685,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 sub = {}
                 chunker_cfg[strategy_key] = sub
             sub.setdefault("chunk_token_size", size_val)
+
+        # Every slot is resolved now, so this one check covers env, the
+        # legacy constructor fields and addon_params alike.
+        validate_chunk_token_sizes(chunker_cfg)
 
         # Back-fill legacy instance fields → always int afterwards.
         # Overlap mirrors the F-strategy resolved value, matching the

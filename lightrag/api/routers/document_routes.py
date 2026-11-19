@@ -88,6 +88,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     MAX_R_SEPARATOR_CHARS,
     MAX_R_SEPARATORS,
+    MIN_CHUNK_TOKEN_SIZE,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_CUSTOM,
@@ -639,7 +640,7 @@ class _StrictChunkParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    chunk_token_size: Optional[int] = Field(default=None, ge=1)
+    chunk_token_size: Optional[int] = Field(default=None, ge=MIN_CHUNK_TOKEN_SIZE)
 
 
 class _OverlapChunkParams(_StrictChunkParams):

@@ -1035,12 +1035,21 @@ class _PipelineMixin:
             from lightrag.parser.routing import (
                 resolve_chunk_options,
                 slim_chunk_options,
+                validate_chunk_token_sizes,
             )
 
             doc_options = _process_options_at(index)
             if chunk_options is not None:
-                return slim_chunk_options(chunk_options[index], doc_options)
-            return resolve_chunk_options(self.addon_params, process_options=doc_options)
+                snapshot = slim_chunk_options(chunk_options[index], doc_options)
+            else:
+                snapshot = resolve_chunk_options(
+                    self.addon_params, process_options=doc_options
+                )
+            # Enqueue is the last ingress before the snapshot is frozen: it
+            # catches a caller-supplied ``chunk_options=`` and a nested
+            # ``addon_params`` mutation that bypassed the init-time check.
+            validate_chunk_token_sizes(snapshot)
+            return snapshot
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:

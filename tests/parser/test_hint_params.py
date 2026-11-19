@@ -143,7 +143,8 @@ def test_filename_hint_drop_references_bare_flag():
     "block,needle",
     [
         ("chunk_ts=abc", "must be an integer"),
-        ("chunk_ts=0", "must be >= 1"),
+        ("chunk_ts=0", "must be >= 64"),
+        ("chunk_ts=63", "must be >= 64"),
         ("foo=1", "unknown parameter 'foo'"),
         ("chunk_ts=1,chunk_ts=2", "may not be repeated"),
         ("correct_tl", "unknown parameter 'correct_tl'"),
@@ -152,7 +153,7 @@ def test_filename_hint_drop_references_bare_flag():
         ("", "empty parameter"),
         # Cross-field invariant: explicit overlap >= size is rejected here, so
         # both rule and filename-hint validation reject it (not just enqueue).
-        ("chunk_ts=50,chunk_ol=100", "must be < chunk_token_size"),
+        ("chunk_ts=80,chunk_ol=100", "must be < chunk_token_size"),
         ("chunk_ts=100,chunk_ol=100", "must be < chunk_token_size"),
     ],
 )
@@ -213,7 +214,7 @@ def test_unknown_native_engine_params_are_rejected():
         "x.[-V(chunk_ol=80)].md",  # overlap invalid for V
         "x.[-R(chunk_ts=abc)].md",  # non-integer
         "x.[native-R(foo=1)].md",  # unknown parameter
-        "x.[-R(chunk_ts=50,chunk_ol=100)].md",  # explicit overlap >= size
+        "x.[-R(chunk_ts=80,chunk_ol=100)].md",  # explicit overlap >= size
     ],
 )
 def test_upload_validation_raises_on_bad_filename_params(name):
@@ -293,7 +294,7 @@ def test_validate_parser_routing_config_accepts_good_params():
         ("pdf:legacy-R(foo=1)", "unknown parameter 'foo'"),
         # Cross-field invariant: explicit overlap >= size is rejected at startup
         # so a global rule cannot make every matching upload fail at enqueue.
-        ("pdf:legacy-R(chunk_ts=50,chunk_ol=100)", "must be < chunk_token_size"),
+        ("pdf:legacy-R(chunk_ts=80,chunk_ol=100)", "must be < chunk_token_size"),
         ("pdf:legacy-R(chunk_ts=100,chunk_ol=100)", "must be < chunk_token_size"),
     ],
 )
@@ -401,7 +402,7 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
     # An explicit overlap (100) >= size (50) pair is rejected up front by
     # filename-hint validation (uniform with rule validation), so the file
     # never enqueues and the overlap message is surfaced in the error document.
-    f = tmp_path / "tiny.[-R(chunk_ts=50,chunk_ol=100)].md"
+    f = tmp_path / "tiny.[-R(chunk_ts=80,chunk_ol=100)].md"
     f.write_text("hello world", encoding="utf-8")
 
     ok, _track = asyncio.run(pipeline_enqueue_file(rag, f))

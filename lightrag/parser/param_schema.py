@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.constants import (
+    MIN_CHUNK_TOKEN_SIZE,
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
@@ -147,7 +148,7 @@ _CHUNK_PARAM_SPECS: tuple[ParamSpec, ...] = (
         aliases=frozenset({"chunk_ts"}),
         kind="int",
         targets=_ALL_CHUNK_SELECTORS,
-        min_value=1,
+        min_value=MIN_CHUNK_TOKEN_SIZE,
     ),
     ParamSpec(
         canonical="chunk_overlap_token_size",
