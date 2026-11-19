@@ -22,11 +22,13 @@ from lightrag.utils import (
     Tokenizer,
     TokenBudgetError,
     normalize_entity_name,
+    remove_spaces_next_to_chinese,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
     strip_markdown_code_fence,
     tolerant_load_json_dict,
+    _first_structural_opener,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     acount_tokens,
@@ -44,6 +46,8 @@ from lightrag.utils import (
     get_llm_cache_identity,
     serialize_llm_cache_identity,
     remove_think_tags,
+    is_reasoning_only_answer,
+    reject_reasoning_only_answer,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
     process_chunks_unified,
@@ -58,6 +62,7 @@ from lightrag.utils import (
     make_relation_chunk_key,
     has_chunk_tracking_row,
     _cooperative_yield,
+    cancel_and_drain_tasks,
     wait_tasks_with_drain,
     performance_timing_log,
 )
@@ -244,6 +249,24 @@ def _truncate_entity_identifier(
         preview,
     )
     return display_value
+
+
+def _finalize_extracted_identifier(
+    identifier: str, chunk_key: str, identifier_role: str
+) -> str:
+    """Cap an extracted entity identifier, then run the final space pass.
+
+    ``identifier`` must come from ``normalize_entity_name(...,
+    final_space_pass=False)``. The pass runs after the cap, never before it:
+    the pass shortens a name, so cutting its output can give two spellings
+    different keys where the cut of the previous rules gave them one, which
+    breaks the merge-only rule of :func:`normalize_extracted_info`. Running it
+    on the capped key keeps the new key a function of the stored one.
+    """
+    capped = _truncate_entity_identifier(
+        identifier, DEFAULT_ENTITY_NAME_MAX_LENGTH, chunk_key, identifier_role
+    )
+    return remove_spaces_next_to_chinese(capped)
 
 
 def _truncate_section_context(
@@ -722,7 +745,9 @@ def _handle_single_entity_extraction(
         return None
 
     try:
-        entity_name = normalize_entity_name(record_attributes[1])
+        entity_name = normalize_entity_name(
+            record_attributes[1], final_space_pass=False
+        )
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -742,7 +767,9 @@ def _handle_single_entity_extraction(
             return None
 
         # Process entity description with same cleaning pipeline
-        entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
+        entity_description = sanitize_and_normalize_extracted_text(
+            record_attributes[3], multiline=True
+        )
 
         if not entity_description.strip():
             logger.warning(
@@ -788,8 +815,8 @@ def _handle_single_relationship_extraction(
         return None
 
     try:
-        source = normalize_entity_name(record_attributes[1])
-        target = normalize_entity_name(record_attributes[2])
+        source = normalize_entity_name(record_attributes[1], final_space_pass=False)
+        target = normalize_entity_name(record_attributes[2], final_space_pass=False)
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -817,7 +844,9 @@ def _handle_single_relationship_extraction(
         edge_keywords = edge_keywords.replace("，", ",")
 
         # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
+        edge_description = sanitize_and_normalize_extracted_text(
+            record_attributes[4], multiline=True
+        )
         if not edge_description.strip():
             logger.warning(
                 f"Relationship extraction error: empty description for relation '{source}'~'{target}' in chunk '{chunk_key}'"
@@ -972,7 +1001,9 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            entity_name = normalize_entity_name(str(entity_data.get("name", "")))
+            entity_name = normalize_entity_name(
+                str(entity_data.get("name", "")), final_space_pass=False
+            )
             if not entity_name or not entity_name.strip():
                 logger.info(
                     f"{chunk_key}: Empty entity name found after sanitization in JSON result"
@@ -989,7 +1020,7 @@ async def _process_json_extraction_result(
                 continue
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("description", ""))
+                str(entity_data.get("description", "")), multiline=True
             )
             if not entity_description.strip():
                 logger.warning(
@@ -997,9 +1028,8 @@ async def _process_json_extraction_result(
                 )
                 continue
 
-            truncated_name = _truncate_entity_identifier(
+            truncated_name = _finalize_extracted_identifier(
                 entity_name,
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Entity name",
             )
@@ -1033,8 +1063,12 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            source = normalize_entity_name(str(rel_data.get("source", "")))
-            target = normalize_entity_name(str(rel_data.get("target", "")))
+            source = normalize_entity_name(
+                str(rel_data.get("source", "")), final_space_pass=False
+            )
+            target = normalize_entity_name(
+                str(rel_data.get("target", "")), final_space_pass=False
+            )
 
             if not source:
                 logger.info(
@@ -1056,7 +1090,7 @@ async def _process_json_extraction_result(
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("description", ""))
+                str(rel_data.get("description", "")), multiline=True
             )
 
             if not edge_description.strip():
@@ -1065,18 +1099,22 @@ async def _process_json_extraction_result(
                 )
                 continue
 
-            truncated_source = _truncate_entity_identifier(
+            truncated_source = _finalize_extracted_identifier(
                 source,
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
-            truncated_target = _truncate_entity_identifier(
+            truncated_target = _finalize_extracted_identifier(
                 target,
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
+            # The cap and the final space pass can make the endpoints equal.
+            if truncated_source == truncated_target:
+                logger.debug(
+                    f"{chunk_key}: Source and target are the same: '{truncated_source}'"
+                )
+                continue
 
             edge_data = dict(
                 src_id=truncated_source,
@@ -1610,9 +1648,8 @@ async def _process_extraction_result(
             record_attributes, chunk_key, timestamp, file_path
         )
         if entity_data is not None:
-            truncated_name = _truncate_entity_identifier(
+            truncated_name = _finalize_extracted_identifier(
                 entity_data["entity_name"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Entity name",
             )
@@ -1626,21 +1663,27 @@ async def _process_extraction_result(
             record_attributes, chunk_key, timestamp, file_path
         )
         if relationship_data is not None:
-            truncated_source = _truncate_entity_identifier(
+            truncated_source = _finalize_extracted_identifier(
                 relationship_data["src_id"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
-            truncated_target = _truncate_entity_identifier(
+            truncated_target = _finalize_extracted_identifier(
                 relationship_data["tgt_id"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
                 "Relation entity",
             )
-            relationship_data["src_id"] = truncated_source
-            relationship_data["tgt_id"] = truncated_target
-            maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
+            # The cap and the final space pass can make the endpoints equal.
+            if truncated_source == truncated_target:
+                logger.debug(
+                    f"Relationship source and target are the same in: {record_attributes}"
+                )
+            else:
+                relationship_data["src_id"] = truncated_source
+                relationship_data["tgt_id"] = truncated_target
+                maybe_edges[(truncated_source, truncated_target)].append(
+                    relationship_data
+                )
         await _cooperative_yield(i, every=8)
 
     return dict(maybe_nodes), dict(maybe_edges)
@@ -3719,6 +3762,8 @@ async def merge_nodes_and_edges(
         if on_anchors_durable is not None:
             await on_anchors_durable()
 
+    entity_tasks: list[asyncio.Task] = []
+    edge_tasks: list[asyncio.Task] = []
     try:
         # Get max async tasks limit from global_config for semaphore control
         graph_max_async = global_config.get("llm_model_max_async", 4) * 2
@@ -3790,7 +3835,6 @@ async def merge_nodes_and_edges(
                         raise prefixed_exception from e
 
         # Create entity processing tasks
-        entity_tasks = []
         for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
             task = asyncio.create_task(
                 _locked_process_entity_name(entity_name, entities)
@@ -3887,7 +3931,6 @@ async def merge_nodes_and_edges(
                         raise prefixed_exception from e
 
         # Create relationship processing tasks
-        edge_tasks = []
         edge_task_labels: dict[asyncio.Task, str] = {}
         for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
             task = asyncio.create_task(_locked_process_edges(edge_key, edges))
@@ -3925,6 +3968,16 @@ async def merge_nodes_and_edges(
         # exceptions — is gone: a merge whose anchors cannot be persisted no
         # longer mutates the graph at all.
 
+    except (Exception, asyncio.CancelledError):
+        # wait_tasks_with_drain only covers cancellation while it is waiting.
+        # The creation loops yield (_cooperative_yield) before it starts, so a
+        # cancellation landing there would leave the writers created so far
+        # merging into the graph after this coroutine has exited and recovery
+        # has begun. Same exit rule as extract_entities: stop and collect
+        # every scheduled writer first. Tasks already drained by
+        # wait_tasks_with_drain are done, so this is then a no-op.
+        await cancel_and_drain_tasks(entity_tasks + edge_tasks)
+        raise
     finally:
         # On EVERY exit — the inter-phase await points (sleep(0) yields,
         # status-lock acquires) sit outside any narrower handler, and a
@@ -4633,6 +4686,18 @@ async def extract_entities(
                 first_exception, progress_prefix
             )
             raise prefixed_exception from first_exception
+    except (Exception, asyncio.CancelledError):
+        # asyncio.wait never cancels the tasks it waits on. Without this, an
+        # external cancellation of this coroutine (pipeline cancel, server
+        # shutdown) leaves the chunk tasks running: still calling the LLM for
+        # a document already abandoned, and failing later with nobody left to
+        # retrieve the exception ("Task exception was never retrieved").
+        # Same rule as wait_tasks_with_drain: cancel what still runs and
+        # collect every outcome before unwinding. On the failure path above
+        # the tasks are already done; this then only retrieves whatever the
+        # cancelled siblings raised.
+        await cancel_and_drain_tasks(tasks)
+        raise
     finally:
         # On EVERY exit — mirrors merge_nodes_and_edges. The success and
         # failure paths used to publish explicitly, but an external
@@ -4688,6 +4753,25 @@ def _answer_cache_kv(
         )
         return None
     return hashing_kv
+
+
+def _drop_reasoning_only_cache_hit(
+    cached_result: tuple[str, int] | None,
+) -> tuple[str, int] | None:
+    """Treat a cached reasoning-only answer as a cache miss.
+
+    Entries written before ``reject_reasoning_only_answer`` guarded the cache
+    write can hold a ``<think>`` trace with no answer. Serving one would
+    replay it forever; a miss regenerates the answer, and the regenerated
+    one overwrites the entry (or the generation raises, as for a fresh miss).
+    """
+    if cached_result is not None and is_reasoning_only_answer(cached_result[0]):
+        logger.warning(
+            " == LLM cache == Ignoring a cached query answer that carries only "
+            "a reasoning trace; regenerating it"
+        )
+        return None
+    return cached_result
 
 
 async def kg_query(
@@ -4751,10 +4835,19 @@ async def kg_query(
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
-    # Handle empty keywords
-    if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
+    # Handle empty keywords. An empty list that the search covers with a
+    # fallback is reported there (_resolve_kg_search_queries), with the
+    # substitution it makes; warn here only when nothing stands in for it.
+    if (
+        ll_keywords == []
+        and query_param.mode in ["local", "hybrid", "mix"]
+        and not hl_keywords
+    ):
         logger.warning("low_level_keywords is empty")
-    if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
+    if hl_keywords == [] and (
+        query_param.mode in ["hybrid", "mix"]
+        or (query_param.mode == "global" and not ll_keywords)
+    ):
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
         if len(query) < 50:
@@ -4781,6 +4874,7 @@ async def kg_query(
         # The token budget must be computed against the template this function
         # will actually render below, not the default one.
         system_prompt=system_prompt,
+        user_prompt_prefix=global_config.get("user_prompt_prefix", ""),
     )
 
     if context_result is None:
@@ -4858,6 +4952,9 @@ async def kg_query(
     kg_chunk_pick_method = retrieval_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
     )
+    keyword_fallback = _kg_keyword_fallback(
+        query_param.mode, ll_keywords_str, hl_keywords_str
+    )
     args_hash = compute_args_hash(
         _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
@@ -4886,13 +4983,27 @@ async def kg_query(
         "\n<kg_chunk_selection>\n",
         related_chunk_number,
         kg_chunk_pick_method,
+        # Unconditional: max_total_tokens now caps the whole rendered KG
+        # context, so the same request can keep fewer graph records or chunks
+        # (with regenerated reference IDs) than the code that wrote an older
+        # entry. Serving that entry pairs its citations with a reference list
+        # that no longer has them, so every KG answer written before must
+        # miss. Only the KG key carries it: the naive context is unchanged.
+        "\n<kg_total_budget>\n",
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        # Present only when the search swaps keyword lists between stores. An
+        # answer cached before that routing existed was written from another
+        # store's context, so it must miss; every other entry keeps hitting,
+        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        *(("\n<kg_keyword_fallback>\n", keyword_fallback) if keyword_fallback else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
 
-    cached_result = await handle_cache(
-        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    cached_result = _drop_reasoning_only_cache_hit(
+        await handle_cache(
+            answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        )
     )
 
     if cached_result is not None:
@@ -4911,6 +5022,9 @@ async def kg_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+        # A reasoning trace with no answer is a failed generation, not an
+        # answer: never return it as one, never cache it.
+        reject_reasoning_only_answer(response)
 
         if (
             answer_cache_kv
@@ -4951,17 +5065,6 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
         # Streaming response (AsyncIterator)
@@ -5004,6 +5107,12 @@ async def get_keywords_from_query(
     return hl_keywords, ll_keywords
 
 
+# The placeholder tokens of PROMPTS["keywords_extraction_examples"], with an
+# optional numeric suffix so the template may list several per array. Matched
+# by name, never by shape: "<div>" is a legitimate keyword for an HTML query.
+_KEYWORD_TEMPLATE_PLACEHOLDER = re.compile(r"<(?:high|low)_level_keyword(?:_\d+)?>")
+
+
 def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     """Normalize keyword payloads into a clean list of strings.
 
@@ -5034,7 +5143,9 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     for idx, value in enumerate(raw_values):
         if isinstance(value, str):
             cleaned = value.strip()
-            if cleaned:
+            # An echoed template placeholder is not a keyword: kept, it would
+            # be embedded for retrieval and cached for every later run.
+            if cleaned and not _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch(cleaned):
                 normalized.append(cleaned)
             continue
 
@@ -5046,6 +5157,34 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
         )
 
     return normalized
+
+
+def _select_keywords_object(text: str, candidates: list[Any]) -> Any:
+    """Pick the keyword object out of a reply that holds several JSON objects.
+
+    ``json_repair`` returns a list when a reply repeats itself, e.g. a fenced
+    object, a "let me fix my format" line, then a second object. Returns the
+    first object that carries a real keyword, so an echoed format template, an
+    echoed empty-list example or an unrelated leading object does not shadow
+    the answer; failing that the first object, so an all-empty reply is still
+    a valid "no keywords" answer.
+
+    Returns ``candidates`` unchanged, which the caller rejects, when the reply
+    is a top-level array or holds no object at all: an array element is never
+    taken for the whole answer.
+    """
+    opener, _ = _first_structural_opener(text)
+    if opener != "{":
+        return candidates
+
+    objects = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    for candidate in objects:
+        if any(
+            _normalize_keyword_list(candidate.get(field_name), field_name)
+            for field_name in ("high_level_keywords", "low_level_keywords")
+        ):
+            return candidate
+    return objects[0] if objects else candidates
 
 
 def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
@@ -5078,6 +5217,8 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
                     strict_error,
                     cleaned_result[:500],
                 )
+                if isinstance(payload, list):
+                    payload = _select_keywords_object(cleaned_result, payload)
             except Exception as repair_error:
                 logger.error(
                     "JSON parsing error: %s; repair failed: %s; response: %r",
@@ -5277,6 +5418,61 @@ async def _get_vector_context(
     return valid_chunks
 
 
+def _kg_keyword_fallback(mode: str, ll_keywords: str, hl_keywords: str) -> str:
+    """Name the keyword fallback a KG search applies; "" when it applies none.
+
+    The name is part of the answer-cache key (see ``kg_query``), so renaming a
+    value retires the cached answers of every request that took that fallback.
+    """
+    if not ll_keywords and hl_keywords and mode in ("local", "hybrid", "mix"):
+        return "entities_by_high_level_keywords"
+    if not hl_keywords and ll_keywords and mode == "global":
+        return "relationships_by_low_level_keywords"
+    return ""
+
+
+def _resolve_kg_search_queries(
+    mode: str, ll_keywords: str, hl_keywords: str
+) -> tuple[str, str]:
+    """Return ``(entity_query, relation_query)`` for a KG search; "" skips a store.
+
+    ``local`` owns the entity store, ``global`` the relationship store,
+    ``hybrid`` / ``mix`` both. Low-level keywords normally drive the entity
+    search and high-level keywords the relationship search.
+
+    When keyword extraction leaves a mode's own list empty, the other list
+    stands in for it on the SAME store. Weaker models routinely put the named
+    entities under ``high_level_keywords`` and return no low-level ones, which
+    would otherwise leave the entity store unqueried. The fallbacks are:
+
+    * low-level empty, ``local`` / ``hybrid`` / ``mix``: high-level keywords
+      query the entity store.
+    * high-level empty, ``global``: low-level keywords query the relationship
+      store.
+
+    A mode never falls through to the store it does not own: ``local`` with no
+    low-level keywords stays an entity search, it does not become ``global``.
+    """
+    entity_query = ll_keywords if mode in ("local", "hybrid", "mix") else ""
+    relation_query = hl_keywords if mode in ("global", "hybrid", "mix") else ""
+
+    fallback = _kg_keyword_fallback(mode, ll_keywords, hl_keywords)
+    if fallback == "entities_by_high_level_keywords":
+        entity_query = hl_keywords
+        logger.warning(
+            "low_level_keywords is empty: querying entities with "
+            "high_level_keywords instead (mode=%s)",
+            mode,
+        )
+    elif fallback == "relationships_by_low_level_keywords":
+        relation_query = ll_keywords
+        logger.warning(
+            "high_level_keywords is empty: querying relationships with "
+            "low_level_keywords instead (mode=global)"
+        )
+    return entity_query, relation_query
+
+
 async def _perform_kg_search(
     query: str,
     ll_keywords: str,
@@ -5323,8 +5519,11 @@ async def _perform_kg_search(
     hl_embedding = None
 
     mode = query_param.mode
-    need_ll = mode in ("local", "hybrid", "mix") and bool(ll_keywords)
-    need_hl = mode in ("global", "hybrid", "mix") and bool(hl_keywords)
+    entity_query, relation_query = _resolve_kg_search_queries(
+        mode, ll_keywords, hl_keywords
+    )
+    need_ll = bool(entity_query)
+    need_hl = bool(relation_query)
 
     if actual_embedding_func:
         texts_to_embed: list[str] = []
@@ -5335,11 +5534,13 @@ async def _perform_kg_search(
             text_purposes.append("query")
 
         if need_ll:
-            texts_to_embed.append(ll_keywords)
+            texts_to_embed.append(entity_query)
             text_purposes.append("ll")
 
-        if need_hl:
-            texts_to_embed.append(hl_keywords)
+        # A fallback can route one keyword string to both stores; embed it once.
+        share_keyword_embedding = need_ll and relation_query == entity_query
+        if need_hl and not share_keyword_embedding:
+            texts_to_embed.append(relation_query)
             text_purposes.append("hl")
 
         if texts_to_embed:
@@ -5354,6 +5555,8 @@ async def _perform_kg_search(
                         ll_embedding = all_embeddings[i]
                     elif purpose == "hl":
                         hl_embedding = all_embeddings[i]
+                if share_keyword_embedding:
+                    hl_embedding = ll_embedding
                 logger.debug(
                     "Pre-computed %d embeddings in single batch (purposes: %s)",
                     len(texts_to_embed),
@@ -5362,72 +5565,51 @@ async def _perform_kg_search(
             except Exception as e:
                 logger.warning(f"Failed to batch pre-compute embeddings: {e}")
 
-    # Handle local and global modes
-    if query_param.mode == "local" and len(ll_keywords) > 0:
+    # Each store is searched with the query string resolved above, so a mode
+    # never reaches a store it does not own (see _resolve_kg_search_queries).
+    if entity_query:
         if progress_callback:
             await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
         local_entities, local_relations = await _get_node_data(
-            ll_keywords,
+            entity_query,
             knowledge_graph_inst,
             entities_vdb,
             query_param,
             query_embedding=ll_embedding,
         )
 
-    elif query_param.mode == "global" and len(hl_keywords) > 0:
+    if relation_query:
         if progress_callback:
             await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
         global_relations, global_entities = await _get_edge_data(
-            hl_keywords,
+            relation_query,
             knowledge_graph_inst,
             relationships_vdb,
             query_param,
             query_embedding=hl_embedding,
         )
 
-    else:  # hybrid or mix mode
-        if len(ll_keywords) > 0:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
-            local_entities, local_relations = await _get_node_data(
-                ll_keywords,
-                knowledge_graph_inst,
-                entities_vdb,
-                query_param,
-                query_embedding=ll_embedding,
-            )
-        if len(hl_keywords) > 0:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
-            global_relations, global_entities = await _get_edge_data(
-                hl_keywords,
-                knowledge_graph_inst,
-                relationships_vdb,
-                query_param,
-                query_embedding=hl_embedding,
-            )
-
-        # Get vector chunks for mix mode
-        if query_param.mode == "mix" and chunks_vdb:
-            if progress_callback:
-                await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
-            vector_chunks = await _get_vector_context(
-                query,
-                chunks_vdb,
-                query_param,
-                query_embedding,
-            )
-            # Track vector chunks with source metadata
-            for i, chunk in enumerate(vector_chunks):
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
-                if chunk_id:
-                    chunk_tracking[chunk_id] = {
-                        "source": "C",
-                        "frequency": 1,  # Vector chunks always have frequency 1
-                        "order": i + 1,  # 1-based order in vector search results
-                    }
-                else:
-                    logger.warning(f"Vector chunk missing chunk_id: {chunk}")
+    # Get vector chunks for mix mode
+    if query_param.mode == "mix" and chunks_vdb:
+        if progress_callback:
+            await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
+        vector_chunks = await _get_vector_context(
+            query,
+            chunks_vdb,
+            query_param,
+            query_embedding,
+        )
+        # Track vector chunks with source metadata
+        for i, chunk in enumerate(vector_chunks):
+            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            if chunk_id:
+                chunk_tracking[chunk_id] = {
+                    "source": "C",
+                    "frequency": 1,  # Vector chunks always have frequency 1
+                    "order": i + 1,  # 1-based order in vector search results
+                }
+            else:
+                logger.warning(f"Vector chunk missing chunk_id: {chunk}")
 
     # Round-robin merge entities
     final_entities = []
@@ -5502,6 +5684,8 @@ async def _apply_token_truncation(
     search_result: dict[str, Any],
     query_param: QueryParam,
     global_config: dict[str, str],
+    query: str | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
@@ -5648,6 +5832,21 @@ async def _apply_token_truncation(
             tokenizer=tokenizer,
         )
 
+    budget_exhausted = False
+    if query is not None:
+        fitted = await run_in_tokenizer_executor(
+            _fit_kg_context_to_total_budget,
+            entities_context,
+            relations_context,
+            [],
+            query,
+            query_param,
+            global_config,
+            system_prompt,
+        )
+        budget_exhausted = fitted is None
+        entities_context, relations_context = fitted[:2] if fitted else ([], [])
+
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
@@ -5713,7 +5912,119 @@ async def _apply_token_truncation(
         "filtered_relations": filtered_relations,
         "entity_id_to_original": filtered_entity_id_to_original,
         "relation_id_to_original": filtered_relation_id_to_original,
+        "token_budget_exceeded": budget_exhausted,
     }
+
+
+def _fit_kg_context_to_total_budget(
+    entities: list[dict],
+    relations: list[dict],
+    chunks: list[dict],
+    query: str,
+    query_param: QueryParam,
+    global_config: dict,
+    system_prompt: str | None,
+) -> tuple[list[dict], list[dict], list[dict], str, list[dict]] | None:
+    """Keep whole ranked records under the rendered system-prompt/query budget.
+
+    Run in the tokenizer executor. Graph records are interleaved by rank, keeping
+    each source's prefix order; chunks use the remaining capacity. Return None
+    when the empty context and required prompt alone cannot fit. Conversation
+    history and provider message framing are outside this query-context budget.
+    """
+    tokenizer = global_config["tokenizer"]
+    limit = query_param.max_total_tokens
+    template = system_prompt or PROMPTS["rag_response"]
+    user_prompt = resolve_user_prompt(
+        query_param.user_prompt,
+        global_config.get("user_prompt_prefix", ""),
+        query_param.disable_user_prompt_prefix,
+    ).slot
+    query_tokens = len(tokenizer.encode(query))
+
+    def render(entity_records, relation_records, chunk_records):
+        references, rendered_chunks = generate_reference_list_from_chunks(chunk_records)
+        context = PROMPTS["kg_query_context"].format(
+            entities_str="\n".join(
+                json.dumps(record, ensure_ascii=False) for record in entity_records
+            ),
+            relations_str="\n".join(
+                json.dumps(record, ensure_ascii=False) for record in relation_records
+            ),
+            text_chunks_str=render_chunks_context_text(rendered_chunks),
+            reference_list_str="\n".join(
+                f"[{ref['reference_id']}] {ref['file_path']}" for ref in references
+            ),
+        )
+        prompt = template.format(
+            context_data=context,
+            response_type=query_param.response_type or "Multiple Paragraphs",
+            user_prompt=user_prompt,
+        )
+        fits = len(tokenizer.encode(prompt)) + query_tokens <= limit
+        return fits, (
+            entity_records,
+            relation_records,
+            rendered_chunks,
+            context,
+            references,
+        )
+
+    if not render([], [], [])[0]:
+        logger.warning("max_total_tokens cannot fit the required query prompt")
+        return None
+
+    ranked = [
+        (kind, records[index])
+        for index in range(max(len(entities), len(relations)))
+        for kind, records in (("entity", entities), ("relation", relations))
+        if index < len(records)
+    ]
+
+    def graph_prefix(count):
+        records = ranked[:count]
+        return (
+            [record for kind, record in records if kind == "entity"],
+            [record for kind, record in records if kind == "relation"],
+        )
+
+    # Search prefixes, then verify the exact survivor rendering. Tokenization
+    # need not be strictly monotonic at record or template boundaries.
+    def fit_prefix(count, candidate):
+        low, high = 0, count
+        while low < high:
+            mid = (low + high + 1) // 2
+            if candidate(mid)[0]:
+                low = mid
+            else:
+                high = mid - 1
+        fits, result = candidate(low)
+        while not fits and low:
+            low -= 1
+            fits, result = candidate(low)
+        return result
+
+    if not render(entities, relations, [])[0]:
+        all_entities, all_relations = entities, relations
+        entities, relations, _, _, _ = fit_prefix(
+            len(ranked), lambda count: render(*graph_prefix(count), [])
+        )
+        # An oversized row in one source must not block the other source's
+        # smaller records. Extend each remaining source prefix independently.
+        entities, relations, _, _, _ = fit_prefix(
+            len(all_entities),
+            lambda count: render(all_entities[:count], relations, []),
+        )
+        entities, relations, _, _, _ = fit_prefix(
+            len(all_relations),
+            lambda count: render(entities, all_relations[:count], []),
+        )
+    fits, result = render(entities, relations, chunks)
+    if fits:
+        return result
+    return fit_prefix(
+        len(chunks), lambda count: render(entities, relations, chunks[:count])
+    )
 
 
 async def _attach_content_headings(
@@ -5922,11 +6233,38 @@ async def _build_context_str(
         or PROMPTS["rag_response"]
     )
 
+    def budget_failure():
+        raw_data = convert_to_user_format([], [], [], [], query_param.mode)
+        raw_data["status"] = "failure"
+        raw_data["message"] = "max_total_tokens cannot fit the query context."
+        raw_data.setdefault("metadata", {})["token_budget_exceeded"] = True
+        return "", raw_data
+
+    had_graph_context = bool(entities_context or relations_context)
+    fitted = await run_in_tokenizer_executor(
+        _fit_kg_context_to_total_budget,
+        entities_context,
+        relations_context,
+        [],
+        query,
+        query_param,
+        global_config,
+        system_prompt,
+    )
+    if fitted is None:
+        return budget_failure()
+    entities_context, relations_context = fitted[:2]
+    if (
+        had_graph_context
+        and not entities_context
+        and not relations_context
+        and not merged_chunks
+    ):
+        return budget_failure()
+
     kg_context_template = PROMPTS["kg_query_context"]
-    # `.text`, not `.slot`: this only sizes the token budget, and `.text`'s empty
-    # fallback matches what this line used before the prefix existed, so an
-    # unconfigured prefix changes no estimate. A configured one IS counted here,
-    # which is the point -- otherwise a long prefix would overfill the context.
+    # This preliminary estimate retains the legacy empty-prefix behavior;
+    # the final rendered-budget check below accounts for the actual slot.
     effective_user_prompt = resolve_user_prompt(
         query_param.user_prompt,
         global_config.get("user_prompt_prefix", ""),
@@ -5974,6 +6312,19 @@ async def _build_context_str(
     available_chunk_tokens = max_total_tokens - (
         sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
     )
+    if (
+        not entities_context
+        and not relations_context
+        and merged_chunks
+        and available_chunk_tokens <= 0
+    ):
+        logger.warning(
+            f"Token budget left no room for any of {len(merged_chunks)} retrieved "
+            f"chunks (max_total_tokens: {max_total_tokens}, available for chunks: "
+            f"{available_chunk_tokens}); the query returns no result. "
+            "Raise max_total_tokens."
+        )
+        return budget_failure()
 
     logger.debug(
         f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
@@ -5990,30 +6341,50 @@ async def _build_context_str(
         progress_callback=progress_callback,
     )
 
-    # Generate reference list from truncated chunks using the new common function
-    reference_list, truncated_chunks = generate_reference_list_from_chunks(
+    # The reference paths and repeated template slots are part of the total
+    # budget too. Re-render after dropping chunks so their IDs stay consistent.
+    fitted = await run_in_tokenizer_executor(
+        _fit_kg_context_to_total_budget,
+        entities_context,
+        relations_context,
+        truncated_chunks,
+        query,
+        query_param,
+        global_config,
+        system_prompt,
+    )
+    if fitted is None:
+        return budget_failure()
+    entities_context, relations_context, retained_chunks, result, reference_list = (
+        fitted
+    )
+    if truncated_chunks and not retained_chunks:
+        outcome = (
+            "the answer uses graph context only"
+            if entities_context or relations_context
+            else "the query returns no result"
+        )
+        logger.warning(
+            f"Token budget left no room for any of {len(truncated_chunks)} "
+            f"retrieved chunks once their reference list was rendered "
+            f"(max_total_tokens: {max_total_tokens}); {outcome}. "
+            "Raise max_total_tokens or lower max_entity_tokens / max_relation_tokens."
+        )
+    if (
         truncated_chunks
-    )
-
-    # Rebuild chunks_context with truncated chunks
-    # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    text_units_str = render_chunks_context_text(truncated_chunks)
-    chunks_context = [
-        {"reference_id": chunk["reference_id"], "content": chunk["content"]}
-        for chunk in truncated_chunks
-    ]
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+        and not entities_context
+        and not relations_context
+        and not retained_chunks
+    ):
+        return budget_failure()
+    truncated_chunks = retained_chunks
 
     logger.info(
-        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
+        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
     )
 
     # not necessary to use LLM to generate a response
-    if not entities_context and not relations_context and not chunks_context:
+    if not entities_context and not relations_context and not truncated_chunks:
         # Return empty raw data structure when no entities/relations
         empty_raw_data = convert_to_user_format(
             [],
@@ -6043,13 +6414,6 @@ async def _build_context_str(
 
         if chunk_tracking_log:
             logger.info(f"Final chunks S+F/O: {' '.join(chunk_tracking_log)}")
-
-    result = kg_context_template.format(
-        entities_str=entities_str,
-        relations_str=relations_str,
-        text_chunks_str=text_units_str,
-        reference_list_str=reference_list_str,
-    )
 
     # Always return both context and complete data structure (unified approach)
     logger.debug(
@@ -6084,6 +6448,7 @@ async def _build_query_context(
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    user_prompt_prefix: str | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -6117,12 +6482,23 @@ async def _build_query_context(
             if not search_result["chunk_tracking"]:
                 return None
 
+    # Prompt rendering uses the live query config, while chunk selection must
+    # keep the storage snapshot. Override only the prefix for token budgeting.
+    budget_config = text_chunks_db.global_config
+    if user_prompt_prefix is not None:
+        budget_config = {**budget_config, "user_prompt_prefix": user_prompt_prefix}
+
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(
         search_result,
         query_param,
-        text_chunks_db.global_config,
+        budget_config,
+        query=query,
+        system_prompt=system_prompt,
     )
+
+    if truncation_result.get("token_budget_exceeded"):
+        return None
 
     # Stage 3: Merge chunks using filtered entities/relations
     merged_chunks = await _merge_all_chunks(
@@ -6153,13 +6529,17 @@ async def _build_query_context(
         merged_chunks=merged_chunks,
         query=query,
         query_param=query_param,
-        global_config=text_chunks_db.global_config,
+        global_config=budget_config,
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
         progress_callback=progress_callback,
         system_prompt=system_prompt,
     )
+
+    # A budget failure also returns an empty context, so this covers both.
+    if not context:
+        return None
 
     # Convert keywords strings to lists and add complete metadata to raw_data
     hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
@@ -6965,6 +7345,12 @@ async def naive_query(
         progress_callback=progress_callback,
     )
 
+    if not processed_chunks:
+        logger.info(
+            "[naive_query] No chunks survived final filtering; returning no-result."
+        )
+        return None
+
     # Generate reference list from processed chunks using the new common function
     reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
         processed_chunks
@@ -7053,8 +7439,10 @@ async def naive_query(
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
-    cached_result = await handle_cache(
-        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    cached_result = _drop_reasoning_only_cache_hit(
+        await handle_cache(
+            answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        )
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -7070,6 +7458,9 @@ async def naive_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+        # A reasoning trace with no answer is a failed generation, not an
+        # answer: never return it as one, never cache it.
+        reject_reasoning_only_answer(response)
 
         if (
             answer_cache_kv
@@ -7106,18 +7497,6 @@ async def naive_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response[len(sys_prompt) :]
-                .replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
         return QueryResult(content=response, raw_data=raw_data)
     else:
         # Streaming response (AsyncIterator)

@@ -78,6 +78,11 @@ _ALL_STRATEGY_KEYS = {
         {"strategy": "recursive_character", "params": {"separators": [1, 2]}},
         # value / range
         {"strategy": "fixed_token", "params": {"chunk_token_size": 0}},
+        # Below MIN_CHUNK_TOKEN_SIZE, for every strategy.
+        {"strategy": "fixed_token", "params": {"chunk_token_size": 63}},
+        {"strategy": "recursive_character", "params": {"chunk_token_size": 63}},
+        {"strategy": "semantic_vector", "params": {"chunk_token_size": 63}},
+        {"strategy": "paragraph_semantic", "params": {"chunk_token_size": 63}},
         {"strategy": "recursive_character", "params": {"chunk_overlap_token_size": -1}},
         {"strategy": "semantic_vector", "params": {"buffer_size": 0}},
         {"strategy": "semantic_vector", "params": {"buffer_size": True}},
@@ -163,9 +168,9 @@ def test_chunking_config_rejects_malformed(body):
 
 
 def test_chunking_config_defaults_to_fixed_token():
-    cfg = TextChunkingConfig.model_validate({"params": {"chunk_token_size": 500}})
+    cfg = TextChunkingConfig.model_validate({"params": {"chunk_token_size": 800}})
     assert cfg.strategy == "fixed_token"
-    assert cfg.params == {"chunk_token_size": 500}
+    assert cfg.params == {"chunk_token_size": 800}
 
 
 def test_chunking_config_normalizes_to_supplied_keys_only():
@@ -251,10 +256,10 @@ def test_chunking_config_keeps_real_value_drops_sibling_null():
     cfg = TextChunkingConfig.model_validate(
         {
             "strategy": "fixed_token",
-            "params": {"chunk_token_size": 500, "split_by_character": None},
+            "params": {"chunk_token_size": 800, "split_by_character": None},
         }
     )
-    assert cfg.params == {"chunk_token_size": 500}
+    assert cfg.params == {"chunk_token_size": 800}
 
 
 def test_insert_text_request_rejects_malformed_chunking():
@@ -415,7 +420,7 @@ def test_resolve_rejects_size_below_inherited_overlap(monkeypatch):
     addon = {"chunker": default_chunker_config()}
     assert addon["chunker"]["fixed_token"]["chunk_overlap_token_size"] == 100
     cfg = TextChunkingConfig.model_validate(
-        {"strategy": "fixed_token", "params": {"chunk_token_size": 50}}
+        {"strategy": "fixed_token", "params": {"chunk_token_size": 80}}
     )
     with pytest.raises(ValueError, match="chunk_overlap_token_size"):
         _resolve_text_chunking(cfg, _stub_rag(addon))
@@ -442,12 +447,12 @@ def test_resolve_skips_overlap_check_for_delimiter_only(monkeypatch):
             "params": {
                 "split_by_character": "\n\n",
                 "split_by_character_only": True,
-                "chunk_token_size": 50,
+                "chunk_token_size": 80,
             },
         }
     )
     _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
-    assert chunk_options["fixed_token"]["chunk_token_size"] == 50
+    assert chunk_options["fixed_token"]["chunk_token_size"] == 80
 
 
 def test_resolve_enforces_overlap_when_only_flag_without_delimiter(monkeypatch):
@@ -460,7 +465,7 @@ def test_resolve_enforces_overlap_when_only_flag_without_delimiter(monkeypatch):
     cfg = TextChunkingConfig.model_validate(
         {
             "strategy": "fixed_token",
-            "params": {"split_by_character_only": True, "chunk_token_size": 50},
+            "params": {"split_by_character_only": True, "chunk_token_size": 80},
         }
     )
     with pytest.raises(ValueError, match="chunk_overlap_token_size"):
@@ -889,7 +894,7 @@ def test_insert_text_returns_422_on_nonfinite_breakpoint_amount(monkeypatch, bad
 
 
 def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
-    # chunk_token_size=50 in the request, overlap=100 inherited from the
+    # chunk_token_size=80 in the request, overlap=100 inherited from the
     # rag's addon_params (not in the request). The model can't catch this;
     # the handler's synchronous _resolve_text_chunking must, BEFORE any
     # background work is scheduled.
@@ -906,7 +911,7 @@ def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
         json={
             "text": "hello",
             "file_source": "a.md",
-            "chunking": {"strategy": "fixed_token", "params": {"chunk_token_size": 50}},
+            "chunking": {"strategy": "fixed_token", "params": {"chunk_token_size": 80}},
         },
     )
     assert resp.status_code == 422
@@ -925,7 +930,7 @@ def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
                 "file_source": "a.md",
                 "chunking": {
                     "strategy": "fixed_token",
-                    "params": {"chunk_token_size": 50},
+                    "params": {"chunk_token_size": 80},
                 },
             },
         ),
@@ -936,7 +941,7 @@ def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
                 "file_sources": ["a.md"],
                 "chunking": {
                     "strategy": "fixed_token",
-                    "params": {"chunk_token_size": 50},
+                    "params": {"chunk_token_size": 80},
                 },
             },
         ),
@@ -1102,10 +1107,10 @@ def test_insert_text_allows_small_size_for_delimiter_only(monkeypatch):
                 "params": {
                     "split_by_character": "\n\n",
                     "split_by_character_only": True,
-                    "chunk_token_size": 50,
+                    "chunk_token_size": 80,
                 },
             },
         },
     )
     assert resp.status_code == 200
-    assert captured["chunking"].params["chunk_token_size"] == 50
+    assert captured["chunking"].params["chunk_token_size"] == 80

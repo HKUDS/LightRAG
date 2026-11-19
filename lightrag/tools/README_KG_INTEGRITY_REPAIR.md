@@ -29,7 +29,7 @@ from lightrag.tools.kg_integrity_repair import audit_kg_integrity
 
 rag = LightRAG(...)
 await rag.initialize_storages()
-report = await audit_kg_integrity(rag)              # report only
+report = await audit_kg_integrity(rag)  # report only
 report = await audit_kg_integrity(rag, apply=True)  # repair anchors
 ```
 
