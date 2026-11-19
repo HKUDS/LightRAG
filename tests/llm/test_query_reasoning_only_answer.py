@@ -2,16 +2,22 @@
 
 The query paths call the LLM with ``enable_cot=True``. With a reasoning model
 whose provider returns ``reasoning_content`` but an empty ``content``, the
-OpenAI binding returns ``<think>{reasoning}</think>``: non-empty, so it passed
-the binding's empty-content check, was returned as the answer and written to
-the query cache (replayed on every identical query). With ``enable_cot=False``
-the same response raises.
+OpenAI binding used to return ``<think>{reasoning}</think>``: non-empty, so it
+skipped the binding's empty-content check and its retry, was returned as the
+answer and written to the query cache (replayed on every identical query).
+With ``enable_cot=False`` the same response was retried and then raised.
+
+Now the binding treats that response as empty whatever ``enable_cot`` says,
+the query layer rejects any reasoning-only answer that still arrives (inline
+``<think>`` in ``content``, custom functions), and a reasoning-only answer
+already in the cache is treated as a miss.
 """
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tenacity import wait_none
 
 from lightrag import LightRAG
 from lightrag.base import QueryContextResult, QueryParam
@@ -36,12 +42,15 @@ class _FakeTokenizerImpl:
 
 
 class _RecordingKV:
-    def __init__(self):
+    def __init__(self, cached_answer=None):
         self.global_config = {"enable_llm_cache": True}
         self.writes = []
+        self._cached_answer = cached_answer
 
     async def get_by_id(self, _key):
-        return None
+        if self._cached_answer is None:
+            return None
+        return {"return": self._cached_answer, "create_time": 0}
 
     async def upsert(self, entries):
         self.writes.append(entries)
@@ -74,16 +83,30 @@ def _completion(content, reasoning_content, finish_reason="stop"):
     )
 
 
-def _openai_query_llm(completion):
-    """The query role backed by the real OpenAI binding over a mocked client."""
+@pytest.fixture(autouse=True)
+def _no_retry_wait(monkeypatch):
+    """Keep the binding's retry loop, drop its real exponential backoff."""
+    monkeypatch.setattr(openai_complete_if_cache.retry, "wait", wait_none())
+
+
+def _openai_query_llm(*completions):
+    """The query role backed by the real OpenAI binding over a mocked client.
+
+    Successive requests (retries included) receive ``completions`` in order;
+    the last one repeats. ``llm.create`` records every request.
+    """
+    responses = list(completions)
+
+    async def _create(*_args, **_kwargs):
+        return responses.pop(0) if len(responses) > 1 else responses[0]
+
+    create = AsyncMock(side_effect=_create)
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        close=AsyncMock(),
+    )
 
     async def _llm(prompt, system_prompt=None, history_messages=None, **kwargs):
-        client = SimpleNamespace(
-            chat=SimpleNamespace(
-                completions=SimpleNamespace(create=AsyncMock(return_value=completion))
-            ),
-            close=AsyncMock(),
-        )
         with patch(
             "lightrag.llm.openai.create_openai_async_client", return_value=client
         ):
@@ -96,7 +119,13 @@ def _openai_query_llm(completion):
                 **kwargs,
             )
 
+    _llm.create = create
     return _llm
+
+
+async def _inline_reasoning_only(*_args, **_kwargs):
+    """A provider that puts the trace inline in ``content``: no binding sees it."""
+    return f"<think>{REASONING}</think>"
 
 
 def _config(query_llm) -> dict:
@@ -139,14 +168,42 @@ async def _kg_query(llm, cache):
     )
 
 
-async def test_binding_root_cause_enable_cot_turns_empty_into_think_block():
-    """Root cause, pinned: the binding is unchanged and behaves as designed."""
+@pytest.mark.parametrize("enable_cot", [True, False])
+async def test_binding_treats_reasoning_only_as_empty_and_retries(enable_cot):
+    """Root cause: enable_cot no longer turns an empty answer into a
+    <think> block; the response is retried as a sampling artifact either way."""
     llm = _openai_query_llm(_completion("", REASONING))
 
-    assert await llm(QUERY, enable_cot=True) == f"<think>{REASONING}</think>"
-    # Same response without enable_cot: the binding rejects it (after retries).
-    with pytest.raises(InvalidResponseError):
-        await llm(QUERY, enable_cot=False)
+    with pytest.raises(InvalidResponseError) as caught:
+        await llm(QUERY, enable_cot=enable_cot)
+
+    assert llm.create.await_count == 3
+    assert "reasoning-only output" in str(caught.value)
+    assert REASONING not in str(caught.value)
+
+
+async def test_binding_truncated_reasoning_only_fails_fast():
+    """Token-limit exhaustion is deterministic: one request, no retry."""
+    llm = _openai_query_llm(_completion("", REASONING, finish_reason="length"))
+
+    with pytest.raises(EmptyTruncatedResponseError):
+        await llm(QUERY, enable_cot=True)
+
+    assert llm.create.await_count == 1
+
+
+async def test_kg_query_retry_recovers_the_answer(stub_query_context):
+    """A reasoning-only first attempt is retried; the answer that follows is
+    returned and cached, the trace is not."""
+    cache = _RecordingKV()
+    llm = _openai_query_llm(_completion("", REASONING), _completion(ANSWER, REASONING))
+
+    result = await _kg_query(llm, cache)
+
+    assert result.content == ANSWER
+    assert llm.create.await_count == 2
+    assert len(cache.writes) == 1
+    assert REASONING not in str(cache.writes)
 
 
 async def test_provider_without_reasoning_content_is_unaffected(stub_query_context):
@@ -163,13 +220,21 @@ async def test_provider_without_reasoning_content_is_unaffected(stub_query_conte
     assert len(cache.writes) == 1
 
 
-async def test_kg_query_rejects_reasoning_only_answer_and_does_not_cache_it(
-    stub_query_context,
-):
+async def test_kg_query_reasoning_only_answer_is_never_cached(stub_query_context):
+    cache = _RecordingKV()
+    llm = _openai_query_llm(_completion("", REASONING))
+
+    with pytest.raises(InvalidResponseError):
+        await _kg_query(llm, cache)
+
+    assert cache.writes == []
+
+
+async def test_kg_query_rejects_inline_reasoning_only_answer(stub_query_context):
     cache = _RecordingKV()
 
     with pytest.raises(ReasoningOnlyResponseError):
-        await _kg_query(_openai_query_llm(_completion("", REASONING)), cache)
+        await _kg_query(_inline_reasoning_only, cache)
 
     assert cache.writes == []
 
@@ -188,10 +253,6 @@ async def test_kg_query_truncated_reasoning_only_answer_is_a_truncation_error(
 
 async def test_naive_query_rejects_reasoning_only_answer_and_does_not_cache_it():
     cache = _RecordingKV()
-
-    async def _inline_reasoning_only(*_args, **_kwargs):
-        # A provider that puts the trace inline in `content`.
-        return f"<think>{REASONING}</think>"
 
     with pytest.raises(ReasoningOnlyResponseError):
         await naive_query(
@@ -245,7 +306,7 @@ class _BypassRAG:
 
 
 async def test_bypass_rejects_reasoning_only_answer():
-    rag = _BypassRAG(_openai_query_llm(_completion("", REASONING)))
+    rag = _BypassRAG(_inline_reasoning_only)
 
     with pytest.raises(ReasoningOnlyResponseError):
         await LightRAG.aquery_llm(
@@ -264,3 +325,54 @@ async def test_bypass_answer_with_reasoning_trace_is_unchanged():
     )
 
     assert result["llm_response"]["content"] == response
+
+
+async def _naive_query(llm, cache):
+    return await naive_query(
+        QUERY,
+        _ChunksVDB(),
+        QueryParam(mode="naive", enable_rerank=False, stream=False),
+        _config(llm),
+        hashing_kv=cache,
+    )
+
+
+@pytest.mark.parametrize("run_query", [_kg_query, _naive_query], ids=["kg", "naive"])
+async def test_cached_reasoning_only_answer_is_regenerated(
+    stub_query_context, run_query
+):
+    """An entry written before the guard existed is a miss, not a replay: the
+    answer is regenerated and overwrites it."""
+    cache = _RecordingKV(cached_answer=f"<think>{REASONING}</think>")
+    calls = []
+
+    async def _llm(*_args, **_kwargs):
+        calls.append(1)
+        return ANSWER
+
+    result = await run_query(_llm, cache)
+
+    assert result.content == ANSWER
+    assert len(calls) == 1
+    assert len(cache.writes) == 1
+    assert ANSWER in str(cache.writes)
+
+
+@pytest.mark.parametrize("run_query", [_kg_query, _naive_query], ids=["kg", "naive"])
+async def test_cached_answer_with_reasoning_trace_is_still_served(
+    stub_query_context, run_query
+):
+    """Control: a cached trace-plus-answer is a hit; the LLM is not called."""
+    cached = f"<think>{REASONING}</think>{ANSWER}"
+    cache = _RecordingKV(cached_answer=cached)
+    calls = []
+
+    async def _llm(*_args, **_kwargs):
+        calls.append(1)
+        return "should not be generated"
+
+    result = await run_query(_llm, cache)
+
+    assert result.content == cached
+    assert calls == []
+    assert cache.writes == []

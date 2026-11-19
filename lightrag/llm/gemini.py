@@ -381,6 +381,8 @@ async def gemini_complete_if_cache(
 
     COT Integration:
     - When enable_cot=True: Thought content is wrapped in <think>...</think> tags
+      on the streaming path. A non-streaming result never carries thoughts,
+      and one with no regular text raises like any empty response.
     - When enable_cot=False: Thought content is filtered out, only regular content returned
     - Thought content is identified by the 'thought' attribute on response parts
     - Requires thinking_config to be enabled in generation_config for API to return thoughts
@@ -677,21 +679,13 @@ async def gemini_complete_if_cache(
 
     final_text = remove_think_tags(final_text)
 
-    # A thinking model that spent its whole budget on the reasoning trace
-    # reaches here with final_text == "<think>...</think>", which the line
-    # above strips to nothing: empty AFTER sanitization is the same broken
-    # response as empty before it, and used to be returned as a successful
-    # (if truncated) empty string. Only escalated for the token-limit case,
-    # which is deterministic and actionable; a reasoning-only response that
-    # ended normally keeps its previous behavior with a warning.
+    # A reasoning-only response reaches here with final_text ==
+    # "<think>...</think>" when enable_cot=True, which the line above strips
+    # to nothing. Empty AFTER sanitization is the same broken response as
+    # empty before it, so it raises the same way the enable_cot=False path
+    # does: fail fast on the token limit, retry otherwise.
     if not final_text.strip():
-        if length_limited:
-            raise _empty_response_error(len((thought_text or "").strip()))
-        logger.warning(
-            "Gemini response contained only reasoning content "
-            f"(finish_reason={getattr(finish_reason, 'name', finish_reason)}), "
-            "returning empty content"
-        )
+        raise _empty_response_error(len((thought_text or "").strip()))
 
     # Flag token-limit truncation so the cache layer skips persisting partial
     # output. Must stay the last transformation of final_text: any later

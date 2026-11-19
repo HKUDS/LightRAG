@@ -518,9 +518,16 @@ async def test_gemini_non_length_empty_response_stays_retryable(monkeypatch, req
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, request):
-    """Scope: only the token-limit case escalates. A reasoning-only response
-    that ended normally still returns empty content, with a warning."""
+@pytest.mark.parametrize("enable_cot", [True, False])
+async def test_gemini_thinking_only_stop_response_stays_retryable(
+    monkeypatch, request, enable_cot
+):
+    """A reasoning-only response that ended normally raises the retryable
+    type with enable_cot=True, exactly as it does with enable_cot=False: the
+    <think> wrapper must not turn it into an empty "answer" that skips the
+    retry (and that the query path would return as the result)."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
     gemini_module = _load_gemini_module(monkeypatch, request)
 
     fake_client = _make_nonstreaming_client(
@@ -528,14 +535,17 @@ async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, requ
     )
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
 
-    result = await gemini_module.gemini_complete_if_cache(
-        model="gemini-model",
-        prompt="Extract entities",
-        api_key="test-key",
-        enable_cot=True,
-    )
+    # __wrapped__ to skip the retry loop's real backoff sleeps.
+    with pytest.raises(gemini_module.InvalidResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache.__wrapped__(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+            enable_cot=enable_cot,
+        )
 
-    assert result == ""
+    assert not isinstance(excinfo.value, EmptyTruncatedResponseError)
+    assert "model returned reasoning-only output" in str(excinfo.value)
 
 
 @pytest.mark.offline

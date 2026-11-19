@@ -5809,31 +5809,39 @@ def _reject_empty_truncated_response(
     raise EmptyTruncatedResponseError(message)
 
 
+def is_reasoning_only_answer(response: Any) -> bool:
+    """Return True for a non-streaming answer that is a reasoning trace only.
+
+    True when nothing is left after ``remove_think_tags``, or when what is
+    left is an unclosed ``<think>`` block (inline reasoning cut off
+    mid-trace). False for streaming iterators, empty strings and any answer
+    that carries text outside the think block. Never raises.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return False
+    cleaned = remove_think_tags(response)
+    unclosed_think = cleaned.startswith("<think>") and "</think>" not in cleaned
+    return not cleaned or unclosed_think
+
+
 def reject_reasoning_only_answer(response: Any) -> None:
     """Fail a non-streaming query answer that is reasoning and nothing else.
 
-    The query paths (``kg_query``, ``naive_query``, bypass mode) call the LLM
-    with ``enable_cot=True``: bindings that surface reasoning (OpenAI-compatible
-    ``reasoning_content``, OpenAI Responses reasoning summaries, Gemini
-    thoughts, Zhipu) wrap it in ``<think>...</think>``. When the model returns
-    reasoning but no answer text, the wrapper turns an empty response -- which
-    the same binding rejects with ``enable_cot=False`` -- into a non-empty one.
-    It then passes every binding check, is returned to the caller as the
-    answer and, unless flagged truncated, is written to the query cache and
-    replayed on every identical query. An unclosed ``<think>`` block (inline
-    reasoning cut off mid-trace) is the same case.
+    Call it on the answering LLM's result BEFORE the query-cache write
+    (``kg_query``, ``naive_query``, bypass mode). The query paths pass
+    ``enable_cot=True``, and a ``<think>...</think>`` wrapper with no answer
+    after it is a NON-empty string, so without this check it is returned and
+    cached as the answer. The bindings with a retry policy (OpenAI, OpenAI
+    Responses, Gemini) already raise on that shape in their non-streaming
+    path; this is the safety net for every other source of it: Zhipu, models
+    that put the trace inline in ``content``, and custom LLM functions.
 
-    This is the answer-path counterpart of ``_reject_empty_truncated_response``
-    on the extraction path. Streaming responses and answers that carry text
-    outside the think block pass through untouched: a reasoning trace shown
-    before an answer is the intended ``enable_cot`` behaviour. Only lengths
-    are logged, never content.
+    Raises :class:`EmptyTruncatedResponseError` for a ``TruncatedResponse``
+    and :class:`ReasoningOnlyResponseError` otherwise. Streaming responses and
+    answers with text outside the think block pass through. Only lengths are
+    logged, never content.
     """
-    if not isinstance(response, str) or not response.strip():
-        return
-    cleaned = remove_think_tags(response)
-    unclosed_think = cleaned.startswith("<think>") and "</think>" not in cleaned
-    if cleaned and not unclosed_think:
+    if not is_reasoning_only_answer(response):
         return
     truncated = is_truncated_response(response)
     diagnostics = format_response_diagnostics(
