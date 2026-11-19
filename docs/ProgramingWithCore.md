@@ -61,32 +61,6 @@ Notes:
 **LightRAG requires explicit initialization before use.** You must call `await rag.initialize_storages()` after creating a LightRAG instance, otherwise you will encounter errors.
 
 
-## Streaming queries
-
-Use `aquery(..., QueryParam(stream=True))` from async code and consume the
-returned chunks with `async for`. A provider can still return a complete
-string, so handle both return values.
-
-```python
-from lightrag import QueryParam
-
-
-async def print_answer(rag, question):
-    answer = await rag.aquery(question, param=QueryParam(mode="hybrid", stream=True))
-    if isinstance(answer, str):
-        print(answer)
-        return
-
-    async for chunk in answer:
-        print(chunk, end="", flush=True)
-    print()
-```
-
-Call this helper on the event loop that initialized the LightRAG instance.
-The synchronous `query()` wrapper waits for the initial response. If the
-provider returns a stream, the wrapper currently hands back an async iterator.
-For synchronous scripts that need a string, use `QueryParam(stream=False)`.
-
 ## LightRAG Init Parameters
 
 **Parameters**
@@ -340,6 +314,37 @@ are filled before chunks: when they use up the budget, no chunk is sent, the ans
 relies on the graph context alone, and a "Token budget left no room" warning is
 logged. Conversation history and provider-specific message framing are outside
 this context budget.
+
+
+### Streaming queries
+
+Use `aquery(..., QueryParam(stream=True))` from async code and consume the
+returned chunks with `async for`. Even with `stream=True`, the result is a
+complete string instead of a stream when the answer comes from the query
+cache, when no context is found, or when the model does not stream, so handle
+both return values.
+
+```python
+from lightrag import QueryParam
+
+
+async def print_answer(rag, question):
+    answer = await rag.aquery(question, param=QueryParam(mode="hybrid", stream=True))
+    if isinstance(answer, str):
+        print(answer)
+        return
+
+    async for chunk in answer:
+        print(chunk, end="", flush=True)
+    print()
+```
+
+Call this helper on the event loop that initialized the LightRAG instance.
+The synchronous `query()` wrapper returns the same value as `aquery()` once
+retrieval has finished and the model call has started, so a streamed answer
+comes back as an async iterator that cannot be read with a plain `for` loop.
+There is no synchronous stream: for synchronous scripts that need a string,
+use `QueryParam(stream=False)`.
 
 
 ## LLM and Embedding Injection
