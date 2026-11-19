@@ -52,3 +52,26 @@ async def test_parenthesised_first_record_still_parses():
 
     assert set(nodes) == {"Carol"}
     assert not edges
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    ["entity framework", "relation store", "relationship graph"],
+)
+async def test_relation_endpoint_named_like_a_record_keyword_on_one_line(source):
+    relation = f"relation{D}{source}{D}Alice{D}uses{D}{source} is used by Alice."
+    nodes, edges = await _parse(D.join([ALICE, relation]) + "\n<|COMPLETE|>")
+
+    assert set(nodes) == {"Alice"}
+    assert set(edges) == {(source, "Alice")}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_line_opening_with_the_delimiter_keeps_its_first_entity():
+    nodes, edges = await _parse(D + D.join([ALICE, BOB, REL]) + "\n<|COMPLETE|>")
+
+    assert set(nodes) == {"Alice", "Bob"}
+    assert set(edges) == {("Alice", "Bob")}
