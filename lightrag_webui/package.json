@@ -29,7 +29,7 @@
     "@radix-ui/react-tabs": "^1.2.1",
     "@radix-ui/react-tooltip": "^1.4.1",
     "@radix-ui/react-use-controllable-state": "^1.3.0",
-    "@react-sigma/core": "^5.0.6",
+    "@react-sigma/core": "^6.0.0",
     "@react-sigma/graph-search": "^5.0.6",
     "@react-sigma/layout-circlepack": "^5.0.6",
     "@react-sigma/layout-circular": "^5.0.6",
