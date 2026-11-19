@@ -29,7 +29,7 @@ def run_queries_and_save_to_json(
     loop = always_get_an_event_loop()
 
     with (
-        open(output_file, "a", encoding="utf-8") as result_file,
+        open(output_file, "w", encoding="utf-8") as result_file,
         open(error_file, "a", encoding="utf-8") as err_file,
     ):
         result_file.write("[\n")
