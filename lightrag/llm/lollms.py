@@ -22,6 +22,7 @@ from tenacity import (
 from typing import Any, List, Union
 import numpy as np
 
+from lightrag.llm._aiohttp_retry import is_transient_aiohttp_error
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     embedding_timeout,
@@ -30,32 +31,12 @@ from lightrag.utils import (
 )
 
 
-def _is_transient_lollms_error(error: BaseException) -> bool:
-    """tenacity predicate: retry connection failures and 429/5xx, not other 4xx.
-
-    Same classification as ``jina.py``, the only other binding that speaks
-    aiohttp directly. The predicate this replaces matched
-    ``lightrag.exceptions``' httpx-shaped RateLimitError / APIConnectionError /
-    APITimeoutError, which nothing in LightRAG raises and aiohttp cannot
-    produce -- so it never matched and the three attempts never happened: a
-    server that was restarting failed the extraction on the first try.
-
-    ``ClientResponseError`` subclasses ``ClientError``, so it has to be
-    classified first: a bad API key or a malformed request is a property of the
-    call, and three requests plus backoff only re-buy the same failure.
-    """
-    if isinstance(error, aiohttp.ClientResponseError):
-        return error.status == 429 or error.status >= 500
-    return isinstance(error, aiohttp.ClientError)
-
-
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception(_is_transient_lollms_error),
-    # Re-raise the transport error once the attempts are spent, rather than
-    # wrapping it in tenacity's opaque ``RetryError`` whose message buries the
-    # reason the call failed. Same reasoning as ``lightrag.llm._error_utils``.
+    retry=retry_if_exception(is_transient_aiohttp_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries the transport error's message.
     reraise=True,
 )
 async def lollms_model_if_cache(
@@ -88,6 +69,14 @@ async def lollms_model_if_cache(
       ``max_tokens`` alias) may therefore be cached as if complete, and
       replayed unchanged from the cache even after the caller raises the
       token budget.
+
+    Retry note:
+    - A non-streaming request is retried up to three times on the failures
+      ``is_transient_aiohttp_error`` classifies as transient (connection
+      failures, timeouts, truncated bodies, transient HTTP statuses); any
+      other error fails on the first attempt.
+    - A streaming request is not retried: its connection is opened only when
+      the caller starts iterating, after this function has returned.
     """
     if image_inputs:
         raise NotImplementedError(

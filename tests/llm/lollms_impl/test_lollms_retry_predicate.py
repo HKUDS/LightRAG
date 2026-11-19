@@ -6,10 +6,14 @@ rather than failing the extraction on the first try. A failure that is a
 property of the call itself (bad credentials, a malformed request) must still
 fail fast: retrying it only re-buys the same failure.
 
-The attempt matrix runs through the real decorator with the session stubbed;
-one local-server test covers the HTTP path end to end.
+The binding uses the shared ``is_transient_aiohttp_error`` classification,
+whose own cases are pinned in ``tests/llm/test_embedding_rerank_client_timeout.py``.
+These tests pin the wiring: the attempt matrix runs through the real decorator
+with the session stubbed, and two local-server tests cover the HTTP path end to
+end (a dropped connection, and an expired ``ClientTimeout``).
 """
 
+import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -19,12 +23,12 @@ from aiohttp import ClientResponseError, RequestInfo
 from tenacity import wait_none
 from yarl import URL
 
-from lightrag.llm.lollms import _is_transient_lollms_error, lollms_model_if_cache
+from lightrag.llm.lollms import lollms_model_if_cache
 
 pytestmark = pytest.mark.offline
 
-# An upstream that is not ready yet: a throttle, or the 5xx family.
-_TRANSIENT_STATUSES = [429, 500, 502, 503, 504]
+# An upstream that is not ready yet: a timeout, a conflict, a throttle, or 5xx.
+_TRANSIENT_STATUSES = [408, 409, 429, 500, 502, 503, 504]
 # A property of the request or the configuration, not of the moment.
 _PERMANENT_STATUSES = [400, 401, 403, 404, 422]
 
@@ -103,9 +107,22 @@ async def test_permanent_status_fails_on_the_first_attempt(monkeypatch, status):
     assert await _attempts_against(monkeypatch, _http_status_error(status)) == 1
 
 
-async def test_unrelated_error_is_not_retried(monkeypatch):
-    """A bug is not a transient failure either."""
-    assert await _attempts_against(monkeypatch, ValueError("boom")) == 1
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(ValueError("boom"), id="bug"),
+        # A malformed base_url: no retry can fix the configuration.
+        pytest.param(aiohttp.InvalidURL("htp//bad"), id="invalid-url"),
+    ],
+)
+async def test_permanent_error_is_not_retried(monkeypatch, error):
+    assert await _attempts_against(monkeypatch, error) == 1
+
+
+async def test_timeout_is_retried(monkeypatch):
+    """An expired ``ClientTimeout(total=...)`` is a bare TimeoutError, not a
+    ``ClientError``; a slow server is as transient as a restarting one."""
+    assert await _attempts_against(monkeypatch, asyncio.TimeoutError()) == 3
 
 
 async def test_the_transport_error_survives_the_exhausted_loop(monkeypatch):
@@ -127,22 +144,6 @@ async def test_the_transport_error_survives_the_exhausted_loop(monkeypatch):
         await lollms_model_if_cache("test-model", "hello")
 
     assert "Cannot connect to host" in str(exc_info.value)
-
-
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    [
-        *[(status, True) for status in _TRANSIENT_STATUSES],
-        *[(status, False) for status in _PERMANENT_STATUSES],
-    ],
-)
-def test_predicate_classification(status, expected):
-    assert _is_transient_lollms_error(_http_status_error(status)) is expected
-
-
-def test_predicate_keeps_a_bare_transport_error_retryable():
-    assert _is_transient_lollms_error(aiohttp.ClientConnectionError("x")) is True
-    assert _is_transient_lollms_error(ValueError("x")) is False
 
 
 class _FlakyServer:
@@ -198,3 +199,33 @@ async def test_a_server_that_comes_back_is_recovered_not_failed():
 
         assert result == "model answer"
         assert server.requests == 3
+
+
+async def test_an_expired_total_timeout_is_retried_end_to_end():
+    """The binding's own ``ClientTimeout`` fires against a server that accepts
+    the connection but never answers; every attempt must reach the server."""
+    connections = 0
+
+    async def _never_answer(reader, writer):
+        nonlocal connections
+        connections += 1
+        try:
+            await reader.read()  # hold the connection until the client leaves
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(_never_answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await lollms_model_if_cache(
+                "test-model",
+                "hello",
+                base_url=f"http://127.0.0.1:{port}",
+                timeout=0.2,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert connections == 3

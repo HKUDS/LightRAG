@@ -1,9 +1,9 @@
 """Shared retry classification for bindings that call HTTP APIs via aiohttp.
 
-Used by ``lightrag.llm.jina`` and ``lightrag.rerank``. Both raise
-``aiohttp.ClientResponseError`` for every non-200 response alike, so a retry
-policy keyed on the exception type alone retries a bad API key or a malformed
-request exactly as eagerly as a rate limit.
+Used by ``lightrag.llm.jina``, ``lightrag.llm.lollms`` and ``lightrag.rerank``.
+An ``aiohttp.ClientResponseError`` is raised for every non-200 response alike,
+so a retry policy keyed on the exception type alone retries a bad API key or a
+malformed request exactly as eagerly as a rate limit.
 """
 
 from __future__ import annotations
