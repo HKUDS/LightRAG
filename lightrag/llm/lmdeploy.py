@@ -6,16 +6,11 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 if not pm.is_installed("lmdeploy"):
     pm.install("lmdeploy[all]")
 
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 
 from lightrag.utils import TruncatedResponse
@@ -48,12 +43,43 @@ def initialize_lmdeploy_pipeline(
     return lmdeploy_pipe
 
 
+def _is_retryable_lmdeploy_error(exc: BaseException) -> bool:
+    """True for an lmdeploy ``RequestError`` reporting an engine-side 5xx.
+
+    Since lmdeploy 0.16.0, ``Pipeline.generate()`` propagates lmdeploy's
+    own ``lmdeploy.serve.core.exceptions.RequestError`` uncaught -- a
+    ``RuntimeError`` subclass carrying ``status_code`` -- for engine-side
+    failures such as ``ENGINE_UNAVAILABLE`` (503) or ``INTERNAL_ERROR``
+    (500). Some of them may be transient; for the rest (an engine whose
+    main loop has died stays dead, since the pipeline is cached) a retry
+    only delays the same error by a few seconds. It never raises
+    ``lightrag.exceptions.RateLimitError`` / ``APIConnectionError`` /
+    ``APITimeoutError``: those are a different client's exception types
+    and this binding has no code path that translates into them, so a
+    predicate built on them never matches and the retry never fires. A
+    4xx ``RequestError`` (bad request, cancelled, context length exceeded)
+    is a permanent failure and must not be retried.
+
+    The import is local and best-effort: it only runs once an exception
+    has actually been raised, and an environment where lmdeploy's error
+    module cannot be found simply treats the error as non-retryable
+    rather than failing the retry predicate itself.
+    """
+    try:
+        from lmdeploy.serve.core.exceptions import RequestError
+    except ImportError:
+        return False
+    return isinstance(exc, RequestError) and exc.status_code >= 500
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception(_is_retryable_lmdeploy_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries lmdeploy's message and callers can
+    # still catch RequestError.
+    reraise=True,
 )
 async def lmdeploy_model_if_cache(
     model,

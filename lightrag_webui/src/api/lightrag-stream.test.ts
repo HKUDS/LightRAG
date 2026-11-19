@@ -1,12 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
-// Dependency-free module — safe to import statically before the mocks below.
 import { isAuthenticationRequiredError } from './errors'
 
 import { backendBaseUrl } from '@/lib/constants'
 import { captureProcessState, restoreProcessState, type ProcessStateSnapshot } from '@/test/processState'
 import { useWebUIAuthStore } from '@/stores/webuiAuth'
 
-// Use the real Axios instance: global module stubs would leak into other suites.
+// NOTE on isolation: nothing here is module-mocked and the GLOBAL axios
+// adapter is never touched. `mock.module` is process-wide for the rest of the
+// bun test run, and axios.create() copies the global adapter into the api
+// module's instance by value, so either one leaked a stub into later files
+// before. The guest-token refresh goes through the api module's own instance
+// (getAuthStatus), so each test installs its stub on that instance with
+// __setAxiosAdapterForTests and afterEach removes it again.
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

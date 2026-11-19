@@ -153,6 +153,7 @@
         "parse": "Parsing",
         "analyze": "Menganalisis",
         "process": "Memproses",
+        "deleting": "Menghapus",
         "failed": "Gagal"
       },
       "status": {
@@ -163,6 +164,7 @@
         "analyzing": "Menganalisis",
         "processing": "Memproses",
         "pending": "Menunggu",
+        "deleting": "Menghapus",
         "failed": "Gagal"
       },
       "errors": {

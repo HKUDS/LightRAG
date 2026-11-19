@@ -8,6 +8,7 @@ policy.
 
 from __future__ import annotations
 
+import codecs
 import io
 import zipfile
 from pathlib import Path
@@ -24,8 +25,12 @@ from lightrag.parser.markdown.parser import (
     _pin_socket,
     _unwrap_embedded_ipv4,
 )
+from lightrag.parser.text_decoding import TextDecodeError
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
+
+
+pytestmark = pytest.mark.offline
 
 _PNG_B64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
@@ -211,6 +216,32 @@ def test_host_is_public_rejects_rfc8215_local_use_nat64_slash48(monkeypatch):
     assert _host_is_public("64:ff9b:1::808:808") is False
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "::ffff:0:7f00:1",  # 127.0.0.1 (loopback)
+        "::ffff:0:a00:1",  # 10.0.0.1 (RFC1918)
+        "::ffff:0:a9fe:a9fe",  # 169.254.169.254 (cloud metadata)
+        "::ffff:0:808:808",  # 8.8.8.8 (public: the whole block is denied)
+    ],
+)
+def test_host_is_public_rejects_ipv4_translated_siit_block(monkeypatch, host):
+    # The RFC 2765 IPv4-translated SIIT prefix ::ffff:0:0:0/96 carries the IPv4
+    # in the low 32 bits but is neither IPv4-mapped (``ipv4_mapped`` is None)
+    # nor IPv4-compatible, and CPython classifies it globally routable. A host
+    # whose SIIT translator still uses it would deliver the request to the
+    # embedded IPv4, so the whole reserved block is default-denied.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    assert _host_is_public(host) is False
+
+
+def test_ipv4_translated_siit_block_permitted_only_via_allowlist(monkeypatch):
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "::ffff:0:0:0/96")
+    assert _host_is_public("::ffff:0:808:808") is True
+    # The IPv4-mapped form (a different prefix) is unaffected by the allowlist.
+    assert _host_is_public("::ffff:7f00:1") is False
+
+
 def test_rfc8215_slash48_permitted_only_via_allowlist(monkeypatch):
     # An operator running a genuine local NAT64 in 64:ff9b:1::/48 can still opt
     # in explicitly; nothing outside the configured block is affected.
@@ -370,6 +401,35 @@ def test_textpack_file_reference_resolved(tmp_path: Path):
     assert asset["data"] == _PNG_BYTES
     assert asset["suggested_name"] == "pic.png"
     assert not warnings
+
+
+def test_textpack_file_reference_with_spaces_resolved(tmp_path: Path):
+    """Typora-style path: spaces and parentheses, no angle brackets."""
+    pack = tmp_path / "note.textpack"
+    _write_textpack(
+        pack,
+        text="# Note\n\n![pic](assets/my shot (1).png)\n",
+        assets={"my shot (1).png": _PNG_BYTES},
+    )
+    p = _make_parser()
+    blocks, warnings, meta = p.extract(
+        pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="note"
+    )
+    (asset,) = meta["md_assets"].values()
+    assert asset["data"] == _PNG_BYTES
+    assert asset["suggested_name"] == "my shot (1).png"
+    assert not warnings
+
+
+def test_standalone_md_relative_image_with_spaces_is_skipped():
+    # Recognised as an image now, so it takes the same warned skip as any
+    # other file reference outside a .textpack instead of staying as text.
+    p = _make_parser()
+    blocks, warnings, meta = p._extract_text(
+        "# H\n\n![x](my assets/pic.png)\n", bundle_root=None
+    )
+    assert meta["md_drawings"] == {}
+    assert warnings.get("images_skipped") == 1
 
 
 def test_textpack_image_outside_assets_dir_is_resolved(tmp_path: Path):
@@ -546,3 +606,50 @@ def test_remote_image_private_host_blocked(monkeypatch):
     (drawing,) = meta["md_drawings"].values()
     assert drawing["kind"] == "external"
     assert warnings.get("images_download_failed") == 1
+
+
+_MD_TEXT = "# 标题\n\n正文 body\n"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        codecs.BOM_UTF8 + _MD_TEXT.encode("utf-8"),
+        codecs.BOM_UTF16_LE + _MD_TEXT.encode("utf-16-le"),
+        codecs.BOM_UTF16_BE + _MD_TEXT.encode("utf-16-be"),
+    ],
+    ids=["utf-8-bom", "utf-16-le", "utf-16-be"],
+)
+def test_md_bom_encodings_are_decoded(tmp_path: Path, data: bytes):
+    source = tmp_path / "note.md"
+    source.write_bytes(data)
+    blocks, _, _ = _make_parser().extract(
+        source, parsed_dir=tmp_path / "p", asset_dir=tmp_path / "a", base_name="note"
+    )
+    assert blocks[0]["heading"] == "标题"
+    assert blocks[0]["content"] == _MD_TEXT.strip()
+
+
+def test_md_decode_failure_has_the_legacy_message(tmp_path: Path):
+    source = tmp_path / "note.md"
+    source.write_bytes("中文".encode("gbk"))
+    with pytest.raises(TextDecodeError) as exc_info:
+        _make_parser().extract(
+            source,
+            parsed_dir=tmp_path / "p",
+            asset_dir=tmp_path / "a",
+            base_name="note",
+        )
+    message = str(exc_info.value)
+    assert message.startswith("File is not valid UTF-8 encoded text")
+    assert "Please convert it to UTF-8 before processing" in message
+
+
+def test_textpack_utf16_text_is_decoded(tmp_path: Path):
+    pack = tmp_path / "note.textpack"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("text.markdown", codecs.BOM_UTF16_LE + _MD_TEXT.encode("utf-16-le"))
+    blocks, _, _ = _make_parser().extract(
+        pack, parsed_dir=tmp_path / "p", asset_dir=tmp_path / "a", base_name="note"
+    )
+    assert blocks[0]["content"] == _MD_TEXT.strip()

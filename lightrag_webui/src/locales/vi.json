@@ -153,6 +153,7 @@
         "parse": "Cú pháp",
         "analyze": "Phân tích",
         "process": "Xử lý",
+        "deleting": "Đang xóa",
         "failed": "Thất bại"
       },
       "status": {
@@ -163,6 +164,7 @@
         "analyzing": "Phân tích",
         "processing": "Xử lý",
         "pending": "Đang chờ",
+        "deleting": "Đang xóa",
         "failed": "Thất bại"
       },
       "errors": {
