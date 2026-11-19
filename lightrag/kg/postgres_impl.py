@@ -4268,6 +4268,8 @@ class _PendingPGVectorDoc:
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
+    supports_hybrid_query: ClassVar[bool] = True
+
     db: PostgreSQLDB | None = field(default=None)
 
     def __post_init__(self):
