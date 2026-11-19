@@ -340,6 +340,10 @@ def _extract_response_text(
         | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Gemini's message and callers can
+    # still catch google.genai.errors.APIError.
+    reraise=True,
 )
 async def gemini_complete_if_cache(
     model: str,
@@ -415,6 +419,10 @@ async def gemini_complete_if_cache(
     Raises:
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
     """
     key = _ensure_api_key(api_key)
     # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
@@ -761,6 +769,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_genai_errors.ServerError)
         | retry_if_exception(_is_retryable_gemini_client_error)
     ),
+    # Same as gemini_complete_if_cache: raise the last attempt's exception.
+    reraise=True,
 )
 async def gemini_embed(
     texts: list[str],
@@ -816,6 +826,10 @@ async def gemini_embed(
     Raises:
         ValueError: If API key is not provided or configured.
         RuntimeError: If the response from Gemini is invalid or empty.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
 
     Note:
         - For dimension 3072: Embeddings are already normalized by the API

@@ -695,3 +695,76 @@ def test_gemini_embed_retry_predicate_matches_native_genai_server_error(
     )
 
     assert would_retry is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_complete_exhausted_retries_reraise_the_sdk_error(
+    monkeypatch, request
+):
+    """A 503 that persists through every attempt must surface as the SDK's
+    own ServerError, not as tenacity.RetryError, so the document's error_msg
+    keeps Gemini's message and callers can still catch the SDK error."""
+    from tenacity import wait_none
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    monkeypatch.setattr(
+        gemini_module.gemini_complete_if_cache.retry, "wait", wait_none()
+    )
+
+    calls = {"n": 0}
+
+    async def _failing_generate_content(**kwargs):
+        calls["n"] += 1
+        raise _FakeGeminiServerError(503)
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_failing_generate_content)
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    with pytest.raises(_FakeGeminiServerError, match="503"):
+        await gemini_module.gemini_complete_if_cache(
+            model="gemini-model", prompt="hi", api_key="test-key"
+        )
+
+    assert calls["n"] == 3
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_embed_exhausted_retries_reraise_the_sdk_error(
+    monkeypatch, request
+):
+    """Same exhausted-retry path in gemini_embed: a persistent 429 must reach
+    the caller as the SDK's ClientError, not as tenacity.RetryError."""
+    from tenacity import wait_none
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    monkeypatch.setattr(gemini_module.gemini_embed.func.retry, "wait", wait_none())
+    monkeypatch.setattr(
+        gemini_module.types,
+        "EmbedContentConfig",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
+    )
+
+    calls = {"n": 0}
+
+    async def _failing_embed_content(**kwargs):
+        calls["n"] += 1
+        raise _FakeGeminiClientError(429)
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(embed_content=_failing_embed_content)
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    with pytest.raises(_FakeGeminiClientError, match="429"):
+        await gemini_module.gemini_embed.func(["hello"], api_key="test-key")
+
+    assert calls["n"] == 3
