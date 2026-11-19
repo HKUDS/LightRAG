@@ -1,11 +1,15 @@
-"""search_labels must not append a wildcard to Chinese, Japanese or Korean queries.
+"""search_labels must send Chinese, Japanese and Korean queries as analyzed terms.
 
 The full-text index uses Lucene's ``cjk`` analyzer, which indexes Han, kana and
-Hangul as overlapping bigrams. A wildcard term bypasses the analyzer, so
-``삼성전자*`` is compared against 2-character terms such as ``삼성`` / ``전자``
-and matches nothing — silently, so the CONTAINS fallback never runs either.
-Only Han was routed to the no-wildcard path, so Korean and kana-only label
+Hangul as overlapping bigrams. A wildcard term is not split into bigrams, so a
+bare ``삼성전자*`` is compared against 2-character terms such as ``삼성`` /
+``전자`` and matches nothing — silently, so the CONTAINS fallback never runs
+either. Only Han was routed to the CJK path, so Korean and kana-only label
 searches of three or more characters returned ``[]`` against a real Neo4j 5.
+
+The CJK path sends ``<query> <query>*``: the analyzed part matches queries of
+two or more characters, and the prefix part keeps a single character working
+(``서*`` matches the bigram ``서울``; the analyzed ``서`` matches nothing).
 """
 
 import pytest
@@ -92,14 +96,17 @@ def test_is_cjk_text(text, expected):
     assert storage._is_cjk_text(text) is expected
 
 
-@pytest.mark.parametrize("query", ["삼성전자", "현대자동차", "タワー", "北京大学"])
-async def test_search_labels_sends_cjk_query_without_wildcard(query):
+@pytest.mark.parametrize(
+    "query",
+    ["삼성전자", "현대자동차", "タワー", "北京大学", "서", "タ", "北", "LG전자"],
+)
+async def test_search_labels_sends_cjk_query_as_terms_plus_prefix(query):
     storage, calls = _make_storage()
 
     await storage.search_labels(query)
 
     assert len(calls) == 1
-    assert calls[0][1]["search_query"] == query
+    assert calls[0][1]["search_query"] == f"{query} {query}*"
 
 
 async def test_search_labels_keeps_prefix_wildcard_for_latin_query():

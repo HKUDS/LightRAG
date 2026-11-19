@@ -154,9 +154,12 @@ class Neo4JStorage(BaseGraphStorage):
         return f"entity_id_fulltext_idx_{suffix}"
 
     # Scripts the Lucene `cjk` analyzer indexes as overlapping bigrams. A query
-    # in these scripts must NOT get a trailing `*`: a wildcard term bypasses the
-    # analyzer, so `삼성전자*` is compared against 2-character bigram terms and
-    # silently matches nothing once the query is longer than one bigram.
+    # in these scripts cannot rely on a bare trailing `*`: a wildcard term is
+    # normalized but not split into bigrams, so `삼성전자*` is compared against
+    # 2-character terms and silently matches nothing once the query is longer
+    # than one bigram. `search_labels` therefore sends `<query> <query>*`: the
+    # analyzed part matches multi-character queries, the prefix part a single
+    # character (`서*` matches the bigram `서울`).
     _CJK_BIGRAM_PATTERN = re.compile(
         r"[\u1100-\u11ff"  # Hangul Jamo
         r"\u3040-\u30ff"  # Hiragana, Katakana
@@ -174,7 +177,7 @@ class Neo4JStorage(BaseGraphStorage):
     def _is_cjk_text(self, text: str) -> bool:
         """Check if text contains Chinese, Japanese or Korean characters.
 
-        True routes ``search_labels`` to the no-wildcard query path; see
+        True routes ``search_labels`` to the CJK query path; see
         ``_CJK_BIGRAM_PATTERN`` for why Korean and kana must take it too.
         """
         return bool(self._CJK_BIGRAM_PATTERN.search(text))
@@ -345,7 +348,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def _create_fulltext_index(
         self, driver: AsyncDriver, database: str, workspace_label: str
     ):
-        """Create a full-text index on the entity_id property with Chinese tokenizer support."""
+        """Create a full-text index on the entity_id property with the CJK analyzer."""
         index_name = self._get_fulltext_index_name(workspace_label)
         legacy_index_name = "entity_id_fulltext_idx"
         try:
@@ -430,7 +433,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                     # Create new index with CJK analyzer
                     logger.info(
-                        f"[{self.workspace}] Creating full-text index '{index_name}' with Chinese tokenizer support."
+                        f"[{self.workspace}] Creating full-text index '{index_name}' with CJK analyzer support."
                     )
 
                     try:
@@ -2014,7 +2017,7 @@ class Neo4JStorage(BaseGraphStorage):
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
                 if is_cjk:
-                    # For CJK text, use different search strategies
+                    # For CJK text, score on the raw (case-sensitive) query
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
@@ -2030,8 +2033,8 @@ class Neo4JStorage(BaseGraphStorage):
                     ORDER BY final_score DESC, label ASC
                     LIMIT $limit
                     """
-                    # No wildcard: it bypasses the CJK analyzer (see _CJK_BIGRAM_PATTERN)
-                    search_query = sanitized_query
+                    # Analyzed terms plus a prefix wildcard (see _CJK_BIGRAM_PATTERN)
+                    search_query = f"{sanitized_query} {sanitized_query}*"
                 else:
                     # For non-CJK text, use the original logic with wildcard
                     cypher_query = f"""
