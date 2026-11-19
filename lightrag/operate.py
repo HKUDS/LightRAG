@@ -1462,6 +1462,11 @@ async def _get_cached_extraction_results(
     1. Individual extraction results within each chunk are sorted by create_time (earliest first)
     2. Chunks themselves are sorted by the create_time of their earliest extraction result
 
+    A row is attributed to every requested chunk whose ``llm_cache_list``
+    references it. The row's own ``chunk_id`` names only its first writer and
+    must not be used for attribution: chunks of different documents with
+    identical text share one row.
+
     Args:
         llm_response_cache: LLM response cache storage
         chunk_ids: Set of chunk IDs to get cached results for
@@ -1474,8 +1479,12 @@ async def _get_cached_extraction_results(
     cached_results = {}
     chunk_data_by_id: dict[str, dict[str, Any]] = {}
 
-    # Collect all LLM cache IDs from chunks
-    all_cache_ids = set()
+    # cache key -> requesting chunks whose llm_cache_list references it. A
+    # row is attributed through these references, never through the row's
+    # own ``chunk_id``: the key hashes the prompt, which carries the chunk
+    # text but no document identity, so chunks of two documents sharing one
+    # paragraph share one row, and ``chunk_id`` names only its first writer.
+    referencing_chunks: dict[str, list[str]] = {}
 
     # Read from storage
     requested_chunk_ids = list(chunk_ids)
@@ -1483,40 +1492,37 @@ async def _get_cached_extraction_results(
     for chunk_id, chunk_data in zip(requested_chunk_ids, chunk_data_list):
         if chunk_data and isinstance(chunk_data, dict):
             chunk_data_by_id[chunk_id] = chunk_data
-            llm_cache_list = chunk_data.get("llm_cache_list", [])
-            if llm_cache_list:
-                all_cache_ids.update(llm_cache_list)
+            for cache_id in dict.fromkeys(chunk_data.get("llm_cache_list") or []):
+                referencing_chunks.setdefault(cache_id, []).append(chunk_id)
         else:
             logger.warning(f"Chunk data is invalid or None: {chunk_data}")
 
-    if not all_cache_ids:
+    if not referencing_chunks:
         logger.warning(f"No LLM cache IDs found for {len(chunk_ids)} chunk IDs")
         return cached_results, chunk_data_by_id
 
     # Batch get LLM cache entries
-    cache_data_list = await llm_response_cache.get_by_ids(list(all_cache_ids))
+    cache_ids = list(referencing_chunks)
+    cache_data_list = await llm_response_cache.get_by_ids(cache_ids)
 
-    # Process cache entries and group by chunk_id
+    # Assign each extract row to every requesting chunk that references it
     valid_entries = 0
-    for cache_entry in cache_data_list:
+    for cache_id, cache_entry in zip(cache_ids, cache_data_list):
         if (
             cache_entry is not None
             and isinstance(cache_entry, dict)
             and cache_entry.get("cache_type") == "extract"
-            and cache_entry.get("chunk_id") in chunk_ids
         ):
-            chunk_id = cache_entry["chunk_id"]
             extraction_result = cache_entry["return"]
             create_time = cache_entry.get(
                 "create_time", 0
             )  # Get creation time, default to 0
-            valid_entries += 1
-
-            # Support multiple LLM caches per chunk
-            if chunk_id not in cached_results:
-                cached_results[chunk_id] = []
-            # Store tuple with extraction result and creation time for sorting
-            cached_results[chunk_id].append((extraction_result, create_time))
+            for chunk_id in referencing_chunks[cache_id]:
+                valid_entries += 1
+                # Store tuple with extraction result and creation time for sorting
+                cached_results.setdefault(chunk_id, []).append(
+                    (extraction_result, create_time)
+                )
 
     # Sort extraction results by create_time for each chunk and collect earliest times
     chunk_earliest_times = {}
