@@ -22,6 +22,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 # Env vars that the project's `.env` may have populated (via load_dotenv at
 # import time of lightrag.api.config). Tests must be hermetic and not depend on
 # developer-local .env values, so we clear/override anything that affects

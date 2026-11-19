@@ -270,7 +270,7 @@ def test_postgres_impl_loads_pgvector_lazily_for_vector_connections():
     """PGTable imports postgres_impl but must not trigger pgvector installation."""
     src = (
         Path(__file__).parents[3] / "lightrag" / "kg" / "postgres_impl.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     module_preamble = src.split("class PostgreSQLDB", 1)[0]
 
     assert "pgvector.asyncpg" not in module_preamble

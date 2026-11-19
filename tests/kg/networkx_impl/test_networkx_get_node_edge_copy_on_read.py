@@ -4,6 +4,9 @@ from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import initialize_share_data
 
 
+pytestmark = pytest.mark.offline
+
+
 def _storage(tmp_path, namespace: str) -> NetworkXStorage:
     initialize_share_data()
     return NetworkXStorage(

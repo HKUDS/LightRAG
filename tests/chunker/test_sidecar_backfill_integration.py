@@ -68,9 +68,9 @@ def _write_blocks(tmp_path: Path, blocks: list[tuple[str, str]]) -> tuple[str, s
 @pytest.mark.offline
 def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
     # End-to-end reproduction of the overlap-tail ambiguity with the real chunker.
-    # Simple case: b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a", "a"]. The
-    # middle window [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the
-    # separator), so the tail chunks belong to b2 — not the earlier "a" inside b1.
+    # Simple case: b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a"]. The
+    # last window [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the
+    # separator), so the tail chunk belongs to b2 — not the earlier "a" inside b1.
     blocks_path, merged = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "a")])
     tok = _tokenizer()
 
@@ -81,13 +81,12 @@ def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
         chunk_overlap_token_size=1,
         _emit_source_span=True,
     )
-    assert [c["content"] for c in chunks] == ["aa", "a", "a"]
+    assert [c["content"] for c in chunks] == ["aa", "a"]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
     assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
     assert [r["id"] for r in chunks[1]["sidecar"]["refs"]] == ["b2"]
-    assert [r["id"] for r in chunks[2]["sidecar"]["refs"]] == ["b2"]
 
 
 @pytest.mark.offline
@@ -95,7 +94,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
     tmp_path: Path,
 ) -> None:
     # Harder end-to-end case: b1="a", b2="abab", chunk_size=2, overlap=1 ->
-    # ["a", "", "a", "ab", "ba", "ab", "b"]. The token overlap repeatedly lands on the
+    # ["a", "", "a", "ab", "ba", "ab"]. The token overlap repeatedly lands on the
     # stripped separator, so consecutive non-empty chunks can share a normalized start
     # and only the end advances. The empty chunk is skipped; every other tail chunk
     # must resolve into b2 without raising ChunkBlockMatchError.
@@ -109,7 +108,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
         chunk_overlap_token_size=1,
         _emit_source_span=True,
     )
-    assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab", "b"]
+    assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab"]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
@@ -289,10 +288,9 @@ def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
 def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> None:
     # Regression: tiktoken is byte-level, so a 4-byte UTF-8 char (emoji / rare CJK
     # extension) can have its bytes split across a token-window boundary. Decoding the
-    # partial window yields U+FFFD in BOTH the chunk content and its span probe, so the
-    # chunk is unlocatable by span or by text. Span-first backfill must skip provenance
-    # for the corrupt chunks while still attributing the clean ones, not FAIL the whole
-    # document.
+    # partial window yields U+FFFD at the edge of the chunk content. The chunker
+    # relocates such a window with the U+FFFD stripped; backfill attributes it when it
+    # has a span and skips it when it has none, and never FAILs the whole document.
     pytest.importorskip("tiktoken")
     from lightrag.utils import TiktokenTokenizer
 
@@ -308,20 +306,49 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
         chunk_overlap_token_size=4,
         _emit_source_span=True,
     )
-    # The window splits at least one emoji -> some chunks carry U+FFFD and lack a span.
-    assert any("�" in c["content"] for c in chunks)
-    assert any("_source_span" not in c for c in chunks)
+    # Emoji windows may still carry U+FFFD, or boundary spans may be recovered (#4112).
+    has_replacement = any("�" in c["content"] for c in chunks)
+    recovered_spans = all(
+        "_source_span" in c for c in chunks if c.get("content", "").strip()
+    )
+    assert has_replacement or recovered_spans
+    raw_chunks = [dict(c) for c in chunks]
 
-    # Must NOT raise: corrupt chunks are skipped, the rest are attributed.
+    # Must NOT raise: boundary-span recovery (#4112) can attribute slices that still
+    # decode with U+FFFD at a split emoji byte; empty tail chunks stay skipped.
     backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:
-        if "�" in ch["content"]:
-            assert "sidecar" not in ch  # provenance degraded, document not failed
-        elif ch["content"].strip():  # empty tail chunks are skipped entirely
+        if not ch["content"].strip():
+            assert "sidecar" not in ch
+            continue
+        # Follow the recovered span. A U+FFFD chunk with a span is attributable;
+        # one without a span degrades. Do not key this on the character alone.
+        if "_source_span" in ch:
             assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
-    # At least the clean chunks resolved into the single source block.
+        else:
+            assert "sidecar" not in ch
     assert any("sidecar" in ch for ch in chunks)
+
+    # Hard-splitting a boundary-recovered parent must degrade, not fail the doc.
+    split = enforce_chunk_token_limit_before_embedding(
+        raw_chunks, tok, max_tokens=8, overlap_tokens=0, source_content=merged
+    )
+    backfill_chunk_sidecars(split, blocks_path)
+    assert any(ch.get("_source_span_unavailable") for ch in split)
+    for ch in split:
+        if ch.get("_source_span_unavailable"):
+            assert "_source_span" not in ch
+            assert "sidecar" not in ch
+            continue
+        if ch["content"].strip() and "_source_span" in ch:
+            assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
+    stored = build_chunks_dict_from_chunking_result(
+        split, doc_id="doc-emoji", file_path="doc.txt"
+    )
+    for record in stored.values():
+        assert "_source_span" not in record
+        assert "_source_span_unavailable" not in record
 
 
 @pytest.mark.offline

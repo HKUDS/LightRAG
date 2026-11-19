@@ -16,6 +16,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
+    MIN_CHUNK_TOKEN_SIZE,
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_NATIVE,
     PROCESS_OPTION_CHUNK_CHARS,
@@ -42,6 +43,7 @@ from lightrag.parser.registry import (
 )
 from lightrag.parser.param_schema import (
     _parse_bool,
+    chunk_param_minimum_error,
     parse_chunk_params,
     parse_engine_params,
     render_engine_params,
@@ -285,6 +287,43 @@ def chunk_strategy_key(process_options: Any) -> str:
     else:
         strategy = parse_process_options(process_options).chunking
     return _CHUNK_STRATEGY_KEYS.get(strategy, "fixed_token")
+
+
+def validate_chunk_token_sizes(chunk_config: Mapping[str, Any] | None) -> None:
+    """Reject any ``chunk_token_size`` below :data:`MIN_CHUNK_TOKEN_SIZE`.
+
+    Checks the top-level slot and every strategy sub-dict present in
+    ``chunk_config`` (a full ``addon_params['chunker']`` dict or a slim
+    per-document snapshot). Absent and ``None`` slots are skipped: they
+    inherit a value that is checked where it is set.
+
+    Call it where configuration ENTERS the system (``LightRAG`` init, the
+    ``addon_params`` setter, enqueue). Do not call it when processing an
+    already persisted snapshot: a document accepted under an older rule
+    must stay processable on retry.
+
+    Raises:
+        ValueError: naming the offending slot and value.
+    """
+    if not chunk_config:
+        return
+    slots: list[tuple[str, Any]] = [("chunker", chunk_config)]
+    for key in dict.fromkeys(_CHUNK_STRATEGY_KEYS.values()):
+        sub = chunk_config.get(key)
+        if isinstance(sub, Mapping):
+            slots.append((f"chunker.{key}", sub))
+    for label, slot in slots:
+        value = slot.get("chunk_token_size")
+        if value is None:
+            continue
+        if int(value) < MIN_CHUNK_TOKEN_SIZE:
+            raise ValueError(
+                f"{label}.chunk_token_size must be >= {MIN_CHUNK_TOKEN_SIZE}, "
+                f"got {value!r}; a chunk this small is a misconfiguration "
+                "(check CHUNK_SIZE / CHUNK_F_SIZE / CHUNK_R_SIZE / "
+                "CHUNK_V_SIZE / CHUNK_P_SIZE, LightRAG(chunk_token_size=...) "
+                "and addon_params['chunker'])"
+            )
 
 
 def slim_chunk_options(
@@ -794,6 +833,42 @@ def _parse_chunk_param_texts(
     return chunk_params, errors
 
 
+def _chunk_param_minimum_errors(
+    chunk_params: Mapping[str, Mapping[str, Any]], *, label: str
+) -> list[str]:
+    """Ingress-only ``MIN_CHUNK_TOKEN_SIZE`` check over parsed per-selector params."""
+    errors: list[str] = []
+    for selector, params in chunk_params.items():
+        error = chunk_param_minimum_error(params)
+        if error is not None:
+            errors.append(f"{label} chunk strategy {selector!r}: {error}")
+    return errors
+
+
+def validate_new_hint_chunk_sizes(
+    file_path: str | Path, chunk_params: Mapping[str, Mapping[str, Any]]
+) -> None:
+    """Reject a NEW file whose hint sets a size below ``MIN_CHUNK_TOKEN_SIZE``.
+
+    Call it on the upload and scan-enqueue paths, after
+    :func:`resolve_parser_directives`. :func:`resolve_parser_directives`
+    itself does not apply the minimum: it also runs when an already ingested
+    document is resumed, and a hint accepted under the old floor must stay
+    resumable.
+
+    Raises:
+        FilenameParserHintError: naming the selector and value.
+    """
+    basename = Path(file_path).name
+    errors = _chunk_param_minimum_errors(
+        chunk_params, label=f"filename hint in {basename!r}"
+    )
+    if errors:
+        raise FilenameParserHintError(
+            f"Invalid filename parser hint in {basename!r}: " + "; ".join(errors)
+        )
+
+
 def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:
     """Decompose a bracket-hint inner string into ``(engine, options)``.
 
@@ -922,7 +997,11 @@ def _filename_hint_match(
         return None
     if engine in supported_parser_engines():
         return m, engine, options, chunk_params, engine_params
-    if engine is None and (options or chunk_params):
+    # Without a recognised engine only the ``-OPTIONS`` form is a hint, and
+    # ``split_engine_and_options`` returns options for nothing else. A chunk
+    # parameter block alone must not qualify: ``xyz-R(...)`` stays
+    # unrecognised just like ``xyz-R``.
+    if engine is None and options:
         return m, "", options, chunk_params, engine_params
     return None
 
@@ -938,7 +1017,7 @@ def _validate_filename_hint_for_resolution(
     if not m:
         return
 
-    inner = m.group(1)
+    inner = m.group(1).strip()
     errors: list[str] = []
 
     if not inner.strip():
@@ -951,6 +1030,7 @@ def _validate_filename_hint_for_resolution(
     # branches below then run on a parameter-free string exactly as before.
     hint_label = f"filename hint {m.group(0)!r}"
     inner, engine_param, chunk_param_texts, struct_errors = _extract_param_blocks(inner)
+    inner = inner.strip()
     errors.extend(f"{hint_label}: {msg}" for msg in struct_errors)
     _, param_errors = _parse_chunk_param_texts(chunk_param_texts, label=hint_label)
     errors.extend(param_errors)
@@ -1214,8 +1294,13 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
                     options_str, label="process options"
                 )
             )
-        _, param_errors = _parse_chunk_param_texts(chunk_param_texts, label=label)
+        rule_chunk_params, param_errors = _parse_chunk_param_texts(
+            chunk_param_texts, label=label
+        )
         errors.extend(param_errors)
+        # Rules are configuration read at startup, so the ingress minimum
+        # applies here (runtime rule matching ignores parse errors).
+        errors.extend(_chunk_param_minimum_errors(rule_chunk_params, label=label))
 
     if errors:
         raise ParserRoutingConfigError(
