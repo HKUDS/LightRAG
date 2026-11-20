@@ -5875,6 +5875,10 @@ class _PipelineMixin:
                     # data is not — a false PROCESSED that recovery can never
                     # detect (status is the commit record).
                     await self._insert_done()
+                    # A tracking write the flush kept after a transient failure
+                    # would land after busy is released, over a newer commit.
+                    # Re-flushed here, else the batch aborts like a raised flush.
+                    await self._require_tracking_commit_landed()
 
                     # A sibling document's flush error may have aborted the
                     # batch while our flush ran; do not mark PROCESSED during

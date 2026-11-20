@@ -804,3 +804,56 @@ async def test_summary_truncation_is_journaled_before_the_graph_write(
         assert summary["stages"] == {"summary": 1}
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_retained_tracking_write_fails_the_operation_and_resume_commits(
+    tmp_path, monkeypatch
+):
+    """A tracking write the commit kept after a transient failure would land
+    after ``busy`` is released, over a newer commit: the operation fails with
+    its journal kept and takes the discard path, and the same call resumes."""
+    from lightrag.exceptions import IndexFlushError
+
+    rag = await _build_rag(tmp_path)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        monkeypatch.setattr(
+            type(rag.entity_chunks), "buffers_writes_per_process", True, raising=False
+        )
+        monkeypatch.setattr(
+            lightrag_module, "_TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS", 0
+        )
+        retained = [True]
+
+        async def has_retained_writes():
+            return retained[0]
+
+        monkeypatch.setattr(
+            rag.entity_chunks, "has_retained_writes", has_retained_writes
+        )
+        discards: list[bool] = []
+        orig_discard = rag._discard_pending_index_ops
+
+        async def spy_discard(*args, **kwargs):
+            discards.append(True)
+            return await orig_discard(*args, **kwargs)
+
+        monkeypatch.setattr(rag, "_discard_pending_index_ops", spy_discard)
+
+        with pytest.raises(IndexFlushError, match="not made durable"):
+            await rag.ainsert_custom_chunks(
+                "fresh doc", ["alice is here"], doc_id="doc-7"
+            )
+        row = await rag.doc_status.get_by_id("doc-7")
+        assert _status_text(row) == DocStatus.FAILED.value
+        assert _journal(row) is not None
+        assert discards == [True]
+
+        retained[0] = False
+        await rag.ainsert_custom_chunks("fresh doc", ["alice is here"], doc_id="doc-7")
+        row = await rag.doc_status.get_by_id("doc-7")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        assert _journal(row) is None
+    finally:
+        await rag.finalize_storages()
