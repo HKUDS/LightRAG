@@ -1250,6 +1250,11 @@ def parsed_artifact_dir_for(
 #   - Unknown sentinel: literal string ``"unknown_source"``
 
 _LEGACY_WINDOWS_AUTHORITY_RE = re.compile(r"[A-Za-z]:\\")
+# A drive marker (``C:`` or the legacy ``C|``) followed by a path with no
+# separator after it: drive-relative, so it names no fixed directory. Checked
+# before ``url2pathname`` because CPython < 3.12 inserts a separator there and
+# silently turns ``C:tmp`` into the absolute ``C:\tmp``.
+_URI_DRIVE_RELATIVE_RE = re.compile(r"^/*[A-Za-z][:|](?!/|\\|%5[Cc]|$)")
 
 
 def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
@@ -1273,6 +1278,9 @@ def _windows_sidecar_path(netloc: str, path: str) -> str | None:
         if path == "/" and _LEGACY_WINDOWS_AUTHORITY_RE.match(legacy):
             return legacy
         return None  # A UNC host: not supported, see the conventions above.
+    if _URI_DRIVE_RELATIVE_RE.match(path):
+        logger.warning(f"Unresolvable sidecar URI path {path!r}: drive-relative")
+        return None
     try:
         # Decodes exactly once and drops the slash before the drive letter.
         return url2pathname(path)
