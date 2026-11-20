@@ -258,8 +258,23 @@ from lightrag.tools.rebuild_vdb import (
     rebuild_relationships_vdb,
 )
 
-report = await check_vdb_consistency(graph, entities_vdb, relationships_vdb)
-if not report["consistent"]:
+report = await check_vdb_consistency(
+    graph,
+    entities_vdb,
+    relationships_vdb,
+    text_chunks_kv=text_chunks,  # optional: also check chunks_vdb
+    chunks_vdb=chunks_vdb,
+)
+status = {label: t["status"] for label, t in report["targets"].items()}
+needs_rebuild = {"inconsistent", "incompatible"}
+# "inconclusive" is not a finding: report it and check again, never drop on it.
+if status["entities"] in needs_rebuild:
     await rebuild_entities_vdb(graph, entities_vdb, global_config)
+if status["relationships"] in needs_rebuild:
     await rebuild_relationships_vdb(graph, relationships_vdb, global_config)
+if status.get("chunks") in needs_rebuild:
+    await rebuild_chunks_vdb(text_chunks, chunks_vdb)
+for label, verdict in status.items():
+    if verdict == "inconclusive":
+        print(f"{label}: not verified ({report['targets'][label]['reason']})")
 ```
