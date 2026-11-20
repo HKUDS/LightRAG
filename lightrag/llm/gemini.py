@@ -105,8 +105,9 @@ def _normalize_gemini_base_url(base_url: str | None) -> str | None:
 def _use_vertexai() -> bool:
     """Whether GOOGLE_GENAI_USE_VERTEXAI enables Vertex AI mode.
 
-    Parsed exactly like the google-genai SDK does ("true" or "1", any case), so
-    LightRAG and the client it builds never disagree about the mode.
+    Accepts the values the google-genai SDK accepts ("true" or "1", any case).
+    The client is always built with an explicit ``vertexai`` flag, so this
+    decision, not the SDK's own environment lookup, selects the mode.
     """
     return os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
 
@@ -145,7 +146,10 @@ def _get_gemini_client(
                 "GOOGLE_CLOUD_PROJECT must be set when using Vertex AI mode"
             )
     else:
-        # Standard Gemini API mode: use api_key
+        # Standard Gemini API mode: use api_key. Pass vertexai=False explicitly,
+        # otherwise the SDK re-reads its own environment variables (including
+        # GOOGLE_GENAI_USE_ENTERPRISE) and may still switch to Vertex AI.
+        client_kwargs["vertexai"] = False
         client_kwargs["api_key"] = api_key
 
     if normalized_base_url is not None or timeout is not None:

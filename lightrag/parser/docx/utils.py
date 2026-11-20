@@ -150,7 +150,9 @@ def create_gemini_client(use_async: bool = False):
                 "Set GOOGLE_GENAI_USE_VERTEXAI=true and configure GCP credentials for Vertex AI mode."
             )
 
-        client = genai.Client(api_key=api_key)
+        # Explicit vertexai=False: otherwise the SDK re-reads its own
+        # environment variables and may still switch to Vertex AI.
+        client = genai.Client(vertexai=False, api_key=api_key)
 
     # Return async or sync client based on parameter
     return client.aio if use_async else client

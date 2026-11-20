@@ -281,7 +281,7 @@ def test_gemini_vertexai_env_off_uses_api_key(monkeypatch, request, value):
     client = gemini_module._get_gemini_client("test-key", None)
 
     assert client.kwargs["api_key"] == "test-key"
-    assert "vertexai" not in client.kwargs
+    assert client.kwargs["vertexai"] is False
 
 
 @pytest.mark.offline
