@@ -68,8 +68,8 @@ class EmptyTruncatedResponseError(RuntimeError):
 
     Two raise surfaces share it:
 
-    - the provider bindings (OpenAI/Gemini), when the response is empty and
-      the finish reason is the output token limit;
+    - the provider bindings (OpenAI/Gemini/Anthropic), when the response is
+      empty and the finish reason is the output token limit;
     - ``use_llm_func_with_cache``, for the case no binding can see: a thinking
       model exhausts its budget inside the reasoning trace and returns
       ``<think>...</think>`` with no answer after it — NON-empty at the

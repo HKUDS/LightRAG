@@ -164,7 +164,7 @@ async def test_max_retries_is_a_client_option_not_a_request_parameter(
     call_kwargs, expected_max_retries
 ):
     message = MagicMock()
-    message.content = [MagicMock(text="hello")]
+    message.content = [MagicMock(type="text", text="hello")]
     message.stop_reason = "end_turn"
     client = MagicMock()
     client.messages.create = AsyncMock(return_value=message)
