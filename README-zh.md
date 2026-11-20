@@ -414,6 +414,14 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 - **模型存在缺陷，陷入输出死循环。** 某些模型（尤其是本地部署的 Qwen 模型）在遇到特殊文本时偶尔会陷入无尽的输出死循环。如果是偶发情况，通常只需将该文档重新处理一次即可解决。
 - **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除匹配的参考文献块，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
 
+### 解决 Embedding 超时
+
+类似 `Embedding func: Worker execution timeout after 60s` 的错误来自 Embedding 队列，该队列有独立的超时设置，不跟随 `LLM_TIMEOUT`：
+
+- **超时由 `EMBEDDING_TIMEOUT` 控制（默认 `30`）。** 与 LLM 超时一样，实际的执行超时是所配置值的**两倍**，因此默认值对应报错中的 `60s`。增大 `LLM_TIMEOUT` 对 Embedding 调用没有任何作用。
+- **通常的原因是 Embedding 服务太慢。** 正常情况下一个 Embedding 批次几秒内即可完成，因此增大 `EMBEDDING_TIMEOUT` 往往只是掩盖问题。请先检查 Embedding 服务。
+- **让并发数与服务的处理能力相匹配。** LightRAG 最多同时发送 `EMBEDDING_FUNC_MAX_ASYNC`（默认 `8`）个批次。使用 Ollama 时，请将 `OLLAMA_NUM_PARALLEL` 设置为不小于该值，或调低 `EMBEDDING_FUNC_MAX_ASYNC`，并让 Embedding 模型保持加载状态（`OLLAMA_KEEP_ALIVE=-1`，或使用独立的 Ollama 实例），因为它与 LLM 在显存中来回切换会导致 Embedding 请求停滞。
+
 ### 文档查询阶段其他重要配置
 
 在文档查询阶段还有以下环境变量建议根据实际需要进行调整：

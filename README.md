@@ -414,6 +414,14 @@ LLM timeouts during entity-relation extraction usually trace back to one of thre
 - **The model gets stuck in an output loop.** Some models (locally deployed Qwen models in particular) occasionally fall into an endless-output loop on certain text. When this is intermittent, simply re-processing the document once usually resolves it.
 - **References specifically (P chunking strategy).** When using the paragraph-semantic (`P`) chunking strategy (e.g., `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` to automatically drop matching reference blocks before chunking. This prevents references from generating a flood of low-value entities and relations, a common source of timeouts. It can also be enabled per file via the filename hint `paper.[-P(drop_rf=true)].pdf`; related detection knobs (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) are documented in `env.example`.
 
+### Resolving Embedding Timeouts
+
+An error such as `Embedding func: Worker execution timeout after 60s` comes from the embedding queue, which has its own timeout and does not follow `LLM_TIMEOUT`:
+
+- **The timeout is `EMBEDDING_TIMEOUT` (default `30`).** As with the LLM timeouts, the effective execution timeout is **twice** the configured value, so the default reports `60s`. Raising `LLM_TIMEOUT` has no effect on embedding calls.
+- **A slow embedding service is the usual cause.** A healthy embedding batch completes in a few seconds, so raising `EMBEDDING_TIMEOUT` usually only hides the problem. Check the embedding service first.
+- **Match the concurrency to what the service can handle.** LightRAG sends up to `EMBEDDING_FUNC_MAX_ASYNC` (default `8`) batches at once. With Ollama, set `OLLAMA_NUM_PARALLEL` to at least that value or lower `EMBEDDING_FUNC_MAX_ASYNC`, and keep the embedding model loaded (`OLLAMA_KEEP_ALIVE=-1`, or a separate Ollama instance), because swapping it with the LLM in VRAM stalls embedding requests.
+
 ### Other Important Configurations for Document Querying
 
 During the document query stage, you may also want to adjust the following environment variables based on your needs:

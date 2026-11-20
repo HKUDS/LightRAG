@@ -414,6 +414,14 @@ LightRAG は4種類のバックエンドストレージを必要とします:
 - **モデルが出力ループに陥る。** 一部のモデル（特にローカル展開された Qwen モデル）は、特定のテキストで際限のない出力ループに陥ることがあります。これが断続的に発生する場合は、ドキュメントを一度再処理するだけで通常は解消します。
 - **特に参考文献の場合（P チャンク戦略）。** 段落セマンティック（`P`）チャンク戦略（例: `LIGHTRAG_PARSER=...-iteP`）を使用している場合、`CHUNK_P_DROP_REFERENCES=true` を設定すると、チャンク化の前に一致する参考文献ブロックを自動的に削除します。これにより、参考文献が大量の低価値なエンティティ・関係を生成すること（タイムアウトの一般的な原因）を防ぎます。ファイル名のヒント `paper.[-P(drop_rf=true)].pdf` でファイルごとに有効化することもできます。関連する検出パラメータ（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）は `env.example` に記載されています。
 
+### Embedding タイムアウトの解消
+
+`Embedding func: Worker execution timeout after 60s` のようなエラーは Embedding キューから発生します。このキューは独自のタイムアウトを持ち、`LLM_TIMEOUT` には従いません:
+
+- **タイムアウトは `EMBEDDING_TIMEOUT`（デフォルト `30`）です。** LLM のタイムアウトと同様に、実際の実行タイムアウトは設定値の**2倍**になるため、デフォルトでは `60s` と表示されます。`LLM_TIMEOUT` を延長しても Embedding 呼び出しには影響しません。
+- **多くの場合、原因は Embedding サービスの遅さです。** 正常な Embedding バッチは数秒で完了するため、`EMBEDDING_TIMEOUT` を延長しても通常は問題を隠すだけです。まず Embedding サービスを確認してください。
+- **並列数をサービスの処理能力に合わせてください。** LightRAG は最大 `EMBEDDING_FUNC_MAX_ASYNC`（デフォルト `8`）個のバッチを同時に送信します。Ollama では `OLLAMA_NUM_PARALLEL` をその値以上に設定するか `EMBEDDING_FUNC_MAX_ASYNC` を下げ、Embedding モデルをロードしたままにしてください（`OLLAMA_KEEP_ALIVE=-1`、または別の Ollama インスタンス）。VRAM 上で LLM と入れ替わると Embedding リクエストが停滞するためです。
+
 ### ドキュメントクエリに関するその他の重要な設定
 
 ドキュメントクエリ段階では、ニーズに応じて以下の環境変数の調整を検討するとよいでしょう:
