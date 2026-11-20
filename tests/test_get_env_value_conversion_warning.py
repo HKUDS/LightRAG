@@ -45,3 +45,27 @@ def test_convertible_value_does_not_warn(monkeypatch, lightrag_log_records):
     monkeypatch.setenv(ENV_KEY, "42")
     assert get_env_value(ENV_KEY, 7, int) == 42
     assert _warnings(lightrag_log_records) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("true", True), (" ON ", True), ("off", False), ("0", False), ("", False)],
+)
+def test_recognized_bool_does_not_warn(
+    raw, expected, monkeypatch, lightrag_log_records
+):
+    monkeypatch.setenv(ENV_KEY, raw)
+    assert get_env_value(ENV_KEY, not expected, bool) is expected
+    assert _warnings(lightrag_log_records) == []
+
+
+@pytest.mark.parametrize("default", [True, False])
+@pytest.mark.parametrize("raw", ["ture", "enabled", "2"])
+def test_unrecognized_bool_falls_back_with_warning(
+    raw, default, monkeypatch, lightrag_log_records
+):
+    monkeypatch.setenv(ENV_KEY, raw)
+    assert get_env_value(ENV_KEY, default, bool) is default
+    messages = _warnings(lightrag_log_records)
+    assert len(messages) == 1
+    assert repr(raw) in messages[0]
