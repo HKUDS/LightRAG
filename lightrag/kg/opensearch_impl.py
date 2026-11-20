@@ -1078,6 +1078,10 @@ class OpenSearchKVStorage(BaseKVStorage):
         # mirrors what was introduced for OpenSearchVectorDBStorage.
         self._pending_upserts: dict[str, dict[str, Any]] = {}
         self._pending_kv_deletes: set[str] = set()
+        # Ids the latest flush ATTEMPTED and kept after a retryable per-item
+        # failure. Distinguishes those from operations buffered after that
+        # flush, which no commit has tried yet; see ``has_retained_writes``.
+        self._retained_ids: set[str] = set()
         # Namespace-keyed lock (multi-process aware) is assigned in
         # initialize(). All buffer reads / writes and the flush itself
         # acquire this lock so an in-flight flush cannot interleave with
@@ -1744,6 +1748,10 @@ class OpenSearchKVStorage(BaseKVStorage):
             }
             pending_deletes.clear()
             pending_deletes.update(new_deletes)
+            # Every buffered operation was part of this bulk (the flush holds
+            # ``_flush_lock`` throughout), so what is left now is exactly what
+            # the server refused for a retryable reason.
+            self._retained_ids = set(pending_upserts) | new_deletes
 
             if retryable_ids:
                 logger.warning(
@@ -1779,10 +1787,12 @@ class OpenSearchKVStorage(BaseKVStorage):
         if self._flush_lock is None:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
+            self._retained_ids.clear()
             return
         async with self._flush_lock:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
+            self._retained_ids.clear()
 
     def discard_buffered_writes(self) -> int:
         """Synchronously drop every buffered upsert and delete; return how many.
@@ -1796,6 +1806,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         dropped = len(self._pending_upserts) + len(self._pending_kv_deletes)
         self._pending_upserts.clear()
         self._pending_kv_deletes.clear()
+        self._retained_ids.clear()
         return dropped
 
     async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
@@ -1844,6 +1855,27 @@ class OpenSearchKVStorage(BaseKVStorage):
             if self._pending_upserts:
                 return True
             return include_deletes and bool(self._pending_kv_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
+    async def has_retained_writes(self) -> bool:
+        """Whether the latest flush kept an operation after a retryable failure.
+
+        Unlike ``has_pending_index_ops`` this ignores operations buffered after
+        that flush: no commit has tried them yet, so they are not evidence that
+        a commit failed. Waits for an in-flight flush, so the answer covers
+        every operation buffered before the call. Upserts and deletes both
+        count -- a retained tombstone lands as late as a retained row.
+        """
+
+        def _answer() -> bool:
+            return any(
+                doc_id in self._pending_upserts or doc_id in self._pending_kv_deletes
+                for doc_id in self._retained_ids
+            )
 
         if self._flush_lock is None:  # see drop_pending_index_ops
             return _answer()

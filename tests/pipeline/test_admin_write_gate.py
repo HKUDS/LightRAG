@@ -1706,3 +1706,62 @@ async def test_an_immediate_tracking_kv_is_never_asked_to_discard(rag, monkeypat
             raise RuntimeError("boom")
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# ainsert_custom_kg commits through _insert_done: a tracking write that commit
+# kept after a transient failure must fail the call, not outlive the gate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lands_on_reflush", [False, True])
+async def test_ainsert_custom_kg_fails_on_a_retained_tracking_write(
+    rag, monkeypatch, lands_on_reflush
+):
+    from lightrag.exceptions import IndexFlushError
+
+    monkeypatch.setattr(
+        type(rag.entity_chunks), "buffers_writes_per_process", True, raising=False
+    )
+    monkeypatch.setattr(lightrag_module, "_TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS", 0)
+    asks = [0]
+
+    async def has_retained_writes():
+        asks[0] += 1
+        return not (lands_on_reflush and asks[0] > 1)
+
+    monkeypatch.setattr(rag.entity_chunks, "has_retained_writes", has_retained_writes)
+    discarded: list[str] = []
+    monkeypatch.setattr(
+        rag, "_discard_buffered_tracking_writes", lambda op: discarded.append(op)
+    )
+    custom_kg = {
+        "chunks": [
+            {"content": "Alice knows Bob.", "source_id": "chunk-1", "file_path": "f"}
+        ],
+        "entities": [
+            {
+                "entity_name": "Alice",
+                "entity_type": "PERSON",
+                "description": "a person",
+                "source_id": "chunk-1",
+                "file_path": "f",
+            }
+        ],
+        "relationships": [],
+    }
+
+    if lands_on_reflush:
+        await rag.ainsert_custom_kg(custom_kg)
+        assert asks[0] == 2
+        assert discarded == []
+    else:
+        with pytest.raises(IndexFlushError, match="not made durable"):
+            await rag.ainsert_custom_kg(custom_kg)
+        assert asks[0] == lightrag_module._TRACKING_RETAINED_FLUSH_RETRIES + 1
+        # The gate's failure exit drops the buffered tracking writes.
+        assert discarded == ["ainsert_custom_kg"]
+
+    status, _lock = await _status_handles(rag)
+    assert status["busy"] is False and status["busy_owner"] is None

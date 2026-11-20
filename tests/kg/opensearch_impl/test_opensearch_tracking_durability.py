@@ -207,3 +207,127 @@ async def test_the_synchronous_discard_empties_the_buffer():
 
     assert server.bulk_calls == 0
     assert server.docs["Foo"]["chunk_ids"] == ["old", "document"]
+
+
+# ---------------------------------------------------------------------------
+# Writers that commit through ``_insert_done``: the document pipeline,
+# ``ainsert_custom_chunks`` and ``ainsert_custom_kg`` ask
+# ``has_retained_writes`` through ``LightRAG._require_tracking_commit_landed``.
+# ---------------------------------------------------------------------------
+
+
+async def test_has_retained_writes_counts_only_what_a_flush_attempted():
+    """A row buffered AFTER a clean flush is pending but not retained: on the
+    pipeline that is a sibling document's merge, not a failed commit."""
+    server = _FakeServer()
+    storage = await _tracking_storage(server)
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        await storage.upsert({"Foo": {"chunk_ids": ["old"], "count": 1}})
+        await storage.index_done_callback()
+        await storage.upsert({"Bar": {"chunk_ids": ["fresh"], "count": 1}})
+        assert await storage.has_pending_index_ops() is True
+        assert await storage.has_retained_writes() is False
+
+        server.rate_limited = True
+        await storage.index_done_callback()
+        assert await storage.has_retained_writes() is True
+
+        server.rate_limited = False
+        await storage.index_done_callback()
+        assert await storage.has_retained_writes() is False
+    assert server.docs["Bar"]["chunk_ids"] == ["fresh"]
+
+
+@pytest.mark.parametrize("op", ["upsert", "delete"])
+async def test_has_retained_writes_counts_a_retained_tombstone(op):
+    server = _FakeServer()
+    storage = await _tracking_storage(server)
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        if op == "upsert":
+            await storage.upsert({"Foo": {"chunk_ids": ["old"], "count": 1}})
+        else:
+            await storage.delete(["Foo"])
+        server.rate_limited = True
+        await storage.index_done_callback()
+    assert await storage.has_retained_writes() is True
+    await storage.drop_pending_index_ops()
+    assert await storage.has_retained_writes() is False
+
+
+def _commit_owner(entity_chunks):
+    """The attributes ``_require_tracking_commit_landed`` and
+    ``_flush_storages`` read, with no cache pair to chain."""
+    from types import SimpleNamespace
+
+    from lightrag.lightrag import LightRAG
+
+    owner = SimpleNamespace(
+        entity_chunks=entity_chunks,
+        relation_chunks=None,
+        text_chunks=None,
+        llm_response_cache=None,
+    )
+    owner._flush_storages = lambda storages, **kw: LightRAG._flush_storages(
+        owner, storages, **kw
+    )
+    return owner, LightRAG._require_tracking_commit_landed
+
+
+async def test_a_retained_pipeline_tracking_write_is_reflushed_until_it_lands(
+    monkeypatch,
+):
+    monkeypatch.setattr("lightrag.lightrag._TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS", 0)
+    server = _FakeServer()
+    storage = await _tracking_storage(server)
+    owner, require_landed = _commit_owner(storage)
+    original_bulk = server.bulk
+
+    async def recovering_bulk(client, actions, **kw):
+        result = await original_bulk(client, actions, **kw)
+        server.rate_limited = False  # the 429 clears after one refusal
+        return result
+
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=recovering_bulk
+    ):
+        await storage.upsert({"Foo": {"chunk_ids": ["old", "document"], "count": 2}})
+        server.rate_limited = True
+        await storage.index_done_callback()  # the document's _insert_done
+        assert await storage.has_retained_writes() is True
+        await require_landed(owner)
+
+    assert server.bulk_calls == 2
+    assert server.docs["Foo"]["chunk_ids"] == ["old", "document"]
+    assert await storage.has_pending_index_ops(include_deletes=True) is False
+
+
+async def test_a_tracking_write_that_never_lands_fails_without_discarding(
+    monkeypatch,
+):
+    """The helper raises the pipeline's flush-failure type and leaves the
+    buffer to the caller's failure path: dropping it here would take rows of
+    sibling documents that have not reached their own check yet."""
+    from lightrag.exceptions import IndexFlushError
+    from lightrag.lightrag import _TRACKING_RETAINED_FLUSH_RETRIES
+
+    monkeypatch.setattr("lightrag.lightrag._TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS", 0)
+    server = _FakeServer()
+    storage = await _tracking_storage(server)
+    owner, require_landed = _commit_owner(storage)
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        await storage.upsert({"Foo": {"chunk_ids": ["old", "document"], "count": 2}})
+        server.rate_limited = True
+        await storage.index_done_callback()
+        with pytest.raises(IndexFlushError, match="not made durable") as exc_info:
+            await require_landed(owner)
+
+    assert exc_info.value.storage_name == "OpenSearchKVStorage"
+    assert server.bulk_calls == 1 + _TRACKING_RETAINED_FLUSH_RETRIES
+    assert await storage.has_retained_writes() is True
+    assert "Foo" not in server.docs

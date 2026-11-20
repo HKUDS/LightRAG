@@ -297,6 +297,12 @@ _SyncResultT = TypeVar("_SyncResultT")
 ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX = "GraphAdmin"
 ADMIN_WRITE_LOCK_KEY = "admin"
 
+# Re-flushes of a chunk-tracking write a commit kept after a transient failure,
+# and the first backoff (doubled per attempt: 0.5 s, 1 s, 2 s). Spent while the
+# caller still holds ``busy``; see ``LightRAG._require_tracking_commit_landed``.
+_TRACKING_RETAINED_FLUSH_RETRIES = 3
+_TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS = 0.5
+
 # How long an admin write waits for a peer admin write to finish before it is
 # refused (HTTP 409 with ``ADMIN_WRITE_LOCK_BUSY_PREFIX``). Admin writes are
 # manual operations, so queueing them is the point; the bound only keeps a
@@ -3832,6 +3838,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # write PROCESSED (the commit record) last with the
                     # journal cleared.
                     await self._insert_done()
+                    # A retained tracking write would outlive busy; raising
+                    # sends the operation down the op_failed discard path.
+                    await self._require_tracking_commit_landed()
 
                     # Patch mode AND resumed creates, not patch alone. Patch
                     # merges pass None for the anchor storages, so this union
@@ -5211,6 +5220,69 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status["latest_message"] = log_message
                 append_pipeline_history(pipeline_status, log_message)
 
+    async def _require_tracking_commit_landed(self) -> None:
+        """Fail when chunk tracking is still buffered after a commit returned.
+
+        Call it after ``_insert_done()`` and BEFORE the PROCESSED write, from a
+        caller that holds the pipeline ``busy`` reservation and has a failure
+        path that discards the buffers (the document pipeline's batch abort,
+        ``ainsert_custom_chunks``' ``op_failed`` branch, the admin-write
+        gate's failure exit for ``ainsert_custom_kg``). It never discards
+        anything itself: on the pipeline other in-flight documents share the
+        buffer, and dropping their rows before the abort flag is set lets one
+        of them reach PROCESSED with its tracking gone.
+
+        A tracking row is a whole row produced by read-modify-write. Retained
+        in a per-process buffer past ``busy`` (``OpenSearchKVStorage`` keeps a
+        retryable bulk failure and returns normally), it lands later over
+        whatever another worker committed in between and erases that writer's
+        attribution. So a retained write is re-flushed a few times with
+        backoff while ``busy`` is still held, and when it still does not land
+        the caller fails with ``IndexFlushError``: the same path, and the same
+        recovery, as a tracking flush that raised. Only storages declaring
+        ``buffers_writes_per_process`` are asked. See *Per-process tracking
+        buffers* in ``docs/design/PipelineConcurrencyContract.md``.
+        """
+        storages = [
+            storage_inst
+            for storage_inst in (
+                getattr(self, "entity_chunks", None),
+                getattr(self, "relation_chunks", None),
+            )
+            if storage_inst is not None
+            and getattr(type(storage_inst), "buffers_writes_per_process", False)
+        ]
+        retained: list = []
+        for attempt in range(_TRACKING_RETAINED_FLUSH_RETRIES + 1):
+            retained = [
+                storage_inst
+                for storage_inst in storages
+                if await storage_inst.has_retained_writes()
+            ]
+            if not retained or attempt == _TRACKING_RETAINED_FLUSH_RETRIES:
+                break
+            delay = _TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS * (2**attempt)
+            logger.warning(
+                "Chunk tracking kept a transiently failed write buffered "
+                f"({', '.join(str(s.namespace) for s in retained)}); "
+                f"re-flushing in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{_TRACKING_RETAINED_FLUSH_RETRIES})"
+            )
+            await asyncio.sleep(delay)
+            await self._flush_storages(retained)
+        if not retained:
+            return
+        storage_inst = retained[0]
+        namespace = getattr(storage_inst, "final_namespace", None) or getattr(
+            storage_inst, "namespace", ""
+        )
+        cause = RuntimeError(
+            "chunk tracking was not made durable: the storage kept a "
+            "transiently failed write buffered after "
+            f"{_TRACKING_RETAINED_FLUSH_RETRIES} re-flushes"
+        )
+        raise IndexFlushError(type(storage_inst).__name__, namespace, cause) from cause
+
     async def _insert_done_with_cleanup(self) -> None:
         """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
         discarding the pending buffers on a flush failure.
@@ -6072,6 +6144,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     await self._insert_done_with_cleanup()
                     if interrupted is not None:
                         mark_cancellation_deferred(interrupted)
+            # Success path only: every failure exit has already propagated, and
+            # the gate drops the buffered tracking writes on those.
+            if update_storage:
+                await self._require_tracking_commit_landed()
 
     def query(
         self,

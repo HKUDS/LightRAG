@@ -739,6 +739,22 @@ class BaseKVStorage(StorageNameSpace, ABC):
         """
         return 0
 
+    async def has_retained_writes(self) -> bool:
+        """Whether a commit returned normally but kept operations it could not write.
+
+        A per-item backend keeps a retryable bulk failure (408/429/5xx) in its
+        buffer and returns from ``index_done_callback`` without raising. This
+        answers "did the latest commit leave something behind", and must NOT
+        count operations buffered after that commit, which no commit has tried
+        yet: ``has_pending_index_ops`` does count them, so a caller running
+        beside concurrent writers cannot use it for this question.
+
+        A backend that declares ``buffers_writes_per_process`` MUST override
+        it; the default has nothing buffered and returns ``False``. See
+        ``LightRAG._require_tracking_commit_landed`` for the caller.
+        """
+        return False
+
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get value by id"""
