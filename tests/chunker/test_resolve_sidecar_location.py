@@ -309,7 +309,14 @@ def test_windows_reader_does_not_root_a_drive_relative_path(windows, location):
 
 @pytest.mark.parametrize(
     "location",
-    ["file:///C:/tmp/report.parsed/", "file:///C:%5Ctmp/report.parsed/"],
+    [
+        "file:///C:/tmp/report.parsed/",
+        "file:///C:%5Ctmp/report.parsed/",
+        "file:///C:%5ctmp/report.parsed/",
+        "file:///C:%2Ftmp/report.parsed/",
+        "file:///C:%2ftmp/report.parsed/",
+        "file:///C|%2Ftmp/report.parsed/",
+    ],
 )
 def test_windows_reader_still_reads_a_rooted_drive_path(windows, location):
     assert resolve_sidecar_uri(location) == PureWindowsPath("C:/tmp/report.parsed")
