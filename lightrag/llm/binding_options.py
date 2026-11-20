@@ -11,16 +11,16 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, List, Literal, Union, get_args, get_origin
 
-from lightrag.utils import get_env_value
+from lightrag.utils import ENV_BOOL_FALSE_WORDS, ENV_BOOL_TRUE_WORDS, get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
 
-# Spellings accepted for boolean-valued options. Shared so the plain-bool and
-# the bool-or-literal parsers below cannot drift apart.
-_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
-# Only consulted by the bool-or-literal parser: plain bools treat "anything not
-# true" as false, whereas an option that also accepts named values has to tell
-# a deliberate false from a typo (see _make_bool_or_literal_parser).
-_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
+# Spellings accepted for boolean-valued options, shared with get_env_value so
+# the env, CLI and bool-or-literal parsers cannot drift apart.
+_BOOL_TRUE_WORDS = ENV_BOOL_TRUE_WORDS
+_BOOL_FALSE_WORDS = ENV_BOOL_FALSE_WORDS
+
+# Marks "the env value was unusable" for paths that must leave a field unset.
+_UNSET = object()
 
 
 def _resolve_optional_type(field_type: Any) -> Any:
@@ -254,12 +254,20 @@ class BindingOptions:
             # Handle boolean types specially to avoid argparse bool() constructor issues
             elif arg_item["type"] is bool:
 
-                def bool_parser(value):
-                    """Custom boolean parser that handles string representations correctly"""
+                def bool_parser(value, _env_name=arg_item["env_name"]):
+                    """Parse a CLI boolean; an unrecognized spelling is an error."""
                     if isinstance(value, bool):
                         return value
                     if isinstance(value, str):
-                        return value.strip().lower() in _BOOL_TRUE_WORDS
+                        text = value.strip().lower()
+                        if text in _BOOL_TRUE_WORDS:
+                            return True
+                        if text in _BOOL_FALSE_WORDS:
+                            return False
+                        raise argparse.ArgumentTypeError(
+                            f"{value!r} is not a valid boolean for "
+                            f"{_env_name}: expected true/false"
+                        )
                     return bool(value)
 
                 # Get environment variable with proper type conversion
@@ -480,7 +488,12 @@ class BindingOptions:
 
             try:
                 if field_type is bool:
-                    base[field_name] = env_raw.strip().lower() in _BOOL_TRUE_WORDS
+                    # get_env_value warns on a typo; leave the field unset
+                    # rather than silently reading it as False.
+                    parsed = get_env_value(role_env, _UNSET, bool)
+                    if parsed is _UNSET:
+                        continue
+                    base[field_name] = parsed
                 elif field_type in (list, List[str]):
                     base[field_name] = json.loads(env_raw)
                 elif field_type is dict:

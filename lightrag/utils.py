@@ -322,6 +322,12 @@ def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[
         return None
 
 
+# Spellings accepted for boolean env values. A blank value counts as false,
+# matching the historical "anything not true is false" reading of ``KEY=``.
+ENV_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
+ENV_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -338,6 +344,10 @@ def get_env_value(
         any: Converted value from environment or default. A value that does
         not convert falls back to ``default``; a non-blank one also logs a
         warning, a blank one (``KEY=`` in .env/Compose) does not.
+
+    For ``bool`` the accepted spellings are ``ENV_BOOL_TRUE_WORDS`` and
+    ``ENV_BOOL_FALSE_WORDS`` (blank reads as ``False``); anything else, such
+    as the typo ``ture``, warns and returns ``default``.
     """
     value = os.getenv(env_key)
     if value is None:
@@ -348,7 +358,20 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        return value.strip().lower() in ("true", "1", "yes", "t", "on")
+        text = value.strip().lower()
+        if text in ENV_BOOL_TRUE_WORDS:
+            return True
+        if text in ENV_BOOL_FALSE_WORDS:
+            return False
+        logger.warning(
+            "Environment variable %s=%r is not a recognized boolean "
+            "(expected one of %s), using default %r",
+            env_key,
+            value,
+            "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+            default,
+        )
+        return default
 
     # Handle list type with JSON parsing
     if value_type is list:
