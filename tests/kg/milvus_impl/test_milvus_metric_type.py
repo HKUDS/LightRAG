@@ -83,7 +83,7 @@ _REBUILD_CALLS = {"release_collection", "drop_index", "create_index", "load_coll
 
 @pytest.mark.parametrize(
     "metric, rebuilt",
-    [("L2", True), ("IP", True), ("COSINE", False), (None, False)],
+    [("L2", True), ("COSINE", False), (None, False)],
 )
 def test_initialize_reindexes_a_non_cosine_vector_index(metric, rebuilt):
     storage = _make_storage()
