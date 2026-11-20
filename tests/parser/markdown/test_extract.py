@@ -631,6 +631,13 @@ def test_inline_dollar_not_recognized_as_equation():
     assert "$5" in ex.blocks[0]["content"]
 
 
+def test_display_math_followed_by_prose_does_not_open_a_block():
+    md = "# A\n$$E = mc^2$$ relates mass and energy.\n## B\n$$\np = mv\n$$\n"
+    ex = _extract(md)
+    assert [b["heading"] for b in ex.blocks] == ["A", "B"]
+    assert list(ex.equations.values()) == ["p = mv"]
+
+
 def test_unclosed_block_equation_is_plain_text():
     ex = _extract("$$\nE = mc^2\nno closing")
     assert not ex.equations

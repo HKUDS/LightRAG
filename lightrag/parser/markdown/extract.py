@@ -870,6 +870,9 @@ def _consume_block_equation(lines: list[str], start: int) -> tuple[int, str]:
     if inner_first.rstrip().endswith("$$") and len(inner_first.rstrip()) >= 2:
         latex = inner_first.rstrip()[:-2].strip()
         return 1, latex
+    # ``$$ … $$`` followed by prose closes on its own line: not a block.
+    if "$$" in inner_first:
+        return 0, ""
     # Multi-line: collect until a line whose stripped text ends with ``$$``.
     body: list[str] = []
     if inner_first.strip():
