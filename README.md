@@ -7,8 +7,9 @@
 # 🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation
 
 <div align="center">
-    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending"><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending" height="55"></picture></a>&#32;<a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS/LightRAG | Trendshift" height="55"></a>&#32;<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank"><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank" height="55"></picture></a>
 </div>
+
 <p>
 </p>
 <div align="center">
@@ -23,7 +24,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -55,31 +56,10 @@
 
 ---
 
-<div align="center">
-  <table>
-    <tr>
-      <td style="vertical-align: middle;">
-        <img src="./assets/LiteWrite.png"
-             width="56"
-             height="56"
-             alt="LiteWrite"
-             style="border-radius: 12px;" />
-      </td>
-      <td style="vertical-align: middle; padding-left: 12px;">
-        <a href="https://litewrite.ai">
-          <img src="https://img.shields.io/badge/🚀%20LiteWrite-AI%20Native%20LaTeX%20Editor-ff6b6b?style=for-the-badge&logoColor=white&labelColor=1a1a2e">
-        </a>
-      </td>
-    </tr>
-  </table>
-</div>
-
----
-
 ## 🎉 News
 - [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
-- [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.
+- [2026.05]🎯[New Feature]: Introducing selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, `Paragraph`, and custom `C`.
 - [2026.05]🎯[New Feature]: **Role-specific LLM configuration** support, 4 distinct roles: EXTRACT, QUERY, KEYWORDS, and VLM, with independent LLM settings.
 - [2026.03]🎯[New Feature]: Integrated **OpenSearch** as a unified storage backend, providing comprehensive support for all four LightRAG storage.
 - [2026.03]🎯[New Feature]: Introduced a setup wizard. Support for local deployment of embedding, reranking, and storage backends via Docker.
@@ -121,77 +101,106 @@
 >
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
-### Install LightRAG Server
+> [!WARNING]
+> **Secure the server before you start it on a shared network.** `lightrag-server` binds to all interfaces (`HOST=0.0.0.0`) and ships with authentication off, so on a cloud host every endpoint is public — and spends your LLM quota. Before the first start, either bind to a private address in `.env` (`HOST=127.0.0.1`, or a VPN / tunnel address), or configure authentication: `LIGHTRAG_API_KEY`, or `AUTH_ACCOUNTS` together with `TOKEN_SECRET` (generate one with `openssl rand -hex 32`). Once `LIGHTRAG_API_KEY` is set, the Ollama-compatible `/api/*` routes require it too (Ollama clients send it as `Authorization: Bearer <key>`); without a key they stay open for client compatibility. This applies to every installation method below.
 
-* Install from PyPI
+### Install from PyPI
+
+The PyPI package ships a prebuilt WebUI, so no frontend build is needed.
 
 ```bash
-### Install LightRAG Server as tool using uv (recommended)
+# Install LightRAG Server as a tool using uv (recommended)
 uv tool install "lightrag-hku[api]"
 
-### Or using pip
+# Or using pip inside a virtual environment
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# Setup env file
-# Obtain the env.example file by downloading it from the GitHub repository root
-# or by copying it from a local source checkout.
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# Launch the server. It binds to all interfaces (0.0.0.0) by default.
-# SECURITY: before exposing it on a network, configure authentication in .env
-# (LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together with TOKEN_SECRET), or bind to
-# 127.0.0.1 for local-only access; without auth every endpoint is public.
-# Note: the Ollama-compatible /api/* routes stay open by default for client
-# compatibility; set WHITELIST_PATHS=/health to require auth on them too.
+# Get the configuration template and edit it (see "Minimum .env Changes" below)
+curl -O https://raw.githubusercontent.com/HKUDS/LightRAG/main/env.example
+cp env.example .env
+
 lightrag-server
 ```
 
-* Installation from Source
+### Install from Source
+
+**Prerequisites**
+
+| Tool | Used for | How to install |
+|---|---|---|
+| git | Cloning the repository | Your system package manager |
+| [uv](https://docs.astral.sh/uv/) | Virtual environment and Python dependencies. Downloads a suitable Python (3.11+) if the system has none | See the uv note above |
+| [bun](https://bun.sh/docs/installation) | Building the WebUI | `curl -fsSL https://bun.sh/install \| bash` (Windows: `powershell -c "irm bun.sh/install.ps1 \| iex"`). The Linux script needs `unzip`, which minimal Debian / Ubuntu images lack: `sudo apt-get install -y unzip` |
+| make | Optional: the `make dev` shortcut and the `make env-*` setup wizard | Your system package manager |
+
+**Step 1 — Clone the repository**
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+```
 
-# Bootstrap the development environment (recommended)
-make dev
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+**Step 2 — Install the Python dependencies.** Pick **one** of the two options:
 
-# make dev installs the test toolchain plus the full offline stack
-# (API, storage backends, and provider integrations), then builds the frontend.
-# Run make env-base or copy env.example to .env before starting the server.
+```bash
+# Option A: just run the server (API + WebUI) — the smallest install
+uv sync --extra api
+```
 
-# Equivalent manual steps with uv
-# Note: uv sync automatically creates a virtual environment in .venv/
+```bash
+# Option B: contributing — the test toolchain plus every storage backend
+# and LLM provider integration
 uv sync --extra test --extra offline
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+```
 
-### Or using pip with virtual environment
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[test,offline]"
+`uv sync` creates the virtual environment in `.venv/`. Activate it with `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`). With pip instead of uv: `python -m venv .venv`, activate it, then `pip install -e ".[api]"` (or `pip install -e ".[test,offline]"`).
 
-# Build front-end artifacts
+**Step 3 — Build the WebUI**
+
+```bash
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
+```
 
-# setup env file
-make env-base  # Or: cp env.example .env and update it manually
-# Launch API-WebUI server
+> `make dev` runs Step 2 Option B and Step 3 in one command. If you used it, continue with Step 4.
+
+**Step 4 — Create `.env`.** Either run the interactive wizard, `make env-base` (see [Create .env File With Setup Tool](#create-env-file-with-setup-tool)), or copy the template and edit it by hand (see [Minimum .env Changes](#minimum-env-changes)):
+
+```bash
+cp env.example .env
+```
+
+**Step 5 — Start the server**
+
+```bash
 lightrag-server
 ```
 
-* Launching the LightRAG Server with Docker Compose
+Open `http://localhost:9621/webui` for the WebUI. The interactive REST API docs are at `http://localhost:9621/docs`. Replace the host and port if you changed `HOST` / `PORT`.
+
+**Updating after `git pull`.** Re-sync with the extras you installed in Step 2, plus `--locked --inexact`. For Option B:
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # Option A: --locked --inexact --extra api
+```
+
+- **Same extras every time.** A package that only an omitted extra needs stops being kept at its locked version, and a sync without `--inexact` uninstalls it.
+- **`--locked`** installs exactly what `uv.lock` pins. If `uv.lock` is out of date with `pyproject.toml`, it stops with an error instead of rewriting `uv.lock`.
+- **`--inexact`** keeps packages that are not in `uv.lock`, such as the spaCy models from `lightrag-download-cache --spacy-install`. A plain `uv sync` removes them.
+
+If the pull changed `lightrag_webui/`, repeat Step 3 as well.
+
+### Launch with Docker Compose
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# modify LLM and Embedding settings in .env
+cp env.example .env  # edit it first: see "Minimum .env Changes" below
 docker compose up
 ```
 
@@ -200,6 +209,22 @@ docker compose up
 > Official GHCR images published by GitHub Actions are signed with Sigstore Cosign using GitHub OIDC. See [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) for verification commands.
 >
 > On Apple Silicon (macOS 26) without Docker Desktop, you can run the same Postgres/Neo4j/Milvus storage stack on Apple's native `container` runtime — see [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md).
+
+### Minimum .env Changes
+
+`env.example` works out of the box with local file-based storage, no reranker, and the built-in document parser, so no database or extra service is needed. Only the model settings need attention. With the default OpenAI models:
+
+| Variable | What to do |
+|---|---|
+| `LLM_BINDING_API_KEY` | **Required.** Set your OpenAI API key |
+| `EMBEDDING_BINDING_API_KEY` | **Required.** Set your OpenAI API key (it can be the same key) |
+| `OPENAI_LLM_REASONING_EFFORT` | **Recommended.** Uncomment it and keep `low`. The default model `gpt-6-luna` is a reasoning model whose API default effort is `medium`, which makes entity extraction — one LLM call per text chunk — noticeably slower and more expensive |
+
+Using another provider? Also set `LLM_BINDING_HOST` and `LLM_MODEL` (keep `LLM_BINDING=openai` for any OpenAI-compatible API), and `EMBEDDING_BINDING_HOST`, `EMBEDDING_MODEL` and `EMBEDDING_DIM`. `EMBEDDING_DIM` must equal the embedding model's output dimension. See [Key Configuration Guide](#key-configuration-guide) for model choices.
+
+> **Settle the embedding model before your first upload.** Changing it later means re-indexing every document (see [Embedding Models](#embedding-models)).
+
+**Next step:** once the server runs, [Exploring LightRAG](./docs/ExploreLightRAG.md) ([🇨🇳](./docs/ExploreLightRAG-zh.md)) walks through enabling the rest, one step at a time and with measured results: PostgreSQL storage, authentication, role-specific LLMs, reranking, image analysis, Word smart headings, MinerU and concurrency tuning.
 
 ### Create .env File With Setup Tool
 
@@ -223,6 +248,8 @@ The native docx parser's opt-in `smart_heading` engine parameter uses spaCy for 
 ```bash
 lightrag-download-cache --spacy-install
 ```
+
+> In a `uv sync` environment (which has no pip) the command installs through `uv pip install` instead. The models are not in `uv.lock`, so a plain `uv sync` removes them again; use `uv sync --inexact` afterwards to keep them.
 
 Enable smart_heading per file/rule (e.g. `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), or globally in `.env`:
 
@@ -268,7 +295,7 @@ LightRAG is a lightweight knowledge-graph RAG framework and an efficient alterna
 - **Extreme Retrieval Efficiency & Low Cost:** LightRAG does not rely on inefficient community reports or multi-hop reasoning for complex queries. This drastically reduces the number of LLM calls required during both the indexing and querying phases, significantly lowering response latency and LLM computational costs.
 - **Incremental Updates & Selective Deletion:** LightRAG addresses the challenges of incrementally updating and selectively deleting content from graph-based knowledge bases, keeping them current in dynamic data environments. When a document is deleted, the system can use the LLM cache created during indexing to quickly rebuild the affected entities and relationships, substantially improving update efficiency.
 - **Multiple Document Parsing Engines:** LightRAG's document processing pipeline supports MinerU, Docling, and Native and can be extended with third-party parsers. LightRAG's Native engine efficiently parses images, tables, and formulas in Word and Markdown documents, making it especially suitable for documents rich in multimodal content. The Native engine also automatically detects and corrects section headings in Word documents, improving content extraction from documents with inconsistent outlines and laying the foundation for section-aware text chunking.
-- **Multiple Text Chunking Strategies:** LightRAG supports four text chunking strategies: `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, and `Paragraph semantic (P)`. The LightRAG-native `Paragraph semantic (P)` strategy **aligns chunk boundaries with the document's native semantic boundaries**—headings, paragraphs, and tables—as closely as possible. This reduces problems such as mismatched headings and content or missing header rows when long tables are split.
+- **Multiple Text Chunking Strategies:** LightRAG supports the built-in `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, and `Paragraph semantic (P)` strategies, plus the custom `C` chunker callback. The `P` strategy works with structured sidecars from supported parsers and **aligns chunk boundaries with the document's native semantic boundaries**—headings, paragraphs, and tables—as closely as possible. This reduces problems such as mismatched headings and content or missing header rows when long tables are split.
 - **Multiple Storage Backends:** LightRAG's default KV, vector, and graph stores are in-memory databases with local file persistence — suitable only for small-scale testing and evaluation, **not for production**. LightRAG also supports a wide range of commonly used storage backends (PostgreSQL recommended) for production deployments with large datasets.
 
 ### Multimodal Capability Upgrades
@@ -289,7 +316,8 @@ LightRAG requires LLM/VLMs of four different roles during its workflow. You shou
 
 **Recommended models by role:**
 
-- **Extraction LLM (`EXTRACT`)**: Entity-relation extraction runs on every text chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended to avoid slow, expensive extraction. Good hosted options include GPT-5.6-luna, Claude Haiku, or Gemini-mini internationally, and DeepSeek-V4-lite or Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+- **Extraction LLM (`EXTRACT`)**: Entity-relation extraction runs on every text chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended to avoid slow, expensive extraction. Good hosted options include GPT-6 Luna, Claude Haiku, or Gemini-mini internationally, and DeepSeek-V4-lite or Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+  With OpenAI's default `gpt-6-luna`, which is a reasoning model, set `OPENAI_LLM_REASONING_EFFORT=low` to keep extraction fast and inexpensive (see [Minimum .env Changes](#minimum-env-changes)).
 - **Query LLM (`QUERY`)**: This model writes the final answer from long, noisy retrieved context, so it should be *stronger* than the extraction model in order to maximize answer quality. Choose a higher-tier model from the same families; a thinking-capable model is fine here.
 - **Keyword LLM (`KEYWORD`)**: A lightweight, latency-sensitive step that **must** use a non-thinking model to keep query latency low; a fast model comparable to the extraction one is sufficient.
 - **VLM (`VLM`)**: Any mainstream multimodal model with image-input support works. For local deployment, consider Qwen3.6-35B-A3B.
@@ -310,9 +338,9 @@ The default query mode for LightRAG is `mix`. Using `mix` mode generally yields 
 
 ### Embedding Models
 
-When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. Any mainstream, up-to-date embedding model works well; for local deployment, `BAAI/bge-m3` is a solid choice. We highly recommend deploying the Embedding model locally to achieve the best performance.
+When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. The `env.example` default, OpenAI `text-embedding-3-large` (3072 dimensions), favors multilingual quality; `text-embedding-3-small` (1536 dimensions, set `EMBEDDING_DIM=1536`) is cheaper and faster. Any mainstream, up-to-date embedding model works well; for local deployment, `BAAI/bge-m3` is a solid choice. We highly recommend deploying the Embedding model locally to achieve the best performance.
 
-**Important Note**: The Embedding model must be determined before document indexing, and the same model must be used in the query phase. Once selected, embedding models generally cannot be changed. If changed, you will need to re-embed all text chunks, entities, and relationships. LightRAG does not currently provide a re-embedding tool. Some storage backends (e.g., PostgreSQL) require the vector dimension to be defined when creating tables for the first time, so changing the Embedding model requires deleting vector-related tables so LightRAG can recreate them.
+**Important Note**: Choose the Embedding model before document indexing and use the same model for queries. Changing it requires re-embedding text chunks, entities, and relationships. Use the supported `lightrag-rebuild-vdb` utility to rebuild vectors from the graph and text chunks; see [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models). Do not delete vector tables or the working directory as a substitute.
 
 ### Enabling Reranking
 
@@ -386,12 +414,21 @@ LLM timeouts during entity-relation extraction usually trace back to one of thre
 - **The model gets stuck in an output loop.** Some models (locally deployed Qwen models in particular) occasionally fall into an endless-output loop on certain text. When this is intermittent, simply re-processing the document once usually resolves it.
 - **References specifically (P chunking strategy).** When using the paragraph-semantic (`P`) chunking strategy (e.g., `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` to automatically drop matching reference blocks before chunking. This prevents references from generating a flood of low-value entities and relations, a common source of timeouts. It can also be enabled per file via the filename hint `paper.[-P(drop_rf=true)].pdf`; related detection knobs (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) are documented in `env.example`.
 
+### Resolving Embedding Timeouts
+
+An error such as `Embedding func: Worker execution timeout after 60s` comes from the embedding queue, which has its own timeout and does not follow `LLM_TIMEOUT`:
+
+- **The timeout is `EMBEDDING_TIMEOUT` (default `30`).** As with the LLM timeouts, the effective execution timeout is **twice** the configured value, so the default reports `60s`. Raising `LLM_TIMEOUT` has no effect on embedding calls.
+- **A slow embedding service is the usual cause.** A healthy embedding batch completes in a few seconds, so raising `EMBEDDING_TIMEOUT` usually only hides the problem. Check the embedding service first.
+- **Match the concurrency to what the service can handle.** LightRAG sends up to `EMBEDDING_FUNC_MAX_ASYNC` (default `8`) batches at once. With Ollama, set `OLLAMA_NUM_PARALLEL` to at least that value or lower `EMBEDDING_FUNC_MAX_ASYNC`, and keep the embedding model loaded (`OLLAMA_KEEP_ALIVE=-1`, or a separate Ollama instance), because swapping it with the LLM in VRAM stalls embedding requests.
+
 ### Other Important Configurations for Document Querying
 
 During the document query stage, you may also want to adjust the following environment variables based on your needs:
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: Controls the token length of the retrieved content sent to the LLM context. The retrieved content consists of three parts: `entities`, `relations`, and `text chunks`. The lengths of entities and relations can be controlled independently, while the text chunk length is determined by subtracting the entity and relation lengths from the total length.
 - **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading where a text chunk resides is sent to the LLM; enabled by default, providing richer context for the LLM and improving answer quality.
 - **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
+- **KEYWORD_EXTRACTION_JSON_MODE**: Controls how query keyword extraction asks the LLM for structured output. `auto` (the default) requests `response_format={"type": "json_object"}`, and retries once without it only when the provider rejects that field itself; `json_object` always sends it, and `none` never sends it. Only set `json_object` or `none` when you know your provider's position — servers such as LM Studio accept only `json_schema`/`text` and answer HTTP 400, which previously made every `hybrid`/`local`/`global` query return "No relevant context found".
 - **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**: Global instructions prepended to every request's `user_prompt` (the "Additional Instructions" section of the answer prompt), giving operators one place to customize LLM output. It is concatenated verbatim, so end the value with `\n\n` yourself. If a request's `user_prompt` is empty, the prefix alone becomes the instructions sent to the LLM; only the API field `disable_user_prompt_prefix` suppresses it, and a request can never read or replace it. Use `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under `PROMPT_DIR/user_prompt`) for long or multi-paragraph text, since a `.env` value must stay on one line.
 
 ### WebUI Entries and the Default Entry
@@ -403,6 +440,8 @@ The server mounts two WebUI entries from a single frontend build. **`/webui`** i
 - **ENABLE_AI_CONTENT_NOTICE**: Labels every **LLM-generated** answer as AI-generated in both query UIs (`/workspace` and the `/webui` retrieval panel); text the model did not write — the canned no-context reply, the admin panel's debug output — stays unlabelled. Off by default; it is a UI element only and never enters the API response or the stored chat history.
 
 Two things to know before pointing end users at `/workspace`. First, query parameters there are **inherited, not editable**: each query uses the settings `/webui` saved in the **same browser** (frontend defaults when none were saved), which is per-browser local state, not a server-wide policy. Second, hiding the admin UI is a UX split, **not** a security boundary — the API still authorizes every endpoint server-side. For the complete behavior of the query entry, see [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
+
+**WebUI authentication migration:** Protected `/webui` and `/workspace` access requires `AUTH_ACCOUNTS` and a strong, non-default `TOKEN_SECRET`. API keys are for programmatic access, no longer entered or sent by the WebUI. Existing API-key-only WebUI users must keep their key, configure accounts and the secret, restart, reload all tabs, and sign in. Fully open deployments (neither accounts nor an effective API key) keep the guest-token flow. See [migration details](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access).
 
 ## Using LightRAG As SDK
 
@@ -446,7 +485,7 @@ python examples/lightrag_openai_demo.py
 
 For a streaming response implementation example, please see `examples/lightrag_openai_compatible_demo.py`. Prior to execution, ensure you modify the sample code's LLM and embedding configurations accordingly.
 
-**Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
+**Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. Vectors written by one model are unusable by another, so switching models requires rebuilding them. For the **demo** data specifically, the simplest route is to delete the demo directory (`./dickens`) and re-run — the corpus is small and disposable; keep `kv_store_llm_response_cache.json` if you want the LLM cache. For a **real deployment, do not delete the working directory**: it holds the knowledge graph and the text chunks, and deleting it turns a re-embedding job into a full re-ingestion of every document. Run `lightrag-rebuild-vdb` instead — see [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models).
 
 **Note 2**: Only `lightrag_openai_demo.py` and `lightrag_openai_compatible_demo.py` are officially supported sample codes. Other sample files are community contributions that haven't undergone full testing and optimization.
 
@@ -494,6 +533,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 | Document | What it covers |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | From the default setup to production: PostgreSQL, auth, role LLMs, rerank, VLM, smart headings, MinerU and concurrency, step by step with measured results |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | The `make env-*` setup wizard: generating `.env` and the wizard-managed `docker-compose.final.yml` |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose deployment, image variants, and Cosign verification of the official GHCR images |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Running the Postgres / Neo4j / Milvus storage stack on Apple's native `container` runtime (Apple Silicon, no Docker Desktop) |
@@ -538,19 +578,27 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 ### Maintenance Tools (`lightrag/tools/`)
 
-Storage-facing tools read `.env` and environment variables exactly like the server does, so run them from the project root with the same configuration. Several of them rewrite storage in place — check the linked guide for whether the server (and any other writer) has to be stopped first; `rebuild_vdb` requires it.
+Storage-facing tools read `.env` and environment variables exactly like the server does, so run them from the project root with the same configuration. Several of them rewrite storage in place — check the linked guide for whether the server (and any other writer) has to be stopped first; `rebuild_vdb` and `clear_storage` require it.
 
 **`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
 
 Drops and rebuilds every vector storage from its authoritative source (graph nodes/edges and the `text_chunks` KV store). The recovery path after a failed vector write, and after changing the embedding model or dimension. Also offers a read-only consistency check.
 
+**`clear_storage.py`** — `lightrag-clear-storage` — [README_CLEAR_STORAGE.md](./lightrag/tools/README_CLEAR_STORAGE.md)
+
+Drops every data storage of one workspace offline, exactly as the WebUI *Clear* button does, after showing what it is about to delete and requiring a typed confirmation. The way out of a startup refusal over an empty or unreadable vector index when the data is disposable and a rebuild would be wasted. Never touches the LLM response cache. Requires the server to be stopped.
+
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) while preserving the expensive extraction cache.
 
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+Deletes chunk-scoped LLM cache rows whose owning chunk no longer exists and that no live chunk still references — rows a document deletion could not reach, still holding the extraction prompt and its result. Reports by default; `--apply` deletes, and only after a strict read confirms the chunk is gone.
+
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
-Migrates default-mode caches (extraction, summary, multimodal analysis) between KV storage backends, preserving workspace isolation.
+Migrates default-mode caches (extraction, summary, multimodal analysis, smart-heading) between KV storage backends, preserving workspace isolation.
 
 **`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
 

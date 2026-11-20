@@ -81,6 +81,7 @@ from lightrag.parser.markdown.raw_cache import (
     native_md_options_signature,
 )
 from lightrag.parser.native_base import NativeExtractRuntime, NativeParserBase
+from lightrag.parser.text_decoding import decode_text_bytes
 from lightrag.utils import logger
 
 if TYPE_CHECKING:
@@ -697,10 +698,19 @@ def _allowed_non_public_networks() -> list:
 #     only the 6to4 *anycast relay* path, 192.88.99.0/24; basic unicast 6to4 and
 #     the 2002::/16 prefix itself are not deprecated — but the block is still not
 #     globally reachable.)
-# Both are default-denied as whole blocks, independent of the interpreter, so we
-# never decode past them. An operator who genuinely runs a local NAT64 / 6to4
+#   - ``::ffff:0:0:0/96`` — the RFC 2765 "IPv4-translated" SIIT format, dropped
+#     by RFC 6145 in favour of RFC 6052 prefixes. It sits in the IANA-reserved
+#     ``::/8``, yet CPython classifies it globally routable; a host whose SIIT
+#     translator still uses it would deliver ``::ffff:0:a.b.c.d`` to the
+#     embedded IPv4. No public host lives there, so it is denied, not decoded.
+# All are default-denied as whole blocks, independent of the interpreter, so we
+# never decode past them. An operator who genuinely runs a local translator
 # there can still opt in via ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``.
-_FORCE_NON_GLOBAL_V6 = (ip_network("64:ff9b:1::/48"), ip_network("2002::/16"))
+_FORCE_NON_GLOBAL_V6 = (
+    ip_network("64:ff9b:1::/48"),
+    ip_network("2002::/16"),
+    ip_network("::ffff:0:0:0/96"),
+)
 
 
 def _unwrap_embedded_ipv4(ip):
@@ -717,11 +727,12 @@ def _unwrap_embedded_ipv4(ip):
     Only wrappers whose embedded-IPv4 position is fixed by spec are decoded:
     IPv4-mapped (``::ffff:0:0/96``), IPv4-compatible (``::/96``, minus
     ``::``/``::1``), and the NAT64 well-known prefix (``64:ff9b::/96``, RFC 6052
-    §2.2 — IPv4 in the low 32 bits). 6to4 (``2002::/16``) and the RFC 8215
-    local-use NAT64 prefix (``64:ff9b:1::/48``) are deliberately NOT decoded
+    §2.2 — IPv4 in the low 32 bits). 6to4 (``2002::/16``), the RFC 8215
+    local-use NAT64 prefix (``64:ff9b:1::/48``) and the obsolete RFC 2765
+    IPv4-translated prefix (``::ffff:0:0:0/96``) are deliberately NOT decoded
     here — they are default-denied as whole blocks via
     :data:`_FORCE_NON_GLOBAL_V6` (the /48's embedded-IPv4 position is not
-    guaranteed, and both are non-globally-reachable per IANA).
+    guaranteed, and none is globally reachable per IANA).
 
     Boundary: a NAT64 deployment using a *custom*, globally-routable Network-
     Specific Prefix (RFC 6052 permits any /32../96) is not recognised here — the
@@ -1604,7 +1615,7 @@ class NativeMarkdownParser(NativeParserBase):
                 finally:
                     rmtree(tmp_dir, ignore_errors=True)
             else:
-                md_text = source.read_bytes().decode("utf-8-sig")
+                md_text = decode_text_bytes(source.read_bytes())
                 result = self._extract_text(
                     md_text,
                     bundle_root=None,
@@ -1651,7 +1662,7 @@ class NativeMarkdownParser(NativeParserBase):
             max_total_bytes=_TEXTPACK_MAX_TOTAL_BYTES,
         )
         text_file = self._find_text_file(tmp_dir, source.name)
-        return text_file.read_bytes().decode("utf-8-sig"), text_file.parent
+        return decode_text_bytes(text_file.read_bytes()), text_file.parent
 
     @staticmethod
     def _find_text_file(root: Path, source_name: str) -> Path:

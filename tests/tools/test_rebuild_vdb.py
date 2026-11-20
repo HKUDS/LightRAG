@@ -12,12 +12,17 @@ Covers:
   persistent VDB failure without deleting source entities.
 """
 
+import builtins
+import os
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
+from lightrag.exceptions import VectorSpaceMismatchError
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
+from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace
 from lightrag.tools.rebuild_vdb import (
     check_vdb_consistency,
     rebuild_chunks_vdb,
@@ -848,6 +853,26 @@ async def test_merge_entity_deferred_flush_failure_raises_before_delete(
 # ---------------------------------------------------------------------------
 
 
+def _register_json_workspace_for_fakes(working_dir: str, workspace: str) -> list:
+    """Publish the JSON anchor a server start leaves (``workspace`` a member)
+    and return the identity and owner rows its snapshot would hold, for a fake
+    configuration storage to serve from ``iter_rows``."""
+    from lightrag import config_anchor as ca
+    from lightrag.config_store import json_shard_metadata_rows
+
+    storage_uuid = ca.new_storage_uuid()
+    os.makedirs(working_dir, exist_ok=True)
+    ca.publish_anchor(
+        working_dir,
+        ca.StorageAnchor(
+            backend="JsonKVStorage", storage_uuid=storage_uuid, members=(workspace,)
+        ),
+        replace=False,
+    )
+    rows = json_shard_metadata_rows(workspace, storage_uuid, updated_by="test")
+    return [{**row, "_id": key} for key, row in rows.items()]
+
+
 @pytest.mark.asyncio
 async def test_check_only_stub_carries_embedding_model_name(monkeypatch):
     # When the api extra is unavailable the tool runs check-only with a stub
@@ -863,12 +888,21 @@ async def test_check_only_stub_carries_embedding_model_name(monkeypatch):
 
     captured_funcs = []
 
-    class _DummyStorage:
+    # The JSON configuration workspace must be registered, as a server start
+    # leaves it: the tool never registers one itself.
+    shard_rows = _register_json_workspace_for_fakes(os.environ["WORKING_DIR"], "")
+
+    class _DummyStorage(_FakeConfigStorage):
         def __init__(self, *, embedding_func, **kwargs):
+            super().__init__(**kwargs)
             captured_funcs.append(embedding_func)
 
-        async def initialize(self):
-            return None
+        def iter_rows(self, *, page_size=200):
+            async def gen():
+                for row in shard_rows:
+                    yield row
+
+            return gen()
 
     monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
 
@@ -895,20 +929,22 @@ async def test_check_only_stub_model_name_none_when_unset(monkeypatch):
     from lightrag.tools.rebuild_vdb import RebuildTool
 
     monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    shard_rows = _register_json_workspace_for_fakes(os.environ["WORKING_DIR"], "")
 
-    class _DummyStorage:
-        def __init__(self, **kwargs):
-            pass
+    class _DummyStorage(_FakeConfigStorage):
+        def iter_rows(self, *, page_size=200):
+            async def gen():
+                for row in shard_rows:
+                    yield row
 
-        async def initialize(self):
-            return None
+            return gen()
 
     monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
 
     tool = RebuildTool()
     monkeypatch.setattr(tool, "build_embedding_func", lambda: None)
 
-    await tool.setup_storages()
+    assert await tool.setup_storages() is True
 
     assert tool.embedding_func.model_name is None
 
@@ -1011,13 +1047,13 @@ def test_main_exits_nonzero_on_failure(monkeypatch):
     monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
     monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
 
-    async def _fail():
+    async def _fail(**kwargs):
         return False
 
     monkeypatch.setattr(rebuild_vdb, "async_main", _fail)
 
     with pytest.raises(SystemExit) as excinfo:
-        rebuild_vdb.main()
+        rebuild_vdb.main([])
     assert excinfo.value.code == 1
 
 
@@ -1025,10 +1061,499 @@ def test_main_exits_zero_on_success(monkeypatch):
     monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
     monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
 
-    async def _ok():
+    async def _ok(**kwargs):
         return True
 
     monkeypatch.setattr(rebuild_vdb, "async_main", _ok)
 
     # No SystemExit on success.
-    rebuild_vdb.main()
+    rebuild_vdb.main([])
+
+
+# ---------------------------------------------------------------------------
+# Embedding-space refusal: the tool must tolerate it, and only it
+# ---------------------------------------------------------------------------
+
+
+def _mismatch(container="entities_index"):
+    return VectorSpaceMismatchError(
+        backend="FakeVectorStorage",
+        container=container,
+        expected_model="new-model",
+        expected_dim=1024,
+        stored_model="old-model",
+        stored_dim=1024,
+    )
+
+
+class _RefusingVDB(MockVDB):
+    """A vector storage that refuses to attach until it has been dropped.
+
+    Models the contract every backend owes: the refusal leaves the instance
+    able to serve ``drop()``, and ``drop()`` re-provisions the container in the
+    current embedding space so the next ``initialize()`` attaches cleanly.
+    """
+
+    def __init__(self, refusals=1):
+        super().__init__()
+        self._refusals_left = refusals
+        self.init_calls = 0
+
+        async def _initialize():
+            self.init_calls += 1
+            if self._refusals_left > 0:
+                self._refusals_left -= 1
+                raise _mismatch()
+
+        async def _drop():
+            self.call_order.append("drop")
+            self.records.clear()
+            # A drop re-provisions the container, which is what clears the
+            # refusal; without this the tool would loop forever.
+            self._refusals_left = 0
+            return {"status": "success", "message": "data dropped"}
+
+        self.initialize = AsyncMock(side_effect=_initialize)
+        self.drop = AsyncMock(side_effect=_drop)
+
+
+class _FakeConfigStorage:
+    """The surface setup_storages() touches on the configuration storage:
+    the factory binds it to the reserved workspace, initializes it with the
+    sources, and strict-reads the three baselines (all absent here)."""
+
+    supports_strict_point_reads = True
+
+    def __init__(self, **kwargs):
+        self.workspace = kwargs.get("workspace")
+        self.initialize = AsyncMock()
+
+    async def get_by_id_strict(self, id):
+        return None
+
+
+def _tool_with_storages(entities, relationships, chunks):
+    tool = rebuild_vdb.RebuildTool()
+    tool.graph = SimpleNamespace(initialize=AsyncMock())
+    tool.text_chunks = SimpleNamespace(initialize=AsyncMock())
+    tool.configuration_storage = _FakeConfigStorage(workspace=CONFIG_CONTAINER_TAG)
+    tool.entities_vdb = entities
+    tool.relationships_vdb = relationships
+    tool.chunks_vdb = chunks
+    for vdb in (entities, relationships, chunks):
+        if not hasattr(vdb, "initialize"):
+            vdb.initialize = AsyncMock()
+    tool.storage_names = {"graph": "g", "vector": "v", "kv": "k", "config": "c"}
+    tool.embedding_func = SimpleNamespace(
+        model_name="new-model", embedding_dim=1024, max_token_size=None
+    )
+    tool.embedding_available = True
+    return tool
+
+
+async def _setup_with(tool, monkeypatch):
+    """Drive the real setup_storages() with the test's fakes behind the factory.
+
+    The factory hands back exactly the objects the test built, keyed by
+    namespace, so the assertions inspect the same instances setup_storages()
+    initialized — a factory returning bare stand-ins would make every one of
+    these tests pass on an AttributeError instead of on the behaviour.
+    """
+    monkeypatch.setattr(tool, "resolve_storage_names", lambda: tool.storage_names)
+    monkeypatch.setattr(tool, "check_env_vars", lambda name: None)
+    monkeypatch.setattr(tool, "build_embedding_func", lambda: tool.embedding_func)
+    monkeypatch.setattr(
+        tool, "build_global_config", lambda: {"working_dir": "./rag_storage"}
+    )
+
+    by_namespace = {
+        NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION: tool.graph,
+        NameSpace.KV_STORE_TEXT_CHUNKS: tool.text_chunks,
+        NameSpace.KV_STORE_CONFIG: tool.configuration_storage,
+        NameSpace.VECTOR_STORE_ENTITIES: tool.entities_vdb,
+        NameSpace.VECTOR_STORE_RELATIONSHIPS: tool.relationships_vdb,
+        NameSpace.VECTOR_STORE_CHUNKS: tool.chunks_vdb,
+    }
+
+    def _fake_get_storage_class(name):
+        def _factory(*, namespace, **kwargs):
+            return by_namespace[namespace]
+
+        return _factory
+
+    import lightrag.kg.factory as factory
+
+    monkeypatch.setattr(factory, "get_storage_class", _fake_get_storage_class)
+    return await tool.setup_storages()
+
+
+@pytest.mark.asyncio
+async def test_setup_records_a_refused_vdb_instead_of_aborting(monkeypatch):
+    entities = _RefusingVDB()
+    tool = _tool_with_storages(entities, MockVDB(), MockVDB())
+
+    assert await _setup_with(tool, monkeypatch) is True
+
+    assert list(tool.incompatible_vdbs) == ["entities"]
+    assert "lightrag-rebuild-vdb" in tool.incompatible_vdbs["entities"]
+    # The sources and the healthy targets still came up.
+    tool.graph.initialize.assert_awaited()
+    tool.text_chunks.initialize.assert_awaited()
+    tool.relationships_vdb.initialize.assert_awaited()
+    tool.chunks_vdb.initialize.assert_awaited()
+    # A refusal is not a repair: nothing was dropped during setup.
+    entities.drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_setup_aborts_when_a_source_storage_fails(monkeypatch):
+    tool = _tool_with_storages(MockVDB(), MockVDB(), MockVDB())
+    tool.graph.initialize = AsyncMock(side_effect=RuntimeError("cluster down"))
+    assert await _setup_with(tool, monkeypatch) is False
+
+
+@pytest.mark.asyncio
+async def test_setup_aborts_on_a_non_typed_vector_failure(monkeypatch):
+    # A cluster outage must never be mistaken for a model change: the recovery
+    # for the typed refusal is destructive.
+    entities = MockVDB()
+    entities.initialize = AsyncMock(side_effect=RuntimeError("connection refused"))
+    tool = _tool_with_storages(entities, MockVDB(), MockVDB())
+    for vdb in (tool.relationships_vdb, tool.chunks_vdb):
+        vdb.initialize = AsyncMock()
+
+    assert await _setup_with(tool, monkeypatch) is False
+    assert tool.incompatible_vdbs == {}
+
+
+@pytest.mark.asyncio
+async def test_recovery_drops_then_reinitializes_the_refused_target():
+    entities = _RefusingVDB()
+    tool = _tool_with_storages(entities, MockVDB(), MockVDB())
+    with pytest.raises(VectorSpaceMismatchError):
+        await entities.initialize()  # the setup-time refusal
+    tool.incompatible_vdbs = {"entities": "refused"}
+
+    await tool.recover_incompatible(["entities", "relationships"])
+
+    entities.drop.assert_awaited_once()
+    # Two calls: the refusal, then the clean attach after the drop.
+    assert entities.init_calls == 2
+    assert tool.incompatible_vdbs == {}
+    # A target that never refused is left alone — no gratuitous drop.
+    tool.relationships_vdb.drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_reinitialize_when_the_drop_fails():
+    entities = _RefusingVDB()
+    entities.drop = AsyncMock(return_value={"status": "error", "message": "no perms"})
+
+    with pytest.raises(RuntimeError, match="Failed to drop"):
+        await rebuild_vdb.clear_vector_space_refusal(entities, "entities")
+    assert entities.init_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_check_reports_the_refusal_instead_of_all_records_missing():
+    graph = make_graph(
+        nodes=[node("Alice"), node("Bob")],
+        edges=[edge("Alice", "Bob")],
+    )
+    entities_vdb, relationships_vdb = MockVDB(), MockVDB()
+
+    report = await check_vdb_consistency(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        incompatible={"entities": str(_mismatch())},
+    )
+
+    assert report["incompatible"]["entities"]
+    assert report["consistent"] is False
+    # The refused store is not probed at all, so it reports no false drift.
+    entities_vdb.get_by_ids.assert_not_awaited()
+    assert report["missing_entities"] == 0
+    assert report["graph_entities"] == 2
+    # Its healthy sibling is still probed and still reports honestly.
+    relationships_vdb.get_by_ids.assert_awaited()
+    assert report["missing_relations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_check_without_refusals_is_unchanged():
+    graph = make_graph(nodes=[node("Alice")])
+    report = await check_vdb_consistency(graph, MockVDB(), MockVDB())
+    assert report["incompatible"] == {}
+    assert report["consistent"] is False  # the vdb really is empty
+    assert report["missing_entities"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    tool.print_source_counts = AsyncMock()
+    monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: True)
+    tool.incompatible_vdbs = {"entities": "refused", "chunks": "refused"}
+    tool.recover_incompatible = AsyncMock()
+
+    ok = rebuild_vdb._new_stats("entities", 1)
+    ok["rebuilt"] = 1
+    tool.run_rebuild_entities_relations = AsyncMock(return_value=[ok])
+
+    assert await tool.run() is True
+    # Option 2 rebuilds entities + relationships only, so only those are
+    # recovered; chunks stays refused until its own rebuild.
+    tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
+
+
+# Corruption is recoverable only after confirmation and a successful backup.
+def _corrupt_target(tmp_path):
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    path = tmp_path / "vdb_entities.json"
+    path.write_bytes(b'{"matrix": "truncated')
+    error = CorruptStorageSnapshotError(
+        backend="NanoVectorDBStorage",
+        container=str(path),
+        detail="invalid JSON",
+        artifacts=(str(path),),
+    )
+    vdb = MockVDB()
+    vdb.initialize = AsyncMock(side_effect=[error, None])
+    vdb.drop = AsyncMock(return_value={"status": "success"})
+    return path, error, vdb
+
+
+@pytest.mark.asyncio
+async def test_corrupt_setup_preserves_snapshot_until_confirmed(tmp_path, monkeypatch):
+    path, error, vdb = _corrupt_target(tmp_path)
+    original = path.read_bytes()
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+    assert await _setup_with(tool, monkeypatch) is True
+    assert tool.corrupt_vdbs == {"entities": error}
+    vdb.drop.assert_not_awaited()
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+    async def drop():
+        backups = list(tmp_path.glob("*.corrupt-*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
+        path.unlink()
+        return {"status": "success"}
+
+    vdb.drop.side_effect = drop
+    await tool.recover_incompatible(["entities"])
+    assert tool.corrupt_vdbs == {}
+    assert tool.incompatible_vdbs == {}
+    assert vdb.initialize.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_corrupt_backup_failure_never_drops_original(tmp_path, monkeypatch):
+    path, error, vdb = _corrupt_target(tmp_path)
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+    tool.corrupt_vdbs = {"entities": error}
+    tool.incompatible_vdbs = {"entities": str(error)}
+    original = path.read_bytes()
+
+    def fail_fsync(fd):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rebuild_vdb.os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="disk full"):
+        await tool.recover_incompatible(["entities"])
+    vdb.drop.assert_not_awaited()
+    assert path.read_bytes() == original
+    assert "entities" in tool.corrupt_vdbs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["source", "cancel"])
+async def test_corrupt_run_does_not_recover_before_source_check_and_confirmation(
+    tmp_path, monkeypatch, failure
+):
+    path, error, vdb = _corrupt_target(tmp_path)
+    original = path.read_bytes()
+    tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    tool.entities_vdb = vdb
+    tool.corrupt_vdbs = {"entities": error}
+    tool.incompatible_vdbs = {"entities": str(error)}
+    tool.print_source_counts = AsyncMock(
+        side_effect=OSError("source unreadable") if failure == "source" else None
+    )
+    monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: False)
+    tool.recover_incompatible = AsyncMock()
+    assert await tool.run() is (failure == "cancel")
+    tool.recover_incompatible.assert_not_awaited()
+    vdb.drop.assert_not_awaited()
+    assert path.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_corrupt_unselected_target_is_not_backed_up_or_dropped(tmp_path):
+    path, error, vdb = _corrupt_target(tmp_path)
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+    tool.corrupt_vdbs = {"entities": error}
+    tool.incompatible_vdbs = {"entities": str(error)}
+    await tool.recover_incompatible(["chunks"])
+    vdb.drop.assert_not_awaited()
+    assert path.exists()
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_corrupt_without_artifacts_aborts_setup(tmp_path, monkeypatch):
+    """Recovery is offered only to a raiser that named files to preserve.
+
+    ``artifacts`` is what the backup copies. A raiser with none — a storage
+    whose state is not a set of local files — cannot be preserved, so the
+    tool must not enter the menu that ends in ``drop()``.
+    """
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    error = CorruptStorageSnapshotError(
+        backend="SomeRemoteStorage",
+        container="collection://entities",
+        detail="unreadable",
+        artifacts=(),
+    )
+    vdb = MockVDB()
+    vdb.initialize = AsyncMock(side_effect=error)
+    vdb.drop = AsyncMock(return_value={"status": "success"})
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+
+    assert await _setup_with(tool, monkeypatch) is False
+    assert tool.corrupt_vdbs == {}
+    vdb.drop.assert_not_awaited()
+
+
+def test_backup_preserves_every_artifact_under_one_token(tmp_path):
+    """A multi-file storage's backups must read as one set, not three strays."""
+    paths = []
+    for name, payload in (("a.index", b"AAA"), ("a.meta.json", b"BB")):
+        path = tmp_path / name
+        path.write_bytes(payload)
+        paths.append(str(path))
+    absent = str(tmp_path / "a.space.json")
+
+    backups = rebuild_vdb.backup_corrupt_snapshot((*paths, absent))
+
+    assert len(backups) == 2
+    assert len({Path(b).name.rsplit("-", 1)[1] for b in backups}) == 1
+    assert [Path(b).read_bytes() for b in backups] == [b"AAA", b"BB"]
+    assert all(os.path.exists(p) for p in paths)
+    # A skipped member leaves no empty stand-in behind.
+    assert not os.path.exists(absent + ".corrupt-" + Path(backups[0]).name[-8:])
+
+
+def test_backup_refuses_when_nothing_is_left_to_preserve(tmp_path):
+    """Nothing to back up means nothing may be dropped."""
+    with pytest.raises(FileNotFoundError, match="none of"):
+        rebuild_vdb.backup_corrupt_snapshot((str(tmp_path / "gone.index"),))
+
+
+@pytest.mark.asyncio
+async def test_corrupt_recovery_is_not_gated_on_one_backend_name(tmp_path, monkeypatch):
+    """A non-Nano file-backed storage reaches the recovery menu too.
+
+    The gate used to compare ``e.backend`` against the single string
+    ``"NanoVectorDBStorage"``, so a corrupt Faiss pair aborted the run and the
+    operator was back to deleting files by hand. What licenses recovery is
+    having named the files to preserve, not being a particular class.
+    """
+    from lightrag.exceptions import CorruptStorageSnapshotError
+
+    index = tmp_path / "faiss_index_entities.index"
+    index.write_bytes(b"truncated")
+    error = CorruptStorageSnapshotError(
+        backend="FaissVectorDBStorage",
+        container=str(index),
+        detail="read error",
+        artifacts=(str(index), str(tmp_path / "meta.json")),
+    )
+    vdb = MockVDB()
+    vdb.initialize = AsyncMock(side_effect=error)
+    vdb.drop = AsyncMock(return_value={"status": "success"})
+    tool = _tool_with_storages(vdb, MockVDB(), MockVDB())
+
+    assert await _setup_with(tool, monkeypatch) is True
+    assert tool.corrupt_vdbs == {"entities": error}
+    vdb.drop.assert_not_awaited()
+    assert index.read_bytes() == b"truncated"
+
+
+def test_a_source_that_cannot_be_read_aborts_instead_of_being_skipped(
+    tmp_path, monkeypatch
+):
+    """Only FileNotFoundError means "this half of a torn pair is missing".
+
+    Every other failure to open a source — a permission fault, a directory
+    that vanished — is a file whose contents still exist and are not being
+    preserved. Skipping it would let the caller drop that container next with
+    nothing holding its rows.
+    """
+    present = tmp_path / "vdb_entities.json"
+    present.write_bytes(b"first")
+    unreadable = tmp_path / "vdb_relationships.json"
+    unreadable.write_bytes(b"second")
+    real_open = builtins.open
+
+    def _deny(path, *args, **kwargs):
+        if str(path) == str(unreadable):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _deny)
+    with pytest.raises(PermissionError):
+        rebuild_vdb.backup_corrupt_snapshot((str(present), str(unreadable)))
+
+    assert present.read_bytes() == b"first"
+    assert unreadable.read_bytes() == b"second"
+
+
+def test_a_failure_on_the_second_file_keeps_the_first_backup_and_every_source(
+    tmp_path, monkeypatch
+):
+    """A partial recovery must leave more evidence than it started with, not
+    less: the sources are all untouched, the backup that completed is durable,
+    and the one that did not leaves no stub pretending to be a copy."""
+    first = tmp_path / "vdb_entities.json"
+    first.write_bytes(b"first rows")
+    second = tmp_path / "vdb_relationships.json"
+    second.write_bytes(b"second rows")
+    real_copy = rebuild_vdb.shutil.copyfileobj
+    seen = []
+
+    def _fail_on_second(source, destination, *args, **kwargs):
+        seen.append(source.name)
+        if len(seen) == 2:
+            raise OSError(28, "No space left on device")
+        return real_copy(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(rebuild_vdb.shutil, "copyfileobj", _fail_on_second)
+    with pytest.raises(OSError, match="No space left"):
+        rebuild_vdb.backup_corrupt_snapshot((str(first), str(second)))
+
+    assert first.read_bytes() == b"first rows"
+    assert second.read_bytes() == b"second rows"
+    backups = sorted(p.name for p in tmp_path.glob("*.corrupt-*"))
+    assert len(backups) == 1, backups
+    assert backups[0].startswith("vdb_entities.json.corrupt-")
+    assert (tmp_path / backups[0]).read_bytes() == b"first rows"
+
+
+@pytest.mark.parametrize("bad", ["0", "-3"])
+def test_build_global_config_rejects_nonpositive_embedding_batch_num(monkeypatch, bad):
+    """The tool builds vector storages without a LightRAG instance, so it
+    must reject the batch size itself instead of failing mid-rebuild."""
+    monkeypatch.setenv("EMBEDDING_BATCH_NUM", bad)
+    tool = rebuild_vdb.RebuildTool()
+    tool.storage_names = {"kv": "k", "vector": "v", "graph": "g"}
+    with pytest.raises(ValueError, match="EMBEDDING_BATCH_NUM must be >= 1"):
+        tool.build_global_config()
