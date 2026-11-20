@@ -19,6 +19,9 @@ from lightrag.parser.base import ParseContext
 from lightrag.parser.external._base import ExternalParserBase
 
 
+pytestmark = pytest.mark.offline
+
+
 class _Stop(Exception):
     """Sentinel to halt parse() right after the hook under test runs."""
 

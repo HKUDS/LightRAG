@@ -9,10 +9,13 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from lightrag.utils import Tokenizer
@@ -33,6 +36,8 @@ _RESERVED = frozenset(
     }
 )
 _CHUNKING_CONTEXT_MARKER = "__lightrag_accepts_chunking_context__"
+_URI_LITERAL_DRIVE = re.compile(r"^/[A-Za-z]:")
+_FOREIGN = "it is not an absolute local path on this platform"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -42,6 +47,8 @@ class ChunkingContext:
     The context is intentionally separate from the chunk text and legacy
     sizing arguments.  Chunkers can use it for source-aware policies without
     changing the text that is embedded or requiring a second callback shape.
+    Resolve ``sidecar_location`` with :func:`resolve_sidecar_location`; never
+    cast the URI to a ``Path`` by hand.
     """
 
     doc_id: str
@@ -50,6 +57,75 @@ class ChunkingContext:
     parse_format: str
     parse_engine: str | None
     process_options: str
+
+
+def _sidecar_location_error(location: str, reason: str) -> ValueError:
+    return ValueError(f"unsupported sidecar location {location!r}: {reason}")
+
+
+def resolve_sidecar_location(location: str | None) -> Path | None:
+    """Resolve ``ChunkingContext.sidecar_location`` to a local directory path.
+
+    Returns ``None`` when the document has no known sidecar: ``None``, an empty
+    string, or the unknown-source sentinel. A local ``file://`` URI returns
+    the ``Path`` the pipeline itself reads for it, without checking that the
+    directory still exists. Any other scheme, a bare path, or a ``file://``
+    URI naming a remote host raises ``ValueError`` instead of being
+    reinterpreted as a local path -- and so does a local URI that does not
+    name an absolute local directory on the platform running LightRAG: an
+    empty or relative path, a network (UNC) path on Windows, or a location
+    written on another platform (a drive path read on POSIX, a POSIX path read
+    on Windows, where it would take its drive from the current directory).
+
+    Decoding is delegated to the pipeline's own sidecar reader, so a location
+    never resolves to a different directory here than in the pipeline; this
+    function only adds the refusals. On Windows that includes the legacy form
+    ``file://C%3A%5Ctmp%5Creport.parsed/`` that older rows carry. How the
+    reader decodes each platform's URIs is documented on
+    ``lightrag.utils_pipeline.resolve_sidecar_uri``.
+    """
+    # Deferred: the pipeline helpers are heavy, and this module must stay cheap.
+    from lightrag import utils_pipeline
+
+    if not location or location == utils_pipeline.SIDECAR_LOCATION_UNKNOWN:
+        return None
+    parts = urlsplit(location)
+    if parts.scheme != "file":
+        raise _sidecar_location_error(
+            location, "only local file:// URIs can be resolved"
+        )
+    windows = os.name == "nt"
+    if parts.netloc.lower() not in ("", "localhost"):
+        # The POSIX reader ignores the authority, so it is checked here; the
+        # Windows reader accepts only the legacy drive form and returns None
+        # for any other authority.
+        if not windows:
+            legacy = utils_pipeline._LEGACY_WINDOWS_AUTHORITY_RE.match(
+                unquote(parts.netloc)
+            )
+            raise _sidecar_location_error(
+                location,
+                _FOREIGN
+                if legacy
+                else f"file:// URI names remote host {parts.netloc!r}",
+            )
+    elif not windows and _URI_LITERAL_DRIVE.match(parts.path):
+        # A POSIX writer percent-encodes ':' (``/C:`` becomes ``/C%3A``), so a
+        # literal drive marker means the URI was written on Windows.
+        raise _sidecar_location_error(location, _FOREIGN)
+    resolved = utils_pipeline.resolve_sidecar_uri(location)
+    if resolved is None:
+        raise _sidecar_location_error(
+            location,
+            "file:// URI names a remote host or a path this platform cannot read",
+        )
+    if not resolved.is_absolute():
+        raise _sidecar_location_error(location, _FOREIGN)
+    if windows and resolved.drive.startswith(("\\\\", "//")):
+        raise _sidecar_location_error(
+            location, "the URI path names a network (UNC) location"
+        )
+    return resolved
 
 
 def accepts_chunking_context(callback: Callable[..., Any]) -> Callable[..., Any]:

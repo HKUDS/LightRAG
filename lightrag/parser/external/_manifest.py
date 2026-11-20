@@ -130,7 +130,11 @@ def load_manifest(raw_dir: Path, *, expected_engine: str) -> Manifest | None:
         return None
     try:
         payload = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        # UnicodeDecodeError is a ValueError, not an OSError: a manifest
+        # holding invalid UTF-8 is a stale bundle like a malformed one. The
+        # miss heals on its own: ExternalParserBase.parse clears raw_dir
+        # before re-downloading, so the bad file never outlives that parse.
         return None
     if not isinstance(payload, dict):
         return None
