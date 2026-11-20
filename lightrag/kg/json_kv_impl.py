@@ -1,5 +1,4 @@
 import copy
-import itertools
 import os
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, ClassVar, final
@@ -405,26 +404,6 @@ class JsonKVStorage(BaseKVStorage):
                 else:
                     results.append(None)
             return results
-
-    async def iter_keys(self, batch_size: int):
-        """Yield keys without copying the complete namespace into memory.
-
-        JsonKVStorage is intentionally small-scale.  Re-opening the proxy
-        iterator for each page is preferable to holding its shared lock while
-        the caller performs arbitrary asynchronous work between yields.
-        """
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        offset = 0
-        while True:
-            async with self._storage_lock:
-                batch = list(
-                    itertools.islice(self._data.keys(), offset, offset + batch_size)
-                )
-            if not batch:
-                return
-            yield [str(key) for key in batch]
-            offset += len(batch)
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         if self._storage_lock is None:

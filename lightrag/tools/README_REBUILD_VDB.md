@@ -35,8 +35,8 @@ dimension. Existing vector records were generated in the old embedding space
 so run the tool with the updated `.env` and choose **Rebuild ALL vector
 storages** to regenerate `entities_vdb`, `relationships_vdb`, and `chunks_vdb`
 from the authoritative graph/KV sources. The consistency check is not enough
-for this case because it only detects missing graph → VDB records, not vectors
-that exist but were embedded with a previous model or dimension.
+for this case because it only compares which records exist, not whether an
+existing vector was embedded with a previous model or dimension.
 
 A vector storage whose container was written in a different embedding space
 **refuses to attach** rather than serving an empty or foreign index. That
@@ -112,13 +112,11 @@ flag is refused.
 
 Menu options:
 
-1. **Consistency check (diagnose only)** — probes every graph entity/relation
-   for a vector counterpart and reports what is missing. Run this first to
-   decide whether a rebuild is worth the embedding cost. The check covers
-   the graph → VDB direction only; reverse orphans can only be cleared by a
-   full rebuild. Legacy reverse-order relation ids (from old custom-KG
-   imports) are recognized and not misreported as missing. The check issues
-   read queries only and does not run a rebuild (no drop + re-embed). It is
+1. **Consistency check (diagnose only)** — reports, per vector storage, whether
+   it matches its source; see [Consistency check](#consistency-check). Run
+   this first to decide whether a rebuild is worth the embedding cost. The
+   check issues read queries only and does not run a rebuild (no drop +
+   re-embed). It is
    **not** strictly side-effect-free, though: the tool initializes every
    storage on startup — exactly as the server does — and for some backends
    that includes schema/DDL setup and one-time legacy migrations (e.g. Qdrant
@@ -173,10 +171,56 @@ Menu options:
 - **Custom-KG placeholder entities.** `UNKNOWN` placeholder nodes created by
   `ainsert_custom_kg` are rebuilt faithfully from the graph; they may gain a
   vector record they previously lacked (improving their retrievability).
-- **Chunk enumeration is backend-specific.** `BaseKVStorage` has no key
-  enumeration API, so the tool scans each KV backend directly (JsonKV,
-  Redis, PostgreSQL, MongoDB, OpenSearch). When a new KV backend is added,
-  `enumerate_kv_keys()` in `rebuild_vdb.py` must be extended.
+- **Sources are read in bounded batches.** Graph nodes and edges come from
+  `iter_labels()` / `iter_edges()`, chunks from `BaseKVStorage.iter_rows()`,
+  so neither the rebuild nor the check holds a whole namespace in client
+  memory. The first batch is read before the target is dropped: a source that
+  cannot be read at all leaves the vector storage untouched. A read that fails
+  later stops the rebuild with an error and leaves the target partly rebuilt
+  (no baseline is recorded, so the server keeps refusing); re-run the tool.
+
+## Consistency check
+
+For each target (entities, relationships, chunks) the check walks the source
+in batches, probes every record a rebuild would write by its vector id, and
+then compares the number of source records with the exact number of records
+in the vector storage. A count above the source means the vector storage holds
+records the source no longer has (reverse orphans); the check does not list
+them, a rebuild clears them. Each target gets one status:
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| `consistent` | every probe hit and the counts are equal | nothing |
+| `inconsistent` | a probe missed, or the counts differ | rebuild that target |
+| `inconclusive` | a read or the count failed or is unsupported; the reason is printed | fix the cause, or rebuild if in doubt |
+| `incompatible` | the storage refused to attach (other embedding space, corrupt snapshot) | rebuild; it is mandatory |
+| `not_applicable` | the storage keeps no vectors | nothing |
+
+Records a rebuild skips (a chunk without `content`, a node or edge without an
+id) are skipped by the check too and counted under `skipped`, so a fresh
+rebuild always checks `consistent`.
+
+**Exact counts are implemented for `NanoVectorDBStorage` and
+`FaissVectorDBStorage` only.** On every other vector backend the check still
+reports missing records, but the target is `inconclusive`, never `consistent`,
+until that backend implements `BaseVectorStorage.get_exact_count()`.
+
+A `consistent` verdict rests on these assumptions, accepted because each is
+rare and a rebuild clears whatever it hides:
+
+- **The graph stores one relationship per pair of entities**, and `iter_edges()`
+  returns it once. A backend that stored both directions would count the pair
+  twice.
+- **Relationship vector ids are not injective.** The id hashes the two sorted
+  entity names concatenated without a delimiter, so the pairs `("ab", "c")`
+  and `("a", "bc")` share one id. Two such relations count twice in the graph
+  but once in the vector storage, so the target reads `inconsistent` after
+  every rebuild; and together with one reverse orphan they would read
+  `consistent`. Changing the id format needs a migration and is out of scope.
+- **Redis `SCAN` may return a chunk key twice** (when Redis resizes its hash
+  table during the scan). A repeated key inflates the chunk source count the
+  same way. The check keeps no set of every id seen, by design: that would
+  make its memory grow with the dataset.
 
 ## Library usage
 

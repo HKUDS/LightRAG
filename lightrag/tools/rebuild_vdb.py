@@ -464,16 +464,16 @@ async def rebuild_entities_vdb(
 
     async def prepare(labels: list[str], stats: Dict[str, Any]):
         nodes = await graph.get_nodes_batch(
-            [str(label) for label in labels if label is not None]
+            [str(label) for label in labels if _entity_has_vector(label)]
         )
         payloads: Dict[str, Dict[str, Any]] = {}
         for label in labels:
-            if label is None:
+            if not _entity_has_vector(label):
                 stats["skipped"] += 1
                 continue
             entity_name = str(label)
             node = nodes.get(label) or nodes.get(entity_name)
-            if not isinstance(node, dict) or not entity_name.strip():
+            if not isinstance(node, dict):
                 stats["skipped"] += 1
                 logger.warning(f"Rebuild entities: skipping unreadable node {label!r}")
                 continue
@@ -532,11 +532,13 @@ async def rebuild_relationships_vdb(
     async def prepare(edges: list[dict], stats: Dict[str, Any]):
         payloads: Dict[str, Dict[str, Any]] = {}
         for edge in edges:
-            src, tgt = edge.get("source"), edge.get("target")
-            if src is None or tgt is None or not str(src).strip() or not str(tgt).strip():
+            if not _relation_has_vector(edge):
                 stats["skipped"] += 1
+                logger.warning(
+                    f"Rebuild relationships: skipping edge without endpoints: {edge!r}"
+                )
                 continue
-            src_id, tgt_id = sorted((str(src), str(tgt)))
+            src_id, tgt_id = sorted((str(edge["source"]), str(edge["target"])))
             rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
             if rel_vdb_id in payloads:
                 stats["duplicates"] += 1
@@ -595,33 +597,24 @@ async def rebuild_chunks_vdb(
     per-record ``content`` check below is the only filter.
     """
     _ensure_vector_rebuild_supported(chunks_vdb)
-    batches = text_chunks_kv.iter_keys(batch_size)
+    batches = _iter_row_batches(text_chunks_kv, batch_size)
     first_batch, batches = await _preflight_batches(batches)
     stats = _new_stats("chunks", 0)
 
-    async def prepare(keys: list[str], stats: Dict[str, Any]):
-        batch_ids = [str(key) for key in keys]
-        records = await text_chunks_kv.get_by_ids(batch_ids)
-        record_map: Dict[str, Dict[str, Any]] = {}
-        for record in records:
-            if record is None:
-                continue
-            if not isinstance(record, dict) or not record.get("_id"):
-                raise RuntimeError("Chunk source returned an unidentifiable record")
-            record_id = str(record["_id"])
-            if record_id not in batch_ids or record_id in record_map:
-                raise RuntimeError("Chunk source returned duplicate or unexpected ids")
-            record_map[record_id] = record
-
+    async def prepare(rows: list[dict], stats: Dict[str, Any]):
         batch_payload: Dict[str, Dict[str, Any]] = {}
-        for chunk_id in batch_ids:
-            record = record_map.get(chunk_id)
-            if record is None:
-                raise RuntimeError("Chunk source returned an incomplete batch")
-            if not record.get("content"):
+        for row in rows:
+            chunk_id = _chunk_row_id(row)
+            if not _chunk_has_vector(row):
                 stats["skipped"] += 1
+                logger.warning(
+                    f"Rebuild chunks: skipping chunk without content: {chunk_id}"
+                )
                 continue
-            payload = dict(record)
+            if chunk_id in batch_payload:
+                stats["duplicates"] += 1
+                continue
+            payload = dict(row)
             payload.pop("_id", None)
             payload.setdefault("full_doc_id", "")
             payload.setdefault("file_path", "")
@@ -638,6 +631,49 @@ async def rebuild_chunks_vdb(
     )
 
 
+async def _iter_row_batches(kv, batch_size: int) -> AsyncIterator[list[dict]]:
+    """Group ``kv.iter_rows()`` into lists of at most ``batch_size`` rows."""
+    batch: list[dict] = []
+    async for row in kv.iter_rows(page_size=batch_size):
+        batch.append(row)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _chunk_row_id(row: Any) -> str:
+    """The chunk id of a ``text_chunks`` row; a row without one is a read fault."""
+    if not isinstance(row, dict) or not row.get("_id"):
+        raise RuntimeError(f"text_chunks returned a row without an _id: {row!r:.120}")
+    return str(row["_id"])
+
+
+def _chunk_has_vector(row: dict) -> bool:
+    """Whether a rebuild writes a vector for this chunk row.
+
+    The one eligibility rule shared by ``rebuild_chunks_vdb`` and the chunk
+    target of ``check_vdb_consistency``: if the two disagreed, a fresh rebuild
+    would be reported inconsistent forever.
+    """
+    return bool(row.get("content"))
+
+
+def _entity_has_vector(label: Any) -> bool:
+    return label is not None and bool(str(label).strip())
+
+
+def _relation_has_vector(edge: dict) -> bool:
+    src, tgt = edge.get("source"), edge.get("target")
+    return (
+        src is not None
+        and tgt is not None
+        and bool(str(src).strip())
+        and bool(str(tgt).strip())
+    )
+
+
 async def check_vdb_consistency(
     graph,
     entities_vdb,
@@ -648,23 +684,36 @@ async def check_vdb_consistency(
     batch_size: int = DEFAULT_BATCH_SIZE,
     incompatible: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
-    """Read-only diagnosis: find graph records with no vector counterpart.
+    """Read-only diagnosis of each vector target against its source.
 
-    Only the graph -> VDB direction is covered; stale reverse orphans
-    (records present in the VDB but absent from the graph) can only be
-    eliminated by a full rebuild. Relations are probed with both candidate
-    ids from make_relation_vdb_ids so legacy reverse-order ids are not
-    misreported as missing.
+    Per target (``entities`` from ``graph.iter_labels``, ``relationships``
+    from ``graph.iter_edges``, and ``chunks`` from ``text_chunks_kv.iter_rows``
+    when both chunk arguments are given), every source record that a rebuild
+    would write is probed by id in bounded batches, then the source count is
+    compared with ``vdb.get_exact_count()``. ``report["targets"][label]
+    ["status"]`` is one of:
 
-    ``incompatible`` names targets (``"entities"`` / ``"relationships"``) whose
-    storage refused to attach because of incompatible vectors or a corrupt
-    snapshot, mapped to the refusal message. Such a target is NOT
-    probed: its storage cannot answer, and probing it anyway would report
-    every graph record as missing -- a true statement about that container
-    that reads as a routine drift report and buries the one fact that matters,
-    which is that the container is unusable and a rebuild is mandatory rather
-    than optional. The report carries the refusal under ``"incompatible"``
-    instead, and ``consistent`` is False.
+    * ``consistent`` -- no probe missed and the counts are equal;
+    * ``inconsistent`` -- a probe missed, or the counts differ (a count
+      above the source is a vector the source no longer has). Repair is the
+      matching rebuild, never an in-place fix;
+    * ``inconclusive`` -- a read or the count failed or is unsupported
+      (``reason`` says which). Never read as consistent;
+    * ``incompatible`` -- the target is in ``incompatible`` and is NOT
+      probed: its storage refused to attach (another embedding space's
+      vectors, or a corrupt snapshot), so a rebuild is mandatory, not optional;
+    * ``not_applicable`` -- the storage does not persist vectors.
+
+    ``report["consistent"]`` is True only when every target is
+    ``consistent`` or ``not_applicable``. The legacy summary fields
+    (``graph_entities``, ``missing_entities``, ...) are kept for library
+    callers.
+
+    Gotchas: run it with no writers (it reads a moving source as drift);
+    relation ids are probed with both candidates from
+    ``make_relation_vdb_ids``, so a legacy reverse-order id is not a miss; and
+    a ``consistent`` verdict rests on the id assumptions listed under
+    *Consistency check* in ``lightrag/tools/README_REBUILD_VDB.md``.
     """
     incompatible = dict(incompatible or {})
     report: Dict[str, Any] = {"targets": {}, "incompatible": incompatible}
@@ -691,6 +740,7 @@ async def check_vdb_consistency(
             "target_count": None,
             "missing": 0,
             "missing_examples": [],
+            "skipped": 0,
             "reason": None,
         }
         report["targets"][label] = target
@@ -708,6 +758,7 @@ async def check_vdb_consistency(
                 for item in source_batch:
                     candidate_ids = [str(value) for value in candidates_for(item)]
                     if not candidate_ids:
+                        target["skipped"] += 1
                         continue
                     logical.append((candidate_ids, display_for(item)))
                     requested.extend(candidate_ids)
@@ -715,9 +766,7 @@ async def check_vdb_consistency(
                 target["source_count"] += len(logical)
                 if blocked_status is not None:
                     continue
-                found = await identify(
-                    await vdb.get_by_ids(requested), set(requested)
-                )
+                found = await identify(await vdb.get_by_ids(requested), set(requested))
                 for candidate_ids, display in logical:
                     if not any(candidate in found for candidate in candidate_ids):
                         target["missing"] += 1
@@ -740,23 +789,31 @@ async def check_vdb_consistency(
         "entities",
         entities_vdb,
         graph.iter_labels(batch_size),
-        lambda label: [compute_mdhash_id(str(label), prefix="ent-")],
+        lambda label: (
+            [compute_mdhash_id(str(label), prefix="ent-")]
+            if _entity_has_vector(label)
+            else []
+        ),
         lambda label: str(label),
     )
     await evaluate(
         "relationships",
         relationships_vdb,
         graph.iter_edges(batch_size),
-        lambda edge: make_relation_vdb_ids(str(edge["source"]), str(edge["target"])),
-        lambda edge: f"{edge['source']} ~ {edge['target']}",
+        lambda edge: (
+            make_relation_vdb_ids(str(edge["source"]), str(edge["target"]))
+            if _relation_has_vector(edge)
+            else []
+        ),
+        lambda edge: f"{edge.get('source')} ~ {edge.get('target')}",
     )
     if text_chunks_kv is not None and chunks_vdb is not None:
         await evaluate(
             "chunks",
             chunks_vdb,
-            text_chunks_kv.iter_keys(batch_size),
-            lambda key: [str(key)],
-            lambda key: str(key),
+            _iter_row_batches(text_chunks_kv, batch_size),
+            lambda row: [_chunk_row_id(row)] if _chunk_has_vector(row) else [],
+            lambda row: _chunk_row_id(row),
         )
 
     # Keep the established summary fields for library callers while exposing
@@ -1575,8 +1632,8 @@ class RebuildTool:
             print(f"  Graph edges: {edge_count:,}")
         if include_chunks:
             chunk_count = 0
-            async for batch in self.text_chunks.iter_keys(self.batch_size):
-                chunk_count += len(batch)
+            async for _row in self.text_chunks.iter_rows(page_size=self.batch_size):
+                chunk_count += 1
             print(f"  Text chunks: {chunk_count:,}")
 
     def confirm_rebuild(self, targets: str) -> bool:

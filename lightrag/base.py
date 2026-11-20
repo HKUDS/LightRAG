@@ -555,12 +555,22 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         pass
 
     async def get_exact_count(self) -> int:
-        """Return the exact number of persisted, addressable records.
+        """Return the exact number of persisted records ``get_by_ids`` can address.
 
-        This optional maintenance capability deliberately fails closed.  A
-        backend must override it only when it can distinguish a complete
-        persisted snapshot from buffered writes or a partially readable
-        index.
+        An optional maintenance capability, consumed by the offline
+        consistency check in ``lightrag/tools/rebuild_vdb.py``. Rules for
+        implementers:
+
+        * count this namespace and workspace only, in the id space
+          ``get_by_ids`` answers;
+        * exact or raise: a transport error, an unreadable container, writes
+          still buffered in this process, or an index whose parts disagree
+          raise ``StorageCapabilityError`` -- never return an estimate, and
+          never return zero for "could not tell";
+        * read-only: never repair what the count finds.
+
+        The default raises ``StorageCapabilityError``, so the check reports
+        the target ``inconclusive`` rather than guessing.
         """
         raise StorageCapabilityError(
             f"{type(self).__name__} does not support exact persisted counts"
@@ -798,17 +808,6 @@ class BaseKVStorage(StorageNameSpace, ABC):
     @abstractmethod
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get values by ids"""
-
-    async def iter_keys(self, batch_size: int) -> AsyncIterator[list[str]]:
-        """Yield namespace keys in bounded batches.
-
-        The default fails closed because materializing every key and slicing
-        it would defeat the memory bound required by maintenance tools.
-        """
-        raise StorageCapabilityError(
-            f"{type(self).__name__} does not support bounded key iteration"
-        )
-        yield []  # pragma: no cover - make this an async generator
 
     @abstractmethod
     async def filter_keys(self, keys: set[str]) -> set[str]:

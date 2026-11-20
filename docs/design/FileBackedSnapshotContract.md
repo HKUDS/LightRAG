@@ -1,21 +1,5 @@
 # File-Backed Snapshot Contract
 
-## Maintenance consistency capabilities
-
-The offline vector rebuild tool uses explicit optional storage capabilities.
-`JsonKVStorage.iter_keys()` is the only file-backed KV implementation that
-advertises bounded key traversal. `NanoVectorDBStorage.get_exact_count()` and
-`FaissVectorDBStorage.get_exact_count()` count only persisted, addressable
-records; pending writes are deliberately excluded, so the existing
-offline/no-writers requirement applies.
-
-Faiss count capability fails closed when index slots and metadata rows differ,
-or when a metadata position is invalid. Nano fails closed when its persisted
-data collection is malformed or contains missing or duplicate IDs. These
-states are diagnostic uncertainty, not proof of inconsistency: callers report
-them as `inconclusive` and must not recommend a destructive rebuild from that
-evidence alone. Neither count path repairs or mutates storage.
-
 Read this before changing `lightrag/kg/nano_vector_db_impl.py`,
 `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`,
 `lightrag/kg/json_doc_status_impl.py`, or `lightrag/kg/file_fingerprint.py`.
@@ -574,6 +558,25 @@ the caller's, so a co-tenant's unfinished sequence can become durable on someone
 else's commit. Unlike the graph store these classes lose nothing to it (a peer
 commit is reloaded and the buffers replayed on top), but the *timing* is still
 not the caller's to choose.
+
+### Maintenance consistency capabilities
+
+`get_exact_count()` (the `BaseVectorStorage` capability the offline check in
+`lightrag/tools/rebuild_vdb.py` compares against the source count) is
+implemented on both vector backends and nowhere else yet.
+
+* It reloads first, like every read, and then **refuses** with
+  `StorageCapabilityError("unflushed_writes")` while this process holds
+  anything not yet on disk: pending upserts or deletes, unsaved redo entries,
+  or a dirty client/index. The answer is therefore always the size of a
+  persisted snapshot, by construction rather than by the caller's promise. The
+  tool runs with no writers, so in practice it never refuses there.
+* It refuses on a snapshot it cannot count exactly: a Nano data collection
+  that is malformed or holds a row without an id or two rows with one id; a
+  Faiss index whose slot count, positions or ids disagree with its metadata
+  (`index_meta_skew`). Those states are uncertainty, not proof of drift: the
+  check reports `inconclusive` and does not recommend a rebuild from them.
+* It never repairs or mutates what it finds.
 
 ## `JsonKVStorage` and `JsonDocStatusStorage` — shared in-memory state, no reload path
 

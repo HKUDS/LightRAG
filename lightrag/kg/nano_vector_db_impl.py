@@ -1586,9 +1586,24 @@ class NanoVectorDBStorage(BaseVectorStorage):
         return [result_map.get(str(requested_id)) for requested_id in ids]
 
     async def get_exact_count(self) -> int:
-        """Count persisted addressable rows, excluding pending writes."""
+        """Count the persisted, addressable rows of this namespace.
+
+        Raises :class:`~lightrag.exceptions.StorageCapabilityError` instead of
+        answering while this process holds writes not yet on disk, or when the
+        persisted rows are malformed, unidentifiable or duplicated. Read-only:
+        nothing is repaired. See *Maintenance consistency capabilities* in
+        ``docs/design/FileBackedSnapshotContract.md``.
+        """
         async with self._storage_lock:
             self._reload_client_from_disk_locked()
+            if (
+                self._pending_upserts
+                or self._pending_deletes
+                or self._unsaved_upserts
+                or self._unsaved_deletes
+                or self._client_dirty
+            ):
+                raise StorageCapabilityError("unflushed_writes")
             try:
                 storage = getattr(self._client, "_NanoVectorDB__storage")
                 rows = storage["data"]

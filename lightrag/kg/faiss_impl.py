@@ -1976,9 +1976,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
         return [result_map.get(str(requested_id)) for requested_id in ids]
 
     async def get_exact_count(self) -> int:
-        """Count persisted addressable rows only when index and metadata agree."""
+        """Count the persisted, addressable rows of this namespace.
+
+        Raises :class:`~lightrag.exceptions.StorageCapabilityError` instead of
+        answering while this process holds writes not yet on disk, or when the
+        index and its metadata disagree (slot count, positions, missing or
+        duplicate ids). Read-only: nothing is repaired. See *Maintenance
+        consistency capabilities* in ``docs/design/FileBackedSnapshotContract.md``.
+        """
         async with self._storage_lock:
             self._reload_index_from_disk_locked()
+            if (
+                self._pending_upserts
+                or self._pending_deletes
+                or self._unsaved_upserts
+                or self._unsaved_deletes
+                or self._index_dirty
+            ):
+                raise StorageCapabilityError("unflushed_writes")
             index_total = int(self._index.ntotal)
             metadata_total = len(self._id_to_meta)
             valid_positions = all(
@@ -1986,10 +2001,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 for fid in self._id_to_meta
             )
             record_ids = [meta.get("__id__") for meta in self._id_to_meta.values()]
-            valid_ids = all(
-                record_id is not None and str(record_id).strip()
-                for record_id in record_ids
-            ) and len({str(record_id) for record_id in record_ids}) == metadata_total
+            valid_ids = (
+                all(
+                    record_id is not None and str(record_id).strip()
+                    for record_id in record_ids
+                )
+                and len({str(record_id) for record_id in record_ids}) == metadata_total
+            )
             if index_total != metadata_total or not valid_positions or not valid_ids:
                 raise StorageCapabilityError(
                     "index_meta_skew: "

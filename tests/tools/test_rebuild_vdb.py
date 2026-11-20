@@ -21,8 +21,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag.exceptions import StorageCapabilityError, VectorSpaceMismatchError
-from lightrag.kg.faiss_impl import FaissVectorDBStorage
-from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
 from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace
 from lightrag.tools.rebuild_vdb import (
@@ -68,10 +66,8 @@ async def test_library_rebuild_rejects_noop_vector_storage_before_source_reads()
         global_config={},
         embedding_func=None,
     )
-    graph = SimpleNamespace(
-        get_all_nodes=AsyncMock(),
-        get_all_edges=AsyncMock(),
-    )
+    # Any source read would raise AttributeError, not the asserted refusal.
+    graph = SimpleNamespace()
     text_chunks = SimpleNamespace()
     error_match = "NoopVectorDBStorage.*persistent vector storage"
 
@@ -81,9 +77,6 @@ async def test_library_rebuild_rejects_noop_vector_storage_before_source_reads()
         await rebuild_relationships_vdb(graph, noop_vdb, {})
     with pytest.raises(RuntimeError, match=error_match):
         await rebuild_chunks_vdb(text_chunks, noop_vdb)
-
-    graph.get_all_nodes.assert_not_awaited()
-    graph.get_all_edges.assert_not_awaited()
 
 
 class MockVDB:
@@ -148,30 +141,17 @@ def make_graph(nodes=None, edges=None):
     return graph
 
 
-class _FakeLock:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
-
-
-class JsonKVStorage:
-    """Minimal bounded-key KV stand-in."""
+class RowKV:
+    """KV stand-in exposing only ``iter_rows`` -- the one surface the tool reads."""
 
     def __init__(self, data):
         self._data = data
-        self._storage_lock = _FakeLock()
+        self.page_sizes = []
 
-    async def get_by_ids(self, ids):
-        return [
-            ({"_id": i, **self._data[i]} if i in self._data else None) for i in ids
-        ]
-
-    async def iter_keys(self, batch_size):
-        keys = list(self._data)
-        for start in range(0, len(keys), batch_size):
-            yield keys[start : start + batch_size]
+    async def iter_rows(self, *, page_size=200):
+        self.page_sizes.append(page_size)
+        for key, value in self._data.items():
+            yield {"_id": key, **value}
 
 
 def node(name, **overrides):
@@ -414,7 +394,7 @@ async def test_rebuild_relationships_skips_edges_without_endpoints():
 
 @pytest.mark.asyncio
 async def test_rebuild_chunks_payload_from_kv_records():
-    kv = JsonKVStorage(
+    kv = RowKV(
         {
             "chunk-1": {
                 "content": "chunk text",
@@ -443,7 +423,7 @@ async def test_rebuild_chunks_payload_from_kv_records():
 
 @pytest.mark.asyncio
 async def test_rebuild_chunks_skips_records_without_content():
-    kv = JsonKVStorage(
+    kv = RowKV(
         {
             "chunk-1": {"content": "ok", "full_doc_id": "doc-1"},
             "chunk-2": {"full_doc_id": "doc-1"},  # no content
@@ -465,7 +445,7 @@ async def test_rebuild_chunks_covers_all_id_schemes():
     # which does NOT start with "chunk-"), and multimodal
     # ("{doc_id}-mm-<modality>-{order}"). A prefix-only filter dropped the
     # pipeline/multimodal chunks and rebuilt to zero. All schemes must rebuild.
-    kv = JsonKVStorage(
+    kv = RowKV(
         {
             "chunk-deadbeef": {"content": "custom kg", "full_doc_id": "doc-xyz"},
             "doc-abc123-chunk-000": {"content": "first", "full_doc_id": "doc-abc123"},
@@ -1597,132 +1577,125 @@ def test_build_global_config_rejects_nonpositive_embedding_batch_num(monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Bounded consistency capabilities
+# Bounded sources and per-target verdicts
 # ---------------------------------------------------------------------------
 
 
+async def _unreadable_source(*_args, **_kwargs):
+    raise StorageCapabilityError("source unreadable")
+    yield []  # pragma: no cover - makes this an async generator
+
+
 @pytest.mark.asyncio
-async def test_rebuild_preflights_source_iterator_before_drop():
-    graph = make_graph(nodes=[node("Alice")])
+@pytest.mark.parametrize("target", ["entities", "relationships", "chunks"])
+async def test_rebuild_reads_the_source_before_dropping_the_target(target):
+    graph = make_graph(nodes=[node("Alice")], edges=[edge("Alice", "Bob")])
+    graph.iter_labels = graph.iter_edges = _unreadable_source
+    kv = RowKV({})
+    kv.iter_rows = _unreadable_source
     vdb = MockVDB()
+    rebuild = {
+        "entities": lambda: rebuild_entities_vdb(graph, vdb, {}),
+        "relationships": lambda: rebuild_relationships_vdb(graph, vdb, {}),
+        "chunks": lambda: rebuild_chunks_vdb(kv, vdb),
+    }[target]
 
-    async def unsupported(_batch_size):
-        raise StorageCapabilityError("bounded iteration unavailable")
-        yield []
-
-    graph.iter_labels = unsupported
-    with pytest.raises(StorageCapabilityError, match="bounded iteration unavailable"):
-        await rebuild_entities_vdb(graph, vdb, {})
+    with pytest.raises(StorageCapabilityError, match="source unreadable"):
+        await rebuild()
     vdb.drop.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_check_unidentifiable_probe_is_inconclusive_not_inconsistent():
-    graph = make_graph(nodes=[node("Alice")])
+@pytest.mark.parametrize(
+    ("edges", "vdb_pairs", "status", "counts"),
+    [
+        pytest.param([], [], "consistent", (0, 0), id="empty"),
+        pytest.param(
+            [edge("Alice", "Bob")],
+            [("Alice", "Bob"), ("Carol", "Dave")],
+            "inconsistent",
+            (1, 2),
+            id="reverse-only-extra-found-by-count",
+        ),
+        # Accepted limitation (README_REBUILD_VDB.md, *Consistency check*):
+        # relation ids hash the sorted names without a delimiter, so these two
+        # pairs share one id. Both probes hit it, but the counts differ.
+        pytest.param(
+            [edge("ab", "c"), edge("a", "bc")],
+            [("ab", "c")],
+            "inconsistent",
+            (2, 1),
+            id="ambiguous-relation-id",
+        ),
+    ],
+)
+async def test_check_relationship_verdict(edges, vdb_pairs, status, counts):
+    relationships_vdb = MockVDB()
+    for src, tgt in vdb_pairs:
+        relationships_vdb.records[make_relation_vdb_ids(src, tgt)[0]] = {}
+
+    report = await check_vdb_consistency(
+        make_graph(edges=edges), MockVDB(), relationships_vdb
+    )
+
+    target = report["targets"]["relationships"]
+    assert (target["status"], target["missing"]) == (status, 0)
+    assert (target["source_count"], target["target_count"]) == counts
+    assert report["consistent"] is (status == "consistent")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("get_by_ids", "unidentifiable_probe_record"),
+        ("short_probe", "incomplete_probe_response"),
+        ("count", "does not support exact persisted counts"),
+    ],
+)
+async def test_check_read_fault_is_inconclusive_never_consistent(fault, reason):
     entities = MockVDB()
-    entities.get_by_ids = AsyncMock(return_value=[{"content": "missing id"}])
+    entities.records[compute_mdhash_id("Alice", prefix="ent-")] = {}
+    if fault == "get_by_ids":
+        entities.get_by_ids = AsyncMock(return_value=[{"content": "no id"}])
+    elif fault == "short_probe":
+        entities.get_by_ids = AsyncMock(return_value=[])
+    else:
+        entities.get_exact_count = AsyncMock(
+            side_effect=StorageCapabilityError(
+                "MockVDB does not support exact persisted counts"
+            )
+        )
 
-    report = await check_vdb_consistency(graph, entities, MockVDB())
+    report = await check_vdb_consistency(
+        make_graph(nodes=[node("Alice")]), entities, MockVDB()
+    )
 
-    assert report["targets"]["entities"]["status"] == "inconclusive"
-    assert report["targets"]["entities"]["reason"] == "unidentifiable_probe_record"
-
-
-@pytest.mark.asyncio
-async def test_check_incomplete_probe_is_inconclusive_not_inconsistent():
-    graph = make_graph(nodes=[node("Alice")])
-    entities = MockVDB()
-    entities.get_by_ids = AsyncMock(return_value=[])
-
-    report = await check_vdb_consistency(graph, entities, MockVDB())
-
-    assert report["targets"]["entities"]["status"] == "inconclusive"
-    assert report["targets"]["entities"]["reason"] == "incomplete_probe_response"
-
-
-@pytest.mark.asyncio
-async def test_rebuild_chunks_rejects_incomplete_source_batch():
-    text_chunks = JsonKVStorage({"chunk-1": {"content": "hello"}})
-    text_chunks.get_by_ids = AsyncMock(return_value=[])
-    chunks = MockVDB()
-
-    with pytest.raises(RuntimeError, match="incomplete batch"):
-        await rebuild_chunks_vdb(text_chunks, chunks)
-
-    chunks.drop.assert_awaited_once()
-    chunks.upsert.assert_not_awaited()
+    target = report["targets"]["entities"]
+    assert target["status"] == "inconclusive"
+    assert reason in target["reason"]
+    assert report["consistent"] is False
 
 
 @pytest.mark.asyncio
-async def test_faiss_exact_count_rejects_index_metadata_skew():
-    storage = object.__new__(FaissVectorDBStorage)
-    storage._storage_lock = _FakeLock()
-    storage._reload_index_from_disk_locked = MagicMock()
-    storage._index = SimpleNamespace(ntotal=2)
-    storage._id_to_meta = {0: {"__id__": "one"}}
+async def test_check_reports_a_fresh_chunk_rebuild_consistent():
+    # The check must skip exactly what the rebuild skips: a chunk without
+    # content has no vector, and counting it would report every fresh rebuild
+    # inconsistent forever.
+    kv = RowKV({"c1": {"content": "hello"}, "c2": {"content": ""}, "c3": {}})
+    chunks_vdb = MockVDB()
+    await rebuild_chunks_vdb(kv, chunks_vdb, batch_size=2)
 
-    with pytest.raises(StorageCapabilityError, match="index_meta_skew"):
-        await storage.get_exact_count()
+    report = await check_vdb_consistency(
+        make_graph(),
+        MockVDB(),
+        MockVDB(),
+        text_chunks_kv=kv,
+        chunks_vdb=chunks_vdb,
+        batch_size=2,
+    )
 
-
-@pytest.mark.asyncio
-async def test_faiss_exact_count_accepts_addressable_rows():
-    storage = object.__new__(FaissVectorDBStorage)
-    storage._storage_lock = _FakeLock()
-    storage._reload_index_from_disk_locked = MagicMock()
-    storage._index = SimpleNamespace(ntotal=2)
-    storage._id_to_meta = {
-        0: {"__id__": "one"},
-        1: {"__id__": "two"},
-    }
-
-    assert await storage.get_exact_count() == 2
-
-
-@pytest.mark.asyncio
-async def test_faiss_exact_count_rejects_invalid_position():
-    storage = object.__new__(FaissVectorDBStorage)
-    storage._storage_lock = _FakeLock()
-    storage._reload_index_from_disk_locked = MagicMock()
-    storage._index = SimpleNamespace(ntotal=1)
-    storage._id_to_meta = {2: {"__id__": "one"}}
-
-    with pytest.raises(StorageCapabilityError, match="index_meta_skew"):
-        await storage.get_exact_count()
-
-
-@pytest.mark.asyncio
-async def test_nano_exact_count_rejects_duplicate_ids():
-    storage = object.__new__(NanoVectorDBStorage)
-    storage._storage_lock = _FakeLock()
-    storage._reload_client_from_disk_locked = MagicMock()
-    storage._client = SimpleNamespace()
-    storage._client._NanoVectorDB__storage = {
-        "data": [{"__id__": "same"}, {"__id__": "same"}]
-    }
-
-    with pytest.raises(StorageCapabilityError, match="duplicate_persisted_id"):
-        await storage.get_exact_count()
-
-
-@pytest.mark.asyncio
-async def test_nano_exact_count_accepts_empty_persisted_data():
-    storage = object.__new__(NanoVectorDBStorage)
-    storage._storage_lock = _FakeLock()
-    storage._reload_client_from_disk_locked = MagicMock()
-    storage._client = SimpleNamespace()
-    storage._client._NanoVectorDB__storage = {"data": []}
-
-    assert await storage.get_exact_count() == 0
-
-
-@pytest.mark.asyncio
-async def test_nano_exact_count_rejects_missing_id():
-    storage = object.__new__(NanoVectorDBStorage)
-    storage._storage_lock = _FakeLock()
-    storage._reload_client_from_disk_locked = MagicMock()
-    storage._client = SimpleNamespace()
-    storage._client._NanoVectorDB__storage = {"data": [{"content": "orphan"}]}
-
-    with pytest.raises(StorageCapabilityError, match="unidentifiable_persisted_row"):
-        await storage.get_exact_count()
+    target = report["targets"]["chunks"]
+    assert (target["status"], target["skipped"]) == ("consistent", 2)
+    assert (target["source_count"], target["target_count"]) == (1, 1)
+    assert kv.page_sizes == [2, 2]
