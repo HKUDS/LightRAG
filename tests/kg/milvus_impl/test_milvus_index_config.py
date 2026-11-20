@@ -11,7 +11,6 @@ from unittest.mock import patch, MagicMock
 from lightrag.kg.milvus_impl import (
     MilvusIndexConfig,
     SUPPORTED_INDEX_TYPES,
-    SUPPORTED_METRIC_TYPES,
     SUPPORTED_SQ_TYPES,
     SUPPORTED_REFINE_TYPES,
 )
@@ -44,13 +43,11 @@ class TestMilvusIndexConfig:
             os.environ,
             {
                 "MILVUS_INDEX_TYPE": "HNSW",
-                "MILVUS_METRIC_TYPE": "L2",
                 "MILVUS_HNSW_M": "64",
             },
         ):
             config = MilvusIndexConfig()
             assert config.index_type == "HNSW"
-            assert config.metric_type == "L2"
             assert config.hnsw_m == 64
 
     def test_init_param_priority(self):
@@ -64,20 +61,10 @@ class TestMilvusIndexConfig:
         config = MilvusIndexConfig(index_type="hnsw")
         assert config.index_type == "HNSW"
 
-    def test_case_insensitive_metric_type(self):
-        """Test that metric type is case insensitive"""
-        config = MilvusIndexConfig(metric_type="cosine")
-        assert config.metric_type == "COSINE"
-
     def test_invalid_index_type(self):
         """Test invalid index type raises exception"""
         with pytest.raises(ValueError, match="Unsupported index type"):
             MilvusIndexConfig(index_type="INVALID_INDEX")
-
-    def test_invalid_metric_type(self):
-        """Test invalid metric type raises exception"""
-        with pytest.raises(ValueError, match="Unsupported metric type"):
-            MilvusIndexConfig(metric_type="INVALID_METRIC")
 
     def test_invalid_hnsw_m_range_low(self):
         """Test HNSW M parameter range validation (too low)"""
@@ -349,12 +336,6 @@ class TestMilvusIndexConfig:
             else:
                 config = MilvusIndexConfig(index_type=index_type)
             assert config.index_type == index_type
-
-    def test_all_metric_types_supported(self):
-        """Test all supported metric types can be configured"""
-        for metric_type in SUPPORTED_METRIC_TYPES:
-            config = MilvusIndexConfig(metric_type=metric_type)
-            assert config.metric_type == metric_type
 
     def test_all_sq_types_supported(self):
         """Test all supported sq_types can be configured"""
