@@ -110,7 +110,7 @@ async def test_client_closed_on_rate_limit_error():
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
         pytest.raises(RateLimitError),
     ):
-        await anthropic_complete_if_cache.__wrapped__(
+        await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -134,7 +134,7 @@ async def test_client_closed_on_api_connection_error():
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
         pytest.raises(APIConnectionError),
     ):
-        await anthropic_complete_if_cache.__wrapped__(
+        await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -161,7 +161,7 @@ async def test_client_closed_on_api_timeout_error():
         patch("lightrag.llm.anthropic.logger") as mock_logger,
         pytest.raises(APITimeoutError),
     ):
-        await anthropic_complete_if_cache.__wrapped__(
+        await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -182,7 +182,7 @@ async def test_client_closed_on_generic_exception():
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
         pytest.raises(RuntimeError),
     ):
-        await anthropic_complete_if_cache.__wrapped__(
+        await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -206,7 +206,7 @@ async def test_client_closed_on_create_cancelled():
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
         pytest.raises(asyncio.CancelledError),
     ):
-        await anthropic_complete_if_cache.__wrapped__(
+        await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -225,7 +225,7 @@ async def test_client_closed_after_non_streaming_success():
     fake_client = _make_success_client("test response")
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
-        result = await anthropic_complete_if_cache.__wrapped__(
+        result = await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -256,7 +256,7 @@ async def test_close_error_does_not_swallow_original_exception():
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
         pytest.raises(RateLimitError),  # original error, not RuntimeError
     ):
-        await anthropic_complete_if_cache.__wrapped__(
+        await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
 
@@ -276,7 +276,7 @@ async def test_stream_closed_after_full_consumption():
     fake_client = _make_stream_client(stream)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
-        gen = await anthropic_complete_if_cache.__wrapped__(
+        gen = await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
         )
         chunks = [chunk async for chunk in gen]
@@ -294,7 +294,7 @@ async def test_stream_closed_on_early_consumer_break():
     fake_client = _make_stream_client(stream)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
-        gen = await anthropic_complete_if_cache.__wrapped__(
+        gen = await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
         )
         first = await gen.__anext__()  # start iteration, then bail out early
@@ -313,7 +313,7 @@ async def test_stream_closed_on_iteration_error():
     fake_client = _make_stream_client(stream)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
-        gen = await anthropic_complete_if_cache.__wrapped__(
+        gen = await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
         )
         with pytest.raises(RuntimeError):
@@ -333,7 +333,7 @@ async def test_stream_close_error_does_not_block_client_close():
     fake_client = _make_stream_client(stream)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
-        gen = await anthropic_complete_if_cache.__wrapped__(
+        gen = await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
         )
         chunks = [chunk async for chunk in gen]
@@ -359,7 +359,7 @@ async def test_client_closed_when_stream_close_cancelled():
     fake_client = _make_stream_client(stream)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
-        gen = await anthropic_complete_if_cache.__wrapped__(
+        gen = await anthropic_complete_if_cache(
             model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
         )
         with pytest.raises(asyncio.CancelledError):

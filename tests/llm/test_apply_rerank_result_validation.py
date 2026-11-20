@@ -60,3 +60,27 @@ async def test_legacy_documents_are_not_inferred_from_later_index_metadata():
     )
 
     assert result == legacy_results
+
+
+@pytest.mark.asyncio
+async def test_negative_top_n_keeps_original_documents_without_calling_rerank():
+    """A negative top_n must not reach a custom rerank function, whose legacy
+    result format would otherwise be sliced with it and silently lose the
+    last-ranked documents."""
+    calls = []
+
+    async def rerank_func(**kwargs):
+        calls.append(kwargs)
+        return [{"content": "b"}, {"content": "a"}]
+
+    documents = [{"content": "a"}, {"content": "b"}]
+
+    result = await apply_rerank_if_enabled(
+        query="query",
+        retrieved_docs=documents,
+        global_config={"rerank_model_func": rerank_func},
+        top_n=-1,
+    )
+
+    assert result == documents
+    assert calls == []

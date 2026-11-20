@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from lightrag.kg.postgres_impl import PGGraphStorage, _dollar_quote
 
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
