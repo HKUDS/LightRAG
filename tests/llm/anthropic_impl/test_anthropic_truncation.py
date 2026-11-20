@@ -6,16 +6,18 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lightrag.exceptions import EmptyTruncatedResponseError
-from lightrag.llm.anthropic import InvalidResponseError, anthropic_complete_if_cache
+from lightrag.llm.anthropic import anthropic_complete_if_cache
 from lightrag.utils import is_truncated_response
 
 pytestmark = pytest.mark.offline
 
 
-def _make_client(*, text: str, stop_reason: str) -> SimpleNamespace:
-    response = SimpleNamespace(
-        content=[SimpleNamespace(type="text", text=text)], stop_reason=stop_reason
-    )
+def _make_client(
+    *, stop_reason: str, text: str | None = None, content: list | None = None
+) -> SimpleNamespace:
+    if content is None:
+        content = [SimpleNamespace(type="text", text=text)]
+    response = SimpleNamespace(content=content, stop_reason=stop_reason)
     return SimpleNamespace(
         messages=SimpleNamespace(create=AsyncMock(return_value=response)),
         close=AsyncMock(),
@@ -54,44 +56,17 @@ async def test_anthropic_end_turn_stop_reason_remains_plain_string():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_extracts_text_after_a_leading_thinking_block():
-    """Extended thinking puts a ThinkingBlock (no .text attribute) before the
-    TextBlock. content[0].text must not be assumed to be the answer."""
-    thinking_block = SimpleNamespace(type="thinking", thinking="reasoning...")
-    text_block = SimpleNamespace(type="text", text="final answer")
-    response = SimpleNamespace(
-        content=[thinking_block, text_block], stop_reason="end_turn"
-    )
-    client = SimpleNamespace(
-        messages=SimpleNamespace(create=AsyncMock(return_value=response)),
-        close=AsyncMock(),
-    )
-
-    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        result = await anthropic_complete_if_cache(
-            model="claude-test", prompt="hi", api_key="test-key"
-        )
-
-    assert result == "final answer"
-    client.close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_anthropic_joins_interleaved_text_blocks():
-    """Interleaved thinking can produce [thinking, text, thinking, text]:
-    every text block must be joined, not just the first one found."""
-    response = SimpleNamespace(
+async def test_anthropic_joins_text_blocks_and_skips_thinking_blocks():
+    """Extended thinking puts thinking blocks (no ``.text``) before and
+    between the text blocks; every text block is joined, in order."""
+    client = _make_client(
         content=[
             SimpleNamespace(type="thinking", thinking="step one"),
             SimpleNamespace(type="text", text="Part one. "),
-            SimpleNamespace(type="thinking", thinking="step two"),
+            SimpleNamespace(type="redacted_thinking", data="opaque"),
             SimpleNamespace(type="text", text="Part two."),
         ],
         stop_reason="end_turn",
-    )
-    client = SimpleNamespace(
-        messages=SimpleNamespace(create=AsyncMock(return_value=response)),
-        close=AsyncMock(),
     )
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
@@ -100,45 +75,34 @@ async def test_anthropic_joins_interleaved_text_blocks():
         )
 
     assert result == "Part one. Part two."
+    assert type(result) is str
+    client.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_anthropic_thinking_only_max_tokens_raises_empty_truncated():
-    """A thinking model can spend the whole output budget on the reasoning
-    trace and never reach a text block. This is deterministic for the given
-    prompt/budget, so it must raise the non-retryable
-    EmptyTruncatedResponseError, matching the OpenAI/Gemini bindings --
-    not the retryable InvalidResponseError, which would buy two more
-    full-budget generations plus backoff for an identically empty result."""
-    response = SimpleNamespace(
-        content=[SimpleNamespace(type="thinking", thinking="x" * 50)],
-        stop_reason="max_tokens",
-    )
-    client = SimpleNamespace(
-        messages=SimpleNamespace(create=AsyncMock(return_value=response)),
-        close=AsyncMock(),
-    )
+@pytest.mark.parametrize(
+    "thinking_block",
+    [
+        SimpleNamespace(type="thinking", thinking="x" * 50),
+        SimpleNamespace(type="redacted_thinking", data="opaque"),
+    ],
+    ids=["thinking", "redacted_thinking"],
+)
+async def test_anthropic_thinking_only_max_tokens_raises_empty_truncated(
+    thinking_block,
+):
+    """The whole output budget went into reasoning: the shared
+    EmptyTruncatedResponseError names the budget knobs, unlike the
+    InvalidResponseError raised for a non-length empty response."""
+    client = _make_client(content=[thinking_block], stop_reason="max_tokens")
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        with pytest.raises(EmptyTruncatedResponseError):
+        with pytest.raises(EmptyTruncatedResponseError) as excinfo:
             await anthropic_complete_if_cache(
                 model="claude-test", prompt="hi", api_key="test-key"
             )
 
-
-@pytest.mark.asyncio
-async def test_anthropic_no_text_block_non_length_reason_stays_retryable():
-    """An empty response NOT caused by hitting the token limit is a sampling
-    artifact a fresh attempt can genuinely fix, so it keeps the retryable
-    InvalidResponseError."""
-    response = SimpleNamespace(content=[], stop_reason="end_turn")
-    client = SimpleNamespace(
-        messages=SimpleNamespace(create=AsyncMock(return_value=response)),
-        close=AsyncMock(),
-    )
-
-    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
-        with pytest.raises(InvalidResponseError):
-            await anthropic_complete_if_cache(
-                model="claude-test", prompt="hi", api_key="test-key"
-            )
+    message = str(excinfo.value)
+    assert "budget consumed by reasoning" in message
+    assert "max_tokens" in message and "thinking.budget_tokens" in message
+    client.close.assert_awaited_once()

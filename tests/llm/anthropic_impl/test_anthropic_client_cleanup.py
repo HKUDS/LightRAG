@@ -29,7 +29,7 @@ def _make_fake_response(content_text: str = "hello world") -> SimpleNamespace:
     class _Message:
         content = [_Content()]
 
-    return SimpleNamespace(content=[_Content()], stop_reason="end_turn")
+    return SimpleNamespace(content=[_Content()])
 
 
 def _make_error_client(error: BaseException) -> SimpleNamespace:

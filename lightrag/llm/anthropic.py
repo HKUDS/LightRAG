@@ -35,7 +35,12 @@ from lightrag.api import __api_version__
 
 
 class InvalidResponseError(Exception):
-    """Kept for import compatibility; this binding never raises it."""
+    """A non-streaming response with no text content block.
+
+    Raised only when the stop reason is not ``max_tokens`` (that case raises
+    ``EmptyTruncatedResponseError``). Nothing retries it: the SDK is this
+    binding's only retry layer and does not retry a successful response.
+    """
 
     pass
 
@@ -82,6 +87,11 @@ async def anthropic_complete_if_cache(
     - When the budget is exhausted, the SDK's own exception
       (``RateLimitError``, ``APIStatusError``, ``APIConnectionError``, ...)
       propagates unchanged, never a ``tenacity.RetryError``.
+
+    Extended thinking:
+    - ``thinking={...}`` may be passed through ``kwargs`` and is forwarded to
+      the API, but its output is discarded: only ``text`` blocks (streaming:
+      text deltas) reach the caller. ``enable_cot`` has no effect.
 
     Structured output note:
     - This adapter does not support OpenAI-style ``response_format`` JSON mode.
@@ -254,9 +264,8 @@ async def anthropic_complete_if_cache(
         try:
             # Record usage before extracting content text: the API call is
             # already billed and response.usage is already populated at this
-            # point, but content[0].text raises if the first content block
-            # isn't a text block (or content is empty) -- that must not cost
-            # the tracker a real, billed call.
+            # point, but extraction raises when no content block is a text
+            # block -- that must not cost the tracker a real, billed call.
             if token_tracker and getattr(response, "usage", None):
                 usage = response.usage
                 prompt_tokens = sum(
@@ -291,27 +300,36 @@ async def anthropic_complete_if_cache(
             stop_reason = getattr(response, "stop_reason", None)
             if content is None:
                 if stop_reason == "max_tokens":
-                    # Deterministic for this prompt/budget: a thinking model
-                    # can spend the whole output budget on the reasoning
-                    # trace and never reach a text block. Non-retryable --
-                    # matching the OpenAI/Gemini bindings -- so this fails
-                    # after one request instead of buying two more
-                    # full-budget generations plus backoff for a result that
-                    # will be identically empty.
+                    # A thinking model can spend the whole output budget on
+                    # the reasoning trace and never reach a text block. Raise
+                    # the shared EmptyTruncatedResponseError, as the OpenAI
+                    # and Gemini bindings do, so the message names the knob
+                    # to turn. Nothing retries a 200 response here (the SDK
+                    # is the only retry layer), and the same prompt and
+                    # budget would fail identically anyway.
+                    block_types = [
+                        getattr(block, "type", None) for block in response.content
+                    ]
                     thinking_len = sum(
                         len(getattr(block, "thinking", "") or "")
                         for block in response.content
                     )
+                    usage = getattr(response, "usage", None)
                     diagnostics = format_response_diagnostics(
                         stop_reason=stop_reason,
-                        content_block_types=[
-                            getattr(block, "type", None) for block in response.content
-                        ],
+                        output_tokens=getattr(usage, "output_tokens", None),
+                        content_block_types=block_types,
                         thinking_len=thinking_len,
                     )
+                    # Judged by block type, not thinking_len: a
+                    # redacted_thinking block has no readable length but
+                    # still spent budget on reasoning.
                     hint = empty_length_truncated_hint(
-                        "consider raising max_tokens or disabling thinking mode",
-                        reasoning_consumed_budget=bool(thinking_len),
+                        "consider raising max_tokens or lowering "
+                        "thinking.budget_tokens",
+                        reasoning_consumed_budget=any(
+                            t in ("thinking", "redacted_thinking") for t in block_types
+                        ),
                     )
                     message = f"Anthropic API returned no text content block ({diagnostics}): {hint}"
                     logger.error(message)
