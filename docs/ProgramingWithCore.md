@@ -1567,6 +1567,13 @@ merged weight = max(all input weights, distinct merged real source IDs)
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
 
+When `insert_custom_kg` writes a relation that already exists, the same rule
+applies to the stored edge and the custom one:
+
+```text
+weight = max(custom weight, stored weight, distinct merged real source IDs)
+```
+
 ### Chunk tracking across a rename or merge
 
 A rename and a merge do not drop chunk tracking, they migrate it: the row moves
@@ -1661,6 +1668,14 @@ custom_kg = {
 rag.insert_custom_kg(custom_kg)
 ```
 
+Writing an entity or relation that already exists replaces its `description`,
+`entity_type` and `keywords` with the custom values but **merges** its
+provenance: the custom chunk is added to the chunk tracking rows
+(`entity_chunks` / `relation_chunks`), to `source_id` and to `file_path`, and
+an existing relationship endpoint gains the relationship's chunk, as a document
+merge does. Deleting a document that contributed to the object therefore keeps
+it, attributed to the custom chunk.
+
 * Other Entity and Relation Operations
   - **create_entity**: Creates a new entity with specified attributes
   - **edit_entity**: Updates an existing entity's attributes or renames it
@@ -1745,8 +1760,9 @@ deletion is always the recovery step:
 
 #### Concurrent admin writes
 
-On a graph storage that declares `requires_single_writer` — `NetworkXStorage`,
-the only one — every public admin graph writer (`acreate_entity`,
+On a graph storage that declares `requires_single_writer` (`NetworkXStorage`,
+the only one), or when chunk tracking sits on a KV storage that buffers writes
+per process (`OpenSearchKVStorage`, the only one), every public admin graph writer (`acreate_entity`,
 `acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
 `adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
 every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
@@ -1973,9 +1989,10 @@ What remains, and why it is tolerated:
 Serializing admin writers would not remove any of these: they are what a crash
 can leave behind, and the same residue is reachable with no concurrency at all.
 Concurrency is handled separately and per storage: when the graph backend
-declares `requires_single_writer` (`NetworkXStorage`, the only one), public admin
+declares `requires_single_writer` (`NetworkXStorage`, the only one), or chunk
+tracking sits on `OpenSearchKVStorage`, public admin
 graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
-lock plus the pipeline `busy` reservation. Other graph backends do not take that
+lock plus the pipeline `busy` reservation. Other backend combinations do not take that
 gate and rely on the per-entity keyed locks. See
 [Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
 and recovery behavior.

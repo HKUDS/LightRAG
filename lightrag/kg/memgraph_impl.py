@@ -844,6 +844,109 @@ class MemgraphStorage(BaseGraphStorage):
             )
             raise
 
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """Fetch several nodes in one UNWIND query.
+
+        Same result per id as :meth:`get_node` (the workspace label removed
+        from ``labels``, the first node kept on a duplicate); a missing id is
+        left out.
+        """
+        if not node_ids:
+            return {}
+        if self._driver is None:
+            raise RuntimeError(
+                "Memgraph driver is not initialized. Call 'await initialize()' first."
+            )
+        workspace_label = self._get_workspace_label()
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                query = f"""
+                UNWIND $ids AS id
+                MATCH (n:`{workspace_label}` {{entity_id: id}})
+                RETURN id AS entity_id, n
+                """
+                result = await session.run(query, ids=list(dict.fromkeys(node_ids)))
+                records = [record async for record in result]
+                await result.consume()
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error batch-getting nodes: {str(e)}")
+            raise
+        nodes: dict[str, dict] = {}
+        for record in records:
+            entity_id = record["entity_id"]
+            if entity_id in nodes:
+                logger.warning(
+                    f"[{self.workspace}] Multiple nodes found with label "
+                    f"'{entity_id}'. Using first node."
+                )
+                continue
+            node_dict = dict(record["n"])
+            if "labels" in node_dict:
+                node_dict["labels"] = [
+                    label for label in node_dict["labels"] if label != workspace_label
+                ]
+            nodes[entity_id] = node_dict
+        return nodes
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Fetch several edges in one UNWIND query.
+
+        Same result per pair as :meth:`get_edge`: keyed by the pair as
+        requested, direction-independent, the first edge kept on a duplicate,
+        and missing core properties filled with the same defaults. An absent
+        edge is left out.
+        """
+        if not pairs:
+            return {}
+        if self._driver is None:
+            raise RuntimeError(
+                "Memgraph driver is not initialized. Call 'await initialize()' first."
+            )
+        workspace_label = self._get_workspace_label()
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                query = f"""
+                UNWIND $pairs AS pair
+                MATCH (start:`{workspace_label}` {{entity_id: pair.src}})-[r]-(end:`{workspace_label}` {{entity_id: pair.tgt}})
+                RETURN pair.src AS src, pair.tgt AS tgt, properties(r) AS edge_properties
+                """
+                result = await session.run(
+                    query,
+                    pairs=[{"src": p["src"], "tgt": p["tgt"]} for p in pairs],
+                )
+                records = [record async for record in result]
+                await result.consume()
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error batch-getting edges: {str(e)}")
+            raise
+        edges: dict[tuple[str, str], dict] = {}
+        for record in records:
+            key = (record["src"], record["tgt"])
+            if key in edges:
+                continue
+            edge_result = dict(record["edge_properties"])
+            for prop, default_value in {
+                "weight": 1.0,
+                "source_id": None,
+                "description": None,
+                "keywords": None,
+            }.items():
+                if prop not in edge_result:
+                    edge_result[prop] = default_value
+                    logger.warning(
+                        f"[{self.workspace}] Edge between {key[0]} and {key[1]} "
+                        f"is missing property: {prop}. Using default value: "
+                        f"{default_value}"
+                    )
+            edges[key] = edge_result
+        return edges
+
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
     ) -> None:
