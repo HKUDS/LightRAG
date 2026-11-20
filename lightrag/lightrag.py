@@ -158,6 +158,7 @@ from lightrag.operate import (
     kg_query,
     merge_nodes_and_edges,
     naive_query,
+    normalize_keyword_extraction_json_mode,
     rebuild_knowledge_from_chunks,
 )
 from lightrag.utils_pipeline import (
@@ -1492,6 +1493,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     no setting moves it. See docs/design/ConfigurationStorageContract.md.
     """
 
+    keyword_extraction_json_mode: str = field(
+        default_factory=lambda: os.getenv("KEYWORD_EXTRACTION_JSON_MODE") or "auto"
+    )
+    """``response_format`` policy for query keyword extraction: ``auto``, ``json_object``
+    or ``none``.
+
+    - ``auto`` (default): ask for ``response_format={"type": "json_object"}`` first, and
+      retry the same prompt once *without* it, but only when the provider rejects that
+      field itself. This keeps the API-enforced JSON constraint everywhere it works and
+      confines the fallback to servers that cannot accept it (LM Studio, for example,
+      allows only ``json_schema``/``text`` and answers HTTP 400).
+    - ``json_object``: always send the constraint. Pick this for a provider known to
+      accept it when you also want failures to be loud rather than silently retried.
+    - ``none``: never send it, for a provider known to reject it. The keyword parser
+      tolerates fenced and repaired JSON, but it cannot turn genuinely free-form text
+      into keywords, so expect empty results from models that would have honored the
+      constraint.
+
+    Default: ``auto``. Set ``KEYWORD_EXTRACTION_JSON_MODE=auto|json_object|none`` in
+    .env.
+
+    Declared at the end, away from ``entity_extraction_use_json``: field order is
+    public API. See ``tests/test_dataclass_positional_compatibility.py``."""
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1837,6 +1862,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status_storage,
                 self.config_storage or default_configuration_storage(self.kv_storage),
             ),
+        )
+
+        # Fail fast on a mistyped policy instead of at the first query, and store
+        # the canonical spelling so a constructor argument such as "AUTO" works.
+        self.keyword_extraction_json_mode = normalize_keyword_extraction_json_mode(
+            self.keyword_extraction_json_mode
         )
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
