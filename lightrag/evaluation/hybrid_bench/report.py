@@ -44,6 +44,20 @@ LATENCY_SURFACE_NOTE = (
     "the network hop. Keywords are injected to exclude the keyword LLM."
 )
 
+DUPLICATE_ALIAS_NOTE = (
+    "content-hash dedup demoted these subset ids to dup pointer rows; each "
+    "was verified against its PROCESSED original by content hash and shares "
+    "the original's chunk attribution (both twins score on the shared chunk)"
+)
+
+MODERATION_FALLBACK_NOTE = (
+    "provider output content moderation (data_inspection_failed) rejected "
+    "extraction permanently; these documents ingested chunks-only after the "
+    "sanctioned recovery rounds — chunk arm intact, NO entities extracted "
+    "(honest entity-arm gap: queries positive only on them can derive empty "
+    "entity truth)"
+)
+
 
 def _fmt_ci(entry: dict) -> str:
     lo, hi = entry["ci95"]
@@ -144,6 +158,20 @@ def render_markdown(results: dict) -> str:
             f"via the sanctioned manual retry path; recovered "
             f"{dataset['ingest']['recovered_doc_ids']}; persistently failed "
             f"{dataset['ingest']['persistently_failed_doc_ids']}.",
+        ]
+        if dataset["ingest"].get("duplicate_aliased_doc_ids"):
+            lines.append(
+                f"Duplicate-aliased twins: "
+                f"{dataset['ingest']['duplicate_aliased_doc_ids']} "
+                f"({DUPLICATE_ALIAS_NOTE})."
+            )
+        if dataset["ingest"].get("moderation_fallback_doc_ids"):
+            lines.append(
+                f"Moderation chunks-only fallback: "
+                f"{dataset['ingest']['moderation_fallback_doc_ids']} "
+                f"({MODERATION_FALLBACK_NOTE})."
+            )
+        lines += [
             "",
             "### Chunk and entity metrics",
             "",

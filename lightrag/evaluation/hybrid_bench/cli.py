@@ -482,6 +482,8 @@ async def run_dataset(
             "recovery_rounds_used": ingest.recovery_rounds_used,
             "recovered_doc_ids": ingest.recovered_doc_ids,
             "persistently_failed_doc_ids": ingest.persistently_failed_doc_ids,
+            "duplicate_aliased_doc_ids": ingest.duplicate_aliased_doc_ids,
+            "moderation_fallback_doc_ids": ingest.moderation_fallback_doc_ids,
             "resumed": ingest.resumed,
         }
         truth = await derive_entity_truth(

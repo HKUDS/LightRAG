@@ -85,3 +85,38 @@ def test_non_default_top_k_leaves_no_hardcoded_ten():
     assert "recall@10" not in markdown
     assert "ndcg@10" not in markdown
     assert "hit@10" not in markdown
+
+
+@pytest.mark.parametrize(
+    ("field", "doc_ids", "heading", "contract_token"),
+    [
+        (
+            "duplicate_aliased_doc_ids",
+            ["MED-2123"],
+            "Duplicate-aliased twins: ['MED-2123']",
+            "content-hash",
+        ),
+        (
+            "moderation_fallback_doc_ids",
+            ["690#119"],
+            "Moderation chunks-only fallback: ['690#119']",
+            "data_inspection_failed",
+        ),
+    ],
+    ids=["duplicate-twins", "moderation-fallback"],
+)
+def test_ingest_annotations_carry_ids_and_contract_tokens(
+    field, doc_ids, heading, contract_token
+):
+    results = _results(10)
+    results["datasets"][0]["ingest"][field] = doc_ids
+    markdown = render_markdown(results)
+    assert heading in markdown
+    # The annotation must name the mechanism / failure class it reports.
+    assert contract_token in markdown
+
+
+def test_no_annotation_lines_without_demotions():
+    markdown = render_markdown(_results(10))
+    assert "Duplicate-aliased twins" not in markdown
+    assert "Moderation chunks-only fallback" not in markdown

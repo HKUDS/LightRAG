@@ -150,7 +150,20 @@ the recovered/still-failed split loudly, and the report's ingest section
 annotates `recovery_rounds_used`, `recovered_doc_ids` and
 `persistently_failed_doc_ids`. Any document still FAILED after the rounds are
 exhausted raises `RuntimeError` — the fail-loud contract is unchanged, and
-recovery never swallows a failure.
+recovery never swallows a failure. ONE permanent failure class is excepted,
+with proof: provider output content moderation (Aliyun MaaS
+`BadRequestError 400` with code `data_inspection_failed`, "Output data may
+contain inappropriate content"). For flagged passages every faithful
+extraction output is rejected deterministically, so the rounds cannot
+recover it; such a document ingests CHUNKS-ONLY through
+`ainsert_custom_kg` (`full_doc_id=corpus_id`, no LLM call — the embedding
+API accepts the text) and the report annotates `moderation_fallback_doc_ids`
+with the honest entity-arm gap: the chunk arm is intact, NO entities are
+extracted, and queries positive only on that document can derive empty
+entity truth (excluded from hit@k, listed as zero-truth). Its doc_status row
+stays FAILED (truthful — extraction failed; never direct state surgery), so
+every resume re-runs the bounded rounds and re-applies the idempotent
+fallback. Every OTHER permanent failure class still raises.
 
 **Resumable runs (OOM / interruption contract).** Without `--workspace`
 every run mints a fresh `hbench_<dataset>_<uuid8>` workspace and starts from
@@ -163,7 +176,9 @@ instead of repeating work:
   auto-resumes interrupted PENDING/PARSING/ANALYZING/PROCESSING rows. The
   harness never edits doc_status state directly.
 - FAILED documents re-enter only through the sanctioned recovery rounds
-  above (one attempt per document per round, same parameters).
+  above (one attempt per document per round, same parameters). A
+  moderation-fallback document stays FAILED, so each resume re-runs its
+  bounded rounds and re-applies the idempotent chunks-only fallback.
 - A chunks-only document is re-ingested unless its chunk row AND its vector
   both exist — the two stores `ainsert_custom_kg` writes for a chunks-only
   payload. A kill between the two upserts therefore heals on resume;
@@ -203,6 +218,25 @@ chunk's rank position. A query positive on any alias counts as retrieved.
 Extraction-path chunk ids are doc-scoped (`hash("doc_id:content")`), so
 extracted documents never share chunk ids with each other or with the
 remainder.
+
+**Content-duplicate twins in the extraction subset.** The product pipeline
+dedups by content hash unconditionally (within the batch AND against
+existing rows): when two subset passages have identical text, the second
+twin is demoted to a `dup-<hash>` FAILED pointer row naming the original
+(`Status: batch_duplicate` on first ingest, the original's live status on a
+resume re-enqueue) and the twin id itself gets NO doc_status row. The
+harness accepts that demotion as EXPECTED, but only with the full proof
+chain: a content-hash pointer row whose `file_path` is the twin's corpus id
+names an original that is PROCESSED, AND the product's content-hash lookup
+(`get_doc_by_content_hash`) confirms that same original holds the twin's
+sanitized text hash. The twin's corpus id then joins the original's chunk
+attribution as an alias (the same list-valued map as chunks-only duplicates),
+so both qrels-positive twins score on the shared chunk, and the report
+annotates `duplicate_aliased_doc_ids`. Any other missing status — no pointer,
+a stale pointer whose claimed content no longer matches, or an original that
+is not PROCESSED — is a silent skip and still raises `RuntimeError`. Each
+resume re-enqueues the twins (dedup-only, no LLM or chunk writes) and appends
+fresh pointer rows; the alias map rebuilds identically.
 
 **Derived entity truth.** An entity is relevant to a query iff the
 `full_doc_id` set of its source chunks intersects the query's qrels-positive
@@ -373,11 +407,21 @@ full run), and run under the overlay command above.
   cut. Direction-harmless (it can only undercount, and only for datasets
   with duplicate text at the cutoff); the pre-fix map lost an alias
   systematically instead.
-- Two identical-text passages inside ONE extraction batch are content-deduped
-  by the product pipeline: the second document gets no doc_status row and the
-  harness fails loud ("has no status"). Such a corpus must be normalized
-  (deduplicated) before running; duplicate pairs in the chunks-only remainder
-  are fully supported via the alias map.
+- Content-duplicate twins in the extraction subset are accepted with proof
+  and aliased to their PROCESSED original (see the twin contract above);
+  unproven missing statuses still fail loud. Residues: each resume appends
+  fresh `dup-<hash>` pointer rows for the same twins (product-managed,
+  cheap, never subset ids, so they never enter the recovery verdict); a
+  twin whose original is FAILED (e.g. moderation) is NOT aliased — the
+  proof chain requires a PROCESSED holder — and fails loud.
+- A moderation-fallback document keeps two attributed copies of its chunk:
+  the failed attempt's doc-scoped chunk (stage 1 writes chunks before
+  extraction, and they survive the failure) and the fallback's content-hash
+  chunk. Both alias to the corpus id and occupy consecutive ranks like any
+  duplicate-content alias (same direction-harmless cutoff residue). Its
+  doc_status row stays FAILED, so every resume pays the bounded recovery
+  rounds again before re-applying the idempotent fallback; the entity-arm
+  gap for that document is permanent for the workspace and annotated.
 - Cleanup retains shared model/dim vector tables even when empty: leftover
   empty tables are harmless, and dropping them on an emptiness check would
   race a concurrent run's commits.

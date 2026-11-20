@@ -101,6 +101,8 @@ async def test_file_backend_mechanics_smoke(tmp_path):
     assert dataset["ingest"]["recovery_rounds_used"] == 0
     assert dataset["ingest"]["recovered_doc_ids"] == []
     assert dataset["ingest"]["persistently_failed_doc_ids"] == []
+    assert dataset["ingest"]["duplicate_aliased_doc_ids"] == []
+    assert dataset["ingest"]["moderation_fallback_doc_ids"] == []
     # At least one extraction call per passage (gleaning may add more);
     # keywords were injected, answers came from the answer-latency protocol.
     assert dataset["fake_llm_calls"]["extraction"] >= 4

@@ -47,6 +47,23 @@ Rules:
   attempt per FAILED document, with the SAME parameters. 0 disables
   recovery. Any document still FAILED after the rounds raises; recovery
   never swallows a failure.
+- Content-duplicate twins: the product pipeline demotes a subset document
+  whose content hash already has a holder to a ``dup-<hash>`` FAILED
+  pointer row, leaving the twin id without a status row. A twin is
+  accepted ONLY when a content-hash pointer row names a PROCESSED
+  original AND the product's content-hash lookup proves the twin's text
+  hash is held by that same original; the twin's corpus id then joins the
+  original's chunk attribution as an alias (``duplicate_aliased_doc_ids``
+  in the report). Any other missing status is a silent skip and raises.
+- Provider content moderation: a document still FAILED after the recovery
+  rounds whose error carries the provider's output-inspection code
+  ``data_inspection_failed`` (Aliyun MaaS BadRequestError 400) ingests
+  chunks-only through ``ainsert_custom_kg`` instead of aborting
+  (``moderation_fallback_doc_ids`` in the report). Its doc_status row
+  stays FAILED (truthful: extraction failed; no state surgery), so every
+  resume re-runs the bounded rounds and re-applies the idempotent
+  fallback. Entities are NOT extracted for it: an honest entity-arm gap.
+  Every OTHER permanent failure class still raises.
 - PG scratch cleanup deletes ONLY the run's workspace rows and retains the
   shared model/dim vector tables: dropping them on an emptiness check races
   a concurrent run's commits. A workspace override (POSTGRES_WORKSPACE or
@@ -84,6 +101,7 @@ from lightrag.utils import (
     logger,
     sanitize_text_for_encoding,
 )
+from lightrag.utils_pipeline import compute_text_content_hash
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +164,12 @@ class IngestResult:
     recovery_rounds_used: int = 0
     recovered_doc_ids: list[str] = field(default_factory=list)
     persistently_failed_doc_ids: list[str] = field(default_factory=list)
+    # Subset ids demoted by the product's content-hash dedup and aliased to
+    # their PROCESSED original's chunk attribution (verified duplicates).
+    duplicate_aliased_doc_ids: list[str] = field(default_factory=list)
+    # Subset ids whose extraction the provider's output moderation rejected
+    # permanently; ingested chunks-only, NO entities (honest entity-arm gap).
+    moderation_fallback_doc_ids: list[str] = field(default_factory=list)
     resumed: bool = False
 
     @property
@@ -336,6 +360,82 @@ def _failed_subset_ids(
     ]
 
 
+# Aliyun MaaS output content inspection: BadRequestError 400 with this code
+# rejects extraction output deterministically for flagged content. The code
+# survives the pipeline's chunk/batch error prefixes into doc_status
+# error_msg; tenacity treats 400 as permanent, so only the sanctioned
+# recovery rounds retry it — and for flagged content they cannot succeed.
+_PROVIDER_MODERATION_CODE = "data_inspection_failed"
+
+
+def _is_provider_moderation_failure(error_msg: str | None) -> bool:
+    return bool(error_msg) and _PROVIDER_MODERATION_CODE in error_msg
+
+
+async def _ingest_chunks_only_doc(
+    rag: LightRAG, dataset: BenchDataset, cid: str
+) -> str:
+    """One passage through ``ainsert_custom_kg`` (no LLM call); returns its
+    content-hash chunk id. Shared by the chunks-only remainder and the
+    moderation fallback so both write the identical payload shape."""
+    await rag.ainsert_custom_kg(
+        {
+            "chunks": [
+                {
+                    "content": dataset.corpus[cid],
+                    "source_id": cid,
+                    "file_path": cid,
+                    "chunk_order_index": 0,
+                }
+            ],
+            "entities": [],
+            "relationships": [],
+        },
+        full_doc_id=cid,
+    )
+    return compute_mdhash_id(
+        sanitize_text_for_encoding(dataset.corpus[cid]), prefix="chunk-"
+    )
+
+
+async def _duplicate_twin_original(
+    rag: LightRAG,
+    dataset: BenchDataset,
+    cid: str,
+    statuses: dict[str, DocProcessingStatus],
+) -> str | None:
+    """The PROCESSED original for a content-dedup-demoted twin, else None.
+
+    All three proofs are required: the product's content-hash lookup finds
+    a holder of the twin's sanitized text hash; that holder is PROCESSED in
+    the fetched snapshot; and a ``dup-<hash>`` FAILED pointer row
+    (``is_duplicate`` + ``duplicate_kind=content_hash``) with the twin's
+    corpus id as file_path names that same holder. None means the missing
+    status is NOT a proven duplicate and the caller must fail loud.
+    """
+    content_hash = compute_text_content_hash(
+        sanitize_text_for_encoding(dataset.corpus[cid])
+    )
+    match = await rag.doc_status.get_doc_by_content_hash(
+        content_hash, exclude_doc_id=cid
+    )
+    if match is None:
+        return None
+    original = match[0]
+    winner = statuses.get(original)
+    if winner is None or winner.status != DocStatus.PROCESSED:
+        return None
+    pointer_found = any(
+        status.status == DocStatus.FAILED
+        and status.file_path == cid
+        and status.metadata.get("is_duplicate")
+        and status.metadata.get("duplicate_kind") == "content_hash"
+        and status.metadata.get("original_doc_id") == original
+        for status in statuses.values()
+    )
+    return original if pointer_found else None
+
+
 def _progress_path(config: BenchConfig) -> Path:
     return Path(config.working_dir) / config.workspace / "ingest_progress.json"
 
@@ -424,8 +524,11 @@ async def ingest_dataset(
     chunks-only document re-ingests unless its chunk row AND vector both
     exist. A fully-ingested dataset returns immediately (``resumed=True``).
     FAILED extraction documents get at most ``config.ingest_recovery_rounds``
-    sanctioned retry rounds before the final fail-loud check; the check
-    itself is unchanged and raises on any document still FAILED.
+    sanctioned retry rounds before the final fail-loud check. Two demotion
+    classes are accepted with proof and annotated instead of raising:
+    content-duplicate twins (aliased to their PROCESSED original's chunks)
+    and provider output-moderation failures (ingested chunks-only, no
+    entities). Every other missing status or FAILED document still raises.
     """
     subset = extraction_subset(dataset, config.extraction_cap)
     subset_set = set(subset)
@@ -488,25 +591,15 @@ async def ingest_dataset(
             )
         phase["name"] = "chunks-only"
         for cid in pending_remainder:
-            await rag.ainsert_custom_kg(
-                {
-                    "chunks": [
-                        {
-                            "content": dataset.corpus[cid],
-                            "source_id": cid,
-                            "file_path": cid,
-                            "chunk_order_index": 0,
-                        }
-                    ],
-                    "entities": [],
-                    "relationships": [],
-                },
-                full_doc_id=cid,
-            )
+            # Remainder aliases are pre-recorded above for the whole remainder;
+            # this only writes the stores for the not-yet-complete documents.
+            await _ingest_chunks_only_doc(rag, dataset, cid)
 
         recovery_rounds_used = 0
         recovered_doc_ids: list[str] = []
         persistently_failed_doc_ids: list[str] = []
+        duplicate_aliased_doc_ids: list[str] = []
+        moderation_fallback_doc_ids: list[str] = []
         if subset:
             statuses = await rag.doc_status.get_docs_by_statuses(
                 [DocStatus.PROCESSED, DocStatus.FAILED], strict=True
@@ -540,12 +633,46 @@ async def ingest_dataset(
                     still_failed,
                 )
                 failed = still_failed
-            persistently_failed_doc_ids = failed
+            for cid in failed:
+                if _is_provider_moderation_failure(statuses[cid].error_msg):
+                    chunk_id = await _ingest_chunks_only_doc(rag, dataset, cid)
+                    _record_chunk_alias(chunk_doc_map, chunk_id, cid)
+                    moderation_fallback_doc_ids.append(cid)
+                    logger.warning(
+                        "[hybrid-bench] provider content-moderation fallback: "
+                        "%s ingested chunks-only after %d recovery round(s); "
+                        "NO entities extracted (entity-arm gap annotated in "
+                        "the report); doc_status stays FAILED: %s",
+                        cid,
+                        recovery_rounds_used,
+                        statuses[cid].error_msg,
+                    )
+            persistently_failed_doc_ids = [
+                cid for cid in failed if cid not in moderation_fallback_doc_ids
+            ]
             for cid in subset:
                 status = statuses.get(cid)
                 if status is None:
-                    raise RuntimeError(f"ingested document {cid!r} has no status")
-                if status.status == DocStatus.FAILED:
+                    original = await _duplicate_twin_original(
+                        rag, dataset, cid, statuses
+                    )
+                    if original is None:
+                        raise RuntimeError(f"ingested document {cid!r} has no status")
+                    duplicate_aliased_doc_ids.append(cid)
+                    logger.info(
+                        "[hybrid-bench] content-duplicate twin %s aliased to "
+                        "PROCESSED original %s (batch_duplicate demotion "
+                        "accepted; chunk attribution shared)",
+                        cid,
+                        original,
+                    )
+                    for chunk_id in statuses[original].chunks_list or []:
+                        _record_chunk_alias(chunk_doc_map, chunk_id, cid)
+                    continue
+                if (
+                    status.status == DocStatus.FAILED
+                    and cid not in moderation_fallback_doc_ids
+                ):
                     detail = f"document {cid!r} failed ingestion: {status.error_msg}"
                     if recovery_rounds_used:
                         detail += (
@@ -554,6 +681,9 @@ async def ingest_dataset(
                             f"persistently failed: {persistently_failed_doc_ids})"
                         )
                     raise RuntimeError(detail)
+                # PROCESSED documents and moderation-fallback documents alike:
+                # the fallback doc's failed-attempt chunks stay in the stores
+                # (stage 1 writes them before extraction) and keep attribution.
                 for chunk_id in status.chunks_list or []:
                     _record_chunk_alias(chunk_doc_map, chunk_id, cid)
         phase["name"] = "complete"
@@ -564,6 +694,8 @@ async def ingest_dataset(
             recovery_rounds_used=recovery_rounds_used,
             recovered_doc_ids=recovered_doc_ids,
             persistently_failed_doc_ids=persistently_failed_doc_ids,
+            duplicate_aliased_doc_ids=duplicate_aliased_doc_ids,
+            moderation_fallback_doc_ids=moderation_fallback_doc_ids,
             resumed=resumed,
         )
     finally:
