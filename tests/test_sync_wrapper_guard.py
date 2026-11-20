@@ -194,3 +194,68 @@ def test_run_sync_runs_when_owning_loop_is_closed():
     finally:
         loop.close()
         asyncio.set_event_loop(None)
+
+
+class _StreamingRAG:
+    """Stand-in exposing only what ``LightRAG.query`` touches."""
+
+    _owning_loop = None
+
+    def __init__(self, response):
+        self._response = response
+        self.calls = []
+
+    async def aquery(self, query, param, system_prompt):
+        self.calls.append((query, param.stream, system_prompt))
+        return self._response
+
+
+@pytest.mark.offline
+def test_query_stream_returns_the_async_iterator_aquery_returns():
+    """``query(stream=True)`` hands back aquery's async iterator unchanged.
+
+    The sync wrapper has no synchronous stream (see the ``query`` docstring):
+    the iterator is not a plain ``Iterator`` and is read with ``async for`` on
+    the loop the wrapper drove.
+    """
+    from collections.abc import AsyncIterator, Iterator
+
+    from lightrag import LightRAG, QueryParam
+
+    async def _chunks():
+        yield "Alpha"
+        yield "Beta"
+
+    stream = _chunks()
+    rag = _StreamingRAG(stream)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = LightRAG.query(rag, "question", QueryParam(stream=True))
+
+        assert result is stream
+        assert rag.calls == [("question", True, None)]
+        assert isinstance(result, AsyncIterator)
+        assert not isinstance(result, Iterator)
+
+        async def _collect():
+            return "".join([chunk async for chunk in result])
+
+        assert loop.run_until_complete(_collect()) == "AlphaBeta"
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+@pytest.mark.offline
+def test_query_return_annotation_names_the_async_iterator():
+    """The annotation matches the runtime contract pinned above."""
+    import typing
+    from collections.abc import AsyncIterator as AbcAsyncIterator
+
+    from lightrag import LightRAG
+
+    returned = typing.get_type_hints(LightRAG.query)["return"]
+    origins = {typing.get_origin(arg) or arg for arg in typing.get_args(returned)}
+
+    assert origins == {str, AbcAsyncIterator}

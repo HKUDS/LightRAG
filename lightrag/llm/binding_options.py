@@ -11,16 +11,16 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, List, Literal, Union, get_args, get_origin
 
-from lightrag.utils import get_env_value
+from lightrag.utils import ENV_BOOL_FALSE_WORDS, ENV_BOOL_TRUE_WORDS, get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
 
-# Spellings accepted for boolean-valued options. Shared so the plain-bool and
-# the bool-or-literal parsers below cannot drift apart.
-_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
-# Only consulted by the bool-or-literal parser: plain bools treat "anything not
-# true" as false, whereas an option that also accepts named values has to tell
-# a deliberate false from a typo (see _make_bool_or_literal_parser).
-_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
+# Spellings accepted for boolean-valued options, shared with get_env_value so
+# the env, CLI and bool-or-literal parsers cannot drift apart.
+_BOOL_TRUE_WORDS = ENV_BOOL_TRUE_WORDS
+_BOOL_FALSE_WORDS = ENV_BOOL_FALSE_WORDS
+
+# Marks "the env value was unusable" for paths that must leave a field unset.
+_UNSET = object()
 
 
 def _resolve_optional_type(field_type: Any) -> Any:
@@ -254,12 +254,20 @@ class BindingOptions:
             # Handle boolean types specially to avoid argparse bool() constructor issues
             elif arg_item["type"] is bool:
 
-                def bool_parser(value):
-                    """Custom boolean parser that handles string representations correctly"""
+                def bool_parser(value, _env_name=arg_item["env_name"]):
+                    """Parse a CLI boolean; an unrecognized spelling is an error."""
                     if isinstance(value, bool):
                         return value
                     if isinstance(value, str):
-                        return value.lower() in _BOOL_TRUE_WORDS
+                        text = value.strip().lower()
+                        if text in _BOOL_TRUE_WORDS:
+                            return True
+                        if text in _BOOL_FALSE_WORDS:
+                            return False
+                        raise argparse.ArgumentTypeError(
+                            f"{value!r} is not a valid boolean for "
+                            f"{_env_name}: expected true/false"
+                        )
                     return bool(value)
 
                 # Get environment variable with proper type conversion
@@ -480,7 +488,12 @@ class BindingOptions:
 
             try:
                 if field_type is bool:
-                    base[field_name] = env_raw.lower() in _BOOL_TRUE_WORDS
+                    # get_env_value warns on a typo; leave the field unset
+                    # rather than silently reading it as False.
+                    parsed = get_env_value(role_env, _UNSET, bool)
+                    if parsed is _UNSET:
+                        continue
+                    base[field_name] = parsed
                 elif field_type in (list, List[str]):
                     base[field_name] = json.loads(env_raw)
                 elif field_type is dict:
@@ -688,7 +701,7 @@ class GeminiLLMOptions(BindingOptions):
         "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
         "seed": "Random seed for reproducible generation (leave empty for random)",
         "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
-        "safety_settings": "JSON object with Gemini safety settings overrides",
+        "safety_settings": 'Safety settings as a JSON object mapping category to threshold (e.g., \'{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}\')',
     }
 
 
@@ -748,6 +761,49 @@ class OpenAILLMOptions(BindingOptions):
         "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
         "max_tokens": "Maximum number of tokens to generate (deprecated, use max_completion_tokens instead)",
         "extra_body": 'Extra body parameters for OpenRouter of vLLM (JSON dict, e.g., \'"reasoning": {"reasoning": {"enabled": false}}\')',
+    }
+
+
+# =============================================================================
+# Binding Options for OpenAI Responses API
+# =============================================================================
+#
+# Deliberately a separate namespace from ``openai_llm``: the Responses API
+# spells several parameters differently (``max_output_tokens`` rather than
+# ``max_completion_tokens``, a nested ``reasoning`` object rather than a flat
+# ``reasoning_effort``) and does not accept others at all. Sharing the
+# ``OPENAI_LLM_*`` namespace would let Chat Completions settings leak into the
+# Responses driver, where they are either wrong or rejected.
+# =============================================================================
+@dataclass
+class OpenAIResponsesLLMOptions(BindingOptions):
+    """Options for the OpenAI Responses API (``/v1/responses``)."""
+
+    # mandatory name of binding
+    _binding_name: ClassVar[str] = "openai_responses_llm"
+
+    # Sampling and generation parameters
+    max_output_tokens: int = None  # Maximum number of output tokens to generate
+    reasoning_effort: str = ""  # Reasoning effort level (minimal, low, medium, high)
+    reasoning_summary: str = ""  # Reasoning summary detail (auto, concise, detailed)
+    service_tier: str = ""  # Service tier for API usage
+    store: bool = False  # Server-side retention; the driver sends false unless set
+    temperature: float = DEFAULT_TEMPERATURE  # Controls randomness (0.0 to 2.0)
+    top_p: float = 1.0  # Nucleus sampling parameter (0.0 to 1.0)
+    truncation: str = ""  # Context-overflow strategy (auto, disabled)
+    extra_body: dict = None  # Extra body parameters for compatible gateways
+
+    # Help descriptions
+    _help: ClassVar[dict[str, str]] = {
+        "max_output_tokens": "Maximum number of output tokens to generate (optional, leave empty for model default)",
+        "reasoning_effort": "Reasoning effort for reasoning models (minimal, low, medium, high); sent as reasoning.effort",
+        "reasoning_summary": "Request reasoning summaries (auto, concise, detailed) so enable_cot calls can emit <think> content; sent as reasoning.summary. Leave empty for models without reasoning",
+        "service_tier": "Service tier for API usage (optional)",
+        "store": "Whether OpenAI retains the response server-side for later retrieval (default false; the API's own default is true)",
+        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
+        "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
+        "truncation": "Context-overflow strategy (auto, disabled)",
+        "extra_body": 'Extra body parameters for OpenAI-compatible gateways (JSON dict, e.g., \'{"foo": "bar"}\')',
     }
 
 

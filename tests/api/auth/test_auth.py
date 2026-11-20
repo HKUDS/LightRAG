@@ -12,6 +12,9 @@ from lightrag.tools.hash_password import main as hash_password_main
 from lightrag.utils import logger as lightrag_logger
 
 
+pytestmark = pytest.mark.offline
+
+
 def import_real_api_module(module_name: str):
     sys.modules.pop(module_name, None)
 
@@ -28,7 +31,7 @@ def auth_module(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="test-jwt-secret",
+        token_secret="test-jwt-secret-that-is-at-least-32-bytes",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -177,7 +180,7 @@ def test_invalid_auth_accounts_raises(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="test-jwt-secret",
+        token_secret="test-jwt-secret-that-is-at-least-32-bytes",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -197,7 +200,7 @@ def load_auth_handler(monkeypatch, auth_accounts: str):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="test-jwt-secret",
+        token_secret="test-jwt-secret-that-is-at-least-32-bytes",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -269,7 +272,7 @@ def test_initialize_config_allows_custom_token_secret_with_auth_accounts():
 
     secure_args = SimpleNamespace(
         auth_accounts="admin:admin_pass",
-        token_secret="custom-jwt-secret",
+        token_secret="custom-jwt-secret-that-is-at-least-32-bytes",
     )
 
     initialized = config.initialize_config(secure_args, force=True)
@@ -431,3 +434,34 @@ def test_hash_password_cli_outputs_auth_accounts_entry(capsys):
     assert hashed.startswith(BCRYPT_PASSWORD_PREFIX)
     raw_hash = hashed[len(BCRYPT_PASSWORD_PREFIX) :]
     assert bcrypt.checkpw("secret".encode("utf-8"), raw_hash.encode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("a" * 73, id="ascii-73-bytes"),
+        # 37 two-byte characters: 37 characters but 74 bytes in UTF-8.
+        pytest.param("é" * 37, id="utf8-74-bytes"),
+    ],
+)
+def test_hash_password_rejects_password_over_bcrypt_limit(password):
+    with pytest.raises(ValueError, match="at most 72"):
+        hash_password(password)
+
+
+def test_hash_password_accepts_password_at_bcrypt_limit():
+    password = "a" * 72
+    hashed = hash_password(password)
+
+    raw_hash = hashed[len(BCRYPT_PASSWORD_PREFIX) :]
+    assert bcrypt.checkpw(password.encode("utf-8"), raw_hash.encode("utf-8"))
+
+
+def test_hash_password_cli_reports_password_over_bcrypt_limit(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        hash_password_main(["--username", "admin", "a" * 73])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "password is 73 bytes in UTF-8; bcrypt accepts at most 72" in captured.err
