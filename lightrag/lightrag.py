@@ -5652,22 +5652,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     merged_edges: dict[tuple[str, str], dict[str, Any]] = {}
                     pairs = list(deduped_relationships)
                     if pairs:
-                        # Only a pair whose endpoints both exist can already
-                        # have an edge. Skipping the rest matters: a backend
-                        # without a native get_edges_batch (OpenSearch,
-                        # Memgraph) reads one edge per round trip, serially,
-                        # with every touched key lock held.
-                        candidate_pairs = [
-                            {"src": src, "tgt": tgt}
-                            for src, tgt in pairs
-                            if src in stored_nodes and tgt in stored_nodes
-                        ]
+                        # Every pair is read, in one batch call. Endpoint
+                        # absence is NOT proof of edge absence: data written
+                        # before both endpoints were materialized (MongoDB,
+                        # OpenSearch) can hold an edge whose endpoint has no
+                        # node, and skipping it would overwrite its weight and
+                        # source_id instead of merging them.
                         stored_edges = (
                             await self.chunk_entity_relation_graph.get_edges_batch(
-                                candidate_pairs
+                                [{"src": src, "tgt": tgt} for src, tgt in pairs]
                             )
-                            if candidate_pairs
-                            else {}
                         )
                         row_keys = [make_relation_chunk_key(*pair) for pair in pairs]
                         relation_rows = dict(

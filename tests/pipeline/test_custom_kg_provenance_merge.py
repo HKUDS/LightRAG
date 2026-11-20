@@ -249,9 +249,9 @@ async def test_unmapped_source_writes_no_tracking_row(rag):
 
 
 @pytest.mark.asyncio
-async def test_edges_are_read_only_between_stored_endpoints(rag, monkeypatch):
-    """A pair with a new endpoint cannot have an edge yet, so it is not read:
-    backends without a native get_edges_batch read one edge per round trip."""
+async def test_edges_are_read_in_one_batch_call(rag, monkeypatch):
+    """All pairs go through a single get_edges_batch, new ones included: the
+    lookup must stay one round trip however many relationships are imported."""
     await _insert_doc(rag)
     graph = rag.chunk_entity_relation_graph
     requested: list[list[dict]] = []
@@ -274,25 +274,34 @@ async def test_edges_are_read_only_between_stored_endpoints(rag, monkeypatch):
     )
     await rag.ainsert_custom_kg(custom_kg)
 
-    assert requested == [[{"src": "Bar", "tgt": "Foo"}]]
-    # The skipped pair is still written, as a new edge.
+    assert requested == [
+        [{"src": "Bar", "tgt": "Foo"}, {"src": "Foo", "tgt": "Newcomer"}]
+    ]
     assert (await graph.get_edge("Foo", "Newcomer"))["source_id"] == CURATED_CHUNK
 
 
 @pytest.mark.asyncio
-async def test_all_new_pairs_issue_no_edge_reads(rag, monkeypatch):
+async def test_edge_with_a_missing_endpoint_node_is_still_merged(rag, monkeypatch):
+    """Legacy MongoDB / OpenSearch data can hold an edge whose endpoint has no
+    node document. Endpoint absence is not proof of edge absence: the stored
+    weight and source_id must be merged, not overwritten."""
+    await _insert_doc(rag)
     graph = rag.chunk_entity_relation_graph
-    calls: list[list[dict]] = []
+    edge = await graph.get_edge("Foo", "Bar")
+    await graph.upsert_edge("Foo", "Bar", {**edge, "weight": 10.0})
+    original = graph.get_nodes_batch
 
-    async def _recording(pairs):
-        calls.append(list(pairs))
-        return {}
+    async def _bar_has_no_node(node_ids):
+        nodes = await original(node_ids)
+        nodes.pop("Bar", None)
+        return nodes
 
-    monkeypatch.setattr(graph, "get_edges_batch", _recording)
-    await rag.ainsert_custom_kg(_custom_kg())
+    monkeypatch.setattr(graph, "get_nodes_batch", _bar_has_no_node)
+    await rag.ainsert_custom_kg(_custom_kg(entities=False, weight=1.0))
 
-    assert calls == []
-    assert (await graph.get_edge("Foo", "Bar"))["source_id"] == CURATED_CHUNK
+    edge = await graph.get_edge("Foo", "Bar")
+    assert edge["weight"] == 10.0
+    assert _ids(edge["source_id"]) == [DOC_CHUNK, CURATED_CHUNK]
 
 
 @pytest.mark.asyncio
