@@ -18,6 +18,7 @@ The suite asserts the operator-visible loop is now closed:
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import numpy as np
@@ -1340,5 +1341,43 @@ async def test_audit_never_shares_an_ambiguous_relation_tracking_row(tmp_path):
         }
         row = await rag.full_relations.get_by_id("doc-collide-2")
         assert [list(p) for p in row["relation_pairs"]] == [sorted(second)]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delete_propagates_when_the_final_flush_fails(tmp_path):
+    """A cancellation must not be turned into a fail ``DeletionResult``.
+
+    The ``finally`` flush failing while ``CancelledError`` propagates used to
+    ``return`` a result from the ``finally`` block, which swallowed the
+    cancellation.
+    """
+    rag = await _build_rag(tmp_path, f"dcs-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest(rag)
+        original_insert_done = rag._insert_done
+        cancelled = False
+        flush_failures = 0
+
+        async def cancelled_delete(ids):
+            nonlocal cancelled
+            cancelled = True
+            raise asyncio.CancelledError()
+
+        async def insert_done_failing_after_cancel(*args, **kwargs):
+            # Earlier stages flush too; only the finally's flush must fail.
+            nonlocal flush_failures
+            if cancelled:
+                flush_failures += 1
+                raise RuntimeError("flush boom")
+            return await original_insert_done(*args, **kwargs)
+
+        rag.doc_status.delete = cancelled_delete
+        rag._insert_done = insert_done_failing_after_cancel
+
+        with pytest.raises(asyncio.CancelledError):
+            await rag.adelete_by_doc_id(doc_id)
+        assert flush_failures == 1
     finally:
         await rag.finalize_storages()
