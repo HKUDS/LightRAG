@@ -134,14 +134,13 @@ _DUPLICATE_KEY_CODE = 11000
 # migration's progress cadence).
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
-# Atlas Vector Search's $vectorSearch stage can only return as many documents
-# as it scans: numCandidates must be greater than or equal to limit, or the
-# stage cannot hand back `limit` results at all. A caller-controlled top_k
-# (MAX_QUERY_TOP_K allows up to 1000) must scale this rather than share one
-# fixed value with every query. Multiplying by 10 follows Atlas's own
-# recommendation for recall quality; the floor keeps small queries at the
-# previous fixed candidate pool, and the ceiling is Atlas's own hard limit.
-_VECTOR_SEARCH_NUM_CANDIDATES_MULTIPLIER = 10
+# Atlas Vector Search rejects a $vectorSearch stage whose limit exceeds
+# numCandidates ("limit should be less than or equal to numCandidates") and
+# one whose numCandidates is outside [1..10000]; the query fails rather than
+# returning fewer rows. numCandidates therefore only widens to top_k: a top_k
+# at or below the floor keeps the previous fixed pool of 100, so the default
+# query is unchanged. top_k above the ceiling (core API only; the REST
+# endpoints cap it at MAX_QUERY_TOP_K) is clamped to the ceiling too.
 _VECTOR_SEARCH_MIN_NUM_CANDIDATES = 100
 _VECTOR_SEARCH_MAX_NUM_CANDIDATES = 10_000
 
@@ -4774,16 +4773,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
 
-        # numCandidates must be >= limit (see _VECTOR_SEARCH_NUM_CANDIDATES_MULTIPLIER
-        # above); scale it with top_k instead of a fixed value that silently caps
-        # every query whose top_k exceeds it.
-        num_candidates = min(
-            max(
-                top_k * _VECTOR_SEARCH_NUM_CANDIDATES_MULTIPLIER,
-                _VECTOR_SEARCH_MIN_NUM_CANDIDATES,
-            ),
-            _VECTOR_SEARCH_MAX_NUM_CANDIDATES,
-        )
+        # Atlas rejects limit > numCandidates and numCandidates > 10000 (see
+        # _VECTOR_SEARCH_MIN_NUM_CANDIDATES above): widen the candidate pool
+        # to top_k, never below the previous fixed 100.
+        limit = min(top_k, _VECTOR_SEARCH_MAX_NUM_CANDIDATES)
+        num_candidates = max(limit, _VECTOR_SEARCH_MIN_NUM_CANDIDATES)
 
         # Define the aggregation pipeline with the converted query vector
         pipeline = [
@@ -4793,7 +4787,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     "path": "vector",
                     "queryVector": query_vector,
                     "numCandidates": num_candidates,
-                    "limit": top_k,
+                    "limit": limit,
                 }
             },
             {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
