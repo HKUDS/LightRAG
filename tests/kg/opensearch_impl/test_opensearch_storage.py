@@ -22,9 +22,14 @@ from opensearchpy.exceptions import (  # type: ignore
     NotFoundError,
     OpenSearchException,
     ConflictError,
+    TransportError,
 )
 import lightrag.kg.opensearch_impl
-from lightrag.exceptions import flush_may_have_lost_reference
+from lightrag.exceptions import (
+    StorageControlPlaneError,
+    VectorSpaceMismatchError,
+    flush_may_have_lost_reference,
+)
 from lightrag.kg.opensearch_impl import (
     OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
@@ -877,16 +882,26 @@ class TestKVStorage:
             mock_client.delete_pit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_iter_raw_docs_missing_index_demotes_readiness(
+    async def test_iter_raw_docs_missing_index_demotes_readiness_and_raises(
         self, global_config, embed_func, mock_client
     ):
+        """The scan marks the index missing and then REFUSES.
+
+        It used to end cleanly, which made an index that vanished mid-scan
+        indistinguishable from an empty namespace -- and ``iter_rows``'
+        caller reads a clean end as "confirmed empty", the verdict that
+        records a durable ``origin=empty`` embedding baseline.
+        """
         mock_client.search = AsyncMock(side_effect=_missing_index_error())
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
 
-            batches = [batch async for batch in s._iter_raw_docs(batch_size=2)]
+            batches = []
+            with pytest.raises(StorageControlPlaneError, match="unexpectedly missing"):
+                async for batch in s._iter_raw_docs(batch_size=2):
+                    batches.append(batch)
 
             assert batches == []
             assert s._index_ready is False
@@ -1036,6 +1051,10 @@ class TestKVStorageBatching:
 
             await s.delete(["gone-1"])
             assert await s.has_pending_index_ops() is False
+            # The configuration store asks with tombstones included: a
+            # buffered delete answers its strict read-back as "gone" before
+            # the server agrees.
+            assert await s.has_pending_index_ops(include_deletes=True) is True
 
     @pytest.mark.asyncio
     async def test_repeated_kv_upserts_flush_in_single_bulk_call(
@@ -4713,7 +4732,9 @@ class TestVectorStorage:
     async def test_query_cosine_score_conversion(
         self, global_config, embed_func, mock_client
     ):
-        """Test that scores are used directly and threshold filtering works."""
+        """lucene/cosinesimil hits score as (1 + cosine_similarity) / 2, so an
+        engine score of 0.85 must convert back to a raw cosine similarity of
+        0.7, not be used directly."""
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -4736,16 +4757,18 @@ class TestVectorStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            results = await s.query("test", top_k=5)
+            with patch("lightrag.kg.opensearch_impl.logger.info") as mock_log:
+                results = await s.query("test", top_k=5)
             assert len(results) == 1
-            assert results[0]["distance"] == 0.85
+            assert results[0]["distance"] == pytest.approx(0.7)
+            assert "cosine_range=[0.7000, 0.7000]" in mock_log.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_query_filters_below_threshold(
         self, global_config, embed_func, mock_client
     ):
         """Low scores should be filtered out."""
-        # score 0.15 < threshold 0.2
+        # engine score 0.15 -> cosine similarity 2*0.15-1 = -0.7 < threshold 0.2
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -4754,6 +4777,40 @@ class TestVectorStorage:
                             "_id": "v1",
                             "_score": 0.15,
                             "_source": {"content": "weak match"},
+                        },
+                    ],
+                    "total": {"value": 1},
+                },
+                "aggregations": {
+                    "status_counts": {"buckets": []},
+                    "src": {"buckets": []},
+                    "tgt": {"buckets": []},
+                },
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            results = await s.query("test", top_k=5)
+            assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_query_rejects_unconverted_score_that_would_have_passed(
+        self, global_config, embed_func, mock_client
+    ):
+        """Regression: comparing the raw engine score against the threshold
+        (instead of converting to cosine similarity first) let a weakly- or
+        negatively-correlated match through. Engine score 0.3 satisfies the
+        default 0.2 threshold directly, but its true cosine similarity is
+        2*0.3-1 = -0.4, which must be filtered out."""
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "v1",
+                            "_score": 0.3,
+                            "_source": {"content": "unrelated"},
                         },
                     ],
                     "total": {"value": 1},
@@ -5319,6 +5376,11 @@ class TestVectorStorage:
         marker and differs only in the vector dimension. Restoring readiness
         on the marker alone would let upsert skip _ensure_index_ready, which
         is the path that raises something an operator can act on.
+
+        The refusal is typed: lightrag-rebuild-vdb responds to it by DROPPING
+        the index, so it must be distinguishable from a cluster outage or a bad
+        credential. A bare ValueError here would force that tool to catch
+        Exception and destroy data on a false positive.
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -5333,7 +5395,7 @@ class TestVectorStorage:
                 lambda: s.get_by_ids(["v1"]),
                 lambda: s.get_vectors_by_ids(["v1"]),
             ):
-                with pytest.raises(ValueError, match="dimension"):
+                with pytest.raises(VectorSpaceMismatchError, match="dimension"):
                     await read()
 
             assert s._index_ready is False
@@ -6667,6 +6729,119 @@ class TestGraphReadContract:
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_popular_labels(limit=2) == ["Alpha", "Zeta"]
+
+    # -- a missing EDGE index is an empty edge set, not a missing graph -----
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_missing_edge_index_ranks_from_node_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Only the edge index is gone; the entities in the node index must
+        still be returned.
+
+        Regression: the missing-index handler wrapped the whole method, so an
+        ``index_not_found`` from the edge aggregation answered ``[]`` without
+        ever scanning the node index -- a graph that held entities reported as
+        one that held nothing. The Mongo backend, the other two-container
+        implementation, treats a missing edge collection as an empty edge set
+        and ranks from the node side; this is the same rule.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            async def _search(index=None, body=None, **kwargs):
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                # The isolated-node scan searches through a PIT, without an
+                # index argument.
+                return self._node_page(["Orphan1", "Orphan2"])
+
+            mock_client.search = AsyncMock(side_effect=_search)
+            labels = await s.get_popular_labels(limit=10)
+
+        assert labels == ["Orphan1", "Orphan2"]
+        mock_client.create_pit.assert_awaited_once()
+        # The mark still lands: the next write must recreate the edge index
+        # with its mapping rather than let the cluster auto-create it.
+        assert s._indices_ready is False
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_missing_node_index_still_returns_empty(
+        self, global_config, embed_func, mock_client
+    ):
+        """The confirmed-empty answer is kept for the index that holds the
+        entities: no node index, no entities."""
+        mock_client.search = AsyncMock(return_value=self._aggs([], []))
+        mock_client.create_pit = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=10)
+
+        assert labels == []
+        assert s._indices_ready is False
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_edge_transport_error_still_raises(
+        self, global_config, embed_func, mock_client
+    ):
+        """Splitting the edge aggregation into its own handler must not widen
+        what it swallows: a transport failure is not a missing index."""
+        mock_client.search = AsyncMock(
+            side_effect=TransportError(
+                503, "search_phase_execution_exception", "shard failure"
+            )
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with pytest.raises(TransportError):
+                await s.get_popular_labels(limit=10)
+
+        mock_client.create_pit.assert_not_awaited()
+        assert s._indices_ready is True
+
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_missing_edge_index_keeps_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        """The ``*`` subgraph ranks from the edge index when truncated; with
+        that index gone it must still return the entities, with no relations,
+        instead of an empty graph.
+
+        Regression: the same whole-method handler as get_popular_labels.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 5})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            async def _search(index=None, body=None, **kwargs):
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                assert index == s._nodes_index
+                return self._node_page(["A", "B", "C", "D"])
+
+            async def _create_pit(index=None, **kwargs):
+                # The edge pass at the end opens a PIT on the edge index.
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                return {"pit_id": "pit-nodes"}
+
+            mock_client.search = AsyncMock(side_effect=_search)
+            mock_client.create_pit = AsyncMock(side_effect=_create_pit)
+            mock_client.mget = AsyncMock(
+                side_effect=_mget_by_ids_side_effect(
+                    {node_id: {"entity_type": "person"} for node_id in "ABCD"}
+                )
+            )
+            result = await s.get_knowledge_graph("*", max_nodes=4)
+
+        assert result.is_truncated is True
+        assert [node.id for node in result.nodes] == ["A", "B", "C", "D"]
+        assert result.edges == []
+        assert s._indices_ready is False
 
     # -- get_knowledge_graph ------------------------------------------------
 

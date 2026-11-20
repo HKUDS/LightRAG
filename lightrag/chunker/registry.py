@@ -9,10 +9,13 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from lightrag.utils import Tokenizer
@@ -32,6 +35,140 @@ _RESERVED = frozenset(
         "c",
     }
 )
+_CHUNKING_CONTEXT_MARKER = "__lightrag_accepts_chunking_context__"
+_URI_LITERAL_DRIVE = re.compile(r"^/[A-Za-z]:")
+_FOREIGN = "it is not an absolute local path on this platform"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ChunkingContext:
+    """Document metadata made available to explicitly context-aware chunkers.
+
+    The context is intentionally separate from the chunk text and legacy
+    sizing arguments.  Chunkers can use it for source-aware policies without
+    changing the text that is embedded or requiring a second callback shape.
+    Resolve ``sidecar_location`` with :func:`resolve_sidecar_location`; never
+    cast the URI to a ``Path`` by hand.
+    """
+
+    doc_id: str
+    file_path: str
+    sidecar_location: str | None
+    parse_format: str
+    parse_engine: str | None
+    process_options: str
+
+
+def _sidecar_location_error(location: str, reason: str) -> ValueError:
+    return ValueError(f"unsupported sidecar location {location!r}: {reason}")
+
+
+def resolve_sidecar_location(location: str | None) -> Path | None:
+    """Resolve ``ChunkingContext.sidecar_location`` to a local directory path.
+
+    Returns ``None`` when the document has no known sidecar: ``None``, an empty
+    string, or the unknown-source sentinel. A local ``file://`` URI returns
+    the ``Path`` the pipeline itself reads for it, without checking that the
+    directory still exists. Any other scheme, a bare path, or a ``file://``
+    URI naming a remote host raises ``ValueError`` instead of being
+    reinterpreted as a local path -- and so does a local URI that does not
+    name an absolute local directory on the platform running LightRAG: an
+    empty or relative path, a network (UNC) path on Windows, or a location
+    written on another platform (a drive path read on POSIX, a POSIX path read
+    on Windows, where it would take its drive from the current directory).
+
+    Decoding is delegated to the pipeline's own sidecar reader, so a location
+    never resolves to a different directory here than in the pipeline; this
+    function only adds the refusals. On Windows that includes the legacy form
+    ``file://C%3A%5Ctmp%5Creport.parsed/`` that older rows carry. How the
+    reader decodes each platform's URIs is documented on
+    ``lightrag.utils_pipeline.resolve_sidecar_uri``.
+    """
+    # Deferred: the pipeline helpers are heavy, and this module must stay cheap.
+    from lightrag import utils_pipeline
+
+    if not location or location == utils_pipeline.SIDECAR_LOCATION_UNKNOWN:
+        return None
+    parts = urlsplit(location)
+    if parts.scheme != "file":
+        raise _sidecar_location_error(
+            location, "only local file:// URIs can be resolved"
+        )
+    windows = os.name == "nt"
+    if parts.netloc.lower() not in ("", "localhost"):
+        # The POSIX reader ignores the authority, so it is checked here; the
+        # Windows reader accepts only the legacy drive form and returns None
+        # for any other authority.
+        if not windows:
+            legacy = utils_pipeline._LEGACY_WINDOWS_AUTHORITY_RE.match(
+                unquote(parts.netloc)
+            )
+            raise _sidecar_location_error(
+                location,
+                _FOREIGN
+                if legacy
+                else f"file:// URI names remote host {parts.netloc!r}",
+            )
+    elif not windows and _URI_LITERAL_DRIVE.match(parts.path):
+        # A POSIX writer percent-encodes ':' (``/C:`` becomes ``/C%3A``), so a
+        # literal drive marker means the URI was written on Windows.
+        raise _sidecar_location_error(location, _FOREIGN)
+    resolved = utils_pipeline.resolve_sidecar_uri(location)
+    if resolved is None:
+        raise _sidecar_location_error(
+            location,
+            "file:// URI names a remote host or a path this platform cannot read",
+        )
+    if not resolved.is_absolute():
+        raise _sidecar_location_error(location, _FOREIGN)
+    if windows and resolved.drive.startswith(("\\\\", "//")):
+        raise _sidecar_location_error(
+            location, "the URI path names a network (UNC) location"
+        )
+    return resolved
+
+
+def accepts_chunking_context(callback: Callable[..., Any]) -> Callable[..., Any]:
+    """Mark a constructor-supplied callback as accepting ``context=``.
+
+    This is an explicit opt-in so legacy six-argument callbacks remain
+    indistinguishable from their historical invocation.  The marker is read
+    at dispatch time and is not inferred from a callback failure.
+    """
+
+    if not callable(callback):
+        raise TypeError("chunking callback must be callable")
+    setattr(callback, _CHUNKING_CONTEXT_MARKER, True)
+    return callback
+
+
+def callback_supports_context(callback: Callable[..., Any]) -> bool:
+    """Return whether a callback explicitly opted into ``context=``."""
+
+    return bool(
+        getattr(callback, _CHUNKING_CONTEXT_MARKER, False)
+        or getattr(callback, "supports_chunking_context", False)
+        or getattr(callback, "accepts_chunking_context", False)
+    )
+
+
+def invoke_chunker(
+    callback: Callable[..., Any],
+    *args: Any,
+    context: ChunkingContext,
+) -> Any:
+    """Invoke a legacy or context-aware callback exactly once.
+
+    Signature probing followed by a retry is deliberately avoided: a
+    ``TypeError`` raised inside a callback is a real callback failure and must
+    never cause the implementation to run a second time.
+    """
+
+    if isinstance(callback, ChunkerBinding):
+        return callback(*args, context=context)
+    if callback_supports_context(callback):
+        return callback(*args, context=context)
+    return callback(*args)
 
 
 @dataclass(frozen=True)
@@ -40,7 +177,9 @@ class ChunkerSpec:
 
     ``version`` is an opaque author-supplied observation. ``executor_safe``
     opts a synchronous, thread-safe implementation into the bounded chunking
-    executor; the default preserves the legacy on-event-loop contract.
+    executor; ``accepts_context`` opts into the keyword-only
+    :class:`ChunkingContext` argument. The defaults preserve the legacy
+    six-positional-argument, on-event-loop contract.
     Future optional fields can extend this spec without changing entry points.
     """
 
@@ -49,6 +188,7 @@ class ChunkerSpec:
     version: str
     description: str
     executor_safe: bool = False
+    accepts_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +242,8 @@ def register_chunker(spec: ChunkerSpec, *, origin: str | None = None) -> None:
         raise ValueError(f"chunker {spec.name!r} requires a one-line description")
     if not isinstance(spec.executor_safe, bool):
         raise ValueError(f"chunker {spec.name!r} executor_safe must be a bool")
+    if not isinstance(spec.accepts_context, bool):
+        raise ValueError(f"chunker {spec.name!r} accepts_context must be a bool")
     resolved_origin = _registration_origin or origin or spec.impl
     previous = _REGISTRY.get(spec.name)
     if previous is not None:
@@ -154,6 +296,8 @@ class ChunkerBinding:
         split_by_character_only: bool,
         chunk_overlap_token_size: int,
         chunk_token_size: int,
+        *,
+        context: ChunkingContext | None = None,
     ) -> Any:
         args = (
             tokenizer,
@@ -163,11 +307,12 @@ class ChunkerBinding:
             chunk_overlap_token_size,
             chunk_token_size,
         )
+        kwargs = {"context": context} if self.spec.accepts_context else {}
         if self.spec.executor_safe:
             from lightrag.utils import run_in_chunking_executor
 
-            return run_in_chunking_executor(self.implementation, *args)
-        return self.implementation(*args)
+            return run_in_chunking_executor(self.implementation, *args, **kwargs)
+        return self.implementation(*args, **kwargs)
 
 
 def resolve_chunker(name: str | None) -> ChunkerBinding | None:
@@ -210,12 +355,20 @@ def resolve_chunker(name: str | None) -> ChunkerBinding | None:
     except (ValueError, TypeError):
         pass  # Some native callables expose no signature; do not invent a fence.
     else:
-        try:
-            signature.bind(*([None] * 6))
-        except TypeError as exc:
-            raise ValueError(
-                f"selected chunker {name!r} must accept six positional arguments: {exc}"
-            ) from exc
+        if spec.accepts_context:
+            try:
+                signature.bind(*([None] * 6), context=None)
+            except TypeError as exc:
+                raise ValueError(
+                    f"selected context-aware chunker {name!r} must accept six positional arguments plus keyword-only context: {exc}"
+                ) from exc
+        else:
+            try:
+                signature.bind(*([None] * 6))
+            except TypeError as exc:
+                raise ValueError(
+                    f"selected chunker {name!r} must accept six positional arguments: {exc}"
+                ) from exc
     if spec.executor_safe and (
         inspect.iscoroutinefunction(implementation)
         or inspect.iscoroutinefunction(getattr(implementation, "__call__", None))

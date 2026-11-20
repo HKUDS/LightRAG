@@ -461,6 +461,20 @@ def chunking_by_recursive_character(
             Bounding is silent — see :func:`inspect_r_separators` to obtain the
             correction detail yourself.
 
+    Raises:
+        ValueError: If ``chunk_token_size < 1``. This function does not apply
+            :data:`~lightrag.constants.MIN_CHUNK_TOKEN_SIZE`; configuration
+            ingress does, so direct callers may still use small sizes.
+        ValueError: If ``chunk_overlap_token_size >= chunk_token_size`` once
+            a negative overlap is floored to 0. This
+            mirrors the same invariant ``token_size.py`` enforces and the REST
+            layer's ``_OverlapChunkParams`` validator checks — but addon_params,
+            direct SDK calls, and persisted per-doc snapshots all reach this
+            function without passing through that validator, so it is
+            re-checked here rather than left to surface as LangChain's own
+            uncontrolled ``ValueError`` from deep inside the splitter
+            constructor.
+
     Returns:
         Ordered list of ``{"tokens", "content", "chunk_order_index"}``
         dicts.
@@ -499,9 +513,28 @@ def chunking_by_recursive_character(
         # returns the same correction detail without splitting anything.
         separators = None
 
+    resolved_chunk_size = int(chunk_token_size)
+    if resolved_chunk_size < 1:
+        # Never floor a non-positive size to 1: that turns a misconfiguration
+        # into one chunk per token and multiplies the extraction LLM calls.
+        raise ValueError(f"chunk_token_size must be >= 1, got {chunk_token_size!r}")
+    resolved_chunk_overlap = max(int(chunk_overlap_token_size), 0)
+    # Fail closed with the same invariant the API-boundary validator
+    # (``_OverlapChunkParams``) enforces. addon_params, direct SDK calls, and
+    # persisted per-doc snapshots all bypass that validator and reach this
+    # function directly, so without this check an out-of-range overlap would
+    # instead surface as LangChain's own uncontrolled ``ValueError`` from the
+    # splitter constructor below (or, for overlap == size exactly, would not
+    # be rejected at all).
+    if resolved_chunk_overlap >= resolved_chunk_size:
+        raise ValueError(
+            f"chunk_overlap_token_size ({resolved_chunk_overlap}) must be < "
+            f"chunk_token_size ({resolved_chunk_size})"
+        )
+
     splitter_kwargs: dict[str, Any] = {
-        "chunk_size": max(int(chunk_token_size), 1),
-        "chunk_overlap": max(int(chunk_overlap_token_size), 0),
+        "chunk_size": resolved_chunk_size,
+        "chunk_overlap": resolved_chunk_overlap,
         "length_function": length_function,
         "strip_whitespace": True,
     }
