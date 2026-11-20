@@ -423,6 +423,11 @@ These apply to every review finding, automated reviews included.
 - **Respect documented decisions.** A residue or rejected alternative recorded in a contract (see *Consistency without transactions* and `docs/design/`) is a decision; its known limitation is not a new finding. Reopening it needs new evidence that its rationale no longer holds.
 - **Classify honestly.** Only demonstrated correctness problems are findings, and they may block on their impact. Preferences, optional hardening and extensions are non-blocking suggestions, never inflated in severity.
 - **Major redesigns need the author's agreement.** Changes to public APIs, storage formats, lifecycle, concurrency or permission models, or cross-module structure are proposed with evidence, alternatives and costs, and are not implemented in the PR or made a merge condition without the author's explicit agreement.
+- **Review every added or changed test for whether it earns its cost.** The offline suite is past 13,000 tests, so a PR's tests get their own review pass, test by test, after the correctness review:
+  - **Necessary?** It pins a behavior that a docstring, contract or the bug being fixed promises, and that no existing test already pins. A test that restates another one, re-tests a dependency, or pins an implementation detail nothing promises is removed.
+  - **Mergeable?** Tests that share a setup and differ only in what they assert become one test. Tests that differ only in input become cases of one `@pytest.mark.parametrize` test, and since each case still counts, a case that drives the same branch as another is dropped.
+  - **Efficient?** No real `sleep`, wall-clock timeouts, network, subprocess or storage backend where a fake does the job; no setup rebuilt per test that a wider-scoped fixture could share; no oversized inputs where a small one reaches the same branch. Check the PR's tests with `--durations=20`, and question any that takes over a second.
+  - Report the result as concrete edits (which tests to merge, drop or speed up), not a general remark. When you are the PR's author, or took the PR over, apply them yourself. A bug fix that lacks its regression test is still a finding.
 
 ## Commit and Pull Request Guidance
 
