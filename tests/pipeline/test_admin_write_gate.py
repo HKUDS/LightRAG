@@ -1613,3 +1613,96 @@ async def test_custom_kg_is_refused_during_ingestion_on_a_buffered_tracking_kv(
     finally:
         async with lock:
             status.update({"busy": False, "busy_owner": None})
+
+
+@pytest.fixture
+def _buffered_tracking(monkeypatch):
+    """Make the tracking KV class look per-process buffered and record every
+    synchronous discard the gate issues, by namespace."""
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    discarded: list[str] = []
+
+    def _discard(self):
+        discarded.append(self.namespace)
+        return 1
+
+    monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", True)
+    monkeypatch.setattr(JsonKVStorage, "discard_buffered_writes", _discard)
+    return discarded
+
+
+def _tracking_namespaces(rag) -> list[str]:
+    return [rag.entity_chunks.namespace, rag.relation_chunks.namespace]
+
+
+async def test_a_failed_admin_write_discards_buffered_tracking(rag, _buffered_tracking):
+    """A failed write's tracking rows must not stay in a per-process buffer:
+    released from the gate, a later flush would publish them over a newer
+    commit. Dropped on the gate's failure exit, for every admin writer."""
+    with pytest.raises(RuntimeError, match="boom"):
+        async with rag._admin_write_gate("test"):
+            raise RuntimeError("boom")
+
+    assert _buffered_tracking == _tracking_namespaces(rag)
+
+
+async def test_a_cancelled_admin_write_discards_buffered_tracking(
+    rag, _buffered_tracking
+):
+    """The exit no flow-level handler sees: a cancellation delivered while the
+    body awaits its tracking flush (the hold ceiling's, a disconnected
+    client's)."""
+    entered = asyncio.Event()
+
+    async def _body():
+        async with rag._admin_write_gate("test"):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(_body())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert _buffered_tracking == _tracking_namespaces(rag)
+
+
+async def test_a_successful_admin_write_discards_no_tracking(rag, _buffered_tracking):
+    async with rag._admin_write_gate("test"):
+        pass
+
+    assert _buffered_tracking == []
+
+
+async def test_a_refused_admin_write_discards_no_tracking(rag, _buffered_tracking):
+    """Refused before the body ran: the buffer is not this write's to drop."""
+    status, lock = await _status_handles(rag)
+    async with lock:
+        status.update({"busy": True, "busy_owner": {"token": "p", "kind": "process"}})
+    try:
+        with pytest.raises(AdminWriteGateRefusedError):
+            async with rag._admin_write_gate("test"):
+                raise AssertionError("the body must not run")  # pragma: no cover
+    finally:
+        async with lock:
+            status.update({"busy": False, "busy_owner": None})
+
+    assert _buffered_tracking == []
+
+
+async def test_an_immediate_tracking_kv_is_never_asked_to_discard(rag, monkeypatch):
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        JsonKVStorage,
+        "discard_buffered_writes",
+        lambda self: calls.append(self.namespace) or 0,
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        async with rag._admin_write_gate("test"):
+            raise RuntimeError("boom")
+
+    assert calls == []

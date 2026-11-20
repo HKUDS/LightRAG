@@ -727,6 +727,18 @@ class BaseKVStorage(StorageNameSpace, ABC):
     in ``docs/design/PipelineConcurrencyContract.md``.
     """
 
+    def discard_buffered_writes(self) -> int:
+        """Drop every buffered, uncommitted operation; return how many.
+
+        The synchronous counterpart of ``drop_pending_index_ops``, for
+        ``LightRAG._admin_write_gate``: it runs while a cancellation is
+        propagating, where an ``await`` could be interrupted by a second one
+        and leave the buffer in place. A backend that declares
+        ``buffers_writes_per_process`` MUST override it; the default has
+        nothing buffered and returns ``0``.
+        """
+        return 0
+
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get value by id"""

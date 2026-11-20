@@ -5280,7 +5280,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
-                    _discard_buffered_tracking,
                     _persist_graph_updates,
                     apply_relation_weight_floor,
                     relation_evidence_source_ids,
@@ -5803,31 +5802,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # The rows only GAIN chunks, so an interruption between here
                     # and the graph writes leaves an object retained, never
                     # lost, and a retry rewrites the same rows.
-                    # A row that could not be committed must not stay in a
-                    # per-process buffer either, where the flush in the
-                    # ``finally`` below (or any later one) would publish it
-                    # after this call has failed and released the gate.
-                    try:
-                        if entity_tracking:
-                            await self.entity_chunks.upsert(entity_tracking)
-                        if relation_tracking:
-                            await self.relation_chunks.upsert(relation_tracking)
-                        if entity_tracking or relation_tracking:
-                            await _persist_graph_updates(
-                                entity_chunks_storage=self.entity_chunks
-                                if entity_tracking
-                                else None,
-                                relation_chunks_storage=self.relation_chunks
-                                if relation_tracking
-                                else None,
-                                context="ainsert_custom_kg",
-                            )
-                    except BaseException:
-                        await _discard_buffered_tracking(
-                            (self.entity_chunks, self.relation_chunks),
-                            only_retained=False,
+                    if entity_tracking:
+                        await self.entity_chunks.upsert(entity_tracking)
+                    if relation_tracking:
+                        await self.relation_chunks.upsert(relation_tracking)
+                    if entity_tracking or relation_tracking:
+                        await _persist_graph_updates(
+                            entity_chunks_storage=self.entity_chunks
+                            if entity_tracking
+                            else None,
+                            relation_chunks_storage=self.relation_chunks
+                            if relation_tracking
+                            else None,
+                            context="ainsert_custom_kg",
                         )
-                        raise
 
                     # Batch insert entities (reduces N serial awaits to 1).
                     # Writing entity_nodes here (before the relationship-endpoint
@@ -9056,6 +9044,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # commits successfully WITHOUT the changes it made.
             if entered_body:
                 self._discard_uncommitted_graph_mutations(operation)
+                self._discard_buffered_tracking_writes(operation)
             # Only a real cancellation suppresses the release-time drive:
             # driving the pipeline from a cancelled task would start work
             # nobody is waiting for, and the mailbox flag is sticky so the next
@@ -9067,6 +9056,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # reservation lock's exit can leave ``busy`` ours, which is why
             # ``reserved`` is set before the acquire.
             cancelled = isinstance(exc, asyncio.CancelledError)
+            raise
+        except Exception:
+            # A failed write must not leave chunk-tracking rows in a
+            # per-process buffer: released from the gate, a later flush would
+            # publish them over whatever another worker committed since. Every
+            # failure exit drops them here, in one place, rather than in each
+            # flow -- see ``_discard_buffered_tracking_writes``.
+            if entered_body:
+                self._discard_buffered_tracking_writes(operation)
             raise
         finally:
             try:
@@ -9116,6 +9114,42 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"Failed to discard uncommitted graph mutations after the "
                 f"interrupted admin write `{operation}`: {e}"
             )
+
+    def _discard_buffered_tracking_writes(self, operation: str) -> None:
+        """Drop chunk-tracking writes a failed admin write left buffered.
+
+        Called on EVERY failure exit of the gate's body -- an exception, a
+        cancellation, the hold ceiling -- while the admin lock and the
+        reservation are still held. A tracking row is a whole row produced by
+        read-modify-write, so one that outlives its operation in a per-process
+        buffer is flushed later over a newer commit and erases that writer's
+        attribution. What is dropped leaves a row too broad or stale, never an
+        object without attribution it had.
+
+        Only a storage declaring ``buffers_writes_per_process`` has anything to
+        drop. Synchronous and never raising, for the reasons given on
+        :meth:`_discard_uncommitted_graph_mutations`.
+        """
+        for name in ("entity_chunks", "relation_chunks"):
+            storage = getattr(self, name, None)
+            if storage is None or not getattr(
+                type(storage), "buffers_writes_per_process", False
+            ):
+                continue
+            try:
+                dropped = storage.discard_buffered_writes()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.error(
+                    f"Failed to discard buffered {name} writes after the failed "
+                    f"admin write `{operation}`: {e}"
+                )
+                continue
+            if dropped:
+                logger.warning(
+                    f"Admin write `{operation}` failed with {dropped} uncommitted "
+                    f"{name} write(s) buffered; they were discarded so they "
+                    "cannot overwrite a later commit."
+                )
 
     async def _drive_pipeline_if_deferred(self, workspace: str) -> None:
         """Start the release-time queue drive when the hold turned a start away.

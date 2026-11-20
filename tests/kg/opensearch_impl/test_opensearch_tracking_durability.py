@@ -186,3 +186,24 @@ async def test_a_raising_tracking_flush_discards_its_buffer_too():
         await storage.index_done_callback()  # this worker's next commit
 
     assert server.docs["Foo"]["chunk_ids"] == ["old", "document"]
+
+
+async def test_the_synchronous_discard_empties_the_buffer():
+    """What the admin-write gate calls on a failure exit: no await, so a second
+    cancellation cannot leave the buffer behind."""
+    server = _FakeServer()
+    storage = await _tracking_storage(server)
+    await storage.upsert({"Foo": {"chunk_ids": ["old", "edit"], "count": 2}})
+    await storage.delete(["Bar"])
+
+    assert storage.discard_buffered_writes() == 2
+    assert await storage.has_pending_index_ops(include_deletes=True) is False
+
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        server.docs["Foo"] = {"chunk_ids": ["old", "document"], "count": 2}
+        await storage.index_done_callback()
+
+    assert server.bulk_calls == 0
+    assert server.docs["Foo"]["chunk_ids"] == ["old", "document"]

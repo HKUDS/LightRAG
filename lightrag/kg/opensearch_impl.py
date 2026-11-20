@@ -1784,6 +1784,20 @@ class OpenSearchKVStorage(BaseKVStorage):
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
 
+    def discard_buffered_writes(self) -> int:
+        """Synchronously drop every buffered upsert and delete; return how many.
+
+        Without the flush lock, on purpose: the admin-write gate calls this
+        while a cancellation is propagating and holds the pipeline ``busy``
+        reservation and the admin lock, so no flush of this buffer is running.
+        Clearing between two awaits is atomic on the event loop, and a flush
+        suspended mid-way only ever ``pop``s ids it may no longer find.
+        """
+        dropped = len(self._pending_upserts) + len(self._pending_kv_deletes)
+        self._pending_upserts.clear()
+        self._pending_kv_deletes.clear()
+        return dropped
+
     async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
         """Discard buffered upserts, KEEPING the buffered deletes.
 
