@@ -836,6 +836,33 @@ async def test_reads_still_hide_the_row_a_redo_entry_names(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_delete_does_not_swallow_an_internal_error(tmp_path):
+    """A failure while queuing a delete must propagate, not be logged and
+    discarded.
+
+    ``delete_entity`` / ``delete_entity_relation`` already re-raise after
+    logging, with a docstring note on exactly this anti-pattern: swallowing
+    the exception silently drops both the queued removal and the failure
+    signal. The bulk ``delete()`` used by the pipeline's purge flow still
+    swallowed it, so a caller that treats a non-raising ``delete()`` as
+    proof the vectors are queued for removal would see none of them removed.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha"})
+
+    class _BrokenPendingDeletes(set):
+        def add(self, item):
+            raise RuntimeError("boom")
+
+    storage._pending_deletes = _BrokenPendingDeletes()
+
+    with pytest.raises(RuntimeError):
+        await storage.delete(["id1"])
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_a_queued_delete_is_scoped_to_the_id_not_the_row(tmp_path):
     """A queued delete is a *request*: the flush removes whatever row carries
     the id, as the eager call and the server-backed backends do.

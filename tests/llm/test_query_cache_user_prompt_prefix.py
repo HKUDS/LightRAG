@@ -106,6 +106,7 @@ def _preprefix_answer_cache_key(
     cfg: dict,
     *,
     keywords: tuple[str, str] | None = None,
+    kg_total_budget: bool = True,
 ) -> str:
     """Frozen snapshot of the answer-cache key as composed BEFORE this feature.
 
@@ -123,6 +124,14 @@ def _preprefix_answer_cache_key(
     naive branch is untouched -- it does not carry these components. The
     defaults below are written as literals on purpose: if ``DEFAULT_*`` ever
     moves, this snapshot must go red again rather than follow it silently.
+
+    Refreshed a second time, deliberately, in PR #4221: ``max_total_tokens``
+    started capping the whole rendered KG context, so a request may now keep
+    fewer graph records or chunks than the context an older entry was written
+    from, and that entry's citations would point at references the new list
+    no longer has. The unconditional ``kg_total_budget`` component retires
+    every KG answer entry written before it; pass ``kg_total_budget=False`` to
+    get the key the code before that change wrote. Naive is untouched again.
     """
     args = [
         "query-answer-cache-v2",
@@ -152,6 +161,8 @@ def _preprefix_answer_cache_key(
                 cfg.get("kg_chunk_pick_method", "VECTOR"),
             ]
         )
+        if kg_total_budget:
+            args.append("\n<kg_total_budget>\n")
     args.extend(
         [
             "\n<llm_identity>\n",
@@ -498,6 +509,30 @@ async def test_kg_entry_written_before_the_prefix_feature_still_hits(
     result = await _run_kg(param, cfg, cache)
     assert result.content == "PRE-PREFIX-ANSWER"
     assert model.calls == 0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_kg_entry_written_before_the_total_budget_cap_misses(
+    stub_query_context,
+):
+    """A KG answer cached before max_total_tokens capped the graph context was
+    written from a context the same request may no longer build, so it must not
+    be served. (The naive counterpart above still hits: its context is unchanged.)
+    """
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    param = _kg_param(user_prompt=USER_PROMPT)
+
+    old_key = _preprefix_answer_cache_key(
+        param, cfg, keywords=("", "Tesla"), kg_total_budget=False
+    )
+    cache._store[old_key] = {"return": "PRE-BUDGET-ANSWER", "create_time": 1}
+
+    result = await _run_kg(param, cfg, cache)
+    assert result.content == "answer-1"
+    assert model.calls == 1
 
 
 @pytest.mark.offline
