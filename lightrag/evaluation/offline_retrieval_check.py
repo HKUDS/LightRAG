@@ -12,6 +12,7 @@ import json
 import math
 import re
 import sys
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,8 +66,9 @@ class QueryResult:
     ranked: list[str]
 
     def recall_at(self, top_k: int) -> float:
-        hits = set(self.expected) & set(self.ranked[:top_k])
-        return len(hits) / len(self.expected)
+        expected = set(self.expected)
+        hits = expected & set(self.ranked[:top_k])
+        return len(hits) / len(expected)
 
     def reciprocal_rank(self) -> float:
         for rank, document in enumerate(self.ranked, start=1):
@@ -75,9 +77,48 @@ class QueryResult:
         return 0.0
 
 
+# CJK text (kana, the ideograph blocks, Hangul syllables) has no word
+# boundaries the ASCII pattern could split on without a dictionary: Chinese and
+# Japanese use no spaces, and Korean attaches particles to its words. A run of
+# it is therefore indexed as overlapping character bigrams, as Lucene's CJK
+# analyzer does.
+#
+# The kana ranges leave out U+30A0 and the katakana middle dot U+30FB, which
+# are punctuation, so "\u30c7\u30fc\u30bf\u30fb\u30d9\u30fc\u30b9" yields no bigram spanning the dot. The
+# iteration mark U+3005 is kept because it is part of words such as "\u4eba\u3005".
+# Planes 2 and 3 hold only CJK ideographs (Extension B onwards).
+_CJK_CHARS = (
+    "\u3005"
+    "\u3041-\u309f"
+    "\u30a1-\u30fa\u30fc-\u30ff"
+    "\u3400-\u4dbf\u4e00-\u9fff"
+    "\uac00-\ud7af"
+    "\uf900-\ufaff"
+    "\U00020000-\U0003ffff"
+)
+_TOKEN_PATTERN = re.compile(rf"[a-z0-9]+|[{_CJK_CHARS}]+")
+
+
 def tokenize(text: str) -> list[str]:
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    return [token for token in tokens if token not in STOPWORDS and len(token) > 1]
+    """Split text into ranking terms.
+
+    Text is NFKC-normalized first, so full-width ASCII ("\uff32\uff21\uff27") matches its
+    ASCII form and half-width katakana matches full-width katakana. ASCII words
+    are kept unless they are stopwords or a single character. A run of CJK
+    characters becomes its overlapping bigrams; a lone CJK character is kept as
+    is, since one ideograph is often a whole word.
+    """
+    tokens: list[str] = []
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    for run in _TOKEN_PATTERN.findall(normalized):
+        if run.isascii():
+            if run not in STOPWORDS and len(run) > 1:
+                tokens.append(run)
+        elif len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
+    return tokens
 
 
 def load_cases(dataset_path: Path) -> list[dict[str, Any]]:

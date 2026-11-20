@@ -109,8 +109,13 @@ def _make_storage(
     storage._client.upsert = MagicMock()
     storage._client.delete = MagicMock()
     # drop() looks up a legacy collection to clear its workspace points;
-    # default to "no legacy collection" so unrelated tests are unaffected.
-    storage._client.collection_exists = MagicMock(return_value=False)
+    # default to "the suffixed collection exists, no legacy collection" so
+    # unrelated tests are unaffected. drop() skips a collection that is not
+    # there -- an initialize() refused by VectorSpaceMismatchError raises
+    # before creating the suffixed one.
+    storage._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == storage.final_namespace
+    )
     storage._client.retrieve = MagicMock(return_value=[])
     storage._client.scroll = MagicMock(return_value=([], None))
 
@@ -480,7 +485,7 @@ async def test_drop_clears_workspace_points_from_workspace_tagged_legacy():
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
     s._client.collection_exists = MagicMock(
-        side_effect=lambda name: name == legacy_collection
+        side_effect=lambda name: name in (legacy_collection, s.final_namespace)
     )
     # Legacy is workspace-tagged: workspace_id present in the payload schema.
     legacy_info = MagicMock()
@@ -509,7 +514,7 @@ async def test_drop_drops_untagged_legacy_collection():
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
     s._client.collection_exists = MagicMock(
-        side_effect=lambda name: name == legacy_collection
+        side_effect=lambda name: name in (legacy_collection, s.final_namespace)
     )
     # Legacy is untagged: no workspace_id in schema and none in sampled payloads.
     legacy_info = MagicMock()
@@ -541,7 +546,7 @@ async def test_drop_reports_error_when_legacy_tagging_undetermined():
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
     s._client.collection_exists = MagicMock(
-        side_effect=lambda name: name == legacy_collection
+        side_effect=lambda name: name in (legacy_collection, s.final_namespace)
     )
     # Metadata lookup fails -> tagging undetermined.
     s._client.get_collection = MagicMock(side_effect=RuntimeError("qdrant unavailable"))

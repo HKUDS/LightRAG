@@ -47,6 +47,7 @@ from ..exceptions import (
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
+    StorageNotInitializedError,
     StorageRecordNotFoundError,
 )
 from ..utils import (
@@ -56,7 +57,9 @@ from ..utils import (
     merge_source_ids,
     parse_cache_key,
     validate_workspace,
+    validate_workspace_override,
 )
+from ..namespace import CONFIG_CONTAINER_TAG, NameSpace
 from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
@@ -65,6 +68,12 @@ from ..constants import (
     DEFAULT_QUERY_PRIORITY,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
+from ..kg.vector_space import (
+    assert_vector_space_matches,
+    declared_model_name,
+    read_vector_space_marker,
+    vector_space_marker,
+)
 
 import pipmaster as pm
 
@@ -236,6 +245,24 @@ def _extract_bulk_failed_ids(
                     )
                 )
     return retryable, non_retryable
+
+
+def _raise_bulk_delete_failures(failed: list[Any], *, context: str) -> None:
+    """Reject incomplete deletes while treating already-absent rows as success."""
+    errors = [
+        payload
+        for entry in failed
+        for op, payload in entry.items()
+        if not 200 <= payload["status"] < 300
+        and not (op == "delete" and payload["status"] == 404)
+    ]
+    if errors:
+        sample = ", ".join(
+            f"{item['_id']}/status={item['status']}/"
+            f"{_summarize_bulk_error(item.get('error'))}"
+            for item in errors[:5]
+        )
+        raise OpenSearchException(f"{context}: bulk deletion failed: {sample}")
 
 
 # Flush-time bulk batching limits. opensearch-py's helpers.async_bulk already
@@ -443,6 +470,18 @@ def _workspace_index_meta(workspace: str, final_namespace: str) -> dict[str, str
     }
 
 
+def _index_meta(mapping: dict, index_name: str) -> dict:
+    """The ``_meta`` block of an index mapping, or ``{}``.
+
+    One reader because the ownership check, its confirmation re-read, the
+    read-path readiness probe and the embedding-space check all want the same
+    block, and an empty dict is the right answer to every way it can be missing
+    -- an index absent from the response, a mapping without ``_meta``, an
+    explicit ``null``.
+    """
+    return (mapping.get(index_name) or {}).get("mappings", {}).get("_meta") or {}
+
+
 def _stored_index_identity(meta: dict) -> dict[str, str | None]:
     """Extract the owning-workspace identity recorded in an index ``_meta``."""
     return {key: meta.get(key) for key in _WORKSPACE_IDENTITY_KEYS}
@@ -454,6 +493,24 @@ def _describe_index_identity(identity: dict[str, str | None]) -> str:
         f"workspace '{identity.get(_WORKSPACE_META_KEY)}' / namespace "
         f"'{identity.get(_FINAL_NAMESPACE_META_KEY)}'"
     )
+
+
+def _read_vector_dimension(mapping: dict, index_name: str) -> int | None:
+    """The knn_vector dimension recorded in an index mapping, or None.
+
+    None means "could not be read" as well as "not recorded", and both are
+    treated the same by every caller: the dimension check is skipped rather
+    than turned into a refusal. A mapping this code cannot parse is not
+    evidence of a mismatch.
+    """
+    try:
+        return (
+            mapping[index_name]["mappings"]["properties"]
+            .get("vector", {})
+            .get("dimension")
+        )
+    except (KeyError, TypeError):
+        return None
 
 
 def _workspace_collision_error(
@@ -512,7 +569,7 @@ async def _claim_index_for_workspace(
     """
     expected = _workspace_index_meta(workspace, final_namespace)
     mapping = await client.indices.get_mapping(index=index_name)
-    meta = (mapping.get(index_name) or {}).get("mappings", {}).get("_meta") or {}
+    meta = _index_meta(mapping, index_name)
     stored = _stored_index_identity(meta)
     if stored == expected:
         return
@@ -546,9 +603,7 @@ async def _claim_index_for_workspace(
     )
 
     confirmation = await client.indices.get_mapping(index=index_name)
-    confirmed = _stored_index_identity(
-        (confirmation.get(index_name) or {}).get("mappings", {}).get("_meta") or {}
-    )
+    confirmed = _stored_index_identity(_index_meta(confirmation, index_name))
     # An entirely absent marker on re-read means the write has not become
     # visible yet, not that another workspace owns the index -- only a
     # *differing* identity is evidence of a collision.
@@ -821,10 +876,21 @@ class ClientManager:
 
 
 def _resolve_workspace(workspace: str, namespace: str):
-    """Resolve effective workspace from env or parameter."""
+    """Resolve effective workspace from env or parameter.
+
+    The configuration container is named in CODE, not by a workspace: its
+    index is ``CONFIG_CONTAINER_TAG`` + the ``config`` namespace, and
+    ``OPENSEARCH_WORKSPACE`` is not consulted for it. Nothing else is ever
+    opened on that namespace, which is what makes it a safe marker. See
+    docs/design/ConfigurationStorageContract.md.
+    """
+    if namespace == NameSpace.KV_STORE_CONFIG:
+        return CONFIG_CONTAINER_TAG
     opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
     if opensearch_workspace and opensearch_workspace.strip():
-        effective = opensearch_workspace.strip()
+        effective = validate_workspace_override(
+            "OPENSEARCH_WORKSPACE", opensearch_workspace
+        )
         logger.info(
             f"Using OPENSEARCH_WORKSPACE: '{effective}' (overriding '{workspace}/{namespace}')"
         )
@@ -841,6 +907,23 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
         final_ns = namespace
         effective = ""
     index_name = _sanitize_index_name(final_ns)
+    # Sanitization is LOSSY -- `.`, `+` and any other character outside
+    # [a-z0-9_-] all become `_` -- so two different names can normalize to one
+    # index. The configuration container is out of reach of a workspace name
+    # (the `config` namespace never consults one), but that is an argument
+    # about today's namespaces, not a property of this function: a namespace
+    # added later could normalize a tenant's index onto the container's.
+    # Refuse that here, before a client is opened, rather than discovering it
+    # as two stores writing one index. The ownership markers stay the general
+    # collision check; this is the one case they could not repair.
+    if namespace != NameSpace.KV_STORE_CONFIG and index_name == _sanitize_index_name(
+        f"{CONFIG_CONTAINER_TAG}_{NameSpace.KV_STORE_CONFIG}"
+    ):
+        raise ValueError(
+            f"Workspace {effective!r} and namespace {namespace!r} normalize to "
+            f"the LightRAG configuration container's index {index_name!r}; "
+            f"choose another workspace"
+        )
     return effective, final_ns, index_name
 
 
@@ -960,6 +1043,9 @@ class OpenSearchKVStorage(BaseKVStorage):
     """Key-Value storage using OpenSearch. Uses dynamic mapping to support varied schemas."""
 
     supports_strict_point_reads: ClassVar[bool] = True
+    # Upserts wait in ``_pending_upserts``, visible to this process only, until
+    # ``index_done_callback``: admin graph writes must not overlap the pipeline.
+    buffers_writes_per_process: ClassVar[bool] = True
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
@@ -992,6 +1078,10 @@ class OpenSearchKVStorage(BaseKVStorage):
         # mirrors what was introduced for OpenSearchVectorDBStorage.
         self._pending_upserts: dict[str, dict[str, Any]] = {}
         self._pending_kv_deletes: set[str] = set()
+        # Ids the latest flush ATTEMPTED and kept after a retryable per-item
+        # failure. Distinguishes those from operations buffered after that
+        # flush, which no commit has tried yet; see ``has_retained_writes``.
+        self._retained_ids: set[str] = set()
         # Namespace-keyed lock (multi-process aware) is assigned in
         # initialize(). All buffer reads / writes and the flush itself
         # acquire this lock so an in-flight flush cannot interleave with
@@ -1151,10 +1241,28 @@ class OpenSearchKVStorage(BaseKVStorage):
         Refreshes before opening the PIT: the point-in-time freezes the view
         for the whole scan, so a row that is written but not yet in a
         searchable segment when it opens is missed by every page.
+
+        A missing index RAISES here rather than ending the scan, for the same
+        reason ``get_by_id_strict`` refuses to answer in that state: after
+        ``initialize()`` the index always exists, so a scan that finds it gone
+        cannot tell an empty namespace from a dropped one, and the base
+        ``iter_rows`` contract forbids presenting a partial listing as a
+        complete one.
+
+        A FAILED REFRESH raises for that same reason, which is why this one
+        asks for the strict variant: the refresh above is not a courtesy here,
+        it is what makes the frozen view complete, so swallowing its failure
+        would hand back a clean empty scan over rows that are already durable.
+        The startup source verdict reads a clean end as confirmed absence and
+        writes a baseline from it.
         """
-        await self._refresh_for_search()
+        await self._refresh_for_search(strict=True)
         if not self._index_ready:
-            return
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] {self.namespace} index "
+                f"'{self._index_name}' is not ready; a scan cannot tell an "
+                f"empty namespace from a dropped one"
+            )
 
         try:
             pit = await self.client.create_pit(
@@ -1191,7 +1299,11 @@ class OpenSearchKVStorage(BaseKVStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' unexpectedly missing mid-scan; the "
+                    f"rows yielded so far are not a complete listing"
+                ) from e
             logger.error(f"[{self.workspace}] Error scanning documents: {e}")
             raise
 
@@ -1636,6 +1748,10 @@ class OpenSearchKVStorage(BaseKVStorage):
             }
             pending_deletes.clear()
             pending_deletes.update(new_deletes)
+            # Every buffered operation was part of this bulk (the flush holds
+            # ``_flush_lock`` throughout), so what is left now is exactly what
+            # the server refused for a retryable reason.
+            self._retained_ids = set(pending_upserts) | new_deletes
 
             if retryable_ids:
                 logger.warning(
@@ -1671,10 +1787,27 @@ class OpenSearchKVStorage(BaseKVStorage):
         if self._flush_lock is None:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
+            self._retained_ids.clear()
             return
         async with self._flush_lock:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
+            self._retained_ids.clear()
+
+    def discard_buffered_writes(self) -> int:
+        """Synchronously drop every buffered upsert and delete; return how many.
+
+        Without the flush lock, on purpose: the admin-write gate calls this
+        while a cancellation is propagating and holds the pipeline ``busy``
+        reservation and the admin lock, so no flush of this buffer is running.
+        Clearing between two awaits is atomic on the event loop, and a flush
+        suspended mid-way only ever ``pop``s ids it may no longer find.
+        """
+        dropped = len(self._pending_upserts) + len(self._pending_kv_deletes)
+        self._pending_upserts.clear()
+        self._pending_kv_deletes.clear()
+        self._retained_ids.clear()
+        return dropped
 
     async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
         """Discard buffered upserts, KEEPING the buffered deletes.
@@ -1709,18 +1842,47 @@ class OpenSearchKVStorage(BaseKVStorage):
         async with self._flush_lock:
             return _discard(self._pending_upserts)
 
-    async def has_pending_index_ops(self) -> bool:
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         """Whether buffered UPSERTS remain (retryable failures are retained).
 
-        Deletes are excluded on purpose -- see the base docstring: a retained
-        tombstone carries no reference to another namespace's rows.
+        Deletes are excluded by default -- see the base docstring: a retained
+        tombstone carries no reference to another namespace's rows. With
+        ``include_deletes=True`` a retained tombstone counts too, for the
+        caller that needs to know whether a delete reached the server.
         """
-        if self._flush_lock is None:  # see drop_pending_index_ops
-            return bool(self._pending_upserts)
-        async with self._flush_lock:
-            return bool(self._pending_upserts)
 
-    async def _refresh_for_search(self) -> None:
+        def _answer() -> bool:
+            if self._pending_upserts:
+                return True
+            return include_deletes and bool(self._pending_kv_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
+    async def has_retained_writes(self) -> bool:
+        """Whether the latest flush kept an operation after a retryable failure.
+
+        Unlike ``has_pending_index_ops`` this ignores operations buffered after
+        that flush: no commit has tried them yet, so they are not evidence that
+        a commit failed. Waits for an in-flight flush, so the answer covers
+        every operation buffered before the call. Upserts and deletes both
+        count -- a retained tombstone lands as late as a retained row.
+        """
+
+        def _answer() -> bool:
+            return any(
+                doc_id in self._pending_upserts or doc_id in self._pending_kv_deletes
+                for doc_id in self._retained_ids
+            )
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
+    async def _refresh_for_search(self, *, strict: bool = False) -> None:
         """Publish prior writes to a search-based read of this index.
 
         Call this from every reader that goes through ``search`` / ``count``
@@ -1736,6 +1898,16 @@ class OpenSearchKVStorage(BaseKVStorage):
         caller the pre-refresh view -- what every one of these readers got
         unconditionally before. It must never turn a read into an error.
 
+        ``strict=True`` is the exception, and only a scan that must not
+        mistake staleness for absence may ask for it: the failure is raised
+        instead. A reader whose empty result would be read as CONFIRMED empty
+        -- ``_iter_raw_docs`` behind the base ``iter_rows`` contract -- cannot
+        accept the pre-refresh view, because rows already durable but not yet
+        in a searchable segment are indistinguishable from no rows at all, and
+        the startup that reads that verdict writes a baseline from it. A
+        missing index is NOT raised here even then: it is recorded, and the
+        caller refuses on its own readiness check with the better message.
+
         It must not settle the commit path's refresh debt either: those
         counters record what this storage's own commits owe, and a best-effort
         call must not retire an obligation on their behalf.
@@ -1748,6 +1920,13 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
+            if strict:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] Refresh before a scan of "
+                    f"{self._index_name} failed, so a scan cannot tell rows "
+                    f"that are durable but not yet searchable from no rows at "
+                    f"all: {e}"
+                ) from e
             logger.warning(
                 f"[{self.workspace}] Refresh before a search read of "
                 f"{self._index_name} failed; reading a possibly stale view: {e}"
@@ -1804,6 +1983,46 @@ class OpenSearchKVStorage(BaseKVStorage):
             # not quarantine rows naming them over a visibility round trip.
             raise OpenSearchReferencesIntactError(str(e)) from e
         self._refreshed_generation = owed
+
+    async def iter_rows(self, *, page_size: int = 200) -> AsyncIterator[dict[str, Any]]:
+        """Stream every row (base contract) over a PIT scan, read-your-writes.
+
+        The pending buffer is snapshotted under ``_flush_lock`` first, so a
+        buffered upsert of this process is yielded in place of (or in
+        addition to) its indexed version and a buffered delete hides its
+        row, matching what ``get_by_ids`` would answer for the same ids.
+
+        Raises ``StorageControlPlaneError`` when the index is gone -- the
+        scan never ends early to signal "empty". The refusal precedes every
+        row, the buffered ones included: ``_iter_raw_docs`` does not flush
+        (``_refresh_for_search`` is best-effort and returns on a missing
+        index), so the indexed side is unknown, and yielding the buffer alone
+        would be exactly the partial listing the base contract forbids.
+        """
+        if self._flush_lock is None:
+            raise StorageNotInitializedError("OpenSearchKVStorage")
+        async with self._flush_lock:
+            pending = dict(self._pending_upserts)
+            deleted = set(self._pending_kv_deletes)
+        seen_pending: set[str] = set()
+        async for hits in self._iter_raw_docs(batch_size=max(1, int(page_size))):
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if doc_id is None or doc_id in deleted:
+                    continue
+                if doc_id in pending:
+                    seen_pending.add(doc_id)
+                    yield self._materialize_pending_kv_doc(doc_id, pending[doc_id])
+                    continue
+                data = dict(hit.get("_source") or {})
+                data.pop("__mirrored_id", None)
+                data["_id"] = doc_id
+                data.setdefault("create_time", 0)
+                data.setdefault("update_time", 0)
+                yield data
+        for doc_id, source in pending.items():
+            if doc_id not in seen_pending and doc_id not in deleted:
+                yield self._materialize_pending_kv_doc(doc_id, source)
 
     async def is_empty(self) -> bool:
         """Return True if the index (plus pending buffer) contains no docs.
@@ -3599,7 +3818,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await _run_chunked_async_bulk(
+            _, failed = await _run_chunked_async_bulk(
                 self.client,
                 actions,
                 max_payload_bytes=self._max_upsert_payload_bytes,
@@ -3609,11 +3828,15 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 raise_on_error=False,
                 refresh="wait_for",
             )
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] doc-status delete"
+            )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
             logger.error(f"[{self.workspace}] Error deleting doc statuses: {e}")
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Delete the entire doc status index."""
@@ -3713,7 +3936,23 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._indices_ready = True
 
     def _mark_indices_missing(self):
-        """Mark graph indices as unavailable for subsequent read short-circuiting."""
+        """Mark graph indices as unavailable for subsequent read short-circuiting.
+
+        One flag covers BOTH indices: every read then answers "empty" until
+        the next write's ``_ensure_indices_ready`` recreates whichever index
+        is gone, with its mapping. That heal is why a read that finds only one
+        index missing must still set the mark -- an unmarked write would let
+        the cluster auto-create the index with dynamic mappings, and the
+        ``terms`` aggregations on its keyword fields would stop working.
+
+        The reads that rank entities (``get_popular_labels`` and the ``*``
+        subgraph) answer the call that discovered a missing EDGE index from
+        the node index before honouring the mark: a missing edge index is an
+        empty edge set, not a missing graph. A repeat call answers empty until
+        a write heals the mark. Accepted: the state is reachable only by an
+        external deletion while the process runs, and ``initialize()``
+        recreates both indices before any read.
+        """
         self._indices_ready = False
         self._nodes_dirty = False
         self._edges_dirty = False
@@ -4431,19 +4670,34 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     # --- Batch operations ---
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
-        """Batch-fetch multiple nodes by ID."""
-        if not self._indices_ready:
+        """Batch-fetch multiple nodes by ID.
+
+        An id is left out only when its mget item says ``found: false``. An
+        item-level error or a short/malformed ``docs`` array raises (see
+        ``_interpret_mget_item``), as in :meth:`has_nodes_batch`: callers read
+        a missing key as "this node does not exist" and act on it.
+        """
+        if not node_ids or not self._indices_ready:
             return {}
+        requested = list(dict.fromkeys(node_ids))
         try:
             response = await self.client.mget(
-                index=self._nodes_index, body={"ids": node_ids}
+                index=self._nodes_index, body={"ids": requested}
             )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(requested):
+                raise RuntimeError(
+                    f"OpenSearch mget for {len(requested)} node ids returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items, "
+                    f"expected exactly {len(requested)}"
+                )
             result = {}
-            for doc in response["docs"]:
-                if doc.get("found"):
-                    data = doc["_source"]
-                    data["_id"] = doc["_id"]
-                    result[doc["_id"]] = data
+            for node_id, item in zip(requested, docs):
+                interpreted = _interpret_mget_item(item, node_id)
+                if interpreted is not None:
+                    data = interpreted["_source"]
+                    data["_id"] = interpreted["_id"]
+                    result[node_id] = data
             return result
         except OpenSearchException as e:
             if _is_missing_index_error(e):
@@ -4451,6 +4705,53 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 return {}
             logger.error(f"[{self.workspace}] Error batch-getting nodes: {e}")
             raise
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Batch-fetch edges with one mget of their canonical ``_id``.
+
+        Same contract as :meth:`get_edge` for every pair: keyed by the pair as
+        requested, a direction-independent lookup, and an absent edge left out.
+        A per-item error or a short/malformed ``docs`` array raises (see
+        ``_interpret_mget_item``) rather than reading as absent.
+        """
+        if not pairs or not self._indices_ready:
+            return {}
+        edge_ids = list(
+            dict.fromkeys(_canonical_edge_id(p["src"], p["tgt"]) for p in pairs)
+        )
+        try:
+            response = await self.client.mget(
+                index=self._edges_index, body={"ids": edge_ids}
+            )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(edge_ids):
+                raise RuntimeError(
+                    f"OpenSearch mget for {len(edge_ids)} edge ids returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items, "
+                    f"expected exactly {len(edge_ids)}"
+                )
+            found: dict[str, dict] = {}
+            for edge_id, item in zip(edge_ids, docs):
+                interpreted = _interpret_mget_item(item, edge_id)
+                if interpreted is not None:
+                    found[edge_id] = {
+                        **interpreted["_source"],
+                        "_id": interpreted["_id"],
+                    }
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting edges: {e}")
+            raise
+        result: dict[tuple[str, str], dict] = {}
+        for pair in pairs:
+            edge = found.get(_canonical_edge_id(pair["src"], pair["tgt"]))
+            if edge is not None:
+                result[(pair["src"], pair["tgt"])] = dict(edge)
+        return result
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Batch-fetch edge counts for multiple nodes using aggregations."""
@@ -4946,18 +5247,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete the node
             try:
-                await self.client.delete(index=self._nodes_index, id=node_id)
-            except NotFoundError:
-                pass
-            self._nodes_dirty = True
-            self._edges_dirty = True
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete the node
+                try:
+                    await self.client.delete(index=self._nodes_index, id=node_id)
+                except NotFoundError:
+                    pass
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
             raise
@@ -4967,7 +5274,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         Marks node and edge search views dirty so refresh happens lazily on the
         next search/count-based graph read. Uses conflicts="proceed" to
-        tolerate already-deleted matches.
+        tolerate already-deleted matches. Raises when any node delete is
+        rejected (a 404 counts as deleted); ``delete_by_query`` needs no item
+        check because the server answers non-2xx when it records a failure.
         """
         if not nodes:
             return
@@ -4986,27 +5295,36 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await _run_chunked_async_bulk(
-                self.client,
-                actions,
-                max_payload_bytes=self._max_upsert_payload_bytes,
-                max_records_per_batch=self._max_delete_records_per_batch,
-                log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
-                what="node delete",
-                raise_on_error=False,
+            try:
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete nodes
+                _, failed = await _run_chunked_async_bulk(
+                    self.client,
+                    actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+                    what="node delete",
+                    raise_on_error=False,
+                )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] node delete"
             )
-            self._nodes_dirty = True
-            self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
             raise
@@ -5017,7 +5335,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         Startup migration is fail-fast, so every edge is keyed by its canonical
         (sorted-pair) ``_id``. Delete that single id per edge — dedup via a set so
         reciprocal inputs ``(A,B)`` and ``(B,A)`` collapse to one delete op. The
-        raw bulk API does not raise on a 404 delete.
+        raw bulk API answers 200 even when items fail, so every item is checked:
+        a 404 counts as deleted, any other failure raises.
 
         Marks edge search views dirty so refresh happens lazily on the next
         search/count-based graph read.
@@ -5049,9 +5368,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     f"[{self.workspace}] {self.namespace} edges: edge delete "
                     f"{len(operations)} ops split into bulk chunks (chunk={chunk})"
                 )
-            for i in range(0, len(operations), chunk):
-                await self.client.bulk(body=operations[i : i + chunk])
-            self._edges_dirty = True
+            try:
+                for i in range(0, len(operations), chunk):
+                    response = await self.client.bulk(body=operations[i : i + chunk])
+                    _raise_bulk_delete_failures(
+                        response["items"],
+                        context=f"[{self.workspace}] edge delete",
+                    )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
             raise
@@ -5446,16 +5775,31 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         },
                     },
                 }
-                resp = await self.client.search(index=self._edges_index, body=body)
-                degree_map = {}
-                for bucket in resp["aggregations"]["src"]["buckets"]:
-                    degree_map[bucket["key"]] = (
-                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                degree_map: dict[str, int] = {}
+                try:
+                    resp = await self.client.search(index=self._edges_index, body=body)
+                except OpenSearchException as e:
+                    if not _is_missing_index_error(e):
+                        raise
+                    # A missing EDGE index is an empty edge set: every entity
+                    # ties at degree 0 and the isolated top-up below fills the
+                    # band from the node index. The rule get_popular_labels
+                    # follows; the edge pass at the end then finds the index
+                    # missing too and returns the nodes it collected.
+                    logger.warning(
+                        f"[{self.workspace}] Edge index {self._edges_index} is "
+                        "missing; ranking entities from the node index alone"
                     )
-                for bucket in resp["aggregations"]["tgt"]["buckets"]:
-                    degree_map[bucket["key"]] = (
-                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                    )
+                    self._mark_indices_missing()
+                else:
+                    for bucket in resp["aggregations"]["src"]["buckets"]:
+                        degree_map[bucket["key"]] = (
+                            degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                        )
+                    for bucket in resp["aggregations"]["tgt"]["buckets"]:
+                        degree_map[bucket["key"]] = (
+                            degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                        )
                 # Degree descending, then label ascending — the BaseGraphStorage
                 # tie-break, and the same ordering get_popular_labels uses.
                 # Sorting on the degree alone is stable, so the equal-degree
@@ -6034,11 +6378,22 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         relations has no document at all, so ranking from the edge side alone
         silently excluded them. NetworkXStorage ranks the whole node set, and a
         graph whose entities carry no relations must not report an empty list.
+
+        A missing EDGE index is an empty edge set, not a missing graph: the
+        ranking then comes from the node scan alone, the way the Mongo backend
+        reads a missing edge collection. Only a missing NODE index answers
+        ``[]``. The mark is still set -- see ``_mark_indices_missing`` for why,
+        and for the repeat-call residue it leaves.
         """
         if not self._indices_ready or limit <= 0:
             return []
         try:
-            await self._refresh_graph_indices_if_dirty(refresh_edges=True)
+            # Nodes as well as edges: the edge branch below may mark the
+            # indices missing, and the mark clears ``_nodes_dirty`` -- the node
+            # scan would otherwise miss an entity written just before.
+            await self._refresh_graph_indices_if_dirty(
+                refresh_nodes=True, refresh_edges=True
+            )
             body = {
                 "size": 0,
                 "aggs": {
@@ -6046,23 +6401,34 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},
                 },
             }
-            response = await self.client.search(index=self._edges_index, body=body)
-            # Keyed on edge ENDPOINTS, so an id with edge documents but no node
-            # document (a dangling endpoint, only reachable as a data-quality
-            # defect — the write path materializes both endpoints) also surfaces
-            # here. Left in deliberately: confirming every ranked id against the
-            # node index costs a round trip on every call, and the worst case is
-            # a picker entry whose entity lookup comes back empty, which the
-            # client reports rather than crashes on.
-            degree_map = {}
-            for bucket in response["aggregations"]["src"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+            degree_map: dict[str, int] = {}
+            try:
+                response = await self.client.search(index=self._edges_index, body=body)
+            except OpenSearchException as e:
+                if not _is_missing_index_error(e):
+                    raise
+                logger.warning(
+                    f"[{self.workspace}] Edge index {self._edges_index} is "
+                    "missing; ranking entities from the node index alone"
                 )
-            for bucket in response["aggregations"]["tgt"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                )
+                self._mark_indices_missing()
+            else:
+                # Keyed on edge ENDPOINTS, so an id with edge documents but no
+                # node document (a dangling endpoint, only reachable as a
+                # data-quality defect — the write path materializes both
+                # endpoints) also surfaces here. Left in deliberately:
+                # confirming every ranked id against the node index costs a
+                # round trip on every call, and the worst case is a picker
+                # entry whose entity lookup comes back empty, which the client
+                # reports rather than crashes on.
+                for bucket in response["aggregations"]["src"]["buckets"]:
+                    degree_map[bucket["key"]] = (
+                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                    )
+                for bucket in response["aggregations"]["tgt"]["buckets"]:
+                    degree_map[bucket["key"]] = (
+                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                    )
             # Ties break on the label, ascending — the ordering the SQL and
             # Cypher backends use, rather than aggregation bucket order.
             sorted_labels = sorted(
@@ -6188,6 +6554,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
     _index_ready: bool = field(default=False, init=False)
+    # Bumped by every _mark_index_missing. _recheck_index_presence samples it
+    # before its round trip and refuses to act on an answer that a later mark
+    # has already outdated -- see there.
+    _missing_mark_generation: int = field(default=0, init=False)
 
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
@@ -6226,6 +6596,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # this lock to keep in-process readers race-free during a flush and
         # to order cross-worker flushes against the same OpenSearch index.
         self._flush_lock = None
+        # Whether the index records an embedding model: True / False once
+        # ``_assert_index_is_usable`` has read the mapping, None while this is
+        # still unknown -- which includes an index THIS instance created, whose
+        # marker went in with the create body. Only an explicit False means
+        # there is something to adopt.
+        self._vector_space_marked: bool | None = None
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
@@ -6233,7 +6609,22 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         ) = _resolve_bulk_batch_limits()
 
     async def initialize(self):
-        """Initialize client and create k-NN vector index."""
+        """Initialize client and create k-NN vector index.
+
+        The flush lock is taken FIRST, before anything that can refuse. A
+        storage that raises ``VectorSpaceMismatchError`` from the compatibility
+        gate below must stay able to serve ``drop()``, because dropping and
+        re-provisioning the index is how ``lightrag-rebuild-vdb`` clears that
+        refusal. Assigning the lock after the gate -- as this did -- left
+        ``_flush_lock`` at ``None`` on the refusal path, so ``drop()`` then died
+        on ``async with None`` and the operator had to delete the index through
+        the OpenSearch API by hand. See
+        ``docs/design/VectorSpaceProvenance.md``.
+        """
+        if self._flush_lock is None:
+            self._flush_lock = get_namespace_lock(
+                self.namespace, workspace=self.workspace
+            )
         async with get_data_init_lock():
             if self.client is None:
                 self.client = await ClientManager.get_client()
@@ -6241,10 +6632,6 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch Vector storage initialized: {self._index_name}"
-            )
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                self.namespace, workspace=self.workspace
             )
 
     async def _ensure_index_ready(self):
@@ -6258,44 +6645,263 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
 
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this index holds vectors whose embedding model is unrecorded.
+
+        ``_assert_index_is_usable`` records the answer from the mapping it
+        already read at attach, so this asks the cluster nothing.
+
+        Unlike the file backends, an *empty* unmarked index also reports
+        pending: nothing here writes the marker outside ``indices.create``, so
+        emptiness cannot mark itself. The probe then finds no sample and lands
+        inconclusive, which leaves the index exactly where it was and costs one
+        retry per start until rows arrive. Accepted rather than special-cased,
+        because an unmarked index that is also empty only exists where a
+        pre-marker deployment created one and never wrote to it.
+        """
+        return (
+            self._vector_space_marked is False
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model in the index ``_meta``.
+
+        ``put_mapping`` replaces ``_meta`` wholesale, so the existing keys are
+        merged rather than overwritten -- dropping them would strip the
+        workspace identity that ``_claim_index_for_workspace`` depends on and
+        hand the index to any folding-equivalent deployment.
+
+        Never raises, per the base contract, and for the reason
+        ``_claim_index_for_workspace`` already gives: a read-only account, a
+        restored snapshot or ``index.blocks.write`` must not turn a safeguard
+        into a startup failure. The index simply stays unmarked, which is
+        where every index was before this feature existed.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+            await self.client.indices.put_mapping(
+                index=self._index_name,
+                body={
+                    "_meta": {
+                        **_index_meta(mapping, self._index_name),
+                        **vector_space_marker(self.embedding_func),
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                f"[{self.workspace}] Could not record the embedding-space marker "
+                f"on index '{self._index_name}' ({e}); it stays unmarked, so a "
+                f"later swap to a different model of the same dimension cannot "
+                f"be detected"
+            )
+            return False
+        self._vector_space_marked = True
+        logger.info(
+            f"[{self.workspace}] Adopted pre-existing index '{self._index_name}' "
+            f"for embedding model '{declared_model_name(self.embedding_func)}'"
+        )
+        return True
+
     def _mark_index_missing(self):
-        """Mark the vector index as unavailable for subsequent read short-circuiting."""
+        """Mark the vector index as unavailable for subsequent read short-circuiting.
+
+        Reads do NOT stay marked forever: each one calls
+        ``_recheck_index_presence`` first and lifts the mark once the index is
+        back. Only a write (or ``initialize()``) ever re-CREATES it.
+
+        Bumping the generation is what keeps that lift from going backwards: a
+        probe already in flight must not restore readiness with what it saw
+        before this mark.
+        """
         self._index_ready = False
+        self._missing_mark_generation += 1
+
+    def _assert_index_is_usable(self, mapping: dict) -> None:
+        """Refuse an index this instance cannot read. THE choke point.
+
+        Three places attach to an index this instance did not just create --
+        the ``exists()`` branch of ``_create_knn_index_if_not_exists``, the
+        loser of its ``indices.create`` race, and ``_recheck_index_presence``.
+        They used to check different things (and the race loser checked neither
+        dimension nor model), so which facts got verified depended on which way
+        the instance happened to arrive. All three call this instead.
+
+        Two facts, both read from the mapping already in hand, so this costs no
+        round trip:
+
+        * **Dimension**, from the ``knn_vector`` mapping. That is the physical
+          truth the index enforces, so it outranks the recorded marker; the
+          marker's dimension is only a fallback for a mapping this code cannot
+          parse.
+        * **Model**, from the ``_meta`` marker. The index name carries no model
+          on this backend, so an index rebuilt under a different embedding model
+          keeps this workspace's ownership marker and differs only here.
+
+        Absent evidence never refuses -- an index recording neither predates the
+        marker and stays servable. ``assert_vector_space_matches`` owns that
+        rule; see ``docs/design/VectorSpaceProvenance.md``.
+
+        The refusal deliberately names ``lightrag-rebuild-vdb`` and NOT a
+        copy-pasteable ``PUT .../_mapping``: ``put_mapping`` replaces ``_meta``
+        wholesale, so a hand-run command carrying only the new keys would strip
+        the workspace identity and hand the index to any folding-equivalent
+        deployment.
+
+        Raises:
+            VectorSpaceMismatchError: the index holds another embedding space.
+        """
+        mapping_dim = _read_vector_dimension(mapping, self._index_name)
+        stored_model, marker_dim = read_vector_space_marker(
+            _index_meta(mapping, self._index_name)
+        )
+        assert_vector_space_matches(
+            backend=type(self).__name__,
+            container=self._index_name,
+            embedding_func=self.embedding_func,
+            stored_model=stored_model,
+            stored_dim=mapping_dim if mapping_dim is not None else marker_dim,
+        )
+        # Remembered from the mapping already in hand so
+        # ``vector_space_adoption_pending`` costs no round trip of its own.
+        self._vector_space_marked = stored_model is not None
+
+    async def _recheck_index_presence(self) -> None:
+        """Lift a stale missing-index mark when OUR index is back. Never creates.
+
+        Call at the top of every read, BEFORE taking ``_flush_lock`` -- the
+        probe is a network round trip and must not hold that lock.
+
+        This is what keeps the reads' empty answers honest. ``query()`` returns
+        ``[]`` only for a CONFIRMED missing index; a mark this instance set in
+        an earlier call is not a confirmation once the index is back, so every
+        read re-verifies before honouring it.
+
+        Free on the healthy path: ``_index_ready`` is True, so this returns
+        without touching the client. It costs one ``get_mapping`` only while
+        this instance believes the index is gone, which is already the
+        degraded state.
+
+        Why reads must re-verify: ``_index_ready`` is per-INSTANCE, so a peer
+        worker that happened to read inside ``drop()``'s rebuild window marks
+        itself and then short-circuits forever -- the vector read paths have no
+        write to heal them, and ``/documents/clear``'s post-drop
+        ``initialize()`` runs only in the worker that served the request (and
+        only for ``doc_status``). Re-verifying is what lets a peer observe the
+        recreate that already happened on the server.
+
+        Rules:
+
+        * Still absent -- the mark is re-applied (bumping the generation) and
+          this returns normally. That is the confirmation the readers' empty
+          answers rest on.
+        * Back, and the ``_meta`` marker names THIS workspace (or names nobody
+          -- an index predating the marker, unprotected exactly as it was
+          before the check existed) -- the mark is lifted.
+        * Back, but claimed by a different workspace -- raise
+          ``WorkspaceIndexCollisionError``. Existence alone must not restore
+          readiness: ``_sanitize_index_name`` is lossy, so the name that came
+          back can belong to another deployment, and reads would serve its
+          vectors as ours. This is the only ownership check on a read path; an
+          instance that was never marked still reads without one.
+        * Back and ours, but built for a different embedding dimension or a
+          different embedding model -- raise ``VectorSpaceMismatchError``.
+          Readiness means "this index is usable by THIS instance", which is
+          exactly what ``_assert_index_is_usable`` decides. Evidence that
+          cannot be read is not a mismatch and does not refuse.
+        * The probe itself fails -- propagate. "It was missing when I last
+          looked and I cannot reach the cluster now" is not a confirmation, and
+          an unconfirmed failure must never become an empty result set. Each
+          caller then applies its own convention: ``query`` lets it out, the
+          point reads swallow it the way they swallow their own transport
+          errors.
+
+        Creating the index here instead would be wrong, not merely more
+        expensive: a read that provisions an empty index manufactures the very
+        confirmation it is checking for. Recreating stays with the write paths,
+        which hold the buffered rows to put back.
+
+        Readiness is only restored if no ``_mark_index_missing`` landed while
+        the answer was in flight. This probe runs OUTSIDE ``_flush_lock``, so
+        the state can move under it two ways: a ``drop()`` can delete the index
+        and fail to recreate it, and a CONCURRENT PROBE can come back 404 after
+        reading the server later than this one did. Restoring readiness on the
+        older observation would leave ``_index_ready`` True with no index
+        behind it, and the next ``upsert`` would then skip
+        ``_ensure_index_ready`` -- the one path that would have rebuilt it --
+        and flush against nothing. Ordering is all this needs, which is what
+        the generation gives and the lock cannot without being held across the
+        round trip.
+
+        The ordering is one-sided on purpose: confirmed absence always writes,
+        restored readiness only writes when nothing moved. Absence is the safe
+        direction -- reads short-circuit and the next probe lifts the mark if
+        the index returned -- while a wrong True disables the rebuild.
+        """
+        if self._index_ready:
+            return
+        if self.client is None:
+            return
+        generation = self._missing_mark_generation
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                # Record the absence rather than discard it. Two probes can be
+                # in flight at once, and the one answered 404 read the server
+                # LATER than one that still saw the index; marking here is what
+                # lets the newer fact outrank the older, in either resumption
+                # order -- it bumps the generation the stale probe is about to
+                # test, and if that probe already lifted the flag it puts it
+                # back.
+                self._mark_index_missing()
+                return
+            raise
+        if generation != self._missing_mark_generation:
+            # The index was marked missing again while this was in flight, so
+            # what came back describes a world that no longer holds. Act on
+            # nothing -- neither lifting nor raising -- and let the next read
+            # probe the current one.
+            return
+        stored = _stored_index_identity(_index_meta(mapping, self._index_name))
+        expected = _workspace_index_meta(self.workspace, self.final_namespace)
+        if stored != expected and any(v is not None for v in stored.values()):
+            # A partially written marker counts as claimed, exactly as in
+            # _claim_index_for_workspace: an identity we cannot fully match is
+            # not ours to read.
+            raise _workspace_collision_error(self._index_name, stored, expected)
+        # Ownership is only half of what an attach must establish; see
+        # _assert_index_is_usable. Without it the probe would restore readiness
+        # against a foreign embedding space, queries would fail on a raw
+        # dimension error, and upsert would skip _ensure_index_ready -- the one
+        # path that raises something an operator can act on.
+        self._assert_index_is_usable(mapping)
+        self._index_ready = True
 
     async def _create_knn_index_if_not_exists(self):
+        """Provision the k-NN index, or verify the one that is already there.
+
+        Three ways out, and every one that attaches to an index this call did
+        not build runs ``_assert_index_is_usable`` -- including the loser of the
+        ``indices.create`` race, which previously validated ownership alone and
+        could mark itself ready against vectors of another dimension entirely.
+        """
+        lost_create_race = False
         try:
             if await self.client.indices.exists(index=self._index_name):
                 # Ownership before compatibility: an index belonging to a
-                # different workspace must not be judged by our dimensions.
+                # different workspace must not be judged by our embedding space.
                 await _claim_index_for_workspace(
                     self.client,
                     self._index_name,
                     self.workspace,
                     self.final_namespace,
                 )
-                # Validate existing index dimension
-                try:
-                    mapping = await self.client.indices.get_mapping(
-                        index=self._index_name
-                    )
-                    existing_dim = (
-                        mapping[self._index_name]["mappings"]["properties"]
-                        .get("vector", {})
-                        .get("dimension")
-                    )
-                    expected_dim = self.embedding_func.embedding_dim
-                    if existing_dim is not None and existing_dim != expected_dim:
-                        raise ValueError(
-                            f"Vector dimension mismatch! Index '{self._index_name}' has "
-                            f"dimension {existing_dim}, but current embedding model expects "
-                            f"dimension {expected_dim}. Please drop the existing index or "
-                            f"use an embedding model with matching dimensions."
-                        )
-                except (KeyError, TypeError):
-                    logger.warning(
-                        f"[{self.workspace}] Could not read vector mapping for index "
-                        f"'{self._index_name}'; skipping dimension validation"
-                    )
+                mapping = await self.client.indices.get_mapping(index=self._index_name)
+                self._assert_index_is_usable(mapping)
                 return
 
             ef_construction = int(
@@ -6336,9 +6942,18 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         "created_at": {"type": "long"},
                     },
                     "dynamic": True,
-                    "_meta": _workspace_index_meta(
-                        self.workspace, self.final_namespace
-                    ),
+                    # Ownership identity plus the embedding-space provenance.
+                    # The index name carries no model on this backend, so the
+                    # marker is the ONLY record of which model wrote these
+                    # vectors -- a same-dimension model swap is invisible
+                    # without it. Written at create time only: backfilling it
+                    # onto an existing unmarked index needs evidence that the
+                    # vectors really came from this model, which lives one
+                    # layer up (see docs/design/VectorSpaceProvenance.md).
+                    "_meta": {
+                        **_workspace_index_meta(self.workspace, self.final_namespace),
+                        **vector_space_marker(self.embedding_func),
+                    },
                 },
             }
             await self.client.indices.create(index=self._index_name, body=body)
@@ -6350,6 +6965,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if "resource_already_exists_exception" not in str(e):
                 logger.error(f"[{self.workspace}] Error creating k-NN index: {e}")
                 raise
+            # A peer won indices.create between our exists() check and our
+            # create. We are now attaching to an index we did not build.
+            lost_create_race = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error creating k-NN index: {e}")
             raise
@@ -6361,6 +6979,17 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
+        if lost_create_race:
+            # Ownership is not enough here, and this is where it used to stop.
+            # The winner of the race may be a folding-equivalent deployment, or
+            # this same workspace started under a different embedding
+            # configuration; either way the index we are about to serve was
+            # built by someone else's embedding space. A mapping we cannot
+            # FETCH propagates -- "I could not look" is not evidence that the
+            # index is usable, and this instance is one step from marking
+            # itself ready.
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+            self._assert_index_is_usable(mapping)
 
     async def finalize(self):
         """Flush pending writes and release the OpenSearch client connection.
@@ -6663,7 +7292,16 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """k-NN similarity search with cosine score conversion for lucene engine."""
+        """k-NN similarity search with cosine score conversion for lucene engine.
+
+        An empty list here means a CONFIRMED missing index (or no hits), never
+        an unconfirmed failure -- see the transport-error branch below. The
+        re-check is what keeps "confirmed" true: a mark this instance set in an
+        earlier call is not a confirmation once the index is back, and a
+        re-check that cannot reach the cluster raises rather than letting the
+        stale mark answer for it.
+        """
+        await self._recheck_index_presence()
         if not self._index_ready:
             return []
         if query_embedding is not None:
@@ -6687,24 +7325,33 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             response = await self.client.search(
                 index=self._index_name, body=search_body
             )
+            hits = response["hits"]["hits"]
             results = []
-            for hit in response["hits"]["hits"]:
-                # OpenSearch k-NN with lucene engine and cosinesimil space type
-                # returns scores that can be used directly as similarity measure.
-                score = hit["_score"]
+            cosine_similarities = []
+            for hit in hits:
+                # OpenSearch k-NN with the lucene engine and cosinesimil space
+                # type scores each hit as (1 + cosine_similarity) / 2, in
+                # [0, 1] -- not raw cosine similarity (Lucene's
+                # VectorSimilarityFunction.COSINE requires non-negative
+                # scores, so the plugin rescales rather than returning the
+                # native [-1, 1] range). Convert back before comparing to
+                # cosine_better_than_threshold, which every other backend
+                # compares against raw cosine similarity.
+                cosine_similarity = 2 * hit["_score"] - 1
+                cosine_similarities.append(cosine_similarity)
 
-                if score >= self.cosine_better_than_threshold:
+                if cosine_similarity >= self.cosine_better_than_threshold:
                     doc = hit["_source"]
                     doc["id"] = hit["_id"]
-                    doc["distance"] = score
+                    doc["distance"] = cosine_similarity
                     results.append(doc)
             logger.info(
                 f"[{self.workspace}] Vector query on {self._index_name}: "
                 f"top_k={top_k}, threshold={self.cosine_better_than_threshold}, "
-                f"total_hits={len(response['hits']['hits'])}, "
+                f"total_hits={len(hits)}, "
                 f"passed_filter={len(results)}, "
-                f"score_range=[{min((h['_score'] for h in response['hits']['hits']), default=0):.4f}, "
-                f"{max((h['_score'] for h in response['hits']['hits']), default=0):.4f}]"
+                f"cosine_range=[{min(cosine_similarities, default=0):.4f}, "
+                f"{max(cosine_similarities, default=0):.4f}]"
             )
             return results
         except OpenSearchException as e:
@@ -6732,6 +7379,28 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         async with self._flush_lock:
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
+
+    async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
+        """Whether buffered vector UPSERTS remain (retryable ones are retained).
+
+        The vector side needs its own answer for the same reason the KV side
+        does: ``_flush_pending_vector_ops`` keeps per-doc 408/429/5xx failures
+        buffered and returns normally, so a successful ``index_done_callback``
+        is not proof that every staged vector reached the server. The base
+        default would answer ``False`` over a non-empty buffer.
+
+        Deletes are excluded by default, as in the base docstring.
+        """
+
+        def _answer() -> bool:
+            if self._pending_vector_docs:
+                return True
+            return include_deletes and bool(self._pending_vector_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
 
     async def index_done_callback(self) -> None:
         """Flush pending vector ops and refresh the index for k-NN visibility.
@@ -6767,6 +7436,38 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             # answers only where it is asked drifts.
             raise OpenSearchReferencesIntactError(str(e)) from e
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+
+        An index this instance has never seen ready is reported empty only
+        after ``_recheck_index_presence`` has been allowed to fail loudly --
+        unlike the reads below it, which swallow that probe.
+        """
+        await self._recheck_index_presence()
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            index_ready = self._index_ready
+        if not index_ready:
+            return True
+        # `count` is search-based, so a flush that has not been refreshed yet
+        # would read as empty. `_refresh_for_search` lives on the KV class
+        # only, so the refresh is issued directly here.
+        await self.client.indices.refresh(index=self._index_name)
+        response = await self.client.count(index=self._index_name)
+        return response["count"] == 0
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.
 
@@ -6774,6 +7475,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         LightRAG vector backend (see ``NanoVectorDBStorage.get_by_id``).
         Callers that need the embedding itself must use ``get_vectors_by_ids``.
         """
+        # These reads answer a transport failure with a miss rather than an
+        # error (see the except blocks below), so the readiness probe follows
+        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
+        # -- it is a ValueError, and a misconfigured index must stay loud.
+        try:
+            await self._recheck_index_presence()
+        except OpenSearchException:
+            pass
         # Buffer lookups happen under the namespace lock so an in-flight
         # flush is observed as either "completely before" or "completely
         # after" -- never as a snapshot-swapped intermediate state.
@@ -6818,6 +7527,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """
         if not ids:
             return []
+        # These reads answer a transport failure with a miss rather than an
+        # error (see the except blocks below), so the readiness probe follows
+        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
+        # -- it is a ValueError, and a misconfigured index must stay loud.
+        try:
+            await self._recheck_index_presence()
+        except OpenSearchException:
+            pass
         buffered: dict[str, dict[str, Any] | None] = {}
         remaining: list[str] = []
         async with self._flush_lock:
@@ -6866,6 +7583,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """Get vector embeddings for given IDs, with read-your-writes."""
         if not ids:
             return {}
+        # These reads answer a transport failure with a miss rather than an
+        # error (see the except blocks below), so the readiness probe follows
+        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
+        # -- it is a ValueError, and a misconfigured index must stay loud.
+        try:
+            await self._recheck_index_presence()
+        except OpenSearchException:
+            pass
         result: dict[str, list[float]] = {}
         remaining: list[str] = []
         async with self._flush_lock:

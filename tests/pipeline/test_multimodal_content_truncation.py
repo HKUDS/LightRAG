@@ -227,3 +227,133 @@ def test_table_budget_too_small_for_wrapper_avoids_partial_tags():
     # Never spend the budget on a broken opening <table ... without </table>.
     assert not (out.lstrip().startswith("<table") and "</table>" not in out)
     assert _MARKER_RE.search(out) is None
+
+
+class _CountingCharTokenizer(_CharTokenizer):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encode(self, content: str):
+        self.calls += 1
+        return super().encode(content)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("fmt", ["json", "html"])
+@pytest.mark.parametrize("keep", ["head", "tail"])
+def test_row_trim_keeps_most_rows_with_logarithmic_probes(fmt, keep):
+    """Row trimming picks the largest fitting row count without probing
+    every count: a linear scan re-tokenized the whole candidate per row,
+    which took ~25s for an 8000-row table.  The probe count is asserted
+    instead of a duration so the bound holds on any runner.  Bisection over
+    4000 rows needs ~13 probes plus the entry check; the ceiling of 40
+    leaves room for small helper changes while staying two orders of
+    magnitude below the ~2700 probes a linear scan makes."""
+    from lightrag.multimodal_context import (
+        _row_trim_table_leading,
+        _row_trim_table_trailing,
+        parse_table_tag,
+        serialize_html_rows,
+        split_html_rows,
+    )
+
+    row_count = 4000
+    if fmt == "json":
+        rows = [[f"r{i}c0", f"r{i}c1"] for i in range(row_count)]
+        attrs = 'id="t" format="json"'
+        content = f"<table {attrs}>{json.dumps(rows)}</table>"
+    else:
+        rows_html = "".join(
+            f"<tr><td>r{i}c0</td><td>r{i}c1</td></tr>" for i in range(row_count)
+        )
+        attrs = 'id="t" format="html"'
+        content = f"<table {attrs}>{rows_html}</table>"
+
+    counting = _CountingCharTokenizer()
+    tok = Tokenizer(model_name="char", tokenizer=counting)
+    budget = len(content) // 3
+    trim = _row_trim_table_trailing if keep == "head" else _row_trim_table_leading
+    out = trim(content, budget, tok)
+
+    assert out is not None
+    assert len(out) <= budget
+    assert counting.calls < 40, f"{counting.calls} tokenizer calls"
+
+    # Maximality: one more row from the same side would not fit.
+    if fmt == "json":
+        _, kept = parse_table_tag(out)
+        k = len(kept)
+        more = rows[: k + 1] if keep == "head" else rows[-(k + 1) :]
+        bigger = f"<table {attrs}>{json.dumps(more, ensure_ascii=False)}</table>"
+    else:
+        all_rows = split_html_rows(rows_html)
+        k = len(split_html_rows(out[out.index(">") + 1 : -len("</table>")]))
+        more = all_rows[: k + 1] if keep == "head" else all_rows[-(k + 1) :]
+        bigger = f"<table {attrs}>{serialize_html_rows(more)}</table>"
+    assert 0 < k < row_count
+    assert len(bigger) > budget
+    edge = "r0c0" if keep == "head" else f"r{row_count - 1}c0"
+    assert edge in out
+
+
+# ---------------------------------------------------------------------------
+# A cell holding the text "</table>" must not end a trimmed table early
+# ---------------------------------------------------------------------------
+
+_MARKUP_ROWS = [["Tag", "Meaning"], ["</table>", "closes"], ["<tr>", "row"]]
+
+
+def _markup_table() -> str:
+    from lightrag.table_markup import dumps_json_table_body
+
+    return (
+        f'<table id="tb-1" format="json">{dumps_json_table_body(_MARKUP_ROWS)}</table>'
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("trim", "kept"),
+    [
+        ("_row_trim_table_trailing", _MARKUP_ROWS[:2]),
+        ("_row_trim_table_leading", _MARKUP_ROWS[1:]),
+    ],
+)
+def test_row_trim_keeps_a_closing_tag_cell_inside_the_tag(trim, kept):
+    # The trimmed table is re-serialized from the parsed rows; a bare
+    # json.dumps put the raw "</table>" back and the result no longer parsed.
+    import lightrag.multimodal_context as mc
+    from lightrag.table_markup import parse_table_tag
+
+    tok = _tokenizer()
+    table = _markup_table()
+
+    out = getattr(mc, trim)(table, len(table) - 5, tok)
+
+    assert out is not None
+    assert out.count("</table>") == 1
+    parsed = parse_table_tag(out)
+    assert parsed is not None, out
+    assert parsed[1] == kept
+    assert len(tok.encode(out)) <= len(table) - 5
+
+
+@pytest.mark.offline
+def test_char_fallback_keeps_a_closing_tag_cell_inside_the_tag():
+    # No whole row fits: the fallback stores a slice of the serialized row as
+    # one JSON string, which carries the cell's markup text along.
+    from lightrag.multimodal_context import _row_trim_table_trailing
+    from lightrag.table_markup import dumps_json_table_body, parse_table_tag
+
+    tok = _tokenizer()
+    rows = [["</table>" + "X" * 400]]
+    table = f'<table id="tb-1" format="json">{dumps_json_table_body(rows)}</table>'
+
+    out = _row_trim_table_trailing(table, 120, tok)
+
+    assert out is not None
+    assert out.count("</table>") == 1
+    parsed = parse_table_tag(out)
+    assert parsed is not None, out
+    assert "</table>" in parsed[1][0][0]
+    assert len(tok.encode(out)) <= 120

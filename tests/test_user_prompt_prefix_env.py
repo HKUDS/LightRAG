@@ -16,21 +16,17 @@ import pytest
 
 from lightrag.base import QueryParam
 from lightrag.prompt import load_user_prompt_prefix_source
-from lightrag.utils import logger as lightrag_logger
 
 
 pytestmark = pytest.mark.offline
 
 
 @pytest.fixture(autouse=True)
-def _clear_prefix_env(monkeypatch):
+def _clear_prefix_env(monkeypatch, lightrag_caplog):
     # load_dotenv(override=False) refills deleted names on the next module
     # import, so pin neutral values rather than using delenv.
     monkeypatch.setenv("USER_PROMPT_PREFIX", "")
     monkeypatch.setenv("USER_PROMPT_PREFIX_FILE", "")
-    # The lightrag logger sets propagate=False, so caplog sees nothing without
-    # this (same approach as tests/parser/markdown/test_raw_cache.py).
-    monkeypatch.setattr(lightrag_logger, "propagate", True)
 
 
 def _prefix_dir(monkeypatch, tmp_path):
@@ -69,7 +65,9 @@ def test_inline_special_characters_are_preserved(monkeypatch):
 
 def test_long_inline_value_is_not_truncated(monkeypatch):
     """No length bound: this is operator config, not client input."""
-    value = "policy. " * 5000
+    # 28,000 characters: long, yet under the 32,767-character cap Windows
+    # puts on a single environment variable, so the test runs there too.
+    value = "policy. " * 3500
     monkeypatch.setenv("USER_PROMPT_PREFIX", value)
     assert load_user_prompt_prefix_source() == value
 

@@ -21,16 +21,12 @@ from anthropic import (
     RateLimitError,
     APITimeoutError,
 )
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     empty_length_truncated_hint,
     format_response_diagnostics,
+    provider_timeout,
     safe_unicode_decode,
     logger,
     TruncatedResponse,
@@ -38,21 +34,33 @@ from lightrag.utils import (
 from lightrag.api import __api_version__
 
 
-# Custom exception for retry mechanism
 class InvalidResponseError(Exception):
-    """Custom exception class for triggering retry mechanism"""
+    """Kept for import compatibility; this binding never raises it."""
 
     pass
 
 
-# Core Anthropic completion function with retry
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError, InvalidResponseError)
-    ),
-)
+# Retry ownership belongs to the Anthropic SDK, so there is no tenacity layer
+# here: stacking one on top of the SDK loop multiplied the attempts (3x3) and
+# overrode a server's ``x-should-retry: false``. The SDK loop obeys
+# ``x-should-retry`` and ``retry-after`` and retries connection errors,
+# timeouts, 408, 409, 429 and >= 500 (incl. 529 overloaded). Its default of
+# two retries backs off only 0.5 s + 1 s when no ``retry-after`` arrives (5xx,
+# connection errors, Anthropic-compatible endpoints), which is too short for a
+# pipeline whose failed extraction call fails the whole document. Four retries
+# back off 0.5 + 1 + 2 + 4 s, about the window the OpenAI binding's tenacity
+# loop gives (4 s + 4 s). Each attempt gets the full ``timeout``; inside
+# LightRAG's LLM worker queue the whole call is still capped at
+# ``2 * llm_timeout``, so the larger budget cannot stretch a hung call.
+#
+# The OpenAI binding resolved the same double loop the other way
+# (``max_retries=0``, tenacity owns retries) so that a predicate can fail
+# permanent spend-stop 429s fast, which the body-blind SDK loop cannot. This
+# binding has no such classification to protect, and the SDK's
+# ``x-should-retry`` / ``retry-after`` handling is worth keeping.
+_DEFAULT_MAX_RETRIES = 4
+
+
 async def anthropic_complete_if_cache(
     model: str,
     prompt: str,
@@ -66,6 +74,14 @@ async def anthropic_complete_if_cache(
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    Retries:
+    - The Anthropic SDK is the only retry layer (see the comment on
+      ``_DEFAULT_MAX_RETRIES``). Pass ``max_retries`` to override its budget
+      per call; ``0`` disables retries.
+    - When the budget is exhausted, the SDK's own exception
+      (``RateLimitError``, ``APIStatusError``, ``APIConnectionError``, ...)
+      propagates unchanged, never a ``tenacity.RetryError``.
 
     Structured output note:
     - This adapter does not support OpenAI-style ``response_format`` JSON mode.
@@ -109,7 +125,14 @@ async def anthropic_complete_if_cache(
             stacklevel=2,
         )
     kwargs.pop("response_format", None)
-    timeout = kwargs.pop("timeout", None)
+    # <= 0 or unset means the SDK default. The SDK reads an explicit
+    # timeout=None as "no timeout at all", so it is only passed when set.
+    timeout = provider_timeout(kwargs.pop("timeout", None))
+    client_timeout = {} if timeout is None else {"timeout": timeout}
+    # Client option, not a ``messages.create`` parameter.
+    max_retries = kwargs.pop("max_retries", None)
+    if max_retries is None:
+        max_retries = _DEFAULT_MAX_RETRIES
 
     # Require max_tokens; the Anthropic SDK errors if it's missing
     kwargs.setdefault("max_tokens", 8192)
@@ -119,14 +142,18 @@ async def anthropic_complete_if_cache(
 
     anthropic_async_client = (
         AsyncAnthropic(
-            default_headers=default_headers, api_key=api_key, timeout=timeout
+            default_headers=default_headers,
+            api_key=api_key,
+            max_retries=max_retries,
+            **client_timeout,
         )
         if base_url is None
         else AsyncAnthropic(
             base_url=base_url,
             default_headers=default_headers,
             api_key=api_key,
-            timeout=timeout,
+            max_retries=max_retries,
+            **client_timeout,
         )
     )
 
@@ -382,6 +409,7 @@ async def anthropic_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
@@ -403,6 +431,7 @@ async def claude_3_opus_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     return await anthropic_complete_if_cache(
@@ -423,6 +452,7 @@ async def claude_3_sonnet_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     return await anthropic_complete_if_cache(
@@ -443,6 +473,7 @@ async def claude_3_haiku_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     return await anthropic_complete_if_cache(
