@@ -414,6 +414,14 @@ Timeout LLM selama ekstraksi entity-relation biasanya berasal dari salah satu da
 - **Model terjebak dalam output loop.** Beberapa model (terutama model Qwen yang di-deploy secara lokal) terkadang masuk ke endless-output loop pada teks tertentu. Jika terjadi sesekali, cukup proses ulang dokumen satu kali dan masalah biasanya terselesaikan.
 - **Khusus referensi (strategi P chunking).** Saat menggunakan strategi paragraph-semantic (`P`) chunking (misalnya `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` untuk otomatis membuang block referensi yang cocok sebelum chunking. Ini mencegah referensi menghasilkan terlalu banyak entity dan relation bernilai rendah, salah satu penyebab umum timeout. Opsi ini juga dapat diaktifkan per file melalui filename hint `paper.[-P(drop_rf=true)].pdf`; parameter detection terkait (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) didokumentasikan di `env.example`.
 
+### Mengatasi Timeout Embedding
+
+Error seperti `Embedding func: Worker execution timeout after 60s` berasal dari embedding queue, yang memiliki timeout sendiri dan tidak mengikuti `LLM_TIMEOUT`:
+
+- **Timeout-nya adalah `EMBEDDING_TIMEOUT` (default `30`).** Seperti timeout LLM, execution timeout efektif adalah **dua kali** nilai yang dikonfigurasi, sehingga nilai default menampilkan `60s`. Menaikkan `LLM_TIMEOUT` tidak berpengaruh pada pemanggilan embedding.
+- **Penyebab yang umum adalah embedding service yang lambat.** Batch embedding yang sehat selesai dalam beberapa detik, sehingga menaikkan `EMBEDDING_TIMEOUT` biasanya hanya menyembunyikan masalah. Periksa embedding service terlebih dahulu.
+- **Sesuaikan concurrency dengan kemampuan service.** LightRAG mengirim hingga `EMBEDDING_FUNC_MAX_ASYNC` (default `8`) batch sekaligus. Dengan Ollama, set `OLLAMA_NUM_PARALLEL` minimal sebesar nilai itu atau turunkan `EMBEDDING_FUNC_MAX_ASYNC`, dan jaga agar model embedding tetap dimuat (`OLLAMA_KEEP_ALIVE=-1`, atau instance Ollama terpisah), karena pertukaran model dengan LLM di VRAM membuat request embedding macet.
+
 ### Konfigurasi Penting Lainnya untuk Query Dokumen
 
 Pada tahap query dokumen, Anda juga mungkin perlu menyesuaikan environment variable berikut sesuai kebutuhan:
