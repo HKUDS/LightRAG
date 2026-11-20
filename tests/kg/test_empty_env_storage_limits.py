@@ -10,6 +10,7 @@ subprocess with every limit set to the same raw value.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -28,7 +29,13 @@ ENV_KEYS = (
     "REDIS_RETRY_ATTEMPTS",
     "MAX_GRAPH_NODES",
 )
+# The parent's no-install guard (tests/conftest.py) does not reach a fresh
+# interpreter, so the child refuses pipmaster.install itself: a missing SDK
+# must fail the probe, never install one.
 PROBE = (
+    "import pipmaster; "
+    "pipmaster.install = lambda *a, **k: (_ for _ in ()).throw("
+    "RuntimeError(f'package install refused: {a}')); "
     "import lightrag.kg.redis_impl as r, lightrag.kg.memgraph_impl as m; "
     "print(repr((r.MAX_CONNECTIONS, r.SOCKET_TIMEOUT, r.SOCKET_CONNECT_TIMEOUT, "
     "r.RETRY_ATTEMPTS, m.MAX_GRAPH_NODES)))"
@@ -47,6 +54,9 @@ DEFAULTS = (200, 30.0, 10.0, 3, 1000)
     ],
 )
 def test_storage_limits_on_import(raw: str | None, expected: tuple) -> None:
+    for sdk in ("redis", "neo4j"):
+        if importlib.util.find_spec(sdk) is None:
+            pytest.skip(f"{sdk} SDK not installed")
     env = {k: v for k, v in os.environ.items() if k not in ENV_KEYS}
     if raw is not None:
         env.update(dict.fromkeys(ENV_KEYS, raw))
