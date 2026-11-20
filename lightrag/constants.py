@@ -440,10 +440,16 @@ KG_WRITE_STATE_GRAPH_MUTATION_STARTED = "graph_mutation_started"
 # the expensive candidate re-analysis and LLM-cache-backed rebuild.
 KG_PURGE_METADATA_KEY = "kg_purge"
 KG_PURGE_PHASE_PREPARED = "prepared"  # proof verified; nothing deleted yet
+KG_PURGE_PHASE_REBUILD_PENDING = (
+    "rebuild_pending"  # classification durable; rebuild owed
+)
+KG_PURGE_PHASE_REBUILD_DEFERRED = (
+    "rebuild_deferred"  # chunks gone; anchors retain intent
+)
 KG_PURGE_PHASE_DERIVED_COMMITTED = "derived_committed"  # graph/vdb/tracking clean
 KG_PURGE_PHASE_ANCHORS_PENDING = "anchors_pending"  # chunks gone; anchors may go
 KG_PURGE_PHASE_COMPLETED = "completed"  # anchors gone; caller finalizes
-KG_PURGE_SCHEMA_VERSION = 1
+KG_PURGE_SCHEMA_VERSION = 2
 # doc_status.metadata keys that record a DEMOTION: this row is not the primary
 # claimant of its canonical source. ``is_duplicate`` is what every backend's
 # primary-candidate predicate keys off (``_basename_of`` returns None for it),
