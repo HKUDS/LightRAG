@@ -7483,7 +7483,15 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             index_ready = self._index_ready
         if not index_ready:
             return 0
-        await self.client.indices.refresh(index=self._index_name)
+        refreshed = await self.client.indices.refresh(index=self._index_name)
+        # A refresh that failed on a shard leaves durable writes unsearchable
+        # there, so the count below would read an older state. Its `total`
+        # also counts replica copies, which an unassigned replica (any
+        # single-node cluster) leaves short of `successful` without failing:
+        # only `failed` is evidence.
+        refresh_shards = (refreshed or {}).get("_shards") or {}
+        if refresh_shards.get("failed") != 0:
+            raise StorageCapabilityError(f"partial_refresh: {refresh_shards}")
         response = await self.client.count(index=self._index_name)
         # `_count` answers 200 with the shards that did respond; a count over
         # part of the index is not exact.

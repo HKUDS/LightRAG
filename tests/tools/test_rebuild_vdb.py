@@ -1581,18 +1581,36 @@ def test_build_global_config_rejects_nonpositive_embedding_batch_num(monkeypatch
 # ---------------------------------------------------------------------------
 
 
-async def _unreadable_source(*_args, **_kwargs):
-    raise StorageCapabilityError("source unreadable")
-    yield []  # pragma: no cover - makes this an async generator
+def _source_failing_on_second_page(first_page):
+    """A source whose second page fails, as an expired cursor would."""
+
+    async def iterate(*_args, **_kwargs):
+        for item in first_page:
+            yield [item]
+        raise StorageCapabilityError("source unreadable")
+
+    return iterate
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["entities", "relationships", "chunks"])
-async def test_rebuild_reads_the_source_before_dropping_the_target(target):
+async def test_rebuild_reads_the_whole_source_before_dropping_the_target(
+    target, tmp_path, monkeypatch
+):
+    # The whole source is spooled before drop(), so a page failing late --
+    # an OpenSearch PIT or Mongo cursor that expired during a slow embedding
+    # flush -- leaves the target untouched instead of half rebuilt.
+    monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
     graph = make_graph(nodes=[node("Alice")], edges=[edge("Alice", "Bob")])
-    graph.iter_labels = graph.iter_edges = _unreadable_source
+    graph.iter_labels = _source_failing_on_second_page(["Alice"])
+    graph.iter_edges = _source_failing_on_second_page([edge("Alice", "Bob")])
     kv = RowKV({})
-    kv.iter_rows = _unreadable_source
+
+    async def rows(*, page_size=200):
+        yield {"_id": "chunk-1", "content": "text"}
+        raise StorageCapabilityError("source unreadable")
+
+    kv.iter_rows = rows
     vdb = MockVDB()
     rebuild = {
         "entities": lambda: rebuild_entities_vdb(graph, vdb, {}),
@@ -1603,6 +1621,37 @@ async def test_rebuild_reads_the_source_before_dropping_the_target(target):
     with pytest.raises(StorageCapabilityError, match="source unreadable"):
         await rebuild()
     vdb.drop.assert_not_awaited()
+    assert list(tmp_path.iterdir()) == []  # the spool went with the failure
+
+
+@pytest.mark.asyncio
+async def test_rebuild_spool_is_private_and_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
+    vdb = MockVDB()
+    seen_modes = []
+    real_upsert = vdb.upsert.side_effect
+
+    async def upsert(payload):
+        seen_modes.extend(
+            path.stat().st_mode & 0o777
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        )
+        await real_upsert(payload)
+
+    vdb.upsert.side_effect = upsert
+
+    stats = await rebuild_entities_vdb(
+        make_graph(nodes=[node("Alice"), node("Bob")]), vdb, {}, batch_size=1
+    )
+
+    assert stats["rebuilt"] == 2
+    assert sorted(vdb.records) == sorted(
+        compute_mdhash_id(name, prefix="ent-") for name in ("Alice", "Bob")
+    )
+    if os.name != "nt":
+        assert seen_modes == [0o600, 0o600]
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

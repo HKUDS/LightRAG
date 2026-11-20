@@ -4683,27 +4683,48 @@ class TestVectorStorage:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "shards,expected",
+        "refresh_shards,count_shards,expected",
         [
-            ({"total": 2, "successful": 2, "failed": 0}, 5),
-            ({"total": 2, "successful": 1, "failed": 1}, StorageCapabilityError),
-            (None, StorageCapabilityError),
+            # Unassigned replicas leave a refresh short without failing it.
+            (
+                {"total": 4, "successful": 2, "failed": 0},
+                {"total": 2, "successful": 2, "failed": 0},
+                5,
+            ),
+            (
+                {"total": 4, "successful": 2, "failed": 0},
+                {"total": 2, "successful": 1, "failed": 1},
+                "partial_shard_count",
+            ),
+            ({"total": 4, "successful": 2, "failed": 0}, None, "partial_shard_count"),
+            (
+                {"total": 4, "successful": 1, "failed": 1},
+                {"total": 2, "successful": 2, "failed": 0},
+                "partial_refresh",
+            ),
         ],
-        ids=["all-shards", "failed-shard", "no-shard-header"],
+        ids=["all-shards", "failed-count-shard", "no-count-header", "failed-refresh"],
     )
-    async def test_exact_count_refreshes_then_counts_every_shard(
-        self, global_config, embed_func, mock_client, shards, expected
+    async def test_exact_count_needs_every_shard_refreshed_and_counted(
+        self,
+        global_config,
+        embed_func,
+        mock_client,
+        refresh_shards,
+        count_shards,
+        expected,
     ):
         order: list[str] = []
 
         async def record_refresh(**kwargs):
             order.append("refresh")
+            return {"_shards": refresh_shards}
 
         async def record_count(**kwargs):
             order.append("count")
             response = {"count": 5}
-            if shards is not None:
-                response["_shards"] = shards
+            if count_shards is not None:
+                response["_shards"] = count_shards
             return response
 
         mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
@@ -4711,12 +4732,14 @@ class TestVectorStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
+            order.clear()
             if isinstance(expected, int):
                 assert await s.get_exact_count() == expected
             else:
-                with pytest.raises(expected, match="partial_shard_count"):
+                with pytest.raises(StorageCapabilityError, match=expected):
                     await s.get_exact_count()
-            assert order == ["refresh", "count"]
+            refreshed_only = expected == "partial_refresh"
+            assert order == (["refresh"] if refreshed_only else ["refresh", "count"])
 
     @pytest.mark.asyncio
     async def test_initialize_creates_knn_index(

@@ -174,10 +174,18 @@ Menu options:
 - **Sources are read in bounded batches.** Graph nodes and edges come from
   `iter_labels()` / `iter_edges()`, chunks from `BaseKVStorage.iter_rows()`,
   so neither the rebuild nor the check holds a whole namespace in client
-  memory. The first batch is read before the target is dropped: a source that
-  cannot be read at all leaves the vector storage untouched. A read that fails
-  later stops the rebuild with an error and leaves the target partly rebuilt
-  (no baseline is recorded, so the server keeps refusing); re-run the tool.
+  memory.
+- **The whole source is read before the target is dropped.** A rebuild first
+  reads its source to the end and writes the prepared records to a spool file,
+  then drops the target and embeds from the spool. A source that cannot be read
+  therefore leaves the vector storage untouched, and no source cursor is held
+  open during embedding (an OpenSearch point-in-time or a MongoDB cursor would
+  expire during a slow flush). The spool needs free disk space about the size
+  of the records being rebuilt (for chunks, the chunk text) in the system
+  temporary directory; set `TMPDIR` to put it elsewhere. It is readable only
+  by the user running the tool and is deleted when the rebuild ends, failed or
+  not; if deleting it fails, the tool logs its path. A killed process can leave
+  a `lightrag-rebuild-*` directory behind: it holds source text, delete it.
 
 ## Consistency check
 

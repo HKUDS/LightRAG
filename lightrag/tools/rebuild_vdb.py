@@ -67,7 +67,9 @@ import argparse
 import asyncio
 import os
 import sys
+import pickle
 import shutil
+import tempfile
 import time
 from uuid import uuid4
 from typing import Any, AsyncIterator, Callable, Dict, List
@@ -398,48 +400,80 @@ async def _upsert_batch(
         await _flush(vdb, stats)
 
 
-async def _preflight_batches(
-    batches: AsyncIterator[list[Any]],
-) -> tuple[list[Any] | None, AsyncIterator[list[Any]]]:
-    """Advance a bounded source iterator before any destructive target drop."""
-    try:
-        first = await anext(batches)
-    except StopAsyncIteration:
-        first = None
-    return first, batches
+async def _spool_prepared(
+    source_batches: AsyncIterator[list[Any]],
+    stats: Dict[str, Any],
+    prepare_batch,
+    spool_path: str,
+) -> int:
+    """Read and prepare the whole source into a private spool file.
+
+    Returns the number of non-empty payload batches written. Every source read
+    (the iterator and whatever ``prepare_batch`` fetches) happens here, before
+    the target is dropped.
+    """
+    written = 0
+    with open_private_file(spool_path) as spool:
+        async for source_batch in source_batches:
+            stats["source_total"] += len(source_batch)
+            payload = await prepare_batch(source_batch, stats)
+            stats["prepared"] += len(payload)
+            if payload:
+                pickle.dump(payload, spool, protocol=pickle.HIGHEST_PROTOCOL)
+                written += 1
+    return written
+
+
+def _read_spool(spool_path: str):
+    # Safe to unpickle: this run created the file, exclusively, private to
+    # this user, inside a directory only this user can enter (mkdtemp).
+    with open(spool_path, "rb") as spool:
+        while True:
+            try:
+                yield pickle.load(spool)
+            except EOFError:
+                return
 
 
 async def _stream_upsert(
     vdb,
     source_batches: AsyncIterator[list[Any]],
-    first_batch: list[Any] | None,
     stats: Dict[str, Any],
     prepare_batch,
     *,
     progress_callback: ProgressCallback | None = None,
 ) -> Dict[str, Any]:
-    """Drop only after preflight, then transform and upsert bounded batches."""
-    await _drop_vdb(vdb, stats["label"])
-    batch_no = 0
+    """Spool the prepared source to disk, then drop the target and upsert.
 
-    async def consume(source_batch: list[Any]) -> None:
-        nonlocal batch_no
-        batch_no += 1
-        stats["source_total"] += len(source_batch)
-        payload = await prepare_batch(source_batch, stats)
-        stats["prepared"] += len(payload)
-        if payload:
-            await _upsert_batch(vdb, payload, batch_no, None, stats)
-        if progress_callback:
-            progress_callback(batch_no, None)
-
-    if first_batch is not None:
-        await consume(first_batch)
-    async for source_batch in source_batches:
-        await consume(source_batch)
-    if progress_callback:
-        progress_callback(batch_no, batch_no)
-    await _flush(vdb, stats)
+    The source is read to the end BEFORE ``drop()``, and its cursors are never
+    held open across embedding work: a backend cursor with an idle timeout
+    (an OpenSearch PIT, a MongoDB cursor) would otherwise expire during a slow
+    flush and leave the target dropped and half rebuilt, the same way on every
+    retry. A source that cannot be read therefore leaves the target untouched.
+    Memory stays bounded by one batch; the spool needs disk space about the
+    size of the prepared payloads, in ``tempfile.gettempdir()`` (``TMPDIR``),
+    and is private to this user and removed when the rebuild returns or fails.
+    """
+    spool_dir = tempfile.mkdtemp(prefix=f"lightrag-rebuild-{stats['label']}-")
+    try:
+        spool_path = os.path.join(spool_dir, "payloads.pickle")
+        total = await _spool_prepared(source_batches, stats, prepare_batch, spool_path)
+        await _drop_vdb(vdb, stats["label"])
+        for batch_no, payload in enumerate(_read_spool(spool_path), start=1):
+            await _upsert_batch(vdb, payload, batch_no, total, stats)
+            if progress_callback:
+                progress_callback(batch_no, total)
+        if progress_callback and total == 0:
+            progress_callback(0, 0)
+        await _flush(vdb, stats)
+    finally:
+        try:
+            shutil.rmtree(spool_dir)
+        except OSError as e:
+            logger.warning(
+                f"Rebuild {stats['label']}: could not remove the source spool "
+                f"{spool_dir} ({e}); it holds source content, delete it by hand"
+            )
     return stats
 
 
@@ -460,7 +494,6 @@ async def rebuild_entities_vdb(
     from lightrag.operate import _truncate_vdb_content
 
     batches = graph.iter_labels(batch_size)
-    first_batch, batches = await _preflight_batches(batches)
     stats = _new_stats("entities", 0)
 
     async def prepare(labels: list[str], stats: Dict[str, Any]):
@@ -500,7 +533,6 @@ async def rebuild_entities_vdb(
     return await _stream_upsert(
         entities_vdb,
         batches,
-        first_batch,
         stats,
         prepare,
         progress_callback=progress_callback,
@@ -527,7 +559,6 @@ async def rebuild_relationships_vdb(
     from lightrag.operate import _truncate_vdb_content
 
     batches = graph.iter_edges(batch_size)
-    first_batch, batches = await _preflight_batches(batches)
     stats = _new_stats("relationships", 0)
 
     async def prepare(edges: list[dict], stats: Dict[str, Any]):
@@ -569,7 +600,6 @@ async def rebuild_relationships_vdb(
     return await _stream_upsert(
         relationships_vdb,
         batches,
-        first_batch,
         stats,
         prepare,
         progress_callback=progress_callback,
@@ -599,7 +629,6 @@ async def rebuild_chunks_vdb(
     """
     _ensure_vector_rebuild_supported(chunks_vdb)
     batches = _iter_row_batches(text_chunks_kv, batch_size)
-    first_batch, batches = await _preflight_batches(batches)
     stats = _new_stats("chunks", 0)
 
     async def prepare(rows: list[dict], stats: Dict[str, Any]):
@@ -625,7 +654,6 @@ async def rebuild_chunks_vdb(
     return await _stream_upsert(
         chunks_vdb,
         batches,
-        first_batch,
         stats,
         prepare,
         progress_callback=progress_callback,
