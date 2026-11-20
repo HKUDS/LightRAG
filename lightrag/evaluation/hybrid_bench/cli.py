@@ -1,4 +1,4 @@
-"""CLI orchestration: ingest, arms, metrics, B3-B5 phases, gates, report.
+"""CLI orchestration: ingest, arms, metrics, optional phases, gates, report.
 
 Run: ``python -m lightrag.evaluation.hybrid_bench --dataset-dir DIR
 --output-dir DIR [knobs]``. Every knob is a CLI argument; PG connection uses
@@ -6,11 +6,13 @@ the standard POSTGRES_* environment recipe. Gate thresholds are proposals
 printed as verdicts, never tuned here.
 
 Phase gating decisions, documented for the RUNS lane:
-- B3c/B3d gate inputs come from the first dataset in sorted order that
-  measured them; every dataset's numbers are in the report.
-- B4 survival pools scored hits across datasets.
+- Write-amplification and backfill gate inputs come from the first dataset
+  in sorted order that measured them; every dataset's numbers are in the
+  report.
+- Reranker survival pools scored hits across datasets.
 - Latency gate inputs pool per-query latencies across datasets.
-- The baseline-worktree half of B3c runs only with --write-amp-baseline.
+- The baseline-worktree half of the write-amplification comparison runs only
+  with --write-amp-baseline.
 - --workspace mints a stable per-dataset workspace (no random suffix) and
   implies --keep-workspace, so re-invoking the same command resumes ingest
   through the product doc_status instead of starting over.

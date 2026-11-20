@@ -55,9 +55,9 @@ Passage ids become LightRAG document ids (`ids=corpus_id`), so chunk
 | `--top-k` | `10` | same across all arms; metric labels follow it |
 | `--seed` / `--bootstrap-resamples` | `42` / `1000` | fixed-seed per-query bootstrap, >=1000 enforced |
 | `--latency-queries` / `--latency-rounds` | `100` / `3` | >=100 slots x >=3 rounds enforced; queries cycle deterministically when fewer exist |
-| `--rerank-model` / `--rerank-min-score` | `BAAI/bge-reranker-v2-m3` / `0.5` | B4 CrossEncoder, lazy import |
+| `--rerank-model` / `--rerank-min-score` | `BAAI/bge-reranker-v2-m3` / `0.5` | CrossEncoder used by the survival measurement, lazy import |
 | `--phases` | all | subset of `b5,latency,write-amp,backfill,rerank,report`; ingest + arms + scoring are the always-on core |
-| `--write-amp-baseline` / `--baseline-ref` | off / `origin/main` | run the B3c baseline half in a temporary detached worktree |
+| `--write-amp-baseline` / `--baseline-ref` | off / `origin/main` | run the baseline half of the write-amplification comparison in a temporary detached worktree |
 | `--cosine-threshold` / `--chunk-token-size` | `0.2` / `8192` | retrieval threshold; high chunk size keeps a passage one chunk |
 | `--workspace-prefix` / `--working-dir` / `--keep-workspace` | `hbench` / `<output>/working` / off | scratch isolation; PG rows are cleaned unless kept |
 | `--workspace` | unset | stable workspace base for resumable runs: per-dataset workspace = `<workspace>_<dataset>` (no random suffix), implies `--keep-workspace`; see the resume contract below |
@@ -177,17 +177,17 @@ instead of repeating work:
   model/dim-scoped); the harness does not detect parameter drift inside a
   reused workspace.
 
-**Arms (B2).** Dense and hybrid chunk retrieval go through the real
+**Arms.** Dense and hybrid chunk retrieval go through the real
 `operate._get_vector_context` dispatch (`QueryParam.enable_hybrid`); entity
 seeding calls `entities_vdb.query` / `hybrid_query`. All arms share one
-precomputed query embedding and the same `top_k`. The lexical-only arm (B2c
-diagnostic) executes the SAME `SQL_TEMPLATES["lexical_chunks"]` template
+precomputed query embedding and the same `top_k`. The lexical-only arm
+(diagnostic) executes the SAME `SQL_TEMPLATES["lexical_chunks"]` template
 `hybrid_query` uses, with the same tokenizer, against the same workspace — no
 product change. Note the production tokenizer ANDs every query token/bigram:
 a natural-language query whose bigrams cross word boundaries can match
 nothing lexically; that is the measured product behavior, not a harness bug.
 
-**Derived entity truth (B2a).** An entity is relevant to a query iff the
+**Derived entity truth.** An entity is relevant to a query iff the
 `full_doc_id` set of its source chunks intersects the query's qrels-positive
 corpus ids (graph `source_id` split on `GRAPH_FIELD_SEP`, resolved through
 `text_chunks`). Queries with empty derived truth are reported separately and
@@ -202,41 +202,42 @@ per-query resamples from `random.Random(seed)`; paired arm differences share
 one index list per resample; nearest-rank 2.5/97.5 percentiles. Same seed +
 inputs = byte-identical intervals (test-pinned).
 
-**B5 ablation.** Storage-level dispatch, no product change: entity-only =
+**Ablation.** Storage-level dispatch, no product change: entity-only =
 entities hybrid + chunks dense; chunk-only = chunks hybrid + entities dense;
 both = both hybrid. Gate: both >= each single arm per metric.
 
-**Latency (B3a/B3b).** The production query router (`create_query_routes`) is
+**Latency.** The production query router (`create_query_routes`) is
 mounted on a minimal FastAPI app and driven via `httpx.ASGITransport`:
 requests pass through `QueryRequest` validation and `to_query_params` exactly
 as on a live server, minus the network hop — the documented direct-call
-equivalent of POST `/query/data` (B3a, `only_need_context=True`) and `/query`
-(B3b, `only_need_context=False`). `hl_keywords`/`ll_keywords` are injected
+equivalent of POST `/query/data` (`only_need_context=True`, retrieval
+latency) and `/query` (`only_need_context=False`, answer latency).
+`hl_keywords`/`ll_keywords` are injected
 equal to the query text so no keyword LLM runs in the measured path; the
 hybrid-minus-dense delta therefore includes the per-query index-validity
 probe (3 round-trips vs 1). The bench LightRAG disables the LLM cache so
 every round measures real work. p50/p95 are nearest-rank over all samples;
 the overhead CI resamples per-query means paired across arms.
 
-**Write amplification (B3c).** `write_amp_driver.py` is self-contained
+**Write amplification.** `write_amp_driver.py` is self-contained
 (imports only lightrag + numpy, baseline-safe) and runs UNCHANGED under the
 branch interpreter and a pristine `--baseline-ref` checkout's own interpreter,
 on the same corpus and PG load, measuring per-batch upsert+flush p95. With
 `--write-amp-baseline` the harness creates a temporary detached worktree under
 the system temp dir, `uv sync`s it, runs both sides, and removes the worktree
-in `finally`. The driver uses synthetic hash embeddings on BOTH sides: B3c is
+in `finally`. The driver uses synthetic hash embeddings on BOTH sides: this is
 a write-path measurement, not a quality claim. GIN-vs-vector index sizes come
 from per-index `pg_relation_size` on the ingested chunks table (CJK corpus for
 the gate).
 
-**Backfill (B3d).** Seeds NULL-tsv rows for the run's workspace, triggers the
+**Backfill.** Seeds NULL-tsv rows for the run's workspace, triggers the
 production backfill scheduling path, polls the pending count to zero under a
 bounded deadline, reports chunks/min. Report-only.
 
-**Reranker survival (B4).** qrels-positive lexical-only chunk hits are scored
+**Reranker survival.** qrels-positive lexical-only chunk hits are scored
 as (query, content) pairs by a CrossEncoder; survival = fraction reaching
-`--rerank-min-score`. sentence-transformers is imported LAZILY inside the B4
-function only — importing the harness never requires it. Below the floor is a
+`--rerank-min-score`. sentence-transformers is imported LAZILY inside the
+reranker function only — importing the harness never requires it. Below the floor is a
 documented RESIDUE verdict, not a run failure. Runtime overlay (no repo
 dependency changes):
 
@@ -247,26 +248,27 @@ UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/ \
 
 ## Gates (PROPOSALS — printed verdicts, never tuned)
 
-J = terminology domain, G = general domain; each gate applies to its own
-domain. Statuses: `pass`, `fail`, `residue` (B4), `report` (B3d), `not-run`
+Each gate applies to its own domain (terminology or general). Statuses:
+`pass`, `fail`, `residue` (reranker survival), `report` (backfill), `not-run`
 (measurement absent).
 
 | gate | proposal |
 | --- | --- |
-| B2a-J | entity hit@10: hybrid >= dense +15% relative AND paired CI lower > 0 |
-| B2a-G | entity hit@10: hybrid >= dense -1% relative AND CI upper of dense-minus-hybrid < 1% of dense |
-| B2b-J | recall@10 and nDCG@10: hybrid >= dense +10% relative AND paired CI lower > 0 |
-| B2b-G | nDCG@10: abs delta <= 0.005 AND CI upper of the absolute delta < 0.005 |
-| B3a | retrieval p95 overhead <= 25% |
-| B3b | answer p95 overhead <= 15% |
-| B3c | upsert p95 increase <= 10% AND GIN <= 1.5x vector index size (CJK) |
-| B3d | >= 5000 chunks/min, report-only |
-| B4 | survival >= 50%; below = residue flag |
-| B5 | both-hybrid >= each single-hybrid arm per metric |
+| terminology entity hit | entity hit@10: hybrid >= dense +15% relative AND paired CI lower > 0 |
+| general entity hit | entity hit@10: hybrid >= dense -1% relative AND CI upper of dense-minus-hybrid < 1% of dense |
+| terminology chunk quality | recall@10 and nDCG@10: hybrid >= dense +10% relative AND paired CI lower > 0 |
+| general chunk quality | nDCG@10: abs delta <= 0.005 AND CI upper of the absolute delta < 0.005 |
+| retrieval latency | retrieval p95 overhead <= 25% |
+| answer latency | answer p95 overhead <= 15% |
+| write amplification | upsert p95 increase <= 10% AND GIN <= 1.5x vector index size (CJK) |
+| backfill | >= 5000 chunks/min, report-only |
+| reranker survival | survival >= 50%; below = residue flag |
+| ablation | both-hybrid >= each single-hybrid arm per metric |
 
-Phase-gate pooling: B3c/B3d use the first dataset in sorted order that
-measured them (all datasets' numbers are in the report); B4 pools scored hits
-across datasets; latency gates pool per-query latencies across datasets.
+Gate pooling: write amplification and backfill use the first dataset in sorted
+order that measured them (all datasets' numbers are in the report); reranker
+survival pools scored hits across datasets; latency gates pool per-query
+latencies across datasets.
 
 ## Outputs
 
@@ -315,8 +317,9 @@ RUNS lane), and run under the overlay command above.
 - The lexical arm inherits the production tokenizer's AND-of-all-bigrams
   semantics; natural-language queries can lexically match nothing. The arm
   reports empty retrieval explicitly instead of hiding it.
-- B3c on a tiny corpus is dominated by per-batch fixed overhead; the RUNS
-  lane must use the real corpus load for a meaningful upsert p95 comparison.
+- Write amplification on a tiny corpus is dominated by per-batch fixed
+  overhead; the benchmark lane must use the real corpus load for a
+  meaningful upsert p95 comparison.
 - File-backends runs skip the lexical arm, write-amp and backfill (PG-only
   surfaces) and label the skips; the hybrid arm falls back to dense because
   the file vector backend does not declare `supports_hybrid_query`.
