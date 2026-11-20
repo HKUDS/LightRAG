@@ -357,6 +357,41 @@ async def test_page_malformed_cursor_raises_control_plane_error():
         )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # A two-entry object (another backend's cursor shape) and a
+        # two-character string both unpack to two strings; read as a keyset
+        # position they would mis-position the sweep instead of failing closed.
+        pytest.param(
+            json.dumps({"pending": "doc-a", "failed": "doc-b"}), id="two-key-object"
+        ),
+        pytest.param(json.dumps("ab"), id="two-char-string"),
+    ],
+)
+async def test_page_cursor_payload_must_be_a_two_element_list(payload):
+    storage = _storage()
+
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page(
+            [DocStatus.FAILED], limit=2, position=CursorAfter(payload), strict=True
+        )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(("2026-01-01T00:00:00+00:00", "doc-1"), id="real-key"),
+        # The NULL created_at bucket the backend itself mints for legacy rows.
+        pytest.param((None, "doc-1"), id="null-bucket"),
+    ],
+)
+def test_decode_cursor_accepts_the_backends_own_shapes(key):
+    created, doc_id = key
+    opaque = MongoDocStatusStorage._encode_cursor(created, doc_id)
+    assert MongoDocStatusStorage._decode_cursor(opaque) == key
+
+
 async def test_page_transport_error_propagates():
     data = _FakeCollection(find_error=PyMongoError("boom"))
     storage = _storage(data=data)
