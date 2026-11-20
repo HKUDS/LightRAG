@@ -348,6 +348,13 @@ _ITERATIVE_SCAN_SQL: dict[str, str] = {
     "IVFFLAT": "SET LOCAL ivfflat.iterative_scan = relaxed_order",
 }
 
+# HNSW index types whose ANN scan is bounded by ``hnsw.ef_search``.
+_HNSW_INDEX_TYPES = frozenset({"HNSW", "HNSW_HALFVEC"})
+# pgvector's default for hnsw.ef_search, used when the GUC is not yet defined,
+# and the largest value the GUC accepts (setting more raises).
+_PGVECTOR_DEFAULT_EF_SEARCH = 40
+_PGVECTOR_MAX_EF_SEARCH = 1000
+
 _DISTANCE_COLUMN = "_distance"
 
 
@@ -1578,23 +1585,67 @@ class PostgreSQLDB:
             return None  # reported once at startup by the version probe
         return _ITERATIVE_SCAN_SQL.get(getattr(self, "vector_index_type", None))
 
-    async def _fetch_with_iterative_scan(
-        self, connection: asyncpg.Connection, sql: str, params: tuple
-    ) -> list:
-        """Fetch ``sql`` in a transaction that first applies the scan setting.
+    def ef_search_statement(self, top_k: int | None) -> str | None:
+        """Return the statement that widens an HNSW scan to ``top_k`` candidates.
 
-        Best-effort: a failing ``SET LOCAL`` (aborting only its own
-        transaction) is logged once and the query runs without it, as it did
+        ``None`` means nothing to apply: a non-HNSW index type, or no positive
+        ``top_k``.
+
+        Rules:
+
+        * It only ever raises ``hnsw.ef_search`` for the query's own
+          transaction: the value in force (an operator's ``ALTER ROLE`` /
+          ``POSTGRES_SERVER_SETTINGS`` setting, else pgvector's default 40) is
+          kept when it is already larger.
+        * ``top_k`` is capped at 1000, the largest value the GUC accepts; a
+          larger ``top_k`` relies on the iterative scan for the remaining rows.
+        * Apply it only through ``_fetch_with_iterative_scan``.
+
+        Why: docs/design/PgVectorFilteredSearch.md#hnsw-candidate-list-ef_search.
+        """
+        if getattr(self, "vector_index_type", None) not in _HNSW_INDEX_TYPES:
+            return None
+        if top_k is None or int(top_k) <= 0:
+            return None
+        wanted = min(int(top_k), _PGVECTOR_MAX_EF_SEARCH)
+        return (
+            "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(NULLIF("
+            "current_setting('hnsw.ef_search', true), '')::int, "
+            f"{_PGVECTOR_DEFAULT_EF_SEARCH}), {wanted})::text, true)"
+        )
+
+    async def _fetch_with_iterative_scan(
+        self,
+        connection: asyncpg.Connection,
+        sql: str,
+        params: tuple,
+        top_k: int | None = None,
+    ) -> list:
+        """Fetch ``sql`` in a transaction that first applies the scan settings.
+
+        The settings are ``iterative_scan_statement()`` and, for an HNSW index,
+        ``ef_search_statement(top_k)``; both are sent in one round trip.
+
+        Best-effort: a failing setting (aborting only its own transaction) is
+        logged once and the query runs without either setting, as it did
         before. A failure of the query itself is re-raised: this helper adds
         no fallback and no retry of its own, so only the caller's normal
         transient-error retry (``_run_with_retry``) can run it again.
         """
-        statement = self.iterative_scan_statement()
-        if statement is not None:
+        statements = [
+            statement
+            for statement in (
+                self.iterative_scan_statement(),
+                self.ef_search_statement(top_k),
+            )
+            if statement is not None
+        ]
+        if statements:
             applied = False
             try:
                 async with connection.transaction():
-                    await connection.execute(statement)
+                    # No arguments: the simple protocol runs both statements.
+                    await connection.execute("; ".join(statements))
                     applied = True
                     return await connection.fetch(sql, *params)
             except Exception as exc:  # noqa: BLE001 - see docstring
@@ -1603,8 +1654,8 @@ class PostgreSQLDB:
                 if not getattr(self, "_iterative_scan_warned", False):
                     self._iterative_scan_warned = True
                     logger.warning(
-                        f"PostgreSQL, iterative scan not applied ({exc}); "
-                        "filtered vector search may return fewer rows than exist"
+                        f"PostgreSQL, vector scan settings not applied ({exc}); "
+                        "vector search may return fewer rows than exist"
                     )
         return await connection.fetch(sql, *params)
 
@@ -3021,13 +3072,21 @@ class PostgreSQLDB:
         graph_name: str | None = None,
         timing_label: str | None = None,
         iterative_scan: bool = False,
+        ann_top_k: int | None = None,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
+        """Run ``sql`` and return its row(s).
+
+        ``iterative_scan=True`` marks an ANN vector query: it then runs through
+        ``_fetch_with_iterative_scan``, and ``ann_top_k`` (its ``LIMIT``) sizes
+        the HNSW candidate list. ``ann_top_k`` is ignored otherwise.
+        """
+
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
             fetch_start = time.perf_counter()
             if iterative_scan:
                 rows = await self._fetch_with_iterative_scan(
-                    connection, sql, prepared_params
+                    connection, sql, prepared_params, top_k=ann_top_k
                 )
             elif prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
@@ -5451,6 +5510,7 @@ class PGVectorStorage(BaseVectorStorage):
             params=list(params.values()),
             multirows=True,
             iterative_scan=True,
+            ann_top_k=top_k,
         )
         if resort and results:
             for row in results:
