@@ -93,8 +93,9 @@ safety margin. Reviews apply these rules to each test a PR adds or changes
   test, search the mirror directory for one that already drives the same path
   to the same assertion. A regression test pins the defect's trigger, not
   every neighbouring input. A test of a private helper that a test of its
-  public caller already covers, or of an implementation detail no docstring or
-  contract promises, is removed rather than kept "just in case".
+  public caller already covers, of a dependency's own behavior, or of an
+  implementation detail no docstring or contract promises, is removed rather
+  than kept "just in case".
 - **Merge tests that share one scenario.** Three tests that each build the same
   storage, run the same operation and then assert a different field are one
   test with three assertions: the setup, which is most of the cost, runs once.
@@ -112,10 +113,11 @@ safety margin. Reviews apply these rules to each test a PR adds or changes
   wait needs a comment saying why nothing shorter proves the behavior.
 - **The cheapest fixture that reaches the behavior.** A stub storage or a
   `MagicMock` instead of a full `LightRAG` with `initialize_storages()`; an
-  in-process call instead of a subprocess or `multiprocessing.Manager()`;
-  a module- or session-scoped fixture for a model, tokenizer or parsed sample
-  that tests only read; the smallest input that triggers the branch instead
-  of a large generated document.
+  in-process call instead of a subprocess or `multiprocessing.Manager()`; a
+  fake transport instead of a real network call or live service; a module- or
+  session-scoped fixture for a model, tokenizer, parsed sample or any setup
+  that tests only read, instead of rebuilding it per test; the smallest input
+  that triggers the branch instead of a large generated document.
 - **Measure, do not guess.** Run the changed tests with `--durations=20`. A new
   test that takes more than about a second serially needs a reason in its
   docstring, or one of the remedies above.
