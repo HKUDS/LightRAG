@@ -47,8 +47,10 @@ Rules:
   attempt per FAILED document, with the SAME parameters. 0 disables
   recovery. Any document still FAILED after the rounds raises; recovery
   never swallows a failure.
-- PG scratch cleanup deletes only the run's workspace rows and drops the
-  vector tables only when no other workspace still holds rows in them.
+- PG scratch cleanup deletes ONLY the run's workspace rows and retains the
+  shared model/dim vector tables: dropping them on an emptiness check races
+  a concurrent run's commits. A workspace override (POSTGRES_WORKSPACE or
+  config.ini) fails the run before storage init.
 - The LLM cache is DISABLED for the whole run: repeated latency rounds must
   measure real retrieval and answer work, never a cached response, and arms
   must not share warm-cache state.
@@ -135,7 +137,10 @@ _PROGRESS_INTERVAL_SECONDS = 30.0
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
-    chunk_doc_map: dict[str, str]
+    # Chunk ids are content hashes: documents with identical text share one
+    # chunk, so the map keeps EVERY corpus alias per chunk id, never the last
+    # writer. Scoring expands all aliases of a retrieved chunk.
+    chunk_doc_map: dict[str, list[str]]
     extracted_doc_ids: list[str]
     chunks_only_doc_ids: list[str]
     recovery_rounds_used: int = 0
@@ -150,7 +155,14 @@ class IngestResult:
 
 def apply_pg_env(config: BenchConfig) -> None:
     """PG connection comes from the standard POSTGRES_* environment recipe;
-    the CLI does not invent a second configuration channel."""
+    the CLI does not invent a second configuration channel.
+
+    A workspace override (POSTGRES_WORKSPACE or config.ini [postgres]
+    workspace) remaps every PG storage away from the run's minted workspace
+    while cleanup still deletes the minted name, so the benchmark would
+    write into the configured workspace and leave its own rows behind:
+    fail fast BEFORE any storage is initialized.
+    """
     if config.storage != "pg":
         return
     if not os.environ.get("POSTGRES_PASSWORD"):
@@ -158,6 +170,16 @@ def apply_pg_env(config: BenchConfig) -> None:
             "PG storage requires the POSTGRES_* environment recipe "
             "(POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE); export it before "
             "running the harness"
+        )
+    from lightrag.kg.postgres_impl import ClientManager
+
+    override = ClientManager.get_config().get("workspace")
+    if override is not None and str(override).strip():
+        raise ValueError(
+            f"PG workspace override {str(override).strip()!r} is set "
+            "(POSTGRES_WORKSPACE or config.ini [postgres] workspace); it "
+            "would remap storage away from the harness workspace while "
+            "cleanup deletes the harness name. Unset it before running"
         )
 
 
@@ -250,6 +272,14 @@ async def build_rag(config: BenchConfig, llm_func) -> LightRAG:
     rag = LightRAG(**kwargs)
     await rag.initialize_storages()
     return rag
+
+
+def _record_chunk_alias(
+    chunk_doc_map: dict[str, list[str]], chunk_id: str, doc_id: str
+) -> None:
+    aliases = chunk_doc_map.setdefault(chunk_id, [])
+    if doc_id not in aliases:
+        aliases.append(doc_id)
 
 
 def extraction_subset(dataset: BenchDataset, cap: int) -> list[str]:
@@ -406,7 +436,9 @@ async def ingest_dataset(
         )
         for cid in remainder
     }
-    chunk_doc_map: dict[str, str] = {remainder_chunk_ids[cid]: cid for cid in remainder}
+    chunk_doc_map: dict[str, list[str]] = {}
+    for cid in remainder:
+        _record_chunk_alias(chunk_doc_map, remainder_chunk_ids[cid], cid)
 
     processed = (
         await rag.doc_status.get_docs_by_statuses([DocStatus.PROCESSED], strict=True)
@@ -425,7 +457,7 @@ async def ingest_dataset(
         if not pending_subset and not pending_remainder:
             for cid in subset:
                 for chunk_id in processed[cid].chunks_list or []:
-                    chunk_doc_map[chunk_id] = cid
+                    _record_chunk_alias(chunk_doc_map, chunk_id, cid)
             logger.info(
                 "[hybrid-bench] resume: workspace %s already holds the full "
                 "dataset (%d extracted docs PROCESSED, %d chunks-only docs "
@@ -523,7 +555,7 @@ async def ingest_dataset(
                         )
                     raise RuntimeError(detail)
                 for chunk_id in status.chunks_list or []:
-                    chunk_doc_map[chunk_id] = cid
+                    _record_chunk_alias(chunk_doc_map, chunk_id, cid)
         phase["name"] = "complete"
         return IngestResult(
             chunk_doc_map=chunk_doc_map,
@@ -548,22 +580,43 @@ async def ingest_dataset(
             logger.warning("[hybrid-bench] final progress checkpoint failed: %s", exc)
 
 
+def _pg_connect_kwargs(pg: dict) -> dict:
+    """asyncpg.connect kwargs mirroring the storage pool's connection setup,
+    including the POSTGRES_SSL_* context/cert settings, so cleanup reaches
+    SSL-required servers exactly like the measured path. write_amp_driver
+    carries a self-contained mirror of this helper (baseline contract)."""
+    from lightrag.kg.postgres_impl import PostgreSQLDB
+
+    db = PostgreSQLDB(pg)
+    kwargs = {
+        "host": pg["host"],
+        "port": int(pg["port"]),
+        "user": pg["user"],
+        "password": pg["password"],
+        "database": pg["database"],
+    }
+    ssl_context = db._create_ssl_context()
+    if ssl_context is not None:
+        kwargs["ssl"] = ssl_context
+    elif db.ssl_mode and db.ssl_mode.lower() in ("require", "prefer"):
+        kwargs["ssl"] = True
+    elif db.ssl_mode and db.ssl_mode.lower() == "disable":
+        kwargs["ssl"] = False
+    return kwargs
+
+
 async def cleanup_pg_workspace(config: BenchConfig) -> None:
-    """Delete the run's workspace rows; drop its vector tables only when no
-    other workspace still uses them. Explicit per-table DELETEs: dynamic
-    DO-block discovery has silently skipped tables before."""
+    """Delete ONLY the run's workspace rows; shared model/dim vector tables
+    are RETAINED. An emptiness-check-then-DROP races a concurrent run that
+    can commit rows between the check and the drop, losing them; leftover
+    empty tables are harmless. Explicit per-table DELETEs: dynamic DO-block
+    discovery has silently skipped tables before."""
     import asyncpg
 
     from lightrag.kg.postgres_impl import ClientManager
 
     pg = ClientManager.get_config()
-    conn = await asyncpg.connect(
-        host=pg["host"],
-        port=int(pg["port"]),
-        user=pg["user"],
-        password=pg["password"],
-        database=pg["database"],
-    )
+    conn = await asyncpg.connect(**_pg_connect_kwargs(pg))
     try:
         tables = await conn.fetch(
             "SELECT tablename FROM pg_tables "
@@ -582,20 +635,5 @@ async def cleanup_pg_workspace(config: BenchConfig) -> None:
                     f'DELETE FROM "{table}" WHERE workspace=$1',
                     config.workspace,
                 )
-        for namespace in ("chunks", "entity", "relation"):
-            table = (
-                f"lightrag_vdb_{namespace}_{config.embedding_model_name}"
-                f"_{config.embedding_dim}d"
-            )
-            exists = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pg_tables "
-                "WHERE schemaname='public' AND tablename=$1)",
-                table,
-            )
-            if not exists:
-                continue
-            remaining = await conn.fetchval(f'SELECT EXISTS(SELECT 1 FROM "{table}")')
-            if not remaining:
-                await conn.execute(f'DROP TABLE IF EXISTS "{table}"')
     finally:
         await conn.close()

@@ -122,12 +122,17 @@ async def test_file_backend_mechanics_smoke(tmp_path):
         assert 0.0 <= entry["mean"] <= 1.0
 
     assert set(dataset["ablation"]) == {"entity_only", "chunk_only", "both"}
+    assert "Ablation:" in markdown
     latency = dataset["latency"]
     for phase in ("retrieval", "answer"):
         assert latency[phase]["dense"]["p95"] > 0
         assert latency[phase]["hybrid"]["p95"] > 0
         assert latency[phase]["dense"]["query_slots"] >= 100
         assert latency[phase]["dense"]["rounds"] == 3
+        for arm in ("dense", "hybrid"):
+            samples = latency[phase][f"all_samples_{arm}"]
+            assert len(samples) == latency[phase][arm]["query_slots"] * 3
+            assert all(value > 0 for value in samples)
 
     assert "lexical-arm" in dataset["skipped"]
     assert "write-amp" in dataset["skipped"]

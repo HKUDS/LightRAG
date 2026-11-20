@@ -10,7 +10,8 @@ Phase-gating decisions, documented for a full run:
   in sorted order that measured them; every dataset's numbers are in the
   report.
 - Reranker survival pools scored hits across datasets.
-- Latency gate inputs pool per-query latencies across datasets.
+- Latency gate inputs pool the flat all-samples latencies across datasets,
+  the same p95 definition the report displays.
 - The baseline-worktree half of the write-amplification comparison runs only
   with --write-amp-baseline.
 - --workspace mints a stable per-dataset workspace (no random suffix) and
@@ -350,7 +351,9 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
             if arm == "lexical":
                 positives = dataset.positives(qid)
                 lexical_positive_hits.extend(
-                    (query, hit.content) for hit in hits if hit.doc_id in positives
+                    (query, hit.content)
+                    for hit in hits
+                    if any(doc_id in positives for doc_id in hit.doc_ids)
                 )
         for arm, hybrid in (("dense", False), ("hybrid", True)):
             entities = await asyncio.wait_for(
@@ -363,20 +366,18 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
         for combo, (entity_hybrid, chunk_hybrid) in arms_mod.B5_COMBINATIONS.items():
             b5_per_query[combo] = {}
             for qid, query in dataset.queries.items():
-                embedding = await arms_mod.embed_query(rag, query)
-                arm = "hybrid" if chunk_hybrid else "dense"
-                hits = await arms_mod.retrieve_chunks(
-                    rag,
-                    query,
-                    arm,
-                    config.top_k,
-                    embedding,
-                    ingest.chunk_doc_map,
+                hits, entities = await asyncio.wait_for(
+                    arms_mod.retrieve_combined(
+                        rag,
+                        query,
+                        entity_hybrid,
+                        chunk_hybrid,
+                        config.top_k,
+                        ingest.chunk_doc_map,
+                    ),
+                    timeout=config.request_timeout,
                 )
                 docs = arms_mod.doc_id_sequence(hits)
-                entities = await arms_mod.retrieve_entities(
-                    rag, query, entity_hybrid, config.top_k, embedding
-                )
                 positives = dataset.positives(qid)
                 entry: dict[str, float] = {}
                 if positives:
@@ -430,14 +431,16 @@ async def _run_latency(rag, dataset, config):
                 "overhead": p95_overhead(dense.p95, hybrid.p95),
                 "overhead_ci95": list(
                     bootstrap_p95_overhead_ci(
-                        dense.per_query,
-                        hybrid.per_query,
+                        dense.all_samples,
+                        hybrid.all_samples,
                         config.seed,
                         config.resamples,
                     )
                 ),
                 "per_query_dense": dense.per_query,
                 "per_query_hybrid": hybrid.per_query,
+                "all_samples_dense": dense.all_samples,
+                "all_samples_hybrid": hybrid.all_samples,
             }
     return results
 
@@ -485,6 +488,7 @@ async def run_dataset(
             rag.chunk_entity_relation_graph,
             rag.text_chunks,
             {qid: dataset.positives(qid) for qid in dataset.queries},
+            entity_chunks=rag.entity_chunks,
         )
         result["entity_truth"] = {
             "queries_with_truth": len(truth.per_query),
@@ -635,8 +639,10 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
         for dataset in datasets:
             latency = dataset.get("latency")
             if latency:
-                dense_pool.extend(latency[phase]["per_query_dense"])
-                hybrid_pool.extend(latency[phase]["per_query_hybrid"])
+                # Gate on the SAME statistic the report displays: the pooled
+                # all-samples (flat) p95, never the per-query round means.
+                dense_pool.extend(latency[phase]["all_samples_dense"])
+                hybrid_pool.extend(latency[phase]["all_samples_hybrid"])
         if dense_pool:
             overheads[phase] = p95_overhead(
                 percentile(dense_pool, 95), percentile(hybrid_pool, 95)

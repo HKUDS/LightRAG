@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 
 def _require_nonempty(name: str, values: Sequence) -> None:
@@ -101,8 +101,14 @@ def p95_overhead(dense_p95: float, hybrid_p95: float) -> float | None:
     return relative_gain(hybrid_p95, dense_p95)
 
 
-def _resample_indices(rng: random.Random, n: int, resamples: int) -> list[list[int]]:
-    return [[rng.randrange(n) for _ in range(n)] for _ in range(resamples)]
+def _resample_indices(
+    rng: random.Random, n: int, resamples: int
+) -> Iterator[list[int]]:
+    # One index list at a time: materializing all resamples costs
+    # resamples * n integers of peak memory for no benefit, since every
+    # caller consumes the sequence sequentially.
+    for _ in range(resamples):
+        yield [rng.randrange(n) for _ in range(n)]
 
 
 def _ci_from_statistics(statistics: list[float]) -> tuple[float, float]:
@@ -154,25 +160,27 @@ def paired_diff_ci(
 
 
 def bootstrap_p95_overhead_ci(
-    dense_per_query: Sequence[float],
-    hybrid_per_query: Sequence[float],
+    dense_samples: Sequence[float],
+    hybrid_samples: Sequence[float],
     seed: int,
     resamples: int = 1000,
 ) -> tuple[float, float]:
     """95% CI of the p95 overhead ``(p95_hybrid - p95_dense) / p95_dense``
-    under paired per-query resampling. A zero dense p95 in any resample is a
+    under paired resampling of the SAME flat all-samples definition the p95
+    gate and report use: one index list per resample feeds both arms, whose
+    samples align by (slot, round). A zero dense p95 in any resample is a
     caller error: real latencies are positive."""
-    _require_nonempty("dense_per_query", dense_per_query)
-    if len(dense_per_query) != len(hybrid_per_query):
+    _require_nonempty("dense_samples", dense_samples)
+    if len(dense_samples) != len(hybrid_samples):
         raise ValueError("paired arms must have equal length")
     if resamples < 1:
         raise ValueError("resamples must be positive")
     rng = random.Random(seed)
-    n = len(dense_per_query)
+    n = len(dense_samples)
     statistics = []
     for indices in _resample_indices(rng, n, resamples):
-        dense_p95 = percentile([dense_per_query[i] for i in indices], 95)
-        hybrid_p95 = percentile([hybrid_per_query[i] for i in indices], 95)
+        dense_p95 = percentile([dense_samples[i] for i in indices], 95)
+        hybrid_p95 = percentile([hybrid_samples[i] for i in indices], 95)
         if dense_p95 <= 0.0:
             raise ValueError("dense p95 must be positive for an overhead CI")
         statistics.append((hybrid_p95 - dense_p95) / dense_p95)

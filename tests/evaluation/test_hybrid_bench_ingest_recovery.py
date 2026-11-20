@@ -203,7 +203,9 @@ async def test_recovery_round_recovers_failed_via_sanctioned_path(tmp_path, comm
         assert result.recovered_doc_ids == ["d0", "d1"]
         assert result.persistently_failed_doc_ids == []
         assert result.chunk_count == 2
-        assert set(result.chunk_doc_map.values()) == {"d0", "d1"}
+        assert {
+            doc for aliases in result.chunk_doc_map.values() for doc in aliases
+        } == {"d0", "d1"}
         ingress = await get_pipeline_ingress(rag.workspace)
         assert ingress.snapshot_manual_retries() == []
         statuses = await rag.doc_status.get_docs_by_statuses(

@@ -6,6 +6,10 @@ with the code under test.
 
 from __future__ import annotations
 
+import math
+import random
+import tracemalloc
+
 import pytest
 
 from lightrag.evaluation.hybrid_bench.metrics import (
@@ -158,6 +162,53 @@ def test_p95_overhead_ci_constant_latency():
     lo, hi = bootstrap_p95_overhead_ci([1.0] * 4, [1.25] * 4, seed=5, resamples=1000)
     assert lo == pytest.approx(0.25)
     assert hi == pytest.approx(0.25)
+
+
+def _legacy_materialized_ci(statistic, n: int, seed: int, resamples: int):
+    """The pre-streaming implementation: materialize ALL resample index
+    lists up front, then reduce. The seeded RNG call order is the contract
+    the streaming generator must preserve exactly."""
+    rng = random.Random(seed)
+    materialized = [[rng.randrange(n) for _ in range(n)] for _ in range(resamples)]
+    ordered = sorted(statistic(indices) for indices in materialized)
+    count = len(ordered)
+    lo = ordered[max(0, math.ceil(0.025 * count) - 1)]
+    hi = ordered[min(count - 1, math.ceil(0.975 * count) - 1)]
+    return lo, hi
+
+
+def test_streaming_resamples_preserve_the_seeded_sequence():
+    values = [i / 97 for i in range(40)]
+    n = len(values)
+    assert bootstrap_mean_ci(values, seed=7, resamples=1000) == (
+        _legacy_materialized_ci(lambda idx: sum(values[i] for i in idx) / n, n, 7, 1000)
+    )
+    arm_a = [i / 53 for i in range(30)]
+    arm_b = [(i % 7) / 11 for i in range(30)]
+    n = len(arm_a)
+    assert paired_diff_ci(arm_a, arm_b, seed=11, resamples=1000) == (
+        _legacy_materialized_ci(
+            lambda idx: sum(arm_a[i] - arm_b[i] for i in idx) / n, n, 11, 1000
+        )
+    )
+
+
+def test_streaming_resamples_lower_peak_memory():
+    # Given 1000 queries x 1000 resamples, materializing every index list
+    # costs ~resamples*n integers; streaming one list at a time must keep
+    # the peak far below that (the reduction statistics still accumulate).
+    values = [i / 997 for i in range(1000)]
+    rng = random.Random(42)
+    tracemalloc.start()
+    materialized = [[rng.randrange(1000) for _ in range(1000)] for _ in range(1000)]
+    _, materialized_peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    del materialized
+    tracemalloc.start()
+    bootstrap_mean_ci(values, seed=42, resamples=1000)
+    _, streamed_peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert streamed_peak < materialized_peak / 2
 
 
 @pytest.mark.parametrize(

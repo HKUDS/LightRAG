@@ -176,7 +176,9 @@ async def test_partial_resume_skips_processed_and_recovers_failed(tmp_path, comm
         assert result.recovered_doc_ids == ["d1"]
         assert result.persistently_failed_doc_ids == []
         assert result.chunk_count == 3
-        assert set(result.chunk_doc_map.values()) == {"d0", "d1", "d2"}
+        assert {
+            doc for aliases in result.chunk_doc_map.values() for doc in aliases
+        } == {"d0", "d1", "d2"}
         assert llm1 == []
         assert llm2 == []
     finally:
@@ -231,7 +233,9 @@ async def test_fully_ingested_dataset_skips_straight_to_retrieval(tmp_path, cap)
         assert result.resumed is True
         assert result.recovery_rounds_used == 0
         assert result.chunk_count == 3
-        assert set(result.chunk_doc_map.values()) == {"d0", "d1", "d2"}
+        assert {
+            doc for aliases in result.chunk_doc_map.values() for doc in aliases
+        } == {"d0", "d1", "d2"}
         assert result.extracted_doc_ids == first.extracted_doc_ids
         assert result.chunks_only_doc_ids == first.chunks_only_doc_ids
         assert llm2 == []

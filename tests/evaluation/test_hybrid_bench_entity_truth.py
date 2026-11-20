@@ -71,6 +71,68 @@ async def test_missing_chunk_row_drops_only_that_document():
     assert truth.entity_documents == {"E1": {"d1"}, "E2": {"d3"}}
 
 
+class FakeTrackingKV:
+    """entity_chunks rows keyed by entity name; absent ids yield None in
+    request order, the BaseKVStorage.get_by_ids contract."""
+
+    def __init__(self, rows: dict[str, dict]):
+        self.rows = rows
+        self.requested: list[list[str]] = []
+
+    async def get_by_ids(self, ids):
+        self.requested.append(list(ids))
+        return [self.rows.get(label) for label in ids]
+
+
+@pytest.mark.asyncio
+async def test_tracking_row_extends_truth_beyond_the_graph_cap():
+    # E1's graph source_id is capped at c1,c2; the tracking row carries the
+    # FULL list including c3. A query positive only on d3 (owned by c3) must
+    # still derive E1 as truth — the capped graph field alone would call it
+    # zero-truth and drop it from hit@k.
+    graph = FakeGraph()
+    kv = FakeChunksKV()
+    tracking = FakeTrackingKV({"E1": {"chunk_ids": ["c1", "c2", "c3"], "count": 3}})
+    truth = await derive_entity_truth(
+        graph, kv, {"q1": {"d3": 1}}, entity_chunks=tracking
+    )
+    # E2 legitimately owns d3 through its graph fallback; the pin is that
+    # E1 is ALSO truth via the beyond-cap tracking chunk c3.
+    assert truth.per_query == {"q1": {"E1", "E2"}}
+    assert truth.zero_truth_query_ids == []
+    assert truth.entity_documents["E1"] == {"d1", "d2", "d3"}
+    assert tracking.requested == [["E1", "E2", "E3"]]
+    assert kv.requested == [["c1", "c2", "c3"]]
+
+
+@pytest.mark.asyncio
+async def test_absent_tracking_row_falls_back_to_graph_source_id():
+    # Only E1 has a tracking row; E2/E3 fall back to the graph field.
+    graph = FakeGraph()
+    kv = FakeChunksKV()
+    tracking = FakeTrackingKV({"E1": {"chunk_ids": ["c1"], "count": 1}})
+    truth = await derive_entity_truth(
+        graph, kv, {"q1": {"d1": 1}, "q2": {"d3": 1}}, entity_chunks=tracking
+    )
+    assert truth.per_query == {"q1": {"E1"}, "q2": {"E2"}}
+    assert truth.entity_documents == {"E1": {"d1"}, "E2": {"d3"}}
+
+
+@pytest.mark.asyncio
+async def test_present_empty_tracking_row_is_authoritative():
+    # A present row with an empty chunk list means no source chunks; the
+    # capped graph field must NOT resurrect documents for it.
+    graph = FakeGraph()
+    kv = FakeChunksKV()
+    tracking = FakeTrackingKV({"E1": {"chunk_ids": [], "count": 0}})
+    truth = await derive_entity_truth(
+        graph, kv, {"q1": {"d1": 1}}, entity_chunks=tracking
+    )
+    assert truth.per_query == {}
+    assert truth.zero_truth_query_ids == ["q1"]
+    assert "E1" not in truth.entity_documents
+
+
 @pytest.mark.asyncio
 async def test_empty_graph_yields_all_zero_truth():
     class EmptyGraph:

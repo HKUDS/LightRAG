@@ -57,11 +57,13 @@ def _run_driver(
     batch_size: int,
     out_json: Path,
 ) -> dict:
+    # The driver runs with cwd=temp dir: a relative --dataset-dir corpus
+    # path must be resolved against the CALLER's cwd before the subprocess.
     completed = subprocess.run(
         [
             interpreter,
             str(_DRIVER_PATH),
-            str(corpus_path),
+            str(Path(corpus_path).resolve()),
             workspace,
             str(dim),
             str(batch_size),

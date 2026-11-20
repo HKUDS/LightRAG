@@ -16,8 +16,10 @@ from pathlib import Path
 ENTITY_TRUTH_DERIVATION = (
     "An entity is relevant to a query iff the full_doc_id set of its source "
     "chunks intersects the query's qrels-positive corpus ids. Source chunks "
-    "come from the graph node source_id split on GRAPH_FIELD_SEP; chunk ids "
-    "resolve to documents through the text_chunks KV store. Queries with "
+    "come from the entity_chunks tracking row (the full attribution list); "
+    "the graph node source_id split on GRAPH_FIELD_SEP is the fallback only "
+    "when no tracking row exists, because the graph field is capped. Chunk "
+    "ids resolve to documents through the text_chunks KV store. Queries with "
     "empty derived truth are reported separately and excluded from hit@k."
 )
 
@@ -25,6 +27,14 @@ LEXICAL_ARM_NOTE = (
     "The lexical-only arm executes the same lexical_chunks SQL template "
     "hybrid_query uses, read from postgres_impl.SQL_TEMPLATES, with the same "
     "tokenizer and workspace. Diagnostic only; no product change."
+)
+
+ABLATION_NOTE = (
+    "Ablation combinations run the combined mix-mode retrieval path "
+    "(operate.kg_query, the aquery_data call) with the entity and chunk "
+    "storage dispatches controlled independently via instance-level "
+    "capability overrides; metrics score the FINAL context chunks and "
+    "entities, so the entity leg can change chunk recall. No product change."
 )
 
 LATENCY_SURFACE_NOTE = (
@@ -40,19 +50,21 @@ def _fmt_ci(entry: dict) -> str:
     return f"{entry['mean']:.4f} [{lo:.4f}, {hi:.4f}]"
 
 
-def _metric_table(dataset: dict) -> list[str]:
+def _metric_table(dataset: dict, top_k: int) -> list[str]:
     lines = [
-        "| arm | recall@10 [95% CI] | nDCG@10 [95% CI] |",
+        f"| arm | recall@{top_k} [95% CI] | nDCG@{top_k} [95% CI] |",
         "| --- | --- | --- |",
     ]
     for arm, metrics in dataset["chunk_metrics"].items():
         lines.append(
-            f"| {arm} | {_fmt_ci(metrics['recall@10'])} "
-            f"| {_fmt_ci(metrics['ndcg@10'])} |"
+            f"| {arm} | {_fmt_ci(metrics[f'recall@{top_k}'])} "
+            f"| {_fmt_ci(metrics[f'ndcg@{top_k}'])} |"
         )
     entity = dataset.get("entity_metrics") or {}
     for arm, metrics in entity.items():
-        lines.append(f"| entity-{arm} | hit@10 {_fmt_ci(metrics['hit@10'])} | - |")
+        lines.append(
+            f"| entity-{arm} | hit@{top_k} {_fmt_ci(metrics[f'hit@{top_k}'])} | - |"
+        )
     return lines
 
 
@@ -98,6 +110,7 @@ def render_markdown(results: dict) -> str:
         "",
         f"- Entity truth: {ENTITY_TRUTH_DERIVATION}",
         f"- Lexical arm: {LEXICAL_ARM_NOTE}",
+        f"- Ablation: {ABLATION_NOTE}",
         f"- Latency surface: {LATENCY_SURFACE_NOTE}",
         "- Extraction subset: all qrels-positive passages plus sorted fill "
         "up to the CLI cap; the remainder ingests chunks-only without LLM "
@@ -112,6 +125,7 @@ def render_markdown(results: dict) -> str:
         lines.append(
             f"| {verdict['gate_id']} | {verdict['status']} | {verdict['detail']} |"
         )
+    top_k = results["config"]["top_k"]
     for dataset in results["datasets"]:
         meta = dataset["meta"]
         lines += [
@@ -133,7 +147,7 @@ def render_markdown(results: dict) -> str:
             "",
             "### Chunk and entity metrics",
             "",
-            *_metric_table(dataset),
+            *_metric_table(dataset, top_k),
             "",
             f"Zero-positive queries (excluded from chunk metrics): "
             f"{dataset['zero_positive_query_ids']}",
@@ -151,14 +165,14 @@ def render_markdown(results: dict) -> str:
                 "",
                 "### Ablation means",
                 "",
-                "| combination | recall@10 | nDCG@10 | entity hit@10 |",
+                f"| combination | recall@{top_k} | nDCG@{top_k} | entity hit@{top_k} |",
                 "| --- | --- | --- | --- |",
             ]
             for combo, metrics in dataset["ablation"].items():
                 lines.append(
-                    f"| {combo} | {metrics['recall@10']:.4f} "
-                    f"| {metrics['ndcg@10']:.4f} "
-                    f"| {metrics['entity_hit@10']:.4f} |"
+                    f"| {combo} | {metrics[f'recall@{top_k}']:.4f} "
+                    f"| {metrics[f'ndcg@{top_k}']:.4f} "
+                    f"| {metrics[f'entity_hit@{top_k}']:.4f} |"
                 )
         write_amp = dataset.get("write_amp")
         if write_amp:

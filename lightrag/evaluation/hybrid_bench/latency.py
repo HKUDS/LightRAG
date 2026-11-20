@@ -17,8 +17,12 @@ Protocol rules:
 - At least ``latency_queries`` query slots (cycling the dataset queries
   deterministically when fewer exist) times ``latency_rounds`` rounds,
   sequential, one shared client. Every request has a bounded timeout.
-- Per-query statistic is the mean over rounds; p50/p95 use nearest-rank
-  percentiles; the overhead CI resamples queries paired across arms.
+- p50/p95 use nearest-rank percentiles over ALL samples (flat), the same
+  statistic the report displays and the gates pool. ``per_query`` round
+  means are kept for diagnostics only; they never feed a p95 gate.
+- The overhead CI resamples the flat samples paired across arms: both arms
+  run the same slots in the same round order, so sample index i is the same
+  (slot, round) on both sides.
 """
 
 from __future__ import annotations

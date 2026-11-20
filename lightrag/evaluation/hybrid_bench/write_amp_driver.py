@@ -7,8 +7,13 @@ query parameters, which do not exist on the baseline. Synthetic hash
 embeddings are legitimate here: this measures the write path, not quality.
 
 Usage: python write_amp_driver.py CORPUS_JSONL WORKSPACE DIM BATCH_SIZE OUT_JSON
-The PG connection comes from the POSTGRES_* environment. The driver deletes
-its workspace rows and drops its scratch vector tables when empty.
+The PG connection comes from the POSTGRES_* environment. A workspace
+override (POSTGRES_WORKSPACE or config.ini [postgres] workspace) fails the
+run before storage init: it would remap storage away from the driver's
+workspace while cleanup deletes the driver's name. Cleanup deletes ONLY the
+driver's workspace rows and retains the shared vector tables (a concurrent
+run may hold rows in them); its connection reuses the storage's
+POSTGRES_SSL_* settings.
 """
 
 from __future__ import annotations
@@ -68,6 +73,16 @@ def percentile95(values: list[float]) -> float:
 
 
 async def run(corpus_path: str, workspace: str, dim: int, batch_size: int) -> dict:
+    from lightrag.kg.postgres_impl import ClientManager
+
+    override = ClientManager.get_config().get("workspace")
+    if override is not None and str(override).strip():
+        raise ValueError(
+            f"PG workspace override {str(override).strip()!r} is set "
+            "(POSTGRES_WORKSPACE or config.ini [postgres] workspace); it "
+            "would remap storage away from the driver workspace while "
+            "cleanup deletes the driver name. Unset it before running"
+        )
     texts = [
         json.loads(line)["text"]
         for line in open(corpus_path, encoding="utf-8")
@@ -125,22 +140,40 @@ async def run(corpus_path: str, workspace: str, dim: int, batch_size: int) -> di
         }
     finally:
         await rag.finalize_storages()
-        await cleanup(workspace, dim)
+        await cleanup(workspace)
 
 
-async def cleanup(workspace: str, dim: int) -> None:
+def _connect_kwargs(pg: dict) -> dict:
+    # Self-contained mirror of rag_setup._pg_connect_kwargs: the driver must
+    # run on a pristine baseline checkout where the harness package does not
+    # exist, so it cannot import the helper. Keep the two identical.
+    from lightrag.kg.postgres_impl import PostgreSQLDB
+
+    db = PostgreSQLDB(pg)
+    kwargs = {
+        "host": pg["host"],
+        "port": int(pg["port"]),
+        "user": pg["user"],
+        "password": pg["password"],
+        "database": pg["database"],
+    }
+    ssl_context = db._create_ssl_context()
+    if ssl_context is not None:
+        kwargs["ssl"] = ssl_context
+    elif db.ssl_mode and db.ssl_mode.lower() in ("require", "prefer"):
+        kwargs["ssl"] = True
+    elif db.ssl_mode and db.ssl_mode.lower() == "disable":
+        kwargs["ssl"] = False
+    return kwargs
+
+
+async def cleanup(workspace: str) -> None:
     import asyncpg
 
     from lightrag.kg.postgres_impl import ClientManager
 
     pg = ClientManager.get_config()
-    conn = await asyncpg.connect(
-        host=pg["host"],
-        port=int(pg["port"]),
-        user=pg["user"],
-        password=pg["password"],
-        database=pg["database"],
-    )
+    conn = await asyncpg.connect(**_connect_kwargs(pg))
     try:
         tables = await conn.fetch(
             "SELECT tablename FROM pg_tables "
@@ -158,17 +191,6 @@ async def cleanup(workspace: str, dim: int) -> None:
                 await conn.execute(
                     f'DELETE FROM "{table}" WHERE workspace=$1', workspace
                 )
-        for namespace in ("chunks", "entity", "relation"):
-            table = f"lightrag_vdb_{namespace}_{MODEL_NAME}_{dim}d"
-            exists = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pg_tables "
-                "WHERE schemaname='public' AND tablename=$1)",
-                table,
-            )
-            if exists and not await conn.fetchval(
-                f'SELECT EXISTS(SELECT 1 FROM "{table}")'
-            ):
-                await conn.execute(f'DROP TABLE IF EXISTS "{table}"')
     finally:
         await conn.close()
 

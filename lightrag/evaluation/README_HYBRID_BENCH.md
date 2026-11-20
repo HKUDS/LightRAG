@@ -72,6 +72,12 @@ export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_USER=lightrag \
 # leave POSTGRES_WORKSPACE unset
 ```
 
+A workspace override (`POSTGRES_WORKSPACE` or a `config.ini` `[postgres]`
+`workspace` value) fails the run BEFORE any storage is initialized, in both
+the harness and the write-amp driver: PG storages honor the override over the
+run's minted workspace, so the benchmark would write into the configured
+workspace while cleanup deletes the minted name.
+
 ## OpenAI-compatible API backend
 
 `--llm-backend openai --embedding-backend openai` runs the bench against any
@@ -183,15 +189,30 @@ seeding calls `entities_vdb.query` / `hybrid_query`. All arms share one
 precomputed query embedding and the same `top_k`. The lexical-only arm
 (diagnostic) executes the SAME `SQL_TEMPLATES["lexical_chunks"]` template
 `hybrid_query` uses, with the same tokenizer, against the same workspace — no
-product change. Note the production tokenizer ANDs every query token/bigram:
-a natural-language query whose bigrams cross word boundaries can match
-nothing lexically; that is the measured product behavior, not a harness bug.
+product change; `postgres_impl` is imported lazily inside that arm, so a
+file-backend run never loads the PG driver stack. Note the production
+tokenizer ANDs every query token/bigram: a natural-language query whose
+bigrams cross word boundaries can match nothing lexically; that is the
+measured product behavior, not a harness bug.
+
+**Chunk attribution and duplicate content.** Chunk ids are content hashes on
+the chunks-only path (`ainsert_custom_kg`), so documents with identical text
+share one chunk; the attribution map keeps EVERY corpus alias per chunk id
+and scoring expands all aliases of a retrieved chunk in sorted order at that
+chunk's rank position. A query positive on any alias counts as retrieved.
+Extraction-path chunk ids are doc-scoped (`hash("doc_id:content")`), so
+extracted documents never share chunk ids with each other or with the
+remainder.
 
 **Derived entity truth.** An entity is relevant to a query iff the
 `full_doc_id` set of its source chunks intersects the query's qrels-positive
-corpus ids (graph `source_id` split on `GRAPH_FIELD_SEP`, resolved through
-`text_chunks`). Queries with empty derived truth are reported separately and
-never averaged into hit@k.
+corpus ids. Source chunks come from the `entity_chunks` tracking row — the
+FULL attribution list; the graph `source_id` split on `GRAPH_FIELD_SEP` is
+the fallback ONLY when no tracking row exists, because the graph field is
+capped and would drop truth for entities appearing in more passages than the
+cap. Chunk ids resolve to documents through `text_chunks`. A present tracking
+row is authoritative even when empty. Queries with empty derived truth are
+reported separately and never averaged into hit@k.
 
 **Metrics.** recall@k = distinct retrieved documents in the first k ranks over
 positive count. nDCG@k = linear qrels-score gain, discount `1/log2(rank+1)`,
@@ -199,12 +220,24 @@ chunk ranks deduplicated to documents at first occurrence (bounded [0,1]);
 IDCG ranks all positive scores descending. hit@k = any truth entity in the
 first k. Empty retrieval scores 0.0 and is listed per arm. Bootstrap: >=1000
 per-query resamples from `random.Random(seed)`; paired arm differences share
-one index list per resample; nearest-rank 2.5/97.5 percentiles. Same seed +
-inputs = byte-identical intervals (test-pinned).
+one index list per resample; nearest-rank 2.5/97.5 percentiles. Resample index
+lists are streamed one at a time (peak memory independent of the resample
+count) with the seeded sequence preserved. Same seed + inputs = byte-identical
+intervals (test-pinned).
 
-**Ablation.** Storage-level dispatch, no product change: entity-only =
-entities hybrid + chunks dense; chunk-only = chunks hybrid + entities dense;
-both = both hybrid. Gate: both >= each single arm per metric.
+**Ablation.** Each combination runs the COMBINED mix-mode retrieval path —
+`operate.kg_query`, the same call `aquery_data` makes, with keywords injected
+and context-only — with the two storage dispatches controlled independently
+through instance-level capability overrides (a disabled dispatch shadows the
+class `supports_hybrid_query` flag for the call and is removed afterwards; a
+backend without the capability is never enabled): entity-only = entities
+hybrid + chunks dense; chunk-only = chunks hybrid + entities dense; both =
+both hybrid. Because the path is combined, the entity leg can change chunk
+recall (entity-derived chunks merge with the vector leg), and metrics score
+the FINAL context chunks and entities after the product's merge/truncation —
+not two independent searches. No product change. Gate: both >= each single
+arm per metric. On file backends no storage declares hybrid capability, so
+all three combinations reduce to the dense path (labeled skip).
 
 **Latency.** The production query router (`create_query_routes`) is
 mounted on a minimal FastAPI app and driven via `httpx.ASGITransport`:
@@ -216,19 +249,29 @@ latency) and `/query` (`only_need_context=False`, answer latency).
 equal to the query text so no keyword LLM runs in the measured path; the
 hybrid-minus-dense delta therefore includes the per-query index-validity
 probe (3 round-trips vs 1). The bench LightRAG disables the LLM cache so
-every round measures real work. p50/p95 are nearest-rank over all samples;
-the overhead CI resamples per-query means paired across arms.
+every round measures real work. p50/p95 are nearest-rank over ALL samples
+(flat); the overhead point estimate AND its paired bootstrap CI use that
+same flat all-samples definition (both arms run the same slots in the same
+round order, so sample index i is the same (slot, round) on both sides).
+Per-query round means are kept in the JSON for diagnostics only and never
+feed a p95 gate.
 
 **Write amplification.** `lightrag/evaluation/hybrid_bench/write_amp_driver.py` is self-contained
 (imports only lightrag + numpy, baseline-safe) and runs UNCHANGED under the
 branch interpreter and a pristine `--baseline-ref` checkout's own interpreter,
-on the same corpus and PG load, measuring per-batch upsert+flush p95. With
+on the same corpus and PG load, measuring per-batch upsert+flush p95. The
+corpus path is resolved to absolute before the subprocess (the driver's cwd
+is a temp dir, so a relative `--dataset-dir` still works). With
 `--write-amp-baseline` the harness creates a temporary detached worktree under
 the system temp dir, `uv sync`s it, runs both sides, and removes the worktree
 in `finally`. The driver uses synthetic hash embeddings on BOTH sides: this is
 a write-path measurement, not a quality claim. GIN-vs-vector index sizes come
 from per-index `pg_relation_size` on the ingested chunks table (CJK corpus for
-the gate).
+the gate). Both the driver and the harness cleanup delete ONLY their
+workspace's rows and RETAIN the shared model/dim vector tables — an
+emptiness-check-then-DROP races a concurrent run's commits — and their
+cleanup connections reuse the storage's `POSTGRES_SSL_*` context/cert
+settings, so SSL-required servers are reached exactly like the measured path.
 
 **Backfill.** Seeds NULL-tsv rows for the run's workspace, triggers the
 production backfill scheduling path, polls the pending count to zero under a
@@ -267,8 +310,9 @@ Each gate applies to its own domain (terminology or general). Statuses:
 
 Gate pooling: write amplification and backfill use the first dataset in sorted
 order that measured them (all datasets' numbers are in the report); reranker
-survival pools scored hits across datasets; latency gates pool per-query
-latencies across datasets.
+survival pools scored hits across datasets; latency gates pool the flat
+all-samples latencies across datasets — the same p95 definition each dataset's
+report table displays.
 
 ## Outputs
 
@@ -323,3 +367,17 @@ full run), and run under the overlay command above.
 - File-backends runs skip the lexical arm, write-amp and backfill (PG-only
   surfaces) and label the skips; the hybrid arm falls back to dense because
   the file vector backend does not declare `supports_hybrid_query`.
+- Duplicate-content aliases occupy consecutive document ranks after
+  expansion; when a shared chunk sits exactly at the k-th rank, its
+  later-sorting alias can fall outside the metric's document-level `[:k]`
+  cut. Direction-harmless (it can only undercount, and only for datasets
+  with duplicate text at the cutoff); the pre-fix map lost an alias
+  systematically instead.
+- Two identical-text passages inside ONE extraction batch are content-deduped
+  by the product pipeline: the second document gets no doc_status row and the
+  harness fails loud ("has no status"). Such a corpus must be normalized
+  (deduplicated) before running; duplicate pairs in the chunks-only remainder
+  are fully supported via the alias map.
+- Cleanup retains shared model/dim vector tables even when empty: leftover
+  empty tables are harmless, and dropping them on an emptiness check would
+  race a concurrent run's commits.

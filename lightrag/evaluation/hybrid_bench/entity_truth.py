@@ -3,17 +3,22 @@
 Derivation rule, quoted verbatim in every report:
 an entity is relevant to a query iff the set of ``full_doc_id`` values of its
 source chunks intersects the query's qrels-positive corpus ids. Source chunks
-come from the graph node's ``source_id`` field split on ``GRAPH_FIELD_SEP``;
-each chunk id resolves to its owning document through the ``text_chunks`` KV
+come from the ``entity_chunks`` tracking row (the FULL attribution list);
+the graph node's ``source_id`` field split on ``GRAPH_FIELD_SEP`` is the
+fallback ONLY when no tracking row exists, because the graph field is capped
+and would drop truth for entities appearing in more passages than the cap.
+Each chunk id resolves to its owning document through the ``text_chunks`` KV
 store. Passage ids equal corpus ids because ingest uses ``ids=corpus_id``.
 
 Rules:
 - Queries whose derived truth set is empty are returned separately; chunk
   metrics still apply to them, entity hit@k never averages them in.
-- A node without a ``source_id`` contributes no documents; it can never be
+- A present tracking row is authoritative even when its chunk list is empty;
+  an entity with no source chunks contributes no documents and can never be
   relevant under this rule.
 - The function takes the graph and KV storages directly so a tiny fake KG can
-  pin the mapping offline.
+  pin the mapping offline. ``entity_chunks=None`` means no tracking store:
+  every entity falls back to the graph field.
 """
 
 from __future__ import annotations
@@ -36,17 +41,26 @@ async def derive_entity_truth(
     graph: BaseGraphStorage,
     text_chunks: BaseKVStorage,
     positives_by_query: Mapping[str, Mapping[str, int]],
+    entity_chunks: BaseKVStorage | None = None,
 ) -> EntityTruth:
     """Map every entity to its source documents, then intersect per query."""
     labels = await graph.get_all_labels()
     nodes = await graph.get_nodes_batch(labels) if labels else {}
+    tracking_rows = (
+        await entity_chunks.get_by_ids(labels)
+        if entity_chunks is not None and labels
+        else [None] * len(labels)
+    )
 
     chunk_ids: set[str] = set()
     node_chunks: dict[str, list[str]] = {}
-    for label in labels:
-        node = nodes.get(label) or {}
-        source_id = node.get("source_id") or ""
-        ids = [part for part in source_id.split(GRAPH_FIELD_SEP) if part]
+    for label, tracking in zip(labels, tracking_rows):
+        if isinstance(tracking, dict):
+            ids = [cid for cid in tracking.get("chunk_ids", []) if cid]
+        else:
+            node = nodes.get(label) or {}
+            source_id = node.get("source_id") or ""
+            ids = [part for part in source_id.split(GRAPH_FIELD_SEP) if part]
         node_chunks[label] = ids
         chunk_ids.update(ids)
 
