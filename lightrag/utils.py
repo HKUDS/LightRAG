@@ -335,7 +335,9 @@ def get_env_value(
         special_none (bool): If True, return None when value is "None"
 
     Returns:
-        any: Converted value from environment or default
+        any: Converted value from environment or default. A value that does
+        not convert falls back to ``default``; a non-blank one also logs a
+        warning, a blank one (``KEY=`` in .env/Compose) does not.
     """
     value = os.getenv(env_key)
     if value is None:
@@ -371,6 +373,16 @@ def get_env_value(
     try:
         converted = value_type(value)
     except (ValueError, TypeError):
+        # A blank value is the usual "unset" idiom in .env/Compose and falls
+        # back quietly; anything else is a typo the operator should hear about.
+        if value.strip():
+            logger.warning(
+                "Environment variable %s=%r is not a valid %s, using default %r",
+                env_key,
+                value,
+                getattr(value_type, "__name__", value_type),
+                default,
+            )
         return default
 
     # Reject non-finite floats so env-backed thresholds cannot become NaN/Inf.
