@@ -964,6 +964,20 @@ class NetworkXStorage(BaseGraphStorage):
             result[(src_id, tgt_id)] = src_degree + tgt_degree
         return result
 
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """Incident edges for multiple nodes, from one graph snapshot.
+
+        See ``get_nodes_batch`` for why this overrides the per-id default.
+        A missing node maps to ``[]``, as in the default.
+        """
+        graph = await self._get_graph()
+        return {
+            node_id: list(graph.edges(node_id)) if graph.has_node(node_id) else []
+            for node_id in node_ids
+        }
+
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
     ) -> None:
