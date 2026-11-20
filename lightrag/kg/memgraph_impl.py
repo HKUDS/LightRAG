@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from typing import final
 import configparser
 
-from ..utils import logger, validate_workspace
+from ..utils import logger, get_env_value, validate_workspace
 from ..base import BaseGraphStorage
+from ..constants import DEFAULT_MAX_GRAPH_NODES
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
@@ -24,7 +25,10 @@ from dotenv import load_dotenv
 # use the .env that is inside the current folder
 load_dotenv(dotenv_path=".env", override=False)
 
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+# Read through get_env_value like ``LightRAG.max_graph_nodes``: this runs at
+# import time, so the same knob that only costs a default there would raise
+# ValueError out of the storage module import here.
+MAX_GRAPH_NODES = get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -59,6 +63,17 @@ class MemgraphStorage(BaseGraphStorage):
 
         self._driver = None
 
+    def _get_raw_workspace_label(self) -> str:
+        """Return the actual Memgraph label name for this workspace (no escaping).
+
+        This is the un-escaped label as it is stored on nodes. It is safe to
+        bind as a query parameter, where the driver handles the value without
+        string interpolation and therefore without any risk of Cypher
+        injection. It must NOT be interpolated directly into a query string.
+        """
+        workspace = self.workspace.strip()
+        return workspace if workspace else "base"
+
     def _get_workspace_label(self) -> str:
         """Return sanitized workspace label safe for use as a backtick-quoted identifier in Cypher queries.
 
@@ -67,11 +82,11 @@ class MemgraphStorage(BaseGraphStorage):
         for all other characters. The returned value is intended to be used
         inside backticks (for example, MATCH (n:`{label}`)) and is not
         validated as a standalone unquoted identifier.
+
+        For string-literal contexts, do NOT interpolate this value; bind
+        ``_get_raw_workspace_label()`` as a query parameter instead.
         """
-        workspace = self.workspace.strip()
-        if not workspace:
-            return "base"
-        return workspace.replace("`", "``")
+        return self._get_raw_workspace_label().replace("`", "``")
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -101,7 +116,7 @@ class MemgraphStorage(BaseGraphStorage):
                     try:
                         workspace_label = self._get_workspace_label()
                         await session.run(
-                            f"""CREATE INDEX ON :{workspace_label}(entity_id)"""
+                            f"""CREATE INDEX ON :`{workspace_label}`(entity_id)"""
                         )
                         logger.info(
                             f"[{self.workspace}] Created index on :{workspace_label}(entity_id) in Memgraph."
@@ -1138,7 +1153,7 @@ class MemgraphStorage(BaseGraphStorage):
                     WHERE start.entity_id = $entity_id
 
                     OPTIONAL MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
-                    WHERE path IS NULL OR ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
+                    WHERE path IS NULL OR ALL(n IN nodes(path) WHERE $workspace_label IN labels(n))
                     WITH start, collect(DISTINCT end) AS discovered_nodes
                     WITH start, [node IN discovered_nodes WHERE node IS NOT NULL AND node <> start] AS other_nodes
                     WITH
@@ -1167,6 +1182,7 @@ class MemgraphStorage(BaseGraphStorage):
                                 "entity_id": node_label,
                                 "max_nodes": max_nodes,
                                 "max_other_nodes": max(max_nodes - 1, 0),
+                                "workspace_label": self._get_raw_workspace_label(),
                             },
                         )
                         record = await result_set.single()

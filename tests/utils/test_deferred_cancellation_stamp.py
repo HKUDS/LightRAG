@@ -28,6 +28,8 @@ from lightrag.utils import (
     _bounded_submit_impl,
     _wait_deferring_cancellation,
     cancellation_was_deferred,
+    mark_cancellation_deferred,
+    retract_cancellation_deferred,
 )
 
 pytestmark = pytest.mark.offline
@@ -280,3 +282,26 @@ async def test_a_write_that_RAISED_is_still_not_stamped():
     # surfaced, no durability may be claimed.
     assert cancellation_was_deferred(excinfo.value) is False
     assert not isinstance(excinfo.value, CommitBookkeepingError)
+
+
+def test_a_rolled_back_write_retracts_the_stamp():
+    """A caller that undid the deferred write withdraws the durability claim."""
+    cancel = asyncio.CancelledError()
+    mark_cancellation_deferred(cancel)
+    assert cancellation_was_deferred(cancel)
+
+    retract_cancellation_deferred(cancel)
+
+    assert not cancellation_was_deferred(cancel)
+
+
+@pytest.mark.parametrize(
+    "exc", [asyncio.CancelledError(), ValueError("boom")], ids=["unstamped", "other"]
+)
+def test_retracting_leaves_an_unstamped_exception_untouched(exc):
+    before = dict(vars(exc))
+
+    retract_cancellation_deferred(exc)
+
+    assert vars(exc) == before
+    assert not cancellation_was_deferred(exc)

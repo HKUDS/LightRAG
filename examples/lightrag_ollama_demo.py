@@ -118,6 +118,7 @@ async def print_stream(stream):
 
 
 async def main():
+    rag = None
     try:
         # Clear old data files
         files_to_delete = [
@@ -128,6 +129,10 @@ async def main():
             "vdb_chunks.json",
             "vdb_entities.json",
             "vdb_relationships.json",
+            # The embedding baseline recorded for those vectors, and the
+            # anchor that binds this directory to it: stale once they are gone.
+            "kv_workspace_config.json",
+            "config_storage_anchor.json",
         ]
 
         for file in files_to_delete:

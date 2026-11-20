@@ -43,7 +43,7 @@ import os
 from typing import Any
 
 from lightrag.base import DocStatus
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.constants import DEFAULT_WORKING_DIR, GRAPH_FIELD_SEP
 from lightrag.utils import has_chunk_tracking_row, logger, make_relation_chunk_key
 
 
@@ -401,7 +401,7 @@ async def _async_main(apply: bool, verbose: bool) -> bool:
         raise RuntimeError("kg_integrity_repair never embeds")
 
     rag = LightRAG(
-        working_dir=os.getenv("WORKING_DIR", "./rag_storage"),
+        working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
         workspace=os.getenv("WORKSPACE", ""),
         llm_model_func=_noop_llm,
         embedding_func=EmbeddingFunc(

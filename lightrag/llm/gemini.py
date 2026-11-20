@@ -25,7 +25,10 @@ from tenacity import (
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -193,6 +196,11 @@ def _build_generation_config(
         if schema is not None and "response_json_schema" not in config_data:
             config_data["response_json_schema"] = schema
 
+    if "safety_settings" in config_data:
+        config_data["safety_settings"] = _normalize_gemini_safety_settings(
+            config_data["safety_settings"]
+        )
+
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
         key: value
@@ -226,6 +234,30 @@ def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
         return response_format
 
     return response_format
+
+
+def _normalize_gemini_safety_settings(safety_settings: Any) -> Any:
+    """Convert a category-to-threshold mapping to the SDK's native list shape.
+
+    ``GeminiLLMOptions.safety_settings`` is documented and typed as a plain
+    JSON object (e.g. ``{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}``), but
+    ``types.GenerateContentConfig.safety_settings`` only accepts a list of
+    ``{"category": ..., "threshold": ...}`` entries and rejects a bare dict.
+    A value that is already a list (the SDK's own shape) passes through
+    unchanged, and a single SDK entry (a dict with a ``category`` key) is
+    wrapped in a list rather than read as a mapping. No harm category is
+    named ``category``, so the two dict shapes cannot collide.
+    """
+    if not isinstance(safety_settings, dict):
+        return safety_settings
+
+    if "category" in safety_settings:
+        return [safety_settings]
+
+    return [
+        {"category": category, "threshold": threshold}
+        for category, threshold in safety_settings.items()
+    ]
 
 
 def _validate_gemini_response_format(response_format: Any | None) -> None:
@@ -308,6 +340,10 @@ def _extract_response_text(
         | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Gemini's message and callers can
+    # still catch google.genai.errors.APIError.
+    reraise=True,
 )
 async def gemini_complete_if_cache(
     model: str,
@@ -349,6 +385,8 @@ async def gemini_complete_if_cache(
 
     COT Integration:
     - When enable_cot=True: Thought content is wrapped in <think>...</think> tags
+      on the streaming path. A non-streaming result never carries thoughts,
+      and one with no regular text raises like any empty response.
     - When enable_cot=False: Thought content is filtered out, only regular content returned
     - Thought content is identified by the 'thought' attribute on response parts
     - Requires thinking_config to be enabled in generation_config for API to return thoughts
@@ -383,9 +421,15 @@ async def gemini_complete_if_cache(
     Raises:
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
     """
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset leaves the SDK default in place.
+    timeout = provider_timeout(timeout)
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 
@@ -643,21 +687,13 @@ async def gemini_complete_if_cache(
 
     final_text = remove_think_tags(final_text)
 
-    # A thinking model that spent its whole budget on the reasoning trace
-    # reaches here with final_text == "<think>...</think>", which the line
-    # above strips to nothing: empty AFTER sanitization is the same broken
-    # response as empty before it, and used to be returned as a successful
-    # (if truncated) empty string. Only escalated for the token-limit case,
-    # which is deterministic and actionable; a reasoning-only response that
-    # ended normally keeps its previous behavior with a warning.
+    # A reasoning-only response reaches here with final_text ==
+    # "<think>...</think>" when enable_cot=True, which the line above strips
+    # to nothing. Empty AFTER sanitization is the same broken response as
+    # empty before it, so it raises the same way the enable_cot=False path
+    # does: fail fast on the token limit, retry otherwise.
     if not final_text.strip():
-        if length_limited:
-            raise _empty_response_error(len((thought_text or "").strip()))
-        logger.warning(
-            "Gemini response contained only reasoning content "
-            f"(finish_reason={getattr(finish_reason, 'name', finish_reason)}), "
-            "returning empty content"
-        )
+        raise _empty_response_error(len((thought_text or "").strip()))
 
     # Flag token-limit truncation so the cache layer skips persisting partial
     # output. Must stay the last transformation of final_text: any later
@@ -682,6 +718,7 @@ async def gemini_model_complete(
     entity_extraction: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
+    apply_llm_timeout(kwargs)
     # Accept legacy keyword if passed via kwargs to preserve backwards compat.
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     hashing_kv = kwargs.get("hashing_kv")
@@ -726,6 +763,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_genai_errors.ServerError)
         | retry_if_exception(_is_retryable_gemini_client_error)
     ),
+    # Same as gemini_complete_if_cache: raise the last attempt's exception.
+    reraise=True,
 )
 async def gemini_embed(
     texts: list[str],
@@ -766,6 +805,9 @@ async def gemini_embed(
             RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, CODE_RETRIEVAL_QUERY,
             QUESTION_ANSWERING, FACT_VERIFICATION.
         timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
+            None (the default) uses LightRAG's ``default_embedding_timeout``
+            inside a LightRAG embedding call; 0 or a negative value, or None
+            outside one, keeps the SDK default.
         token_tracker: Optional token usage tracker for monitoring API usage.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
@@ -778,6 +820,10 @@ async def gemini_embed(
     Raises:
         ValueError: If API key is not provided or configured.
         RuntimeError: If the response from Gemini is invalid or empty.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
 
     Note:
         - For dimension 3072: Embeddings are already normalized by the API
@@ -790,7 +836,9 @@ async def gemini_embed(
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
 
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset keeps the SDK default (no http_options timeout).
+    timeout = embedding_timeout(timeout)
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 
