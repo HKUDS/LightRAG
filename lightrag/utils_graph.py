@@ -409,6 +409,30 @@ def _declined_commit_error(context: str) -> RuntimeError:
     )
 
 
+async def _discard_buffered_tracking(tracking_storages, *, only_retained: bool) -> list:
+    """Drop uncommitted chunk-tracking writes; return the storages dropped from.
+
+    Only a storage declaring ``buffers_writes_per_process`` is touched. With
+    ``only_retained`` a storage is dropped from only when it still has buffered
+    operations; without it, unconditionally (after a raise, when what the
+    buffer holds is unknown). See ``_require_tracking_drained`` for why such a
+    write must not survive the operation that issued it.
+    """
+    dropped = []
+    for storage_inst in tracking_storages:
+        if storage_inst is None or not getattr(
+            type(storage_inst), "buffers_writes_per_process", False
+        ):
+            continue
+        if only_retained and not await storage_inst.has_pending_index_ops(
+            include_deletes=True
+        ):
+            continue
+        await storage_inst.drop_pending_index_ops()
+        dropped.append(storage_inst)
+    return dropped
+
+
 async def _require_tracking_drained(tracking_storages, context: str) -> None:
     """Fail when a tracking flush returned normally but left rows buffered.
 
@@ -427,17 +451,15 @@ async def _require_tracking_drained(tracking_storages, context: str) -> None:
     ``buffers_writes_per_process`` is asked, and that declaration puts every
     admin writer under ``LightRAG._admin_write_gate``: no pipeline batch and no
     other admin write has operations in this buffer.
+
+    A flush that RAISES keeps its buffer too (a transport error pops nothing),
+    so ``_persist_graph_updates`` discards on that exit as well, before
+    re-raising: the failed operation's rows must not be flushed by a later
+    commit of this process.
     """
-    retained = []
-    for storage_inst in tracking_storages:
-        if not getattr(type(storage_inst), "buffers_writes_per_process", False):
-            continue
-        if await storage_inst.has_pending_index_ops(include_deletes=True):
-            retained.append(storage_inst)
+    retained = await _discard_buffered_tracking(tracking_storages, only_retained=True)
     if not retained:
         return
-    for storage_inst in retained:
-        await storage_inst.drop_pending_index_ops()
     names = ", ".join(
         str(getattr(storage_inst, "namespace", storage_inst))
         for storage_inst in retained
@@ -598,6 +620,8 @@ async def _persist_graph_updates(
             if isinstance(result, BaseException)
         ]
         if errors:
+            if phase is phases[0]:
+                await _discard_buffered_tracking(tracking_storages, only_retained=False)
             errors.sort(key=lambda item: not item[0])
             raise errors[0][1]
         if phase is phases[0]:

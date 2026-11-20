@@ -16,7 +16,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.kg.opensearch_impl import ClientManager, OpenSearchKVStorage
+from lightrag.kg.opensearch_impl import (
+    ClientManager,
+    OpenSearchKVStorage,
+    OpenSearchReferencesIntactError,
+)
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.utils_graph import _persist_graph_updates
 
@@ -146,3 +150,39 @@ async def test_a_tracking_write_that_lands_commits_the_graph():
 
     assert server.docs["Foo"]["chunk_ids"] == ["old", "custom"]
     assert graph.commits == 1
+
+
+async def test_a_raising_tracking_flush_discards_its_buffer_too():
+    """A transport error pops nothing from the buffer. The failed operation's
+    row must not be published by a later flush of this process: here a
+    timeout, then a 429 on the retry, then a peer commit, then a clean flush."""
+    from opensearchpy.exceptions import ConnectionTimeout
+
+    server = _FakeServer()
+    storage = await _tracking_storage(server)
+    graph = _RecordingGraph()
+    await storage.upsert({"Foo": {"chunk_ids": ["old", "custom"], "count": 2}})
+
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk",
+        side_effect=ConnectionTimeout("TIMEOUT", "timed out", Exception("slow")),
+    ):
+        with pytest.raises(OpenSearchReferencesIntactError, match="ConnectionTimeout"):
+            await _persist_graph_updates(
+                entity_chunks_storage=storage,
+                chunk_entity_relation_graph=graph,
+                context="test",
+            )
+    assert graph.commits == 0
+    assert await storage.has_pending_index_ops(include_deletes=True) is False
+
+    with patch(
+        "lightrag.kg.opensearch_impl.helpers.async_bulk", side_effect=server.bulk
+    ):
+        server.rate_limited = True
+        await storage.index_done_callback()  # the caller's final flush
+        server.rate_limited = False
+        server.docs["Foo"] = {"chunk_ids": ["old", "document"], "count": 2}
+        await storage.index_done_callback()  # this worker's next commit
+
+    assert server.docs["Foo"]["chunk_ids"] == ["old", "document"]

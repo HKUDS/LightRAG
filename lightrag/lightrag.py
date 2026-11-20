@@ -5280,6 +5280,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    _discard_buffered_tracking,
                     _persist_graph_updates,
                     apply_relation_weight_floor,
                     relation_evidence_source_ids,
@@ -5802,20 +5803,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # The rows only GAIN chunks, so an interruption between here
                     # and the graph writes leaves an object retained, never
                     # lost, and a retry rewrites the same rows.
-                    if entity_tracking:
-                        await self.entity_chunks.upsert(entity_tracking)
-                    if relation_tracking:
-                        await self.relation_chunks.upsert(relation_tracking)
-                    if entity_tracking or relation_tracking:
-                        await _persist_graph_updates(
-                            entity_chunks_storage=self.entity_chunks
-                            if entity_tracking
-                            else None,
-                            relation_chunks_storage=self.relation_chunks
-                            if relation_tracking
-                            else None,
-                            context="ainsert_custom_kg",
+                    # A row that could not be committed must not stay in a
+                    # per-process buffer either, where the flush in the
+                    # ``finally`` below (or any later one) would publish it
+                    # after this call has failed and released the gate.
+                    try:
+                        if entity_tracking:
+                            await self.entity_chunks.upsert(entity_tracking)
+                        if relation_tracking:
+                            await self.relation_chunks.upsert(relation_tracking)
+                        if entity_tracking or relation_tracking:
+                            await _persist_graph_updates(
+                                entity_chunks_storage=self.entity_chunks
+                                if entity_tracking
+                                else None,
+                                relation_chunks_storage=self.relation_chunks
+                                if relation_tracking
+                                else None,
+                                context="ainsert_custom_kg",
+                            )
+                    except BaseException:
+                        await _discard_buffered_tracking(
+                            (self.entity_chunks, self.relation_chunks),
+                            only_retained=False,
                         )
+                        raise
 
                     # Batch insert entities (reduces N serial awaits to 1).
                     # Writing entity_nodes here (before the relationship-endpoint

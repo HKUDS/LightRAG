@@ -341,3 +341,32 @@ async def test_tracking_rows_are_committed_before_the_graph_is_written(
     assert {"commit:entity_chunks", "commit:relation_chunks"} <= set(
         events[:first_graph_write]
     )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tracking_commit_discards_the_buffered_rows(rag, monkeypatch):
+    """When the tracking commit fails, the rows must not stay buffered for the
+    final flush to publish after the call has failed; the graph is untouched."""
+    from lightrag import utils_graph
+
+    await _insert_doc(rag)
+    discarded: list[tuple] = []
+    original_discard = utils_graph._discard_buffered_tracking
+
+    async def _failing_persist(**kwargs):
+        raise RuntimeError("tracking flush timed out")
+
+    async def _recording_discard(storages, *, only_retained):
+        discarded.append((tuple(storages), only_retained))
+        return await original_discard(storages, only_retained=only_retained)
+
+    monkeypatch.setattr(utils_graph, "_persist_graph_updates", _failing_persist)
+    monkeypatch.setattr(utils_graph, "_discard_buffered_tracking", _recording_discard)
+
+    with pytest.raises(RuntimeError, match="tracking flush timed out"):
+        await rag.ainsert_custom_kg(_custom_kg())
+
+    assert discarded == [((rag.entity_chunks, rag.relation_chunks), False)]
+    foo = await rag.chunk_entity_relation_graph.get_node("Foo")
+    assert foo["description"] == "Foo fact from v3"
+    assert foo["source_id"] == DOC_CHUNK
