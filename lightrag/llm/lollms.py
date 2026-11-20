@@ -147,7 +147,10 @@ async def lollms_model_if_cache(
     # <= 0 or unset keeps aiohttp's session default; ClientTimeout(total=None)
     # would mean "no timeout at all".
     timeout = provider_timeout(kwargs.get("timeout"))
-    session_kwargs: dict = {"headers": headers}
+    # Raise ClientResponseError on a non-2xx status before the body is read,
+    # so an error page never becomes model output; the retry predicate above
+    # then classifies its status.
+    session_kwargs: dict = {"headers": headers, "raise_for_status": True}
     if timeout is not None:
         session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
 
@@ -234,7 +237,8 @@ async def lollms_embed(
         if api_key
         else {"Content-Type": "application/json"}
     )
-    session_kwargs: dict[str, Any] = {"headers": headers}
+    # Fail on a non-2xx status before parsing the body as an embedding.
+    session_kwargs: dict[str, Any] = {"headers": headers, "raise_for_status": True}
     timeout = embedding_timeout(kwargs.pop("timeout", None))
     if timeout is not None:
         session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
