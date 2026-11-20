@@ -207,9 +207,27 @@ async def audit_kg_integrity(
     # relation chunk key (an entity name may contain the separator), and a
     # key-to-pair dict would drop one of those edges from the scan entirely.
     edge_keys = {pair: make_relation_chunk_key(*pair) for pair in graph_edge_sources}
+    # A key shared by several pairs names one tracking row for all of them, so
+    # that row cannot say which edge a chunk belongs to. Unioning it into each
+    # pair would attribute one edge to another edge's document, and the purge
+    # of that document would then delete an edge whose own chunk is still live.
+    # Those pairs fall back to their own graph ``source_id`` -- exactly what the
+    # audit read before tracking was consulted, so they are never worse off.
+    pairs_by_key: dict[str, list[tuple[str, str]]] = {}
+    for pair, key in edge_keys.items():
+        pairs_by_key.setdefault(key, []).append(pair)
+    ambiguous_keys = {key for key, pairs in pairs_by_key.items() if len(pairs) > 1}
+    if ambiguous_keys:
+        logger.warning(
+            f"[kg-integrity] {len(ambiguous_keys)} relation tracking key(s) are "
+            f"shared by several entity pairs (an entity name contains the field "
+            f"separator); those relations are resolved from their graph "
+            f"source_id only: "
+            f"{sorted(pair for key in ambiguous_keys for pair in pairs_by_key[key])}"
+        )
     tracked_relations = await _read_chunk_tracking(
         getattr(rag, "relation_chunks", None),
-        sorted(set(edge_keys.values())),
+        sorted(set(edge_keys.values()) - ambiguous_keys),
         batch_size,
     )
 

@@ -928,6 +928,52 @@ async def test_audit_unions_tracking_with_graph_only_source_ids(tmp_path):
         await rag.finalize_storages()
 
 
+async def _seed_colliding_pairs(rag: LightRAG) -> list[tuple[str, str]]:
+    """Two pairs whose ``make_relation_chunk_key`` collides, one doc each.
+
+    Pair ``i`` is sourced only from ``collide-chunk-i`` of ``doc-collide-i``.
+    """
+    pairs = [
+        (f"ACME{GRAPH_FIELD_SEP}CORP", "X"),
+        ("ACME", f"CORP{GRAPH_FIELD_SEP}X"),
+    ]
+    for index, (src_name, tgt_name) in enumerate(pairs, start=1):
+        chunk_id = f"collide-chunk-{index}"
+        doc_id = f"doc-collide-{index}"
+        await rag.text_chunks.upsert(
+            {
+                chunk_id: {
+                    "content": "t",
+                    "full_doc_id": doc_id,
+                    "chunk_order_index": 0,
+                }
+            }
+        )
+        for name in (src_name, tgt_name):
+            await rag.chunk_entity_relation_graph.upsert_node(
+                name, {"entity_id": name, "source_id": chunk_id}
+            )
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            src_name, tgt_name, {"source_id": chunk_id, "weight": 1.0}
+        )
+        await rag.doc_status.upsert(
+            {
+                doc_id: {
+                    "status": DocStatus.PROCESSED,
+                    "content_summary": doc_id,
+                    "content_length": 1,
+                    "chunks_count": 1,
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-01T00:00:00",
+                    "file_path": f"{doc_id}.txt",
+                    "track_id": doc_id,
+                }
+            }
+        )
+    await rag.chunk_entity_relation_graph.index_done_callback()
+    return pairs
+
+
 @pytest.mark.asyncio
 async def test_audit_keeps_every_edge_when_relation_keys_collide(tmp_path):
     """Two pairs can share one relation chunk key; neither edge may vanish.
@@ -941,44 +987,7 @@ async def test_audit_keeps_every_edge_when_relation_keys_collide(tmp_path):
     """
     rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
     try:
-        pairs = [
-            (f"ACME{GRAPH_FIELD_SEP}CORP", "X"),
-            ("ACME", f"CORP{GRAPH_FIELD_SEP}X"),
-        ]
-        for index, (src_name, tgt_name) in enumerate(pairs, start=1):
-            chunk_id = f"collide-chunk-{index}"
-            doc_id = f"doc-collide-{index}"
-            await rag.text_chunks.upsert(
-                {
-                    chunk_id: {
-                        "content": "t",
-                        "full_doc_id": doc_id,
-                        "chunk_order_index": 0,
-                    }
-                }
-            )
-            for name in (src_name, tgt_name):
-                await rag.chunk_entity_relation_graph.upsert_node(
-                    name, {"entity_id": name, "source_id": chunk_id}
-                )
-            await rag.chunk_entity_relation_graph.upsert_edge(
-                src_name, tgt_name, {"source_id": chunk_id, "weight": 1.0}
-            )
-            await rag.doc_status.upsert(
-                {
-                    doc_id: {
-                        "status": DocStatus.PROCESSED,
-                        "content_summary": doc_id,
-                        "content_length": 1,
-                        "chunks_count": 1,
-                        "created_at": "2026-01-01T00:00:00",
-                        "updated_at": "2026-01-01T00:00:00",
-                        "file_path": f"{doc_id}.txt",
-                        "track_id": doc_id,
-                    }
-                }
-            )
-        await rag.chunk_entity_relation_graph.index_done_callback()
+        await _seed_colliding_pairs(rag)
 
         report = await audit_kg_integrity(rag, apply=False)
 
@@ -1302,3 +1311,34 @@ async def test_retry_state_write_never_clobbers_the_journal(tmp_path):
 def test_union_ids_never_drops_a_tracked_id(tracked, graph_sources, expected):
     """Every usable element survives: split, stripped, coerced, deduplicated."""
     assert _union_ids(tracked, graph_sources) == expected
+
+
+@pytest.mark.asyncio
+async def test_audit_never_shares_an_ambiguous_relation_tracking_row(tmp_path):
+    """A tracking row two pairs share must not attribute one pair to the other.
+
+    The colliding pairs share one ``relation_chunks`` row; here it names only
+    the second document's chunk (the last writer replaced it). Unioning it into
+    both pairs would add the first pair to the second document's anchors, and
+    purging that document would then delete an edge whose own chunk is live.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        first, second = await _seed_colliding_pairs(rag)
+        shared_key = make_relation_chunk_key(*first)
+        assert shared_key == make_relation_chunk_key(*second)
+        await rag.relation_chunks.upsert(
+            {shared_key: {"chunk_ids": ["collide-chunk-2"], "count": 1}}
+        )
+        await rag.relation_chunks.index_done_callback()
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        assert report["missing_relation_anchors"] == {
+            "doc-collide-1": [sorted(first)],
+            "doc-collide-2": [sorted(second)],
+        }
+        row = await rag.full_relations.get_by_id("doc-collide-2")
+        assert [list(p) for p in row["relation_pairs"]] == [sorted(second)]
+    finally:
+        await rag.finalize_storages()

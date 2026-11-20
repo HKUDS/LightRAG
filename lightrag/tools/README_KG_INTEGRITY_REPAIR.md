@@ -126,6 +126,12 @@ audit cannot distinguish that from a workspace that truly owns no graph data —
 one more reason to run it only while the server is stopped and the workspace
 is healthy, as stated at the top.
 
+A second one: when an entity name contains the field separator, two entity
+pairs can map to the same `relation_chunks` key and so share one tracking row,
+which cannot say which edge a chunk belongs to. Those relations are resolved
+from their capped graph `source_id` only — the audit's behavior before it read
+tracking — and the audit logs a warning naming them.
+
 Note that `--apply` reports what it found under `missing_entity_anchors` /
 `missing_relation_anchors` (the diagnosis) and what it wrote under
 `repaired_docs` (the action) — the first two are not emptied by a repair.
