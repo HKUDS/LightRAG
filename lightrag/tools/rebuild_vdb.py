@@ -508,9 +508,14 @@ async def rebuild_entities_vdb(
             entity_name = str(label)
             node = nodes.get(label) or nodes.get(entity_name)
             if not isinstance(node, dict):
-                stats["skipped"] += 1
-                logger.warning(f"Rebuild entities: skipping unreadable node {label!r}")
-                continue
+                # Enumerated but not readable (absent from the batch read, or
+                # a payload the backend could not decode and handed back
+                # raw): a source fault, not a node to skip. Raising here runs
+                # before the drop, so the existing vector survives.
+                raise RuntimeError(
+                    f"Rebuild entities: graph node {entity_name!r} was listed "
+                    f"but could not be read (got {type(node).__name__})"
+                )
             description = node.get("description") or ""
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
             if entity_vdb_id in payloads:

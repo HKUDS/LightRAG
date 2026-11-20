@@ -1625,6 +1625,20 @@ async def test_rebuild_reads_the_whole_source_before_dropping_the_target(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "batch_read", [{}, {"Alice": '{"broken json'}], ids=["absent", "undecodable"]
+)
+async def test_rebuild_entities_refuses_a_listed_node_it_cannot_read(batch_read):
+    graph = make_graph(nodes=[node("Alice")])
+    graph.get_nodes_batch = AsyncMock(return_value=batch_read)
+    vdb = MockVDB()
+
+    with pytest.raises(RuntimeError, match="'Alice' was listed but could not be read"):
+        await rebuild_entities_vdb(graph, vdb, {})
+    vdb.drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_rebuild_spool_is_private_and_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
     vdb = MockVDB()
