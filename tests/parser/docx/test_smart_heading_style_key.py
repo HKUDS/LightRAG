@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import itertools
+import re
+
 import pytest
 
 from lightrag.parser.docx.smart_heading.style_key import (
+    _MATCH_ORDER,
+    _MATCH_ORDER_ROMAN_PAREN,
+    _P_MULTI_LEVEL,
+    _P_MULTI_LEVEL_SHAPE,
     ALLOW_EMPTY_TITLE,
     CN_CHAPTER,
     CN_CLAUSE,
@@ -19,6 +26,7 @@ from lightrag.parser.docx.smart_heading.style_key import (
     MULTI_LEVEL_NUM,
     ROMAN_NUM,
     STYLE_KEY_PRIORITY,
+    _may_open_numbering,
     classify_numbering,
     compute_fs_base,
     parse_alpha_ordinal,
@@ -408,6 +416,111 @@ def test_priority_table() -> None:
         < STYLE_KEY_PRIORITY[EN_SINGLE_PAREN]
     )
     assert ALLOW_EMPTY_TITLE == {CN_CHAPTER, EN_CHAPTER, CN_CLAUSE, EN_CLAUSE}
+
+
+# ---------------------------------------------------------------------------
+# First-character gate: classify_numbering skips every pattern when the first
+# non-space character cannot open one, so the gate must cover the patterns.
+# ---------------------------------------------------------------------------
+
+#: Suffixes that complete each styleKey's pattern after any first character
+#: it accepts; every candidate first character ``c`` is probed as
+#: ``c + suffix``. A new styleKey, or a new alternative that none of its
+#: suffixes completes, needs a probe here.
+_GATE_PROBES: dict[str, tuple[str, ...]] = {
+    MULTI_LEVEL_NUM: ("1.1 x",),
+    CN_CHAPTER: ("一章 x",),
+    EN_CHAPTER: ("hapter 1 x", "ection 1 x", "art 1 x", "olume 1 x"),
+    CN_CLAUSE: ("一条 x",),
+    EN_CLAUSE: ("rt 1 x", "ec 1 x", "lause 1 x", "ara 1 x", "1 x"),
+    CN_NUM: ("、x",),
+    CN_PARENT_NUM: ("一）x", "）x"),
+    ROMAN_NUM: ("I. x", "i. x", ". x"),
+    EN_NUM: (" x",),
+    EN_ALPHA: (". x",),
+    EN_DOUBLE_PAREN: ("1) x",),
+    EN_SINGLE_PAREN: (") x",),
+}
+
+#: First characters each styleKey is known to accept: proves the probes
+#: complete their patterns, so the scan below can fail.
+_GATE_KNOWN_HEADS: dict[str, str] = {
+    MULTI_LEVEL_NUM: "§5",
+    CN_CHAPTER: "第",
+    EN_CHAPTER: "CSPVcspvſ",
+    CN_CLAUSE: "第",
+    EN_CLAUSE: "ASCPascpſ§¶",
+    CN_NUM: "一十",
+    CN_PARENT_NUM: "（(一",
+    ROMAN_NUM: "IVXivxⅠⅻ",
+    EN_NUM: "5",
+    EN_ALPHA: "aZ",
+    EN_DOUBLE_PAREN: "（(",
+    EN_SINGLE_PAREN: "5a",
+}
+
+
+def _gate_patterns() -> list[tuple[str, re.Pattern]]:
+    return list(dict.fromkeys((*_MATCH_ORDER, *_MATCH_ORDER_ROMAN_PAREN)))
+
+
+def _matches_any_probe(style_key: str, pattern: re.Pattern, head: str) -> bool:
+    return any(pattern.match(head + suffix) for suffix in _GATE_PROBES[style_key])
+
+
+def test_first_char_gate_premises() -> None:
+    """The gate reads the head with ``str.lstrip``/``str.isdecimal`` where the
+    patterns use ``^\\s*`` / ``\\d``; pin that both agree on every code point,
+    and that no pattern names a character outside the BMP scanned below."""
+    space, digit = re.compile(r"\s"), re.compile(r"\d")
+    for cp in range(0x110000):
+        ch = chr(cp)
+        assert bool(space.match(ch)) == ch.isspace(), hex(cp)
+        assert bool(digit.match(ch)) == ch.isdecimal(), hex(cp)
+    assert set(_GATE_PROBES) == {key for key, _ in _MATCH_ORDER}
+    patterns = _gate_patterns()
+    for style_key, pattern in patterns:
+        assert pattern.pattern.startswith(r"^\s*"), style_key
+        assert all(ord(ch) < 0x10000 for ch in pattern.pattern), style_key
+    for style_key, heads in _GATE_KNOWN_HEADS.items():
+        for head in heads:
+            assert _may_open_numbering(head), (style_key, head)
+            assert any(
+                _matches_any_probe(key, pattern, head)
+                for key, pattern in patterns
+                if key == style_key
+            ), (style_key, head)
+
+
+def test_first_char_gate_covers_every_pattern() -> None:
+    """No BMP character the gate rejects may open any pattern."""
+    patterns = _gate_patterns()
+    leaks = []
+    for cp in range(0x10000):
+        head = chr(cp)
+        if head.isspace() or _may_open_numbering(head):
+            continue
+        leaks.extend(
+            (style_key, hex(cp))
+            for style_key, pattern in patterns
+            if _matches_any_probe(style_key, pattern, head)
+        )
+    assert leaks == []
+
+
+def test_multi_level_opener_is_digit_or_section_sign() -> None:
+    """classify_numbering tries MultiLevelNum only for a "§"/digit head whose
+    text matches _P_MULTI_LEVEL_SHAPE; both must hold for every real match."""
+    for cp in range(0x10000):
+        head = chr(cp)
+        if head.isspace() or head == "§" or head.isdecimal():
+            continue
+        assert not _P_MULTI_LEVEL_SHAPE.match(head + "1.1 x"), hex(cp)
+    tokens = ["", " ", "§", "§ ", "1", "12", ".", ".3", "-", "/", "、", "x", "章", "١"]
+    for parts in itertools.product(tokens, repeat=4):
+        text = "".join(parts)
+        if _P_MULTI_LEVEL.match(text):
+            assert _P_MULTI_LEVEL_SHAPE.match(text), text
 
 
 # ---------------------------------------------------------------------------

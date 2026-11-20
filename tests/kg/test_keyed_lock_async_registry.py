@@ -276,3 +276,30 @@ async def test_status_shells_keep_health_schema():
     assert all(v == 0 for v in info["current_status"].values())
     public = get_keyed_lock_status()
     assert set(public) == STATUS_KEYS | {"process_id"}
+
+
+@pytest.mark.offline
+async def test_duplicate_keys_acquire_once_instead_of_self_deadlocking():
+    """A key listed twice is one lock, taken once.
+
+    The per-key locks are not reentrant. Before duplicates were dropped, the
+    second copy waited on the mutex the first copy had just acquired, so a
+    relation call with identical endpoints (``sorted([name, name])``) hung
+    until the admin-write hold ceiling failed it.
+    """
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        keyed = _registry()
+        combined = _get_combined_key("ns", "k")
+
+        async def _enter_and_exit():
+            async with get_storage_keyed_lock(["k", "k"], namespace="ns"):
+                assert keyed._async_lock_count[combined] == 1
+
+        await asyncio.wait_for(_enter_and_exit(), timeout=5)
+
+        assert combined not in keyed._async_lock
+        assert combined not in keyed._async_lock_count
+    finally:
+        finalize_share_data()
