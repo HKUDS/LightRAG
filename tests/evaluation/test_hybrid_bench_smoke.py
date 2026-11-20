@@ -121,9 +121,9 @@ async def test_file_backend_mechanics_smoke(tmp_path):
         entry = dataset["entity_metrics"][arm]["hit@10"]
         assert 0.0 <= entry["mean"] <= 1.0
 
-    assert set(dataset["b5"]) == {"entity_only", "chunk_only", "both"}
+    assert set(dataset["ablation"]) == {"entity_only", "chunk_only", "both"}
     latency = dataset["latency"]
-    for phase in ("b3a", "b3b"):
+    for phase in ("retrieval", "answer"):
         assert latency[phase]["dense"]["p95"] > 0
         assert latency[phase]["hybrid"]["p95"] > 0
         assert latency[phase]["dense"]["query_slots"] >= 100

@@ -125,7 +125,7 @@ def test_b2b_g_boundaries(hybrid, ci_upper, status):
         (0.1501, 0.15, "fail"),
         (None, 0.25, "not-run"),
     ],
-    ids=["b3a-at", "b3a-past", "b3b-at", "b3b-past", "absent"],
+    ids=["retrieval-at", "retrieval-past", "answer-at", "answer-past", "absent"],
 )
 def test_p95_overhead_boundaries(overhead, limit, status):
     assert gate_p95_overhead("B3x", overhead, limit).status == status
@@ -236,13 +236,13 @@ def test_evaluate_gates_mixed_verdicts():
                 0.8, 0.802, (-0.001, 0.004), (-0.004, 0.001), (0.0, 0.004)
             ),
         },
-        b3a_overhead=0.20,
-        b3b_overhead=0.30,
+        retrieval_p95_overhead=0.20,
+        answer_p95_overhead=0.30,
         upsert_increase=0.05,
         gin_vector_ratio=1.2,
         backfill_chunks_per_min=8000.0,
         rerank_survival=0.4,
-        b5={"recall@10": (0.7, 0.6, 0.6)},
+        ablation={"recall@10": (0.7, 0.6, 0.6)},
     )
     verdicts = {v.gate_id: v.status for v in evaluate_gates(inputs)}
     assert verdicts["entity-hit/terminology/entity_hit@10"] == "pass"

@@ -56,7 +56,7 @@ Passage ids become LightRAG document ids (`ids=corpus_id`), so chunk
 | `--seed` / `--bootstrap-resamples` | `42` / `1000` | fixed-seed per-query bootstrap, >=1000 enforced |
 | `--latency-queries` / `--latency-rounds` | `100` / `3` | >=100 slots x >=3 rounds enforced; queries cycle deterministically when fewer exist |
 | `--rerank-model` / `--rerank-min-score` | `BAAI/bge-reranker-v2-m3` / `0.5` | CrossEncoder used by the survival measurement, lazy import |
-| `--phases` | all | subset of `b5,latency,write-amp,backfill,rerank,report`; ingest + arms + scoring are the always-on core |
+| `--phases` | all | subset of `ablation,latency,write-amp,backfill,rerank,report`; ingest + arms + scoring are the always-on core |
 | `--write-amp-baseline` / `--baseline-ref` | off / `origin/main` | run the baseline half of the write-amplification comparison in a temporary detached worktree |
 | `--cosine-threshold` / `--chunk-token-size` | `0.2` / `8192` | retrieval threshold; high chunk size keeps a passage one chunk |
 | `--workspace-prefix` / `--working-dir` / `--keep-workspace` | `hbench` / `<output>/working` / off | scratch isolation; PG rows are cleaned unless kept |
@@ -126,7 +126,7 @@ qrels-positive passage, filled from the sorted remaining ids up to
 `--extraction-cap`; a cap below the positive count fails loud. The subset runs
 the real pipeline with the answer-LLM binding; every other passage ingests
 chunks-only through `ainsert_custom_kg` with `full_doc_id=corpus_id` and no
-LLM call. The RUNS lane sets the cap from measured extraction throughput.
+LLM call. Set the cap from measured extraction throughput.
 
 **Ingest timeout and FAILED-document recovery.** The whole ingest (extraction
 subset + chunks-only remainder + recovery rounds) runs under
@@ -296,15 +296,15 @@ python -m lightrag.evaluation.hybrid_bench \
   --extraction-cap <corpus-size> --cosine-threshold 0.1
 ```
 
-Real mini-smoke (<=20 passages, ENV serving stack + reranker overlay): drop
+Real mini-smoke (<=20 passages, local serving stack + reranker overlay): drop
 `--embedding-backend/--llm-backend` fakes, keep `--phases
-b5,write-amp,backfill,rerank,report` (latency's 600 answer calls belong to the
-RUNS lane), and run under the overlay command above.
+ablation,write-amp,backfill,rerank,report` (the 600 answer calls belong to a
+full run), and run under the overlay command above.
 
-## RUNS lane checklist
+## Full-run checklist
 
-1. ENV stack up (PG + pgvector, ollama with the embedding and answer models).
-2. DATA lane datasets normalized to the contract above.
+1. Serving stack up (PG + pgvector, ollama with the embedding and answer models).
+2. Datasets normalized to the contract above.
 3. Measure extraction throughput on a pilot; set `--extraction-cap` so the
    subset (all qrels-positive passages + fill) finishes in budget.
 4. Full run: all phases, `--write-amp-baseline`, reranker overlay, real
@@ -318,7 +318,7 @@ RUNS lane), and run under the overlay command above.
   semantics; natural-language queries can lexically match nothing. The arm
   reports empty retrieval explicitly instead of hiding it.
 - Write amplification on a tiny corpus is dominated by per-batch fixed
-  overhead; the benchmark lane must use the real corpus load for a
+  overhead; a full run must use the real corpus load for a
   meaningful upsert p95 comparison.
 - File-backends runs skip the lexical arm, write-amp and backfill (PG-only
   surfaces) and label the skips; the hybrid arm falls back to dense because

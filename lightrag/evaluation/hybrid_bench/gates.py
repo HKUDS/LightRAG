@@ -264,13 +264,13 @@ class GateInputs:
     entity_hit: dict[str, MetricComparison]
     chunk_recall: dict[str, MetricComparison]
     chunk_ndcg: dict[str, MetricComparison]
-    b3a_overhead: float | None = None
-    b3b_overhead: float | None = None
+    retrieval_p95_overhead: float | None = None
+    answer_p95_overhead: float | None = None
     upsert_increase: float | None = None
     gin_vector_ratio: float | None = None
     backfill_chunks_per_min: float | None = None
     rerank_survival: float | None = None
-    b5: dict[str, tuple[float, float, float]] | None = None
+    ablation: dict[str, tuple[float, float, float]] | None = None
 
 
 def evaluate_gates(
@@ -353,19 +353,19 @@ def evaluate_gates(
     verdicts.append(
         gate_p95_overhead(
             "retrieval-latency/retrieval-p95",
-            inputs.b3a_overhead,
+            inputs.retrieval_p95_overhead,
             thresholds.b3a_p95_overhead,
         )
-        if inputs.b3a_overhead is not None
+        if inputs.retrieval_p95_overhead is not None
         else not_run("retrieval-latency/retrieval-p95", "latency not measured")
     )
     verdicts.append(
         gate_p95_overhead(
             "answer-latency/answer-p95",
-            inputs.b3b_overhead,
+            inputs.answer_p95_overhead,
             thresholds.b3b_p95_overhead,
         )
-        if inputs.b3b_overhead is not None
+        if inputs.answer_p95_overhead is not None
         else not_run("answer-latency/answer-p95", "answer latency not measured")
     )
     verdicts.extend(
@@ -373,9 +373,9 @@ def evaluate_gates(
     )
     verdicts.append(gate_b3d(inputs.backfill_chunks_per_min, thresholds))
     verdicts.append(gate_b4(inputs.rerank_survival, thresholds))
-    if inputs.b5 is None:
+    if inputs.ablation is None:
         verdicts.append(not_run("ablation/all", "ablation not measured"))
     else:
-        for metric, (both, entity_only, chunk_only) in inputs.b5.items():
+        for metric, (both, entity_only, chunk_only) in inputs.ablation.items():
             verdicts.append(gate_b5(metric, both, entity_only, chunk_only))
     return verdicts

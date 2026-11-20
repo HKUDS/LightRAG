@@ -5,7 +5,7 @@ Run: ``python -m lightrag.evaluation.hybrid_bench --dataset-dir DIR
 the standard POSTGRES_* environment recipe. Gate thresholds are proposals
 printed as verdicts, never tuned here.
 
-Phase gating decisions, documented for the RUNS lane:
+Phase-gating decisions, documented for a full run:
 - Write-amplification and backfill gate inputs come from the first dataset
   in sorted order that measured them; every dataset's numbers are in the
   report.
@@ -71,7 +71,7 @@ from lightrag.evaluation.hybrid_bench.write_amp import (
 # Ingest, the three retrieval arms and metric scoring are the always-on core;
 # the optional phases below surround them.
 ALL_PHASES = (
-    "b5",
+    "ablation",
     "latency",
     "write-amp",
     "backfill",
@@ -359,7 +359,7 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
             )
             arm_entities[arm][qid] = entities
     b5_per_query: dict[str, dict[str, dict[str, float]]] = {}
-    if "b5" in phase_set:
+    if "ablation" in phase_set:
         for combo, (entity_hybrid, chunk_hybrid) in arms_mod.B5_COMBINATIONS.items():
             b5_per_query[combo] = {}
             for qid, query in dataset.queries.items():
@@ -395,7 +395,7 @@ async def _run_latency(rag, dataset, config):
     slots = latency_mod.select_query_slots(queries, config.latency_queries)
     results = {}
     async with latency_mod.build_latency_client(rag) as client:
-        for phase, need_answer in (("b3a", False), ("b3b", True)):
+        for phase, need_answer in (("retrieval", False), ("answer", True)):
             dense = await latency_mod.measure_latency(
                 client,
                 slots,
@@ -465,7 +465,7 @@ async def run_dataset(
         "index_sizes": None,
         "backfill_chunks_per_min": None,
         "rerank": None,
-        "b5": None,
+        "ablation": None,
     }
     try:
         ingest = await asyncio.wait_for(
@@ -537,7 +537,7 @@ async def run_dataset(
                 values = [e[key] for e in entries.values() if key in e]
                 return mean(values) if values else 0.0
 
-            result["b5"] = {
+            result["ablation"] = {
                 combo: {
                     f"recall@{k}": _b5_mean(entries, "recall"),
                     f"ndcg@{k}": _b5_mean(entries, "ndcg"),
@@ -628,7 +628,7 @@ def _entity_comparisons(datasets: list[dict], seed: int, resamples: int) -> dict
 
 def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
     seed, resamples = args.seed, args.bootstrap_resamples
-    overheads: dict[str, float | None] = {"b3a": None, "b3b": None}
+    overheads: dict[str, float | None] = {"retrieval": None, "answer": None}
     for phase in overheads:
         dense_pool: list[float] = []
         hybrid_pool: list[float] = []
@@ -660,10 +660,10 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
         d["rerank"]["surviving_hits"] for d in datasets if d.get("rerank")
     )
     survival = surviving_hits / scored_hits if scored_hits else None
-    b5 = None
+    ablation = None
     b5_members = [d for d in datasets if d.get("_b5_per_query")]
     if b5_members:
-        b5 = {}
+        ablation = {}
         for metric, key in (
             (f"recall@{args.top_k}", "recall"),
             (f"ndcg@{args.top_k}", "ndcg"),
@@ -678,7 +678,7 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
                     if key in entry
                 ]
                 pooled[combo] = mean(values) if values else 0.0
-            b5[metric] = (
+            ablation[metric] = (
                 pooled["both"],
                 pooled["entity_only"],
                 pooled["chunk_only"],
@@ -687,15 +687,15 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
         entity_hit=_entity_comparisons(datasets, seed, resamples),
         chunk_recall=_domain_comparisons(datasets, "recall", seed, resamples),
         chunk_ndcg=_domain_comparisons(datasets, "ndcg", seed, resamples),
-        b3a_overhead=overheads["b3a"],
-        b3b_overhead=overheads["b3b"],
+        retrieval_p95_overhead=overheads["retrieval"],
+        answer_p95_overhead=overheads["answer"],
         upsert_increase=(
             first_write_amp["upsert_increase"] if first_write_amp else None
         ),
         gin_vector_ratio=first_sizes["ratio"] if first_sizes else None,
         backfill_chunks_per_min=first_backfill,
         rerank_survival=survival,
-        b5=b5,
+        ablation=ablation,
     )
 
 

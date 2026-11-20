@@ -146,7 +146,7 @@ def render_markdown(results: dict) -> str:
             "",
             *_latency_lines(dataset.get("latency")),
         ]
-        if dataset.get("b5"):
+        if dataset.get("ablation"):
             lines += [
                 "",
                 "### Ablation means",
@@ -154,7 +154,7 @@ def render_markdown(results: dict) -> str:
                 "| combination | recall@10 | nDCG@10 | entity hit@10 |",
                 "| --- | --- | --- | --- |",
             ]
-            for combo, metrics in dataset["b5"].items():
+            for combo, metrics in dataset["ablation"].items():
                 lines.append(
                     f"| {combo} | {metrics['recall@10']:.4f} "
                     f"| {metrics['ndcg@10']:.4f} "
