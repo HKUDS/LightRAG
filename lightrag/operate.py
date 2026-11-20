@@ -5217,6 +5217,13 @@ async def kg_query(
         logger.info("[kg_query] No query context could be built; returning no-result.")
         return None
 
+    # Report the keyword lists themselves: splitting the joined search strings
+    # on ", " again would break a keyword that contains one ("Washington, D.C.").
+    context_result.raw_data.setdefault("metadata", {})["keywords"] = {
+        "high_level": list(hl_keywords) if hl_keywords else [],
+        "low_level": list(ll_keywords) if ll_keywords else [],
+    }
+
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(
@@ -6953,19 +6960,11 @@ async def _build_query_context(
     if not context:
         return None
 
-    # Convert keywords strings to lists and add complete metadata to raw_data
-    hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
-    ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
-
-    # Add complete metadata to raw_data (preserve existing metadata including query_mode)
+    # Add processing info to raw_data (preserve existing metadata including
+    # query_mode). kg_query fills in metadata["keywords"]: it holds the lists.
     if "metadata" not in raw_data:
         raw_data["metadata"] = {}
 
-    # Update keywords while preserving existing metadata
-    raw_data["metadata"]["keywords"] = {
-        "high_level": hl_keywords_list,
-        "low_level": ll_keywords_list,
-    }
     raw_data["metadata"]["processing_info"] = {
         "total_entities_found": len(search_result.get("final_entities", [])),
         "total_relations_found": len(search_result.get("final_relations", [])),
