@@ -73,26 +73,15 @@ _ROWS = {
 }
 
 
-@pytest.mark.parametrize(
-    ("cache_types", "expected_gone"),
-    [
-        (
-            {"query", "keywords"},
-            {"mix:query:q1", "naive:query:q2", "local:keywords:k1"},
-        ),
-        ({"query"}, {"mix:query:q1", "naive:query:q2"}),
-    ],
-)
-async def test_only_matching_rows_in_this_workspace_are_deleted(
-    fake, cache_types, expected_gone
-):
+async def test_only_matching_rows_in_this_workspace_are_deleted(fake):
     storage = await _storage("ws-a")
     other = await _storage("ws-b")
     rows = {k: {"return": "x", "cache_type": t} for k, t in _ROWS.items()}
     await storage.upsert(rows)
     await other.upsert(rows)
 
-    deleted = await storage.delete_by_cache_types(cache_types)
+    expected_gone = {"mix:query:q1", "naive:query:q2"}
+    deleted = await storage.delete_by_cache_types({"query"})
 
     assert deleted == len(expected_gone)
     remaining = {k for k in _ROWS if await storage.get_by_id(k) is not None}

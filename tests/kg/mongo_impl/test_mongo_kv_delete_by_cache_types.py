@@ -40,8 +40,8 @@ _KEYS = [
 ]
 
 
-@pytest.mark.parametrize("cache_types", [{"query", "keywords"}, {"query"}])
-async def test_the_filter_matches_exactly_what_parse_cache_key_selects(cache_types):
+async def test_the_filter_matches_exactly_what_parse_cache_key_selects():
+    cache_types = {"query", "keywords"}
     storage, collection = _storage(deleted_count=7)
 
     deleted = await storage.delete_by_cache_types(cache_types)

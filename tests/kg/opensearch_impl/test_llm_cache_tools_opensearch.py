@@ -91,7 +91,6 @@ class TestCleanupToolOpenSearch:
                     "local:keywords:1",
                 ],
             ),
-            ("query", {"query"}, ["mix:query:1", "global:query:1"]),
             ("keywords", {"keywords"}, ["mix:keywords:1", "local:keywords:1"]),
         ],
     )

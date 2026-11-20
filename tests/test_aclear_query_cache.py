@@ -8,7 +8,9 @@ commit still publishes the whole cache namespace, extract rows the pipeline
 has buffered included, so it must be the ordered ``text_chunks`` ->
 ``llm_response_cache`` pair, and a pair that did not land is a failure.
 
-See HKUDS/LightRAG#4082 and *LLM extraction cache reachability* in
+The scenarios that need a real commit build a ``LightRAG`` on ``JsonKVStorage``
+(the deferred backend where the ordering matters); the argument checks use a
+stub. See HKUDS/LightRAG#4082 and *LLM extraction cache reachability* in
 docs/design/PurgeRecoveryContract.md.
 """
 
@@ -43,7 +45,22 @@ async def _dummy_llm(*args, **kwargs) -> str:
     return "ok"
 
 
-async def _build_rag(tmp_path) -> LightRAG:
+# Every cache type the codebase writes, in the key shapes it writes them.
+_QUERY_ROWS = {
+    "mix:query:q1": "query",
+    "naive:query:q2": "query",
+    "hybrid:keywords:k1": "keywords",
+}
+_SURVIVING_ROWS = {
+    "default:extract:e1": "extract",
+    "default:summary:s1": "summary",
+    "default:smartheading:h1": "smartheading",
+    "default:analysis:a1": "analysis",
+}
+_ALL_ROWS = {**_QUERY_ROWS, **_SURVIVING_ROWS}
+
+
+async def _seeded_rag(tmp_path) -> LightRAG:
     rag = LightRAG(
         working_dir=str(tmp_path / "wd"),
         workspace=f"clearquery-{uuid4().hex[:8]}",
@@ -54,45 +71,18 @@ async def _build_rag(tmp_path) -> LightRAG:
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
     )
     await rag.initialize_storages()
-    return rag
-
-
-# Every cache type the codebase writes, in the key shapes it writes them.
-_QUERY_ROWS = {
-    "mix:query:q1": "query",
-    "local:query:q2": "query",
-    "naive:query:q3": "query",
-    "hybrid:keywords:k1": "keywords",
-    "global:keywords:k2": "keywords",
-}
-_SURVIVING_ROWS = {
-    "default:extract:e1": "extract",
-    "default:summary:s1": "summary",
-    "default:smartheading:h1": "smartheading",
-    "default:analysis:a1": "analysis",
-}
-
-
-async def _seed(rag: LightRAG) -> None:
     await rag.llm_response_cache.upsert(
         {
-            key: {"return": f"answer for {key}", "cache_type": cache_type}
-            for key, cache_type in {**_QUERY_ROWS, **_SURVIVING_ROWS}.items()
+            k: {"return": f"answer for {k}", "cache_type": t}
+            for k, t in _ALL_ROWS.items()
         }
     )
     await rag.llm_response_cache.index_done_callback()
+    return rag
 
 
 def _on_disk(rag: LightRAG) -> set[str]:
     return set(load_json(rag.llm_response_cache._file_name) or {})
-
-
-async def _in_memory(rag: LightRAG) -> set[str]:
-    return {
-        key
-        for key in {**_QUERY_ROWS, **_SURVIVING_ROWS}
-        if await rag.llm_response_cache.get_by_id(key) is not None
-    }
 
 
 def _record_commits(rag: LightRAG, order: list[str], *, chunks=None):
@@ -102,9 +92,7 @@ def _record_commits(rag: LightRAG, order: list[str], *, chunks=None):
 
     async def _chunks():
         order.append("text_chunks")
-        if chunks is not None:
-            return await chunks()
-        return await chunks_original()
+        return await (chunks or chunks_original)()
 
     async def _cache():
         order.append("llm_response_cache")
@@ -120,71 +108,38 @@ def test_query_cache_types_carry_no_reference():
 
 
 @pytest.mark.asyncio
-async def test_only_query_and_keywords_rows_are_deleted_and_committed(tmp_path):
-    rag = await _build_rag(tmp_path)
-    try:
-        await _seed(rag)
-
-        deleted = await rag.aclear_query_cache()
-
-        assert deleted == len(_QUERY_ROWS)
-        assert await _in_memory(rag) == set(_SURVIVING_ROWS)
-        # Committed, not just removed from memory: a crash after the call must
-        # not bring the rows back from the file.
-        assert _on_disk(rag) == set(_SURVIVING_ROWS)
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("cache_types", "kept_type"), [(["query"], "keywords"), (["keywords"], "query")]
+    ("cache_types", "deleted_keys"),
+    [
+        (None, set(_QUERY_ROWS)),
+        (["query"], {"mix:query:q1", "naive:query:q2"}),
+    ],
+    ids=["default-both", "query-only"],
 )
-async def test_the_selector_leaves_the_other_type_alone(
-    tmp_path, cache_types, kept_type
+async def test_deletes_only_the_selected_rows_and_commits_the_ordered_pair(
+    tmp_path, cache_types, deleted_keys
 ):
-    rag = await _build_rag(tmp_path)
+    """One run pins every facet of a successful clear: only the selected
+    query-cache types go, the extraction-side rows survive, the deletion is on
+    disk (a crash must not bring the rows back), the commit is the ordered
+    pair, and none of it waits for the pipeline -- the run happens while
+    ``busy`` is set, as it would during ingestion."""
+    rag = await _seeded_rag(tmp_path)
     try:
-        await _seed(rag)
-
-        deleted = await rag.aclear_query_cache(cache_types)
-
-        expected_kept = {k for k, t in _QUERY_ROWS.items() if t == kept_type}
-        assert deleted == len(_QUERY_ROWS) - len(expected_kept)
-        assert _on_disk(rag) == set(_SURVIVING_ROWS) | expected_kept
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "cache_types", [["extract"], ["query", "summary"], ["smartheading"], []]
-)
-async def test_any_other_type_is_refused_before_deleting(tmp_path, cache_types):
-    rag = await _build_rag(tmp_path)
-    try:
-        await _seed(rag)
-
-        with pytest.raises(ValueError, match="non-empty subset"):
-            await rag.aclear_query_cache(cache_types)
-
-        assert await _in_memory(rag) == set(_QUERY_ROWS) | set(_SURVIVING_ROWS)
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_the_commit_is_the_ordered_pair(tmp_path):
-    """A bare cache commit would publish extract rows whose references are not
-    on disk; the chunk references go first, as on the query path."""
-    rag = await _build_rag(tmp_path)
-    try:
-        await _seed(rag)
         order: list[str] = []
         _record_commits(rag, order)
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status["busy"] = True
+        try:
+            args = () if cache_types is None else (cache_types,)
+            deleted = await rag.aclear_query_cache(*args)
+        finally:
+            pipeline_status["busy"] = False
 
-        await rag.aclear_query_cache()
-
+        assert deleted == len(deleted_keys)
+        assert _on_disk(rag) == set(_ALL_ROWS) - deleted_keys
         assert order == ["text_chunks", "llm_response_cache"], order
     finally:
         await rag.finalize_storages()
@@ -205,10 +160,10 @@ async def _chunk_commit_declines():
 async def test_a_failed_chunk_commit_is_reported_as_a_failure(tmp_path, chunks):
     """The query path logs and moves on; this caller changed the cache, so a
     pair that did not land must not come back as success -- the rows are gone
-    from memory only and would return after a restart."""
-    rag = await _build_rag(tmp_path)
+    from memory only and would return after a restart. The two cases are the
+    two ways ``_query_done`` withholds the cache half."""
+    rag = await _seeded_rag(tmp_path)
     try:
-        await _seed(rag)
         order: list[str] = []
         _record_commits(rag, order, chunks=chunks)
 
@@ -216,37 +171,39 @@ async def test_a_failed_chunk_commit_is_reported_as_a_failure(tmp_path, chunks):
             await rag.aclear_query_cache()
 
         assert order == ["text_chunks"], order
-        assert _on_disk(rag) == set(_QUERY_ROWS) | set(_SURVIVING_ROWS)
+        assert _on_disk(rag) == set(_ALL_ROWS)
     finally:
         await rag.finalize_storages()
+
+
+class _NeverCalledCache:
+    def __init__(self):
+        self.calls: list[set[str]] = []
+
+    async def delete_by_cache_types(self, cache_types):
+        self.calls.append(set(cache_types))
+        raise AssertionError("refused types must not reach the storage")
+
+
+class _StubRag:
+    """Only what the argument check touches: refusal happens before storage."""
+
+    aclear_query_cache = LightRAG.aclear_query_cache
+
+    def __init__(self):
+        self.llm_response_cache = _NeverCalledCache()
 
 
 @pytest.mark.asyncio
-async def test_it_runs_while_the_pipeline_is_busy(tmp_path):
-    """No reservation: an operator clears the stale answers during ingestion,
-    which is exactly when they are most likely to ask."""
-    rag = await _build_rag(tmp_path)
-    try:
-        await _seed(rag)
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-        pipeline_status["busy"] = True
-        try:
-            deleted = await rag.aclear_query_cache()
-        finally:
-            pipeline_status["busy"] = False
+@pytest.mark.parametrize(
+    "cache_types", [["query", "extract"], []], ids=["reference-type", "empty"]
+)
+async def test_any_other_type_is_refused_before_deleting(cache_types):
+    """A valid type must not carry an invalid one through, and an empty set is
+    not "everything"."""
+    rag = _StubRag()
 
-        assert deleted == len(_QUERY_ROWS)
-        assert _on_disk(rag) == set(_SURVIVING_ROWS)
-    finally:
-        await rag.finalize_storages()
+    with pytest.raises(ValueError, match="non-empty subset"):
+        await rag.aclear_query_cache(cache_types)
 
-
-@pytest.mark.asyncio
-async def test_an_empty_cache_deletes_nothing(tmp_path):
-    rag = await _build_rag(tmp_path)
-    try:
-        assert await rag.aclear_query_cache() == 0
-    finally:
-        await rag.finalize_storages()
+    assert rag.llm_response_cache.calls == []

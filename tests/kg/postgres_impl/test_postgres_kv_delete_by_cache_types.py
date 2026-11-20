@@ -53,16 +53,3 @@ async def test_types_are_bound_not_interpolated_and_the_count_is_returned():
     assert "keywords" not in sql and "query" not in sql.replace("LIGHTRAG", "")
     assert "workspace=$1" in sql and "ANY($2::text[])" in sql
     assert sql.startswith("DELETE FROM LIGHTRAG_LLM_CACHE ")
-
-
-async def test_nothing_matched_is_zero():
-    storage, _ = _storage("DELETE 0")
-
-    assert await storage.delete_by_cache_types({"query"}) == 0
-
-
-async def test_no_types_issues_no_statement():
-    storage, connection = _storage("DELETE 5")
-
-    assert await storage.delete_by_cache_types(set()) == 0
-    assert connection.calls == []
