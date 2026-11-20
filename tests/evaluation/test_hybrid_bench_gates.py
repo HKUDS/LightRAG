@@ -197,8 +197,7 @@ def test_evaluate_gates_all_absent_reports_not_run():
     # Terminology gets recall and nDCG; general gets nDCG only.
     assert "chunk-quality/general/recall@10" not in ids
     assert (
-        sum(v.gate_id == "entity-hit/terminology/entity_hit@10" for v in verdicts)
-        == 1
+        sum(v.gate_id == "entity-hit/terminology/entity_hit@10" for v in verdicts) == 1
     )
     assert "retrieval-latency/retrieval-p95" in ids
     assert "answer-latency/answer-p95" in ids
@@ -218,9 +217,7 @@ def test_evaluate_gates_mixed_verdicts():
             ),
             # general: -1% relative (float-exact at dense=100), reverse CI
             # upper 0.999 < band 1.0 -> pass.
-            "general": _comparison(
-                100.0, 99.0, (-1.0, 0.1), (-0.1, 0.999), (0.0, 1.0)
-            ),
+            "general": _comparison(100.0, 99.0, (-1.0, 0.1), (-0.1, 0.999), (0.0, 1.0)),
         },
         chunk_recall={
             # terminology: +10% relative (float-exact at dense=100),

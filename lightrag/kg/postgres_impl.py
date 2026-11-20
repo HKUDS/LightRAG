@@ -5804,16 +5804,12 @@ class PGVectorStorage(BaseVectorStorage):
                 f"hybrid_query covers entities and chunks, not {self.namespace}"
             )
 
-        vector_results = await self.query(
-            query, top_k, query_embedding=query_embedding
-        )
+        vector_results = await self.query(query, top_k, query_embedding=query_embedding)
         tsquery_text = tokenize_for_query(query)
         if not tsquery_text:
             return vector_results
 
-        index_name = _safe_index_name(
-            self.table_name, f"{LEXICAL_TSV_COLUMN}_gin"
-        )
+        index_name = _safe_index_name(self.table_name, f"{LEXICAL_TSV_COLUMN}_gin")
         lexical_results = None
         degrade_reason = ""
         try:
@@ -5832,9 +5828,7 @@ class PGVectorStorage(BaseVectorStorage):
                     multirows=True,
                 )
             else:
-                degrade_reason = (
-                    f"lexical index {index_name} is missing or invalid"
-                )
+                degrade_reason = f"lexical index {index_name} is missing or invalid"
         except Exception as e:
             degrade_reason = f"lexical query failed: {e}"
 

@@ -79,9 +79,7 @@ def gate_b2a_j(
     gain = relative_gain(hybrid_mean, dense_mean)
     if gain is None:
         return not_run(gate_id, "dense mean is zero; relative gain undefined")
-    passed = (
-        gain >= thresholds.b2a_j_relative_gain and diff_ci_lower > 0.0
-    )
+    passed = gain >= thresholds.b2a_j_relative_gain and diff_ci_lower > 0.0
     return GateVerdict(
         gate_id,
         "pass" if passed else "fail",
@@ -105,8 +103,7 @@ def gate_b2a_g(
         return not_run(gate_id, "dense mean is zero; relative gain undefined")
     band = thresholds.b2a_g_noise_band_fraction * dense_mean
     passed = (
-        gain >= thresholds.b2a_g_relative_floor
-        and dense_minus_hybrid_ci_upper < band
+        gain >= thresholds.b2a_g_relative_floor and dense_minus_hybrid_ci_upper < band
     )
     return GateVerdict(
         gate_id,
@@ -129,9 +126,7 @@ def gate_b2b_j(
     gain = relative_gain(hybrid_mean, dense_mean)
     if gain is None:
         return not_run(gate_id, "dense mean is zero; relative gain undefined")
-    passed = (
-        gain >= thresholds.b2b_j_relative_gain and diff_ci_lower > 0.0
-    )
+    passed = gain >= thresholds.b2b_j_relative_gain and diff_ci_lower > 0.0
     return GateVerdict(
         gate_id,
         "pass" if passed else "fail",
@@ -201,8 +196,7 @@ def gate_b3c(
             GateVerdict(
                 "write-amp/gin-size",
                 "pass" if gin_vector_ratio <= limit else "fail",
-                f"GIN/vector index size ratio {_fmt(gin_vector_ratio)} "
-                f"<= {limit:.2f}",
+                f"GIN/vector index size ratio {_fmt(gin_vector_ratio)} <= {limit:.2f}",
             )
         )
     return verdicts

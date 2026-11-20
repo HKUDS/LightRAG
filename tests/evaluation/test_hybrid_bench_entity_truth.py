@@ -39,8 +39,7 @@ class FakeChunksKV:
         self.requested.append(list(ids))
         owners = {"c1": "d1", "c2": "d2", "c3": "d3"}
         return [
-            None if cid in self.missing else {"full_doc_id": owners[cid]}
-            for cid in ids
+            None if cid in self.missing else {"full_doc_id": owners[cid]} for cid in ids
         ]
 
 

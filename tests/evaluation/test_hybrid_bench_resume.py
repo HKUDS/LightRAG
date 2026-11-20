@@ -146,9 +146,7 @@ def commit_spy(monkeypatch):
     return calls
 
 
-async def test_partial_resume_skips_processed_and_recovers_failed(
-    tmp_path, commit_spy
-):
+async def test_partial_resume_skips_processed_and_recovers_failed(tmp_path, commit_spy):
     workspace = f"resume_{uuid4().hex[:8]}"
     stub1 = _StubExtract({"d1": 1})
     rag1, config, llm1 = await _build(
@@ -212,9 +210,7 @@ async def test_interrupted_pending_rows_are_continued(tmp_path):
 async def test_fully_ingested_dataset_skips_straight_to_retrieval(tmp_path, cap):
     workspace = f"resume_{uuid4().hex[:8]}"
     stub1 = _StubExtract()
-    rag1, config, _ = await _build(
-        tmp_path, workspace, stub1, extraction_cap=cap
-    )
+    rag1, config, _ = await _build(tmp_path, workspace, stub1, extraction_cap=cap)
     try:
         first = await ingest_dataset(rag1, _dataset(), config)
         assert first.resumed is False
@@ -224,9 +220,7 @@ async def test_fully_ingested_dataset_skips_straight_to_retrieval(tmp_path, cap)
         await rag1.finalize_storages()
 
     refuse = _RefuseExtract()
-    rag2, config2, llm2 = await _build(
-        tmp_path, workspace, refuse, extraction_cap=cap
-    )
+    rag2, config2, llm2 = await _build(tmp_path, workspace, refuse, extraction_cap=cap)
     custom_kg_calls = _refuse_custom_kg(rag2)
     ainsert_calls = _refuse_ainsert(rag2)
     try:

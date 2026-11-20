@@ -73,9 +73,7 @@ async def derive_entity_truth(
     for query_id, positives in positives_by_query.items():
         positive_docs = set(positives)
         truth = {
-            entity
-            for entity, docs in entity_documents.items()
-            if docs & positive_docs
+            entity for entity, docs in entity_documents.items() if docs & positive_docs
         }
         if truth:
             per_query[query_id] = truth

@@ -390,9 +390,10 @@ async def test_drop_gin_degrades_to_vector_baseline_with_dedup_warning(
 
         # A new failure streak warns again (the success re-armed it).
         await db.execute(f"DROP INDEX IF EXISTS {_index_name(table)}")
-        assert await storage.hybrid_query(
-            _QUERY, top_k=4, query_embedding=_Q_VEC
-        ) == baseline
+        assert (
+            await storage.hybrid_query(_QUERY, top_k=4, query_embedding=_Q_VEC)
+            == baseline
+        )
         warnings = [
             r
             for r in lightrag_log_records
@@ -538,9 +539,24 @@ async def test_lexical_query_error_degrades_to_vector_baseline(lightrag_log_reco
         ("   ", _VECTOR_ONLY_IDS),
     ],
     ids=[
-        "and", "or", "not", "parens", "follows", "quote", "backslash",
-        "prefix", "drop-table", "mixed-operators", "cjk-and", "cjk-or",
-        "cjk-not", "sql-or", "script", "sql-quote", "empty", "whitespace",
+        "and",
+        "or",
+        "not",
+        "parens",
+        "follows",
+        "quote",
+        "backslash",
+        "prefix",
+        "drop-table",
+        "mixed-operators",
+        "cjk-and",
+        "cjk-or",
+        "cjk-not",
+        "sql-or",
+        "script",
+        "sql-quote",
+        "empty",
+        "whitespace",
     ],
 )
 async def test_reserved_char_queries_parse_and_stay_sane(query, expected_ids):
@@ -567,7 +583,9 @@ async def test_reserved_char_queries_parse_and_stay_sane(query, expected_ids):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("n_words", [1200, 6000], ids=["1200-tokens", "6000-tokens-capped"])
+@pytest.mark.parametrize(
+    "n_words", [1200, 6000], ids=["1200-tokens", "6000-tokens-capped"]
+)
 async def test_long_query_is_bounded_and_completes(n_words):
     workspace = f"hybc3_{uuid4().hex[:8]}"
     storage = _make_storage(NameSpace.VECTOR_STORE_CHUNKS, workspace)

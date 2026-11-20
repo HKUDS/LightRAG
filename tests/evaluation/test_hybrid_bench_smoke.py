@@ -66,15 +66,24 @@ async def test_file_backend_mechanics_smoke(tmp_path):
     output_dir = tmp_path / "out"
     args = parse_args(
         [
-            "--dataset-dir", str(dataset_dir),
-            "--output-dir", str(output_dir),
-            "--storage", "file",
-            "--embedding-backend", "fake-hash",
-            "--embedding-dim", "32",
-            "--llm-backend", "fake",
-            "--extraction-cap", "4",
-            "--cosine-threshold", "0.1",
-            "--working-dir", str(tmp_path / "working"),
+            "--dataset-dir",
+            str(dataset_dir),
+            "--output-dir",
+            str(output_dir),
+            "--storage",
+            "file",
+            "--embedding-backend",
+            "fake-hash",
+            "--embedding-dim",
+            "32",
+            "--llm-backend",
+            "fake",
+            "--extraction-cap",
+            "4",
+            "--cosine-threshold",
+            "0.1",
+            "--working-dir",
+            str(tmp_path / "working"),
         ]
     )
     results = await run_bench(args)

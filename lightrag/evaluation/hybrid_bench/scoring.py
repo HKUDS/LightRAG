@@ -53,12 +53,8 @@ def score_chunk_arms(
 ) -> tuple[dict[str, dict[str, dict[str, float]]], list[str], dict[str, list[str]]]:
     """Per-query recall/nDCG per arm, the scored query order, and the query
     ids whose retrieval came back empty per arm."""
-    scored_queries = [
-        qid for qid in dataset.queries if dataset.positives(qid)
-    ]
-    zero_positive = [
-        qid for qid in dataset.queries if not dataset.positives(qid)
-    ]
+    scored_queries = [qid for qid in dataset.queries if dataset.positives(qid)]
+    zero_positive = [qid for qid in dataset.queries if not dataset.positives(qid)]
     per_query: dict[str, dict[str, dict[str, float]]] = {}
     empty: dict[str, list[str]] = {}
     for arm, docs_by_query in arm_docs.items():
@@ -119,9 +115,7 @@ def comparison(
         dense_mean=mean(dense_values),
         hybrid_mean=mean(hybrid_values),
         diff_ci=paired_diff_ci(hybrid_values, dense_values, seed, resamples),
-        reverse_diff_ci=paired_diff_ci(
-            dense_values, hybrid_values, seed, resamples
-        ),
+        reverse_diff_ci=paired_diff_ci(dense_values, hybrid_values, seed, resamples),
         abs_diff_ci=paired_diff_ci(
             hybrid_values, dense_values, seed, resamples, absolute=True
         ),

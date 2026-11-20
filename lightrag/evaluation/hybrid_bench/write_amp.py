@@ -160,9 +160,9 @@ def measure_write_amp(
                 )
     increase = None
     if baseline is not None and baseline["p95_seconds"] > 0:
-        increase = (
-            branch["p95_seconds"] - baseline["p95_seconds"]
-        ) / baseline["p95_seconds"]
+        increase = (branch["p95_seconds"] - baseline["p95_seconds"]) / baseline[
+            "p95_seconds"
+        ]
     return WriteAmpResult(
         branch_p95=branch["p95_seconds"],
         baseline_p95=baseline["p95_seconds"] if baseline else None,
@@ -198,9 +198,7 @@ async def measure_index_sizes(rag: LightRAG) -> tuple[int | None, int | None]:
     return gin_bytes, vector_bytes
 
 
-async def measure_backfill(
-    rag: LightRAG, deadline_seconds: float = 600.0
-) -> float:
+async def measure_backfill(rag: LightRAG, deadline_seconds: float = 600.0) -> float:
     """Backfill: NULL the workspace's tsv rows, drive the production backfill
     scheduling path, poll to zero, return chunks per minute. Report-only.
 

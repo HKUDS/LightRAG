@@ -63,9 +63,7 @@ def test_subset_cap_below_positives_fails_loud():
     ids=["real", "fake-embed", "fake-llm", "both-fake"],
 )
 def test_synthetic_label_follows_the_fakes(embedding_backend, llm_backend, synthetic):
-    config = BenchConfig(
-        embedding_backend=embedding_backend, llm_backend=llm_backend
-    )
+    config = BenchConfig(embedding_backend=embedding_backend, llm_backend=llm_backend)
     assert config.synthetic is synthetic
 
 
@@ -115,9 +113,7 @@ async def test_max_gleaning_reaches_extraction_global_config(tmp_path, value):
     try:
         assert rag.entity_extract_max_gleaning == value
         # operate.py reads the knob from this exact dict.
-        assert (
-            rag._build_global_config()["entity_extract_max_gleaning"] == value
-        )
+        assert rag._build_global_config()["entity_extract_max_gleaning"] == value
     finally:
         await rag.finalize_storages()
 
@@ -177,9 +173,7 @@ def test_llm_num_predict_non_positive_rejected(value):
 
 def test_ollama_default_host_resolution_unchanged():
     # Empty config host means unset; the ollama path keeps the local URL.
-    assert build_llm_func(BenchConfig()).keywords["host"] == (
-        "http://127.0.0.1:11434"
-    )
+    assert build_llm_func(BenchConfig()).keywords["host"] == ("http://127.0.0.1:11434")
     embedding = build_embedding_func(BenchConfig())
     assert embedding.func.keywords["host"] == "http://127.0.0.1:11434"
 

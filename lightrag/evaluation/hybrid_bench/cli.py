@@ -281,8 +281,7 @@ def _resolve_workspace(args: argparse.Namespace, dataset_name: str) -> str:
 def _base_config(args: argparse.Namespace, workspace: str) -> BenchConfig:
     return BenchConfig(
         storage=args.storage,
-        working_dir=args.working_dir
-        or str(Path(args.output_dir) / "working"),
+        working_dir=args.working_dir or str(Path(args.output_dir) / "working"),
         workspace=workspace,
         embedding_backend=args.embedding_backend,
         embedding_host=args.embedding_host or "",
@@ -338,7 +337,11 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
                 continue
             hits = await asyncio.wait_for(
                 arms_mod.retrieve_chunks(
-                    rag, query, arm, config.top_k, embedding,
+                    rag,
+                    query,
+                    arm,
+                    config.top_k,
+                    embedding,
                     ingest.chunk_doc_map,
                 ),
                 timeout=config.request_timeout,
@@ -347,29 +350,27 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
             if arm == "lexical":
                 positives = dataset.positives(qid)
                 lexical_positive_hits.extend(
-                    (query, hit.content)
-                    for hit in hits
-                    if hit.doc_id in positives
+                    (query, hit.content) for hit in hits if hit.doc_id in positives
                 )
         for arm, hybrid in (("dense", False), ("hybrid", True)):
             entities = await asyncio.wait_for(
-                arms_mod.retrieve_entities(
-                    rag, query, hybrid, config.top_k, embedding
-                ),
+                arms_mod.retrieve_entities(rag, query, hybrid, config.top_k, embedding),
                 timeout=config.request_timeout,
             )
             arm_entities[arm][qid] = entities
     b5_per_query: dict[str, dict[str, dict[str, float]]] = {}
     if "b5" in phase_set:
-        for combo, (entity_hybrid, chunk_hybrid) in (
-            arms_mod.B5_COMBINATIONS.items()
-        ):
+        for combo, (entity_hybrid, chunk_hybrid) in arms_mod.B5_COMBINATIONS.items():
             b5_per_query[combo] = {}
             for qid, query in dataset.queries.items():
                 embedding = await arms_mod.embed_query(rag, query)
                 arm = "hybrid" if chunk_hybrid else "dense"
                 hits = await arms_mod.retrieve_chunks(
-                    rag, query, arm, config.top_k, embedding,
+                    rag,
+                    query,
+                    arm,
+                    config.top_k,
+                    embedding,
                     ingest.chunk_doc_map,
                 )
                 docs = arms_mod.doc_id_sequence(hits)
@@ -396,12 +397,22 @@ async def _run_latency(rag, dataset, config):
     async with latency_mod.build_latency_client(rag) as client:
         for phase, need_answer in (("b3a", False), ("b3b", True)):
             dense = await latency_mod.measure_latency(
-                client, slots, config.latency_rounds, False, need_answer,
-                config.top_k, config.request_timeout,
+                client,
+                slots,
+                config.latency_rounds,
+                False,
+                need_answer,
+                config.top_k,
+                config.request_timeout,
             )
             hybrid = await latency_mod.measure_latency(
-                client, slots, config.latency_rounds, True, need_answer,
-                config.top_k, config.request_timeout,
+                client,
+                slots,
+                config.latency_rounds,
+                True,
+                need_answer,
+                config.top_k,
+                config.request_timeout,
             )
             results[phase] = {
                 "dense": {
@@ -419,8 +430,10 @@ async def _run_latency(rag, dataset, config):
                 "overhead": p95_overhead(dense.p95, hybrid.p95),
                 "overhead_ci95": list(
                     bootstrap_p95_overhead_ci(
-                        dense.per_query, hybrid.per_query,
-                        config.seed, config.resamples,
+                        dense.per_query,
+                        hybrid.per_query,
+                        config.seed,
+                        config.resamples,
                     )
                 ),
                 "per_query_dense": dense.per_query,
@@ -435,9 +448,7 @@ async def run_dataset(
     workspace = _resolve_workspace(args, dataset.name)
     config = _base_config(args, workspace)
     fake_llm = (
-        FakeLLM(_fake_entity_specs(dataset))
-        if config.llm_backend == "fake"
-        else None
+        FakeLLM(_fake_entity_specs(dataset)) if config.llm_backend == "fake" else None
     )
     if not dataset.positive_corpus_ids():
         raise ValueError(
@@ -479,10 +490,8 @@ async def run_dataset(
             "queries_with_truth": len(truth.per_query),
             "zero_truth_query_ids": truth.zero_truth_query_ids,
         }
-        arm_docs, arm_entities, lexical_hits, skipped, b5_per_query = (
-            await _run_arms(
-                rag, dataset, config, ingest, truth, args.phase_set
-            )
+        arm_docs, arm_entities, lexical_hits, skipped, b5_per_query = await _run_arms(
+            rag, dataset, config, ingest, truth, args.phase_set
         )
         result["skipped"].update(skipped)
         scored, zero_positive, empty = scoring.score_chunk_arms(
@@ -498,11 +507,13 @@ async def run_dataset(
             arm: {
                 f"recall@{k}": scoring.summarize(
                     [values["recall"] for values in scored[arm].values()],
-                    config.seed, config.resamples,
+                    config.seed,
+                    config.resamples,
                 ).as_dict(),
                 f"ndcg@{k}": scoring.summarize(
                     [values["ndcg"] for values in scored[arm].values()],
-                    config.seed, config.resamples,
+                    config.seed,
+                    config.resamples,
                 ).as_dict(),
                 "per_query": scored[arm],
             }
@@ -590,46 +601,28 @@ def _domain_comparisons(
 ) -> dict:
     comparisons = {}
     for domain in ("terminology", "general"):
-        members = [
-            d for d in datasets if d["meta"]["domain"] == domain
-        ]
+        members = [d for d in datasets if d["meta"]["domain"] == domain]
         if not members:
             continue
-        dense = scoring.pool_values(
-            [d["_scored"] for d in members], "dense", metric
-        )
-        hybrid = scoring.pool_values(
-            [d["_scored"] for d in members], "hybrid", metric
-        )
+        dense = scoring.pool_values([d["_scored"] for d in members], "dense", metric)
+        hybrid = scoring.pool_values([d["_scored"] for d in members], "hybrid", metric)
         if dense and hybrid:
-            comparisons[domain] = scoring.comparison(
-                dense, hybrid, seed, resamples
-            )
+            comparisons[domain] = scoring.comparison(dense, hybrid, seed, resamples)
     return comparisons
 
 
-def _entity_comparisons(
-    datasets: list[dict], seed: int, resamples: int
-) -> dict:
+def _entity_comparisons(datasets: list[dict], seed: int, resamples: int) -> dict:
     comparisons = {}
     for domain in ("terminology", "general"):
         members = [
-            d
-            for d in datasets
-            if d["meta"]["domain"] == domain and d["_entity_scored"]
+            d for d in datasets if d["meta"]["domain"] == domain and d["_entity_scored"]
         ]
         if not members:
             continue
-        dense = scoring.pool_flat(
-            [d["_entity_scored"] for d in members], "dense"
-        )
-        hybrid = scoring.pool_flat(
-            [d["_entity_scored"] for d in members], "hybrid"
-        )
+        dense = scoring.pool_flat([d["_entity_scored"] for d in members], "dense")
+        hybrid = scoring.pool_flat([d["_entity_scored"] for d in members], "hybrid")
         if dense and hybrid:
-            comparisons[domain] = scoring.comparison(
-                dense, hybrid, seed, resamples
-            )
+            comparisons[domain] = scoring.comparison(dense, hybrid, seed, resamples)
     return comparisons
 
 
@@ -662,9 +655,7 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
         ),
         None,
     )
-    scored_hits = sum(
-        d["rerank"]["scored_hits"] for d in datasets if d.get("rerank")
-    )
+    scored_hits = sum(d["rerank"]["scored_hits"] for d in datasets if d.get("rerank"))
     surviving_hits = sum(
         d["rerank"]["surviving_hits"] for d in datasets if d.get("rerank")
     )
@@ -726,8 +717,7 @@ async def run_bench(args: argparse.Namespace) -> dict:
     verdicts = evaluate_gates(inputs, GateThresholds(), args.top_k)
     for verdict in verdicts:
         print(
-            f"[gate] {verdict.gate_id}: {verdict.status.upper()} "
-            f"({verdict.detail})",
+            f"[gate] {verdict.gate_id}: {verdict.status.upper()} ({verdict.detail})",
             flush=True,
         )
     for dataset in datasets:

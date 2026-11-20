@@ -54,7 +54,11 @@ def _openai_config(**overrides) -> BenchConfig:
 @pytest.mark.parametrize(
     ("flag_host", "env_host", "expected"),
     [
-        ("https://flag.example/v1", "https://env.example/v1", "https://flag.example/v1"),
+        (
+            "https://flag.example/v1",
+            "https://env.example/v1",
+            "https://flag.example/v1",
+        ),
         ("", "https://env.example/v1", "https://env.example/v1"),
         ("", None, None),
     ],
@@ -176,8 +180,7 @@ class _RecordingEmbeddings:
         self.calls.append(kwargs)
         return SimpleNamespace(
             data=[
-                SimpleNamespace(embedding=[0.0] * self._dim)
-                for _ in kwargs["input"]
+                SimpleNamespace(embedding=[0.0] * self._dim) for _ in kwargs["input"]
             ],
             usage=None,
         )

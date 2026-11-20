@@ -64,9 +64,7 @@ def build_openai_embedding_func(config: BenchConfig) -> EmbeddingFunc:
         func=partial(
             openai_embed.func,
             model=config.embedding_model,
-            base_url=_resolve_host(
-                config.embedding_host, "EMBEDDING_BINDING_HOST"
-            ),
+            base_url=_resolve_host(config.embedding_host, "EMBEDDING_BINDING_HOST"),
             api_key=_resolve_api_key("EMBEDDING_BINDING_API_KEY"),
             embedding_dim=config.embedding_dim,
             timeout=config.request_timeout,

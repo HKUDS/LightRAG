@@ -402,7 +402,9 @@ async def test_concurrent_index_build_does_not_lock_writes():
         # 2000 seeded + the concurrent row; the stall writer's row is still
         # uncommitted and rightly invisible to other connections.
         assert await _row_count(db, table, workspace) == 2001
-        assert await build_in_progress(), "build finished before the write proved overlap"
+        assert await build_in_progress(), (
+            "build finished before the write proved overlap"
+        )
         assert not build_task.done()
         print(
             f"\n[no-lock proof] insert committed in {insert_elapsed:.3f}s while "

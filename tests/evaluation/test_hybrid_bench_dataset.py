@@ -23,23 +23,35 @@ _UNICODE_LINE_BREAKS = [
 
 def _write_dataset(root, corpus=None, queries=None, qrels=None, meta=None):
     root.mkdir(parents=True, exist_ok=True)
-    corpus = corpus if corpus is not None else [
-        {"id": "d1", "text": "光耦合器隔离信号。"},
-        {"id": "d2", "text": "Servo motors drive joints."},
-    ]
-    queries = queries if queries is not None else [
-        {"id": "q1", "text": "光耦合器如何隔离信号？"},
-        {"id": "q2", "text": "What drives robot joints?"},
-    ]
+    corpus = (
+        corpus
+        if corpus is not None
+        else [
+            {"id": "d1", "text": "光耦合器隔离信号。"},
+            {"id": "d2", "text": "Servo motors drive joints."},
+        ]
+    )
+    queries = (
+        queries
+        if queries is not None
+        else [
+            {"id": "q1", "text": "光耦合器如何隔离信号？"},
+            {"id": "q2", "text": "What drives robot joints?"},
+        ]
+    )
     qrels = qrels if qrels is not None else "q1\td1\t1\nq2\td2\t2\nq1\td2\t0\n"
-    meta = meta if meta is not None else {
-        "domain": "terminology",
-        "language": "zh",
-        "source": "https://example.org",
-        "license": "CC-BY-4.0",
-        "subset_protocol": "full dev split",
-        "counts": {"corpus": 2, "queries": 2},
-    }
+    meta = (
+        meta
+        if meta is not None
+        else {
+            "domain": "terminology",
+            "language": "zh",
+            "source": "https://example.org",
+            "license": "CC-BY-4.0",
+            "subset_protocol": "full dev split",
+            "counts": {"corpus": 2, "queries": 2},
+        }
+    )
     (root / "corpus.jsonl").write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in corpus) + "\n",
         encoding="utf-8",
@@ -58,7 +70,10 @@ def _write_dataset(root, corpus=None, queries=None, qrels=None, meta=None):
 def test_load_dataset_happy_path_and_zero_score_rows(tmp_path):
     dataset = load_dataset(_write_dataset(tmp_path / "ds"))
     assert dataset.name == "ds"
-    assert dataset.corpus == {"d1": "光耦合器隔离信号。", "d2": "Servo motors drive joints."}
+    assert dataset.corpus == {
+        "d1": "光耦合器隔离信号。",
+        "d2": "Servo motors drive joints.",
+    }
     assert dataset.positives("q1") == {"d1": 1}
     assert dataset.positives("q2") == {"d2": 2}
     assert dataset.qrels["q1"]["d2"] == 0
@@ -106,27 +121,19 @@ def test_load_dataset_happy_path_and_zero_score_rows(tmp_path):
             "3 tab-separated fields",
         ),
         (
-            lambda r: (r / "qrels.tsv").write_text(
-                "qX\td1\t1\n", encoding="utf-8"
-            ),
+            lambda r: (r / "qrels.tsv").write_text("qX\td1\t1\n", encoding="utf-8"),
             "unknown query id",
         ),
         (
-            lambda r: (r / "qrels.tsv").write_text(
-                "q1\tdX\t1\n", encoding="utf-8"
-            ),
+            lambda r: (r / "qrels.tsv").write_text("q1\tdX\t1\n", encoding="utf-8"),
             "unknown corpus id",
         ),
         (
-            lambda r: (r / "qrels.tsv").write_text(
-                "q1\td1\thigh\n", encoding="utf-8"
-            ),
+            lambda r: (r / "qrels.tsv").write_text("q1\td1\thigh\n", encoding="utf-8"),
             "not an integer",
         ),
         (
-            lambda r: (r / "qrels.tsv").write_text(
-                "q1\td1\t-1\n", encoding="utf-8"
-            ),
+            lambda r: (r / "qrels.tsv").write_text("q1\td1\t-1\n", encoding="utf-8"),
             "negative score",
         ),
         (
@@ -219,9 +226,7 @@ def test_discover_datasets_empty_root_fails_loud(tmp_path):
 
 @pytest.mark.parametrize("table", ["corpus", "queries"])
 @pytest.mark.parametrize("separator", _UNICODE_LINE_BREAKS)
-def test_unicode_line_breaks_inside_text_load_as_one_record(
-    tmp_path, table, separator
-):
+def test_unicode_line_breaks_inside_text_load_as_one_record(tmp_path, table, separator):
     text = f"alpha{separator}beta{separator}gamma"
     rows = [{"id": "d1", "text": text}, {"id": "d2", "text": "plain"}]
     qrels = "q1\td1\t1\n" if table == "corpus" else "d1\td1\t1\n"
@@ -232,9 +237,7 @@ def test_unicode_line_breaks_inside_text_load_as_one_record(
 
 
 @pytest.mark.parametrize("separator", _UNICODE_LINE_BREAKS)
-def test_unicode_line_breaks_inside_qrels_ids_load_as_one_row(
-    tmp_path, separator
-):
+def test_unicode_line_breaks_inside_qrels_ids_load_as_one_row(tmp_path, separator):
     query_id = f"q1{separator}x"
     corpus_id = f"d1{separator}x"
     dataset = load_dataset(

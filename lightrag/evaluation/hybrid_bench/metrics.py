@@ -49,8 +49,7 @@ def ndcg_at_k(
 
     def dcg(gains: Sequence[float]) -> float:
         return sum(
-            gain / math.log2(rank + 1)
-            for rank, gain in enumerate(gains[:k], start=1)
+            gain / math.log2(rank + 1) for rank, gain in enumerate(gains[:k], start=1)
         )
 
     ideal = sorted(positives.values(), reverse=True)
@@ -102,9 +101,7 @@ def p95_overhead(dense_p95: float, hybrid_p95: float) -> float | None:
     return relative_gain(hybrid_p95, dense_p95)
 
 
-def _resample_indices(
-    rng: random.Random, n: int, resamples: int
-) -> list[list[int]]:
+def _resample_indices(rng: random.Random, n: int, resamples: int) -> list[list[int]]:
     return [[rng.randrange(n) for _ in range(n)] for _ in range(resamples)]
 
 

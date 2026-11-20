@@ -54,9 +54,7 @@ def build_latency_client(rag: LightRAG) -> httpx.AsyncClient:
     original_argv = sys.argv[:]
     sys.argv = [original_argv[0]]
     try:
-        query_routes = importlib.import_module(
-            "lightrag.api.routers.query_routes"
-        )
+        query_routes = importlib.import_module("lightrag.api.routers.query_routes")
     finally:
         sys.argv = original_argv
     app = FastAPI()
@@ -112,9 +110,7 @@ async def measure_latency(
             body = response.json()
             if need_answer:
                 if not body.get("response"):
-                    raise RuntimeError(
-                        f"answer query returned no response: {body}"
-                    )
+                    raise RuntimeError(f"answer query returned no response: {body}")
             elif body.get("status") != "success":
                 raise RuntimeError(f"/query/data failed: {body}")
             samples[slot].append(elapsed)

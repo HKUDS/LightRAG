@@ -75,7 +75,9 @@ def _shared_data():
     finalize_share_data()
 
 
-async def test_unsupported_backend_hybrid_request_stays_vector_only(tmp_path, _shared_data):
+async def test_unsupported_backend_hybrid_request_stays_vector_only(
+    tmp_path, _shared_data
+):
     """A real registered unsupported backend (Nano) returns the same vector-only
     hits with enable_hybrid=True as with it False -- no exception, no new leg."""
     storage = NanoVectorDBStorage(

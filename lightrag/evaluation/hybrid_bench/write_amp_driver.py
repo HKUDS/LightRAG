@@ -73,9 +73,7 @@ async def run(corpus_path: str, workspace: str, dim: int, batch_size: int) -> di
         for line in open(corpus_path, encoding="utf-8")
         if line.strip()
     ]
-    corpus_sha = hashlib.sha256(
-        "".join(texts).encode("utf-8")
-    ).hexdigest()
+    corpus_sha = hashlib.sha256("".join(texts).encode("utf-8")).hexdigest()
 
     async def embed_func(texts: list[str], **kwargs) -> np.ndarray:
         return embed(texts, dim)

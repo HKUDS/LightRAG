@@ -52,9 +52,7 @@ def _metric_table(dataset: dict) -> list[str]:
         )
     entity = dataset.get("entity_metrics") or {}
     for arm, metrics in entity.items():
-        lines.append(
-            f"| entity-{arm} | hit@10 {_fmt_ci(metrics['hit@10'])} | - |"
-        )
+        lines.append(f"| entity-{arm} | hit@10 {_fmt_ci(metrics['hit@10'])} | - |")
     return lines
 
 
@@ -112,8 +110,7 @@ def render_markdown(results: dict) -> str:
     ]
     for verdict in results["gates"]:
         lines.append(
-            f"| {verdict['gate_id']} | {verdict['status']} "
-            f"| {verdict['detail']} |"
+            f"| {verdict['gate_id']} | {verdict['status']} | {verdict['detail']} |"
         )
     for dataset in results["datasets"]:
         meta = dataset["meta"]

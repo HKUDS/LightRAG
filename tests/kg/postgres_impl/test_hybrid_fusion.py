@@ -67,7 +67,12 @@ def test_rrf_swapped_overlap_ranks_break_tie_by_vector_rank():
 
 @pytest.mark.parametrize(
     ("top_k", "expected"),
-    [(1, ["v1"]), (2, ["v1", "l1"]), (3, ["v1", "l1", "v2"]), (9, ["v1", "l1", "v2", "l2"])],
+    [
+        (1, ["v1"]),
+        (2, ["v1", "l1"]),
+        (3, ["v1", "l1", "v2"]),
+        (9, ["v1", "l1", "v2", "l2"]),
+    ],
 )
 def test_rrf_returns_at_most_top_k_in_fusion_order(top_k, expected):
     fused = rrf_fuse(_rows("id", "v1", "v2"), _rows("id", "l1", "l2"), "id", top_k)
@@ -202,7 +207,9 @@ async def test_hybrid_entities_namespace_uses_entity_name_key():
     assert "SELECT entity_name" in db.lexical_sql
 
 
-@pytest.mark.parametrize("query", ["", "   ", "!&|", "---"], ids=["empty", "spaces", "operators", "punct"])
+@pytest.mark.parametrize(
+    "query", ["", "   ", "!&|", "---"], ids=["empty", "spaces", "operators", "punct"]
+)
 async def test_hybrid_empty_tokenization_skips_lexical_leg(query, lightrag_log_records):
     vector = [{"id": "v1", "content": "V1"}]
     db = _FakeDB(vector, [], {"indisvalid": True})
@@ -259,9 +266,10 @@ async def test_hybrid_degrade_warning_dedup_and_rearm(lightrag_log_records):
     storage = _storage(db)
 
     for _ in range(3):
-        assert await storage.hybrid_query(
-            _QUERY, top_k=3, query_embedding=_EMBEDDING
-        ) is vector
+        assert (
+            await storage.hybrid_query(_QUERY, top_k=3, query_embedding=_EMBEDDING)
+            is vector
+        )
     degraded_warnings = [
         r for r in lightrag_log_records if "degraded to vector-only" in r.getMessage()
     ]

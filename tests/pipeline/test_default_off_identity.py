@@ -55,83 +55,127 @@ MODES = ("local", "global", "hybrid", "mix", "naive")
 COSINE_THRESHOLD = 0.1
 
 FAMILIES = [
-    ("传感器", "sensors", [
-        ("光耦合器", "optocoupler"),
-        ("超声波传感器", "ultrasonic sensor"),
-        ("陀螺仪", "gyroscope"),
-        ("触碰传感器", "touch sensor"),
-        ("颜色传感器", "color sensor"),
-    ]),
-    ("电机", "motors", [
-        ("伺服电机", "servo motor"),
-        ("步进电机", "stepper motor"),
-        ("直流电机", "dc motor"),
-        ("无刷电机", "brushless motor"),
-        ("编码电机", "encoded motor"),
-    ]),
-    ("齿轮", "gears", [
-        ("行星齿轮", "planetary gear"),
-        ("蜗轮蜗杆", "worm gear"),
-        ("锥齿轮", "bevel gear"),
-        ("齿条", "gear rack"),
-        ("差速器", "differential"),
-    ]),
-    ("控制器", "controllers", [
-        ("主控制器", "main controller"),
-        ("扩展板", "expansion board"),
-        ("电机驱动板", "motor driver board"),
-        ("传感器集线器", "sensor hub"),
-        ("遥控器", "remote controller"),
-    ]),
-    ("编程", "programming", [
-        ("图形化编程", "block programming"),
-        ("Python编程", "python programming"),
-        ("状态机", "state machine"),
-        ("事件循环", "event loop"),
-        ("固件升级", "firmware update"),
-    ]),
-    ("结构", "structure", [
-        ("底盘", "chassis"),
-        ("机械臂", "robotic arm"),
-        ("履带", "track"),
-        ("万向轮", "omni wheel"),
-        ("连接销", "connector pin"),
-    ]),
-    ("能源", "power", [
-        ("锂电池", "lithium battery"),
-        ("稳压模块", "voltage regulator"),
-        ("太阳能板", "solar panel"),
-        ("电源管理", "power management"),
-        ("充电底座", "charging dock"),
-    ]),
-    ("通信", "communication", [
-        ("蓝牙模块", "bluetooth module"),
-        ("Wi-Fi模块", "wifi module"),
-        ("红外通信", "infrared communication"),
-        ("串口总线", "serial bus"),
-        ("CAN总线", "can bus"),
-    ]),
-    ("算法", "algorithms", [
-        ("PID控制", "pid control"),
-        ("路径规划", "path planning"),
-        ("卡尔曼滤波", "kalman filter"),
-        ("视觉识别", "vision recognition"),
-        ("避障算法", "obstacle avoidance"),
-    ]),
-    ("材料", "materials", [
-        ("ABS塑料", "abs plastic"),
-        ("碳纤维", "carbon fiber"),
-        ("铝合金", "aluminum alloy"),
-        ("橡胶轮胎", "rubber tire"),
-        ("润滑脂", "lubricant grease"),
-    ]),
-    ("测试", "testing", [
-        ("单元测试", "unit testing"),
-        ("标定流程", "calibration procedure"),
-        ("老化测试", "burn-in testing"),
-        ("故障注入", "fault injection"),
-        ("回归测试", "regression testing"),
-    ]),
+    (
+        "传感器",
+        "sensors",
+        [
+            ("光耦合器", "optocoupler"),
+            ("超声波传感器", "ultrasonic sensor"),
+            ("陀螺仪", "gyroscope"),
+            ("触碰传感器", "touch sensor"),
+            ("颜色传感器", "color sensor"),
+        ],
+    ),
+    (
+        "电机",
+        "motors",
+        [
+            ("伺服电机", "servo motor"),
+            ("步进电机", "stepper motor"),
+            ("直流电机", "dc motor"),
+            ("无刷电机", "brushless motor"),
+            ("编码电机", "encoded motor"),
+        ],
+    ),
+    (
+        "齿轮",
+        "gears",
+        [
+            ("行星齿轮", "planetary gear"),
+            ("蜗轮蜗杆", "worm gear"),
+            ("锥齿轮", "bevel gear"),
+            ("齿条", "gear rack"),
+            ("差速器", "differential"),
+        ],
+    ),
+    (
+        "控制器",
+        "controllers",
+        [
+            ("主控制器", "main controller"),
+            ("扩展板", "expansion board"),
+            ("电机驱动板", "motor driver board"),
+            ("传感器集线器", "sensor hub"),
+            ("遥控器", "remote controller"),
+        ],
+    ),
+    (
+        "编程",
+        "programming",
+        [
+            ("图形化编程", "block programming"),
+            ("Python编程", "python programming"),
+            ("状态机", "state machine"),
+            ("事件循环", "event loop"),
+            ("固件升级", "firmware update"),
+        ],
+    ),
+    (
+        "结构",
+        "structure",
+        [
+            ("底盘", "chassis"),
+            ("机械臂", "robotic arm"),
+            ("履带", "track"),
+            ("万向轮", "omni wheel"),
+            ("连接销", "connector pin"),
+        ],
+    ),
+    (
+        "能源",
+        "power",
+        [
+            ("锂电池", "lithium battery"),
+            ("稳压模块", "voltage regulator"),
+            ("太阳能板", "solar panel"),
+            ("电源管理", "power management"),
+            ("充电底座", "charging dock"),
+        ],
+    ),
+    (
+        "通信",
+        "communication",
+        [
+            ("蓝牙模块", "bluetooth module"),
+            ("Wi-Fi模块", "wifi module"),
+            ("红外通信", "infrared communication"),
+            ("串口总线", "serial bus"),
+            ("CAN总线", "can bus"),
+        ],
+    ),
+    (
+        "算法",
+        "algorithms",
+        [
+            ("PID控制", "pid control"),
+            ("路径规划", "path planning"),
+            ("卡尔曼滤波", "kalman filter"),
+            ("视觉识别", "vision recognition"),
+            ("避障算法", "obstacle avoidance"),
+        ],
+    ),
+    (
+        "材料",
+        "materials",
+        [
+            ("ABS塑料", "abs plastic"),
+            ("碳纤维", "carbon fiber"),
+            ("铝合金", "aluminum alloy"),
+            ("橡胶轮胎", "rubber tire"),
+            ("润滑脂", "lubricant grease"),
+        ],
+    ),
+    (
+        "测试",
+        "testing",
+        [
+            ("单元测试", "unit testing"),
+            ("标定流程", "calibration procedure"),
+            ("老化测试", "burn-in testing"),
+            ("故障注入", "fault injection"),
+            ("回归测试", "regression testing"),
+        ],
+    ),
 ]
 
 ASPECTS = [
@@ -167,16 +211,36 @@ QUERIES = [
     ("锂电池的充电与维护", ["能源", "电池"], ["锂电池", "充电底座"]),
     ("蓝牙模块的通信距离", ["通信", "无线"], ["蓝牙模块"]),
     ("PID控制参数如何整定？", ["算法", "控制"], ["PID控制"]),
-    ("How does the optocoupler isolate signals?", ["sensors", "isolation"], ["optocoupler"]),
+    (
+        "How does the optocoupler isolate signals?",
+        ["sensors", "isolation"],
+        ["optocoupler"],
+    ),
     ("What is the role of the gyroscope?", ["sensors", "orientation"], ["gyroscope"]),
-    ("Explain planetary gear transmission", ["gears", "transmission"], ["planetary gear"]),
-    ("How to calibrate the ultrasonic sensor?", ["testing", "calibration"], ["ultrasonic sensor", "calibration procedure"]),
-    ("Which motor suits a robotic arm?", ["motors", "structure"], ["servo motor", "robotic arm"]),
+    (
+        "Explain planetary gear transmission",
+        ["gears", "transmission"],
+        ["planetary gear"],
+    ),
+    (
+        "How to calibrate the ultrasonic sensor?",
+        ["testing", "calibration"],
+        ["ultrasonic sensor", "calibration procedure"],
+    ),
+    (
+        "Which motor suits a robotic arm?",
+        ["motors", "structure"],
+        ["servo motor", "robotic arm"],
+    ),
     ("机器人底盘用什么材料？", ["材料", "结构"], ["底盘", "ABS塑料", "铝合金"]),
     ("卡尔曼滤波如何融合陀螺仪数据？", ["算法", "传感器"], ["卡尔曼滤波", "陀螺仪"]),
     ("固件升级的流程与风险", ["编程", "维护"], ["固件升级"]),
     ("避障算法与路径规划的关系", ["算法", "导航"], ["避障算法", "路径规划"]),
-    ("Difference between stepper motor and dc motor", ["motors", "comparison"], ["stepper motor", "dc motor"]),
+    (
+        "Difference between stepper motor and dc motor",
+        ["motors", "comparison"],
+        ["stepper motor", "dc motor"],
+    ),
 ]
 
 
@@ -192,9 +256,7 @@ def build_fixture() -> dict:
         for zh, en in subs:
             d = doc_index
             doc_index += 1
-            file_path = (
-                f"corpus/{fam_en.replace(' ', '_')}/{en.replace(' ', '_')}.md"
-            )
+            file_path = f"corpus/{fam_en.replace(' ', '_')}/{en.replace(' ', '_')}.md"
             aliases = [f"src-{d:03d}-{k}" for k in range(4)]
             doc_of[zh] = (d, aliases[0])
             for k, (asp_zh, asp_en) in enumerate(ASPECTS):
@@ -347,9 +409,7 @@ async def _regenerate_manifest(backend: str, working_dir: str, workspace: str) -
             func=a7_embed,
             model_name=MODEL_NAME,
         ),
-        vector_db_storage_cls_kwargs={
-            "cosine_better_than_threshold": COSINE_THRESHOLD
-        },
+        vector_db_storage_cls_kwargs={"cosine_better_than_threshold": COSINE_THRESHOLD},
     )
     if backend == "pg":
         kwargs.update(
@@ -402,9 +462,7 @@ async def _regenerate_manifest(backend: str, working_dir: str, workspace: str) -
 
 
 def _assert_matches_pinned(manifest: dict, pinned_name: str) -> None:
-    pinned = json.loads(
-        (_FIXTURE_DIR / pinned_name).read_text(encoding="utf-8")
-    )
+    pinned = json.loads((_FIXTURE_DIR / pinned_name).read_text(encoding="utf-8"))
     assert manifest["version"] == pinned["version"]
     assert manifest["backend"] == pinned["backend"]
     assert manifest["fixture"] == pinned["fixture"]
@@ -416,9 +474,7 @@ def _assert_matches_pinned(manifest: dict, pinned_name: str) -> None:
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_file_backend_matches_pinned_baseline(tmp_path):
-    manifest = await _regenerate_manifest(
-        "file", str(tmp_path / "wd"), "off_file"
-    )
+    manifest = await _regenerate_manifest("file", str(tmp_path / "wd"), "off_file")
     _assert_matches_pinned(manifest, "default_off_manifest_file.json")
 
 

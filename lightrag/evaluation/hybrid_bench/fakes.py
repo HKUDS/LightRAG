@@ -18,9 +18,7 @@ from functools import lru_cache
 import numpy as np
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]")
-_INPUT_TEXT_RE = re.compile(
-    r"---Input Text---\s*```\s*\n(.*?)\n```", re.DOTALL
-)
+_INPUT_TEXT_RE = re.compile(r"---Input Text---\s*```\s*\n(.*?)\n```", re.DOTALL)
 _QUERY_RE = re.compile(r"User Query: (.+)")
 
 

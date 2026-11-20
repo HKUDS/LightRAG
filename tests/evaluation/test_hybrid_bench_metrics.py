@@ -155,9 +155,7 @@ def test_paired_diff_ci_seed_determinism():
 
 def test_p95_overhead_ci_constant_latency():
     # dense 1.0, hybrid 1.25 everywhere -> overhead 0.25 in every resample.
-    lo, hi = bootstrap_p95_overhead_ci(
-        [1.0] * 4, [1.25] * 4, seed=5, resamples=1000
-    )
+    lo, hi = bootstrap_p95_overhead_ci([1.0] * 4, [1.25] * 4, seed=5, resamples=1000)
     assert lo == pytest.approx(0.25)
     assert hi == pytest.approx(0.25)
 

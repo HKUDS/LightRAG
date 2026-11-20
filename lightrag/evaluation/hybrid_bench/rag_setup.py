@@ -334,9 +334,7 @@ def _write_progress(
 
 
 async def _doc_status_counts(rag: LightRAG) -> dict[str, int]:
-    statuses = await rag.doc_status.get_docs_by_statuses(
-        list(DocStatus), strict=True
-    )
+    statuses = await rag.doc_status.get_docs_by_statuses(list(DocStatus), strict=True)
     counts: dict[str, int] = {}
     for status in statuses.values():
         key = DocStatus(status.status).value
@@ -361,9 +359,7 @@ async def _progress_monitor(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning(
-                "[hybrid-bench] progress checkpoint failed: %s", exc
-            )
+            logger.warning("[hybrid-bench] progress checkpoint failed: %s", exc)
 
 
 async def _complete_chunk_doc_ids(
@@ -410,32 +406,22 @@ async def ingest_dataset(
         )
         for cid in remainder
     }
-    chunk_doc_map: dict[str, str] = {
-        remainder_chunk_ids[cid]: cid for cid in remainder
-    }
+    chunk_doc_map: dict[str, str] = {remainder_chunk_ids[cid]: cid for cid in remainder}
 
     processed = (
-        await rag.doc_status.get_docs_by_statuses(
-            [DocStatus.PROCESSED], strict=True
-        )
+        await rag.doc_status.get_docs_by_statuses([DocStatus.PROCESSED], strict=True)
         if subset
         else {}
     )
     pending_subset = [cid for cid in subset if cid not in processed]
     complete_remainder = await _complete_chunk_doc_ids(rag, remainder_chunk_ids)
-    pending_remainder = [
-        cid for cid in remainder if cid not in complete_remainder
-    ]
+    pending_remainder = [cid for cid in remainder if cid not in complete_remainder]
     resumed = bool(processed) or bool(complete_remainder)
 
     phase = {"name": "extracting" if pending_subset else "chunks-only"}
-    monitor = asyncio.create_task(
-        _progress_monitor(rag, config, dataset, phase)
-    )
+    monitor = asyncio.create_task(_progress_monitor(rag, config, dataset, phase))
     try:
-        _write_progress(
-            config, dataset, phase["name"], await _doc_status_counts(rag)
-        )
+        _write_progress(config, dataset, phase["name"], await _doc_status_counts(rag))
         if not pending_subset and not pending_remainder:
             for cid in subset:
                 for chunk_id in processed[cid].chunks_list or []:
@@ -559,9 +545,7 @@ async def ingest_dataset(
                 config, dataset, phase["name"], await _doc_status_counts(rag)
             )
         except Exception as exc:
-            logger.warning(
-                "[hybrid-bench] final progress checkpoint failed: %s", exc
-            )
+            logger.warning("[hybrid-bench] final progress checkpoint failed: %s", exc)
 
 
 async def cleanup_pg_workspace(config: BenchConfig) -> None:
@@ -610,9 +594,7 @@ async def cleanup_pg_workspace(config: BenchConfig) -> None:
             )
             if not exists:
                 continue
-            remaining = await conn.fetchval(
-                f'SELECT EXISTS(SELECT 1 FROM "{table}")'
-            )
+            remaining = await conn.fetchval(f'SELECT EXISTS(SELECT 1 FROM "{table}")')
             if not remaining:
                 await conn.execute(f'DROP TABLE IF EXISTS "{table}"')
     finally:

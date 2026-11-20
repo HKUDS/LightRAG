@@ -100,14 +100,22 @@ async def test_ingest_timeout_expires_at_configured_value(
     initialize_share_data(workers=1)
     args = parse_args(
         _cli_argv(
-            "--storage", "file",
-            "--embedding-backend", "fake-hash",
-            "--embedding-dim", "32",
-            "--llm-backend", "fake",
-            "--extraction-cap", "2",
-            "--phases", "",
-            "--working-dir", str(tmp_path / "working"),
-            "--ingest-timeout", str(timeout),
+            "--storage",
+            "file",
+            "--embedding-backend",
+            "fake-hash",
+            "--embedding-dim",
+            "32",
+            "--llm-backend",
+            "fake",
+            "--extraction-cap",
+            "2",
+            "--phases",
+            "",
+            "--working-dir",
+            str(tmp_path / "working"),
+            "--ingest-timeout",
+            str(timeout),
         )
     )
     calls = []
@@ -182,9 +190,7 @@ def commit_spy(monkeypatch):
     return calls
 
 
-async def test_recovery_round_recovers_failed_via_sanctioned_path(
-    tmp_path, commit_spy
-):
+async def test_recovery_round_recovers_failed_via_sanctioned_path(tmp_path, commit_spy):
     rag, config, stub, llm_calls = await _build_rag_with_stub(
         tmp_path, {"d0": 1, "d1": 1}
     )
@@ -234,9 +240,7 @@ async def test_persistent_failure_raises_loud_after_bounded_rounds(
         await rag.finalize_storages()
 
 
-async def test_mixed_recovery_annotates_recovered_and_persistent(
-    tmp_path, commit_spy
-):
+async def test_mixed_recovery_annotates_recovered_and_persistent(tmp_path, commit_spy):
     rag, config, stub, llm_calls = await _build_rag_with_stub(
         tmp_path, {"d0": 3, "d1": 1}, ingest_recovery_rounds=2
     )

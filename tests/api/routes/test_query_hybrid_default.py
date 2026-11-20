@@ -38,9 +38,7 @@ def _rest_enable_hybrid(env_value: str | None, **request_fields) -> str:
     env["PYTHON_DOTENV_DISABLED"] = "1"
     if env_value is not None:
         env["HYBRID_BY_DEFAULT"] = env_value
-    extra = "".join(
-        f", {name}={value!r}" for name, value in request_fields.items()
-    )
+    extra = "".join(f", {name}={value!r}" for name, value in request_fields.items())
     script = (
         "from lightrag.api.routers.query_routes import QueryRequest; "
         f"print(QueryRequest(query='what is this about'{extra})"

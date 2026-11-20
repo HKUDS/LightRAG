@@ -126,18 +126,13 @@ def _load_qrels(
         fields = line.split("\t")
         if len(fields) != 3:
             raise DatasetError(
-                f"{path}:{line_no}: expected 3 tab-separated fields, "
-                f"got {len(fields)}"
+                f"{path}:{line_no}: expected 3 tab-separated fields, got {len(fields)}"
             )
         query_id, corpus_id, raw_score = fields
         if query_id not in queries:
-            raise DatasetError(
-                f"{path}:{line_no}: unknown query id {query_id!r}"
-            )
+            raise DatasetError(f"{path}:{line_no}: unknown query id {query_id!r}")
         if corpus_id not in corpus:
-            raise DatasetError(
-                f"{path}:{line_no}: unknown corpus id {corpus_id!r}"
-            )
+            raise DatasetError(f"{path}:{line_no}: unknown corpus id {corpus_id!r}")
         try:
             score = int(raw_score)
         except ValueError as exc:
@@ -149,8 +144,7 @@ def _load_qrels(
         per_query = qrels.setdefault(query_id, {})
         if corpus_id in per_query:
             raise DatasetError(
-                f"{path}:{line_no}: duplicate qrels pair "
-                f"{query_id!r}/{corpus_id!r}"
+                f"{path}:{line_no}: duplicate qrels pair {query_id!r}/{corpus_id!r}"
             )
         per_query[corpus_id] = score
     return qrels

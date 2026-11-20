@@ -76,7 +76,9 @@ class _KeywordModel:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runner,mode", _RUNNERS)
 async def test_hybrid_on_and_off_write_different_keys(
-    runner, mode, stub_query_context  # noqa: F811
+    runner,
+    mode,
+    stub_query_context,  # noqa: F811
 ):
     written = []
     for flag in (False, True):
@@ -92,7 +94,9 @@ async def test_hybrid_on_and_off_write_different_keys(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runner,mode", _RUNNERS)
 async def test_hybrid_off_keeps_the_legacy_key(
-    runner, mode, stub_query_context  # noqa: F811
+    runner,
+    mode,
+    stub_query_context,  # noqa: F811
 ):
     """Default-off costs no deployment its warm answer cache."""
     cache = _FakeKVStorage()
@@ -110,7 +114,9 @@ async def test_hybrid_off_keeps_the_legacy_key(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runner,mode", _RUNNERS)
 async def test_legacy_entry_serves_off_but_never_on(
-    runner, mode, stub_query_context  # noqa: F811
+    runner,
+    mode,
+    stub_query_context,  # noqa: F811
 ):
     cache = _FakeKVStorage()
     model = _RecordingModel()
@@ -141,7 +147,12 @@ async def test_legacy_entry_serves_off_but_never_on(
     ],
 )
 async def test_other_dimensions_still_partition_with_hybrid_on(
-    runner, mode, dimension, arm_a, arm_b, stub_query_context  # noqa: F811
+    runner,
+    mode,
+    dimension,
+    arm_a,
+    arm_b,
+    stub_query_context,  # noqa: F811
 ):
     """The new component must not collapse the pre-existing partitioning."""
     cache = _FakeKVStorage()
@@ -176,7 +187,10 @@ async def test_other_dimensions_still_partition_with_hybrid_on(
     ],
 )
 async def test_arm_answers_never_cross_contaminate(
-    runner, mode, sequence, stub_query_context  # noqa: F811
+    runner,
+    mode,
+    sequence,
+    stub_query_context,  # noqa: F811
 ):
     """A cache HIT means no second LLM call for the same arm; a shared key
     would hand one arm the other's answer instead."""

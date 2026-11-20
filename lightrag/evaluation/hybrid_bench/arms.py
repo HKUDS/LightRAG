@@ -59,9 +59,7 @@ async def embed_query(rag: LightRAG, query: str) -> list[float]:
     return embeddings[0].tolist()
 
 
-def _resolve_hits(
-    rows: list[dict], chunk_doc_map: dict[str, str]
-) -> list[ChunkHit]:
+def _resolve_hits(rows: list[dict], chunk_doc_map: dict[str, str]) -> list[ChunkHit]:
     hits = []
     for row in rows:
         chunk_id = row.get("chunk_id") or row.get("id")
@@ -131,9 +129,7 @@ async def retrieve_entities(
             query, top_k=top_k, query_embedding=query_embedding
         )
     else:
-        rows = await vdb.query(
-            query, top_k=top_k, query_embedding=query_embedding
-        )
+        rows = await vdb.query(query, top_k=top_k, query_embedding=query_embedding)
     return [row["entity_name"] for row in rows]
 
 
