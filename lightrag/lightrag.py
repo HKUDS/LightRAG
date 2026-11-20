@@ -158,6 +158,7 @@ from lightrag.operate import (
     kg_query,
     merge_nodes_and_edges,
     naive_query,
+    normalize_keyword_extraction_json_mode,
     rebuild_knowledge_from_chunks,
 )
 from lightrag.utils_pipeline import (
@@ -1134,7 +1135,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     Default: False. Set ENTITY_EXTRACTION_USE_JSON=true in .env to enable."""
 
     keyword_extraction_json_mode: str = field(
-        default=os.getenv("KEYWORD_EXTRACTION_JSON_MODE", "auto").strip().lower()
+        default=os.getenv("KEYWORD_EXTRACTION_JSON_MODE") or "auto"
     )
     """``response_format`` policy for query keyword extraction: ``auto``, ``json_object``
     or ``none``.
@@ -1858,6 +1859,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status_storage,
                 self.config_storage or default_configuration_storage(self.kv_storage),
             ),
+        )
+
+        # Fail fast on a mistyped policy instead of at the first query, and store
+        # the canonical spelling so a constructor argument such as "AUTO" works.
+        self.keyword_extraction_json_mode = normalize_keyword_extraction_json_mode(
+            self.keyword_extraction_json_mode
         )
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy

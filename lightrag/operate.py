@@ -5592,16 +5592,33 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
     return True, hl_keywords, ll_keywords
 
 
+KEYWORD_EXTRACTION_JSON_MODES = ("auto", "json_object", "none")
+
+
+def normalize_keyword_extraction_json_mode(value: Any) -> str:
+    """Return the canonical ``keyword_extraction_json_mode``, or raise ``ValueError``."""
+    mode = str(value).strip().lower()
+    if mode not in KEYWORD_EXTRACTION_JSON_MODES:
+        raise ValueError(
+            "keyword_extraction_json_mode (KEYWORD_EXTRACTION_JSON_MODE) must be "
+            f"'auto', 'json_object' or 'none', got {value!r}"
+        )
+    return mode
+
+
 def _is_unsupported_response_format_error(error: BaseException) -> bool:
     """Whether the provider rejected the ``response_format=json_object`` constraint itself.
 
     The fallback exists for OpenAI-compatible servers that accept only
     ``json_schema``/``text`` (LM Studio answers ``'response_format.type' must be
-    'json_schema' or 'text'``). Both tokens must be present in the message so a generic
-    400, a timeout, or a transport error never qualifies: only this compatibility
-    failure may be retried without the constraint, everything else must propagate.
+    'json_schema' or 'text'``). The message must name the field (``response_format``
+    or ``json_object``) AND carry a rejection marker, so a generic 400, a timeout, or
+    a transport error never qualifies: only this compatibility failure may be retried
+    without the constraint, everything else must propagate.
     """
-    message = str(error).lower()
+    # The OpenAI SDK prints the error ``type`` of every 400 as
+    # ``invalid_request_error``; it says nothing about which field was rejected.
+    message = str(error).lower().replace("invalid_request_error", "")
     if "response_format" not in message and "json_object" not in message:
         return False
     rejection_markers = (
@@ -5614,7 +5631,6 @@ def _is_unsupported_response_format_error(error: BaseException) -> bool:
         "must be",
         "only accept",
         "only support",
-        "expected",
     )
     return any(marker in message for marker in rejection_markers)
 
@@ -5630,11 +5646,9 @@ async def extract_keywords_only(
     This method does NOT build the final RAG context or provide a final answer.
     It ONLY extracts keywords (hl_keywords, ll_keywords).
     """
-    json_mode = str(global_config.get("keyword_extraction_json_mode", "auto")).strip().lower()
-    if json_mode not in ("auto", "json_object", "none"):
-        raise ValueError(
-            f"keyword_extraction_json_mode must be 'auto', 'json_object' or 'none', got {json_mode!r}"
-        )
+    json_mode = normalize_keyword_extraction_json_mode(
+        global_config.get("keyword_extraction_json_mode", "auto")
+    )
 
     # 1. Build the examples
     examples = "\n".join(PROMPTS["keywords_extraction_examples"])

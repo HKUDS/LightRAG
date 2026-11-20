@@ -1,12 +1,16 @@
 import pytest
 from unittest.mock import patch
 
+import numpy as np
+
+from lightrag import LightRAG
 from lightrag.base import QueryParam
 from lightrag.operate import (
     _is_unsupported_response_format_error,
     _parse_keywords_payload,
     extract_keywords_only,
 )
+from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
 class _FakeKeywordModel:
@@ -334,9 +338,7 @@ async def test_json_mode_auto_retries_once_without_response_format_on_compat_err
     async def keyword_model(*_args, **kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
-            raise RuntimeError(
-                "'response_format.type' must be 'json_schema' or 'text'"
-            )
+            raise RuntimeError("'response_format.type' must be 'json_schema' or 'text'")
         return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
 
     hl_keywords, ll_keywords = await extract_keywords_only(
@@ -422,6 +424,7 @@ async def test_non_json_response_is_not_treated_as_valid_keyword_output():
     """A provider that ignores the constraint and rambles must yield no keywords:
     prose that merely mentions the topic is not structured keyword output, and
     empty keywords — not fabricated ones — are what a caller can act on."""
+
     async def keyword_model(*_args, **kwargs):
         return "AI and RAG are two interesting topics for retrieval, graph and memory."
 
@@ -434,6 +437,46 @@ async def test_non_json_response_is_not_treated_as_valid_keyword_output():
 
     assert hl_keywords == []
     assert ll_keywords == []
+
+
+async def _unused_llm(*_args, **_kwargs) -> str:
+    return ""
+
+
+async def _unused_embedding(texts: list[str]) -> np.ndarray:
+    return np.zeros((len(texts), 8))
+
+
+def _build_rag(tmp_path, **kwargs) -> LightRAG:
+    return LightRAG(
+        working_dir=str(tmp_path),
+        llm_model_func=_unused_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8, max_token_size=8192, func=_unused_embedding
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _FakeTokenizer()),
+        **kwargs,
+    )
+
+
+@pytest.mark.offline
+def test_keyword_extraction_json_mode_is_rejected_at_construction(tmp_path):
+    """A mistyped policy must fail at startup, not at the first query."""
+    with pytest.raises(ValueError, match="KEYWORD_EXTRACTION_JSON_MODE"):
+        _build_rag(tmp_path, keyword_extraction_json_mode="sometimes")
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("auto", "auto"), (" JSON_Object ", "json_object"), ("None", "none")],
+)
+def test_keyword_extraction_json_mode_is_canonicalized_at_construction(
+    tmp_path, given, expected
+):
+    rag = _build_rag(tmp_path, keyword_extraction_json_mode=given)
+
+    assert rag.keyword_extraction_json_mode == expected
 
 
 @pytest.mark.offline
@@ -462,6 +505,22 @@ async def test_keyword_extraction_json_mode_rejects_unknown_value():
         ("Request timed out while waiting for response_format", False),
         ("HTTP 429: rate limit exceeded", False),
         ("invalid JSON in prompt", False),
+        ("Unexpected end of stream while reading the json_object reply", False),
+        # The OpenAI SDK prints `invalid_request_error` as the type of every 400:
+        # that token alone must not turn a 400 naming the field into a rejection...
+        (
+            "Error code: 400 - {'error': {'message': \"'messages' must contain the "
+            "word 'json' in some form, to use 'response_format' of type "
+            "'json_object'.\", 'type': 'invalid_request_error'}}",
+            False,
+        ),
+        # ...while a real rejection wrapped the same way still qualifies.
+        (
+            "Error code: 400 - {'error': {'message': \"Invalid value: 'json_object'. "
+            "Supported values are: 'json_schema' and 'text'.\", "
+            "'type': 'invalid_request_error'}}",
+            True,
+        ),
     ],
 )
 def test_is_unsupported_response_format_error(message, expected):
