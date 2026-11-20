@@ -284,6 +284,7 @@ def test_resolver_rejects_an_empty_or_relative_uri_path(flavor, location):
     [
         # Drive-relative: C:tmp depends on the drive's current directory.
         "file:///C:tmp/report.parsed/",
+        "file:///C|tmp/report.parsed/",
         # UNC through an empty or localhost authority: a network share, not a
         # local directory, once Windows reads the leading double separator.
         "file:////fileserver/share/report.parsed/",
@@ -294,6 +295,31 @@ def test_resolver_rejects_an_empty_or_relative_uri_path(flavor, location):
 def test_windows_rejects_a_uri_path_that_names_no_local_directory(windows, location):
     with pytest.raises(ValueError, match=UNSUPPORTED):
         resolve_sidecar_location(location)
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["file:///C:tmp/report.parsed/", "file:///C|tmp/report.parsed/"],
+)
+def test_windows_reader_does_not_root_a_drive_relative_path(windows, location):
+    # CPython < 3.12's url2pathname reads C:tmp as C:\tmp; the pipeline's
+    # reader must refuse it on every version rather than pick a directory.
+    assert resolve_sidecar_uri(location) is None
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "file:///C:/tmp/report.parsed/",
+        "file:///C:%5Ctmp/report.parsed/",
+        "file:///C:%5ctmp/report.parsed/",
+        "file:///C:%2Ftmp/report.parsed/",
+        "file:///C:%2ftmp/report.parsed/",
+        "file:///C|%2Ftmp/report.parsed/",
+    ],
+)
+def test_windows_reader_still_reads_a_rooted_drive_path(windows, location):
+    assert resolve_sidecar_uri(location) == PureWindowsPath("C:/tmp/report.parsed")
 
 
 def test_posix_rejects_a_literal_drive_relative_uri(posix):
