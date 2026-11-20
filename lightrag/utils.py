@@ -7513,6 +7513,7 @@ async def apply_rerank_if_enabled(
             if first_object is not None and "index" in first_object:
                 # New format: [{"index": 0, "relevance_score": 0.85}, ...]
                 reranked_docs = []
+                seen_indices = set()
                 for result in rerank_results:
                     normalized_result, _ = normalize_rerank_result(
                         result, len(retrieved_docs)
@@ -7521,6 +7522,9 @@ async def apply_rerank_if_enabled(
                         continue
 
                     index = normalized_result["index"]
+                    if index in seen_indices:
+                        continue
+                    seen_indices.add(index)
                     relevance_score = normalized_result["relevance_score"]
 
                     # Get original document and add rerank score
