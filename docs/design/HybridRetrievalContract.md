@@ -50,7 +50,7 @@ to the pre-hybrid code. This is pinned by
 66 entities, 65 relations, 20 queries across all five modes, on the file
 backends and on PostgreSQL, compared hash for hash against pinned manifests
 (`tests/pipeline/default_off_manifest_file.json` and
-`default_off_manifest_pg.json`). The query cache key also stays on the legacy
+`tests/pipeline/default_off_manifest_pg.json`). The query cache key also stays on the legacy
 form when the flag is off, so answers cached before the feature existed keep
 hitting.
 

@@ -219,7 +219,7 @@ probe (3 round-trips vs 1). The bench LightRAG disables the LLM cache so
 every round measures real work. p50/p95 are nearest-rank over all samples;
 the overhead CI resamples per-query means paired across arms.
 
-**Write amplification.** `write_amp_driver.py` is self-contained
+**Write amplification.** `lightrag/evaluation/hybrid_bench/write_amp_driver.py` is self-contained
 (imports only lightrag + numpy, baseline-safe) and runs UNCHANGED under the
 branch interpreter and a pristine `--baseline-ref` checkout's own interpreter,
 on the same corpus and PG load, measuring per-batch upsert+flush p95. With
