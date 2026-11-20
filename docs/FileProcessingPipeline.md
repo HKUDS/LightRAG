@@ -1077,7 +1077,7 @@ What each offline tool can and cannot repair:
 
 | Tool | Source of truth and what it repairs | What it cannot repair | Cost |
 | --- | --- | --- | --- |
-| `python -m lightrag.tools.kg_integrity_repair` | Walks graph → chunk `source_id` → `text_chunks` → `full_doc_id` to rebuild missing or unusable `full_entities` / `full_relations` anchor rows; can also write empty anchor rows for a document that genuinely owns nothing | Graph↔VDB drift, `doc_status` / `full_docs` themselves, custom-chunk journals, the fence itself | Never calls the LLM or embedder — effectively free |
+| `python -m lightrag.tools.kg_integrity_repair` | Walks graph → chunk provenance (`entity_chunks` / `relation_chunks` ∪ capped `source_id`) → `text_chunks` → `full_doc_id` to rebuild missing or unusable `full_entities` / `full_relations` anchor rows; can also write empty anchor rows for a document that genuinely owns nothing | Graph↔VDB drift, `doc_status` / `full_docs` themselves, custom-chunk journals, the fence itself | Never calls the LLM or embedder — effectively free |
 | `lightrag-rebuild-vdb` | Drops and rebuilds `entities_vdb` / `relationships_vdb` from the graph and `chunks_vdb` from `text_chunks`; also clears reverse orphans (present in the vector store, absent from the graph), which incremental repair cannot do | Anchor rows, `doc_status`, the correctness of the graph itself, the fence itself | A full re-embed — real money |
 
 Two ordering traps; getting them backwards turns repairable data into unrepairable data:
