@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import codecs
 import io
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -46,6 +49,12 @@ _SVG_BYTES = (
 )
 
 
+@pytest.fixture(scope="module")
+def require_svg_rasterizer():
+    if md_parser.check_svg_rasterizer() is not None:
+        pytest.skip("SVG rendering requires CairoSVG with a working native libcairo")
+
+
 def test_magic_detection():
     assert _image_ext_from_magic(_PNG_BYTES) == "png"
     assert _image_ext_from_magic(b"\xff\xd8\xff\xe0junk") == "jpg"
@@ -61,7 +70,7 @@ def test_looks_like_svg():
     assert _looks_like_svg(b"<html><body>no svg</body></html>") is False
 
 
-def test_svg_rasterized_to_png_via_coerce():
+def test_svg_rasterized_to_png_via_coerce(require_svg_rasterizer):
     coerced = _image_bytes_and_ext(
         _SVG_BYTES, max_bytes=25 * 1024 * 1024, max_svg_pixels=16_000_000
     )
@@ -105,17 +114,18 @@ def test_svg_dimensions_parsed_from_width_height_and_viewbox():
 def test_svg_oversized_canvas_rejected_before_render(monkeypatch):
     # A tiny SVG declaring a huge canvas is rejected on the pre-render pixel
     # budget — cairosvg.svg2png must never be reached.
-    import cairosvg
-
-    def _boom(*a, **k):  # pragma: no cover - must not be called
-        raise AssertionError("cairosvg.svg2png should not run for oversized canvas")
-
-    monkeypatch.setattr(cairosvg, "svg2png", _boom)
+    render = Mock(
+        side_effect=AssertionError(
+            "cairosvg.svg2png should not run for oversized canvas"
+        )
+    )
+    monkeypatch.setitem(sys.modules, "cairosvg", SimpleNamespace(svg2png=render))
     big = b'<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000"/>'
     assert md_parser._rasterize_svg(big, max_pixels=16_000_000) is None
+    render.assert_not_called()
 
 
-def test_base64_svg_decoded_and_rasterized():
+def test_base64_svg_decoded_and_rasterized(require_svg_rasterizer):
     import base64 as _b64
 
     p = _make_parser()
@@ -130,7 +140,7 @@ def test_base64_svg_decoded_and_rasterized():
     assert not warnings
 
 
-def test_textpack_svg_file_rasterized_to_png(tmp_path: Path):
+def test_textpack_svg_file_rasterized_to_png(tmp_path: Path, require_svg_rasterizer):
     pack = tmp_path / "note.textpack"
     with zipfile.ZipFile(pack, "w") as zf:
         zf.writestr("text.markdown", "# N\n\n![logo](assets/logo.svg)\n")
