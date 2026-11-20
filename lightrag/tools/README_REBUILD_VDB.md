@@ -226,6 +226,12 @@ rare and a rebuild clears whatever it hides:
   table during the scan). A repeated key inflates the chunk source count the
   same way. The check keeps no set of every id seen, by design: that would
   make its memory grow with the dataset.
+- **A vector count can only overstate, never understate.** Milvus does not
+  enforce primary-key uniqueness on `insert`, which its schema migration uses,
+  so a retried migration can leave a duplicate row that `count(*)` counts
+  twice. An overstated count reads `inconsistent` (a rebuild clears it), never
+  `consistent`: that needs every source record found and the count equal to
+  the source.
 
 ## Library usage
 
