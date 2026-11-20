@@ -82,6 +82,46 @@ rule below names the defect it prevents.
   a named helper (`_legacy_greedy_load`), so the test body reads as the claim
   "the old code fails here and the new code does not".
 
+## Every test must earn its place
+
+The offline suite is past 13000 tests. Every test is paid for on every CI run
+and every full local run, so a test that adds no protection is a cost, not a
+safety margin. Reviews apply these rules to each test a PR adds or changes
+(AGENTS.md *PR Review Guidelines*); the same rules apply when writing one.
+
+- **Necessity: it pins a behavior no existing test pins.** Before adding a
+  test, search the mirror directory for one that already drives the same path
+  to the same assertion. A regression test pins the defect's trigger, not
+  every neighbouring input. A test of a private helper that a test of its
+  public caller already covers, of a dependency's own behavior, or of an
+  implementation detail no docstring or contract promises, is removed rather
+  than kept "just in case".
+- **Merge tests that share one scenario.** Three tests that each build the same
+  storage, run the same operation and then assert a different field are one
+  test with three assertions: the setup, which is most of the cost, runs once.
+  This does not contradict *Split a test when the halves assert different
+  things* above: split when the halves are different claims about different
+  inputs; merge when they are facets of one outcome of one run.
+- **Cases that differ only in input and expectation are one parametrized
+  test**, not copies of a test body. Parametrizing does not reduce the count
+  or the runtime, so it is no excuse for cases that exercise the same branch:
+  keep one case per branch or boundary, not one per plausible value.
+- **No real waiting.** A test that sleeps, polls with a real timeout, or waits
+  for a lock to expire costs that time on every run. Drive the clock
+  (monkeypatch `time.monotonic` / the module's sleep), shrink the configured
+  interval to milliseconds, or synchronize on an event. A deliberate real
+  wait needs a comment saying why nothing shorter proves the behavior.
+- **The cheapest fixture that reaches the behavior.** A stub storage or a
+  `MagicMock` instead of a full `LightRAG` with `initialize_storages()`; an
+  in-process call instead of a subprocess or `multiprocessing.Manager()`; a
+  fake transport instead of a real network call or live service; a module- or
+  session-scoped fixture for a model, tokenizer, parsed sample or any setup
+  that tests only read, instead of rebuilding it per test; the smallest input
+  that triggers the branch instead of a large generated document.
+- **Measure, do not guess.** Run the changed tests with `--durations=20`. A new
+  test that takes more than about a second serially needs a reason in its
+  docstring, or one of the remedies above.
+
 ## Small things
 
 - A sentinel exception or a test-double class whose body would be `pass` gets
