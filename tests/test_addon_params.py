@@ -147,7 +147,12 @@ def test_cache_is_invalidated_on_a_normal_chunker_replacement() -> None:
 
 
 def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
-    """Resolving runtime defaults must not write into the caller's config."""
+    """Resolving runtime defaults must not write into the caller's config.
+
+    A shared mapping reused for a second instance must not carry the first
+    instance's resolved sizes, which would otherwise outrank the second
+    instance's own ``chunk_token_size`` as an explicit addon_params value.
+    """
     from lightrag.lightrag import LightRAG
 
     supplied = {"chunker": {"fixed_token": {"split_by_character": "|"}}}
@@ -155,13 +160,17 @@ def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
     class _OverlayOwner:
         _apply_chunk_size_overlay = LightRAG._apply_chunk_size_overlay
 
-        def __init__(self) -> None:
+        def __init__(self, chunk_token_size: int) -> None:
             self._addon_params = normalize_addon_params(supplied)
-            self.chunk_token_size = None
+            self.chunk_token_size = chunk_token_size
             self.chunk_overlap_token_size = None
 
-    owner = _OverlayOwner()
-    owner._apply_chunk_size_overlay()
+    first = _OverlayOwner(500)
+    first._apply_chunk_size_overlay()
+    second = _OverlayOwner(2000)
+    second._apply_chunk_size_overlay()
 
     assert supplied == {"chunker": {"fixed_token": {"split_by_character": "|"}}}
-    assert "chunk_token_size" in owner._addon_params["chunker"]
+    assert (first.chunk_token_size, second.chunk_token_size) == (500, 2000)
+    first._addon_params["chunker"]["fixed_token"]["split_by_character"] = "#"
+    assert second._addon_params["chunker"]["fixed_token"]["split_by_character"] == "|"
