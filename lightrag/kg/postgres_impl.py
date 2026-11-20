@@ -5768,7 +5768,11 @@ class PGVectorStorage(BaseVectorStorage):
         return results
 
     async def hybrid_query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        lexical_keywords: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Hybrid (vector + lexical) retrieval fused by reciprocal rank.
 
@@ -5782,6 +5786,12 @@ class PGVectorStorage(BaseVectorStorage):
           their original fields; a lexical-only record gains ``distance``
           equal to ``cosine_better_than_threshold`` so a downstream
           similarity threshold admits it.
+        - ``lexical_keywords`` carries keyword boundaries for the lexical
+          leg (entity seeding): each keyword is tokenized on its own and
+          the per-keyword expressions are OR-ed, so any ONE keyword can
+          match; ``query`` still drives the dense leg. None tokenizes the
+          whole query with AND (chunk recall). A single keyword yields the
+          same expression as tokenizing the whole query.
         - Returns at most top_k records in RRF fusion order (``rrf_fuse``).
           Downstream must consume that order, never re-sort by distance.
         - Empty tokenization skips the lexical leg: vector-only, no
@@ -5805,7 +5815,20 @@ class PGVectorStorage(BaseVectorStorage):
             )
 
         vector_results = await self.query(query, top_k, query_embedding=query_embedding)
-        tsquery_text = tokenize_for_query(query)
+        if lexical_keywords is None:
+            tsquery_text = tokenize_for_query(query)
+        else:
+            # AND inside each keyword, OR across keywords: an entity named
+            # after ONE keyword must match even when the query lists several.
+            # The operators are added here, never taken from user input; the
+            # tokens themselves stay alphanumeric by construction.
+            per_keyword = [tokenize_for_query(kw) for kw in lexical_keywords]
+            per_keyword = [expr for expr in per_keyword if expr]
+            tsquery_text = (
+                per_keyword[0]
+                if len(per_keyword) == 1
+                else " | ".join(f"({expr})" for expr in per_keyword)
+            )
         if not tsquery_text:
             return vector_results
 

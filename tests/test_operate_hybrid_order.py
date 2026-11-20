@@ -47,13 +47,17 @@ class _HybridVDB:
         self._key = key
         self.query_calls: list[tuple] = []
         self.hybrid_calls: list[tuple] = []
+        self.hybrid_lexical_keywords: list = []
 
     async def query(self, query, top_k, query_embedding=None):
         self.query_calls.append((query, top_k))
         return [dict(r) for r in reversed(self._fused)]
 
-    async def hybrid_query(self, query, top_k, query_embedding=None):
+    async def hybrid_query(
+        self, query, top_k, query_embedding=None, lexical_keywords=None
+    ):
         self.hybrid_calls.append((query, top_k))
+        self.hybrid_lexical_keywords.append(lexical_keywords)
         return [dict(r) for r in self._fused]
 
 
@@ -171,3 +175,46 @@ async def test_node_data_flag_off_stays_on_plain_query():
     assert [n["entity_name"] for n in node_datas] == ["VecHit", "LexOnly"]
     assert vdb.query_calls == [("query", 5)]
     assert vdb.hybrid_calls == []
+
+
+@pytest.mark.parametrize(
+    ("entity_query", "expected_keywords"),
+    [
+        ("CABG, HTN", ["CABG", "HTN"]),
+        ("CABG", ["CABG"]),
+        ("東京, 大阪", ["東京", "大阪"]),
+    ],
+    ids=["multi-keyword", "single-keyword", "cjk-multi-keyword"],
+)
+async def test_node_data_hybrid_recovers_keyword_boundaries(
+    entity_query, expected_keywords
+):
+    vdb = _HybridVDB(_FUSED_ENTITIES, "entity_name")
+
+    await _get_node_data(
+        entity_query,
+        _FakeGraph(),
+        vdb,
+        QueryParam(enable_hybrid=True, top_k=5),
+        query_embedding=[0.1],
+    )
+
+    # The dense leg keeps the joined string; only the lexical leg receives
+    # the recovered keyword boundaries (the ", " join of kg_query).
+    assert vdb.hybrid_calls == [(entity_query, 5)]
+    assert vdb.hybrid_lexical_keywords == [expected_keywords]
+    assert vdb.query_calls == []
+
+
+async def test_vector_context_hybrid_lexical_stays_whole_query():
+    vdb = _HybridVDB(_FUSED_CHUNKS, "id")
+
+    await _get_vector_context(
+        "CABG, HTN", vdb, QueryParam(enable_hybrid=True), query_embedding=[0.1]
+    )
+
+    # Chunk recall is a natural-language query: no keyword boundaries, the
+    # lexical leg ANDs the whole query (hybrid_query's None default).
+    assert vdb.hybrid_calls == [("CABG, HTN", 20)]
+    assert vdb.hybrid_lexical_keywords == [None]
+    assert vdb.query_calls == []

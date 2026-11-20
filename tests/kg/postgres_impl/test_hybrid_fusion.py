@@ -322,3 +322,151 @@ async def test_hybrid_returns_top_k_of_the_fused_union():
 
     assert [r["id"] for r in fused] == ["v1", "l1"]
     assert db.lexical_params[2] == 2
+
+
+# ---------------------------------------------------------------------------
+# Keyword boundaries: the entity seeding leg ORs per-keyword expressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("query", "keywords", "expected_tsquery"),
+    [
+        ("CABG, HTN", ["CABG", "HTN"], "(cabg) | (htn)"),
+        ("東京, 大阪", ["東京", "大阪"], "(東京) | (大阪)"),
+        (
+            "coronary bypass, HTN",
+            ["coronary bypass", "HTN"],
+            "(coronary & bypass) | (htn)",
+        ),
+        ("CABG, , HTN", ["CABG", "", "HTN"], "(cabg) | (htn)"),
+        ("CABG, ・, HTN", ["CABG", "・", "HTN"], "(cabg) | (htn)"),
+    ],
+    ids=[
+        "latin-jargon",
+        "cjk-terms",
+        "and-inside-keyword",
+        "empty-keyword-dropped",
+        "punctuation-keyword-dropped",
+    ],
+)
+async def test_hybrid_keywords_or_per_keyword_expressions(
+    query, keywords, expected_tsquery
+):
+    # Vector hit matches neither keyword; the lexical leg returns one entity
+    # per keyword. Fusion: VEC=1/61, CABG=1/61, HTN=1/62; the 1/61 tie goes
+    # to the vector-leg record (documented tie-break).
+    vector = [{"entity_name": "VEC", "created_at": 1}]
+    lexical = [
+        {"entity_name": "CABG", "created_at": 2},
+        {"entity_name": "HTN", "created_at": 3},
+    ]
+    db = _FakeDB(vector, lexical, {"indisvalid": True})
+    storage = _storage(db, namespace="entities")
+
+    fused = await storage.hybrid_query(
+        query, top_k=3, query_embedding=_EMBEDDING, lexical_keywords=keywords
+    )
+
+    assert db.lexical_params == ["gw", expected_tsquery, 3]
+    assert [r["entity_name"] for r in fused] == ["VEC", "CABG", "HTN"]
+    assert fused[0] is vector[0]
+    assert "distance" not in fused[0]
+    assert fused[1]["distance"] == 0.2
+    assert fused[2]["distance"] == 0.2
+    assert db.calls == ["vector", "validity", "lexical"]
+
+
+@pytest.mark.parametrize(
+    ("query", "keywords"),
+    [
+        ("CABG", ["CABG"]),
+        ("東京", ["東京"]),
+        ("乐高机器人", ["乐高机器人"]),
+        ("coronary bypass", ["coronary bypass"]),
+    ],
+    ids=["latin", "cjk", "cjk-long", "multi-word-single-keyword"],
+)
+async def test_hybrid_single_keyword_expression_identical_to_whole_query(
+    query, keywords
+):
+    db = _FakeDB([], [], {"indisvalid": True})
+    storage = _storage(db, namespace="entities")
+
+    await storage.hybrid_query(
+        query, top_k=3, query_embedding=_EMBEDDING, lexical_keywords=keywords
+    )
+
+    assert db.lexical_params[1] == tokenize_for_query(query)
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    [[], [""], ["・", "!!!"], ["", "・"]],
+    ids=["no-keywords", "empty-string", "punctuation-only", "all-empty"],
+)
+async def test_hybrid_keywords_without_tokens_skip_lexical_leg(
+    keywords, lightrag_log_records
+):
+    vector = [{"entity_name": "VEC", "created_at": 1}]
+    db = _FakeDB(vector, [], {"indisvalid": True})
+    storage = _storage(db, namespace="entities")
+
+    result = await storage.hybrid_query(
+        "・, !!!", top_k=3, query_embedding=_EMBEDDING, lexical_keywords=keywords
+    )
+
+    assert result is vector
+    assert db.calls == ["vector"]
+    assert not any("degraded" in r.getMessage() for r in lightrag_log_records)
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing-index", "lexical-error"], ids=["missing-index", "lexical-error"]
+)
+async def test_hybrid_keyword_or_degrades_fail_open(fault, lightrag_log_records):
+    vector = [{"entity_name": "VEC", "created_at": 1}]
+    lexical = [{"entity_name": "CABG", "created_at": 2}]
+    validity = None if fault == "missing-index" else {"indisvalid": True}
+    db = _FakeDB(vector, lexical, validity)
+    if fault == "lexical-error":
+        db.lexical_error = RuntimeError("injected lexical failure")
+    storage = _storage(db, namespace="entities")
+
+    result = await storage.hybrid_query(
+        "CABG, HTN",
+        top_k=3,
+        query_embedding=_EMBEDDING,
+        lexical_keywords=["CABG", "HTN"],
+    )
+
+    assert result is vector
+    if fault == "lexical-error":
+        # The injected fault actually fired: the OR statement was reached.
+        assert db.calls == ["vector", "validity", "lexical"]
+        assert db.lexical_params[1] == "(cabg) | (htn)"
+    else:
+        assert db.calls == ["vector", "validity"]
+    warnings = [r for r in lightrag_log_records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "degraded to vector-only" in warnings[0].getMessage()
+
+
+async def test_hybrid_dense_leg_embeds_the_joined_query():
+    embedded: list[list[str]] = []
+
+    async def recording_embed(texts, **kwargs):
+        embedded.append(list(texts))
+        return [[0.1] * 8 for _ in texts]
+
+    vector = [{"entity_name": "VEC", "created_at": 1}]
+    db = _FakeDB(vector, [], {"indisvalid": True})
+    storage = _storage(db, namespace="entities")
+    storage.embedding_func = recording_embed
+
+    await storage.hybrid_query("CABG, HTN", top_k=3, lexical_keywords=["CABG", "HTN"])
+
+    # Keyword boundaries feed ONLY the lexical leg; the dense leg embeds the
+    # joined string exactly as query() would.
+    assert embedded == [["CABG, HTN"]]
+    assert db.calls == ["vector", "validity", "lexical"]

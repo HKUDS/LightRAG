@@ -72,6 +72,10 @@ is no second tokenizer, and PostgreSQL's default parser never splits CJK on its
 own.
 
 - CJK runs become overlapping bigrams; a one-character run becomes a unigram.
+  Only alphanumeric characters join a CJK run: the non-alphanumeric code
+  points inside the ranges (U+30FB ・, the U+3099/U+309A combining marks, the
+  U+309B/U+309C sound marks) are separators. U+30FC ー is category Lm and
+  stays bigram material.
 - Every other alphanumeric run is one word token, truncated to 128 characters.
 - Every emitted token is alphanumeric, so the reserved tsquery characters
   (`& | ! ( ) : * <-> ' \`) cannot reach `to_tsquery` from user input. The
@@ -136,6 +140,25 @@ from a query error. Each hybrid query probes `pg_index.indisvalid`; if the
 index is missing or invalid, or the lexical query raises, that one query
 degrades to the dense result.
 
+**Entity keyword boundaries.** The entity query is the low-level keyword list
+joined with `", "` (or the high-level list under the documented fallback).
+ANDing the tokens of that joined string would require ONE entity name to
+carry every keyword, so a multi-keyword jargon query ("CABG, HTN") seeded
+nothing lexically. `_get_node_data` therefore splits the joined string back
+into keywords — the same split `_build_query_context` uses for the keyword
+metadata — and passes them as `hybrid_query(..., lexical_keywords=...)`. Each
+keyword is tokenized on its own (AND inside a keyword) and the per-keyword
+expressions are OR-ed into ONE tsquery, so any single keyword can seed its
+entity; the match set is the union of the per-keyword match sets, ranked by
+`ts_rank_cd` over the OR expression. The dense leg still embeds the joined
+string, and fusion, the sentinel and degradation are unchanged. A single
+keyword produces the same expression as whole-query tokenization. The chunk
+leg keeps the whole-query AND: its query is natural language, not a keyword
+list. The `", "` join is lossy for a keyword that itself contains that
+separator: such a keyword reaches the lexical leg as fragments OR-ed together
+(exactly as it reaches the keyword metadata as separate entries). The
+direction is extra recall on a seeding leg; the dense leg is unaffected.
+
 Fusion is application-side `rrf_fuse` with k = 60: a record scores the sum over
 its legs of `1 / (60 + rank)`, ranks 1-based. Records union by key
 (`entity_name` for entities, `id` for chunks); on overlap the vector-leg record
@@ -189,6 +212,12 @@ bumped for this reason.
 Keyword extraction is retrieval-independent and keeps its existing key. The
 same conditional component is used for the KG and naive paths.
 
+The key records that hybrid was REQUESTED, not whether the lexical leg
+actually ran: an answer cached while retrieval was degraded can serve after
+recovery. That is the accepted degradation-window residue below. A key built
+from the rendered retrieval context was rejected: it would miss whenever the
+context shifts, collapsing the cache hit rate and multiplying LLM calls.
+
 ## Concurrency and multiple workers
 
 The index and the column live in PostgreSQL, shared by every worker. There is
@@ -238,7 +267,12 @@ cost of keeping it is on the order of a few percent on upsert p95 and about
 3. **Tokenizer rule changes need re-tokenization.** The backfill only selects
    NULL rows. Rows that already have a tsvector keep the old token sequence
    until it is reset. This is deliberate: the backfill must not rewrite the
-   whole table on every startup.
+   whole table on every startup. The CJK alphanumeric guard is such a rule
+   change: rows whose text contains U+30FB or the voiced marks keep the old
+   noise bigrams (京・, ・大) until `content_tsv` is reset to NULL for those
+   rows and the backfill re-runs. Write and query sides tokenize with the
+   same current rules, so matching stays consistent before the re-index;
+   the reset removes the stored noise.
 4. **Relationships carry the schema but are not queried.** Their `content_tsv`
    is maintained on write for uniformity. A future relation hybrid leg would
    use it without another migration.
@@ -255,6 +289,20 @@ cost of keeping it is on the order of a few percent on upsert p95 and about
    of NULL rows and require a full backfill at enable time.
 8. **Non-PostgreSQL backends.** They advertise no capability and ignore the
    flag. There is no in-process fallback and no second index.
+9. **Degradation-window cache staleness.** The answer cache stores the answer
+   TEXT keyed by request parameters (including the hybrid marker); references
+   and raw data are retrieved fresh on every call. An answer generated while
+   the lexical leg was degraded (backfill lag, missing or invalid index,
+   lexical error) is dense-based, and the same hybrid-on request after
+   recovery hits that entry: the old answer ships with fresh hybrid
+   references, which can mismatch. The window is narrow — it needs both a
+   degradation and a cache hit on the same request — and the answer itself
+   stays valid, so the direction is harmless. Rejected remedy: keying on the
+   rendered retrieval context collapses the cache hit rate (see Cache
+   partitioning). A degradation-flag component in the hybrid key is the cheap
+   alternative if this residue ever needs closing; it is not implemented.
+   Recovery: a changed request parameter misses, and operators can clear
+   query-mode entries with `lightrag-clean-llmqc`.
 
 ## Verification map
 
@@ -263,12 +311,14 @@ cost of keeping it is on the order of a few percent on upsert p95 and about
 | tokenizer string rules | `tests/kg/postgres_impl/test_lexical_tokenizer.py` |
 | schema, backfill, concurrent index, invalid-index retry | `tests/kg/postgres_impl/test_postgres_lexical_schema.py` |
 | fusion math, sentinel, degradation, live PG | `tests/kg/postgres_impl/test_postgres_hybrid_query.py`, `tests/kg/postgres_impl/test_hybrid_fusion.py` |
+| entity keyword boundaries (per-keyword OR) | `tests/kg/postgres_impl/test_hybrid_fusion.py`, `tests/kg/postgres_impl/test_postgres_hybrid_query.py`, `tests/test_operate_hybrid_order.py` |
 | capability flag and graceful fallback | `tests/kg/test_hybrid_capability.py` |
 | default-off byte identity | `tests/pipeline/test_default_off_identity.py` |
 | fusion order downstream | `tests/test_operate_hybrid_order.py` |
 | cache key partition | `tests/pipeline/test_query_cache_hybrid_partition.py` |
 | positional compatibility and env default | `tests/pipeline/test_query_param_hybrid_compat.py` |
 | API field default | `tests/api/routes/test_query_hybrid_default.py` |
+| /query/data forwards enable_hybrid | `tests/api/routes/test_query_hybrid_default.py` |
 
 The evaluation harness that produced the performance and quality numbers is
 documented in `lightrag/evaluation/README_HYBRID_BENCH.md`.

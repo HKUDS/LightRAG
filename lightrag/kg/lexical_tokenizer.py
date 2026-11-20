@@ -12,7 +12,10 @@ RULES
   database locale.
 * CJK runs (the ranges in ``_CJK_RANGES``) become overlapping bigrams; a
   one-character run becomes a unigram. Bigrams overlap by one character
-  (standard n-gram indexing); no other token expansion is emitted.
+  (standard n-gram indexing); no other token expansion is emitted. Only
+  alphanumeric characters join a CJK run: non-alphanumeric code points
+  inside the ranges (the U+30FB middle dot, combining voiced marks, the
+  Sk sound marks) are separators like any other punctuation.
 * Every other alphanumeric run is ONE word token, truncated to
   ``MAX_TOKEN_LENGTH`` characters (prefix kept). Punctuation, symbols,
   whitespace, combining marks and the tsquery reserved characters
@@ -53,6 +56,10 @@ MAX_TOKEN_LENGTH: Final = 128
 # sit inside the CJK punctuation block. Astral extension planes (U+20000+)
 # are out of scope for bigramming: those characters are category Lo, so
 # ch.isalnum() holds and they are ordinary word-token material instead.
+# The ranges also contain non-alphanumeric code points (U+30FB ・ Po,
+# U+3099/U+309A combining marks, U+309B/U+309C Sk); the isalnum guard in
+# tokenize routes them to the separator branch, keeping every emitted
+# token alphanumeric.
 _CJK_RANGES: Final = (
     (0x3005, 0x3007),
     (0x3040, 0x30FF),
@@ -96,7 +103,7 @@ def tokenize(text: str) -> tuple[str, ...]:
     for ch in normalized:
         if len(tokens) >= MAX_TOKENS:
             break
-        if _is_cjk(ch):
+        if _is_cjk(ch) and ch.isalnum():
             flush_word()
             if cjk_len:
                 tokens.append(cjk_prev + ch)

@@ -69,6 +69,40 @@ def test_index_cjk_runs_become_overlapping_bigrams(text, expected):
 
 
 @pytest.mark.parametrize(
+    ("text", "expected_index", "expected_query"),
+    [
+        # Non-alphanumeric code points INSIDE the CJK ranges separate runs:
+        # U+30FB middle dot (Po), U+3099 combining voiced mark (Mn), U+309B
+        # spacing sound mark (Sk, NFKC -> space + U+3099). The prolonged
+        # sound mark U+30FC is Lm and stays bigram material (pinned above).
+        ("東京・大阪", "東京 大阪", "東京 & 大阪"),
+        (
+            "カタカナ・テスト",
+            "カタ タカ カナ テス スト",
+            "カタ & タカ & カナ & テス & スト",
+        ),
+        ("東京・", "東京", "東京"),
+        ("・大阪", "大阪", "大阪"),
+        ("ア゙", "ア", "ア"),
+        ("カ゛タ", "カ タ", "カ & タ"),
+        ("ア゚", "ア", "ア"),
+    ],
+    ids=[
+        "middle-dot-between-kanji",
+        "middle-dot-between-katakana-words",
+        "trailing-middle-dot",
+        "leading-middle-dot",
+        "combining-voiced-mark",
+        "spacing-voiced-mark",
+        "combining-semivoiced-mark",
+    ],
+)
+def test_cjk_punctuation_and_marks_separate_runs(text, expected_index, expected_query):
+    assert tokenize_for_index(text) == expected_index
+    assert tokenize_for_query(text) == expected_query
+
+
+@pytest.mark.parametrize(
     ("text", "expected"),
     [
         ("Oracle Database", "oracle database"),
@@ -115,6 +149,10 @@ def test_index_mixed_cjk_and_latin(text, expected):
         "\u3000",
         "🎉🎉",
         "\u0301",
+        "・",
+        "・。・",
+        "゛",
+        "゙",
     ],
     ids=[
         "empty",
@@ -127,6 +165,10 @@ def test_index_mixed_cjk_and_latin(text, expected):
         "ideographic-space",
         "emoji",
         "combining-mark",
+        "katakana-middle-dot",
+        "middle-dot-and-period",
+        "spacing-sound-mark",
+        "combining-voiced-mark",
     ],
 )
 def test_separator_only_input_yields_empty_on_both_sides(text):
@@ -215,6 +257,9 @@ def test_every_special_char_separates_tokens(separator):
         "数据库",
         "a & b",
         "ＯＲＡＣＬＥ",
+        "東京・大阪",
+        "ア゙",
+        "・",
     ],
 )
 def test_query_output_is_alphanumeric_tokens_joined_by_and(text):
@@ -354,6 +399,8 @@ def test_query_length_bounded(text, exact_length):
         "🎉",
         "人々",
         "ｽｹｰﾙ",
+        "東京・大阪",
+        "・",
     ],
 )
 def test_write_and_query_sides_share_one_token_sequence(text):

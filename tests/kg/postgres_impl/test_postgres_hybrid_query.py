@@ -71,6 +71,12 @@ _VECTORS = {
     "乐高机器人 教程": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "乐高机器人 指南": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "无关文本": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+    # Keyword-seeding fixtures: cosine 0.0, reachable ONLY via the lexical
+    # leg, so a fused hit proves the lexical leg matched the entity name.
+    "CABG 手术": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+    "HTN 高血压": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    "東京 都市": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    "大阪 都市": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
 }
 # id -> content. c-v* pass the 0.2 cosine threshold; c-l* match the query
 # lexically but sit at cosine 0.0; c-x matches neither.
@@ -343,6 +349,141 @@ async def test_entities_namespace_hybrid_fuses_on_entity_name():
         ]
         by_name = {r["entity_name"]: r for r in fused}
         assert by_name["乐高机器人手册"]["distance"] == 0.2
+        assert by_name["乐高机器人"] == baseline[0]
+    finally:
+        await storage.finalize()
+
+
+# ---------------------------------------------------------------------------
+# Entity keyword boundaries: per-keyword OR seeds each jargon entity
+# ---------------------------------------------------------------------------
+
+
+def _entity_item(entity_name: str, content: str) -> dict:
+    return {
+        "entity_name": entity_name,
+        "content": content,
+        "source_id": "chunk-hyb",
+        "file_path": "hyb.txt",
+    }
+
+
+async def _lexical_ranks(storage: PGVectorStorage, workspace: str, tsquery_text: str):
+    return await storage.db.query(
+        f"SELECT entity_name, ts_rank_cd({LEXICAL_TSV_COLUMN}, "
+        "to_tsquery('simple', $1)) AS r "
+        f"FROM {storage.table_name} WHERE workspace=$2 "
+        f"AND {LEXICAL_TSV_COLUMN} @@ to_tsquery('simple', $1) "
+        "ORDER BY r DESC, entity_name",
+        [tsquery_text, workspace],
+        multirows=True,
+    )
+
+
+async def test_entity_keyword_or_seeds_each_jargon_entity():
+    workspace = f"hybkw_{uuid4().hex[:8]}"
+    storage = _make_storage(NameSpace.VECTOR_STORE_ENTITIES, workspace)
+    await storage.initialize()
+    try:
+        await storage.upsert(
+            {
+                "e-vec": _entity_item("乐高机器人", "乐高机器人 搭建"),
+                "e-cabg": _entity_item("CABG", "CABG 手术"),
+                "e-htn": _entity_item("HTN", "HTN 高血压"),
+            }
+        )
+        await storage.index_done_callback()
+        joined_query = "CABG, HTN"
+        baseline = await storage.query(joined_query, top_k=3, query_embedding=_Q_VEC)
+        assert [r["entity_name"] for r in baseline] == ["乐高机器人"]
+
+        # Defect premise: the whole-query AND matches NEITHER jargon entity
+        # (each name carries only its own lexeme), so the unsplit lexical leg
+        # contributes nothing and hybrid equals the vector baseline.
+        and_hits = await _lexical_ranks(
+            storage, workspace, tokenize_for_query(joined_query)
+        )
+        assert and_hits == []
+        whole = await storage.hybrid_query(
+            joined_query, top_k=3, query_embedding=_Q_VEC
+        )
+        assert whole == baseline
+
+        # OR premise: each keyword matches its own entity; single-lexeme
+        # full covers tie at ts_rank_cd 0.1, entity_name ASC breaks the tie.
+        ranks = await _lexical_ranks(storage, workspace, "(cabg) | (htn)")
+        assert [row["entity_name"] for row in ranks] == ["CABG", "HTN"]
+        assert ranks[0]["r"] == ranks[1]["r"], "ts_rank_cd tie premise broke"
+
+        fused = await storage.hybrid_query(
+            joined_query,
+            top_k=3,
+            query_embedding=_Q_VEC,
+            lexical_keywords=["CABG", "HTN"],
+        )
+        # Hand-computed: 乐高机器人 = 1/61 (vector r1), CABG = 1/61 (lexical
+        # r1), HTN = 1/62. The 1/61 tie goes to the vector-leg record.
+        assert [r["entity_name"] for r in fused] == ["乐高机器人", "CABG", "HTN"]
+        by_name = {r["entity_name"]: r for r in fused}
+        assert by_name["CABG"]["distance"] == 0.2
+        assert by_name["HTN"]["distance"] == 0.2
+        assert by_name["乐高机器人"] == baseline[0]
+
+        # Single keyword: the boundary list yields the SAME expression as
+        # tokenizing the whole query, so the results are record-identical.
+        single_plain = await storage.hybrid_query(
+            "CABG", top_k=3, query_embedding=_Q_VEC
+        )
+        single_kw = await storage.hybrid_query(
+            "CABG", top_k=3, query_embedding=_Q_VEC, lexical_keywords=["CABG"]
+        )
+        assert single_kw == single_plain
+        assert [r["entity_name"] for r in single_kw] == ["乐高机器人", "CABG"]
+    finally:
+        await storage.finalize()
+
+
+async def test_cjk_entity_keyword_or_seeds_each_term():
+    workspace = f"hybcjk_{uuid4().hex[:8]}"
+    storage = _make_storage(NameSpace.VECTOR_STORE_ENTITIES, workspace)
+    await storage.initialize()
+    try:
+        await storage.upsert(
+            {
+                "e-vec": _entity_item("乐高机器人", "乐高机器人 搭建"),
+                "e-tokyo": _entity_item("東京", "東京 都市"),
+                "e-osaka": _entity_item("大阪", "大阪 都市"),
+            }
+        )
+        await storage.index_done_callback()
+        joined_query = "東京, 大阪"
+        baseline = await storage.query(joined_query, top_k=3, query_embedding=_Q_VEC)
+        assert [r["entity_name"] for r in baseline] == ["乐高机器人"]
+
+        # Whole-query AND of the two bigrams matches neither single-bigram
+        # name; the per-keyword OR matches both.
+        assert (
+            await _lexical_ranks(storage, workspace, tokenize_for_query(joined_query))
+            == []
+        )
+        ranks = await _lexical_ranks(storage, workspace, "(東京) | (大阪)")
+        # Tie at 0.1; entity_name ASC under the database collation puts
+        # 大阪 (U+5927) before 東京 (U+6771).
+        assert [row["entity_name"] for row in ranks] == ["大阪", "東京"]
+        assert ranks[0]["r"] == ranks[1]["r"], "ts_rank_cd tie premise broke"
+
+        fused = await storage.hybrid_query(
+            joined_query,
+            top_k=3,
+            query_embedding=_Q_VEC,
+            lexical_keywords=["東京", "大阪"],
+        )
+        # 乐高机器人 = 1/61 (vector r1), 大阪 = 1/61 (lexical r1),
+        # 東京 = 1/62; the vector-rank tie-break puts the vector hit first.
+        assert [r["entity_name"] for r in fused] == ["乐高机器人", "大阪", "東京"]
+        by_name = {r["entity_name"]: r for r in fused}
+        assert by_name["大阪"]["distance"] == 0.2
+        assert by_name["東京"]["distance"] == 0.2
         assert by_name["乐高机器人"] == baseline[0]
     finally:
         await storage.finalize()

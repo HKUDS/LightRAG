@@ -6585,8 +6585,16 @@ async def _get_node_data(
         getattr(entities_vdb, "supports_hybrid_query", False)
         and query_param.enable_hybrid
     ):
+        # The entity query is the keyword list joined with ", " (kg_query);
+        # recover the boundaries for the lexical leg so each keyword can seed
+        # entities on its own instead of ANDing across separate keywords.
+        # Same split _build_query_context uses for the keyword metadata. The
+        # dense leg still embeds the joined string.
         results = await entities_vdb.hybrid_query(
-            query, top_k=query_param.top_k, query_embedding=query_embedding
+            query,
+            top_k=query_param.top_k,
+            query_embedding=query_embedding,
+            lexical_keywords=query.split(", "),
         )
     else:
         results = await entities_vdb.query(
