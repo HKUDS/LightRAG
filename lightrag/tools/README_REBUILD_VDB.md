@@ -38,6 +38,35 @@ from the authoritative graph/KV sources. The consistency check is not enough
 for this case because it only detects missing graph → VDB records, not vectors
 that exist but were embedded with a previous model or dimension.
 
+A vector storage whose container was written in a different embedding space
+**refuses to attach** rather than serving an empty or foreign index. That
+refusal is the condition this tool clears, so it is the one startup failure the
+tool tolerates: the three vector targets are initialized individually, a typed
+`VectorSpaceMismatchError` is recorded instead of aborting the run, and the
+rebuild opens by dropping that container and re-provisioning it in the current
+embedding space. No out-of-band step (deleting the index through the backend's
+own API, `DROP TABLE`, `rm`) is needed.
+
+A **corrupt file-backed vector snapshot** (NanoVectorDB, Faiss) is tolerated
+the same way, because a rebuild is its recovery too: the target shows as
+corrupt in the menu, and once you confirm the rebuild the tool first copies
+every file of it to `<file>.corrupt-<token>` beside the original, then drops
+and rebuilds the index. The copies are private to the user running the tool
+(mode `0600`) and are never deleted automatically. They hold the same
+document-derived content the index did, so remove them yourself once the
+rebuilt index is confirmed. If a copy cannot be made, nothing is changed and
+the message names the files to move aside by hand.
+
+Everything else still aborts. A cluster outage, a bad credential or a corrupt
+authoritative source is not a model change, and the recovery for a model change is destructive —
+so it is only ever applied to a refusal that says so in its type. The
+authoritative sources (graph storage and `text_chunks`) likewise keep the
+server-identical startup path, migrations included: rebuilding vectors from a
+half-migrated source is worse than not rebuilding.
+
+See `docs/design/VectorSpaceProvenance.md` for the provenance marker and the
+rules that decide when a backend refuses.
+
 The tool also completes a graph-only backfill performed with
 `NoopVectorDBStorage`. Stop every writer, preserve the same working directory,
 workspace, graph storage, and KV storage, switch to the intended persistent
@@ -46,6 +75,11 @@ select **Rebuild ALL vector storages**. Create a new `LightRAG` instance or
 restart the process after changing the vector backend. Do not start the server
 until the rebuild succeeds; there is currently no persisted vector-index
 readiness marker.
+
+If the workspace's data is disposable -- a test corpus, a workspace being
+decommissioned -- a rebuild is wasted embedding cost. `lightrag-clear-storage`
+(see `README_CLEAR_STORAGE.md`) drops the workspace instead, which also clears
+the startup refusal.
 
 ## Usage
 
@@ -61,7 +95,20 @@ The tool reads the same `.env` / environment configuration as the server
 `WORKSPACE`, `WORKING_DIR`, `EMBEDDING_*`, backend connection settings) and
 builds its embedding function through the exact factory the server uses —
 run it with the same `.env` so rebuilt vectors live in the same embedding
-space the server queries against.
+space the server queries against. Without `--workspace`, `WORKSPACE` is normalized
+as the server normalizes it (every character outside `[A-Za-z0-9_]` becomes `_`).
+To select an SDK workspace exactly, use `lightrag-rebuild-vdb --workspace team-a`.
+The explicit name is validated but never rewritten; `--workspace ""` selects the
+empty/default workspace even when `WORKSPACE` is set. The selected name applies
+to every source, vector target, configuration baseline and directory claim. With
+JSON configuration storage the workspace must already be registered: start
+the server once for a new workspace, stop it, then run the tool. The server
+can register only a name its normalization leaves unchanged; an exact SDK name
+such as `team-a` is registered by a library start instead (`LightRAG(...,
+workspace="team-a")`, `initialize_storages()`, `finalize_storages()`).
+`--workspace` is the tool's only option: every other setting, the embedding
+configuration included, comes from `.env` / the environment, and any other
+flag is refused.
 
 Menu options:
 
@@ -93,7 +140,28 @@ Menu options:
 - **Embedding model/dimension changes.** Run the tool with the new embedding
   configuration and rebuild all vector storages. A consistency check can still
   pass when every vector record exists but was created with the old embedding
-  model or dimension.
+  model or dimension — unless the backend recorded its embedding-space
+  provenance, in which case the check reports the refusal and says the rebuild
+  is mandatory rather than reporting every record as missing.
+- **The previous model's container is cleared once the rebuild succeeded.**
+  Qdrant, PostgreSQL and Milvus name the collection / table after the embedding
+  model, so a rebuild under a new model writes into a new container and leaves
+  the old one behind. While a target is being rebuilt that old container is
+  your fallback: if the rebuild fails, restore the previous embedding
+  configuration and the server starts on it. Once the target's baseline is
+  recorded the server refuses the previous model, so the tool then removes
+  this workspace's data from every other model's container for that target.
+  If that step cannot complete it prints a warning and the rebuild still
+  counts as successful; the next rebuild or workspace clear removes the rest.
+  On Milvus a rebuild also drops the legacy (unsuffixed) collection and the
+  `_old` / `_temp` backups of a schema migration, as it already did on Qdrant
+  and PostgreSQL: after a rebuild there is no going back to a LightRAG version
+  from before model-named containers without re-embedding.
+- **A refused target is dropped only after you confirm the rebuild.** Choosing
+  the consistency check never destroys anything, so a refusal can be diagnosed
+  before it is acted on. Options 2–4 recover exactly the targets they rebuild:
+  picking option 2 leaves a refused `chunks_vdb` refused until option 3 or 4
+  runs.
 - **Embedding cost.** A rebuild re-embeds every affected record. On large
   datasets this means real API cost and time. Use the check mode first, and
   rebuild only the storages that need it.

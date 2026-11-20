@@ -371,9 +371,11 @@ def test_limits_are_read_live_and_can_be_disabled(tmp_path, monkeypatch):
 
 def test_ordinary_docx_passes_untouched(tmp_path):
     src = _benign(tmp_path / "ok.docx")
+    original = src.read_bytes()
     parser = NativeDocxParser()
     parser.validate_source(src, "ok.docx")
     parser.validate_source_blocking(src, "ok.docx")
+    assert src.read_bytes() == original
 
 
 def test_non_zip_named_docx_is_passed_through_not_rejected_here(tmp_path):
@@ -512,11 +514,17 @@ def test_budget_accepts_bytes_and_path_equivalently(tmp_path):
 def test_validate_source_does_not_open_the_archive(tmp_path, monkeypatch):
     src = _benign(tmp_path / "ok.docx")
 
+    opened: list[tuple] = []
+
     def _explode(*args, **kwargs):  # pragma: no cover - only on regression
-        raise AssertionError("validate_source opened the zip on the event loop")
+        opened.append(args)
+        raise RuntimeError("validate_source opened the zip on the event loop")
 
     monkeypatch.setattr(zipfile, "ZipFile", _explode)
     NativeDocxParser().validate_source(src, "ok.docx")
+    # Recorded as well as raised, so a broad except in validate_source cannot
+    # swallow the regression.
+    assert opened == []
 
 
 def test_budget_runs_in_the_executor_before_artifact_cleanup():

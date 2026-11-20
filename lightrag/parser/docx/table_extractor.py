@@ -10,6 +10,8 @@ from docx.table import Table
 from docx.oxml.ns import qn
 from typing import List
 
+from .content_controls import is_hidden_inline_control, iter_blocks, iter_cells
+from .ooxml import is_on
 from .drawing_image_extractor import (
     DrawingExtractionContext,
     extract_drawing_placeholder_from_element,
@@ -65,14 +67,19 @@ def extract_text_from_run_table(
         tag = child.tag.split("}")[-1]  # Remove namespace
         if tag == "t" and child.text:
             text += child.text
-        elif tag == "tab":
+        elif tag in ("tab", "ptab"):
+            # w:ptab is an absolute position tab; same as the body walker.
             text += "\t"
-        elif tag == "br":
-            # Handle line breaks - textWrapping or no type = soft line break
+        elif tag in ("br", "cr"):
+            # Handle line breaks - textWrapping or no type = soft line break.
+            # A w:cr (carriage return) has no type and breaks the line too.
             br_type = child.get(qn_func("w:type"))
             if br_type in (None, "textWrapping"):
                 text += "\n"
             # Skip page and column breaks (layout elements)
+        elif tag == "noBreakHyphen":
+            # Non-breaking hyphen, written as a plain hyphen like the body walker.
+            text += "-"
         elif tag == "drawing":
             text += extract_drawing_placeholder_from_element(
                 child,
@@ -105,7 +112,8 @@ def extract_paragraph_content_table(
 
     Handles w:r (text runs), m:oMath (inline equations), and m:oMathPara
     (block equations). Recurses into container elements (e.g., w:hyperlink,
-    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content.
+    w:ins, w:sdt, w:fldSimple, w:smartTag) to avoid dropping content, except
+    a content control still showing its placeholder (see content_controls).
 
     Args:
         para_elem: lxml paragraph element (w:p)
@@ -121,7 +129,7 @@ def extract_paragraph_content_table(
         # Drop tracked-change deletions (w:del/w:moveFrom) and comment markers
         # (w:commentRangeStart/End, w:commentReference, w:annotationRef) so the
         # output only contains the final revised text without annotation glyphs.
-        if tag in _SKIP_PARAGRAPH_TAGS:
+        if tag in _SKIP_PARAGRAPH_TAGS or is_hidden_inline_control(node):
             return
         if tag == "r":
             parts.append(
@@ -161,8 +169,9 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     """Physical-cell features for the smart title-block table channel.
 
     Returns ``(text, effective_size_pt, has_outline)`` computed from the
-    cell's OWN ``w:p`` children (direct children only — nested tables are
-    excluded; vMerge-continue cells report their own, usually empty, text):
+    cell's OWN ``w:p`` children (direct or inside a content control, see
+    ``content_controls`` — nested tables are excluded; vMerge-continue cells
+    report their own, usually empty, text):
 
     - ``text``: visible source characters (``w:t`` via ``run_features``), so
       drawing/equation placeholders and auto-numbering labels never inflate
@@ -184,7 +193,7 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
     texts = []
     max_size = None
     has_outline = False
-    for para_elem in tc.findall(qn_func("w:p")):
+    for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
         phys = extract_paragraph_physical_features(para_elem, style_attributes)
         text = "".join(rf.text for rf in phys.run_features).strip()
         if text:
@@ -200,6 +209,31 @@ def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tup
             elif phys.style_id and styles_outline and phys.style_id in styles_outline:
                 has_outline = True
     return ("\n".join(texts), max_size, has_outline)
+
+
+_ROW_TAGS = frozenset({qn("w:tr")})
+_PARAGRAPH_TAGS = frozenset({qn("w:p")})
+
+
+def _grid_count(node, minimum: int) -> int:
+    """Return a grid-column count from ``node``'s ``w:val``, at least ``minimum``.
+
+    The DOCX is untrusted input: a missing element, a missing or non-integer
+    ``w:val``, or a value below ``minimum`` all yield ``minimum``, so a bad
+    attribute can neither shift cells nor fail the document.
+    """
+    if node is None:
+        return minimum
+    try:
+        return max(int(node.get(qn("w:val"))), minimum)
+    except (TypeError, ValueError):
+        return minimum
+
+
+def _grid_before(tr) -> int:
+    """Return how many leading grid columns a ``w:tr`` leaves without a cell."""
+    tr_pr = tr.find(qn("w:trPr"))
+    return _grid_count(tr_pr.find(qn("w:gridBefore")) if tr_pr is not None else None, 0)
 
 
 class TableExtractor:
@@ -253,6 +287,21 @@ class TableExtractor:
         Vertical merge behavior:
         - All rows in a vertically merged region share the same content
         - All rows use the paraId from the merge start cell (for precise edit targeting)
+        - A merge continues only from the row directly above: a row with no
+          restart or continuation cell at that grid column ends it. A
+          continuation below such a row repeats nothing; Word draws it as a
+          separate empty cell, whether a normal cell or no cell (gridBefore)
+          broke the merge. It keeps its own paraIds
+
+        Grid alignment:
+        - A row that starts late (``w:gridBefore``) leaves its first grid
+          columns empty, so its cells stay under the columns they are drawn in
+        - Rows and cells inside a content control or custom XML markup count
+          like direct ones, and so do paragraphs a cell wraps in one (see
+          ``content_controls``). A cell inside a table of contents or
+          placeholder control keeps its grid columns and paraIds but no text
+          (nothing in it is extracted, so its images are not exported); a row
+          inside one is left out
 
         Args:
             table: python-docx Table object
@@ -269,8 +318,10 @@ class TableExtractor:
             - para_ids: 2D list of paraIds (first paraId in each cell, or None)
                         For vertically merged cells, all rows share the start cell's paraId
             - para_ids_end: 2D list of paraIds (last paraId in each cell, or None)
-                            For vertically merged cells, all rows share the start cell's paraId
-            - header_indices: List of row indices marked as table headers
+                            Continuations use the last paraId of their own cell
+            - header_indices: indices of the repeating header rows: the
+              rows marked ``w:tblHeader`` from the first row down to
+              the first unmarked one
             - cell_features: per-row lists of PHYSICAL cells as
               ``(text, effective_size_pt, has_outline)`` tuples (one entry per
               ``w:tc`` — a gridSpan-merged full-width row is ONE cell), or
@@ -294,14 +345,16 @@ class TableExtractor:
                 "cell_features": [] if collect_features else None,
             }
 
-        # Detect header rows using w:tblHeader attribute
+        # Repeating header rows (w:tblHeader): only the run of marked rows that
+        # starts at the first row. A marked row below an unmarked one is not
+        # repeated by Word (the schema says the property "shall be ignored").
         header_indices = []
-        for idx, tr in enumerate(tbl.findall(qn("w:tr"))):
+        for idx, tr in enumerate(iter_blocks(tbl, _ROW_TAGS)):
             trPr = tr.find(qn("w:trPr"))
-            if trPr is not None:
-                tbl_header = trPr.find(qn("w:tblHeader"))
-                if tbl_header is not None:
-                    header_indices.append(idx)
+            tbl_header = trPr.find(qn("w:tblHeader")) if trPr is not None else None
+            if tbl_header is None or not is_on(tbl_header):
+                break
+            header_indices.append(idx)
 
         # Process each row by directly iterating <w:tr> elements
         grid = []
@@ -310,18 +363,23 @@ class TableExtractor:
         cell_features_grid = [] if collect_features else None
         vmerge_content = {}  # Track vertical merge by column: {col: {'text': str, 'para_id': str, 'para_id_end': str}}
 
-        for tr in tbl.findall(qn("w:tr")):
+        for tr in iter_blocks(tbl, _ROW_TAGS):
             row_data = [""] * num_cols  # Pre-fill with empty strings
             row_para_ids = [None] * num_cols  # Pre-fill with None
             row_para_ids_end = [None] * num_cols  # Pre-fill with None for last paraId
             row_cell_features = [] if collect_features else None
-            grid_col = 0
+            grid_col = _grid_before(tr)
+            merged_cols = set()  # columns whose vertical merge reaches this row
 
             # Iterate actual <w:tc> elements (each physical cell appears once)
-            for tc in tr.findall(qn("w:tc")):
+            for tc, hidden in iter_cells(tr):
                 if collect_features:
                     row_cell_features.append(
-                        _extract_cell_features(tc, qn, style_attributes, styles_outline)
+                        ("", None, False)
+                        if hidden
+                        else _extract_cell_features(
+                            tc, qn, style_attributes, styles_outline
+                        )
                     )
                 # Reset numbering state when cell changes to prevent incorrect continuation
                 if numbering_resolver is not None:
@@ -330,11 +388,10 @@ class TableExtractor:
                 tcPr = tc.find(qn("w:tcPr"))
 
                 # Check gridSpan (horizontal merge)
-                grid_span = 1
-                if tcPr is not None:
-                    gs = tcPr.find(qn("w:gridSpan"))
-                    if gs is not None:
-                        grid_span = int(gs.get(qn("w:val")))
+                # A span below 1 would stall or rewind grid_col: count it as 1.
+                grid_span = _grid_count(
+                    tcPr.find(qn("w:gridSpan")) if tcPr is not None else None, 1
+                )
 
                 # Check vMerge (vertical merge)
                 vmerge_elem = None
@@ -362,10 +419,22 @@ class TableExtractor:
                 if is_vmerge_restart or is_normal_cell:
                     # Extract content for restart or normal cells
                     # Get cell text with numbering support and format preservation
-                    if numbering_resolver is not None:
+                    if hidden:
+                        # Only the paraIds: extracting would still export its
+                        # images (against the shared image budget) and count
+                        # its list items.
+                        for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
+                            para_id_attr = para_elem.get(
+                                "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
+                            )
+                            if para_id_attr:
+                                if cell_para_id is None:
+                                    cell_para_id = para_id_attr
+                                cell_para_id_end = para_id_attr
+                    elif numbering_resolver is not None:
                         # Extract text with numbering labels and superscript/subscript markup
                         cell_paragraphs = []
-                        for para_elem in tc.findall(qn("w:p")):
+                        for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
                             # Capture paraId from each paragraph
                             para_id_attr = para_elem.get(
                                 "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
@@ -401,7 +470,7 @@ class TableExtractor:
                         # Fallback to simple text extraction with format preservation
                         # Cannot use cell.text here, must extract from XML
                         para_texts = []
-                        for para_elem in tc.findall(qn("w:p")):
+                        for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
                             # Capture paraId from each paragraph
                             para_id_attr = para_elem.get(
                                 "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
@@ -431,36 +500,29 @@ class TableExtractor:
                             "para_id": cell_para_id,
                             "para_id_end": cell_para_id_end,
                         }
-                    elif is_normal_cell:
-                        # For normal cells: if empty and we have active vMerge, copy all from start
-                        # If non-empty, this ends the vMerge region
-                        if not cell_text and grid_col in vmerge_content:
-                            # Empty cell in vMerge region - copy content and paraIds from start
-                            cell_text = vmerge_content[grid_col]["text"]
-                            cell_para_id = vmerge_content[grid_col]["para_id"]
-                            cell_para_id_end = vmerge_content[grid_col]["para_id_end"]
-                        elif cell_text:
-                            # Non-empty cell - this ends the vMerge for this column
-                            vmerge_content.pop(grid_col, None)
+                        merged_cols.add(grid_col)
 
                 elif is_vmerge_continue:
-                    # Copy content and para_id from previous merge start
-                    # But extract actual para_id_end from this continue cell for range boundary
+                    # The continuation's own paraIds bound the range (uuid_end),
+                    # whether or not a merge still reaches it.
+                    for para_elem in iter_blocks(tc, _PARAGRAPH_TAGS):
+                        para_id_attr = para_elem.get(
+                            "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
+                        )
+                        if para_id_attr:
+                            if cell_para_id is None:
+                                cell_para_id = para_id_attr
+                            cell_para_id_end = para_id_attr
                     if grid_col in vmerge_content:
+                        # Copy content and the restart's paraId (edit target)
+                        merged_cols.add(grid_col)
                         cell_text = vmerge_content[grid_col]["text"]
-                        cell_para_id = vmerge_content[grid_col][
-                            "para_id"
-                        ]  # Use restart's paraId for edit targeting
+                        cell_para_id = vmerge_content[grid_col]["para_id"]
+                    # Otherwise no merge reaches it: Word draws a separate
+                    # empty cell, so it keeps no text and its own paraIds.
 
-                        # Extract actual paraId from this continue cell for uuid_end (range boundary)
-                        for para_elem in tc.findall(qn("w:p")):
-                            para_id_attr = para_elem.get(
-                                "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
-                            )
-                            if para_id_attr:
-                                cell_para_id_end = (
-                                    para_id_attr  # Use actual paraId for range boundary
-                                )
+                if hidden:
+                    cell_text = ""
 
                 # Place content at starting grid position only
                 if grid_col < num_cols:
@@ -470,6 +532,11 @@ class TableExtractor:
 
                 # Move grid position by gridSpan
                 grid_col += grid_span
+
+            # A normal cell, or no cell at all (gridBefore / gridAfter, a
+            # short row), ends the merge in its column, even when empty.
+            for col in [col for col in vmerge_content if col not in merged_cols]:
+                del vmerge_content[col]
 
             grid.append(row_data)
             para_ids_grid.append(row_para_ids)

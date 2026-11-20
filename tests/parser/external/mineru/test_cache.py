@@ -123,6 +123,15 @@ def test_invalid_when_manifest_malformed(
 
 
 @pytest.mark.offline
+def test_invalid_when_manifest_not_utf8(
+    fresh_bundle: tuple[Path, Manifest], source_file: Path
+) -> None:
+    raw, _ = fresh_bundle
+    (raw / "_manifest.json").write_bytes(b"\xff\xfe")
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
 def test_invalid_when_manifest_wrong_engine(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:

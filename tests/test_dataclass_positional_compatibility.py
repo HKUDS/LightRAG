@@ -223,6 +223,13 @@ def test_user_prompt_prefix_is_appended_after_every_legacy_field():
     assert params.index("user_prompt_prefix") > params.index("_storages_status")
 
 
+def test_keyword_extraction_json_mode_is_appended_after_every_legacy_field():
+    params = _lightrag_init_params()
+    assert params.index("keyword_extraction_json_mode") > params.index(
+        "_storages_status"
+    )
+
+
 def test_lightrag_positional_anchors_did_not_shift():
     """Spot-checks either end of the range the insertion used to move."""
     params = _lightrag_init_params()
