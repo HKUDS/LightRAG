@@ -7485,6 +7485,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             return 0
         await self.client.indices.refresh(index=self._index_name)
         response = await self.client.count(index=self._index_name)
+        # `_count` answers 200 with the shards that did respond; a count over
+        # part of the index is not exact.
+        shards = response.get("_shards") or {}
+        if shards.get("failed") != 0 or shards.get("successful") != shards.get("total"):
+            raise StorageCapabilityError(f"partial_shard_count: {shards}")
         return int(response["count"])
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:

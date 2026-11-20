@@ -1981,7 +1981,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         Raises :class:`~lightrag.exceptions.StorageCapabilityError` instead of
         answering while this process holds writes not yet on disk, or when the
         index and its metadata disagree (slot count, positions, missing or
-        duplicate ids). Read-only: nothing is repaired. See *Maintenance
+        duplicate ids). It counts the snapshot as loaded: a metadata row past
+        the end of the index is dropped at load, holds no vector and is
+        unreadable by every read, so it is not an addressable record.
+        Read-only: nothing is repaired. See *Maintenance
         consistency capabilities* in ``docs/design/FileBackedSnapshotContract.md``.
         """
         async with self._storage_lock:

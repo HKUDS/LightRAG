@@ -26,6 +26,7 @@ from opensearchpy.exceptions import (  # type: ignore
 )
 import lightrag.kg.opensearch_impl
 from lightrag.exceptions import (
+    StorageCapabilityError,
     StorageControlPlaneError,
     VectorSpaceMismatchError,
     flush_may_have_lost_reference,
@@ -4681,8 +4682,17 @@ class TestVectorStorage:
             )
 
     @pytest.mark.asyncio
-    async def test_exact_count_refreshes_then_counts(
-        self, global_config, embed_func, mock_client
+    @pytest.mark.parametrize(
+        "shards,expected",
+        [
+            ({"total": 2, "successful": 2, "failed": 0}, 5),
+            ({"total": 2, "successful": 1, "failed": 1}, StorageCapabilityError),
+            (None, StorageCapabilityError),
+        ],
+        ids=["all-shards", "failed-shard", "no-shard-header"],
+    )
+    async def test_exact_count_refreshes_then_counts_every_shard(
+        self, global_config, embed_func, mock_client, shards, expected
     ):
         order: list[str] = []
 
@@ -4691,14 +4701,21 @@ class TestVectorStorage:
 
         async def record_count(**kwargs):
             order.append("count")
-            return {"count": 5}
+            response = {"count": 5}
+            if shards is not None:
+                response["_shards"] = shards
+            return response
 
         mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
         mock_client.count = AsyncMock(side_effect=record_count)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            assert await s.get_exact_count() == 5
+            if isinstance(expected, int):
+                assert await s.get_exact_count() == expected
+            else:
+                with pytest.raises(expected, match="partial_shard_count"):
+                    await s.get_exact_count()
             assert order == ["refresh", "count"]
 
     @pytest.mark.asyncio
