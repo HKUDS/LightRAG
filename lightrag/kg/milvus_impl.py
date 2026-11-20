@@ -472,8 +472,15 @@ SUPPORTED_INDEX_TYPES = {
     "SCANN",
 }
 
-# Supported metric types
-SUPPORTED_METRIC_TYPES = {"COSINE", "L2", "IP"}
+# The only vector metric LightRAG builds or searches with. Every query passes
+# cosine_better_than_threshold as Milvus's range-search radius, which is a
+# similarity lower bound only under COSINE (under L2 it is a distance upper
+# bound). See docs/MilvusConfigurationGuide.md#distance-metric.
+VECTOR_METRIC_TYPE = "COSINE"
+
+# Ignored MILVUS_METRIC_TYPE / metric_type values already warned about, so the
+# deprecation warning appears once per value per process, not per namespace.
+_IGNORED_METRIC_TYPES_WARNED: set[str] = set()
 
 # HNSW_SQ quantization types
 SUPPORTED_SQ_TYPES = {"SQ4U", "SQ6", "SQ8", "BF16", "FP16"}
@@ -520,6 +527,25 @@ def _escape_milvus_str(val: str) -> str:
     )
 
 
+def _warn_ignored_metric_type(requested: Optional[str]) -> None:
+    """Warn, once per value, that a non-COSINE metric request is ignored."""
+    if not requested:
+        return
+    normalized = str(requested).strip().upper()
+    if not normalized or normalized == VECTOR_METRIC_TYPE:
+        return
+    if normalized in _IGNORED_METRIC_TYPES_WARNED:
+        return
+    _IGNORED_METRIC_TYPES_WARNED.add(normalized)
+    logger.warning(
+        f"Milvus metric type '{requested}' is no longer supported and is ignored: "
+        f"LightRAG always uses {VECTOR_METRIC_TYPE}. Remove MILVUS_METRIC_TYPE / "
+        "metric_type from your configuration. An existing collection indexed "
+        f"with another metric is re-indexed with {VECTOR_METRIC_TYPE} at startup "
+        "(see docs/MilvusConfigurationGuide.md#distance-metric)."
+    )
+
+
 @dataclass
 class MilvusIndexConfig:
     """
@@ -527,11 +553,15 @@ class MilvusIndexConfig:
 
     Supports configuration via environment variables or initialization parameters.
     Initialization parameters take precedence over environment variables.
+
+    ``metric_type`` / ``MILVUS_METRIC_TYPE`` are deprecated and ignored: the
+    metric is always ``VECTOR_METRIC_TYPE`` (COSINE), and a non-COSINE value
+    only logs a warning. The field stays so callers passing it keep working.
     """
 
     # Base configuration
     index_type: Optional[str] = None
-    metric_type: Optional[str] = None
+    metric_type: Optional[str] = None  # Deprecated: always resolved to COSINE
 
     # HNSW series parameters
     hnsw_m: Optional[int] = None
@@ -555,10 +585,10 @@ class MilvusIndexConfig:
             self.index_type or os.environ.get("MILVUS_INDEX_TYPE", "AUTOINDEX")
         ).upper()
 
-        # Metric type
-        self.metric_type = (
-            self.metric_type or os.environ.get("MILVUS_METRIC_TYPE", "COSINE")
-        ).upper()
+        # Metric type: fixed to COSINE; a requested other metric is ignored
+        requested_metric = self.metric_type or os.environ.get("MILVUS_METRIC_TYPE")
+        _warn_ignored_metric_type(requested_metric)
+        self.metric_type = VECTOR_METRIC_TYPE
 
         # HNSW parameters
         # Defaults aligned with Milvus 2.4+ official documentation
@@ -596,12 +626,6 @@ class MilvusIndexConfig:
             raise ValueError(
                 f"Unsupported index type: {self.index_type}. "
                 f"Supported: {SUPPORTED_INDEX_TYPES}"
-            )
-
-        if self.metric_type not in SUPPORTED_METRIC_TYPES:
-            raise ValueError(
-                f"Unsupported metric type: {self.metric_type}. "
-                f"Supported: {SUPPORTED_METRIC_TYPES}"
             )
 
         if self.index_type == "HNSW_SQ":
@@ -1251,7 +1275,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     def _create_indexes_after_collection(self):
         """Create indexes after collection is created"""
-        # Build vector index using index configuration
+        self._create_vector_index()
+
+        # Create scalar indexes based on namespace
+        self._create_scalar_indexes()
+
+    def _create_vector_index(self):
+        """Create the vector index from the index configuration (raises on failure)."""
         # Use compatibility helper to get IndexParams
         index_params_for_vector = self._get_index_params()
 
@@ -1280,7 +1310,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
         )
 
-        # Create scalar indexes based on namespace
+    def _create_scalar_indexes(self):
+        """Create the namespace's scalar indexes; failures only degrade performance."""
         # Wrap scalar index creation in try-except to allow graceful degradation
         try:
             # Try to get IndexParams in a version-compatible way
@@ -2298,6 +2329,52 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         self._create_indexes_after_collection()
 
+    def _ensure_cosine_vector_index(self) -> None:
+        """Re-index the collection's vector field with COSINE if built otherwise.
+
+        Collections created while ``MILVUS_METRIC_TYPE`` was configurable may
+        carry an L2 or IP index, which every COSINE search now refuses. The
+        rebuild keeps the rows (a metric belongs to the index, not the data):
+        release, drop the vector index, create it with COSINE, load. Must run
+        under the data-init lock with the collection existing. A failure is
+        raised; a crash after the drop leaves no vector index, which the
+        missing-index repair in ``_validate_collection_and_load`` rebuilds on
+        the next start. See docs/MilvusConfigurationGuide.md#distance-metric.
+        """
+        index_names = self._client.list_indexes(
+            self.final_namespace, field_name="vector"
+        )
+        stale: dict[str, str] = {}
+        for index_name in index_names or []:
+            info = self._client.describe_index(self.final_namespace, index_name)
+            metric = str((info or {}).get("metric_type") or "").upper()
+            if metric and metric != VECTOR_METRIC_TYPE:
+                stale[index_name] = metric
+        if not stale:
+            return
+
+        logger.warning(
+            f"[{self.workspace}] Collection '{self.final_namespace}' vector index uses "
+            f"{sorted(set(stale.values()))}, not {VECTOR_METRIC_TYPE}; rebuilding it in "
+            "place (rows are kept, the collection is unavailable until it finishes)"
+        )
+        try:
+            self._client.release_collection(self.final_namespace)
+            for index_name in stale:
+                self._client.drop_index(self.final_namespace, index_name)
+            self._create_vector_index()
+            self._ensure_collection_loaded()
+        except Exception as rebuild_error:
+            raise RuntimeError(
+                f"Rebuilding the vector index of '{self.final_namespace}' with "
+                f"{VECTOR_METRIC_TYPE} failed; restart to retry. Original error: "
+                f"{rebuild_error}"
+            ) from rebuild_error
+        logger.info(
+            f"[{self.workspace}] Rebuilt vector index of '{self.final_namespace}' "
+            f"with {VECTOR_METRIC_TYPE}"
+        )
+
     def _ensure_collection_loaded(self):
         """Ensure the collection is loaded into memory for search operations"""
         try:
@@ -2523,7 +2600,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # which is the RECOMMENDED method for framework integration (e.g., RAGAnything).
         #
         # All 11 index configuration parameters can be passed through vector_db_storage_cls_kwargs:
-        #   - index_type, metric_type
+        #   - index_type, metric_type (deprecated and ignored: always COSINE)
         #   - hnsw_m, hnsw_ef_construction, hnsw_ef
         #   - sq_type, sq_refine, sq_refine_type, sq_refine_k
         #   - ivf_nlist, ivf_nprobe
@@ -2534,7 +2611,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         #       vector_db_storage_cls_kwargs={
         #           "cosine_better_than_threshold": 0.2,
         #           "index_type": "HNSW",
-        #           "metric_type": "COSINE",
         #           "hnsw_m": 32,
         #           "hnsw_ef_construction": 256,
         #       }
@@ -2739,6 +2815,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
                 # Create collection and check compatibility
                 self._create_collection_if_not_exist()
+                # After every path above (existing, migrated, recovered, new):
+                # an index left over from a configurable metric is re-indexed.
+                self._ensure_cosine_vector_index()
                 self._initialized = True
                 logger.info(
                     f"[{self.workspace}] Milvus collection '{self.namespace}' initialized successfully"
