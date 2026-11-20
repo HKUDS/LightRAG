@@ -34,7 +34,7 @@ from lightrag.constants import (
     KG_WRITE_STATE_METADATA_KEY,
     KG_WRITE_STATE_PRE_GRAPH,
 )
-from lightrag.tools.kg_integrity_repair import audit_kg_integrity
+from lightrag.tools.kg_integrity_repair import _union_ids, audit_kg_integrity
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
@@ -1281,3 +1281,24 @@ async def test_retry_state_write_never_clobbers_the_journal(tmp_path):
         assert returned is snapshot
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.parametrize(
+    ("tracked", "graph_sources", "expected"),
+    [
+        pytest.param(None, ["c1", "c2"], ["c1", "c2"], id="no-tracking-row"),
+        pytest.param(
+            ["c2", "c3"], ["c1", "c2"], ["c2", "c3", "c1"], id="union-ordered"
+        ),
+        pytest.param(
+            [f"c1{GRAPH_FIELD_SEP}c2", " c3 ", ""],
+            [],
+            ["c1", "c2", "c3"],
+            id="joined-split",
+        ),
+        pytest.param([None, 7], ["c1"], ["7", "c1"], id="non-string-coerced"),
+    ],
+)
+def test_union_ids_never_drops_a_tracked_id(tracked, graph_sources, expected):
+    """Every usable element survives: split, stripped, coerced, deduplicated."""
+    assert _union_ids(tracked, graph_sources) == expected

@@ -60,13 +60,17 @@ def _union_ids(tracked: list[str] | None, graph_sources: list[str]) -> list[str]
     stored list — so this does not re-run the write-path normalization
     (``merge_source_ids``), which re-splits every element with a regex and
     costs several times the whole audit on a large graph. A joined element is
-    still split, so a legacy or hand-written row cannot smuggle one in.
+    still split, so a legacy or hand-written row cannot smuggle one in, and a
+    non-string element is coerced rather than dropped, as ``merge_source_ids``
+    does: dropping it would narrow the provenance this audit certifies.
     """
     merged: dict[str, None] = {}
     for source in (tracked or (), graph_sources):
         for chunk_id in source:
-            if not isinstance(chunk_id, str):
+            if chunk_id is None:
                 continue
+            if not isinstance(chunk_id, str):
+                chunk_id = str(chunk_id)
             parts = (
                 chunk_id.split(GRAPH_FIELD_SEP)
                 if GRAPH_FIELD_SEP in chunk_id
