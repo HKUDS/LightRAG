@@ -1,131 +1,182 @@
-"""Regression test: PGVectorStorage.query must scale hnsw.ef_search with top_k.
+"""HNSW vector queries must widen ``hnsw.ef_search`` to their ``top_k``.
 
-pgvector's HNSW index only explores ``hnsw.ef_search`` candidates during an
-ANN search (default 40), independent of the query's ``LIMIT``. Left unset,
-PGVectorStorage.query() asked a Postgres HNSW index for more rows than the
-index actually searched for whenever a caller requested ``top_k`` above 40
-(the AGENTS.md example config uses ``top_k=60``), silently returning fewer
-matches than exist under the cosine threshold instead of the requested
-count -- the same failure shape as MongoDB's hardcoded ``numCandidates``.
-
-The fix passes a ``SET LOCAL hnsw.ef_search`` preamble, scaled to
-``max(top_k, 40)``, through to the same transaction as the fetch whenever an
-HNSW-family index is configured, and leaves non-HNSW index types untouched.
+pgvector's HNSW scan returns at most ``hnsw.ef_search`` candidates (default
+40), whatever the ``LIMIT``. Without iterative scan (pgvector < 0.8) a
+``top_k`` above that silently returns fewer rows; with it the rows are
+complete but the first batch's recall is lower. The setting is raised for the
+query's own transaction only, never lowered below the value already in force,
+and capped at 1000 (the GUC's maximum). See
+``docs/design/PgVectorFilteredSearch.md#hnsw-candidate-list-ef_search``.
 """
 
-import numpy as np
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import AsyncMock, patch
 
-from lightrag.kg.postgres_impl import PGVectorStorage
-from lightrag.namespace import NameSpace
-from lightrag.utils import EmbeddingFunc
+from lightrag.kg.postgres_impl import PGVectorStorage, PostgreSQLDB
+
+pytestmark = pytest.mark.offline
+
+HNSW_SQL = "SET LOCAL hnsw.iterative_scan = strict_order"
+IVFFLAT_SQL = "SET LOCAL ivfflat.iterative_scan = relaxed_order"
 
 
-@pytest.fixture
-def mock_pg_db():
-    """Mock PostgreSQL database connection, capturing db.query() kwargs."""
-    db = AsyncMock()
-    db.workspace = "test_workspace"
-    db.vector_index_type = None
+def _ef_sql(value: int) -> str:
+    return (
+        "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(NULLIF("
+        "current_setting('hnsw.ef_search', true), '')::int, 40), "
+        f"{value})::text, true)"
+    )
 
-    async def mock_query(sql, params=None, multirows=False, **kwargs):
-        if multirows:
-            return []
-        return {"exists": False, "count": 0}
 
-    db.query = AsyncMock(side_effect=mock_query)
-    db.execute = AsyncMock(return_value=None)
-    db.check_table_exists = AsyncMock(return_value=True)
-
+def _db(index_type: str | None = "HNSW", *, supported=None) -> PostgreSQLDB:
+    # Bypass __init__: only the attributes the code under test reads are set.
+    db = PostgreSQLDB.__new__(PostgreSQLDB)
+    db.workspace = "gw"
+    db.vector_index_type = index_type
+    db.iterative_scan_supported = supported
     return db
 
 
-@pytest.fixture(autouse=True)
-def mock_data_init_lock():
-    with patch("lightrag.kg.postgres_impl.get_data_init_lock") as mock_lock:
-        mock_lock_ctx = AsyncMock()
-        mock_lock.return_value = mock_lock_ctx
-        yield mock_lock
+class _Connection:
+    """Records the order of transaction boundaries and statements."""
+
+    def __init__(self, *, execute_error: Exception | None = None):
+        self.log: list[str] = []
+        self._execute_error = execute_error
+
+    @asynccontextmanager
+    async def transaction(self):
+        self.log.append("BEGIN")
+        try:
+            yield
+        except BaseException:
+            self.log.append("ROLLBACK")
+            raise
+        else:
+            self.log.append("COMMIT")
+
+    async def execute(self, sql, *args):
+        # No bound arguments: a multi-statement string needs the simple protocol.
+        assert args == ()
+        self.log.append(sql)
+        if self._execute_error is not None:
+            raise self._execute_error
+
+    async def fetch(self, sql, *args):
+        self.log.append("FETCH")
+        return [{"id": "a"}]
 
 
-@pytest.fixture
-def mock_client_manager(mock_pg_db):
-    with patch("lightrag.kg.postgres_impl.ClientManager") as mock_manager:
-        mock_manager.get_client = AsyncMock(return_value=mock_pg_db)
-        mock_manager.release_client = AsyncMock()
-        yield mock_manager
-
-
-@pytest.fixture
-def mock_embedding_func():
-    async def embed_func(texts, **kwargs):
-        return np.array([[0.1] * 768 for _ in texts])
-
-    return EmbeddingFunc(embedding_dim=768, func=embed_func, model_name="test_model")
-
-
-async def _make_storage(mock_embedding_func, index_type):
-    config = {
-        "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
-    }
-    storage = PGVectorStorage(
-        namespace=NameSpace.VECTOR_STORE_ENTITIES,
-        global_config=config,
-        embedding_func=mock_embedding_func,
-        workspace="test_ws",
-    )
-    return storage
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("index_type", ["HNSW", "HNSW_HALFVEC"])
 @pytest.mark.parametrize(
-    "top_k, expected_ef_search",
-    [
-        (60, 60),  # above pgvector's default: must be raised to top_k
-        (100, 100),  # AGENTS.md example top_k
-        (10, 40),  # below pgvector's default: floored at 40, never lowered
-    ],
+    ("top_k", "value"),
+    [(10, 10), (60, 60), (1000, 1000), (1001, 1000), (5000, 1000)],
 )
-async def test_query_scales_ef_search_with_top_k(
-    mock_client_manager,
-    mock_pg_db,
-    mock_embedding_func,
-    index_type,
-    top_k,
-    expected_ef_search,
-):
-    mock_pg_db.vector_index_type = index_type
-    storage = await _make_storage(mock_embedding_func, index_type)
-    await storage.initialize()
+@pytest.mark.parametrize("index_type", ["HNSW", "HNSW_HALFVEC"])
+def test_statement_raises_to_top_k_capped_at_the_guc_maximum(
+    index_type, top_k, value
+) -> None:
+    # GREATEST(current, top_k): a value already in force (operator setting,
+    # else pgvector's default 40) is never lowered; set_config(..., true) is
+    # transaction-local like SET LOCAL.
+    assert _db(index_type).ef_search_statement(top_k) == _ef_sql(value)
 
-    query_embedding = [0.1] * 768
-    await storage.query("test query", top_k=top_k, query_embedding=query_embedding)
 
-    assert mock_pg_db.query.called
-    call_kwargs = mock_pg_db.query.call_args.kwargs
-    preamble = call_kwargs.get("preamble")
-    assert preamble is not None, (
-        f"expected a hnsw.ef_search preamble for index type {index_type}, got none"
-    )
-    assert f"hnsw.ef_search = {expected_ef_search}" in preamble
+@pytest.mark.parametrize("index_type", ["IVFFLAT", "VCHORDRQ", None])
+def test_non_hnsw_index_has_no_statement(index_type) -> None:
+    assert _db(index_type).ef_search_statement(100) is None
+
+
+@pytest.mark.parametrize("top_k", [None, 0, -1])
+def test_no_positive_top_k_has_no_statement(top_k) -> None:
+    assert _db().ef_search_statement(top_k) is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("index_type", [None, "IVFFLAT", "VCHORDRQ"])
-async def test_query_leaves_non_hnsw_index_types_untouched(
-    mock_client_manager, mock_pg_db, mock_embedding_func, index_type
-):
-    """Non-HNSW index types must not receive an hnsw.ef_search preamble."""
-    mock_pg_db.vector_index_type = index_type
-    storage = await _make_storage(mock_embedding_func, index_type)
-    await storage.initialize()
+async def test_both_settings_share_one_round_trip_in_the_query_transaction() -> None:
+    connection = _Connection()
 
-    query_embedding = [0.1] * 768
-    await storage.query("test query", top_k=100, query_embedding=query_embedding)
+    rows = await _db()._fetch_with_iterative_scan(connection, "SELECT 1", (), top_k=100)
 
-    assert mock_pg_db.query.called
-    call_kwargs = mock_pg_db.query.call_args.kwargs
-    assert call_kwargs.get("preamble") is None
+    assert connection.log == [
+        "BEGIN",
+        f"{HNSW_SQL}; {_ef_sql(100)}",
+        "FETCH",
+        "COMMIT",
+    ]
+    assert rows == [{"id": "a"}]
+
+
+@pytest.mark.asyncio
+async def test_old_pgvector_still_gets_ef_search() -> None:
+    """Without iterative scan the candidate list is the only bound left."""
+    connection = _Connection()
+
+    await _db(supported=False)._fetch_with_iterative_scan(
+        connection, "SELECT 1", (), top_k=100
+    )
+
+    assert connection.log == ["BEGIN", _ef_sql(100), "FETCH", "COMMIT"]
+
+
+@pytest.mark.asyncio
+async def test_ivfflat_gets_only_its_iterative_scan() -> None:
+    connection = _Connection()
+
+    await _db("IVFFLAT")._fetch_with_iterative_scan(
+        connection, "SELECT 1", (), top_k=100
+    )
+
+    assert connection.log == ["BEGIN", IVFFLAT_SQL, "FETCH", "COMMIT"]
+
+
+@pytest.mark.asyncio
+async def test_failing_settings_fall_back_to_a_plain_fetch() -> None:
+    connection = _Connection(execute_error=Exception("boom"))
+
+    rows = await _db()._fetch_with_iterative_scan(connection, "SELECT 1", (), top_k=100)
+
+    assert connection.log == [
+        "BEGIN",
+        f"{HNSW_SQL}; {_ef_sql(100)}",
+        "ROLLBACK",
+        "FETCH",
+    ]
+    assert rows == [{"id": "a"}]
+
+
+@pytest.mark.asyncio
+async def test_db_query_hands_ann_top_k_to_the_scan_helper() -> None:
+    db = _db()
+    connection = _Connection()
+
+    async def run_with_retry(operation, **kwargs):
+        return await operation(connection)
+
+    db._run_with_retry = run_with_retry
+
+    await db.query("SELECT 1", multirows=True, iterative_scan=True, ann_top_k=100)
+
+    assert connection.log[1] == f"{HNSW_SQL}; {_ef_sql(100)}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("top_k", [10, 60, 100])
+async def test_storage_query_passes_its_top_k(top_k) -> None:
+    storage = PGVectorStorage.__new__(PGVectorStorage)
+    storage.namespace = "chunks"
+    storage.workspace = "gw"
+    storage.table_name = "t"
+    storage.cosine_better_than_threshold = 0.2
+    storage.db = _db()
+    storage.db.query = AsyncMock(return_value=[])
+
+    await storage.query("q", top_k=top_k, query_embedding=[0.1, 0.2])
+
+    call = storage.db.query.await_args
+    assert call.kwargs["iterative_scan"] is True
+    assert call.kwargs["ann_top_k"] == top_k
+    assert call.kwargs["params"][2] == top_k  # the same value is the LIMIT

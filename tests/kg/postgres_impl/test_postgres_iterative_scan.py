@@ -133,7 +133,7 @@ async def test_failing_set_falls_back_and_warns_once() -> None:
             assert rows == [{"id": "a"}]
 
     assert logger.warning.call_count == 1
-    assert "iterative scan not applied" in str(logger.warning.call_args)
+    assert "vector scan settings not applied" in str(logger.warning.call_args)
 
 
 @pytest.mark.offline
