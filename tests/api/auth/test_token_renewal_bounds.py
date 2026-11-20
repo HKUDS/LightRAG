@@ -110,7 +110,7 @@ def _handler_with_accounts(monkeypatch, auth_accounts: str):
         "global_args",
         SimpleNamespace(
             auth_accounts=auth_accounts,
-            token_secret="test-jwt-secret",
+            token_secret="test-jwt-secret-that-is-at-least-32-bytes",
             jwt_algorithm="HS256",
             token_expire_hours=48,
             guest_token_expire_hours=24,
@@ -251,11 +251,9 @@ class TestConfiguredAccountsRespectTheSameBound:
             )
 
     def test_oversized_username_error_does_not_log_the_password(
-        self, monkeypatch, caplog
+        self, monkeypatch, caplog, lightrag_caplog
     ):
         """The rejected entry carries a password, so only lengths may be logged."""
-        lightrag_logger = logging.getLogger("lightrag")
-        monkeypatch.setattr(lightrag_logger, "propagate", True)
         username = "u" * (_auth.MAX_TOKEN_SUBJECT_LENGTH + 1)
 
         with caplog.at_level(logging.ERROR, logger="lightrag"):
@@ -436,16 +434,13 @@ class TestRenewalCacheIsBounded:
 class TestRenewalLogSanitization:
     """Part 3: CR/LF in the claim must not forge log records (CWE-117)."""
 
-    def test_crlf_in_subject_is_neutralized(self, monkeypatch, caplog):
+    def test_crlf_in_subject_is_neutralized(self, monkeypatch, caplog, lightrag_caplog):
         """The renewal INFO line must not carry raw newlines from the claim.
 
         Pre-fix the emitted record read as three lines, the middle one a
         fabricated ``CRITICAL:lightrag:`` entry.
         """
         client = _client(monkeypatch, auth_configured=False, api_key=None)
-        # The lightrag logger does not propagate, so caplog sees nothing by default.
-        lightrag_logger = logging.getLogger("lightrag")
-        monkeypatch.setattr(lightrag_logger, "propagate", True)
         injected = "alice\nCRITICAL:lightrag: SECURITY AUDIT PASSED - admin login\nbob"
 
         with caplog.at_level(logging.INFO, logger="lightrag"):
@@ -643,7 +638,9 @@ class TestRenewalSkipUnderApiPrefix:
         server = importlib.import_module("lightrag.api.lightrag_server")
 
         dependency = utils_api.get_combined_auth_dependency(None)
-        app = FastAPI(root_path=api_prefix or None)
+        app = FastAPI()
+        # Same as create_app: the constructor argument is deprecated.
+        app.root_path = api_prefix
         if api_prefix:
             app.add_middleware(server._RootPathNormalizationMiddleware)
 

@@ -1391,13 +1391,20 @@ def test_an_environment_embedding_timeout_still_reaches_the_ceiling(tmp_path):
     reaches ``default_embedding_timeout``'s field default -- and the ceiling,
     resolved from that field, follows it without reading the environment again.
     Run from a scratch cwd, since ``load_dotenv(dotenv_path=".env")`` resolves
-    relative to it.
+    relative to it. The subprocess drops ``PYTHON_DOTENV_DISABLED``, which the
+    test suite sets for itself (``tests/__init__.py``), because this test is
+    about ``.env`` loading.
     """
     (tmp_path / ".env").write_text("EMBEDDING_TIMEOUT=300\n", encoding="utf-8")
     bare = {
         key: value
         for key, value in os.environ.items()
-        if key not in ("EMBEDDING_TIMEOUT", "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS")
+        if key
+        not in (
+            "EMBEDDING_TIMEOUT",
+            "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS",
+            "PYTHON_DOTENV_DISABLED",
+        )
     }
 
     result = subprocess.run(
@@ -1542,3 +1549,160 @@ def test_the_hold_ceiling_accessor_never_returns_none(tmp_path):
 
     resolved.admin_write_max_hold_seconds = 42.0
     assert resolved._admin_write_hold_ceiling() == 42.0
+
+
+# ---------------------------------------------------------------------------
+# Chunk tracking on a KV storage that buffers per process
+#
+# The pipeline's tracking writes wait in its worker's buffer until the
+# document is flushed, so an admin write on another worker would merge into a
+# row that lacks them. Such a KV storage asks for the gate through
+# ``buffers_writes_per_process``; the graph storage's own declaration is
+# switched off here so only the KV declaration can be what turns the gate on.
+# ---------------------------------------------------------------------------
+
+
+def test_only_the_per_process_buffered_kv_backend_declares_it():
+    from lightrag.base import BaseKVStorage
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+    from lightrag.kg.opensearch_impl import OpenSearchKVStorage
+
+    assert OpenSearchKVStorage.buffers_writes_per_process is True
+    # One mapping shared by every worker: nothing is hidden from a peer.
+    assert JsonKVStorage.buffers_writes_per_process is False
+    assert BaseKVStorage.buffers_writes_per_process is False
+
+
+@pytest.mark.parametrize("buffered", [True, False], ids=["buffered", "immediate"])
+def test_a_buffered_tracking_kv_turns_the_gate_on(tmp_path, monkeypatch, buffered):
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    monkeypatch.setattr(NetworkXStorage, "requires_single_writer", False)
+    monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", buffered)
+
+    assert _build_rag(tmp_path)._admin_write_gate_required() is buffered
+
+
+async def test_custom_kg_is_refused_during_ingestion_on_a_buffered_tracking_kv(
+    rag, monkeypatch
+):
+    """The race this closes needs the pipeline's tracking writes to be pending
+    in another worker's buffer; holding ``busy`` is what rules that out."""
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    monkeypatch.setattr(NetworkXStorage, "requires_single_writer", False)
+    custom_kg = {
+        "chunks": [],
+        "entities": [{"entity_name": "Alice", "description": "curated"}],
+        "relationships": [],
+    }
+    status, lock = await _status_handles(rag)
+    async with lock:
+        status.update({"busy": True, "busy_owner": {"token": "p", "kind": "process"}})
+    try:
+        monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", True)
+        with pytest.raises(AdminWriteGateRefusedError) as excinfo:
+            await rag.ainsert_custom_kg(custom_kg)
+        assert str(excinfo.value).startswith(ADMIN_WRITE_PIPELINE_BUSY_PREFIX)
+        assert await rag.chunk_entity_relation_graph.has_node("Alice") is False
+
+        # Without the declaration the same call is not gated at all.
+        monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", False)
+        await rag.ainsert_custom_kg(custom_kg)
+        assert await rag.chunk_entity_relation_graph.has_node("Alice") is True
+    finally:
+        async with lock:
+            status.update({"busy": False, "busy_owner": None})
+
+
+@pytest.fixture
+def _buffered_tracking(monkeypatch):
+    """Make the tracking KV class look per-process buffered and record every
+    synchronous discard the gate issues, by namespace."""
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    discarded: list[str] = []
+
+    def _discard(self):
+        discarded.append(self.namespace)
+        return 1
+
+    monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", True)
+    monkeypatch.setattr(JsonKVStorage, "discard_buffered_writes", _discard)
+    return discarded
+
+
+def _tracking_namespaces(rag) -> list[str]:
+    return [rag.entity_chunks.namespace, rag.relation_chunks.namespace]
+
+
+async def test_a_failed_admin_write_discards_buffered_tracking(rag, _buffered_tracking):
+    """A failed write's tracking rows must not stay in a per-process buffer:
+    released from the gate, a later flush would publish them over a newer
+    commit. Dropped on the gate's failure exit, for every admin writer."""
+    with pytest.raises(RuntimeError, match="boom"):
+        async with rag._admin_write_gate("test"):
+            raise RuntimeError("boom")
+
+    assert _buffered_tracking == _tracking_namespaces(rag)
+
+
+async def test_a_cancelled_admin_write_discards_buffered_tracking(
+    rag, _buffered_tracking
+):
+    """The exit no flow-level handler sees: a cancellation delivered while the
+    body awaits its tracking flush (the hold ceiling's, a disconnected
+    client's)."""
+    entered = asyncio.Event()
+
+    async def _body():
+        async with rag._admin_write_gate("test"):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(_body())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert _buffered_tracking == _tracking_namespaces(rag)
+
+
+async def test_a_successful_admin_write_discards_no_tracking(rag, _buffered_tracking):
+    async with rag._admin_write_gate("test"):
+        pass
+
+    assert _buffered_tracking == []
+
+
+async def test_a_refused_admin_write_discards_no_tracking(rag, _buffered_tracking):
+    """Refused before the body ran: the buffer is not this write's to drop."""
+    status, lock = await _status_handles(rag)
+    async with lock:
+        status.update({"busy": True, "busy_owner": {"token": "p", "kind": "process"}})
+    try:
+        with pytest.raises(AdminWriteGateRefusedError):
+            async with rag._admin_write_gate("test"):
+                raise AssertionError("the body must not run")  # pragma: no cover
+    finally:
+        async with lock:
+            status.update({"busy": False, "busy_owner": None})
+
+    assert _buffered_tracking == []
+
+
+async def test_an_immediate_tracking_kv_is_never_asked_to_discard(rag, monkeypatch):
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        JsonKVStorage,
+        "discard_buffered_writes",
+        lambda self: calls.append(self.namespace) or 0,
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        async with rag._admin_write_gate("test"):
+            raise RuntimeError("boom")
+
+    assert calls == []

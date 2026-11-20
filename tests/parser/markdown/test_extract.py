@@ -9,15 +9,21 @@ resolver.
 from __future__ import annotations
 
 import itertools
+import random
 import re
 import time
+import tracemalloc
 
 import pytest
 
+from lightrag.parser.markdown import extract as extract_module
 from lightrag.parser.markdown.extract import (
     PREFACE_HEADING,
     ResolvedImage,
+    _PAREN_SOURCE_MAX_CHARS,
+    _has_unescaped_pipe,
     _replace_inline_images,
+    _split_pipe_row,
     extract_markdown,
 )
 
@@ -25,9 +31,116 @@ from lightrag.parser.markdown.extract import (
 pytestmark = pytest.mark.offline
 
 
-_LEGACY_INLINE_IMAGE_RE = re.compile(
-    r'!\[(?P<alt>[^\]]*)\]\(\s*(?P<src><[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)'
-)
+def _reference_tail_end(line: str, source_end: int) -> int | None:
+    index = source_end
+    while index < len(line) and line[index].isspace():
+        index += 1
+    if index < len(line) and line[index] == ")":
+        return index + 1
+    if index == source_end or index >= len(line) or line[index] != '"':
+        return None
+    index = line.find('"', index + 1)
+    if index < 0:
+        return None
+    index += 1
+    while index < len(line) and line[index].isspace():
+        index += 1
+    return index + 1 if index < len(line) and line[index] == ")" else None
+
+
+def _reference_match(line: str, start: int) -> tuple[int, str] | None:
+    alt_end = line.find("]", start + 2)
+    if alt_end < 0 or line[alt_end + 1 : alt_end + 2] != "(":
+        return None
+    source_start = alt_end + 2
+    while source_start < len(line) and line[source_start].isspace():
+        source_start += 1
+    if source_start >= len(line):
+        return None
+    if line[source_start] == "<":
+        angle_end = line.find(">", source_start + 1)
+        if angle_end >= 0:
+            end = _reference_tail_end(line, angle_end + 1)
+            if end is not None:
+                return end, line[source_start : angle_end + 1]
+    depth = 0
+    source_end = source_start
+    while source_end < len(line) and not line[source_end].isspace():
+        if line[source_end] == "(":
+            depth += 1
+        elif line[source_end] == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        source_end += 1
+    if source_end == source_start or depth != 0:
+        return None
+    end = _reference_tail_end(line, source_end)
+    return None if end is None else (end, line[source_start:source_end])
+
+
+_REFERENCE_CANDIDATE_RE = re.compile(r"`+|!\[")
+_REFERENCE_BACKTICKS_RE = re.compile(r"`+")
+
+
+def _reference_escaped(line: str, index: int) -> bool:
+    backslashes = len(line[:index]) - len(line[:index].rstrip("\\"))
+    return backslashes % 2 == 1
+
+
+def _reference_skip_backticks(line: str, run: re.Match[str]) -> int:
+    opener_start = run.start() + _reference_escaped(line, run.start())
+    length = run.end() - opener_start
+    if length:
+        for closer in _REFERENCE_BACKTICKS_RE.finditer(line, run.end()):
+            if closer.end() - closer.start() == length:
+                return closer.end()
+    return run.end()
+
+
+def _reference_alt_end_is_literal(line: str, start: int) -> bool:
+    alt_end = line.find("]", start + 2)
+    if alt_end < 0:
+        return False
+    if _reference_escaped(line, alt_end):
+        return True
+    scan = start + 2
+    while run := _REFERENCE_BACKTICKS_RE.search(line, scan, alt_end):
+        scan = _reference_skip_backticks(line, run)
+        if scan > alt_end:
+            return True
+    return False
+
+
+def _reference_replace_inline_images(line: str) -> str:
+    """The strict image grammar, written naively (quadratic, no caches).
+
+    It is the oracle for the scanner's cached searches, code spans and
+    escapes included. It has no lenient retry, so it is only valid for lines
+    without an image file extension.
+    """
+    parts: list[str] = []
+    position = 0
+    cursor = 0
+    while candidate := _REFERENCE_CANDIDATE_RE.search(line, cursor):
+        start = candidate.start()
+        if candidate.group() != "![":
+            cursor = _reference_skip_backticks(line, candidate)
+            continue
+        matched = None
+        if not _reference_escaped(line, start) and not (
+            _reference_alt_end_is_literal(line, start)
+        ):
+            matched = _reference_match(line, start)
+        if matched is None:
+            cursor = start + 2
+            continue
+        end, src = matched
+        parts.append(line[position:start])
+        parts.append(f"<{src}>")
+        position = cursor = end
+    parts.append(line[position:])
+    return "".join(parts)
 
 
 class _StubResolver:
@@ -47,6 +160,31 @@ class _StubResolver:
             suggested_name="img.png",
             fmt="png",
         )
+
+
+def _scan_time_ratio(small: str, large: str) -> float:
+    """How much longer ``large`` takes to scan than ``small``.
+
+    Timing on a shared machine is noisy in one direction only: a scan can be
+    delayed, never sped up. So each line is timed by its fastest scan, and the
+    lowest ratio of a few attempts is returned. An eightfold input that
+    scanned quadratically would still give about 64 every time.
+    """
+
+    def fastest(line: str) -> float:
+        best = float("inf")
+        for _ in range(5):
+            started = time.perf_counter()
+            _replace_inline_images(line, lambda src: src)
+            best = min(best, time.perf_counter() - started)
+        return best
+
+    ratio = float("inf")
+    for _ in range(3):
+        ratio = min(ratio, fastest(large) / max(fastest(small), 1e-9))
+        if ratio < 12:
+            break
+    return ratio
 
 
 def _extract(md: str):
@@ -111,6 +249,27 @@ def test_pipe_table_with_header():
     assert table["header"] == [["Name", "Age"]]
 
 
+def test_pipe_table_stops_at_atx_heading_with_pipe():
+    md = (
+        "# Regional inventory\n"
+        "| Item | Quantity |\n"
+        "| --- | --- |\n"
+        "| # Available | 2 |\n"
+        "## Delivery | Next steps\n"
+        "Confirm the shipment date.\n"
+    )
+    ex = _extract(md)
+
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["# Available", "2"]]
+    assert [block["heading"] for block in ex.blocks] == [
+        "Regional inventory",
+        "Delivery | Next steps",
+    ]
+    assert ex.blocks[1]["parent_headings"] == ["Regional inventory"]
+    assert "Confirm the shipment date." in ex.blocks[1]["content"]
+
+
 def test_pipe_table_requires_delimiter_row():
     # A pipe-containing line with no delimiter row underneath is plain text.
     md = "| just | text |\nnot a delimiter\n"
@@ -133,6 +292,86 @@ def test_pipe_table_column_count_must_match_header():
     md = "| a | b | c |\n| --- | --- |\n| 1 | 2 | 3 |\n"
     ex = _extract(md)
     assert not ex.tables
+
+
+def test_pipe_table_escaped_pipe_is_cell_text():
+    # ``\|`` is content, not a column separator, so the row keeps the header's
+    # column count instead of silently shifting values under the wrong header.
+    md = "| h1 | h2 |\n| --- | --- |\n| a \\| b | c |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["header"] == [["h1", "h2"]]
+    assert table["rows"] == [["a | b", "c"]]
+
+
+def test_pipe_table_escaped_pipe_in_header_keeps_table():
+    # An escaped pipe in the header must not inflate its column count, or the
+    # delimiter row stops matching and the table is not recognised at all.
+    md = "| a \\| b | h2 |\n| --- | --- |\n| 1 | 2 |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["header"] == [["a | b", "h2"]]
+    assert table["rows"] == [["1", "2"]]
+
+
+def test_pipe_table_escaped_backslash_still_splits():
+    # ``\\`` is a literal backslash, so the ``|`` after it is a real separator.
+    md = "| h1 | h2 |\n| --- | --- |\n| a \\\\| b |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a \\", "b"]]
+
+
+def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
+    # With no unescaped ``|`` the line has no column separator at all, so it is
+    # a paragraph, even though its single cell matches the one-cell ``---``.
+    md = "foo \\| bar\n---\nnext paragraph\n"
+    ex = _extract(md)
+    assert not ex.tables
+    assert "foo \\| bar" in ex.blocks[0]["content"]
+
+
+def test_escaped_pipe_only_line_stays_in_the_table_body():
+    # Escaping is content-level. Once the delimiter row has established the
+    # table, a line whose only pipe is escaped is still a body row -- GFM keeps
+    # it, as one cell padded to the header width. Requiring an unescaped ``|``
+    # here would move table data out into a paragraph; only the header gate,
+    # where no table is established yet, may demand structural evidence.
+    md = "| h1 | h2 |\n| --- | --- |\n| a | b |\ntail \\| text\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a", "b"], ["tail | text"]]
+    assert "tail \\| text" not in ex.blocks[0]["content"]
+
+
+def test_escaped_backslash_body_row_splits_into_two_cells():
+    # ``\\|`` is an escaped backslash followed by a real separator, so the row
+    # carries two cells and the backslash stays in the first one.
+    md = "| h1 | h2 |\n| --- | --- |\n| a | b |\nc \\\\| d\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a", "b"], ["c \\", "d"]]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("foo", False),
+        ("a | b", True),
+        ("| foo |", True),  # a one-column table still carries separators
+        ("a \\| b", False),  # escaped pipe: cell content, no separator
+        ("a \\\\| b", True),  # escaped backslash, then a real separator
+        ("a \\\\\\| b", False),  # escaped backslash, then an escaped pipe
+        ("a \\\\\\\\| b", True),  # two escaped backslashes, then a separator
+    ],
+)
+def test_has_unescaped_pipe_agrees_with_the_row_splitter(line, expected):
+    # The table gate and the row splitter read one scan, so they cannot
+    # disagree about what an escape is; this pins the rule both of them see.
+    # The prepended ``|`` absorbs the splitter's opening-pipe strip, leaving a
+    # cell count that reflects exactly the separators in ``line``.
+    assert _has_unescaped_pipe(line) is expected
+    assert (len(_split_pipe_row("|" + line)) > 1) is expected
 
 
 def test_html_table_captured_verbatim_spanning_lines():
@@ -449,29 +688,300 @@ def test_inline_image_scanner_preserves_supported_image_grammar(line, expected):
     assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
 
 
-def test_inline_image_scanner_matches_legacy_regex_for_short_title_inputs():
-    def legacy_replace(line: str) -> str:
-        return _LEGACY_INLINE_IMAGE_RE.sub(
-            lambda match: f"<{match.group('src')}>", line
-        )
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Typora-style local path: spaces, no angle brackets.
+        ("![alt](./my doc.assets/a.png)", "<./my doc.assets/a.png>"),
+        ("a ![x](my doc/a b.JPG) b", "a <my doc/a b.JPG> b"),
+        ('![x](my doc/a.png "the caption")', "<my doc/a.png>"),
+        ("![x](  my doc/a.webp  )", "<my doc/a.webp>"),
+        # Balanced parentheses inside such a path.
+        ("![x](shots/shot (1).png)", "<shots/shot (1).png>"),
+        # The first extension is followed by more path, so the source runs on.
+        ("![x](a.png copy.png)", "<a.png copy.png>"),
+        ("![x](pics (old.png) new.svg)", "<pics (old.png) new.svg>"),
+        ("![x](a b.png) and ![y](c d.gif)", "<a b.png> and <c d.gif>"),
+        ("![broken ![nested](a b.png)", "<a b.png>"),
+    ],
+)
+def test_inline_image_scanner_accepts_bare_source_with_spaces(line, expected):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
 
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # No image extension: still not an image.
+        "![alt](some words here)",
+        "![alt](my doc/readme.md)",
+        # The candidate's own parenthesis closes before any image extension,
+        # so a later parenthetical or link is not swallowed into its source.
+        "![alt](not an image) see (figure one.png)",
+        "![alt](two words) and [a link](my pic.png)",
+        # Unbalanced parentheses and quotes are not paths.
+        "![alt](shot (1.png)",
+        '![alt](my "doc".png)',
+        '![alt](a b.png "unterminated)',
+        # The extension must end the source.
+        "![alt](my doc.png?raw=1 x)",
+        "![alt](my doc.png extra)",
+    ],
+)
+def test_inline_image_scanner_lenient_retry_leaves_non_images_alone(line):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == line
+
+
+def test_lenient_retry_sees_an_image_inside_an_earlier_tail():
+    # Codex finding: ``old.png "...")`` is itself a valid source end plus
+    # quoted title, and that title spans the real image. Looking for source
+    # ends with one non-overlapping scan of the line hid the image's own end.
+    line = '(old.png "![x](my pic.png)")'
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == (
+        '(old.png "<my pic.png>")'
+    )
+    ex = _extract(line)
+    (drawing,) = ex.drawings.values()
+    assert drawing["src"] == "my pic.png"
+
+
+def test_lenient_retry_does_not_reach_into_the_next_candidate():
+    # The first candidate is rejected; its retry must stop at the next ``![``
+    # so the second image is matched on its own, by the strict grammar.
+    line = "![a](two words ![b](ok.png)"
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == (
+        "![a](two words <ok.png>"
+    )
+
+
+def test_strict_grammar_wins_over_the_lenient_retry():
+    # ``a.png`` already is a complete image; the retry must not extend it.
+    line = "![x](a.png) trailing (b c.png)"
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == (
+        "<a.png> trailing (b c.png)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # CommonMark: a bare destination may hold balanced parentheses.
+        ("![x](shot(1).png)", "<shot(1).png>"),
+        ("see ![x](a(b(c))d) end", "see <a(b(c))d> end"),
+        ('![x](shot(1).png "caption")', "<shot(1).png>"),
+        (
+            "![x](https://en.wikipedia.org/wiki/File:Foo_(bar).svg) tail)",
+            "<https://en.wikipedia.org/wiki/File:Foo_(bar).svg> tail)",
+        ),
+        ("(![x](a(1).png))", "(<a(1).png>)"),
+        ("![x](a.png)(b)", "<a.png>(b)"),
+        # Unbalanced: not an image (CommonMark asks for escapes or <...>).
+        ("![x](foo(and(bar))", "![x](foo(and(bar))"),
+        ('![x](foo(bar "title")', '![x](foo(bar "title")'),
+        ("![x]()", "![x]()"),
+    ],
+)
+def test_inline_image_scanner_keeps_balanced_parentheses_in_source(line, expected):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
+
+
+def test_image_path_with_spaces_becomes_a_drawing():
+    resolver = _StubResolver()
+    ex = extract_markdown(
+        "Intro\n\n![shot](./my doc.assets/shot (1).png)\n", image_resolver=resolver
+    )
+    assert resolver.calls == ["./my doc.assets/shot (1).png"]
+    (drawing,) = ex.drawings.values()
+    assert drawing["src"] == "./my doc.assets/shot (1).png"
+    assert "my doc.assets" not in ex.blocks[0]["content"]
+
+
+def test_parenthesised_source_is_limited_in_length():
+    limit = _PAREN_SOURCE_MAX_CHARS
+    fits = "a(1)" + "x" * (limit - 4)
+    assert len(fits) == limit
+    assert _replace_inline_images(f"![x]({fits})", lambda src: f"<{src}>") == (
+        f"<{fits}>"
+    )
+    assert _replace_inline_images(f'![x]({fits} "t")', lambda src: "<>") == "<>"
+    too_long = f"![x]({fits}x)"
+    assert _replace_inline_images(too_long, lambda src: "<>") == too_long
+    too_long = f'![x]({fits}x "t")'
+    assert _replace_inline_images(too_long, lambda src: "<>") == too_long
+    # The limit is on sources WITH parentheses only: a base64 data URL has
+    # none and may be any length.
+    data_url = "data:image/png;base64," + "QUJD" * limit
+    assert _replace_inline_images(f"![x]({data_url})", lambda src: "<>") == "<>"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Codex finding: a whole-line parenthesis index grew one entry per
+        # depth for a suffix no image could ever reach (230 MiB for 1 MB).
+        "![x](a.png) " + ")" * 1_000_000,
+        "![x](a(1).png) " + ")" * 1_000_000,
+        "![x](" + "(" * 1_000_000,
+        "![x](a(" + "()" * 500_000 + ")",
+        "![x](a b" + ".png)" * 200_000,
+        "![x](a (b" + ".png) " * 200_000,
+        # Code spans are skipped, never indexed: a whole-line list of backtick
+        # runs took 48 MiB for this line.
+        "![x](a.png) " + "`a" * 200_000,
+        "![x](a.png) " + "``a`" * 100_000,
+        "![x](a.png) " + "".join("`" * k + " " for k in range(1, 1_400)),
+    ],
+)
+def test_inline_image_scanner_memory_stays_bounded(line):
+    tracemalloc.start()
+    try:
+        _replace_inline_images(line, lambda src: "")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # The output is a copy of (most of) the line; allow that and a fixed
+    # overhead, far below what any per-character index would take.
+    assert peak < 2 * len(line) + 4_000_000
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "![](a(",
+        "![](a)",
+        "![](a(b)",
+        "![]((",
+        "![](a (",
+    ],
+)
+def test_parenthesis_matching_scales_linearly_for_malformed_candidates(
+    unit, monkeypatch
+):
+    # A small window, so that both sizes span many windows and their cost
+    # per candidate is comparable.
+    monkeypatch.setattr(extract_module, "_PAREN_SOURCE_MAX_CHARS", 64)
+    assert _scan_time_ratio(unit * 1_024, unit * 8_192) < 16
+
+
+def test_parenthesis_window_rebuilds_scale_linearly():
+    # Every candidate lies beyond the previous window, so each one rebuilds it.
+    unit = "![](a(" + "x" * 5_000
+    assert _scan_time_ratio(unit * 32, unit * 256) < 16
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "![](a b",  # no extension anywhere near
+        "![](a b.png",  # extension, never closed
+        "![](a (b.png) ",  # closed at the wrong depth
+        '![](a b.png "',  # dangling titles
+        "![",  # candidates nested in one alt text ...
+    ],
+)
+def test_lenient_retry_scales_linearly_for_malformed_candidates(unit):
+    # ... which all share the source start after this suffix.
+    suffix = "](a ( b.png)"
+    assert _scan_time_ratio(unit * 1_024 + suffix, unit * 8_192 + suffix) < 16
+
+
+@pytest.mark.parametrize(
+    ("unit", "suffix"),
+    [
+        ("`a", ""),  # closed spans
+        ("``a`", ""),  # openers that never close
+        ("\\``a", ""),  # escaped openers
+        ("![", "`](x.png)`"),  # nested candidates, alt ends inside a span
+        ("![ `a` ", "`](x.png)`"),  # ... after spans closed in the alt text
+        ("![", "\\](x.png)"),  # nested candidates, escaped alt end
+    ],
+)
+def test_code_span_and_escape_checks_scale_linearly(unit, suffix):
+    def line_with(count: int) -> str:
+        return "![x](a.png) " + unit * count + suffix
+
+    assert _scan_time_ratio(line_with(1_024), line_with(8_192)) < 16
+
+
+def test_escape_check_on_a_shared_alt_end_scales_linearly():
+    # Every nested candidate ends its alt text at one ``]`` behind a long odd
+    # backslash run; counting that run once per candidate was quadratic.
+    def line_with(count: int) -> str:
+        return "![" * count + "\\" * (2 * count + 1) + "](x.png)"
+
+    assert _scan_time_ratio(line_with(1_024), line_with(8_192)) < 16
+
+
+class _CopyCountingLine(str):
+    """A line that counts the characters its slices copy."""
+
+    copied = 0
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            self.copied += len(range(*key.indices(len(self))))
+        return str.__getitem__(self, key)
+
+
+@pytest.mark.parametrize("alt_end", ["\\]", "`]", " `a` `]"])
+@pytest.mark.parametrize("source", ["<" + "a" * 4_096 + ">", "a" * 4_096])
+def test_rejected_alt_text_does_not_copy_the_source_per_candidate(alt_end, source):
+    # Nested candidates share one literal ``]`` and a long source. Matching
+    # the source before rejecting copied it once per candidate.
+    line = _CopyCountingLine("![" * 2_048 + alt_end + "(" + source + ") `")
+    assert _replace_inline_images(line, lambda src: "<>") == line
+    assert line.copied <= 2 * len(line)
+
+
+def test_inline_image_scanner_matches_reference_grammar_for_short_inputs():
     # The first case previously exposed a cache query that fell back to an
-    # earlier start after a title search. The generated short corpus protects
-    # the title and alternate-source grammar without a timing dependency.
+    # earlier start after a title search. The generated short corpora protect
+    # the title, alternate-source and parenthesis grammar without a timing
+    # dependency.
     lines = (
         'srcb"bb![a]( ![a]( " "title")<![a](>',
         '![a](src "title") ![b](other "caption")',
         '![a](<a b> "title") ![b](<c>d)',
+        '![a](x(y)z) ![b]((x) "t") ![c](a(b c)',
     )
     pieces = ("![a](", "![", "]", "(", ")", "<", ">", " ", '"', "title", "src")
+    paren_pieces = ("![a](", "(", ")", " ", "x", '"')
     corpus = itertools.chain(
         lines,
         ("".join(parts) for parts in itertools.product(pieces, repeat=4)),
+        ("".join(parts) for parts in itertools.product(paren_pieces, repeat=6)),
     )
     for line in corpus:
-        assert _replace_inline_images(line, lambda src: f"<{src}>") == legacy_replace(
-            line
-        )
+        assert _replace_inline_images(
+            line, lambda src: f"<{src}>"
+        ) == _reference_replace_inline_images(line), line
+
+
+def test_code_spans_and_escapes_match_reference_for_short_inputs():
+    # The cached closing-run search once moved its per-length memory back to
+    # an earlier run, which hid a later closer from every following opener.
+    pieces = ("`", "``", "\\", "![a](", "![", "]", "(", ")", "x", " ")
+    corpus = itertools.chain(
+        (
+            "``x `a` `b ![i](i) ` `",
+            "``u `a` `in ``` t` ![r](r) ```",
+        ),
+        ("".join(parts) for parts in itertools.product(pieces, repeat=5)),
+    )
+    for line in corpus:
+        assert _replace_inline_images(
+            line, lambda src: f"<{src}>"
+        ) == _reference_replace_inline_images(line), line
+
+
+def test_code_spans_and_escapes_match_reference_for_random_lines():
+    pieces = ("`", "``", "```", "\\", "![a](b)", "![", "](c)", "]", " ", "x")
+    rng = random.Random(4133)
+    for _ in range(20_000):
+        line = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 24)))
+        assert _replace_inline_images(
+            line, lambda src: f"<{src}>"
+        ) == _reference_replace_inline_images(line), line
 
 
 def test_inline_image_scanner_scales_linearly_for_malformed_candidates():

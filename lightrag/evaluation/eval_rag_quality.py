@@ -79,24 +79,39 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-# Conditional imports - will raise ImportError if dependencies not installed
+# Conditional imports. An ImportError here means "not installed" OR "installed
+# but broken" (e.g. a ragas/langchain version mismatch); keep the exception so
+# RAGEvaluator can report the real cause instead of a generic install hint.
+_RAGAS_IMPORT_ERROR: ImportError | None = None
 try:
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics import (
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
-    )
+
+    # ragas 0.4 deprecates these top-level exports in favour of
+    # ragas.metrics.collections, but the collections metrics are not accepted
+    # by ragas.evaluate() and reject LangchainLLMWrapper, so they are not a
+    # drop-in replacement. Silence only this import's notice, scoped locally.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Importing \w+ from 'ragas\.metrics' is deprecated",
+            category=DeprecationWarning,
+        )
+        from ragas.metrics import (
+            AnswerRelevancy,
+            ContextPrecision,
+            ContextRecall,
+            Faithfulness,
+        )
     from ragas.llms import LangchainLLMWrapper
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from tqdm.auto import tqdm
 
     RAGAS_AVAILABLE = True
 
-except ImportError:
+except ImportError as exc:
     RAGAS_AVAILABLE = False
+    _RAGAS_IMPORT_ERROR = exc
     Dataset = None
     evaluate = None
     LangchainLLMWrapper = None
@@ -110,6 +125,17 @@ TOTAL_TIMEOUT_SECONDS = 180.0
 def _is_nan(value: Any) -> bool:
     """Return True when value is a float NaN."""
     return isinstance(value, float) and math.isnan(value)
+
+
+#: Metric names averaged in benchmark stats, shared so the all-failed and
+#: has-successes branches of _calculate_benchmark_stats agree on the keys.
+_METRIC_NAMES = (
+    "faithfulness",
+    "answer_relevance",
+    "context_recall",
+    "context_precision",
+    "ragas_score",
+)
 
 
 class RAGEvaluator:
@@ -133,15 +159,18 @@ class RAGEvaluator:
             EVAL_EMBEDDING_BINDING_HOST: Custom endpoint URL for embeddings (fallback: EVAL_LLM_BINDING_HOST)
 
         Raises:
-            ImportError: If ragas or datasets packages are not installed
+            ImportError: If the RAGAS stack (ragas, datasets, langchain-openai)
+                is not installed or fails to import; the message carries the
+                original import error
             EnvironmentError: If EVAL_LLM_BINDING_API_KEY and OPENAI_API_KEY are both not set
         """
         # Validate RAGAS dependencies are installed
         if not RAGAS_AVAILABLE:
             raise ImportError(
-                "RAGAS dependencies not installed. "
-                "Install with: pip install ragas datasets"
-            )
+                f"RAGAS dependencies are unavailable ({_RAGAS_IMPORT_ERROR}). "
+                "If they are not installed, install them with: "
+                'pip install "lightrag-hku[evaluation]"'
+            ) from _RAGAS_IMPORT_ERROR
 
         # Configure evaluation LLM (for RAGAS scoring)
         eval_llm_api_key = os.getenv("EVAL_LLM_BINDING_API_KEY") or os.getenv(
@@ -524,9 +553,15 @@ class RAGEvaluator:
                     # Calculate RAGAS score (average of all metrics, excluding NaN values)
                     metrics = result["metrics"]
                     valid_metrics = [v for v in metrics.values() if not _is_nan(v)]
-                    ragas_score = (
-                        sum(valid_metrics) / len(valid_metrics) if valid_metrics else 0
-                    )
+                    if not valid_metrics:
+                        # Nothing was scored (e.g. the judge LLM's output could
+                        # not be parsed for any metric). Report a failed case
+                        # rather than a 0.0 "success" that drags the averages
+                        # down as if the RAG answer itself were bad.
+                        raise ValueError(
+                            "All RAGAS metrics returned NaN; no score could be computed"
+                        )
+                    ragas_score = sum(valid_metrics) / len(valid_metrics)
                     result["ragas_score"] = round(ragas_score, 4)
 
                     # Update progress counter
@@ -788,22 +823,25 @@ class RAGEvaluator:
         failed_tests = total_tests - successful_tests
 
         if not valid_results:
+            # Every case failed (e.g. an all-NaN RAGAS result, or every RAG
+            # call raised). Keep the same keys the success path returns —
+            # zeroed rather than omitted — so callers like run() can read
+            # average_metrics / min_ragas_score / max_ragas_score
+            # unconditionally instead of branching on whether anything
+            # succeeded.
             return {
                 "total_tests": total_tests,
                 "successful_tests": 0,
                 "failed_tests": failed_tests,
                 "success_rate": 0.0,
+                "average_metrics": dict.fromkeys(_METRIC_NAMES, 0.0),
+                "min_ragas_score": 0,
+                "max_ragas_score": 0,
             }
 
         # Calculate averages for each metric (handling NaN values correctly)
         # Track both sum and count for each metric to handle NaN values properly
-        metrics_data = {
-            "faithfulness": {"sum": 0.0, "count": 0},
-            "answer_relevance": {"sum": 0.0, "count": 0},
-            "context_recall": {"sum": 0.0, "count": 0},
-            "context_precision": {"sum": 0.0, "count": 0},
-            "ragas_score": {"sum": 0.0, "count": 0},
-        }
+        metrics_data = {name: {"sum": 0.0, "count": 0} for name in _METRIC_NAMES}
 
         for result in valid_results:
             metrics = result.get("metrics", {})

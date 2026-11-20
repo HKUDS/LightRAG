@@ -4,9 +4,24 @@ import bcrypt
 
 BCRYPT_PASSWORD_PREFIX = "{bcrypt}"
 
+# bcrypt only reads the first 72 bytes of its input. bcrypt>=5 raises a bare
+# ValueError for anything longer, and bcrypt 4 silently ignores the extra bytes,
+# so a longer password would be either unhashable or only partly checked.
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
 
 def hash_password(password: str) -> str:
-    """Return an AUTH_ACCOUNTS-ready bcrypt password value."""
+    """Return an AUTH_ACCOUNTS-ready bcrypt password value.
+
+    Raises:
+        ValueError: If the password is longer than 72 bytes in UTF-8.
+    """
+    password_bytes = len(password.encode("utf-8"))
+    if password_bytes > BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"password is {password_bytes} bytes in UTF-8; bcrypt accepts at "
+            f"most {BCRYPT_MAX_PASSWORD_BYTES}"
+        )
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
     return f"{BCRYPT_PASSWORD_PREFIX}{hashed}"

@@ -88,6 +88,7 @@ ignore_this.txt
 
 # AI Agent files
 memory-bank
+.codex/*
 # Ignore .claude/ by default; only track the shared hook and settings
 # (local overrides like settings.local.json stay ignored via .claude/*)
 .claude/*

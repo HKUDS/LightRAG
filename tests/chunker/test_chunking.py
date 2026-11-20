@@ -401,6 +401,59 @@ def test_valid_overlap_still_covers_every_token(chunk_overlap_token_size):
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("split_by_character", [None, "|"])
+def test_no_trailing_window_inside_previous_window(split_by_character):
+    """A window that reaches the end of the text is the last one.
+
+    17 tokens, size 10, overlap 3 (step 7): the windows [0:10] and [7:17]
+    already cover everything. The next start (14) used to emit [14:17],
+    which is the tail of [7:17] and adds no text. The "|" case sends the
+    same text through the split_by_character path as one oversize segment.
+    """
+    tokenizer = make_tokenizer()
+    content = "0123456789abcdefg"  # 17 chars
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character=split_by_character,
+        chunk_token_size=10,
+        chunk_overlap_token_size=3,
+    )
+
+    assert [chunk["content"] for chunk in chunks] == ["0123456789", "789abcdefg"]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("split_by_character", [None, "|"])
+@pytest.mark.parametrize("chunk_overlap_token_size", [0, 3, 6, 9])
+@pytest.mark.parametrize("length", range(1, 40))
+def test_every_window_adds_new_text(
+    length, chunk_overlap_token_size, split_by_character
+):
+    """Each window must end past the previous one, the last must reach the end
+    of the text, and the count must be the minimum that covers it."""
+    tokenizer = make_tokenizer()
+    content = "".join(chr(33 + i) for i in range(length))
+    chunk_token_size = 10
+    step = chunk_token_size - chunk_overlap_token_size
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character=split_by_character,
+        chunk_token_size=chunk_token_size,
+        chunk_overlap_token_size=chunk_overlap_token_size,
+        _emit_source_span=True,
+    )
+
+    ends = [chunk["_source_span"]["end"] for chunk in chunks]
+    assert ends == sorted(set(ends))
+    assert ends[-1] == length
+    assert len(chunks) == 1 + max(0, -(-(length - chunk_token_size) // step))
+
+
+@pytest.mark.offline
 @pytest.mark.parametrize("split_by_character_only", [False, True])
 def test_negative_overlap_raises_with_split_by_character(split_by_character_only):
     """Negative overlap must be rejected even when every split_by_character
@@ -778,16 +831,9 @@ def test_large_overlap():
     )
 
     # With overlap=9, step size = 10 - 9 = 1
-    # Chunks start at: 0, 1, 2, 3, ..., 20
-    # Total chunks = 21 (from position 0 to 20, each taking 10 tokens)
-    # Wait, let me recalculate: range(0, 30, 1) gives positions 0-29
-    # But each chunk is 10 tokens, so last chunk starts at position 20
-    # Actually: positions are 0, 1, 2, ..., 20 (21 chunks) for a 30-char string
-    # No wait: for i in range(0, 30, 1): if i + 10 <= 30, we can create a chunk
-    # So positions: 0-20 (chunks of size 10), then 21-29 would be partial
-    # Actually the loop is: for start in range(0, len(tokens), step):
-    # range(0, 30, 1) = [0, 1, 2, ..., 29], so 30 chunks total
-    assert len(chunks) == 30
+    # Chunks start at: 0, 1, 2, ..., 20. The window starting at 20 reaches the
+    # end of the text, so windows starting at 21-29 (tails of it) are not made.
+    assert len(chunks) == 21
 
     # Verify first few chunks have correct content with proper overlap
     assert chunks[0]["content"] == "0123456789"  # [0:10]
@@ -800,7 +846,7 @@ def test_large_overlap():
     assert chunks[3]["content"] == "3456789abc"  # [3:13]
 
     # Verify last chunk
-    assert chunks[-1]["content"] == "t"  # [29:30] - last char only
+    assert chunks[-1]["content"] == "klmnopqrst"  # [20:30] - ends the text
 
 
 # ============================================================================
@@ -1051,13 +1097,13 @@ def test_overlap_uses_token_count():
         chunk_overlap_token_size=2,
     )
 
-    # Chunks start at token positions: 0, 2, 4, 6
+    # Chunks start at token positions: 0, 2, 4. [4:7] reaches the end, so the
+    # start at 6 (a tail of [4:7]) is not used.
     # [0:4]=2 chars, [2:6]=2.5 chars, [4:7]=1.5 chars
-    assert len(chunks) == 4
+    assert len(chunks) == 3
     assert chunks[0]["tokens"] == 4
     assert chunks[1]["tokens"] == 4
     assert chunks[2]["tokens"] == 3
-    assert chunks[3]["tokens"] == 1
 
 
 @pytest.mark.offline
