@@ -134,6 +134,16 @@ _DUPLICATE_KEY_CODE = 11000
 # migration's progress cadence).
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
+# Atlas Vector Search rejects a $vectorSearch stage whose limit exceeds
+# numCandidates ("limit should be less than or equal to numCandidates") and
+# one whose numCandidates is outside [1..10000]; the query fails rather than
+# returning fewer rows. numCandidates therefore only widens to top_k: a top_k
+# at or below the floor keeps the previous fixed pool of 100, so the default
+# query is unchanged. top_k above the ceiling (core API only; the REST
+# endpoints cap it at MAX_QUERY_TOP_K) is clamped to the ceiling too.
+_VECTOR_SEARCH_MIN_NUM_CANDIDATES = 100
+_VECTOR_SEARCH_MAX_NUM_CANDIDATES = 10_000
+
 # Ceiling on how many same-depth candidates get a degree lookup before the
 # max_nodes cap in the bidirectional BFS. node_degrees_batch itself chunks
 # its $in queries at this same size (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so
@@ -4763,6 +4773,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
 
+        # Atlas rejects limit > numCandidates and numCandidates > 10000 (see
+        # _VECTOR_SEARCH_MIN_NUM_CANDIDATES above): widen the candidate pool
+        # to top_k, never below the previous fixed 100.
+        limit = min(top_k, _VECTOR_SEARCH_MAX_NUM_CANDIDATES)
+        num_candidates = max(limit, _VECTOR_SEARCH_MIN_NUM_CANDIDATES)
+
         # Define the aggregation pipeline with the converted query vector
         pipeline = [
             {
@@ -4770,8 +4786,8 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     "index": self._index_name,  # Use stored index name for consistency
                     "path": "vector",
                     "queryVector": query_vector,
-                    "numCandidates": 100,  # Adjust for performance
-                    "limit": top_k,
+                    "numCandidates": num_candidates,
+                    "limit": limit,
                 }
             },
             {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
