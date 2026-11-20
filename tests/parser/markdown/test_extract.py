@@ -239,6 +239,16 @@ def test_tilde_fence_supported():
     assert "## still code" in ex.blocks[0]["content"]
 
 
+def test_one_line_backtick_code_span_does_not_open_a_fence():
+    """A backtick run followed by text holding a backtick is an inline code
+    span, not a fence opener, so it must not swallow the rest of the file."""
+    md = "# Install\n```pip install lightrag```\n## Usage\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+    ex = _extract(md)
+    assert [b["heading"] for b in ex.blocks] == ["Install", "Usage"]
+    assert "```pip install lightrag```" in ex.blocks[0]["content"]
+    assert len(ex.tables) == 1
+
+
 def test_pipe_table_with_header():
     md = "| Name | Age |\n|------|-----|\n| Bob | 30 |\n| Sue | 25 |\n"
     ex = _extract(md)
