@@ -1549,3 +1549,67 @@ def test_the_hold_ceiling_accessor_never_returns_none(tmp_path):
 
     resolved.admin_write_max_hold_seconds = 42.0
     assert resolved._admin_write_hold_ceiling() == 42.0
+
+
+# ---------------------------------------------------------------------------
+# Chunk tracking on a KV storage that buffers per process
+#
+# The pipeline's tracking writes wait in its worker's buffer until the
+# document is flushed, so an admin write on another worker would merge into a
+# row that lacks them. Such a KV storage asks for the gate through
+# ``buffers_writes_per_process``; the graph storage's own declaration is
+# switched off here so only the KV declaration can be what turns the gate on.
+# ---------------------------------------------------------------------------
+
+
+def test_only_the_per_process_buffered_kv_backend_declares_it():
+    from lightrag.base import BaseKVStorage
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+    from lightrag.kg.opensearch_impl import OpenSearchKVStorage
+
+    assert OpenSearchKVStorage.buffers_writes_per_process is True
+    # One mapping shared by every worker: nothing is hidden from a peer.
+    assert JsonKVStorage.buffers_writes_per_process is False
+    assert BaseKVStorage.buffers_writes_per_process is False
+
+
+@pytest.mark.parametrize("buffered", [True, False], ids=["buffered", "immediate"])
+def test_a_buffered_tracking_kv_turns_the_gate_on(tmp_path, monkeypatch, buffered):
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    monkeypatch.setattr(NetworkXStorage, "requires_single_writer", False)
+    monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", buffered)
+
+    assert _build_rag(tmp_path)._admin_write_gate_required() is buffered
+
+
+async def test_custom_kg_is_refused_during_ingestion_on_a_buffered_tracking_kv(
+    rag, monkeypatch
+):
+    """The race this closes needs the pipeline's tracking writes to be pending
+    in another worker's buffer; holding ``busy`` is what rules that out."""
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+
+    monkeypatch.setattr(NetworkXStorage, "requires_single_writer", False)
+    custom_kg = {
+        "chunks": [],
+        "entities": [{"entity_name": "Alice", "description": "curated"}],
+        "relationships": [],
+    }
+    status, lock = await _status_handles(rag)
+    async with lock:
+        status.update({"busy": True, "busy_owner": {"token": "p", "kind": "process"}})
+    try:
+        monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", True)
+        with pytest.raises(AdminWriteGateRefusedError) as excinfo:
+            await rag.ainsert_custom_kg(custom_kg)
+        assert str(excinfo.value).startswith(ADMIN_WRITE_PIPELINE_BUSY_PREFIX)
+        assert await rag.chunk_entity_relation_graph.has_node("Alice") is False
+
+        # Without the declaration the same call is not gated at all.
+        monkeypatch.setattr(JsonKVStorage, "buffers_writes_per_process", False)
+        await rag.ainsert_custom_kg(custom_kg)
+        assert await rag.chunk_entity_relation_graph.has_node("Alice") is True
+    finally:
+        async with lock:
+            status.update({"busy": False, "busy_owner": None})

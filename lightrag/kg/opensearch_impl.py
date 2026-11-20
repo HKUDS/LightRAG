@@ -1043,6 +1043,9 @@ class OpenSearchKVStorage(BaseKVStorage):
     """Key-Value storage using OpenSearch. Uses dynamic mapping to support varied schemas."""
 
     supports_strict_point_reads: ClassVar[bool] = True
+    # Upserts wait in ``_pending_upserts``, visible to this process only, until
+    # ``index_done_callback``: admin graph writes must not overlap the pipeline.
+    buffers_writes_per_process: ClassVar[bool] = True
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)

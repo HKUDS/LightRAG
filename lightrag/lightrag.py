@@ -276,8 +276,10 @@ _SyncResultT = TypeVar("_SyncResultT")
 # ``adelete_by_relation``, ``aedit_entity``, ``aedit_relation``,
 # ``acreate_entity``, ``acreate_relation``, ``amerge_entities``,
 # ``ainsert_custom_kg``) run their body inside ``LightRAG._admin_write_gate``.
-# On a graph storage that declares ``requires_single_writer`` (only
-# ``NetworkXStorage``) the gate takes, in this fixed order:
+# Where ``_admin_write_gate_required()`` holds (a ``requires_single_writer``
+# graph storage, i.e. ``NetworkXStorage``, or chunk tracking on a KV storage
+# that buffers per process, i.e. ``OpenSearchKVStorage``) the gate takes, in
+# this fixed order:
 #
 #     admin lock (WAITS, bounded)  ->  pipeline ``busy`` reservation (REFUSES)
 #                                  ->  the per-entity / per-edge keyed locks
@@ -1496,8 +1498,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``; an explicit value below the
     embedding timeout is refused in ``__post_init__``.
 
-    Applies only where the graph storage declares ``requires_single_writer``
-    (``NetworkXStorage``); other backends never take the gate.
+    Applies only where ``_admin_write_gate_required()`` holds (a
+    ``requires_single_writer`` graph storage, or chunk tracking on a KV storage
+    that buffers per process); other backends never take the gate.
 
     Declared LAST, away from the ``default_embedding_timeout`` it is derived
     from, because ``LightRAG`` is a plain dataclass without ``kw_only``: field
@@ -8769,22 +8772,38 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # ------------------------------------------------------------------
 
     def _admin_write_gate_required(self) -> bool:
-        """Whether this instance's graph storage needs the admin-write gate.
+        """Whether this instance's storages need the admin-write gate.
 
-        Decided by the graph storage's class-level ``requires_single_writer``
-        declaration and by nothing else. Only the graph storage can lose an
-        uncommitted mutation to a peer commit: ``NanoVectorDBStorage`` and
+        Decided by two class-level declarations and by nothing else:
+
+        * the graph storage's ``requires_single_writer`` (``NetworkXStorage``):
+          its reload on a peer commit discards an uncommitted mutation;
+        * a chunk-tracking KV storage's ``buffers_writes_per_process``
+          (``OpenSearchKVStorage``): the pipeline's tracking writes stay in
+          its worker's buffer until the document is flushed, so an admin write
+          on another worker would merge into a row that lacks them and
+          overwrite the pipeline's addition. Holding ``busy`` excludes that,
+          because the pipeline flushes every document before it releases
+          ``busy``.
+
+        Nothing else qualifies. ``NanoVectorDBStorage`` and
         ``FaissVectorDBStorage`` replay their pending buffers over a reloaded
         snapshot, ``JsonKVStorage`` / ``JsonDocStatusStorage`` have no reload
-        path at all (their data is a shared Manager mapping), and every
-        server-backed store has row/transaction-level concurrency of its own.
-        So a server-backed graph store combined with file-backed KV or vector
-        storages runs ungated -- serializing it workspace-wide would be a
-        throughput regression for no correctness gain.
+        path at all (their data is a shared Manager mapping), and every other
+        server-backed store writes immediately with row/transaction-level
+        concurrency of its own. Those combinations run ungated -- serializing
+        them workspace-wide would be a throughput regression for no
+        correctness gain.
         """
-        return bool(
-            getattr(
-                type(self.chunk_entity_relation_graph), "requires_single_writer", False
+        if getattr(
+            type(self.chunk_entity_relation_graph), "requires_single_writer", False
+        ):
+            return True
+        return any(
+            getattr(type(storage), "buffers_writes_per_process", False)
+            for storage in (
+                getattr(self, "entity_chunks", None),
+                getattr(self, "relation_chunks", None),
             )
         )
 
@@ -8810,9 +8829,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Refuse a hold ceiling that cannot survive one embedding round-trip.
 
         Called from ``__post_init__`` once the graph storage exists, and ONLY
-        when ``_admin_write_gate_required()`` -- a server-backed graph store
-        never takes the gate, so it must not be refused startup over a knob it
-        does not use.
+        when ``_admin_write_gate_required()`` -- a backend combination that
+        never takes the gate must not be refused startup over a knob it does
+        not use.
 
         The relation was documented in ``env.example`` and enforced nowhere. A
         ceiling below the embedding timeout stops every admin write that
@@ -8862,8 +8881,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Wraps the body of every public admin graph writer -- the seven
         ``utils_graph`` flows plus ``ainsert_custom_kg``. A no-op unless
-        ``_admin_write_gate_required()``, i.e. unless the graph storage's class
-        declares ``requires_single_writer`` (``NetworkXStorage`` only).
+        ``_admin_write_gate_required()``: the graph storage's class declares
+        ``requires_single_writer`` (``NetworkXStorage``), or a chunk-tracking
+        KV storage declares ``buffers_writes_per_process``
+        (``OpenSearchKVStorage``).
 
         Two halves, one fixed acquisition order::
 

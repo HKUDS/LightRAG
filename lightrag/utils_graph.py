@@ -723,8 +723,8 @@ async def adelete_by_entity(
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -733,7 +733,7 @@ async def adelete_by_entity(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     requested_entity_name = entity_name
@@ -948,8 +948,8 @@ async def adelete_by_relation(
         target_entity: Name of the target entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -958,7 +958,7 @@ async def adelete_by_relation(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     relation_str = f"{source_entity} -> {target_entity}"
@@ -1804,8 +1804,8 @@ async def aedit_entity(
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -1814,7 +1814,7 @@ async def aedit_entity(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Order matters: the empty-description check runs first so a `None`
@@ -2078,8 +2078,8 @@ async def aedit_relation(
     Returns:
         Dictionary containing updated relation information
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -2088,7 +2088,7 @@ async def aedit_relation(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # See `aedit_entity` for the ordering rationale.
@@ -2548,8 +2548,8 @@ async def acreate_entity(
     Returns:
         Dictionary containing created entity information
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -2558,7 +2558,7 @@ async def acreate_entity(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
@@ -2749,8 +2749,8 @@ async def acreate_relation(
     Returns:
         Dictionary containing created relation information
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -2759,7 +2759,7 @@ async def acreate_relation(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
@@ -3732,8 +3732,8 @@ async def amerge_entities(
     Returns:
         Dictionary containing the merged entity information
 
-    Concurrency: on a graph storage that declares
-    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    Concurrency: where ``LightRAG._admin_write_gate_required()`` holds
+    (``NetworkXStorage``, or tracking on ``OpenSearchKVStorage``), the public ``LightRAG``
     method that calls this runs it inside ``LightRAG._admin_write_gate``, which
     serializes admin writes against each other (a workspace-wide admin lock the
     second caller WAITS on, refused with 409 only after
@@ -3742,7 +3742,7 @@ async def amerge_entities(
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
     A hold longer than ``admin_write_max_hold_seconds`` fails the operation
-    (500) and releases both. Server-backed graph stores run this ungated. See
+    (500) and releases both. Other backend combinations run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     if not source_entities:
