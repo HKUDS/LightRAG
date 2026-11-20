@@ -146,6 +146,7 @@ MAX_REPORTED_MISSING = 20
 BOLD_CYAN = "\033[1;36m"
 BOLD_RED = "\033[1;31m"
 BOLD_GREEN = "\033[1;32m"
+YELLOW = "\033[1;33m"
 RESET = "\033[0m"
 
 ProgressCallback = Callable[[int, int | None], None]
@@ -698,7 +699,9 @@ async def check_vdb_consistency(
       above the source is a vector the source no longer has). Repair is the
       matching rebuild, never an in-place fix;
     * ``inconclusive`` -- a read or the count failed or is unsupported
-      (``reason`` says which). Never read as consistent;
+      (``reason`` says which) before any probe missed; a miss already found
+      keeps the target ``inconsistent``. Never read as consistent, and not
+      by itself a reason to rebuild;
     * ``incompatible`` -- the target is in ``incompatible`` and is NOT
       probed: its storage refused to attach (another embedding space's
       vectors, or a corrupt snapshot), so a rebuild is mandatory, not optional;
@@ -776,7 +779,15 @@ async def check_vdb_consistency(
                 return
             target["target_count"] = await vdb.get_exact_count()
         except Exception as exc:
-            target["reason"] = (str(exc) or type(exc).__name__)[:240]
+            message = (str(exc) or type(exc).__name__)[:240]
+            if blocked_status is not None:
+                target["reason"] = f"{target['reason']}; source count failed: {message}"
+                return
+            target["reason"] = message
+            # A miss found before the failure is a positive finding: the
+            # failure cannot make it less true.
+            if target["missing"]:
+                target["status"] = "inconsistent"
             return
         target["status"] = (
             "consistent"
@@ -1613,12 +1624,21 @@ class RebuildTool:
             print(f"    - {label}: {target['status']} [{counts}]{reason}")
         if report["consistent"]:
             print(f"\n{BOLD_GREEN}✓ Every applicable target is consistent.{RESET}")
-        elif incompatible:
+            return
+        statuses = {target["status"] for target in report["targets"].values()}
+        if incompatible:
             print(f"\n{BOLD_RED}✗ Vector storage unusable (see above).{RESET}")
             print("  Run a rebuild (menu options 2-4) to restore service.")
-        else:
+        if "inconsistent" in statuses:
             print(f"\n{BOLD_RED}✗ Inconsistencies detected.{RESET}")
-            print("  Run a rebuild (menu options 2-4) to restore consistency.")
+            print("  Rebuild the inconsistent targets (menu options 2-4).")
+        if "inconclusive" in statuses:
+            print(
+                f"\n{YELLOW}? Some targets could not be verified (see the reason "
+                f"in parentheses).{RESET}\n"
+                "  That is not evidence of drift: fix the read or count failure and\n"
+                "  run the check again before deciding on a rebuild."
+            )
 
     async def print_source_counts(self, include_graph: bool, include_chunks: bool):
         if include_graph:

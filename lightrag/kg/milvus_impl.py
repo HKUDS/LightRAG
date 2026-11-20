@@ -3391,6 +3391,36 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         return not rows
 
+    async def get_exact_count(self) -> int:
+        """Exact row count of this collection. See ``BaseVectorStorage``.
+
+        Read with ``count(*)`` at the point-read consistency level, so a row
+        flushed just before is counted. No ``except``: a failed read
+        propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+            if self._client is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] Milvus client is not connected, so "
+                    f"{self.final_namespace} cannot be counted"
+                )
+
+        await self._run_gated(self._ensure_collection_loaded)
+        rows = await self._run_gated(
+            self._client.query,
+            collection_name=self.final_namespace,
+            filter='id != ""',
+            output_fields=["count(*)"],
+            consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
+        )
+        if not rows or rows[0].get("count(*)") is None:
+            raise RuntimeError(
+                f"[{self.workspace}] count(*) on {self.final_namespace} returned no row"
+            )
+        return int(rows[0]["count(*)"])
+
     async def _query_rows_by_ids(
         self,
         ids: list[str],

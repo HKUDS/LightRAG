@@ -192,7 +192,7 @@ them, a rebuild clears them. Each target gets one status:
 | --- | --- | --- |
 | `consistent` | every probe hit and the counts are equal | nothing |
 | `inconsistent` | a probe missed, or the counts differ | rebuild that target |
-| `inconclusive` | a read or the count failed or is unsupported; the reason is printed | fix the cause, or rebuild if in doubt |
+| `inconclusive` | a read or the count failed or is unsupported before any probe missed; the reason is printed | fix the cause and check again |
 | `incompatible` | the storage refused to attach (other embedding space, corrupt snapshot) | rebuild; it is mandatory |
 | `not_applicable` | the storage keeps no vectors | nothing |
 
@@ -200,10 +200,15 @@ Records a rebuild skips (a chunk without `content`, a node or edge without an
 id) are skipped by the check too and counted under `skipped`, so a fresh
 rebuild always checks `consistent`.
 
-**Exact counts are implemented for `NanoVectorDBStorage` and
-`FaissVectorDBStorage` only.** On every other vector backend the check still
-reports missing records, but the target is `inconclusive`, never `consistent`,
-until that backend implements `BaseVectorStorage.get_exact_count()`.
+A probe miss is reported `inconsistent` even when a later read or the count
+fails: the miss is a positive finding.
+
+**Every bundled persistent vector backend counts exactly** (NanoVectorDB,
+Faiss, PostgreSQL, Milvus, Qdrant, MongoDB, OpenSearch), scoped to the
+workspace the way its reads are. A count is refused while the storage still
+buffers writes, so run the check with no writers. A third-party backend that
+does not implement `BaseVectorStorage.get_exact_count()` still reports missing
+records, but is otherwise `inconclusive`, never `consistent`.
 
 A `consistent` verdict rests on these assumptions, accepted because each is
 rare and a rebuild clears whatever it hides:

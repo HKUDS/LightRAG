@@ -1646,16 +1646,20 @@ async def test_check_relationship_verdict(edges, vdb_pairs, status, counts):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("fault", "reason"),
+    ("fault", "reason", "seeded", "status"),
     [
-        ("get_by_ids", "unidentifiable_probe_record"),
-        ("short_probe", "incomplete_probe_response"),
-        ("count", "does not support exact persisted counts"),
+        ("get_by_ids", "unidentifiable_probe_record", True, "inconclusive"),
+        ("short_probe", "incomplete_probe_response", True, "inconclusive"),
+        ("count", "does not support exact persisted counts", True, "inconclusive"),
+        # A miss found before the fault is a positive finding and stands.
+        ("count", "does not support exact persisted counts", False, "inconsistent"),
     ],
+    ids=["unidentifiable", "short-probe", "count", "miss-then-count"],
 )
-async def test_check_read_fault_is_inconclusive_never_consistent(fault, reason):
+async def test_check_read_fault_is_never_consistent(fault, reason, seeded, status):
     entities = MockVDB()
-    entities.records[compute_mdhash_id("Alice", prefix="ent-")] = {}
+    if seeded:
+        entities.records[compute_mdhash_id("Alice", prefix="ent-")] = {}
     if fault == "get_by_ids":
         entities.get_by_ids = AsyncMock(return_value=[{"content": "no id"}])
     elif fault == "short_probe":
@@ -1672,9 +1676,38 @@ async def test_check_read_fault_is_inconclusive_never_consistent(fault, reason):
     )
 
     target = report["targets"]["entities"]
-    assert target["status"] == "inconclusive"
+    assert target["status"] == status
     assert reason in target["reason"]
     assert report["consistent"] is False
+
+
+def test_inconclusive_report_does_not_recommend_a_rebuild(capsys):
+    target = {
+        "status": "inconclusive",
+        "source_count": 3,
+        "target_count": None,
+        "missing": 0,
+        "missing_examples": [],
+        "skipped": 0,
+        "reason": "no exact count",
+    }
+    report = {
+        "targets": {"entities": target},
+        "incompatible": {},
+        "consistent": False,
+        "graph_entities": 3,
+        "graph_relations": 0,
+        "missing_entities": 0,
+        "missing_relations": 0,
+        "missing_entity_names": [],
+        "missing_relation_pairs": [],
+    }
+
+    rebuild_vdb.RebuildTool().print_check_report(report)
+
+    out = capsys.readouterr().out
+    assert "could not be verified" in out and "no exact count" in out
+    assert "Inconsistencies detected" not in out
 
 
 @pytest.mark.asyncio

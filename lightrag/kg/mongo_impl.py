@@ -5093,6 +5093,23 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         return await collection.count_documents({}, limit=1) == 0
 
+    async def get_exact_count(self) -> int:
+        """Exact document count of this collection. See ``BaseVectorStorage``.
+
+        No ``except``: a failed read propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+            if self._data is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] MongoDB collection is not connected, "
+                    f"so {self.namespace} cannot be counted"
+                )
+            collection = self._data
+
+        return int(await collection.count_documents({}))
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer.
 

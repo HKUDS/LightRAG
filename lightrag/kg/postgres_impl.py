@@ -63,6 +63,7 @@ from ..constants import CUSTOM_CHUNK_PATCH_METADATA_KEY, DEFAULT_QUERY_PRIORITY
 from ..exceptions import (
     DataMigrationError,
     SourceConflictRepairCASError,
+    StorageCapabilityError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
@@ -5737,6 +5738,26 @@ class PGVectorStorage(BaseVectorStorage):
                 f"returned no row"
             )
         return not result["has_data"]
+
+    async def get_exact_count(self) -> int:
+        """Exact row count of this workspace. See ``BaseVectorStorage``.
+
+        Same scope as ``is_empty`` and ``get_by_ids``: this table, filtered by
+        ``workspace``. No ``except``: a failed read propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+
+        query = (
+            f"SELECT COUNT(*) AS row_count FROM {self.table_name} WHERE workspace=$1"
+        )
+        result = await self.db.query(query, [self.workspace])
+        if not result or result.get("row_count") is None:
+            raise RuntimeError(
+                f"[{self.workspace}] row count on {self.table_name} returned no row"
+            )
+        return int(result["row_count"])
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.

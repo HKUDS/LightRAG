@@ -4681,6 +4681,27 @@ class TestVectorStorage:
             )
 
     @pytest.mark.asyncio
+    async def test_exact_count_refreshes_then_counts(
+        self, global_config, embed_func, mock_client
+    ):
+        order: list[str] = []
+
+        async def record_refresh(**kwargs):
+            order.append("refresh")
+
+        async def record_count(**kwargs):
+            order.append("count")
+            return {"count": 5}
+
+        mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
+        mock_client.count = AsyncMock(side_effect=record_count)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_exact_count() == 5
+            assert order == ["refresh", "count"]
+
+    @pytest.mark.asyncio
     async def test_initialize_creates_knn_index(
         self, global_config, embed_func, mock_client
     ):

@@ -46,6 +46,7 @@ from ..base import (
 from ..exceptions import (
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
+    StorageCapabilityError,
     StorageControlPlaneError,
     StorageNotInitializedError,
     StorageRecordNotFoundError,
@@ -7467,6 +7468,24 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         await self.client.indices.refresh(index=self._index_name)
         response = await self.client.count(index=self._index_name)
         return response["count"] == 0
+
+    async def get_exact_count(self) -> int:
+        """Exact document count of this index. See ``BaseVectorStorage``.
+
+        Refreshes first, as ``is_empty`` does, because ``count`` is
+        search-based. An index that does not exist holds no vectors and
+        counts ``0``. No ``except``: a failed read propagates.
+        """
+        await self._recheck_index_presence()
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+            index_ready = self._index_ready
+        if not index_ready:
+            return 0
+        await self.client.indices.refresh(index=self._index_name)
+        response = await self.client.count(index=self._index_name)
+        return int(response["count"])
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.

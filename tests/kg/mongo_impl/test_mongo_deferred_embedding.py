@@ -568,3 +568,19 @@ async def test_drop_pending_index_ops_clears_buffers():
     await s.drop_pending_index_ops()
     assert not s._pending_vector_docs
     assert not s._pending_vector_deletes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("buffered", [False, True], ids=["flushed", "buffered"])
+async def test_exact_count_refuses_while_writes_are_buffered(buffered):
+    from lightrag.exceptions import StorageCapabilityError
+
+    storage = _make_storage(MockEmbeddingFunc())
+    storage._data.count_documents = AsyncMock(return_value=6)
+    if buffered:
+        await storage.delete(["ent-1"])
+        with pytest.raises(StorageCapabilityError, match="pending_writes"):
+            await storage.get_exact_count()
+        storage._data.count_documents.assert_not_awaited()
+    else:
+        assert await storage.get_exact_count() == 6
