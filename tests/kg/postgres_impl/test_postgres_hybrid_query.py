@@ -1,13 +1,14 @@
-"""Live-PostgreSQL hybrid query semantics (plan A5 + C group).
+"""Live-PostgreSQL hybrid query semantics.
 
-Pins D5/D9 on a real pgvector server with controlled embeddings: the vector
+Pins the hybrid query contract on a real pgvector server with controlled
+embeddings: the vector
 leg's cosine threshold is unchanged, RRF fusion order equals hand-computed
 ranks, lexical-only records carry the exact distance sentinel, each leg
 takes top_k and the union returns top_k, and a dropped/invalid GIN index or
 a lexical query error degrades THAT query to the vector baseline with a
-deduplicated warning. C1 drives reserved-character/injection strings through
-the live lexical leg, C2 empty queries, C3 bounded >1000-token queries, C4
-fault variants (real canceled-CIC invalid residue included), C5 four
+deduplicated warning. Reserved-character/injection strings run through
+the live lexical leg, then empty queries, bounded >1000-token queries, fault
+variants (real canceled-CIC invalid residue included), and four
 concurrent workers querying while ingesting.
 
 Markers and the env guard follow ``test_postgres_lexical_schema.py``: skipped
@@ -176,7 +177,7 @@ async def _hybrid_test_env():
     initialize_share_data(workers=1)
     # asyncio.Lock binds to the loop of its first CONTENDED acquire; these
     # two primitives are process-wide while pytest loops are per-test (the
-    # A4 fixture's reset pattern). Nothing holds them at setup.
+    # the shared fixture's reset pattern). Nothing holds them at setup.
     shared_storage._data_init_lock = asyncio.Lock()
     ClientManager._lock = asyncio.Lock()
     yield
@@ -191,7 +192,7 @@ async def _hybrid_test_env():
 
 
 # ---------------------------------------------------------------------------
-# A5: vector-leg threshold unchanged
+# vector-leg threshold unchanged
 # ---------------------------------------------------------------------------
 
 
@@ -217,7 +218,7 @@ async def test_vector_leg_threshold_unchanged_and_empty_lexical_union():
 
 
 # ---------------------------------------------------------------------------
-# A5: RRF fusion order == hand-computed ranks; top_k semantics; sentinel
+# RRF fusion order == hand-computed ranks; top_k semantics; sentinel
 # ---------------------------------------------------------------------------
 
 
@@ -348,7 +349,7 @@ async def test_entities_namespace_hybrid_fuses_on_entity_name():
 
 
 # ---------------------------------------------------------------------------
-# A5 fault injection / C4: dropped index -> degrade == vector baseline
+# Fault injection: dropped index -> degrade == vector baseline
 # ---------------------------------------------------------------------------
 
 
@@ -418,7 +419,7 @@ async def test_invalid_index_residue_degrades_then_heals(lightrag_log_records):
 
         # Real canceled-CIC residue: a pre-opened write transaction forces
         # the build into its wait phase, then pg_cancel_backend aborts it,
-        # leaving the index INVALID (the A4 stall trick).
+        # leaving the index INVALID (the shared fixture's stall trick).
         stall_tx = stall_conn.transaction()
         await stall_tx.start()
         await stall_conn.execute(
@@ -509,8 +510,8 @@ async def test_lexical_query_error_degrades_to_vector_baseline(lightrag_log_reco
 
 
 # ---------------------------------------------------------------------------
-# C1: reserved characters / injection strings through the LIVE lexical leg
-# C2: empty / whitespace queries (also offline in test_hybrid_fusion.py)
+# reserved characters / injection strings through the LIVE lexical leg
+# empty / whitespace queries (also offline in test_hybrid_fusion.py)
 # ---------------------------------------------------------------------------
 
 
@@ -562,7 +563,7 @@ async def test_reserved_char_queries_parse_and_stay_sane(query, expected_ids):
 
 
 # ---------------------------------------------------------------------------
-# C3: >1000-token queries stay bounded and complete
+# >1000-token queries stay bounded and complete
 # ---------------------------------------------------------------------------
 
 
@@ -589,7 +590,7 @@ async def test_long_query_is_bounded_and_completes(n_words):
 
 
 # ---------------------------------------------------------------------------
-# C5: >=4 workers running hybrid queries while ingesting
+# >=4 workers running hybrid queries while ingesting
 # ---------------------------------------------------------------------------
 
 

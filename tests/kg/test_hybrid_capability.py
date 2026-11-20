@@ -1,13 +1,13 @@
-"""``supports_hybrid_query`` capability protocol (plan D3) and its graceful fallback.
+"""``supports_hybrid_query`` capability protocol and its graceful fallback.
 
-P1 pins the protocol BEFORE any consumer exists. The class-level flag is False
+This file pins the protocol before any consumer exists. The class-level flag is False
 on every registered vector backend except ``PGVectorStorage``, it is a
 ``ClassVar`` (never a dataclass ``__init__`` field, so no backend constructor
 signature moves -- the ``requires_single_writer`` precedent), and an
 ``enable_hybrid=True`` request through the real retrieval entry point
 ``_get_vector_context`` leaves an unsupported backend on its plain vector path.
 
-The graceful cases are the real gate now that P3 wires ``hybrid_query``: a
+The graceful cases are the real gate now that the query path wires ``hybrid_query``: a
 consumer must check the flag and fall back to vector-only, never crash or
 change results on a backend that does not support hybrid retrieval, and
 never reach a ``hybrid_query`` method on such a backend.
@@ -135,7 +135,7 @@ _UNSUPPORTED_BACKENDS = [b for b in _VECTOR_BACKENDS if b != "PGVectorStorage"]
 
 @pytest.mark.parametrize("backend_name", _UNSUPPORTED_BACKENDS)
 async def test_dispatch_guard_never_reaches_hybrid_query(backend_name):
-    """With a consumer wired (P3), enable_hybrid=True on ANY unsupported
+    """With the query path wired, enable_hybrid=True on ANY unsupported
     backend must never reach a hybrid_query method, even one attached to the
     instance: the dispatch gate checks the capability flag first. Service
     backends are exercised through ``__new__`` (no connection needed at this

@@ -1,10 +1,10 @@
-"""A7: default-off retrieval is byte-identical to the pre-hybrid baseline.
+"""Default-off retrieval is byte-identical to the pre-hybrid baseline.
 
 Pinned-manifest regression for the hybrid-retrieval zero-change guarantee:
 55 documents / 220 CJK+EN chunks / 66 seeded entities / 65 relations,
 20 queries x 5 modes, ``only_need_context=True`` with injected hl/ll
 keywords so no LLM is ever called, and deterministic bag-of-tokens hash
-embeddings. Synthetic embeddings are legitimate here: A7 is an identity
+embeddings. Synthetic embeddings are legitimate here: this is an identity
 proof, not a quality proof.
 
 Provenance: both pinned manifests were generated on pristine origin/main
@@ -50,7 +50,7 @@ from lightrag.utils import EmbeddingFunc
 # ---------------------------------------------------------------------------
 
 EMBEDDING_DIM = 32
-MODEL_NAME = "a7proof"
+MODEL_NAME = "identityproof"
 MODES = ("local", "global", "hybrid", "mix", "naive")
 COSINE_THRESHOLD = 0.1
 
@@ -301,9 +301,9 @@ LLM_CALLS: list[str] = []
 
 
 async def refuse_llm(prompt, *args, **kwargs):
-    """Record AND raise: a context-only A7 run must never reach the LLM."""
+    """Record AND raise: a context-only default-off run must never reach the LLM."""
     LLM_CALLS.append(str(prompt)[:80])
-    raise AssertionError("A7 context-only run must not call the LLM")
+    raise AssertionError("context-only default-off run must not call the LLM")
 
 
 def make_param(mode: str, hl: list[str], ll: list[str]) -> QueryParam:
@@ -417,9 +417,9 @@ def _assert_matches_pinned(manifest: dict, pinned_name: str) -> None:
 @pytest.mark.asyncio
 async def test_file_backend_matches_pinned_baseline(tmp_path):
     manifest = await _regenerate_manifest(
-        "file", str(tmp_path / "wd"), "a7off_file"
+        "file", str(tmp_path / "wd"), "off_file"
     )
-    _assert_matches_pinned(manifest, "a7_default_off_manifest_file.json")
+    _assert_matches_pinned(manifest, "default_off_manifest_file.json")
 
 
 @pytest.mark.requires_db
@@ -445,17 +445,17 @@ async def test_pg_backend_matches_pinned_baseline(tmp_path):
     shared_storage._data_init_lock = asyncio.Lock()
     ClientManager._lock = asyncio.Lock()
 
-    workspace = f"a7off_{uuid4().hex[:8]}"
+    workspace = f"off_{uuid4().hex[:8]}"
     try:
         manifest = await _regenerate_manifest("pg", str(tmp_path / "wd"), workspace)
-        _assert_matches_pinned(manifest, "a7_default_off_manifest_pg.json")
+        _assert_matches_pinned(manifest, "default_off_manifest_pg.json")
     finally:
         await _cleanup_pg(workspace)
 
 
 async def _cleanup_pg(workspace: str) -> None:
     """Delete every row this workspace wrote, then drop the scratch vector
-    tables: the a7proof model name is exclusive to this test."""
+    tables: the identityproof model name is exclusive to this test."""
     import asyncpg
 
     from lightrag.kg.postgres_impl import ClientManager

@@ -1,12 +1,12 @@
 """Live-PostgreSQL tests for the lexical (hybrid retrieval) schema lifecycle.
 
-Pins the D7 contract on a real pgvector server: idempotent migration,
+Pins the schema lifecycle on a real pgvector server: idempotent migration,
 reentrant batched backfill, CREATE INDEX CONCURRENTLY that does not lock
 writes, invalid-index detection with drop/retry, concurrent workers racing
 the migration, and upsert-maintained tsvector consistency for CJK, latin and
-mixed text. The SIGKILL mid-backfill proof lives in the manual-QA driver
-(artifact dir), not here; the in-process fault injection below covers the
-same reentrancy seam at the db.query boundary.
+mixed text. A SIGKILL mid-backfill proof is a manual QA run, not here; the
+in-process fault injection below covers the same reentrancy seam at the
+db.query boundary.
 
 Markers and the env guard follow the live-DB conventions of
 ``test_postgres_anchor_migration_smoke.py``: skipped unless POSTGRES_HOST and

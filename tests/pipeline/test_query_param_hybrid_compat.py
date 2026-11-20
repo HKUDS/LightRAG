@@ -1,4 +1,4 @@
-"""``QueryParam.enable_hybrid`` backward-compatibility contract (plan D4 / A3).
+"""``QueryParam.enable_hybrid`` backward-compatibility contract.
 
 ``QueryParam`` is a plain dataclass: field ORDER is public API because SDK
 callers construct it positionally. ``enable_hybrid`` must be the LAST field,

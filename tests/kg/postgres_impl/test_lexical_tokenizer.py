@@ -1,4 +1,4 @@
-"""A1: the lexical tokenizer's string contract (plan hybrid-retrieval-pg-pr).
+"""The lexical tokenizer's string contract.
 
 Pins the rules in ``lightrag/kg/lexical_tokenizer.py``: CJK overlapping
 bigrams, latin word tokens, NFKC + lowercase on both sides, tsquery
@@ -6,7 +6,7 @@ reserved characters neutralized by construction, bounded output, and
 write/query token consistency. Expected values below are worked out by
 hand from the rules, never recomputed with the code under test.
 
-The live-PG proof that these strings parse as tsvector/tsquery (C1) belongs
+The live-PG proof that these strings parse as tsvector/tsquery belongs
 to the requires_db phase; offline, the guarantee is the allowlist grammar:
 emitted tokens are alphanumeric only, joined by spaces or `` & ``.
 """

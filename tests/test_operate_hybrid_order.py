@@ -1,4 +1,4 @@
-"""Fusion order is consumed as-is downstream (plan D5 invariant, test A8).
+"""Fusion order is consumed as-is downstream.
 
 Every fixture here is built so a distance-descending re-sort WOULD reorder
 the records (lexical-only sentinel distances sit below real vector

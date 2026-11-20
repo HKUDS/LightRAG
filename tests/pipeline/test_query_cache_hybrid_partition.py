@@ -1,4 +1,4 @@
-"""``enable_hybrid`` must partition the answer cache (plan A6).
+"""``enable_hybrid`` must partition the answer cache.
 
 On a hybrid-capable vector backend the flag switches retrieval to
 lexical+vector fusion, so the same request builds a different context with
