@@ -409,6 +409,47 @@ def _declined_commit_error(context: str) -> RuntimeError:
     )
 
 
+async def _require_tracking_drained(tracking_storages, context: str) -> None:
+    """Fail when a tracking flush returned normally but left rows buffered.
+
+    A per-item backend (``OpenSearchKVStorage``) keeps a retryable bulk
+    failure (408/429/5xx) in its per-process buffer and returns from
+    ``index_done_callback`` without raising. For most namespaces the next
+    flush heals that. A chunk-tracking row does not heal: it is a whole row
+    produced by read-modify-write, so a row retained here would be written
+    later OVER whatever another worker committed in between, erasing that
+    writer's attribution while both operations reported success.
+
+    So the retained operations are discarded and the caller is failed. Before
+    a graph mutation that leaves nothing published; after one it leaves a row
+    that is too broad or stale, the direction every staging in this module
+    already accepts. Discarding is safe because only a storage declaring
+    ``buffers_writes_per_process`` is asked, and that declaration puts every
+    admin writer under ``LightRAG._admin_write_gate``: no pipeline batch and no
+    other admin write has operations in this buffer.
+    """
+    retained = []
+    for storage_inst in tracking_storages:
+        if not getattr(type(storage_inst), "buffers_writes_per_process", False):
+            continue
+        if await storage_inst.has_pending_index_ops(include_deletes=True):
+            retained.append(storage_inst)
+    if not retained:
+        return
+    for storage_inst in retained:
+        await storage_inst.drop_pending_index_ops()
+    names = ", ".join(
+        str(getattr(storage_inst, "namespace", storage_inst))
+        for storage_inst in retained
+    )
+    raise RuntimeError(
+        f"{context}: chunk tracking ({names}) was not made durable -- the "
+        "storage kept a transiently failed write buffered instead of "
+        "committing it. The buffered tracking writes were discarded so they "
+        "cannot overwrite a later commit; retry the operation."
+    )
+
+
 async def _persist_graph_updates(
     entities_vdb=None,
     relationships_vdb=None,
@@ -428,6 +469,9 @@ async def _persist_graph_updates(
     handling — reporting a completed deletion as ``fail``/500, and stranding the
     tracking rows the retry would then believe it still owed. Every other
     exception still propagates: those mean the flush did not happen.
+
+    A tracking flush that returns normally but leaves rows buffered is a
+    failure too: see ``_require_tracking_drained``.
 
     Commit order -- the tracking rows are committed BEFORE the
     graph, in two phases:
@@ -556,6 +600,8 @@ async def _persist_graph_updates(
         if errors:
             errors.sort(key=lambda item: not item[0])
             raise errors[0][1]
+        if phase is phases[0]:
+            await _require_tracking_drained(tracking_storages, context)
 
 
 async def _finish_deferring_cancellation(coro, description: str) -> None:
