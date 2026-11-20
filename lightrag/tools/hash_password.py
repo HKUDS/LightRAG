@@ -27,7 +27,10 @@ def main(argv: list[str] | None = None) -> int:
     if not password:
         parser.error("password cannot be empty")
 
-    hashed_password = hash_password(password)
+    try:
+        hashed_password = hash_password(password)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.username:
         print(f"{args.username}:{hashed_password}")
     else:

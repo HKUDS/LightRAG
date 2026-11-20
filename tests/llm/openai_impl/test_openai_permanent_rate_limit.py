@@ -22,8 +22,13 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from openai import APIStatusError, RateLimitError
-from tenacity import RetryError, wait_none
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    InternalServerError,
+    RateLimitError,
+)
+from tenacity import wait_none
 
 from lightrag.llm._error_utils import is_permanent_rate_limit_error
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
@@ -182,17 +187,19 @@ async def test_complete_does_not_retry_insufficient_quota(monkeypatch, no_retry_
 
 @pytest.mark.asyncio
 async def test_complete_still_retries_ordinary_rate_limit(monkeypatch, no_retry_wait):
-    """Stability: a throughput 429 keeps its three attempts and RetryError."""
+    """A throughput 429 keeps its three attempts, then the original
+    RateLimitError -- not a tenacity.RetryError -- reaches the caller."""
     err = _make_rate_limit_error(THROTTLE_BODY)
     fake_client = _make_chat_client(err)
     monkeypatch.setattr(
         "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
     )
 
-    with pytest.raises(RetryError):
+    with pytest.raises(RateLimitError) as excinfo:
         await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
 
     assert fake_client.chat.completions.create.await_count == 3
+    assert "Rate limit reached" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -216,10 +223,11 @@ async def test_embed_still_retries_ordinary_rate_limit(monkeypatch, no_retry_wai
         "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
     )
 
-    with pytest.raises(RetryError):
+    with pytest.raises(RateLimitError) as excinfo:
         await openai_embed(["hello"])
 
     assert fake_client.calls == 3
+    assert "Rate limit reached" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +333,7 @@ async def test_ordinary_429_costs_exactly_the_tenacity_attempts(
         _client_factory(_counting_transport(calls, THROTTLE_BODY)),
     )
 
-    with pytest.raises(RetryError):
+    with pytest.raises(RateLimitError):
         await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
 
     assert calls[0] == 3
@@ -367,10 +375,11 @@ async def test_complete_retries_transient_statuses(
         _client_factory(_counting_transport(calls, None, status_code)),
     )
 
-    with pytest.raises(RetryError):
+    with pytest.raises(APIStatusError) as excinfo:
         await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
 
     assert calls[0] == 3
+    assert excinfo.value.status_code == status_code
 
 
 @pytest.mark.parametrize("status_code", [408, 409])
@@ -384,10 +393,11 @@ async def test_embed_retries_transient_statuses(
         _client_factory(_counting_transport(calls, None, status_code)),
     )
 
-    with pytest.raises(RetryError):
+    with pytest.raises(APIStatusError) as excinfo:
         await openai_embed(["hello"])
 
     assert calls[0] == 3
+    assert excinfo.value.status_code == status_code
 
 
 @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
@@ -404,3 +414,66 @@ async def test_client_errors_still_fail_fast(monkeypatch, no_retry_wait, status_
         await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
 
     assert calls[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Exhausted retries surface the provider's own error, not tenacity.RetryError
+# ---------------------------------------------------------------------------
+
+
+def _disconnecting_transport(counter: list[int]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        counter[0] += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    return httpx.MockTransport(handler)
+
+
+async def _call_complete():
+    return await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+
+async def _call_embed():
+    return await openai_embed(["hello"])
+
+
+@pytest.mark.parametrize(
+    "call", [_call_complete, _call_embed], ids=["complete", "embed"]
+)
+@pytest.mark.asyncio
+async def test_exhausted_5xx_reraises_internal_server_error(
+    monkeypatch, no_retry_wait, call
+):
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(
+            _counting_transport(calls, {"message": "upstream connect error"}, 503)
+        ),
+    )
+
+    with pytest.raises(InternalServerError) as excinfo:
+        await call()
+
+    assert calls[0] == 3
+    assert excinfo.value.status_code == 503
+    assert "upstream connect error" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "call", [_call_complete, _call_embed], ids=["complete", "embed"]
+)
+@pytest.mark.asyncio
+async def test_exhausted_connection_error_reraises_api_connection_error(
+    monkeypatch, no_retry_wait, call
+):
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_disconnecting_transport(calls)),
+    )
+
+    with pytest.raises(APIConnectionError):
+        await call()
+
+    assert calls[0] == 3

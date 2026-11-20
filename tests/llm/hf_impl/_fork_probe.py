@@ -10,10 +10,24 @@ Forking there makes CPython emit its multi-threaded-fork DeprecationWarning,
 which cannot be promoted to an error (it is emitted after fork() has already
 returned), so in-process the warning could only ever be filtered away.
 
-Here the process is single-threaded, which is also what the scenario under
-test actually looks like -- a gunicorn pre-fork master imports the app and
-forks. That lets the warning be asserted ABSENT rather than suppressed: its
-presence means something made this process multi-threaded and the probe fails.
+Here the process is single-threaded, which is the precondition the at-fork
+reset under test is about. That lets the warning be asserted ABSENT rather
+than suppressed: its presence means something made this process
+multi-threaded and the probe fails.
+
+"Single-threaded" includes native threads, which threading.enumerate() cannot
+see and CPython 3.12+ counts from the OS when it decides to warn. Importing
+lightrag.llm.hf pulls in numpy, whose BLAS runtime starts one OS thread per
+core at import. OpenBLAS normally stops those threads in its own pre-fork
+handler, so they are not a confirmed cause of the warning; but they are
+unrelated to the executor reset, and no pool at all is simpler to reason about
+than one that must be torn down in time. main() therefore caps the common
+runtimes at one thread (_NATIVE_POOL_CAPS) before anything imports numpy. The
+caps isolate the check; they do not model production -- a real pre-fork master
+that has not set them forks with those pools running.
+
+If the warning ever fires, the stderr report adds the OS threads that existed
+before fork(), by kernel name, to identify the native pool responsible.
 
 Exit code 0 means every check passed; anything else is a failure explained on
 stderr.
@@ -26,6 +40,36 @@ import sys
 import threading
 import types
 import warnings
+
+# Set, not setdefault: a runner exporting OMP_NUM_THREADS=4 must not reopen
+# the pools. GOTO_NUM_THREADS covers older OpenBLAS builds; RAYON_NUM_THREADS
+# covers Rust-backed extensions such as tokenizers.
+_NATIVE_POOL_CAPS = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "GOTO_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "BLIS_NUM_THREADS": "1",
+    "RAYON_NUM_THREADS": "1",
+}
+
+
+def _os_thread_names() -> list[str] | None:
+    # Linux only; elsewhere the diagnostic is simply omitted.
+    try:
+        tids = os.listdir("/proc/self/task")
+    except OSError:
+        return None
+    names = []
+    for tid in tids:
+        try:
+            with open(f"/proc/self/task/{tid}/comm", encoding="utf-8") as f:
+                names.append(f.read().strip())
+        except OSError:
+            names.append(f"<tid {tid} gone>")
+    return sorted(names)
 
 
 def _install_stubs() -> None:
@@ -60,6 +104,9 @@ def _install_stubs() -> None:
 
 
 def main() -> int:
+    # Must run before _install_stubs() and the lightrag import below: the
+    # runtimes read these once, when numpy is first imported.
+    os.environ.update(_NATIVE_POOL_CAPS)
     _install_stubs()
 
     import lightrag.llm.hf as hf
@@ -74,6 +121,7 @@ def main() -> int:
         failures.append("parent: _get_hf_inference_executor() left the slot empty")
 
     alive = sorted(t.name for t in threading.enumerate())
+    os_threads = _os_thread_names()
     if alive != ["MainThread"]:
         failures.append(f"parent: expected a single thread before fork, got {alive}")
 
@@ -100,6 +148,11 @@ def main() -> int:
 
     for warning in caught:
         failures.append(f"parent: fork() warned -- {warning.message}")
+    if caught and os_threads is not None:
+        failures.append(
+            f"parent: {len(os_threads)} OS thread(s) before fork {os_threads} "
+            f"for Python threads {alive}; any extra is a native pool"
+        )
 
     for line in failures:
         print(line, file=sys.stderr)

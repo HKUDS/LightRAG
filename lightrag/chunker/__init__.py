@@ -58,6 +58,14 @@ chunker selection per document.
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
+from lightrag.chunker.registry import (
+    ChunkingContext,
+    accepts_chunking_context,
+    callback_supports_context,
+    invoke_chunker,
+    resolve_sidecar_location,
+)
+
 if TYPE_CHECKING:
     from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
     from lightrag.chunker.recursive_character import chunking_by_recursive_character
@@ -88,9 +96,14 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "ChunkingContext",
+    "accepts_chunking_context",
+    "callback_supports_context",
     "chunking_by_fixed_token",
     "chunking_by_paragraph_semantic",
     "chunking_by_recursive_character",
     "chunking_by_semantic_vector",
     "chunking_by_token_size",
+    "invoke_chunker",
+    "resolve_sidecar_location",
 ]

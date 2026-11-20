@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.constants import (
+    MIN_CHUNK_TOKEN_SIZE,
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
@@ -147,6 +148,11 @@ _CHUNK_PARAM_SPECS: tuple[ParamSpec, ...] = (
         aliases=frozenset({"chunk_ts"}),
         kind="int",
         targets=_ALL_CHUNK_SELECTORS,
+        # Parse-level floor stays 1: the best-effort hint classifier
+        # (_filename_hint_match) shares this schema, and a hint that was valid
+        # when its file was ingested must keep canonicalizing to the stored
+        # key. MIN_CHUNK_TOKEN_SIZE is checked at ingress only, by
+        # chunk_param_minimum_error.
         min_value=1,
     ),
     ParamSpec(
@@ -316,6 +322,23 @@ def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
     if size is not None and overlap is not None and overlap >= size:
         return (
             f"chunk_overlap_token_size ({overlap}) must be < chunk_token_size ({size})"
+        )
+    return None
+
+
+def chunk_param_minimum_error(params: Mapping[str, Any]) -> str | None:
+    """Return an error string when a block's explicit size is below the minimum.
+
+    Ingress-only: call it where a NEW hint or rule enters (upload, scan
+    enqueue, ``LIGHTRAG_PARSER`` startup validation), never from
+    classification, canonicalization or the resume path, which must keep
+    accepting hints that were valid under the old floor of 1.
+    """
+    size = params.get("chunk_token_size")
+    if size is not None and size < MIN_CHUNK_TOKEN_SIZE:
+        return (
+            f"value for 'chunk_token_size' must be >= {MIN_CHUNK_TOKEN_SIZE}, "
+            f"got {size}"
         )
     return None
 
