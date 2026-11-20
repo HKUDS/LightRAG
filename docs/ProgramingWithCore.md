@@ -315,6 +315,12 @@ relies on the graph context alone, and a "Token budget left no room" warning is
 logged. Conversation history and provider-specific message framing are outside
 this context budget.
 
+`naive` mode applies the same final check to its text chunks: trailing chunks are
+dropped, and the reference list is rebuilt from the chunks that are kept, until
+the rendered system prompt and the user query fit. If not even the first chunk
+fits, the query returns no result without calling the answer model and a "Token
+budget left no room" warning is logged.
+
 
 ### Streaming queries
 
