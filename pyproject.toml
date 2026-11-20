@@ -253,6 +253,15 @@ norecursedirs = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Python 3.12+ warns when fork() runs in a multi-threaded process. The
+# real-Manager tests start shared_storage's SyncManager (fork context) inside
+# the pytest process, which earlier tests have left with executor threads; in
+# production that start runs in the gunicorn master before any threads exist.
+# Scoped to forks multiprocessing starts; tests calling os.fork() directly
+# carry their own filterwarnings mark.
+filterwarnings = [
+    "ignore:This process .* is multi-threaded, use of fork\\(\\) may lead to deadlocks in the child:DeprecationWarning:multiprocessing.popen_fork",
+]
 markers = [
     "offline: tests that run without any external service (default CI gate)",
     "integration: tests requiring external services; skipped by default, opt in with --run-integration",
