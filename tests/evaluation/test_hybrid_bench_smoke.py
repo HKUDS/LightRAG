@@ -104,10 +104,14 @@ async def test_file_backend_mechanics_smoke(tmp_path):
     assert dataset["ingest"]["duplicate_aliased_doc_ids"] == []
     assert dataset["ingest"]["moderation_fallback_doc_ids"] == []
     # At least one extraction call per passage (gleaning may add more);
-    # keywords were injected, answers came from the answer-latency protocol.
+    # entity seeding extracts keywords once per query (run-cached); ablation
+    # and latency still inject keywords, answers came from the answer-latency
+    # protocol.
     assert dataset["fake_llm_calls"]["extraction"] >= 4
-    assert dataset["fake_llm_calls"]["keywords"] == 0
+    assert dataset["fake_llm_calls"]["keywords"] == len(QUERIES)
     assert dataset["fake_llm_calls"]["answer"] > 0
+    assert dataset["entity_seeding_protocol"] == "production-faithful-multi-keyword"
+    assert dataset["entity_seeding_fallbacks"] == {}
 
     chunk_metrics = dataset["chunk_metrics"]
     assert set(chunk_metrics) == {"dense", "hybrid"}

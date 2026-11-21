@@ -23,6 +23,17 @@ ENTITY_TRUTH_DERIVATION = (
     "empty derived truth are reported separately and excluded from hit@k."
 )
 
+ENTITY_SEEDING_NOTE = (
+    "Entity arms extract keywords once per query through the product's "
+    "get_keywords_from_query (the kg_query mechanism), then query entities "
+    "with the joined keyword string and its embedding exactly as "
+    "_get_node_data does; the hybrid arm passes lexical_keywords so each "
+    "keyword seeds entities on its own (OR across keywords). Chunk arms "
+    "keep the whole query and its AND lexical leg. Zero-keyword queries "
+    "fall back to the query as one keyword (annotated per query); empty "
+    "low-level lists use the high-level list, the product's fallback."
+)
+
 LEXICAL_ARM_NOTE = (
     "The lexical-only arm executes the same lexical_chunks SQL template "
     "hybrid_query uses, read from postgres_impl.SQL_TEMPLATES, with the same "
@@ -123,6 +134,7 @@ def render_markdown(results: dict) -> str:
         "## Protocols",
         "",
         f"- Entity truth: {ENTITY_TRUTH_DERIVATION}",
+        f"- Entity seeding: {ENTITY_SEEDING_NOTE}",
         f"- Lexical arm: {LEXICAL_ARM_NOTE}",
         f"- Ablation: {ABLATION_NOTE}",
         f"- Latency surface: {LATENCY_SURFACE_NOTE}",
@@ -158,7 +170,14 @@ def render_markdown(results: dict) -> str:
             f"via the sanctioned manual retry path; recovered "
             f"{dataset['ingest']['recovered_doc_ids']}; persistently failed "
             f"{dataset['ingest']['persistently_failed_doc_ids']}.",
+            f"Entity seeding protocol: "
+            f"{dataset.get('entity_seeding_protocol', 'unannotated')}.",
         ]
+        if dataset.get("entity_seeding_fallbacks"):
+            lines.append(
+                f"Entity-seeding keyword fallbacks (qid -> kind): "
+                f"{dataset['entity_seeding_fallbacks']}."
+            )
         if dataset["ingest"].get("duplicate_aliased_doc_ids"):
             lines.append(
                 f"Duplicate-aliased twins: "

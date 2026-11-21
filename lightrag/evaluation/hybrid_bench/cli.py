@@ -331,8 +331,16 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
             "file vector backend lacks supports_hybrid_query; hybrid arm "
             "falls back to dense"
         )
+    seeding_cache: dict[str, arms_mod.EntitySeeding] = {}
+    seeding_fallbacks: dict[str, str] = {}
     for qid, query in dataset.queries.items():
         embedding = await arms_mod.embed_query(rag, query)
+        seeding = await asyncio.wait_for(
+            arms_mod.prepare_entity_seeding(rag, query, seeding_cache),
+            timeout=config.request_timeout,
+        )
+        if seeding.fallback:
+            seeding_fallbacks[qid] = seeding.fallback
         for arm in arms_mod.ARMS:
             if arm == "lexical" and not lexical_available:
                 continue
@@ -357,7 +365,7 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
                 )
         for arm, hybrid in (("dense", False), ("hybrid", True)):
             entities = await asyncio.wait_for(
-                arms_mod.retrieve_entities(rag, query, hybrid, config.top_k, embedding),
+                arms_mod.retrieve_entities(rag, seeding, hybrid, config.top_k),
                 timeout=config.request_timeout,
             )
             arm_entities[arm][qid] = entities
@@ -388,7 +396,14 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
                         entities, truth.per_query[qid], config.top_k
                     )
                 b5_per_query[combo][qid] = entry
-    return arm_docs, arm_entities, lexical_positive_hits, skipped, b5_per_query
+    return (
+        arm_docs,
+        arm_entities,
+        lexical_positive_hits,
+        skipped,
+        b5_per_query,
+        seeding_fallbacks,
+    )
 
 
 async def _run_latency(rag, dataset, config):
@@ -496,10 +511,17 @@ async def run_dataset(
             "queries_with_truth": len(truth.per_query),
             "zero_truth_query_ids": truth.zero_truth_query_ids,
         }
-        arm_docs, arm_entities, lexical_hits, skipped, b5_per_query = await _run_arms(
-            rag, dataset, config, ingest, truth, args.phase_set
-        )
+        (
+            arm_docs,
+            arm_entities,
+            lexical_hits,
+            skipped,
+            b5_per_query,
+            seeding_fallbacks,
+        ) = await _run_arms(rag, dataset, config, ingest, truth, args.phase_set)
         result["skipped"].update(skipped)
+        result["entity_seeding_protocol"] = arms_mod.ENTITY_SEEDING_PROTOCOL
+        result["entity_seeding_fallbacks"] = seeding_fallbacks
         scored, zero_positive, empty = scoring.score_chunk_arms(
             dataset, arm_docs, config.top_k
         )

@@ -3,9 +3,18 @@
 Rules:
 - Dense and hybrid chunk arms go through the REAL retrieval path,
   ``operate._get_vector_context``, with ``QueryParam.enable_hybrid`` selecting
-  the dispatch; entity seeding calls ``entities_vdb.query`` /
-  ``entities_vdb.hybrid_query`` directly. All arms share one precomputed query
-  embedding and the same top_k.
+  the dispatch; the chunk lexical leg stays whole-query AND. Chunk arms share
+  one precomputed whole-query embedding and the same top_k.
+- Entity seeding is PRODUCTION-FAITHFUL (``ENTITY_SEEDING_PROTOCOL``): one
+  keyword-extraction pass per query through the product's
+  ``operate.get_keywords_from_query`` (the same call ``kg_query`` makes when
+  keywords are not injected), cached within the run. Both entity arms query
+  with the joined keyword string and ITS embedding, exactly as
+  ``_perform_kg_search`` / ``_get_node_data`` do; the hybrid arm additionally
+  passes ``lexical_keywords=keywords_str.split(", ")`` so each keyword seeds
+  entities on its own (OR across keywords, the entity-side hybrid fix).
+  Omitting ``lexical_keywords`` would measure the legacy whole-query AND path
+  and is a protocol defect, not a simplification.
 - The lexical-only arm is diagnostic: it executes the SAME lexical SQL
   template ``hybrid_query`` uses, read from ``postgres_impl.SQL_TEMPLATES``
   with the same tokenizer, against the same workspace. PG only; on file
@@ -33,9 +42,12 @@ from dataclasses import dataclass
 from lightrag import LightRAG
 from lightrag.base import QueryParam
 from lightrag.kg.lexical_tokenizer import tokenize_for_query
-from lightrag.operate import _get_vector_context, kg_query
+from lightrag.operate import _get_vector_context, get_keywords_from_query, kg_query
+from lightrag.utils import logger
 
 ARMS = ("dense", "hybrid", "lexical")
+#: Report annotation naming the entity-seeding measurement protocol.
+ENTITY_SEEDING_PROTOCOL = "production-faithful-multi-keyword"
 B5_COMBINATIONS = {
     "entity_only": (True, False),
     "chunk_only": (False, True),
@@ -127,21 +139,103 @@ async def retrieve_chunks(
     raise ValueError(f"unknown chunk arm {arm!r}")
 
 
+@dataclass(frozen=True, slots=True)
+class EntitySeeding:
+    """One query's production-style entity search inputs.
+
+    ``keywords_str`` is the joined keyword list (the entity query string in
+    ``_perform_kg_search``); ``embedding`` embeds THAT string, not the raw
+    query. ``fallback`` names a documented deviation from plain low-level
+    seeding: ``"high_level"`` (ll empty, hl stands in, the product's
+    ``entities_by_high_level_keywords`` fallback) or ``"zero_keywords"``
+    (both lists empty; the query itself becomes the single keyword).
+    """
+
+    keywords_str: str
+    embedding: list[float]
+    fallback: str
+
+
+async def prepare_entity_seeding(
+    rag: LightRAG, query: str, cache: dict[str, EntitySeeding]
+) -> EntitySeeding:
+    """Extract keywords once per query and form the entity search inputs.
+
+    Rules:
+    - Extraction goes through the PRODUCT mechanism ``kg_query`` uses when
+      keywords are not injected (``get_keywords_from_query`` with the run's
+      configured keyword-role LLM). Provider errors propagate: a failed
+      extraction must never silently degrade to whole-query seeding.
+    - ``cache`` keys on the query text and lives for the whole run: the bench
+      disables the LLM cache, so this dict is what guarantees one extraction
+      pass per query shared by every arm.
+    - Empty low-level keywords with non-empty high-level ones use the hl list
+      (the product's mix-mode entity-store fallback). Both lists empty falls
+      back to the query as ONE keyword: production refuses such queries over
+      50 chars, but the benchmark must score every query, so the fallback is
+      applied at any length, logged, and annotated in the report. A single
+      keyword is byte-identical to whole-query AND seeding.
+    """
+    cached = cache.get(query)
+    if cached is not None:
+        return cached
+    hl_keywords, ll_keywords = await get_keywords_from_query(
+        query,
+        QueryParam(mode="mix"),
+        rag._build_global_config(),
+        hashing_kv=rag.llm_response_cache,
+    )
+    fallback = ""
+    keywords = ll_keywords
+    if not keywords and hl_keywords:
+        keywords = hl_keywords
+        fallback = "high_level"
+    elif not keywords:
+        keywords = [query]
+        fallback = "zero_keywords"
+    if fallback:
+        logger.warning(
+            "[hybrid-bench] entity seeding fallback %s for query %r",
+            fallback,
+            query,
+        )
+    keywords_str = ", ".join(keywords)
+    seeding = EntitySeeding(
+        keywords_str=keywords_str,
+        embedding=await embed_query(rag, keywords_str),
+        fallback=fallback,
+    )
+    cache[query] = seeding
+    return seeding
+
+
 async def retrieve_entities(
     rag: LightRAG,
-    query: str,
+    seeding: EntitySeeding,
     hybrid: bool,
     top_k: int,
-    query_embedding: list[float],
 ) -> list[str]:
-    """Entity names in seeding order, dense or hybrid."""
+    """Entity names in seeding order, dense or hybrid.
+
+    Mirrors ``operate._get_node_data``: the query string is the joined
+    keyword list, the dense leg embeds that same string, and the hybrid
+    lexical leg receives ``lexical_keywords`` recovered by the same
+    ``split(", ")`` so each keyword seeds entities on its own (OR across
+    keywords). Never drop ``lexical_keywords``: the storage default (None)
+    is the legacy whole-query AND path the entity-side hybrid fix replaced.
+    """
     vdb = rag.entities_vdb
     if hybrid and getattr(vdb, "supports_hybrid_query", False):
         rows = await vdb.hybrid_query(
-            query, top_k=top_k, query_embedding=query_embedding
+            seeding.keywords_str,
+            top_k=top_k,
+            query_embedding=seeding.embedding,
+            lexical_keywords=seeding.keywords_str.split(", "),
         )
     else:
-        rows = await vdb.query(query, top_k=top_k, query_embedding=query_embedding)
+        rows = await vdb.query(
+            seeding.keywords_str, top_k=top_k, query_embedding=seeding.embedding
+        )
     return [row["entity_name"] for row in rows]
 
 

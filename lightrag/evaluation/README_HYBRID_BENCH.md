@@ -199,16 +199,42 @@ instead of repeating work:
   reused workspace.
 
 **Arms.** Dense and hybrid chunk retrieval go through the real
-`operate._get_vector_context` dispatch (`QueryParam.enable_hybrid`); entity
-seeding calls `entities_vdb.query` / `hybrid_query`. All arms share one
-precomputed query embedding and the same `top_k`. The lexical-only arm
-(diagnostic) executes the SAME `SQL_TEMPLATES["lexical_chunks"]` template
-`hybrid_query` uses, with the same tokenizer, against the same workspace — no
-product change; `postgres_impl` is imported lazily inside that arm, so a
-file-backend run never loads the PG driver stack. Note the production
-tokenizer ANDs every query token/bigram: a natural-language query whose
-bigrams cross word boundaries can match nothing lexically; that is the
-measured product behavior, not a harness bug.
+`operate._get_vector_context` dispatch (`QueryParam.enable_hybrid`) with the
+whole query and one precomputed whole-query embedding; the chunk lexical leg
+stays whole-query AND (the entity-side OR fix does not apply to chunks). All
+arms share the same `top_k`. The lexical-only arm (diagnostic) executes the
+SAME `SQL_TEMPLATES["lexical_chunks"]` template `hybrid_query` uses, with the
+same tokenizer, against the same workspace — no product change;
+`postgres_impl` is imported lazily inside that arm, so a file-backend run
+never loads the PG driver stack. Note the production tokenizer ANDs every
+query token/bigram: a natural-language query whose bigrams cross word
+boundaries can match nothing lexically; that is the measured product
+behavior, not a harness bug.
+
+**Entity seeding (production-faithful multi-keyword).** The entity arms
+mirror `operate._get_node_data`. One keyword-extraction pass per query runs
+through the product's `get_keywords_from_query` — the same keyword-role LLM
+mechanism `kg_query` uses when keywords are not injected — cached within the
+run: the bench disables the LLM cache, so a harness dict keyed on the query
+text guarantees one extraction shared by both entity arms. Both arms query
+`entities_vdb` with the joined keyword string `", ".join(keywords)` and ITS
+embedding (production embeds the keyword string, not the raw query); the
+hybrid arm additionally passes `lexical_keywords=keywords_str.split(", ")`,
+so each keyword seeds entities on its own: AND inside a keyword, OR across
+keywords — the entity-side hybrid fix. Omitting `lexical_keywords` would
+measure the legacy whole-query AND path (the pre-fix protocol null).
+Fallbacks are logged and annotated per query in `entity_seeding_fallbacks`:
+an empty low-level list with non-empty high-level keywords uses the hl list
+(the product's `entities_by_high_level_keywords` fallback); both lists empty
+falls back to the query as ONE keyword, byte-identical to whole-query AND.
+Production refuses zero-keyword queries over 50 chars; the benchmark must
+score every query, so it applies that single-keyword fallback at any length
+— a documented divergence. Extraction FAILURE (a provider error) always
+propagates and fails the run; it never degrades to whole-query seeding. The
+report carries `entity_seeding_protocol="production-faithful-multi-keyword"`.
+Ablation and latency keep their injected-keyword protocols (dispatch
+attribution and keyword-LLM exclusion respectively); the faithful entity
+quality measurement is the dense/hybrid entity arms.
 
 **Chunk attribution and duplicate content.** Chunk ids are content hashes on
 the chunks-only path (`ainsert_custom_kg`), so documents with identical text
@@ -271,7 +297,10 @@ recall (entity-derived chunks merge with the vector leg), and metrics score
 the FINAL context chunks and entities after the product's merge/truncation —
 not two independent searches. No product change. Gate: both >= each single
 arm per metric. On file backends no storage declares hybrid capability, so
-all three combinations reduce to the dense path (labeled skip).
+all three combinations reduce to the dense path (labeled skip). The injected
+whole-query keyword is deliberate and unchanged: ablation attributes quality
+to the storage DISPATCHES, while the production-faithful multi-keyword
+entity measurement lives in the entity arms (see above).
 
 **Latency.** The production query router (`create_query_routes`) is
 mounted on a minimal FastAPI app and driven via `httpx.ASGITransport`:
@@ -352,8 +381,9 @@ report table displays.
 
 `<output-dir>/report.md` + `report.json`: domain x arm x metric tables with
 95% CIs, per-query values, zero-positive/zero-truth/empty-retrieval query
-lists, latency/write-amp/backfill/rerank sections, gate verdicts, and a
-hardware/model/parameter appendix. A run with `fake-hash` embeddings or the
+lists, the entity-seeding protocol annotation (`entity_seeding_protocol`,
+`entity_seeding_fallbacks`), latency/write-amp/backfill/rerank sections, gate
+verdicts, and a hardware/model/parameter appendix. A run with `fake-hash` embeddings or the
 fake LLM is labeled **SYNTHETIC** in both outputs: mechanics proof, not
 quality evidence.
 

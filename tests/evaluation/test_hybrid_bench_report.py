@@ -120,3 +120,17 @@ def test_no_annotation_lines_without_demotions():
     markdown = render_markdown(_results(10))
     assert "Duplicate-aliased twins" not in markdown
     assert "Moderation chunks-only fallback" not in markdown
+    assert "Entity-seeding keyword fallbacks" not in markdown
+
+
+def test_entity_seeding_annotation_renders_protocol_and_fallbacks():
+    results = _results(10)
+    dataset = results["datasets"][0]
+    dataset["entity_seeding_protocol"] = "production-faithful-multi-keyword"
+    dataset["entity_seeding_fallbacks"] = {"q7": "zero_keywords"}
+    markdown = render_markdown(results)
+    assert "Entity seeding protocol: production-faithful-multi-keyword." in markdown
+    assert (
+        "Entity-seeding keyword fallbacks (qid -> kind): {'q7': 'zero_keywords'}."
+        in markdown
+    )
