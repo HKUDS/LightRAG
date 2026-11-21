@@ -206,30 +206,60 @@ def test_v_oversized_group_resplit_preserves_child_source_spans():
         assert chunk["tokens"] <= 35
 
 
+_SHORT_SENTENCES = (
+    "Alpha sentence one. "
+    "Beta sentence two. "
+    "Gamma sentence three. "
+    "Delta sentence four. "
+    "Epsilon sentence five. "
+    "Zeta sentence six."
+)
+
+
 @pytest.mark.offline
-def test_semantic_groups_mirror_matches_upstream_split_text():
+@pytest.mark.parametrize(
+    ("text", "splitter_kwargs"),
+    [
+        pytest.param(
+            "Quantum mechanics describes nature at small scales. "
+            "It contradicts classical intuition. "
+            "Bread is baked from flour. "
+            "Sourdough requires a long fermentation.",
+            {},
+            id="default",
+        ),
+        # A threshold of 0 puts almost every sentence boundary above it, so
+        # without min_chunk_size this body splits into one group per sentence,
+        # giving min_chunk_size several undersized groups to merge forward.
+        pytest.param(
+            _SHORT_SENTENCES,
+            {"breakpoint_threshold_amount": 0.0, "min_chunk_size": 60},
+            id="min_chunk_size",
+        ),
+    ],
+)
+def test_semantic_groups_mirror_matches_upstream_split_text(text, splitter_kwargs):
     """Drift guard: ``_semantic_groups_with_spans`` re-implements the private body
     of ``SemanticChunker.split_text`` to keep verbatim source spans. If an upstream
     langchain-experimental release changes that grouping (or a private member it
     relies on), this catches it — the mirror must yield the same group count and the
     same content modulo whitespace (it keeps the verbatim slice; upstream reflows
-    sentences with single spaces)."""
+    sentences with single spaces).
+
+    The ``min_chunk_size`` case covers the mirror's merge-forward branch: the
+    ``continue`` that skips updating ``start_index`` folds an undersized group
+    into the next one instead of dropping it."""
     from langchain_experimental.text_splitter import SemanticChunker
 
     from lightrag.chunker.semantic_vector import _semantic_groups_with_spans
     from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
 
-    text = (
-        "Quantum mechanics describes nature at small scales. "
-        "It contradicts classical intuition. "
-        "Bread is baked from flour. "
-        "Sourdough requires a long fermentation."
-    )
     splitter = SemanticChunker(
         _make_sync_embeddings(),
         buffer_size=1,
         breakpoint_threshold_type="percentile",
         sentence_split_regex=DEFAULT_SENTENCE_SPLIT_REGEX,
+        **splitter_kwargs,
     )
 
     # Same process → identical deterministic embeddings on both calls → identical
@@ -240,50 +270,6 @@ def test_semantic_groups_mirror_matches_upstream_split_text():
     assert len(mirror) == len(upstream)
     for (grp_text, start, end), up in zip(mirror, upstream):
         assert grp_text == text[start:end]  # mirror keeps the verbatim source slice
-        assert "".join(grp_text.split()) == "".join(up.split())
-
-
-@pytest.mark.offline
-def test_semantic_groups_mirror_matches_upstream_with_min_chunk_size():
-    """Drift guard for the mirror's ``min_chunk_size`` branch.
-
-    The guard above leaves ``min_chunk_size`` unset, so the ``continue`` that
-    skips updating ``start_index`` — merging an undersized group forward into
-    the next one instead of dropping it — was never compared with upstream's
-    ``split_text``. One size that forces several merges is enough: every size
-    takes the same branch.
-    """
-    from langchain_experimental.text_splitter import SemanticChunker
-
-    from lightrag.chunker.semantic_vector import _semantic_groups_with_spans
-    from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
-
-    text = (
-        "Alpha sentence one. "
-        "Beta sentence two. "
-        "Gamma sentence three. "
-        "Delta sentence four. "
-        "Epsilon sentence five. "
-        "Zeta sentence six."
-    )
-    splitter = SemanticChunker(
-        _make_sync_embeddings(),
-        buffer_size=1,
-        breakpoint_threshold_type="percentile",
-        # A threshold of 0 puts almost every sentence boundary above it, so
-        # without min_chunk_size this body splits into one group per sentence —
-        # giving min_chunk_size plenty of undersized groups to merge forward.
-        breakpoint_threshold_amount=0.0,
-        sentence_split_regex=DEFAULT_SENTENCE_SPLIT_REGEX,
-        min_chunk_size=60,
-    )
-
-    upstream = splitter.split_text(text)
-    mirror = _semantic_groups_with_spans(splitter, text)
-
-    assert len(mirror) == len(upstream)
-    for (grp_text, start, end), up in zip(mirror, upstream):
-        assert grp_text == text[start:end]
         assert "".join(grp_text.split()) == "".join(up.split())
 
 
@@ -305,14 +291,7 @@ def test_v_min_chunk_size_merges_small_groups_forward_without_dropping_content()
     ``start_index`` update ahead of the ``continue`` (turning the merge into
     silent data loss) would have passed every existing test in this file.
     """
-    body = (
-        "Alpha sentence one. "
-        "Beta sentence two. "
-        "Gamma sentence three. "
-        "Delta sentence four. "
-        "Epsilon sentence five. "
-        "Zeta sentence six."
-    )
+    body = _SHORT_SENTENCES
 
     async def _run(min_chunk_size):
         return await chunking_by_semantic_vector(
