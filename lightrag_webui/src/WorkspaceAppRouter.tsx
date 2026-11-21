@@ -1,4 +1,3 @@
-import '@/lib/extensions'; // Import all global extensions
 import '@/bootstrap/workspaceEntry'; // Entry-specific navigation policy — before anything can 401
 import { HashRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
