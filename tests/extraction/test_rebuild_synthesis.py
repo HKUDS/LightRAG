@@ -1,5 +1,6 @@
 import pytest
 from lightrag.base import BaseGraphStorage, BaseVectorStorage, BaseKVStorage
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.operate import _rebuild_single_entity, _rebuild_single_relationship
 from lightrag.utils import Tokenizer, TokenizerInterface
 
@@ -286,3 +287,68 @@ async def test_rebuild_single_relationship_keyword_deduplication_and_formatting(
 
     updated_edge = await graph.get_edge("A", "B")
     assert updated_edge["keywords"] == "AI, Deep Learning, Machine Learning"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_single_entity_from_edges_takes_file_paths_from_surviving_chunks():
+    """An entity named only as a relation endpoint is re-summarized from its
+    edges, but its file_path follows the surviving chunks like its source_id:
+    capped at max_file_paths, in chunk order, and never copied from the
+    edges, whose file_path names other files and its own truncation marker.
+    """
+    graph = DummyGraph()
+    global_config = {
+        "max_source_ids_per_entity": 10,
+        "max_file_paths": 2,
+        "file_path_more_placeholder": "more",
+        "source_ids_limit_method": "KEEP",
+        "tokenizer": Tokenizer("dummy", _DummyTokenizer()),
+        "summary_context_size": 1_000_000,
+        "summary_max_tokens": 1_000_000,
+        "force_llm_summary_on_merge": 6,
+    }
+    await graph.upsert_node(
+        "ALICE",
+        {
+            "description": "Initial description",
+            "entity_type": "PERSON",
+            "source_id": "c0",
+            "file_path": "deleted.txt",
+        },
+    )
+    for other in ("BOB", "CARL"):
+        await graph.upsert_edge(
+            "ALICE",
+            other,
+            {
+                "description": f"Alice knows {other}",
+                "file_path": GRAPH_FIELD_SEP.join(
+                    [f"{other}-1.txt", f"{other}-2.txt", "...more...(KEEP 2/5)"]
+                ),
+            },
+        )
+
+    degraded = await _rebuild_single_entity(
+        knowledge_graph_inst=graph,
+        entities_vdb=DummyVector(),
+        entity_name="ALICE",
+        chunk_ids=["c3", "c1", "c2"],
+        chunk_entities={},
+        llm_response_cache=DummyKV(),
+        global_config=global_config,
+        chunk_data_by_id={
+            "c1": {"file_path": "f1.txt"},
+            "c2": {"file_path": "f2.txt"},
+            "c3": {"file_path": "f3.txt"},
+        },
+    )
+
+    node = await graph.get_node("ALICE")
+    assert degraded is False
+    assert node["description"] != "Initial description"
+    assert node["source_id"] == GRAPH_FIELD_SEP.join(["c3", "c1", "c2"])
+    assert node["file_path"].split(GRAPH_FIELD_SEP) == [
+        "f3.txt",
+        "f1.txt",
+        "...more...(KEEP 2/3)",
+    ]

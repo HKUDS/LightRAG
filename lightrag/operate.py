@@ -2257,20 +2257,18 @@ async def _rebuild_single_entity(
             f"No entity data found for `{entity_name}`, trying to rebuild from relationships"
         )
 
-        # Collect relationship data to extract entity information
+        # Only the description comes from the edges. Provenance follows the
+        # surviving chunks like source_id does: an edge's file_path may name
+        # files outside this entity's chunks and carries its own truncation
+        # marker, which must not be counted or kept as a path.
         relationship_descriptions = []
-        file_paths = set()
-
-        # Get edge data for all connected relationships
         for src_id, tgt_id in edges:
             edge_data = await knowledge_graph_inst.get_edge(src_id, tgt_id)
-            if edge_data:
-                if edge_data.get("description"):
-                    relationship_descriptions.append(edge_data["description"])
-
-                if edge_data.get("file_path"):
-                    edge_file_paths = edge_data["file_path"].split(GRAPH_FIELD_SEP)
-                    file_paths.update(edge_file_paths)
+            if edge_data and edge_data.get("description"):
+                relationship_descriptions.append(edge_data["description"])
+        file_paths = _surviving_chunk_file_paths(
+            limited_chunk_ids, chunk_data_by_id or {}, global_config
+        )
 
         # deduplicate descriptions
         description_list = list(dict.fromkeys(relationship_descriptions))
