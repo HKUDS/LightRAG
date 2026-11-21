@@ -838,14 +838,17 @@ def test_parenthesised_source_is_limited_in_length():
         # depth for a suffix no image could ever reach (230 MiB for 1 MB).
         "![x](a.png) " + ")" * 1_000_000,
         "![x](a(1).png) " + ")" * 1_000_000,
-        "![x](" + "(" * 1_000_000,
-        "![x](a(" + "()" * 500_000 + ")",
+        # These two are slow under tracemalloc, so they are shorter: an index
+        # over the whole line still takes about 4x the bound at this length.
+        "![x](" + "(" * 250_000,
+        "![x](a(" + "()" * 125_000 + ")",
         "![x](a b" + ".png)" * 200_000,
         "![x](a (b" + ".png) " * 200_000,
         # Code spans are skipped, never indexed: a whole-line list of backtick
-        # runs took 48 MiB for this line.
-        "![x](a.png) " + "`a" * 200_000,
-        "![x](a.png) " + "``a`" * 100_000,
+        # runs took 48 MiB for the first line at twice this length. Halved for
+        # speed, the list still takes 1.5x the bound or more.
+        "![x](a.png) " + "`a" * 100_000,
+        "![x](a.png) " + "``a`" * 50_000,
         "![x](a.png) " + "".join("`" * k + " " for k in range(1, 1_400)),
     ],
 )
