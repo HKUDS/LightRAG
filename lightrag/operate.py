@@ -2920,10 +2920,13 @@ async def _merge_nodes_then_upsert(
         # and wins a tie (sorted() is stable): one conflicting extraction must
         # not flip it. An UNKNOWN placeholder -- written for a relation
         # endpoint never extracted as an entity, or for a missing stored type
-        # -- is not evidence, casts no vote and yields to any real extraction.
-        incumbent_types = [t for t in already_entity_types if t.upper() != "UNKNOWN"]
+        # -- is not evidence, casts no vote and yields to any real extraction;
+        # with no other vote it is kept as is.
+        type_votes = [t for t in already_entity_types if t.upper() != "UNKNOWN"] + [
+            dp["entity_type"] for dp in nodes_data
+        ]
         entity_type = sorted(
-            Counter(incumbent_types + [dp["entity_type"] for dp in nodes_data]).items(),
+            Counter(type_votes or already_entity_types).items(),
             key=lambda x: x[1],
             reverse=True,
         )[0][0]
