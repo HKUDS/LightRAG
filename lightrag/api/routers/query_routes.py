@@ -145,6 +145,11 @@ class QueryRequest(BaseModel):
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
     )
 
+    enable_hybrid: Optional[bool] = Field(
+        default=None,
+        description="Enable hybrid (lexical + vector) retrieval on backends that support it (PGVectorStorage). Unsupported backends fall back to vector-only retrieval. If omitted, the server default applies (HYBRID_BY_DEFAULT, False unless enabled); an explicit true/false overrides it.",
+    )
+
     include_references: Optional[bool] = Field(
         default=True,
         description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",

@@ -79,6 +79,7 @@ from ..utils import (
     validate_workspace_override,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
+from ..kg.lexical_tokenizer import tokenize_for_index, tokenize_for_query
 
 import pipmaster as pm
 
@@ -338,6 +339,112 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
             f"POSTGRES_DELETE_MAX_RECORDS_PER_BATCH={delete_records} is non-positive, disable delete record-count splitting"
         )
     return upsert_payload_bytes, upsert_records, delete_records
+
+
+# Lexical column maintained on every vector table for hybrid retrieval. The
+# column and its GIN index are schema: every write maintains them whether or
+# not retrieval ever enables the lexical leg.
+LEXICAL_TSV_COLUMN = "content_tsv"
+DEFAULT_PG_LEXICAL_BACKFILL_BATCH_SIZE = 1000
+# Bounded CREATE INDEX CONCURRENTLY attempts before the residue is logged and
+# left for the next startup.
+_LEXICAL_INDEX_MAX_ATTEMPTS = 3
+
+
+def _resolve_lexical_backfill_batch_size() -> int:
+    """Rows per lexical backfill batch, from POSTGRES_LEXICAL_BACKFILL_BATCH_SIZE.
+
+    Raises:
+        ValueError: the value is not a positive integer. A batch size nobody
+            can use must fail at construction, not reshape the backfill.
+    """
+    raw = os.environ.get(
+        "POSTGRES_LEXICAL_BACKFILL_BATCH_SIZE",
+        str(DEFAULT_PG_LEXICAL_BACKFILL_BATCH_SIZE),
+    )
+    try:
+        size = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"POSTGRES_LEXICAL_BACKFILL_BATCH_SIZE must be an integer, got {raw!r}"
+        ) from None
+    if size <= 0:
+        raise ValueError(
+            f"POSTGRES_LEXICAL_BACKFILL_BATCH_SIZE must be positive, got {size}"
+        )
+    return size
+
+
+def _lexical_source_column(namespace: str) -> str:
+    """The row column whose text feeds the lexical tsvector.
+
+    Chunks and relations index ``content``; entities index ``entity_name``.
+    The upsert path and the backfill MUST both use this mapping so a row's
+    stored lexemes do not depend on which path wrote them.
+
+    Raises:
+        ValueError: the namespace has no vector table.
+    """
+    if is_namespace(namespace, NameSpace.VECTOR_STORE_ENTITIES):
+        return "entity_name"
+    if is_namespace(
+        namespace,
+        (NameSpace.VECTOR_STORE_CHUNKS, NameSpace.VECTOR_STORE_RELATIONSHIPS),
+    ):
+        return "content"
+    raise ValueError(f"{namespace} is not supported")
+
+
+# Reciprocal-rank fusion constant: a record's score is the sum over the legs
+# it appears in of 1 / (RRF_K + rank), ranks 1-based. k=60 is the standard
+# RRF default; fusion happens application-side, never in SQL.
+RRF_K = 60
+
+
+def rrf_fuse(
+    vector_results: list[dict[str, Any]],
+    lexical_results: list[dict[str, Any]],
+    key_field: str,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Fuse two ranked result lists by reciprocal rank, best first.
+
+    Rules:
+    - Each leg contributes ``1 / (RRF_K + rank)`` per record, ranks 1-based
+      in the order the leg returned them; a record in both legs sums both.
+    - Records union by ``key_field``; on overlap the VECTOR leg's record
+      object wins, so its original fields reach the caller untouched.
+    - Ties break by vector-leg rank first (a record absent from that leg
+      sorts last), then lexical-leg rank, then key ascending. The order is
+      deterministic for any input.
+    - Returns at most ``top_k`` records in fusion order. Inputs are never
+      mutated; the returned list shares record objects with the inputs, so
+      any further annotation is the caller's to make.
+    """
+    scores: dict[str, float] = {}
+    vector_ranks: dict[str, int] = {}
+    lexical_ranks: dict[str, int] = {}
+    records: dict[str, dict[str, Any]] = {}
+    for rank, record in enumerate(vector_results, start=1):
+        key = record[key_field]
+        scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
+        vector_ranks[key] = rank
+        records[key] = record
+    for rank, record in enumerate(lexical_results, start=1):
+        key = record[key_field]
+        scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
+        lexical_ranks[key] = rank
+        records.setdefault(key, record)
+    ordered = sorted(
+        records,
+        key=lambda key: (
+            -scores[key],
+            vector_ranks.get(key, float("inf")),
+            lexical_ranks.get(key, float("inf")),
+            key,
+        ),
+    )
+    return [records[key] for key in ordered[:top_k]]
 
 
 # Transaction-local statement that lets a filtered ANN scan continue past
@@ -4328,6 +4435,8 @@ class _PendingPGVectorDoc:
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
+    supports_hybrid_query: ClassVar[bool] = True
+
     db: PostgreSQLDB | None = field(default=None)
 
     def __post_init__(self):
@@ -4386,6 +4495,11 @@ class PGVectorStorage(BaseVectorStorage):
         self._pending_vector_deletes: set[str] = set()
         # Namespace-keyed lock; created in initialize() after workspace is final.
         self._flush_lock = None
+        self._lexical_backfill_batch_size = _resolve_lexical_backfill_batch_size()
+        self._lexical_backfill_task: asyncio.Task | None = None
+        # Warn once per lexical-degrade failure streak; the next successful
+        # lexical leg re-arms it (see hybrid_query).
+        self._lexical_degrade_warned = False
 
     @staticmethod
     async def _pg_create_table(
@@ -4941,6 +5055,190 @@ class PGVectorStorage(BaseVectorStorage):
                 "PostgreSQL: Manual deletion is required after data migration verification."
             )
 
+    @staticmethod
+    async def _pg_ensure_lexical_index(db: PostgreSQLDB, table_name: str) -> None:
+        """Ensure the GIN index on the lexical column exists and is valid.
+
+        Rules for callers: the lexical column must already exist on the table.
+        The build is CREATE INDEX CONCURRENTLY, which refuses transaction
+        blocks, so it runs on a bare pooled connection (asyncpg autocommit).
+        A session advisory lock keyed on the index name serializes racing
+        instances: without it one instance could drop an index another is
+        still building. Only an INVALID index is ever dropped; a valid one is
+        left untouched. Attempts are bounded; a still-missing or invalid index
+        is logged as a residue and retried by the next startup.
+        """
+        index_name = _safe_index_name(table_name, f"{LEXICAL_TSV_COLUMN}_gin")
+        validity_sql = (
+            "SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass($1)"
+        )
+        create_sql = (
+            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {index_name} "
+            f"ON {table_name} USING gin ({LEXICAL_TSV_COLUMN})"
+        )
+
+        async def _operation(connection: asyncpg.Connection) -> None:
+            await connection.execute(
+                "SELECT pg_advisory_lock(hashtextextended($1, 0))", index_name
+            )
+            try:
+                for attempt in range(1, _LEXICAL_INDEX_MAX_ATTEMPTS + 1):
+                    row = await connection.fetchrow(validity_sql, index_name)
+                    if row is not None and row["indisvalid"]:
+                        return
+                    if row is not None:
+                        logger.warning(
+                            f"PostgreSQL, dropping invalid lexical index {index_name} "
+                            "left by a failed concurrent build; rebuilding it"
+                        )
+                        await connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+                    try:
+                        await connection.execute(create_sql)
+                    except asyncpg.PostgresError as e:
+                        logger.warning(
+                            f"PostgreSQL, concurrent build of {index_name} failed "
+                            f"(attempt {attempt}/{_LEXICAL_INDEX_MAX_ATTEMPTS}): {e}"
+                        )
+                        continue
+                    row = await connection.fetchrow(validity_sql, index_name)
+                    if row is not None and row["indisvalid"]:
+                        logger.info(
+                            f"PostgreSQL, lexical index {index_name} is valid "
+                            f"on table {table_name}"
+                        )
+                        return
+                logger.error(
+                    f"PostgreSQL, lexical index {index_name} on table {table_name} "
+                    f"is still missing or invalid after {_LEXICAL_INDEX_MAX_ATTEMPTS} "
+                    "attempts; lexical retrieval stays degraded until a later "
+                    "startup rebuilds it"
+                )
+            finally:
+                await connection.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended($1, 0))", index_name
+                )
+
+        await db._run_with_retry(_operation)
+
+    async def _ensure_lexical_readiness(self) -> None:
+        """Add the lexical column and index, then schedule the backfill.
+
+        Rules:
+        - Idempotent on every startup and safe under concurrent instances.
+        - The column is nullable with no default, so the ALTER is
+          metadata-only; pre-existing rows keep NULL until backfill covers
+          them.
+        - Startup never waits for a full-table backfill: it runs as a
+          background task. While it is incomplete the lexical leg
+          under-covers, retrieval degrades to vector-only, and the next
+          startup resumes the remainder.
+        """
+        await self.db.execute(
+            f"ALTER TABLE {self.table_name} "
+            f"ADD COLUMN IF NOT EXISTS {LEXICAL_TSV_COLUMN} TSVECTOR"
+        )
+        await self._pg_ensure_lexical_index(self.db, self.table_name)
+        if (
+            self._lexical_backfill_task is not None
+            and not self._lexical_backfill_task.done()
+        ):
+            return
+        probe = await self.db.query(
+            f"SELECT EXISTS(SELECT 1 FROM {self.table_name} "
+            f"WHERE workspace=$1 AND {LEXICAL_TSV_COLUMN} IS NULL) AS has_pending",
+            [self.workspace],
+        )
+        if probe and probe.get("has_pending") is True:
+            self._lexical_backfill_task = asyncio.create_task(
+                self._run_lexical_backfill(),
+                name=f"lexical-backfill-{self.table_name}-{self.workspace}",
+            )
+
+    async def _run_lexical_backfill(self) -> None:
+        """Cover this workspace's NULL-tsv rows in reentrant batches.
+
+        One batch is one SELECT of pending rows plus one transaction of
+        UPDATEs, so a kill or failure mid-batch leaves those rows untouched
+        and the next startup resumes from ``WHERE tsv IS NULL``. Tokenization
+        is the same application-side function the upsert path uses. A failure
+        is logged once as a residue, never raised into the event loop; the
+        uncovered remainder heals on the next startup.
+        """
+        source_column = _lexical_source_column(self.namespace)
+        batch_size = self._lexical_backfill_batch_size
+        select_sql = (
+            f"SELECT id, {source_column} AS lexical_source FROM {self.table_name} "
+            f"WHERE workspace=$1 AND {LEXICAL_TSV_COLUMN} IS NULL "
+            "ORDER BY id LIMIT $2"
+        )
+        update_sql = (
+            f"UPDATE {self.table_name} "
+            f"SET {LEXICAL_TSV_COLUMN} = to_tsvector('simple', $1) "
+            f"WHERE workspace=$2 AND id=$3 AND {LEXICAL_TSV_COLUMN} IS NULL"
+        )
+        covered = 0
+        try:
+            while True:
+                rows = await self.db.query(
+                    select_sql, [self.workspace, batch_size], multirows=True
+                )
+                if not rows:
+                    break
+                values = [
+                    (
+                        tokenize_for_index(row["lexical_source"] or ""),
+                        self.workspace,
+                        row["id"],
+                    )
+                    for row in rows
+                ]
+
+                async def _apply_batch(
+                    connection: asyncpg.Connection,
+                    _values: list[tuple[str, str, str]] = values,
+                ) -> None:
+                    async with connection.transaction():
+                        await connection.executemany(update_sql, _values)
+
+                await self.db._run_with_retry(_apply_batch)
+                covered += len(values)
+                logger.debug(
+                    f"[{self.workspace}] lexical backfill covered {covered} rows "
+                    f"on {self.table_name}"
+                )
+                await asyncio.sleep(0)
+            logger.info(
+                f"[{self.workspace}] lexical backfill complete on {self.table_name}: "
+                f"{covered} rows covered"
+            )
+        except asyncio.CancelledError:
+            logger.info(
+                f"[{self.workspace}] lexical backfill on {self.table_name} "
+                f"cancelled after {covered} rows; the remainder resumes on the "
+                "next startup"
+            )
+            raise
+        except Exception as e:
+            logger.warning(
+                f"[{self.workspace}] lexical backfill on {self.table_name} stopped "
+                f"after {covered} rows: {e}; the remainder resumes on the next startup"
+            )
+
+    async def _cancel_lexical_backfill(self) -> None:
+        """Stop the background backfill before the shared client is released.
+
+        A cancelled batch rolls back; the uncovered remainder resumes on the
+        next startup. Awaiting the task keeps it from touching a closed pool.
+        """
+        task = self._lexical_backfill_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
@@ -5000,8 +5298,16 @@ class PGVectorStorage(BaseVectorStorage):
                 base_table=self.legacy_table_name,  # base_table for DDL template lookup
             )
 
+            # Lexical schema is maintained unconditionally: it is schema, not
+            # a retrieval feature, so enable_hybrid plays no part here.
+            await self._ensure_lexical_readiness()
+
     async def finalize(self):
-        """Flush pending vector ops then release the shared PG client.
+        """Flush pending vector ops, stop the lexical backfill, release the client.
+
+        The background backfill is cancelled and awaited BEFORE the shared
+        client is released, so it can never touch a closed pool; its
+        uncovered remainder resumes on the next startup.
 
         Captures regular ``Exception`` from the flush so it can be re-raised
         as a ``RuntimeError`` naming the unflushed buffer counts after the
@@ -5036,6 +5342,7 @@ class PGVectorStorage(BaseVectorStorage):
             except Exception as e:
                 flush_error = e
         finally:
+            await self._cancel_lexical_backfill()
             if self.db is not None:
                 await ClientManager.release_client(self.db)
                 self.db = None
@@ -5079,6 +5386,7 @@ class PGVectorStorage(BaseVectorStorage):
                 item["file_path"],  # $8
                 current_time,  # $9
                 current_time,  # $10
+                tokenize_for_index(item["content"]),  # $11 - lexical source
             )
         except Exception as e:
             logger.error(
@@ -5114,6 +5422,7 @@ class PGVectorStorage(BaseVectorStorage):
             item.get("file_path", None),  # $7
             current_time,  # $8
             current_time,  # $9
+            tokenize_for_index(item["entity_name"]),  # $10 - lexical source
         )
         return upsert_sql, values
 
@@ -5146,6 +5455,7 @@ class PGVectorStorage(BaseVectorStorage):
             item.get("file_path", None),  # $8
             current_time,  # $9
             current_time,  # $10
+            tokenize_for_index(item["content"]),  # $11 - lexical source
         )
         return upsert_sql, values
 
@@ -5517,6 +5827,112 @@ class PGVectorStorage(BaseVectorStorage):
             for row in results:
                 row.pop(_DISTANCE_COLUMN, None)
         return results
+
+    async def hybrid_query(
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        lexical_keywords: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Hybrid (vector + lexical) retrieval fused by reciprocal rank.
+
+        Rules:
+        - Same call contract as ``query``. Only backends whose
+          ``supports_hybrid_query`` is True implement it; callers gate on
+          that flag plus ``QueryParam.enable_hybrid``.
+        - The vector leg is ``query`` unchanged (cosine threshold, top_k).
+          The lexical leg ranks by ts_rank_cd over content_tsv, takes
+          top_k, and applies NO cosine threshold. Vector-leg records keep
+          their original fields; a lexical-only record gains ``distance``
+          equal to ``cosine_better_than_threshold`` so a downstream
+          similarity threshold admits it.
+        - ``lexical_keywords`` carries keyword boundaries for the lexical
+          leg (entity seeding): each keyword is tokenized on its own and
+          the per-keyword expressions are OR-ed, so any ONE keyword can
+          match; ``query`` still drives the dense leg. None tokenizes the
+          whole query with AND (chunk recall). A single keyword yields the
+          same expression as tokenizing the whole query.
+        - Returns at most top_k records in RRF fusion order (``rrf_fuse``).
+          Downstream must consume that order, never re-sort by distance.
+        - Empty tokenization skips the lexical leg: vector-only, no
+          warning. A missing or invalid lexical index, or a lexical query
+          error, degrades THIS query to vector-only with one warning per
+          failure streak (fail-open). The vector leg's own errors still
+          propagate. Only the entities and chunks namespaces are covered.
+
+        Raises:
+            ValueError: the namespace has no hybrid lexical path.
+        """
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
+            key_field = "entity_name"
+            lexical_template = SQL_TEMPLATES["lexical_entities"]
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
+            key_field = "id"
+            lexical_template = SQL_TEMPLATES["lexical_chunks"]
+        else:
+            raise ValueError(
+                f"hybrid_query covers entities and chunks, not {self.namespace}"
+            )
+
+        vector_results = await self.query(query, top_k, query_embedding=query_embedding)
+        if lexical_keywords is None:
+            tsquery_text = tokenize_for_query(query)
+        else:
+            # AND inside each keyword, OR across keywords: an entity named
+            # after ONE keyword must match even when the query lists several.
+            # The operators are added here, never taken from user input; the
+            # tokens themselves stay alphanumeric by construction.
+            per_keyword = [tokenize_for_query(kw) for kw in lexical_keywords]
+            per_keyword = [expr for expr in per_keyword if expr]
+            tsquery_text = (
+                per_keyword[0]
+                if len(per_keyword) == 1
+                else " | ".join(f"({expr})" for expr in per_keyword)
+            )
+        if not tsquery_text:
+            return vector_results
+
+        index_name = _safe_index_name(self.table_name, f"{LEXICAL_TSV_COLUMN}_gin")
+        lexical_results = None
+        degrade_reason = ""
+        try:
+            # PG would happily seqscan without the index, so absence or
+            # invalidity must be detected, not inferred from a query error.
+            # One catalog probe per hybrid query; no cached state to stale.
+            validity = await self.db.query(
+                "SELECT i.indisvalid FROM pg_index i "
+                "WHERE i.indexrelid = to_regclass($1)",
+                [index_name],
+            )
+            if validity is not None and validity["indisvalid"]:
+                lexical_results = await self.db.query(
+                    lexical_template.format(table_name=self.table_name),
+                    [self.workspace, tsquery_text, top_k],
+                    multirows=True,
+                )
+            else:
+                degrade_reason = f"lexical index {index_name} is missing or invalid"
+        except Exception as e:
+            degrade_reason = f"lexical query failed: {e}"
+
+        if lexical_results is None:
+            if not self._lexical_degrade_warned:
+                logger.warning(
+                    f"[{self.workspace}] hybrid lexical leg on {self.table_name} "
+                    f"degraded to vector-only: {degrade_reason}; further "
+                    "failures stay silent until a lexical query succeeds"
+                )
+                self._lexical_degrade_warned = True
+            return vector_results
+        self._lexical_degrade_warned = False
+
+        fused = rrf_fuse(vector_results, lexical_results, key_field, top_k)
+        vector_keys = {record[key_field] for record in vector_results}
+        for record in fused:
+            if record[key_field] not in vector_keys:
+                record["distance"] = self.cosine_better_than_threshold
+        return fused
 
     async def index_done_callback(self) -> None:
         await self._flush_pending_vector_ops()
@@ -10529,6 +10945,7 @@ TABLES = {
                     tokens INTEGER,
                     content TEXT,
                     content_vector VECTOR(dimension),
+                    content_tsv TSVECTOR,
                     file_path TEXT NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
@@ -10542,6 +10959,7 @@ TABLES = {
                     entity_name VARCHAR(512),
                     content TEXT,
                     content_vector VECTOR(dimension),
+                    content_tsv TSVECTOR,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
@@ -10557,6 +10975,7 @@ TABLES = {
                     target_id VARCHAR(512),
                     content TEXT,
                     content_vector VECTOR(dimension),
+                    content_tsv TSVECTOR,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
@@ -10873,11 +11292,14 @@ SQL_TEMPLATES = {
                       count=EXCLUDED.count,
                       update_time = EXCLUDED.update_time
                      """,
-    # SQL for VectorStorage
+    # SQL for VectorStorage. content_tsv is maintained on every write from the
+    # application-side tokenizer output bound to to_tsvector('simple', $N):
+    # chunks/relations tokenize content, entities tokenize entity_name.
     "upsert_chunk": """INSERT INTO {table_name} (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      create_time, update_time, content_tsv)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                      to_tsvector('simple', $11))
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
@@ -10885,22 +11307,28 @@ SQL_TEMPLATES = {
                       content = EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
                       file_path=EXCLUDED.file_path,
-                      update_time = EXCLUDED.update_time
+                      update_time = EXCLUDED.update_time,
+                      content_tsv=EXCLUDED.content_tsv
                      """,
     "upsert_entity": """INSERT INTO {table_name} (workspace, id, entity_name, content,
-                      content_vector, chunk_ids, file_path, create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, $8, $9)
+                      content_vector, chunk_ids, file_path, create_time, update_time,
+                      content_tsv)
+                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, $8, $9,
+                      to_tsvector('simple', $10))
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
                       chunk_ids=EXCLUDED.chunk_ids,
                       file_path=EXCLUDED.file_path,
-                      update_time=EXCLUDED.update_time
+                      update_time=EXCLUDED.update_time,
+                      content_tsv=EXCLUDED.content_tsv
                      """,
     "upsert_relationship": """INSERT INTO {table_name} (workspace, id, source_id,
-                      target_id, content, content_vector, chunk_ids, file_path, create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, $9, $10)
+                      target_id, content, content_vector, chunk_ids, file_path, create_time,
+                      update_time, content_tsv)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, $9, $10,
+                      to_tsvector('simple', $11))
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
@@ -10908,7 +11336,8 @@ SQL_TEMPLATES = {
                       content_vector=EXCLUDED.content_vector,
                       chunk_ids=EXCLUDED.chunk_ids,
                       file_path=EXCLUDED.file_path,
-                      update_time = EXCLUDED.update_time
+                      update_time = EXCLUDED.update_time,
+                      content_tsv=EXCLUDED.content_tsv
                      """,
     "relationships": """
                      SELECT source_id AS src_id,
@@ -10938,6 +11367,32 @@ SQL_TEMPLATES = {
               WHERE workspace = $1
                 AND content_vector <=> $4::{vector_cast} < $2
               ORDER BY content_vector <=> $4::{vector_cast}
+              LIMIT $3;
+              """,
+    # Lexical legs for hybrid_query: same row shape as the vector templates
+    # above, ranked by ts_rank_cd over the maintained content_tsv column.
+    # The secondary id/name order keeps ranks deterministic when ts_rank_cd
+    # ties. $1=workspace, $2=tokenized tsquery text, $3=top_k.
+    "lexical_entities": """
+                SELECT entity_name,
+                       EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+                FROM {table_name}
+                WHERE workspace = $1
+                  AND content_tsv @@ to_tsquery('simple', $2)
+                ORDER BY ts_rank_cd(content_tsv, to_tsquery('simple', $2)) DESC,
+                         entity_name
+                LIMIT $3;
+                """,
+    "lexical_chunks": """
+              SELECT id,
+                     content,
+                     file_path,
+                     EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+              FROM {table_name}
+              WHERE workspace = $1
+                AND content_tsv @@ to_tsquery('simple', $2)
+              ORDER BY ts_rank_cd(content_tsv, to_tsquery('simple', $2)) DESC,
+                       id
               LIMIT $3;
               """,
     # DROP tables
