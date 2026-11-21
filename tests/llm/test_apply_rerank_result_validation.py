@@ -2,7 +2,8 @@
 
 import pytest
 
-from lightrag.utils import apply_rerank_if_enabled
+from lightrag.base import QueryParam
+from lightrag.utils import apply_rerank_if_enabled, process_chunks_unified
 
 pytestmark = pytest.mark.offline
 
@@ -41,6 +42,33 @@ async def test_valid_results_survive_malformed_items():
     )
 
     assert result == [{"content": "second", "rerank_score": 0.8}]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_index_keeps_its_best_score_and_one_chunk_top_k_slot():
+    """A repeated index must take one chunk_top_k slot, with its highest score
+    even when a lower one comes first: keeping the first would sort the
+    document down and let min_rerank_score drop it."""
+
+    async def rerank_func(**_kwargs):
+        return [
+            {"index": 0, "relevance_score": 0.3},
+            {"index": 1, "relevance_score": 0.78},
+            {"index": 0, "relevance_score": 0.99},
+            {"index": 0, "relevance_score": 0.85},
+        ]
+
+    result = await process_chunks_unified(
+        query="query",
+        unique_chunks=[{"content": "first"}, {"content": "second"}],
+        query_param=QueryParam(enable_rerank=True, chunk_top_k=2),
+        global_config={"rerank_model_func": rerank_func},
+    )
+
+    assert result == [
+        {"content": "first", "rerank_score": 0.99, "id": "DC1"},
+        {"content": "second", "rerank_score": 0.78, "id": "DC2"},
+    ]
 
 
 @pytest.mark.asyncio
