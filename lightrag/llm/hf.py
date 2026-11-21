@@ -144,6 +144,10 @@ async def _run_hf_inference(fn, /, *args, **kwargs):
     retry=retry_if_exception_type(
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
+    # Surface the last attempt's own error, not a tenacity.RetryError, so
+    # callers can catch the real exception type and see its message (same
+    # convention as openai.py / ollama.py / gemini.py, etc.).
+    reraise=True,
 )
 async def hf_model_if_cache(
     model,
