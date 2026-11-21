@@ -176,34 +176,27 @@ def find_target_span(
     Returns ``(start, end)`` byte offsets, or ``None`` if not found.
     ``kind`` is the sidecar root key — ``"drawings"`` / ``"tables"`` /
     ``"equations"``.
+
+    For tables the ``<table id="…">`` tag wins over a
+    ``<cite type="table" refid="…">`` to the same id wherever each sits in
+    the block; the cite is only a fallback for a block that names the table
+    without holding its tag (the stand-in the removed content_list writer
+    emitted). No in-tree writer puts both in one block, so the precedence
+    matters only for sidecars written elsewhere.
     """
     if kind == "drawings":
-        pattern = _drawing_pattern(item_id)
+        patterns = [_drawing_pattern(item_id)]
     elif kind == "tables":
-        # Prefer the actual <table id="..."> tag over a <cite refid="...">
-        # to the same id, regardless of which comes first in the text: a
-        # plain alternation's leftmost-match semantics would anchor on a
-        # self-citing <cite> that narrates the table before presenting it
-        # ("as shown in Table 1, <cite ...>Table 1</cite>: <table ...>"),
-        # scoping the surrounding leading/trailing text around the citation
-        # instead of the table it refers to. The cite pattern is only a
-        # fallback for a block that references the table without also
-        # containing its tag.
-        match = _table_tag_pattern(item_id).search(block_content)
-        if match:
-            return match.start(), match.end()
-        match = _table_cite_pattern(item_id).search(block_content)
-        if not match:
-            return None
-        return match.start(), match.end()
+        patterns = [_table_tag_pattern(item_id), _table_cite_pattern(item_id)]
     elif kind == "equations":
-        pattern = _equation_pattern(item_id)
+        patterns = [_equation_pattern(item_id)]
     else:
         return None
-    match = pattern.search(block_content)
-    if not match:
-        return None
-    return match.start(), match.end()
+    for pattern in patterns:
+        match = pattern.search(block_content)
+        if match:
+            return match.start(), match.end()
+    return None
 
 
 # ---------------------------------------------------------------------------
