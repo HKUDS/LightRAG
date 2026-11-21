@@ -2434,16 +2434,23 @@ async def _rebuild_single_relationship(
         identifier=f"`{src}`~`{tgt}`",
     )
 
-    # Collect all relationship data from relevant chunks
+    # Collect all relationship data from relevant chunks. One chunk's records can
+    # name this relation more than once (the LLM restated it, or listed both
+    # directions); each chunk contributes weight once, keeping its first record's
+    # weight -- the same rule _merge_edges_then_upsert applies on insert, so a
+    # rebuild does not re-inflate a weight the insert counted once.
     all_relationship_data = []
+    weight_by_chunk: dict[str, float] = {}
     for chunk_id in limited_chunk_ids:
         if chunk_id in chunk_relationships:
             # Check both (src, tgt) and (tgt, src) since relationships can be bidirectional
             for edge_key in [(src, tgt), (tgt, src)]:
                 if edge_key in chunk_relationships[chunk_id]:
-                    all_relationship_data.extend(
-                        chunk_relationships[chunk_id][edge_key]
-                    )
+                    records = chunk_relationships[chunk_id][edge_key]
+                    all_relationship_data.extend(records)
+                    for rel_data in records:
+                        if rel_data.get("weight"):
+                            weight_by_chunk.setdefault(chunk_id, rel_data["weight"])
 
     # Kept, not removed, when no surviving chunk's records name it; see the
     # matching branch of _rebuild_single_entity.
@@ -2459,7 +2466,11 @@ async def _rebuild_single_relationship(
     # Merge descriptions and keywords
     descriptions = [current_relationship.get("description", "")] if degraded else []
     raw_keywords = [current_relationship.get("keywords", "")] if degraded else []
-    weights = [current_relationship.get("weight", 1.0)] if degraded else []
+    weights = (
+        [current_relationship.get("weight", 1.0)]
+        if degraded
+        else list(weight_by_chunk.values())
+    )
     file_paths_list = (
         _surviving_chunk_file_paths(
             limited_chunk_ids, chunk_data_by_id or {}, global_config
@@ -2476,8 +2487,6 @@ async def _rebuild_single_relationship(
             descriptions.append(rel_data["description"])
         if rel_data.get("keywords"):
             raw_keywords.append(rel_data["keywords"])
-        if rel_data.get("weight"):
-            weights.append(rel_data["weight"])
         if rel_data.get("file_path"):
             file_path = rel_data["file_path"]
             if file_path and file_path not in seen_paths:
@@ -3319,16 +3328,23 @@ async def _merge_edges_then_upsert(
         # persists), so it must not add weight either -- otherwise weight would
         # outgrow the stored source count. Count only sources that actually
         # persist: truthy AND not already reflected in the stored scalar.
+        #
+        # edges_data can also carry more than one record for the SAME
+        # source_id within this one call: a single LLM extraction can state the
+        # same relation twice, or once in each direction (both land under the
+        # sorted edge key). Each source must contribute weight once, matching
+        # the "distinct contributing sources" intent above, not once per
+        # record; keep the first record seen per source, the same
+        # first-occurrence convention used for description dedup.
+        # _rebuild_single_relationship applies the same rule per chunk.
         already_edge_source_set = set(already_source_ids)
-        weight = sum(
-            [
-                dp["weight"]
-                for dp in edges_data
-                if dp.get("source_id")
-                and dp["source_id"] not in already_edge_source_set
-            ]
-            + already_weights
-        )
+        new_weight_by_source: dict[str, float] = {}
+        for dp in edges_data:
+            dp_source_id = dp.get("source_id")
+            if not dp_source_id or dp_source_id in already_edge_source_set:
+                continue
+            new_weight_by_source.setdefault(dp_source_id, dp["weight"])
+        weight = sum(new_weight_by_source.values()) + sum(already_weights)
         # Repair legacy/manual rows that predate the shared weight contract:
         # every distinct real source contributes a baseline of 1, while an
         # existing larger weight remains an optional importance boost.

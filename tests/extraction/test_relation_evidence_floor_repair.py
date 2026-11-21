@@ -257,6 +257,30 @@ async def test_rebuild_floors_on_the_post_limit_chunk_list():
     assert edge["weight"] == 2.0
 
 
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rebuild_counts_each_chunk_once():
+    """One chunk's cached extraction can name the relation several times, in
+    either direction. The rebuild counts that chunk's weight once -- the rule
+    ``_merge_edges_then_upsert`` applies on insert -- so purging an unrelated
+    document does not re-inflate a weight the insert counted once."""
+    graph = await _graph_with_edge(weight=2.0, source_id="c1")
+
+    edge = await _rebuild(
+        graph,
+        ["c1", "c2"],
+        {
+            "c1": {
+                ("A", "B"): [_fragment(1.0), _fragment(1.0)],
+                ("B", "A"): [_fragment(1.0)],
+            },
+            "c2": {("A", "B"): [_fragment(1.0)]},
+        },
+    )
+
+    assert edge["weight"] == 2.0
+
+
 # --- 2. no placeholder may enter relation chunk tracking -------------------
 
 
@@ -267,7 +291,7 @@ async def test_merge_keeps_legacy_placeholder_out_of_chunk_tracking(placeholder)
     """A manually created legacy edge carries a no-evidence placeholder in its
     ``source_id``. When extraction later merges a real chunk into it, neither the
     authoritative tracking row nor the edge may keep the placeholder."""
-    graph = await _graph_with_edge(weight=1.0, source_id=placeholder)
+    graph = await _graph_with_edge(weight=0.25, source_id=placeholder)
     storage_key = make_relation_chunk_key("A", "B")
     tracking = _MemKV()
 
@@ -286,9 +310,9 @@ async def test_merge_keeps_legacy_placeholder_out_of_chunk_tracking(placeholder)
     assert tracking.data[storage_key]["count"] == 1
     edge = await graph.get_edge("A", "B")
     assert edge["source_id"] == "c1"
-    # Unchanged by this fix: the stored manual scalar stays an importance boost
-    # on top of the newly contributed evidence.
-    assert edge["weight"] == 2.0
+    # The stored manual scalar stays a boost on top of the new evidence, and the
+    # placeholder is not evidence: a floor counting it would lift this to 2.0.
+    assert edge["weight"] == 1.25
 
 
 @pytest.mark.offline

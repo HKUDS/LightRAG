@@ -1551,8 +1551,11 @@ field, copying the stored weight verbatim without touching the graph.
 
 A rebuild re-derives the relation from the extraction results cached for the
 surviving chunks, so — like the rebuilt description and keywords — the weight is
-recomputed rather than preserved: it becomes the summed fragment weights lifted
-to the surviving evidence count. Weight therefore follows evidence downward as a
+recomputed rather than preserved: each surviving chunk contributes the weight of
+its first cached fragment once, even when its extraction states the relation
+several times or in both directions, and the sum is lifted to the surviving
+evidence count. Extraction applies the same rule on insert, counting each new
+source once per merge. Weight therefore follows evidence downward as a
 purge removes chunks, and an importance boost applied through `edit_relation`
 does not survive a rebuild that finds cached fragments. When no cached fragment
 survives, the rebuild keeps the stored weight.
