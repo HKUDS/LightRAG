@@ -1,22 +1,9 @@
-"""Full-text index name collisions across workspaces must be refused, not
-silently resolved by reusing or recreating someone else's index.
+"""A full-text index name another workspace already owns must be refused.
 
-``_get_fulltext_index_name`` derives the index name from a lossy
-normalization of the workspace label (``_normalize_index_suffix`` folds
-every run of non-alphanumeric characters to a single underscore), so two
-distinct workspace labels -- e.g. "foo-bar" and "foo_bar" -- can resolve to
-the same index name. ``_create_fulltext_index`` must compare the existing
-index's actual labels (``labelsOrTypes`` from ``SHOW FULLTEXT INDEXES``)
-against this workspace's own label BEFORE deciding what to do with it:
-
-* a matching label is the common case and proceeds unchanged (skip if
-  ONLINE, recreate otherwise);
-* a mismatched label must raise ``WorkspaceIndexCollisionError`` and send
-  no ``DROP INDEX`` -- including when the colliding index is not ONLINE,
-  which is exactly the case the unconditional "recreate" branch would
-  otherwise drop and take over.
-
-These tests run without a live Neo4j instance.
+``_get_fulltext_index_name`` is lossy ("foo-bar" and "foo_bar" share one
+index name), so ``_create_fulltext_index`` compares the existing index's
+``labelsOrTypes`` with this workspace's label before it skips (ONLINE) or
+drops and recreates (otherwise) that index. Runs without a live Neo4j.
 """
 
 import pytest
@@ -74,112 +61,62 @@ def _make_storage(workspace: str) -> Neo4JStorage:
     )
 
 
-def _sent_drop(calls: list[str]) -> bool:
-    return any(query.strip().startswith("DROP INDEX") for query in calls)
+def _sent(calls: list[str]) -> tuple[bool, bool]:
+    """Return (sent a DROP INDEX, sent a CREATE FULLTEXT INDEX)."""
+    return (
+        any(query.strip().startswith("DROP INDEX") for query in calls),
+        any("CREATE FULLTEXT INDEX" in query for query in calls),
+    )
 
 
-def _sent_create(calls: list[str]) -> bool:
-    return any("CREATE FULLTEXT INDEX" in query for query in calls)
-
-
-async def test_matching_label_online_index_is_left_alone():
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (None, (False, True)),  # no index yet: create it
+        ("ONLINE", (False, False)),  # own index online: leave it alone
+        ("POPULATING", (True, True)),  # own index not online: recreate it
+    ],
+)
+async def test_own_or_missing_index_is_handled_as_before(state, expected):
     storage = _make_storage("foo-bar")
     label = storage._get_workspace_label()
-    index_name = storage._get_fulltext_index_name(label)
-    driver = _FakeDriver(
-        [
+    rows = []
+    if state is not None:
+        rows.append(
             {
-                "name": index_name,
-                "state": "ONLINE",
+                "name": storage._get_fulltext_index_name(label),
+                "state": state,
                 "labelsOrTypes": [storage._get_raw_workspace_label()],
             }
-        ]
-    )
+        )
+    driver = _FakeDriver(rows)
 
     await storage._create_fulltext_index(driver, "neo4j", label)
 
-    assert not _sent_drop(driver.calls)
-    assert not _sent_create(driver.calls)
+    assert _sent(driver.calls) == expected
 
 
-async def test_matching_label_non_online_index_is_recreated():
-    storage = _make_storage("foo-bar")
-    label = storage._get_workspace_label()
-    index_name = storage._get_fulltext_index_name(label)
-    driver = _FakeDriver(
-        [
-            {
-                "name": index_name,
-                "state": "POPULATING",
-                "labelsOrTypes": [storage._get_raw_workspace_label()],
-            }
-        ]
-    )
-
-    await storage._create_fulltext_index(driver, "neo4j", label)
-
-    assert _sent_drop(driver.calls)
-    assert _sent_create(driver.calls)
-
-
-async def test_mismatched_label_online_index_raises_without_recreating():
-    # "foo-bar" and "foo_bar" both normalize to the same index name.
+@pytest.mark.parametrize("state", ["ONLINE", "POPULATING"])
+async def test_index_of_another_workspace_is_refused_untouched(state):
     owner = _make_storage("foo-bar")
     claimant = _make_storage("foo_bar")
     claimant_label = claimant._get_workspace_label()
     index_name = claimant._get_fulltext_index_name(claimant_label)
     assert owner._get_fulltext_index_name(owner._get_workspace_label()) == index_name
-
     driver = _FakeDriver(
         [
             {
                 "name": index_name,
-                "state": "ONLINE",
+                "state": state,
                 "labelsOrTypes": [owner._get_raw_workspace_label()],
             }
         ]
     )
 
-    with pytest.raises(WorkspaceIndexCollisionError):
+    # Raised from inside the function's own catch-all ``except Exception``,
+    # so this also pins that the refusal is not swallowed there.
+    with pytest.raises(WorkspaceIndexCollisionError, match="foo-bar"):
         await claimant._create_fulltext_index(driver, "neo4j", claimant_label)
 
-    assert not _sent_drop(driver.calls)
-    assert not _sent_create(driver.calls)
-
-
-async def test_mismatched_label_non_online_index_raises_before_dropping():
-    """The critical case: without the check, a non-ONLINE index is
-    unconditionally dropped and recreated, taking over another workspace's
-    index instead of merely misrouting searches to it.
-    """
-    owner = _make_storage("foo-bar")
-    claimant = _make_storage("foo_bar")
-    claimant_label = claimant._get_workspace_label()
-    index_name = claimant._get_fulltext_index_name(claimant_label)
-
-    driver = _FakeDriver(
-        [
-            {
-                "name": index_name,
-                "state": "POPULATING",
-                "labelsOrTypes": [owner._get_raw_workspace_label()],
-            }
-        ]
-    )
-
-    with pytest.raises(WorkspaceIndexCollisionError):
-        await claimant._create_fulltext_index(driver, "neo4j", claimant_label)
-
-    assert not _sent_drop(driver.calls)
-    assert not _sent_create(driver.calls)
-
-
-async def test_no_existing_index_creates_a_new_one():
-    storage = _make_storage("foo-bar")
-    label = storage._get_workspace_label()
-    driver = _FakeDriver([])
-
-    await storage._create_fulltext_index(driver, "neo4j", label)
-
-    assert not _sent_drop(driver.calls)
-    assert _sent_create(driver.calls)
+    # A non-ONLINE index would otherwise be dropped and recreated.
+    assert _sent(driver.calls) == (False, False)

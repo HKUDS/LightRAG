@@ -66,16 +66,13 @@ READ_RETRY = retry(
 class WorkspaceIndexCollisionError(ValueError):
     """A full-text index name is already claimed by a different workspace.
 
-    ``_get_fulltext_index_name`` derives the index name from a lossy
-    normalization of the workspace label (every run of non-alphanumeric
-    characters folds to one underscore), so two distinct workspace labels
-    -- e.g. "foo-bar" and "foo_bar" -- can resolve to the same index name.
-    Renaming the index to disambiguate is deliberately not done here: it
-    would force a migration on every existing deployment, including the
-    overwhelming majority that never collide. Raised from index
-    initialization instead, so a colliding deployment fails to start rather
-    than silently attaching to -- and, on recreation, dropping -- another
-    workspace's index.
+    ``_get_fulltext_index_name`` is lossy, so distinct workspace labels (e.g.
+    ``foo-bar`` and ``foo_bar``) can resolve to one index name. Raised from
+    index initialization so the instance refuses to start instead of reusing,
+    or dropping and recreating, the other workspace's index. Never catch it to
+    continue; rename one workspace instead. The colliding names and the
+    accepted first-start race are listed in
+    docs/design/ServerInstanceContract.md.
     """
 
 
