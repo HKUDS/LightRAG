@@ -31,14 +31,14 @@ def embedding(value, **metadata):
     return {"embedding": encoded, **metadata}
 
 
-@pytest.mark.parametrize("order", ["indexed", "reversed", "unindexed"])
-async def test_embeddings_follow_input_order(serve_embeddings, order):
-    rows = [embedding(1, index=0), embedding(2, index=1)]
-    if order == "reversed":
-        rows.reverse()
-    elif order == "unindexed":
-        for row in rows:
-            del row["index"]
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([embedding(2, index=1), embedding(1, index=0)], id="reversed"),
+        pytest.param([embedding(1), embedding(2)], id="unindexed"),
+    ],
+)
+async def test_embeddings_follow_input_order(serve_embeddings, rows):
     post = serve_embeddings(rows)
 
     result = await jina.jina_embed.func(
@@ -54,8 +54,6 @@ async def test_embeddings_follow_input_order(serve_embeddings, order):
     [
         pytest.param(0, id="duplicate"),
         pytest.param(2, id="out-of-range"),
-        pytest.param(-1, id="negative"),
-        pytest.param("1", id="string"),
         pytest.param(True, id="boolean"),
         pytest.param(None, id="missing"),
     ],

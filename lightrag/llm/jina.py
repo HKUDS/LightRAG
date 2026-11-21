@@ -174,7 +174,10 @@ async def jina_embed(
             if any(type(index) is not int for index in indices) or set(indices) != set(
                 range(len(texts))
             ):
-                raise ValueError("Jina API returned invalid embedding indices")
+                raise ValueError(
+                    f"Jina API returned invalid embedding indices for "
+                    f"{len(texts)} texts (first 10: {indices[:10]})"
+                )
             data_list = sorted(data_list, key=lambda row: row["index"])
 
         embeddings = np.array(
