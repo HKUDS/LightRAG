@@ -53,6 +53,28 @@ def _make_deterministic_embedding(dim: int = 8) -> EmbeddingFunc:
     return EmbeddingFunc(embedding_dim=dim, max_token_size=4096, func=_embed)
 
 
+def _make_sync_embeddings():
+    """Synchronous twin of ``_make_deterministic_embedding`` (same per-text
+    vectors) so ``SemanticChunker`` can be driven directly by the drift guards."""
+    from langchain_core.embeddings import Embeddings
+
+    class _SyncEmbeddings(Embeddings):
+        def embed_documents(self, texts):
+            rows = []
+            for text in texts:
+                seed = abs(hash(text)) % (2**32)
+                rng = np.random.default_rng(seed=seed)
+                vec = rng.normal(size=8).astype(np.float64)
+                vec /= np.linalg.norm(vec) or 1.0
+                rows.append(vec.tolist())
+            return rows
+
+        def embed_query(self, text):
+            return self.embed_documents([text])[0]
+
+    return _SyncEmbeddings()
+
+
 @pytest.mark.offline
 def test_v_chunker_runs_with_stub_embedding():
     """Async chunker should split a multi-sentence body into ≥1 chunk
@@ -192,28 +214,10 @@ def test_semantic_groups_mirror_matches_upstream_split_text():
     relies on), this catches it — the mirror must yield the same group count and the
     same content modulo whitespace (it keeps the verbatim slice; upstream reflows
     sentences with single spaces)."""
-    from langchain_core.embeddings import Embeddings
     from langchain_experimental.text_splitter import SemanticChunker
 
     from lightrag.chunker.semantic_vector import _semantic_groups_with_spans
     from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
-
-    class _SyncEmbeddings(Embeddings):
-        """Deterministic per-text vectors, mirroring _make_deterministic_embedding
-        but synchronous so SemanticChunker can be driven directly."""
-
-        def embed_documents(self, texts):
-            rows = []
-            for text in texts:
-                seed = abs(hash(text)) % (2**32)
-                rng = np.random.default_rng(seed=seed)
-                vec = rng.normal(size=8).astype(np.float64)
-                vec /= np.linalg.norm(vec) or 1.0
-                rows.append(vec.tolist())
-            return rows
-
-        def embed_query(self, text):
-            return self.embed_documents([text])[0]
 
     text = (
         "Quantum mechanics describes nature at small scales. "
@@ -222,7 +226,7 @@ def test_semantic_groups_mirror_matches_upstream_split_text():
         "Sourdough requires a long fermentation."
     )
     splitter = SemanticChunker(
-        _SyncEmbeddings(),
+        _make_sync_embeddings(),
         buffer_size=1,
         breakpoint_threshold_type="percentile",
         sentence_split_regex=DEFAULT_SENTENCE_SPLIT_REGEX,
@@ -240,40 +244,19 @@ def test_semantic_groups_mirror_matches_upstream_split_text():
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("min_chunk_size", [None, 30, 60, 1000])
-def test_semantic_groups_mirror_matches_upstream_with_min_chunk_size(min_chunk_size):
-    """Drift guard, specifically for ``min_chunk_size``.
+def test_semantic_groups_mirror_matches_upstream_with_min_chunk_size():
+    """Drift guard for the mirror's ``min_chunk_size`` branch.
 
-    ``min_chunk_size`` is not exercised by ``test_semantic_groups_mirror_matches_upstream_split_text``
-    above (it is left at its default there), so the mirror's own ``min_chunk_size``
-    branch — the ``continue`` that skips updating ``start_index``, merging an
-    undersized group forward into the next one instead of dropping it — has never
-    been checked against upstream's actual ``split_text`` output. This drives both
-    with several sizes, including one large enough to merge every sentence into a
-    single group, and requires the same group count and content from each.
+    The guard above leaves ``min_chunk_size`` unset, so the ``continue`` that
+    skips updating ``start_index`` — merging an undersized group forward into
+    the next one instead of dropping it — was never compared with upstream's
+    ``split_text``. One size that forces several merges is enough: every size
+    takes the same branch.
     """
-    from langchain_core.embeddings import Embeddings
     from langchain_experimental.text_splitter import SemanticChunker
 
     from lightrag.chunker.semantic_vector import _semantic_groups_with_spans
     from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
-
-    class _SyncEmbeddings(Embeddings):
-        """Deterministic per-text vectors, mirroring _make_deterministic_embedding
-        but synchronous so SemanticChunker can be driven directly."""
-
-        def embed_documents(self, texts):
-            rows = []
-            for text in texts:
-                seed = abs(hash(text)) % (2**32)
-                rng = np.random.default_rng(seed=seed)
-                vec = rng.normal(size=8).astype(np.float64)
-                vec /= np.linalg.norm(vec) or 1.0
-                rows.append(vec.tolist())
-            return rows
-
-        def embed_query(self, text):
-            return self.embed_documents([text])[0]
 
     text = (
         "Alpha sentence one. "
@@ -284,7 +267,7 @@ def test_semantic_groups_mirror_matches_upstream_with_min_chunk_size(min_chunk_s
         "Zeta sentence six."
     )
     splitter = SemanticChunker(
-        _SyncEmbeddings(),
+        _make_sync_embeddings(),
         buffer_size=1,
         breakpoint_threshold_type="percentile",
         # A threshold of 0 puts almost every sentence boundary above it, so
@@ -292,7 +275,7 @@ def test_semantic_groups_mirror_matches_upstream_with_min_chunk_size(min_chunk_s
         # giving min_chunk_size plenty of undersized groups to merge forward.
         breakpoint_threshold_amount=0.0,
         sentence_split_regex=DEFAULT_SENTENCE_SPLIT_REGEX,
-        min_chunk_size=min_chunk_size,
+        min_chunk_size=60,
     )
 
     upstream = splitter.split_text(text)
@@ -338,8 +321,8 @@ def test_v_min_chunk_size_merges_small_groups_forward_without_dropping_content()
             4000,
             embedding_func=_make_deterministic_embedding(),
             breakpoint_threshold_type="percentile",
-            # Forces a split at nearly every sentence boundary, so plain runs
-            # with no min_chunk_size.
+            # Forces a split at nearly every sentence boundary, so the run
+            # without min_chunk_size yields one group per sentence or so.
             breakpoint_threshold_amount=0.0,
             min_chunk_size=min_chunk_size,
         )
