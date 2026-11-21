@@ -183,6 +183,21 @@ async def zhipu_complete_if_cache(
         for k, v in kwargs.items()
         if k not in ["hashing_kv", "keyword_extraction", "entity_extraction"]
     }
+
+    # Streaming is not implemented by this binding: `stream` always arrives
+    # here because LightRAG's query pipeline passes it unconditionally
+    # (operate.py sets stream=query_param.stream on every call, regardless
+    # of provider). Forwarding it as-is would make zai-sdk's
+    # chat.completions.create() return a Stream object instead of a
+    # ChatCompletion, and everything below this point only knows how to read
+    # `.choices` off a ChatCompletion -- it has no code path that iterates a
+    # Stream. Drop it and always complete in non-streaming mode instead of
+    # crashing with AttributeError once the SDK honors the flag.
+    if kwargs.pop("stream", None):
+        logger.warning(
+            "zhipu_complete_if_cache: streaming is not supported by this "
+            "binding; completing the request without streaming"
+        )
     # `thinking` is an official Zhipu request field. Example:
     # {"type": "enabled"} enables reasoning output on supported models.
     if thinking is not None:
