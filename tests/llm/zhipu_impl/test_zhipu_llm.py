@@ -449,6 +449,43 @@ async def test_zhipu_if_cache_entity_extraction_maps_to_json_object(monkeypatch)
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_zhipu_if_cache_does_not_forward_stream_to_the_client_call(monkeypatch):
+    """LightRAG's query pipeline always calls the LLM function with
+    ``stream=query_param.stream`` (see operate.py), even when the caller
+    never asked for streaming. zai-sdk's chat.completions.create() returns
+    a Stream object instead of a ChatCompletion when given stream=True, and
+    this binding only knows how to read ``.choices`` off a ChatCompletion --
+    it has no code path that iterates a Stream. So ``stream`` must never
+    reach the raw client call; forwarding it crashes with AttributeError as
+    soon as the fake (or real) SDK honors it and returns a streaming object."""
+    captured_calls = []
+
+    class FakeStreamObject:
+        """Stands in for zai-sdk's Stream: deliberately has no `.choices`."""
+
+    class FakeClient(FakeClientBase):
+        def __init__(self, api_key=None, **kwargs):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured_calls.append(kwargs)
+            if kwargs.get("stream"):
+                return FakeStreamObject()
+            return _fake_chat_response(content="answer")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key", stream=True
+    )
+
+    assert result == "answer"
+    assert "stream" not in captured_calls[0]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_zhipu_complete_runs_client_call_off_the_event_loop_thread(monkeypatch):
     """ZhipuAI wraps a synchronous httpx.Client, so calling it directly from
     this async function would block the event loop for the whole HTTP
