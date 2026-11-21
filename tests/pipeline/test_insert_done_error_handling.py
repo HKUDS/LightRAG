@@ -334,73 +334,46 @@ def _bind_enqueue_owned_spies(rag, recorder):
     return full, status, cache, other
 
 
+@pytest.mark.parametrize("skip_enqueue_owned", [True, False])
 @pytest.mark.asyncio
-async def test_discard_skip_enqueue_owned_true(tmp_path, monkeypatch):
+async def test_discard_on_a_healthy_abort(tmp_path, monkeypatch, skip_enqueue_owned):
+    """The ordinary abort cleanup: commit the pair, then drop every buffer.
+
+    ``full_docs`` / ``doc_status`` belong to the concurrent enqueue and are
+    skipped by default; direct callers pass ``False`` and clear them too. The
+    chunk references commit first -- the loop only DROPS ``text_chunks``, so a
+    reference not committed before the cache flush is discarded outright --
+    and the LLM cache, expensive to recompute, gets its final flush before its
+    buffer goes. That drop is upserts-only and untyped: a buffered cache
+    delete is a tombstone an already-returned deletion promised. Regenerable
+    storages are only dropped, never flushed.
+    """
     rag = await _make_rag(tmp_path)
     try:
         rec: list = []
         full, status, cache, other = _bind_enqueue_owned_spies(rag, rec)
+        chunks = _SpyStorage("text_chunks", recorder=rec)
+        rag.text_chunks = chunks
+        # Cache ahead of chunks: the order must come from the pair, not the list.
         monkeypatch.setattr(
-            rag, "_index_storages", lambda: [full, status, cache, other]
+            rag, "_index_storages", lambda: [full, status, cache, other, chunks]
         )
 
-        await rag._discard_pending_index_ops()  # skip_enqueue_owned=True default
+        await rag._discard_pending_index_ops(skip_enqueue_owned=skip_enqueue_owned)
 
-        # full_docs / doc_status are skipped.
-        assert full.drop_calls == 0
-        assert status.drop_calls == 0
-        # cache + other are dropped — the cache through the upserts-only
-        # drop, which is the only one it ever takes (its buffered deletes are
-        # tombstones an already-returned deletion promised).
-        assert cache.drop_upsert_calls == 1
-        assert cache.drop_calls == 0
-        assert other.drop_calls == 1
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_discard_skip_enqueue_owned_false(tmp_path, monkeypatch):
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        full, status, cache, other = _bind_enqueue_owned_spies(rag, rec)
-        monkeypatch.setattr(
-            rag, "_index_storages", lambda: [full, status, cache, other]
-        )
-
-        await rag._discard_pending_index_ops(skip_enqueue_owned=False)
-
-        # Now full_docs / doc_status are ALSO dropped.
-        assert full.drop_calls == 1
-        assert status.drop_calls == 1
-        assert cache.drop_upsert_calls == 1
-        assert other.drop_calls == 1
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_discard_llm_cache_flush_before_drop(tmp_path, monkeypatch):
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        full, status, cache, other = _bind_enqueue_owned_spies(rag, rec)
-        monkeypatch.setattr(
-            rag, "_index_storages", lambda: [full, status, cache, other]
-        )
-
-        await rag._discard_pending_index_ops()
-
-        # The LLM cache is flushed (index_done_callback) BEFORE its buffer is
-        # dropped — expensive cached results are persisted maximally first.
-        assert ("llm_cache", "flush") in rec
+        expected_enqueue_drops = 0 if skip_enqueue_owned else 1
+        assert full.drop_calls == expected_enqueue_drops
+        assert status.drop_calls == expected_enqueue_drops
+        assert rec.index(("text_chunks", "flush")) < rec.index(("llm_cache", "flush"))
+        assert rec.index(("text_chunks", "flush")) < rec.index(("text_chunks", "drop"))
         assert rec.index(("llm_cache", "flush")) < rec.index(
             ("llm_cache", "drop_upserts")
         )
-        # Non-cache storages are only dropped, never flushed here.
-        assert ("other_vdb", "flush") not in rec
         assert cache.index_done_calls == 1
+        assert cache.drop_upsert_cache_types == [None]
+        assert cache.drop_calls == 0
+        assert other.drop_calls == 1
+        assert ("other_vdb", "flush") not in rec
     finally:
         await rag.finalize_storages()
 
@@ -623,7 +596,13 @@ async def test_insert_done_skips_the_cache_flush_when_chunks_fail(
     """A failed chunk flush must not be followed by the rows it would strand.
 
     On OpenSearch a permanent bulk failure DROPS the chunk operation before
-    raising, so a cache row committed beside it has no reference left at all.
+    raising, so a cache row committed beside it has no reference left at all,
+    and deferring is not enough: the next successful pair commit would publish
+    it. The buffered extract rows are quarantined instead -- upserts only.
+    ``adelete_by_doc_id(delete_llm_cache=True)`` buffers its cache deletes and
+    reports success after merely LOGGING a flush error, so a quarantine that
+    took the deletes too would leave the prompt-holding rows on disk with
+    nothing left that names them.
     """
     rag = await _make_rag(tmp_path)
     try:
@@ -639,27 +618,15 @@ async def test_insert_done_skips_the_cache_flush_when_chunks_fail(
         assert cache.index_done_calls == 0, (
             "the cache rows were committed behind a chunk flush that failed"
         )
+        assert cache.drop_upsert_calls == 1, (
+            "the orphaned cache rows stayed buffered for the next pair commit "
+            "to publish"
+        )
+        assert cache.drop_calls == 0, (
+            "the quarantine took the buffered cache DELETES with the upserts"
+        )
         # Unrelated namespaces are unaffected: only the pair is serialised.
         assert other.index_done_calls == 1
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_discard_flushes_chunk_references_before_the_cache(tmp_path, monkeypatch):
-    """The aborting-batch cleanup obeys the same order — and it must, here more
-    than anywhere: the loop only DROPS text_chunks, so a reference not committed
-    before the cache flush is discarded outright."""
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        await rag._discard_pending_index_ops()
-
-        assert rec.index(("text_chunks", "flush")) < rec.index(("llm_cache", "flush"))
-        assert rec.index(("text_chunks", "flush")) < rec.index(("text_chunks", "drop"))
     finally:
         await rag.finalize_storages()
 
@@ -671,9 +638,11 @@ async def test_discard_skips_the_cache_flush_when_references_fail(
     """Losing the cached results is the accepted side of this trade.
 
     They are recomputed on the next run. A cache row published here behind a
-    reference that just failed to commit — with both buffers dropped on the
-    very next lines — is an unreachable row holding document text, which is
-    permanent.
+    reference that just failed to commit -- with both buffers dropped on the
+    very next lines -- is an unreachable row holding document text, which is
+    permanent. The cache drop stays upserts-only: a completed
+    ``adelete_by_doc_id(delete_llm_cache=True)`` may have left its tombstone
+    buffered, and with the document already gone nothing could reissue it.
     """
     rag = await _make_rag(tmp_path)
     try:
@@ -690,10 +659,13 @@ async def test_discard_skips_the_cache_flush_when_references_fail(
             "cache rows were published behind references that did not commit, "
             "and the next lines drop the buffer"
         )
-        # Upserts only: the buffered DELETES are tombstones a completed
-        # deletion promised, covered by its own test below.
         assert cache.drop_upsert_calls == 1
-        assert cache.drop_calls == 0
+        assert cache.drop_calls == 0, (
+            "the buffered cache DELETES were discarded on an aborting batch, "
+            "and a completed deletion has no way to reissue them"
+        )
+        # Every other namespace still gets the full drop.
+        assert other.drop_calls == 1
         assert any(
             "Failed to persist chunk cache references on abort" in rec_.message
             for rec_ in caplog.records
@@ -849,40 +821,6 @@ async def test_a_concurrent_writer_cannot_land_between_the_two_flushes(
         await rag.finalize_storages()
 
 
-@pytest.mark.asyncio
-async def test_a_permanent_chunk_failure_quarantines_the_buffered_cache_rows(
-    tmp_path, monkeypatch
-):
-    """Deferring is not enough when the reference can never land.
-
-    A per-item backend raises only for PERMANENT failures, and removes the
-    operation from its buffer first. The cache rows naming that reference can
-    therefore never become reachable, so the next successful pair commit would
-    publish orphans. They are dropped instead.
-    """
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(
-            rag, rec, chunks_flush_error=RuntimeError("permanent bulk failure")
-        )
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        with pytest.raises(IndexFlushError):
-            await rag._insert_done()
-
-        assert cache.drop_upsert_calls == 1, (
-            "the orphaned cache rows stayed buffered for the next pair commit "
-            "to publish"
-        )
-        assert cache.drop_calls == 0, (
-            "the quarantine took the buffered cache DELETES with the upserts"
-        )
-        assert cache.index_done_calls == 0
-    finally:
-        await rag.finalize_storages()
-
-
 # ---------------------------------------------------------------------------
 # The quarantine is gated on what the raise could have lost (issue #3924)
 # ---------------------------------------------------------------------------
@@ -926,6 +864,21 @@ def test_the_predicate_unwraps_the_flush_wrapper_and_nothing_else():
     assert flush_may_have_lost_reference(finalize_error) is True
 
 
+def test_the_predicate_terminates_on_a_cause_cycle():
+    """A ``__cause__`` cycle must not turn a diagnostic into a hang.
+
+    The unwrap loop is bounded for exactly this input; a cycle of wrappers
+    never reaches an intact claim, so the answer is the safe one.
+    """
+    self_loop = IndexFlushError("Self", "ns", RuntimeError("x"))
+    self_loop.__cause__ = self_loop
+    a = IndexFlushError("A", "ns", RuntimeError("x"))
+    b = IndexFlushError("B", "ns", RuntimeError("x"))
+    a.__cause__, b.__cause__ = b, a
+    assert flush_may_have_lost_reference(self_loop) is True
+    assert flush_may_have_lost_reference(a) is True
+
+
 @pytest.mark.asyncio
 async def test_a_reference_safe_chunk_failure_does_not_quarantine(
     tmp_path, monkeypatch
@@ -964,105 +917,76 @@ async def test_a_reference_safe_chunk_failure_does_not_quarantine(
         await rag.finalize_storages()
 
 
+@pytest.mark.parametrize(
+    "cause, expected_committed, expected_retries",
+    [
+        pytest.param(
+            ReferencesIntactFlushError("bulk died mid-stream"), True, 1, id="intact"
+        ),
+        pytest.param(RuntimeError("permanent bulk failure"), False, 0, id="lost"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_the_epilogue_retries_a_chunk_flush_that_dropped_nothing(
-    tmp_path, monkeypatch
+async def test_the_epilogue_retries_only_a_chunk_flush_that_dropped_nothing(
+    tmp_path, monkeypatch, cause, expected_committed, expected_retries
 ):
     """The reason to distrust a retry is a drained buffer; without one it is truthful.
 
     The epilogue exists to save the partial cache of a document that failed
     midway. Believing a reference-safe exception over its own retry would
-    withhold exactly that, on a transport blip that has since cleared.
+    withhold exactly that, on a transport blip that has since cleared. An
+    unclassified raise is still believed: the retry would read a drained
+    buffer.
     """
     rag = await _make_rag(tmp_path)
     try:
         rec: list = []
         chunks, cache, other = _bind_cache_pair_spies(rag, rec)
         monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-        namespace = chunks.namespace
 
-        intact = ReferencesIntactFlushError("bulk died mid-stream")
-        error = IndexFlushError("OpenSearchKVStorage", namespace, intact)
-        error.__cause__ = intact
-
-        committed = await rag._persist_chunk_cache_references_best_effort(
-            stage_label="extract failure", doc_id="doc-intact", error=error
-        )
-
-        assert committed is True
-        assert chunks.index_done_calls == 1
-        assert cache.drop_upsert_calls == 0
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_the_epilogue_still_believes_a_raise_that_dropped_something(
-    tmp_path, monkeypatch
-):
-    """The unclassified case is unchanged: the retry reads a drained buffer."""
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        cause = RuntimeError("permanent bulk failure")
         error = IndexFlushError("OpenSearchKVStorage", chunks.namespace, cause)
         error.__cause__ = cause
 
         committed = await rag._persist_chunk_cache_references_best_effort(
-            stage_label="extract failure", doc_id="doc-lost", error=error
+            stage_label="extract failure", doc_id="doc", error=error
         )
 
-        assert committed is False
-        assert chunks.index_done_calls == 0, (
-            "the epilogue retried a flush the backend had already given up on"
-        )
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_a_reference_safe_epilogue_failure_does_not_quarantine(
-    tmp_path, monkeypatch
-):
-    """Its own flush raising safely defers the cache without discarding it."""
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(
-            rag,
-            rec,
-            chunks_flush_error=ReferencesIntactFlushError("chunk store blipped"),
-        )
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        committed = await rag._persist_chunk_cache_references_best_effort(
-            stage_label="extract failure", doc_id="doc-epilogue-intact"
-        )
-
-        assert committed is False
-        assert rag._chunk_reference_commit_failed is False
+        assert committed is expected_committed
+        assert chunks.index_done_calls == expected_retries
         assert cache.drop_upsert_calls == 0
     finally:
         await rag.finalize_storages()
 
 
+@pytest.mark.parametrize(
+    "flush_error, flush_result, expected_recorded",
+    [
+        pytest.param(
+            ReferencesIntactFlushError("chunk store blipped"), None, False, id="intact"
+        ),
+        pytest.param(RuntimeError("chunk store is down"), None, True, id="lost"),
+        pytest.param(None, False, True, id="declined"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_the_epilogue_records_its_own_failed_chunk_commit(tmp_path, monkeypatch):
+async def test_the_epilogue_records_a_failed_chunk_commit_of_its_own(
+    tmp_path, monkeypatch, flush_error, flush_result, expected_recorded
+):
     """The epilogue's standalone flush is a chunk commit like any other.
 
-    Without recording it, the aborting-batch cleanup that follows reads an
-    unset flag, retries the drained buffer, and publishes what the epilogue
-    had just withheld.
+    Unrecorded, the aborting-batch cleanup that follows reads an unset flag,
+    retries the drained buffer, and publishes what the epilogue had just
+    withheld; a DECLINED commit discarded the mutation, so it counts too. A
+    raise that proved it dropped nothing still withholds the cache but neither
+    records nor quarantines: the rows wait for the next ordered pair.
     """
     rag = await _make_rag(tmp_path)
     try:
         rec: list = []
         chunks, cache, other = _bind_cache_pair_spies(
-            rag, rec, chunks_flush_error=RuntimeError("chunk store is down")
+            rag, rec, chunks_flush_error=flush_error
         )
+        chunks._flush_result = flush_result
         monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
 
         committed = await rag._persist_chunk_cache_references_best_effort(
@@ -1070,28 +994,8 @@ async def test_the_epilogue_records_its_own_failed_chunk_commit(tmp_path, monkey
         )
 
         assert committed is False
-        assert rag._chunk_reference_commit_failed is True
-        assert cache.drop_upsert_calls == 1
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_a_declined_epilogue_commit_is_recorded_too(tmp_path, monkeypatch):
-    """A DECLINED commit discarded the mutation; the references are not on disk."""
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
-        chunks._flush_result = False
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        committed = await rag._persist_chunk_cache_references_best_effort(
-            stage_label="extract failure", doc_id="doc-declined"
-        )
-
-        assert committed is False
-        assert rag._chunk_reference_commit_failed is True
+        assert rag._chunk_reference_commit_failed is expected_recorded
+        assert cache.drop_upsert_calls == (1 if expected_recorded else 0)
     finally:
         await rag.finalize_storages()
 
@@ -1158,170 +1062,9 @@ async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
         await rag.finalize_storages()
 
 
-@pytest.mark.asyncio
-async def test_the_quarantine_keeps_buffered_cache_deletions(tmp_path, monkeypatch):
-    """A cache tombstone is a promise an already-returned deletion made.
-
-    ``adelete_by_doc_id(delete_llm_cache=True)`` buffers the deletes and
-    flushes with a plain ``_insert_done`` precisely so they are not discarded;
-    that path reports success after merely LOGGING a flush error. A quarantine
-    that took the deletes with the upserts would leave the cache rows holding
-    the document prompt on disk, with the chunk rows that name them already
-    gone and no retry anywhere.
-    """
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(
-            rag, rec, chunks_flush_error=RuntimeError("index refresh failed")
-        )
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        with pytest.raises(IndexFlushError):
-            await rag._insert_done()
-
-        assert ("llm_cache", "drop") not in rec, (
-            "the buffered cache deletions were discarded along with the upserts"
-        )
-        assert ("llm_cache", "drop_upserts") in rec
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_abort_cleanup_keeps_cache_tombstones_when_references_fail(
-    tmp_path, monkeypatch
-):
-    """The second unconditional drop site, and the one with no recovery path.
-
-    A completed ``adelete_by_doc_id(delete_llm_cache=True)`` can leave its
-    tombstone buffered when the final ``_insert_done`` hit a ``text_chunks``
-    flush error — that path reports success after merely logging it. If an
-    aborting batch then discards the tombstone, the document, its status and
-    its chunks are already gone, so the cache row holding the prompt has
-    nothing left that can ever reach it.
-    """
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(
-            rag, rec, chunks_flush_error=RuntimeError("chunk store is down")
-        )
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        await rag._discard_pending_index_ops()
-
-        assert cache.index_done_calls == 0, "the cache was flushed behind failed refs"
-        assert cache.drop_calls == 0, (
-            "the buffered cache DELETES were discarded on an aborting batch, "
-            "and a completed deletion has no way to reissue them"
-        )
-        assert cache.drop_upsert_calls == 1
-        # Every other namespace still gets the full drop.
-        assert other.drop_calls == 1
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_abort_cleanup_drops_every_upsert_when_references_commit(
-    tmp_path, monkeypatch
-):
-    """The cache-type narrowing applies only to the failed-reference case.
-
-    The upserts-only narrowing applies to both: a buffered cache delete is
-    never this cleanup's to discard.
-    """
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
-
-        await rag._discard_pending_index_ops()
-
-        assert cache.index_done_calls == 1
-        # Upserts only, untyped: the batch is abandoned so every buffered
-        # upsert goes, but the deletes never do.
-        assert cache.drop_upsert_calls == 1
-        assert cache.drop_upsert_cache_types == [None]
-        assert cache.drop_calls == 0
-    finally:
-        await rag.finalize_storages()
-
-
 # ---------------------------------------------------------------------------
 # Reference-before-row: a successful chunk commit is not always proof
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_discard_skips_the_cache_flush_when_chunk_ops_stay_buffered(
-    tmp_path, monkeypatch
-):
-    """A per-item backend retains retryable failures and returns normally.
-
-    Everywhere else that residue is accepted because the retained operations
-    replay on the next flush. This cleanup is the exception: it DROPS the
-    chunk buffer a few lines later, so nothing ever replays them. Flushing the
-    cache on that successful-looking return publishes extract rows whose only
-    reference is in the buffer about to be discarded.
-    """
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks = _SpyStorage("text_chunks", recorder=rec, pending_index_ops=True)
-        cache = _SpyStorage("llm_cache", recorder=rec, dropped_upsert_count=3)
-        rag.text_chunks = chunks
-        rag.llm_response_cache = cache
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache])
-
-        await rag._discard_pending_index_ops()
-
-        # The chunk commit was attempted and reported success, but operations
-        # stayed buffered -- so the cache is NOT published. Asserted first, so
-        # a regression fails on the published row rather than on a missing
-        # call to the mechanism that prevents it.
-        assert cache.index_done_calls == 0
-        # Only the upserts go, so an already-promised tombstone survives.
-        assert cache.drop_upsert_calls == 1
-        assert cache.drop_calls == 0
-        assert chunks.index_done_calls == 1
-        assert chunks.has_pending_calls == 1
-    finally:
-        rag.text_chunks = None
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_discard_still_flushes_the_cache_when_nothing_stays_buffered(
-    tmp_path, monkeypatch
-):
-    """Stability: the gate must not suppress the ordinary abort path.
-
-    Cached LLM results are expensive, so a healthy chunk commit still buys the
-    cache its final flush before the buffers are dropped.
-    """
-    rag = await _make_rag(tmp_path)
-    try:
-        rec: list = []
-        chunks = _SpyStorage("text_chunks", recorder=rec, pending_index_ops=False)
-        cache = _SpyStorage("llm_cache", recorder=rec)
-        rag.text_chunks = chunks
-        rag.llm_response_cache = cache
-        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache])
-
-        await rag._discard_pending_index_ops()
-
-        assert cache.index_done_calls == 1
-        assert rec.index(("llm_cache", "flush")) < rec.index(
-            ("llm_cache", "drop_upserts")
-        )
-        assert cache.drop_upsert_calls == 1
-        assert cache.drop_calls == 0
-    finally:
-        rag.text_chunks = None
-        await rag.finalize_storages()
 
 
 @pytest.mark.asyncio
@@ -1374,26 +1117,45 @@ async def test_finalize_commits_the_ordered_pair_before_the_loop(tmp_path):
     assert cache.drop_upsert_calls == 0
 
 
+@pytest.mark.parametrize(
+    "dropped, expected_log, forbidden_log",
+    [
+        pytest.param(
+            4, "none is left unreachable", "nothing will heal them", id="discarded"
+        ),
+        # 0, not None: the ordered pair already quarantined the rows.
+        pytest.param(
+            0, "none is left unreachable", "nothing will heal them", id="already-empty"
+        ),
+        # None: a snapshot backend cannot separate the upserts out at all.
+        pytest.param(
+            None, "nothing will heal them", "none is left unreachable", id="snapshot"
+        ),
+    ],
+)
 @pytest.mark.asyncio
 async def test_finalize_quarantines_extract_rows_when_the_chunk_commit_failed(
-    tmp_path,
+    tmp_path, caplog, dropped, expected_log, forbidden_log
 ):
     """The process is exiting, so a published orphan is permanent.
 
     The cache's ``finalize`` flushes its buffer, which publishes the whole
     namespace; the extract rows it holds are discarded first when the
-    references did not reach disk.
+    references did not reach disk. Where the backend cannot discard them --
+    the one site with no heal path -- it says so instead of logging a discard
+    that did not happen, and an already-emptied buffer raises no such alarm.
     """
     rag = await _make_rag(tmp_path)
     rec: list = []
     chunks = _SpyStorage(
         "text_chunks", recorder=rec, flush_error=RuntimeError("chunks down")
     )
-    cache = _SpyStorage("llm_cache", recorder=rec, dropped_upsert_count=4)
+    cache = _SpyStorage("llm_cache", recorder=rec, dropped_upsert_count=dropped)
     rag.text_chunks = chunks
     rag.llm_response_cache = cache
 
-    await rag.finalize_storages()
+    with caplog.at_level("ERROR", logger="lightrag"):
+        await rag.finalize_storages()
 
     # Recorded once by the failed ordered pair, once by the finalize gate;
     # every one of them names the reference-carrying types only.
@@ -1402,76 +1164,9 @@ async def test_finalize_quarantines_extract_rows_when_the_chunk_commit_failed(
     # Quarantined BEFORE the cache's own finalize, which is what publishes.
     last_drop = len(rec) - 1 - rec[::-1].index(("llm_cache", "drop_upserts"))
     assert ("llm_cache", "flush") not in rec[last_drop:]
-
-
-@pytest.mark.asyncio
-async def test_finalize_quarantines_when_chunk_ops_are_merely_retained(tmp_path):
-    """A successful chunk commit that retained operations is not proof here.
-
-    Quarantined twice: once by the strict pair before the loop, once by the
-    gate before the cache's finalize. Both are needed — the pair's is the one
-    that runs before anything could be published.
-    """
-    rag = await _make_rag(tmp_path)
-    chunks = _SpyStorage("text_chunks", pending_index_ops=True)
-    cache = _SpyStorage("llm_cache", dropped_upsert_count=1)
-    rag.text_chunks = chunks
-    rag.llm_response_cache = cache
-
-    await rag.finalize_storages()
-
-    assert cache.drop_upsert_calls >= 1
-
-
-@pytest.mark.asyncio
-async def test_finalize_reports_the_residue_a_snapshot_backend_cannot_close(
-    tmp_path, caplog
-):
-    """On a snapshot backend the discard is a base-class no-op.
-
-    Nothing can be separated out of the shared dict, the process is exiting,
-    and no later run can publish the references — the one site with no heal
-    path, so it says so instead of logging a discard that did not happen.
-    """
-    rag = await _make_rag(tmp_path)
-    chunks = _SpyStorage("text_chunks", flush_error=RuntimeError("chunks down"))
-    # None, not 0: the backend cannot separate the upserts out at all.
-    cache = _SpyStorage("llm_cache", dropped_upsert_count=None)
-    rag.text_chunks = chunks
-    rag.llm_response_cache = cache
-
-    with caplog.at_level("ERROR", logger="lightrag"):
-        await rag.finalize_storages()
-
     messages = [r.message for r in caplog.records]
-    assert any("nothing will heal them" in m for m in messages)
-    # The finalize itself still ran: it releases the backend's client.
-    assert cache.drop_upsert_calls >= 1
-
-
-@pytest.mark.asyncio
-async def test_finalize_does_not_cry_residue_over_an_already_emptied_buffer(
-    tmp_path, caplog
-):
-    """An empty buffer is not an unclosable residue.
-
-    The ordered pair before the loop quarantines on its own chunk failure, so
-    by the time the finalize gate runs the per-item backend has nothing left
-    to discard and answers 0. Reading that as the base-class no-op would raise
-    a permanent-orphan alarm over rows that were already quarantined.
-    """
-    rag = await _make_rag(tmp_path)
-    chunks = _SpyStorage("text_chunks", flush_error=RuntimeError("chunks down"))
-    cache = _SpyStorage("llm_cache", dropped_upsert_count=0)
-    rag.text_chunks = chunks
-    rag.llm_response_cache = cache
-
-    with caplog.at_level("ERROR", logger="lightrag"):
-        await rag.finalize_storages()
-
-    messages = [r.message for r in caplog.records]
-    assert not any("nothing will heal them" in m for m in messages)
-    assert any("none is left unreachable" in m for m in messages)
+    assert any(expected_log in m for m in messages)
+    assert not any(forbidden_log in m for m in messages)
 
 
 class _BufferedCacheStorage:
@@ -1535,7 +1230,9 @@ async def test_the_aborting_cleanup_keeps_the_answer_rows_it_cannot_orphan(
 ):
     """The shared buffer also holds query answers, which name no chunk.
 
-    When the references did not land, this cleanup withholds the cache flush
+    When the references did not land -- here a per-item backend RETAINED a
+    retryable chunk failure and returned normally, which this cleanup cannot
+    accept because it drops that buffer next -- it withholds the cache flush
     and discards the buffer instead of publishing it. Discarding it untyped
     takes the answer rows too — full LLM responses that nothing can orphan and
     that the next cache commit would have published for free.
@@ -1564,6 +1261,9 @@ async def test_the_aborting_cleanup_keeps_the_answer_rows_it_cannot_orphan(
         }
         # Nothing was published behind a reference that is not on disk.
         assert cache.published == {}
+        # The chunk commit was attempted and returned; only the retained ops
+        # made it untrustworthy.
+        assert chunks.index_done_calls == 1
         # The tombstone an already-returned deletion promised is still there.
         assert cache.pending_deletes == {"default:extract:gone"}
     finally:

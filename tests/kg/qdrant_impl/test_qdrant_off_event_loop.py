@@ -188,6 +188,29 @@ async def test_reads_run_in_the_qdrant_pool(call):
 
 
 @pytest.mark.asyncio
+async def test_exact_count_is_exact_scoped_and_runs_in_the_qdrant_pool():
+    s = _make_storage()
+    rec = _ThreadRecorder()
+    s._client.count = rec(SimpleNamespace(count=4))
+
+    assert await s.get_exact_count() == 4
+    rec.assert_all_in_pool(1)
+    kwargs = s._client.count.call_args.kwargs
+    assert kwargs["exact"] is True
+    assert "test_ws" in repr(kwargs["count_filter"])
+
+
+@pytest.mark.asyncio
+async def test_strict_read_raises_where_get_by_ids_reports_nothing():
+    s = _make_storage()
+    s._client.retrieve = MagicMock(side_effect=ConnectionError("qdrant down"))
+
+    assert await s.get_by_ids(["a"]) == []
+    with pytest.raises(ConnectionError):
+        await s.get_by_ids_strict(["a"])
+
+
+@pytest.mark.asyncio
 async def test_buffered_read_does_not_touch_the_client():
     s = _make_storage()
     s._pending_vector_docs["a"] = _pending("a")

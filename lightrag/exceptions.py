@@ -68,8 +68,8 @@ class EmptyTruncatedResponseError(RuntimeError):
 
     Two raise surfaces share it:
 
-    - the provider bindings (OpenAI/Gemini), when the response is empty and
-      the finish reason is the output token limit;
+    - the provider bindings (OpenAI/Gemini/Anthropic), when the response is
+      empty and the finish reason is the output token limit;
     - ``use_llm_func_with_cache``, for the case no binding can see: a thinking
       model exhausts its budget inside the reasoning trace and returns
       ``<think>...</think>`` with no answer after it — NON-empty at the
@@ -94,6 +94,21 @@ class ReasoningOnlyResponseError(RuntimeError):
     no binding check sees (inline ``<think>`` in ``content``, Zhipu, custom
     LLM functions); the token-limit variant raises
     :class:`EmptyTruncatedResponseError` instead.
+    """
+
+
+class EmptySummaryResponseError(RuntimeError):
+    """An entity or relation description summary that came back empty.
+
+    The summary replaces every description fragment it was asked to merge, so
+    storing an empty one would erase them. Raised by the summary step for an
+    answer that is empty after think-tag removal and sanitization, including
+    ``<think>...</think>`` with nothing after it; the token-limit variant
+    raises :class:`EmptyTruncatedResponseError` before it gets there.
+
+    A retry asks the LLM again, except for an answer of control characters
+    only: it is cached before sanitization empties it, so it keeps failing
+    until the LLM cache is cleared.
     """
 
 
@@ -238,8 +253,9 @@ class PipelineReservationConflictError(RuntimeError):
 class AdminWriteGateRefusedError(PipelineReservationConflictError):
     """The workspace admin-write gate refused an admin graph write (→ HTTP 409).
 
-    Raised by ``LightRAG._admin_write_gate`` on a graph storage
-    that declares ``requires_single_writer``, in exactly two situations, each
+    Raised by ``LightRAG._admin_write_gate`` where the gate applies (a
+    ``requires_single_writer`` graph storage, or chunk tracking on a KV storage
+    that buffers per process), in exactly two situations, each
     with its own stable leading phrase so a client can tell them apart from the
     ``detail`` text alone (text, not a machine-readable code,
     is the contract):

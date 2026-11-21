@@ -13,7 +13,9 @@ document is deleted or reprocessed.
 
 This tool enumerates the whole graph (deliberately offline-only; the hot
 paths never do a graph-wide scan), maps every node/edge back to its owning
-documents via chunk `source_id` → `text_chunks` → `full_doc_id`, and:
+documents via its chunk provenance (the `entity_chunks` / `relation_chunks`
+tracking row unioned with the graph `source_id`, which `apply_source_ids_limit`
+caps) → `text_chunks` → `full_doc_id`, and:
 
 - reports per-document anchor gaps;
 - reports irrecoverable orphans (contributions whose source chunks no longer
@@ -123,6 +125,12 @@ One sharp edge remains: a graph backend whose indices/collections are missing
 audit cannot distinguish that from a workspace that truly owns no graph data —
 one more reason to run it only while the server is stopped and the workspace
 is healthy, as stated at the top.
+
+A second one: when an entity name contains the field separator, two entity
+pairs can map to the same `relation_chunks` key and so share one tracking row,
+which cannot say which edge a chunk belongs to. Those relations are resolved
+from their capped graph `source_id` only — the audit's behavior before it read
+tracking — and the audit logs a warning naming them.
 
 Note that `--apply` reports what it found under `missing_entity_anchors` /
 `missing_relation_anchors` (the diagnosis) and what it wrote under

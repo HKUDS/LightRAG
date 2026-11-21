@@ -1077,7 +1077,7 @@ POST /documents/recovery/force_reset
 
 | 工具 | 真相源与修复对象 | 修不了 | 成本 |
 | --- | --- | --- | --- |
-| `python -m lightrag.tools.kg_integrity_repair` | 沿 graph → chunk `source_id` → `text_chunks` → `full_doc_id` 反查，重建缺失或不可用的 `full_entities` / `full_relations` 锚点行；也能给确实什么都不拥有的文档写空锚点行 | 图↔向量漂移、`doc_status` / `full_docs` 自身、custom-chunk 日志、栅栏本身 | 不调 LLM / embedder，近乎免费 |
+| `python -m lightrag.tools.kg_integrity_repair` | 沿 graph → chunk 归属（`entity_chunks` / `relation_chunks` ∪ 被截断的 `source_id`）→ `text_chunks` → `full_doc_id` 反查，重建缺失或不可用的 `full_entities` / `full_relations` 锚点行；也能给确实什么都不拥有的文档写空锚点行 | 图↔向量漂移、`doc_status` / `full_docs` 自身、custom-chunk 日志、栅栏本身 | 不调 LLM / embedder，近乎免费 |
 | `lightrag-rebuild-vdb` | drop 后按图重建 `entities_vdb` / `relationships_vdb`、按 `text_chunks` 重建 `chunks_vdb`；能清掉反向孤儿（向量里有、图里没有），这是增量修复做不到的 | 锚点行、`doc_status`、图本身的正确性、栅栏本身 | 全量重新嵌入，真金白银 |
 
 两个顺序陷阱，弄反了会把可修复的数据变成不可修复的：

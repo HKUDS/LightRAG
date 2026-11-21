@@ -1841,8 +1841,9 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     write commits, and refuses with its own 409 when the pipeline is
     already busy or scanning. That gate runs only where the graph storage
     declares ``requires_single_writer`` (``NetworkXStorage``, the one
-    backend whose reload discards uncommitted mutations); server-backed
-    graph stores never take it, so the cost once cited against holding
+    backend whose reload discards uncommitted mutations) or chunk tracking
+    sits on a KV storage that buffers per process (``OpenSearchKVStorage``);
+    other server-backed stores never take it, so the cost once cited against holding
     ``busy`` across a UI edit -- serialising every edit against ingestion --
     does not apply to them, and on the file backend it amounts to deferring
     a pipeline start by one short, LLM-free request. This router check is

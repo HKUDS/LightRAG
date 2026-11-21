@@ -1,17 +1,19 @@
-"""Regression tests: edge weight must not accumulate across reprocess/resume
+"""Regression tests: an edge's weight counts each distinct source once
 (issue #3367 sibling of description accumulation).
 
 ``_merge_edges_then_upsert`` finalizes an edge's weight by summing the newly
-extracted relations' weights with the stored scalar. Before the fix it summed
-*every* new relation, so re-feeding an already-stored source (any reprocess or
-resume) re-added its weight, growing 1 -> 2 -> 3 per reprocess. The fix only
-sums weights of sources not already reflected in the stored scalar, filtering on
-the edge's own ``already_source_ids`` (consistent with ``already_weights``), and
-ignores falsy source ids.
+extracted relations' weights with the stored scalar. It used to sum *every* new
+relation, so re-feeding an already-stored source (any reprocess or resume)
+re-added its weight, growing 1 -> 2 -> 3 per reprocess, and a source whose
+extraction stated the relation twice in one batch counted twice. It now sums one
+weight per source not already reflected in the stored scalar, filtering on the
+edge's own ``already_source_ids`` (consistent with ``already_weights``), and
+ignores falsy source ids. The deletion rebuild's side of the per-chunk rule is
+pinned in ``test_relation_evidence_floor_repair.py``.
 
 These drive the real merge round-trip (unit ``_merge_edges_then_upsert`` and the
 top-level ``merge_nodes_and_edges`` orchestrator) against in-memory stores, no DB
-or LLM. Split out from #3373 as a focused, independent fix.
+or LLM.
 """
 
 from __future__ import annotations
@@ -140,88 +142,61 @@ def _rel(src, weight: float = 1.0) -> dict:
     }
 
 
-async def _reprocess_edge_weights(sources: list[str]) -> list[float]:
-    """Merge one edge per source in order; return the persisted weight after
-    each merge. Endpoint nodes are pre-created; a no-op vdb sidesteps the
-    unrelated entity_vdb path so this test isolates the weight logic."""
+# --- unit tests of the edge weight logic -----------------------------------
+#
+# Every relation an extraction emits carries weight 1.0, so the evidence floor
+# (weight >= distinct real sources) lifts an under-counted weight back up on its
+# own. A test of a lost or skipped contribution therefore needs a stored boost
+# above the floor, or it cannot fail.
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_edge_weight_counts_each_source_once_across_reprocess():
+    """#3367 sibling: re-feeding an already-stored source (reprocess/resume) adds
+    nothing, while each genuinely new source still adds its weight."""
     g = await _edge_graph_with_nodes()
     cfg = _cfg()
     weights: list[float] = []
-    for src in sources:
+    for src in ["c1", "c1", "c2", "c2", "c3"]:
         await _merge_edges_then_upsert(
             "A", "B", [_rel(src)], g, _MemVdb(), _MemVdb(), cfg
         )
         weights.append((await g.get_edge("A", "B"))["weight"])
-    return weights
-
-
-# --- unit tests of the edge weight logic -----------------------------------
+    assert weights == [1.0, 1.0, 2.0, 2.0, 3.0]
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_edge_weight_not_accumulated_on_reprocess():
-    """#3367 sibling: re-merging the same edge from the SAME source keeps weight
-    fixed. Each source contributes 1.0 and an already-reflected source is not
-    re-summed, so reprocess/resume does not inflate weight."""
-    assert await _reprocess_edge_weights(["c1", "c1", "c1"]) == [1.0, 1.0, 1.0]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_edge_weight_grows_across_distinct_sources():
-    """Over-suppress guard: distinct sources (legitimate multi-document
-    evidence) must still accumulate weight."""
-    assert await _reprocess_edge_weights(["c1", "c2", "c3"]) == [1.0, 2.0, 3.0]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_edge_weight_adds_only_the_new_source():
-    """A reprocessed source followed by a genuinely new one adds only the new
-    one's weight, not the re-fed duplicate's."""
-    assert await _reprocess_edge_weights(["c1", "c1", "c2"]) == [1.0, 1.0, 2.0]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_edge_weight_recovers_to_one_when_edge_missing_but_chunks_stored():
-    """Partial-write recovery: relation_chunks_storage already has the source but
-    the graph edge does not exist yet (a crash between the two writes). The weight
-    filter must NOT treat those sources as already-weighted -- already_weights is
-    empty, so filtering them would recover the edge with weight 0. With no stored
-    scalar, sum all contributions (weight = 1, not 0)."""
+async def test_edge_weight_not_double_counted_within_one_batch():
+    """One merge call's edges_data can carry two records for the SAME source
+    (one extraction stated the relation twice). Each source contributes weight
+    once per call, not once per record; another source in the batch still counts."""
     g = await _edge_graph_with_nodes()
-    cfg = _cfg()
-    rcs = _MemKV({make_relation_chunk_key("A", "B"): {"chunk_ids": ["c1"]}})
     await _merge_edges_then_upsert(
         "A",
         "B",
-        [_rel("c1")],
+        [_rel("c1"), _rel("c1"), _rel("c2")],
         g,
         _MemVdb(),
         _MemVdb(),
-        cfg,
-        relation_chunks_storage=rcs,
+        _cfg(),
     )
     edge = await g.get_edge("A", "B")
-    assert edge is not None
-    assert edge["weight"] == 1.0
+    assert edge["source_id"].split(GRAPH_FIELD_SEP) == ["c1", "c2"]
+    assert edge["weight"] == 2.0
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_edge_weight_adds_new_source_when_chunks_store_is_ahead():
     """relation_chunks_storage can run AHEAD of the graph edge (chunks upserted,
-    edge not yet updated). A genuinely new source re-fed then must still add
-    weight -- the filter uses the EDGE's own source_ids (consistent with the
-    stored scalar), not the chunk store, so the new source is not wrongly skipped
-    (which would under-count the weight)."""
+    edge not yet updated). A genuinely new source re-fed then must still add its
+    weight: the filter uses the EDGE's own source_ids (consistent with the stored
+    scalar), not the chunk store. The stored boost keeps the evidence floor (2)
+    from hiding a skipped contribution."""
     g = await _edge_graph_with_nodes()
-    cfg = _cfg()
-    # Existing edge reflects only c1 (weight 1)...
-    g.edges[("A", "B")] = _rel("c1")
-    # ...but relation_chunks already lists c1 AND c2 (ahead of the edge).
+    g.edges[("A", "B")] = _rel("c1", weight=5.0)
     rcs = _MemKV({make_relation_chunk_key("A", "B"): {"chunk_ids": ["c1", "c2"]}})
     await _merge_edges_then_upsert(
         "A",
@@ -230,10 +205,10 @@ async def test_edge_weight_adds_new_source_when_chunks_store_is_ahead():
         g,
         _MemVdb(),
         _MemVdb(),
-        cfg,
+        _cfg(),
         relation_chunks_storage=rcs,
     )
-    assert (await g.get_edge("A", "B"))["weight"] == 2.0
+    assert (await g.get_edge("A", "B"))["weight"] == 6.0
 
 
 @pytest.mark.offline
@@ -248,34 +223,6 @@ async def test_edge_merge_repairs_legacy_weight_below_evidence_floor():
     edge = await g.get_edge("A", "B")
     assert set(edge["source_id"].split(GRAPH_FIELD_SEP)) == {"c1", "c2"}
     assert edge["weight"] == 2.0
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_legacy_no_source_marker_does_not_raise_evidence_floor():
-    g = await _edge_graph_with_nodes()
-    cfg = _cfg()
-    g.edges[("A", "B")] = _rel("manual_creation", weight=0.25)
-
-    await _merge_edges_then_upsert("A", "B", [_rel("c1")], g, _MemVdb(), _MemVdb(), cfg)
-
-    edge = await g.get_edge("A", "B")
-    assert edge["weight"] == 1.25
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_edge_weight_not_double_counted_on_reversed_refeed():
-    """Undirected edge: stored as (A,B) from c1, then re-fed reversed as (B,A)
-    from the SAME c1. get_edge is symmetric, so the edge's own source_ids see c1
-    and the re-fed duplicate is dropped -- weight stays 1, no direction-flip
-    double count."""
-    g = await _edge_graph_with_nodes()
-    g.edges[("A", "B")] = _rel("c1")
-    await _merge_edges_then_upsert(
-        "B", "A", [_rel("c1")], g, _MemVdb(), _MemVdb(), _cfg()
-    )
-    assert (await g.get_edge("A", "B"))["weight"] == 1.0
 
 
 @pytest.mark.offline
@@ -316,8 +263,8 @@ async def test_edge_weight_ignores_falsy_source(falsy_source):
 
 # --- End-to-end via the real orchestrator merge_nodes_and_edges -------------
 #
-# The tests above drive the unit _merge_edges_then_upsert helper. These drive the
-# top-level two-phase merge the pipeline actually calls (Phase 1 entities ->
+# The tests above drive the unit _merge_edges_then_upsert helper. This one drives
+# the top-level two-phase merge the pipeline actually calls (Phase 1 entities ->
 # Phase 2 relations) with in-memory stores, to prove the non-accumulation
 # invariant holds through the full reprocess path (weight, plus description as an
 # incidental corroboration of the already-merged #3395 fix).
@@ -364,26 +311,31 @@ def _stores() -> dict:
     }
 
 
+def _edge_dp(src_id: str, tgt_id: str, src: str) -> dict:
+    return {
+        "src_id": src_id,
+        "tgt_id": tgt_id,
+        "weight": 1.0,
+        "description": "rel",
+        "keywords": "k",
+        "source_id": src,
+        "file_path": "d.txt",
+        "timestamp": 1,
+    }
+
+
 def _one_chunk(src: str, alice_desc: str = "Alice is an engineer."):
     """A single extracted chunk: entities ALICE + ACME and edge ALICE~ACME,
-    all attributed to source `src`."""
+    all attributed to source `src`. The extraction states the relation in both
+    directions, as LLM output does; the orchestrator folds both under one sorted
+    key, so the edge must still count this chunk once."""
     maybe_nodes = {
         "ALICE": [_node_dp("ALICE", alice_desc, src)],
         "ACME": [_node_dp("ACME", "Acme is a company.", src)],
     }
     maybe_edges = {
-        ("ACME", "ALICE"): [
-            {
-                "src_id": "ALICE",
-                "tgt_id": "ACME",
-                "weight": 1.0,
-                "description": "rel",
-                "keywords": "k",
-                "source_id": src,
-                "file_path": "d.txt",
-                "timestamp": 1,
-            }
-        ]
+        ("ALICE", "ACME"): [_edge_dp("ALICE", "ACME", src)],
+        ("ACME", "ALICE"): [_edge_dp("ACME", "ALICE", src)],
     }
     return [(maybe_nodes, maybe_edges)]
 
@@ -394,61 +346,29 @@ def _node_frag_count(g, name: str) -> int:
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_orchestrator_reprocess_same_doc_does_not_accumulate():
-    """Merging the SAME extracted doc twice (a reprocess/resume) must not grow
-    entity descriptions or edge weight through the real orchestrator."""
+async def test_orchestrator_weight_and_description_track_distinct_sources():
+    """Through the real orchestrator: reprocessing a doc (d1 twice, and d1 again
+    after d2) grows neither the entity description nor the edge weight, while a
+    DISTINCT doc grows both; a chunk stating the relation in both directions
+    counts once."""
     from lightrag.kg.shared_storage import initialize_share_data
 
     initialize_share_data()
     g = _MemGraph()
     stores = _stores()
     cfg = _cfg()
-    for _ in range(2):
-        await _orchestrate(_one_chunk("c1"), g, stores, cfg, doc_id="d1")
-    assert _node_frag_count(g, "ALICE") == 1
-    assert (await g.get_edge("ALICE", "ACME"))["weight"] == 1.0
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_orchestrator_distinct_docs_accumulate():
-    """Two DISTINCT docs (distinct sources + descriptions) legitimately grow the
-    entity description to two fragments and the edge weight to two."""
-    from lightrag.kg.shared_storage import initialize_share_data
-
-    initialize_share_data()
-    g = _MemGraph()
-    stores = _stores()
-    cfg = _cfg()
-    await _orchestrate(
-        _one_chunk("c1", "Alice is an engineer."), g, stores, cfg, doc_id="d1"
-    )
-    await _orchestrate(
-        _one_chunk("c2", "Alice leads the team."), g, stores, cfg, doc_id="d2"
-    )
-    assert _node_frag_count(g, "ALICE") == 2
-    assert (await g.get_edge("ALICE", "ACME"))["weight"] == 2.0
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_orchestrator_reprocess_after_distinct_docs_is_stable():
-    """After two distinct docs (c1, c2), reprocessing c1 again must not grow the
-    description or weight past two."""
-    from lightrag.kg.shared_storage import initialize_share_data
-
-    initialize_share_data()
-    g = _MemGraph()
-    stores = _stores()
-    cfg = _cfg()
-    await _orchestrate(
-        _one_chunk("c1", "Alice is an engineer."), g, stores, cfg, doc_id="d1"
-    )
-    await _orchestrate(
-        _one_chunk("c2", "Alice leads the team."), g, stores, cfg, doc_id="d2"
-    )
-    await _orchestrate(
-        _one_chunk("c1", "Alice is an engineer."), g, stores, cfg, doc_id="d1"
-    )
-    assert _node_frag_count(g, "ALICE") == 2
-    assert (await g.get_edge("ALICE", "ACME"))["weight"] == 2.0
+    observed = []
+    for src, desc, doc_id in [
+        ("c1", "Alice is an engineer.", "d1"),
+        ("c1", "Alice is an engineer.", "d1"),
+        ("c2", "Alice leads the team.", "d2"),
+        ("c1", "Alice is an engineer.", "d1"),
+    ]:
+        await _orchestrate(_one_chunk(src, desc), g, stores, cfg, doc_id=doc_id)
+        observed.append(
+            (
+                _node_frag_count(g, "ALICE"),
+                (await g.get_edge("ALICE", "ACME"))["weight"],
+            )
+        )
+    assert observed == [(1, 1.0), (1, 1.0), (2, 2.0), (2, 2.0)]

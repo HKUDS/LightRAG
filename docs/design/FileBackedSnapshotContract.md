@@ -559,6 +559,25 @@ else's commit. Unlike the graph store these classes lose nothing to it (a peer
 commit is reloaded and the buffers replayed on top), but the *timing* is still
 not the caller's to choose.
 
+### Maintenance consistency capabilities
+
+`get_exact_count()` (the `BaseVectorStorage` capability the offline check in
+`lightrag/tools/rebuild_vdb.py` compares against the source count) is
+implemented on both vector backends and nowhere else yet.
+
+* It reloads first, like every read, and then **refuses** with
+  `StorageCapabilityError("unflushed_writes")` while this process holds
+  anything not yet on disk: pending upserts or deletes, unsaved redo entries,
+  or a dirty client/index. The answer is therefore always the size of a
+  persisted snapshot, by construction rather than by the caller's promise. The
+  tool runs with no writers, so in practice it never refuses there.
+* It refuses on a snapshot it cannot count exactly: a Nano data collection
+  that is malformed or holds a row without an id or two rows with one id; a
+  Faiss index whose slot count, positions or ids disagree with its metadata
+  (`index_meta_skew`). Those states are uncertainty, not proof of drift: the
+  check reports `inconclusive` and does not recommend a rebuild from them.
+* It never repairs or mutates what it finds.
+
 ## `JsonKVStorage` and `JsonDocStatusStorage` — shared in-memory state, no reload path
 
 These two classes use a fundamentally different cross-process model from the

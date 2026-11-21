@@ -554,6 +554,52 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Point read with complete-or-raise semantics, one entry per id.
+
+        Returns a list aligned with ``ids``: the record, in the shape
+        ``get_by_ids`` returns (``id`` included), or ``None`` only when the
+        backend positively determined that the id is absent. A transport or
+        server error, a response that failed for some items, or a container
+        that cannot be read MUST raise -- never a ``None`` slot and never a
+        short list. Writes this instance still buffers are served the way
+        ``get_by_ids`` serves them.
+
+        It exists because ``get_by_ids`` may answer a failed read with a miss
+        (logged, then ``[]`` or ``None`` slots), which is harmless where a miss
+        only defers or displays something. Use this one wherever a miss drives
+        a decision, as the offline ``lightrag-rebuild-vdb`` check does.
+
+        The default raises :class:`~lightrag.exceptions.StorageCapabilityError`:
+        a backend without it cannot prove a miss, and callers must treat that
+        as "unknown", never as "absent".
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support strict point reads"
+        )
+
+    async def get_exact_count(self) -> int:
+        """Return the exact number of persisted records ``get_by_ids`` can address.
+
+        An optional maintenance capability, consumed by the offline
+        consistency check in ``lightrag/tools/rebuild_vdb.py``. Rules for
+        implementers:
+
+        * count this namespace and workspace only, in the id space
+          ``get_by_ids`` answers;
+        * exact or raise: a transport error, an unreadable container, writes
+          still buffered in this process, or an index whose parts disagree
+          raise ``StorageCapabilityError`` -- never return an estimate, and
+          never return zero for "could not tell";
+        * read-only: never repair what the count finds.
+
+        The default raises ``StorageCapabilityError``, so the check reports
+        the target ``inconclusive`` rather than guessing.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support exact persisted counts"
+        )
+
     @abstractmethod
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs
@@ -711,6 +757,49 @@ class BaseKVStorage(StorageNameSpace, ABC):
     unconfirmed miss). Callers MUST gate on this flag before calling
     :meth:`get_by_id_strict`.
     """
+
+    buffers_writes_per_process: ClassVar[bool] = False
+    """Class-level declaration: ``upsert`` stays in a buffer only THIS process
+    can read until ``index_done_callback`` flushes it.
+
+    ``LightRAG._admin_write_gate`` keys off this for the chunk-tracking
+    namespaces. The document pipeline updates a tracking row under a keyed
+    lock but flushes only at the end of the document, so on such a backend an
+    admin graph write on another worker would read the row without that
+    addition and overwrite it. Where this is ``True`` the admin writers
+    therefore take the pipeline ``busy`` reservation, so the two never
+    overlap. An immediate-write backend, and one whose buffer every worker
+    shares (``JsonKVStorage``), leave it ``False``. See *Admin graph writes*
+    in ``docs/design/PipelineConcurrencyContract.md``.
+    """
+
+    def discard_buffered_writes(self) -> int:
+        """Drop every buffered, uncommitted operation; return how many.
+
+        The synchronous counterpart of ``drop_pending_index_ops``, for
+        ``LightRAG._admin_write_gate``: it runs while a cancellation is
+        propagating, where an ``await`` could be interrupted by a second one
+        and leave the buffer in place. A backend that declares
+        ``buffers_writes_per_process`` MUST override it; the default has
+        nothing buffered and returns ``0``.
+        """
+        return 0
+
+    async def has_retained_writes(self) -> bool:
+        """Whether a commit returned normally but kept operations it could not write.
+
+        A per-item backend keeps a retryable bulk failure (408/429/5xx) in its
+        buffer and returns from ``index_done_callback`` without raising. This
+        answers "did the latest commit leave something behind", and must NOT
+        count operations buffered after that commit, which no commit has tried
+        yet: ``has_pending_index_ops`` does count them, so a caller running
+        beside concurrent writers cannot use it for this question.
+
+        A backend that declares ``buffers_writes_per_process`` MUST override
+        it; the default has nothing buffered and returns ``False``. See
+        ``LightRAG._require_tracking_commit_landed`` for the caller.
+        """
+        return False
 
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -876,7 +965,8 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     # admin graph writers take the workspace admin lock and the pipeline
     # ``busy`` reservation; where it is ``False`` (every server-backed store,
     # which has row/transaction-level concurrency of its own) they run
-    # unserialized, as before.
+    # unserialized, unless a chunk-tracking KV storage asks for the gate
+    # through ``BaseKVStorage.buffers_writes_per_process``.
     #
     # ``ClassVar`` on purpose: the storage bases are dataclasses, so a bare
     # annotated attribute would become an ``__init__`` field and change the

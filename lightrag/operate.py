@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, overload, Literal, Callable, Awaitable
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
+    EmptySummaryResponseError,
     IndexFlushError,
     PipelineCancelledException,
 )
@@ -594,7 +595,8 @@ async def _summarize_descriptions(
             path.
 
     Returns:
-        Summarized description string
+        Summarized description string, never empty: an empty answer raises
+        :class:`~lightrag.exceptions.EmptySummaryResponseError`.
     """
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     # Apply higher priority (8) to entity/relation summary tasks
@@ -666,6 +668,24 @@ async def _summarize_descriptions(
     # would later break GraphML (XML) serialization on write. Strip them
     # at the source, symmetric with how extracted descriptions are cleaned.
     summary = sanitize_text_for_encoding(summary)
+
+    # The summary replaces every fragment it merges, so storing an empty one
+    # would erase them. Fail instead: the stored description survives and the
+    # document can be retried. An answer that is empty after think-tag
+    # removal is never cached (save_to_cache skips falsy content), so the
+    # retry asks the LLM again.
+    # Accepted residue: an answer of control characters only is cached (it is
+    # non-empty until sanitize_text_for_encoding above runs), so a retry
+    # replays it and fails again, loudly, until the LLM cache is cleared.
+    if not summary.strip():
+        message = (
+            f"Received empty summary for {description_type}:{description_name} "
+            f"({len(description_list)} descriptions): the model returned no "
+            "answer text (empty, or reasoning only); if it is a thinking model, "
+            "consider disabling thinking mode for the extract role"
+        )
+        logger.error(message)
+        raise EmptySummaryResponseError(message)
 
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")
@@ -2237,20 +2257,18 @@ async def _rebuild_single_entity(
             f"No entity data found for `{entity_name}`, trying to rebuild from relationships"
         )
 
-        # Collect relationship data to extract entity information
+        # Only the description comes from the edges. Provenance follows the
+        # surviving chunks like source_id does: an edge's file_path may name
+        # files outside this entity's chunks and carries its own truncation
+        # marker, which must not be counted or kept as a path.
         relationship_descriptions = []
-        file_paths = set()
-
-        # Get edge data for all connected relationships
         for src_id, tgt_id in edges:
             edge_data = await knowledge_graph_inst.get_edge(src_id, tgt_id)
-            if edge_data:
-                if edge_data.get("description"):
-                    relationship_descriptions.append(edge_data["description"])
-
-                if edge_data.get("file_path"):
-                    edge_file_paths = edge_data["file_path"].split(GRAPH_FIELD_SEP)
-                    file_paths.update(edge_file_paths)
+            if edge_data and edge_data.get("description"):
+                relationship_descriptions.append(edge_data["description"])
+        file_paths = _surviving_chunk_file_paths(
+            limited_chunk_ids, chunk_data_by_id or {}, global_config
+        )
 
         # deduplicate descriptions
         description_list = list(dict.fromkeys(relationship_descriptions))
@@ -2434,16 +2452,23 @@ async def _rebuild_single_relationship(
         identifier=f"`{src}`~`{tgt}`",
     )
 
-    # Collect all relationship data from relevant chunks
+    # Collect all relationship data from relevant chunks. One chunk's records can
+    # name this relation more than once (the LLM restated it, or listed both
+    # directions); each chunk contributes weight once, keeping its first record's
+    # weight -- the same rule _merge_edges_then_upsert applies on insert, so a
+    # rebuild does not re-inflate a weight the insert counted once.
     all_relationship_data = []
+    weight_by_chunk: dict[str, float] = {}
     for chunk_id in limited_chunk_ids:
         if chunk_id in chunk_relationships:
             # Check both (src, tgt) and (tgt, src) since relationships can be bidirectional
             for edge_key in [(src, tgt), (tgt, src)]:
                 if edge_key in chunk_relationships[chunk_id]:
-                    all_relationship_data.extend(
-                        chunk_relationships[chunk_id][edge_key]
-                    )
+                    records = chunk_relationships[chunk_id][edge_key]
+                    all_relationship_data.extend(records)
+                    for rel_data in records:
+                        if rel_data.get("weight"):
+                            weight_by_chunk.setdefault(chunk_id, rel_data["weight"])
 
     # Kept, not removed, when no surviving chunk's records name it; see the
     # matching branch of _rebuild_single_entity.
@@ -2459,7 +2484,11 @@ async def _rebuild_single_relationship(
     # Merge descriptions and keywords
     descriptions = [current_relationship.get("description", "")] if degraded else []
     raw_keywords = [current_relationship.get("keywords", "")] if degraded else []
-    weights = [current_relationship.get("weight", 1.0)] if degraded else []
+    weights = (
+        [current_relationship.get("weight", 1.0)]
+        if degraded
+        else list(weight_by_chunk.values())
+    )
     file_paths_list = (
         _surviving_chunk_file_paths(
             limited_chunk_ids, chunk_data_by_id or {}, global_config
@@ -2476,8 +2505,6 @@ async def _rebuild_single_relationship(
             descriptions.append(rel_data["description"])
         if rel_data.get("keywords"):
             raw_keywords.append(rel_data["keywords"])
-        if rel_data.get("weight"):
-            weights.append(rel_data["weight"])
         if rel_data.get("file_path"):
             file_path = rel_data["file_path"]
             if file_path and file_path not in seen_paths:
@@ -2915,11 +2942,18 @@ async def _merge_nodes_then_upsert(
         # 6.1 Finalize source_id
         source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-        # 6.2 Finalize entity type by highest count
+        # 6.2 Finalize entity type by highest count. The stored type carries
+        # a single vote however many merges established it, so it goes first
+        # and wins a tie (sorted() is stable): one conflicting extraction must
+        # not flip it. An UNKNOWN placeholder -- written for a relation
+        # endpoint never extracted as an entity, or for a missing stored type
+        # -- is not evidence, casts no vote and yields to any real extraction;
+        # with no other vote it is kept as is.
+        type_votes = [t for t in already_entity_types if t.upper() != "UNKNOWN"] + [
+            dp["entity_type"] for dp in nodes_data
+        ]
         entity_type = sorted(
-            Counter(
-                [dp["entity_type"] for dp in nodes_data] + already_entity_types
-            ).items(),
+            Counter(type_votes or already_entity_types).items(),
             key=lambda x: x[1],
             reverse=True,
         )[0][0]
@@ -3319,16 +3353,23 @@ async def _merge_edges_then_upsert(
         # persists), so it must not add weight either -- otherwise weight would
         # outgrow the stored source count. Count only sources that actually
         # persist: truthy AND not already reflected in the stored scalar.
+        #
+        # edges_data can also carry more than one record for the SAME
+        # source_id within this one call: a single LLM extraction can state the
+        # same relation twice, or once in each direction (both land under the
+        # sorted edge key). Each source must contribute weight once, matching
+        # the "distinct contributing sources" intent above, not once per
+        # record; keep the first record seen per source, the same
+        # first-occurrence convention used for description dedup.
+        # _rebuild_single_relationship applies the same rule per chunk.
         already_edge_source_set = set(already_source_ids)
-        weight = sum(
-            [
-                dp["weight"]
-                for dp in edges_data
-                if dp.get("source_id")
-                and dp["source_id"] not in already_edge_source_set
-            ]
-            + already_weights
-        )
+        new_weight_by_source: dict[str, float] = {}
+        for dp in edges_data:
+            dp_source_id = dp.get("source_id")
+            if not dp_source_id or dp_source_id in already_edge_source_set:
+                continue
+            new_weight_by_source.setdefault(dp_source_id, dp["weight"])
+        weight = sum(new_weight_by_source.values()) + sum(already_weights)
         # Repair legacy/manual rows that predate the shared weight contract:
         # every distinct real source contributes a baseline of 1, while an
         # existing larger weight remains an optional importance boost.
@@ -5592,6 +5633,49 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
     return True, hl_keywords, ll_keywords
 
 
+KEYWORD_EXTRACTION_JSON_MODES = ("auto", "json_object", "none")
+
+
+def normalize_keyword_extraction_json_mode(value: Any) -> str:
+    """Return the canonical ``keyword_extraction_json_mode``, or raise ``ValueError``."""
+    mode = str(value).strip().lower()
+    if mode not in KEYWORD_EXTRACTION_JSON_MODES:
+        raise ValueError(
+            "keyword_extraction_json_mode (KEYWORD_EXTRACTION_JSON_MODE) must be "
+            f"'auto', 'json_object' or 'none', got {value!r}"
+        )
+    return mode
+
+
+def _is_unsupported_response_format_error(error: BaseException) -> bool:
+    """Whether the provider rejected the ``response_format=json_object`` constraint itself.
+
+    The fallback exists for OpenAI-compatible servers that accept only
+    ``json_schema``/``text`` (LM Studio answers ``'response_format.type' must be
+    'json_schema' or 'text'``). The message must name the field (``response_format``
+    or ``json_object``) AND carry a rejection marker, so a generic 400, a timeout, or
+    a transport error never qualifies: only this compatibility failure may be retried
+    without the constraint, everything else must propagate.
+    """
+    # The OpenAI SDK prints the error ``type`` of every 400 as
+    # ``invalid_request_error``; it says nothing about which field was rejected.
+    message = str(error).lower().replace("invalid_request_error", "")
+    if "response_format" not in message and "json_object" not in message:
+        return False
+    rejection_markers = (
+        "unsupported",
+        "not supported",
+        "does not support",
+        "not allowed",
+        "not accept",
+        "invalid",
+        "must be",
+        "only accept",
+        "only support",
+    )
+    return any(marker in message for marker in rejection_markers)
+
+
 async def extract_keywords_only(
     text: str,
     param: QueryParam,
@@ -5603,6 +5687,9 @@ async def extract_keywords_only(
     This method does NOT build the final RAG context or provide a final answer.
     It ONLY extracts keywords (hl_keywords, ll_keywords).
     """
+    json_mode = normalize_keyword_extraction_json_mode(
+        global_config.get("keyword_extraction_json_mode", "auto")
+    )
 
     # 1. Build the examples
     examples = "\n".join(PROMPTS["keywords_extraction_examples"])
@@ -5658,7 +5745,31 @@ async def extract_keywords_only(
         global_config["role_llm_funcs"]["keyword"], _priority=DEFAULT_QUERY_PRIORITY
     )
 
-    result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
+    # JSON mode policy (see keyword_extraction_json_mode): `auto` keeps the
+    # API-enforced JSON constraint on the first attempt — supported providers must not
+    # be downgraded to prompt-only parsing, which silently degrades to empty keywords —
+    # and drops it only after the provider rejects the field.
+    llm_kwargs: dict[str, Any] = (
+        {"response_format": {"type": "json_object"}}
+        if json_mode in ("auto", "json_object")
+        else {}
+    )
+
+    try:
+        result = await use_model_func(kw_prompt, **llm_kwargs)
+    except Exception as error:
+        if not (
+            json_mode == "auto"
+            and llm_kwargs
+            and _is_unsupported_response_format_error(error)
+        ):
+            raise
+        logger.warning(
+            "Keyword extraction: provider rejected response_format=json_object (%s); "
+            "retrying once without it",
+            error,
+        )
+        result = await use_model_func(kw_prompt)
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)

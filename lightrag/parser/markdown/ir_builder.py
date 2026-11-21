@@ -197,15 +197,19 @@ def _build_table(placeholder: str, spec: dict) -> IRTable:
         [str(c) for c in row]
         for row in itertools.chain(header or [], spec.get("rows") or [])
     ]
-    num_rows = len(rows)
+    # Every row, header included, is padded to the widest row. Unlike GFM,
+    # cells past the header width are kept, not dropped: they are usually an
+    # unescaped ``|`` inside a cell, and dropping them would remove that text
+    # from the index without a trace.
     num_cols = max((len(r) for r in rows), default=0)
+    rows = [row + [""] * (num_cols - len(row)) for row in rows]
     return IRTable(
         placeholder_key=placeholder,
         rows=rows,
         html=None,
-        num_rows=num_rows,
+        num_rows=len(rows),
         num_cols=num_cols,
-        table_header=header if header else None,
+        table_header=rows[: len(header)] if header else None,
     )
 
 

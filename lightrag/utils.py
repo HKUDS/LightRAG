@@ -322,6 +322,12 @@ def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[
         return None
 
 
+# Spellings accepted for boolean env values. A blank value counts as false,
+# matching the historical "anything not true is false" reading of ``KEY=``.
+ENV_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
+ENV_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -335,7 +341,13 @@ def get_env_value(
         special_none (bool): If True, return None when value is "None"
 
     Returns:
-        any: Converted value from environment or default
+        any: Converted value from environment or default. A value that does
+        not convert falls back to ``default``; a non-blank one also logs a
+        warning, a blank one (``KEY=`` in .env/Compose) does not.
+
+    For ``bool`` the accepted spellings are ``ENV_BOOL_TRUE_WORDS`` and
+    ``ENV_BOOL_FALSE_WORDS`` (blank reads as ``False``); anything else, such
+    as the typo ``ture``, warns and returns ``default``.
     """
     value = os.getenv(env_key)
     if value is None:
@@ -346,7 +358,20 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        return value.strip().lower() in ("true", "1", "yes", "t", "on")
+        text = value.strip().lower()
+        if text in ENV_BOOL_TRUE_WORDS:
+            return True
+        if text in ENV_BOOL_FALSE_WORDS:
+            return False
+        logger.warning(
+            "Environment variable %s=%r is not a recognized boolean "
+            "(expected one of %s), using default %r",
+            env_key,
+            value,
+            "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+            default,
+        )
+        return default
 
     # Handle list type with JSON parsing
     if value_type is list:
@@ -371,6 +396,16 @@ def get_env_value(
     try:
         converted = value_type(value)
     except (ValueError, TypeError):
+        # A blank value is the usual "unset" idiom in .env/Compose and falls
+        # back quietly; anything else is a typo the operator should hear about.
+        if value.strip():
+            logger.warning(
+                "Environment variable %s=%r is not a valid %s, using default %r",
+                env_key,
+                value,
+                getattr(value_type, "__name__", value_type),
+                default,
+            )
         return default
 
     # Reject non-finite floats so env-backed thresholds cannot become NaN/Inf.
@@ -5105,11 +5140,11 @@ async def aexport_data(
         entities_data.append(entity_row)
 
     # --- Relations ---
-    for src_entity in all_entities:
-        for tgt_entity in all_entities:
-            if src_entity == tgt_entity:
-                continue
-
+    # Relations are undirected: has_edge(a, b) and has_edge(b, a) answer for
+    # the same edge, so probe each unordered pair once. Probing ordered pairs
+    # exported every relation twice, once per orientation.
+    for src_index, src_entity in enumerate(all_entities):
+        for tgt_entity in all_entities[src_index + 1 :]:
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 src_entity, tgt_entity
             )
@@ -7537,6 +7572,13 @@ async def apply_rerank_if_enabled(
                         "Rerank returned no usable results, using original chunks"
                     )
                     return retrieved_docs
+
+                # Sort by score instead of trusting the provider already
+                # returned results in relevance order: callers slice this
+                # list positionally (chunk_top_k truncation), so an
+                # unsorted response would silently keep the wrong chunks
+                # despite every chunk carrying a correct rerank_score.
+                reranked_docs.sort(key=lambda d: d["rerank_score"], reverse=True)
 
                 logger.info(
                     f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"
