@@ -161,6 +161,7 @@ from lightrag.operate import (
     merge_nodes_and_edges,
     naive_query,
     normalize_keyword_extraction_json_mode,
+    normalize_kg_chunk_pick_method,
     rebuild_knowledge_from_chunks,
 )
 from lightrag.utils_pipeline import (
@@ -888,9 +889,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Number of related chunks to grab from single entity or relation."""
 
     kg_chunk_pick_method: str = field(
-        default=get_env_value("KG_CHUNK_PICK_METHOD", DEFAULT_KG_CHUNK_PICK_METHOD, str)
+        default_factory=lambda: (
+            get_env_value(
+                "KG_CHUNK_PICK_METHOD", DEFAULT_KG_CHUNK_PICK_METHOD, str
+            ).strip()
+            or DEFAULT_KG_CHUNK_PICK_METHOD
+        )
     )
-    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection."""
+    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection.
+
+    Case-insensitive; any other value raises ``ValueError`` at construction.
+    """
 
     enable_content_headings: bool = field(
         default_factory=lambda: get_env_value("ENABLE_CONTENT_HEADINGS", True, bool)
@@ -1938,6 +1947,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # the canonical spelling so a constructor argument such as "AUTO" works.
         self.keyword_extraction_json_mode = normalize_keyword_extraction_json_mode(
             self.keyword_extraction_json_mode
+        )
+        self.kg_chunk_pick_method = normalize_kg_chunk_pick_method(
+            self.kg_chunk_pick_method
         )
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy

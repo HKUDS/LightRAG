@@ -4,6 +4,7 @@ Both paths deduplicate each group's chunk list, both can empty a group that
 way, and both size their chunk budget from the surviving group count. The
 entity path used to keep the emptied groups, so phantom groups inflated the
 WEIGHT and VECTOR budgets and over-delivered beyond ``related_chunk_number``.
+Both paths also share the VECTOR -> WEIGHT fallback when VECTOR cannot run.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -84,56 +85,35 @@ def _vector_call_args(picker: AsyncMock) -> tuple[int, int]:
     )
 
 
-async def test_weighted_polling_sees_only_surviving_entity_groups():
-    with patch(
-        "lightrag.operate.pick_by_weighted_polling",
-        return_value=CHUNK_IDS[:RELATED_CHUNK_NUMBER],
-    ) as weighted_picker:
-        result = await _select_from_entities(_text_chunks_db("WEIGHT"))
+@pytest.mark.parametrize(
+    "select",
+    [_select_from_entities, _select_from_relations],
+    ids=["entities", "relations"],
+)
+async def test_weight_path_honours_the_configured_budget(select):
+    """The user-visible symptom: phantom entity groups used to deliver 8, not 2.
 
-    groups, max_related_chunks = weighted_picker.call_args.args[:2]
-    assert len(groups) == 1
-    assert groups[0]["sorted_chunks"] == CHUNK_IDS
-    assert max_related_chunks == RELATED_CHUNK_NUMBER
-    assert [chunk["chunk_id"] for chunk in result] == CHUNK_IDS[:RELATED_CHUNK_NUMBER]
-
-
-async def test_entity_path_honours_the_configured_weight_budget():
-    """The user-visible symptom: phantom groups used to deliver 8, not 2."""
-    result = await _select_from_entities(_text_chunks_db("WEIGHT"))
+    Both paths are pinned because the asymmetry is what makes this easy to
+    reintroduce.
+    """
+    result = await select(_text_chunks_db("WEIGHT"))
 
     assert [chunk["chunk_id"] for chunk in result] == CHUNK_IDS[:RELATED_CHUNK_NUMBER]
 
 
-async def test_vector_budget_counts_only_surviving_entity_groups():
-    text_chunks_db = _text_chunks_db("VECTOR")
-    text_chunks_db.embedding_func = AsyncMock()
+@pytest.mark.parametrize(
+    "select",
+    [_select_from_entities, _select_from_relations],
+    ids=["entities", "relations"],
+)
+async def test_vector_budget_counts_only_surviving_groups(select):
+    """``related_chunk_number=1`` pins both the dedup and the quota floor.
 
-    with patch(
-        "lightrag.operate.pick_by_vector_similarity",
-        new=AsyncMock(return_value=[]),
-    ) as vector_picker:
-        await _select_from_entities(
-            text_chunks_db, query="question", chunks_vdb=AsyncMock()
-        )
-
-    # int(2 * 1 / 2) over the single surviving group, not int(2 * 5 / 2).
-    assert _vector_call_args(vector_picker) == (1, 1)
-
-
-async def test_collapsed_groups_keep_a_nonzero_vector_quota():
-    """``related_chunk_number=1`` is the input where the quota floor fires.
-
-    Every other VECTOR test here runs at 2, where ``int(2 * 1 / 2)`` is 1
-    whether or not the floor exists, so none of them can tell the two fixes
-    apart. At 1 the collapse to a single group makes the ungated expression
-    ``int(1 * 1 / 2)`` truncate to 0; ``pick_by_vector_similarity`` reads that
-    as "no chunks" and the call site silently downgrades to WEIGHT.
-
-    Dropping the phantom groups is what exposes that input -- before this fix
-    the inflated count masked it -- and the floor added with
-    ``_vector_chunk_quota`` is what answers it. This test is the only place
-    the two are pinned together.
+    With the phantom groups still counted the picker would get
+    ``int(1 * 5 / 2) == 2`` chunks over 5 groups. With the groups dropped but
+    without the floor added with ``_vector_chunk_quota``, ``int(1 * 1 / 2)``
+    truncates to 0; ``pick_by_vector_similarity`` reads that as "no chunks" and
+    the call site silently downgrades to WEIGHT. Only ``(1, 1)`` has both.
     """
     text_chunks_db = _text_chunks_db("VECTOR", related_chunk_number=1)
     text_chunks_db.embedding_func = AsyncMock()
@@ -142,33 +122,30 @@ async def test_collapsed_groups_keep_a_nonzero_vector_quota():
         "lightrag.operate.pick_by_vector_similarity",
         new=AsyncMock(return_value=[]),
     ) as vector_picker:
-        await _select_from_entities(
-            text_chunks_db, query="question", chunks_vdb=AsyncMock()
-        )
+        await select(text_chunks_db, query="question", chunks_vdb=AsyncMock())
 
     assert _vector_call_args(vector_picker) == (1, 1)
 
 
-async def test_both_paths_deliver_the_same_weight_budget():
-    """The asymmetry is what makes this easy to reintroduce, so pin it."""
-    entity_result = await _select_from_entities(_text_chunks_db("WEIGHT"))
-    relation_result = await _select_from_relations(_text_chunks_db("WEIGHT"))
+@pytest.mark.parametrize(
+    ("select", "query", "chunks_vdb"),
+    [
+        (_select_from_entities, "", AsyncMock()),
+        (_select_from_relations, "question", None),
+    ],
+    ids=["entities_without_query", "relations_without_chunks_vdb"],
+)
+async def test_vector_without_prerequisites_falls_back_to_weight(
+    select, query, chunks_vdb
+):
+    """VECTOR without a query or ``chunks_vdb`` used to skip both branches and return []."""
+    text_chunks_db = _text_chunks_db("VECTOR")
+    text_chunks_db.embedding_func = AsyncMock()
 
-    assert [chunk["chunk_id"] for chunk in entity_result] == [
-        chunk["chunk_id"] for chunk in relation_result
-    ]
+    with patch(
+        "lightrag.operate.pick_by_vector_similarity", new=AsyncMock()
+    ) as vector_picker:
+        result = await select(text_chunks_db, query=query, chunks_vdb=chunks_vdb)
 
-
-async def test_both_paths_hand_the_same_budget_to_the_vector_picker():
-    budgets = []
-    for select in (_select_from_entities, _select_from_relations):
-        text_chunks_db = _text_chunks_db("VECTOR")
-        text_chunks_db.embedding_func = AsyncMock()
-        with patch(
-            "lightrag.operate.pick_by_vector_similarity",
-            new=AsyncMock(return_value=[]),
-        ) as vector_picker:
-            await select(text_chunks_db, query="question", chunks_vdb=AsyncMock())
-        budgets.append(_vector_call_args(vector_picker))
-
-    assert budgets[0] == budgets[1]
+    vector_picker.assert_not_awaited()
+    assert [chunk["chunk_id"] for chunk in result] == CHUNK_IDS[:RELATED_CHUNK_NUMBER]
