@@ -137,6 +137,29 @@ _MATCH_ORDER_ROMAN_PAREN: tuple[tuple[str, re.Pattern], ...] = tuple(
     for style_key, pattern in _MATCH_ORDER
 )
 
+#: Non-ASCII-letter, non-digit characters that can follow the ``^\s*`` every
+#: pattern above opens with. ``classify_numbering`` rejects any other first
+#: character without running a pattern, so a pattern or alternative that can
+#: open with a new character MUST add it here (digits and ASCII letters are
+#: accepted separately). "ſ" is here because IGNORECASE folds it to "s" for
+#: the Section/Sec keywords. ``test_first_char_gate_covers_every_pattern``
+#: fails when this set misses a character a pattern accepts.
+_NUMBERING_MARKER_HEADS = frozenset(
+    "§¶第（(ſ"
+    + _CN_ORD
+    + "".join(chr(cp) for cp in range(0x2160, 0x216C))  # Ⅰ..Ⅻ
+    + "".join(chr(cp) for cp in range(0x2170, 0x217C))  # ⅰ..ⅻ
+)
+
+
+def _may_open_numbering(head: str) -> bool:
+    """Whether ``head`` (first non-space character) can open any pattern."""
+    return (
+        head.isdecimal()
+        or (head.isascii() and head.isalpha())
+        or head in _NUMBERING_MARKER_HEADS
+    )
+
 
 # --- ordinal / unit parsing ---------------------------------------------------
 
@@ -403,14 +426,21 @@ def classify_numbering(
     automatic_alpha = numbering_format in ("lowerLetter", "upperLetter")
     automatic_roman = numbering_format in ("lowerRoman", "upperRoman")
     match_order = _MATCH_ORDER_ROMAN_PAREN if automatic_roman else _MATCH_ORDER
-    multi_level_shape = _P_MULTI_LEVEL_SHAPE.match(text) is not None
+    # str.lstrip() strips exactly what the patterns' ``^\s*`` skips.
+    head = text.lstrip()[:1]
+    if not _may_open_numbering(head):
+        return None
+    if (head == "§" or head.isdecimal()) and _P_MULTI_LEVEL_SHAPE.match(text):
+        # A multi-level opener is claimed by MultiLevelNum exclusively; if
+        # its full rule rejects the text, the paragraph is body.
+        match_order = match_order[:1]
+    else:
+        # Without that opener MultiLevelNum cannot match: _P_MULTI_LEVEL
+        # opens with the shape (test_multi_level_opener_is_digit_or_section_sign).
+        match_order = match_order[1:]
     for style_key, pattern in match_order:
         if automatic_alpha and style_key == ROMAN_NUM:
             continue
-        if multi_level_shape and style_key != MULTI_LEVEL_NUM:
-            # A multi-level opener is claimed by MultiLevelNum exclusively;
-            # if its full rule rejected the text, the paragraph is body.
-            return None
         m = pattern.match(text)
         if m is None:
             continue

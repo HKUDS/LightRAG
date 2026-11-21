@@ -17,6 +17,9 @@ from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag import utils_graph
 
 
+pytestmark = pytest.mark.offline
+
+
 class _MergeGraphStorage:
     """Two source entities (A, B) each hold a separate edge to a shared
     third node C, mirroring the case the "max" strategy mishandled."""

@@ -15,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",
     "EMBEDDING_BINDING",
@@ -41,6 +43,10 @@ def _isolate_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    # Part of the minimal viable server config since create_app began
+    # refusing to start without a named embedding model. The ollama
+    # binding's own default, so no EMBEDDING_DIM is implied.
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
     monkeypatch.setenv("AUTH_ACCOUNTS", "")
     monkeypatch.setenv("TOKEN_SECRET", "")
     monkeypatch.setenv("LIGHTRAG_API_KEY", "")
@@ -324,7 +330,9 @@ class TestQueryStreamProtocolOrder:
             )
             assert response.status_code == 200
             lines = self._parse_ndjson(response.text)
-            assert lines[-1] == {"error": "query failed"}
+            assert set(lines[-1]) == {"error"}
+            assert lines[-1]["error"].startswith("Internal server error (error_id: ")
+            assert "query failed" not in response.text
             assert not any("response_time" in item for item in lines)
         finally:
             sys.argv = original_argv

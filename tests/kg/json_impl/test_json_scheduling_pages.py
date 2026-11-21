@@ -455,6 +455,50 @@ async def test_malformed_cursor_raises_control_plane_error(tmp_path):
         )
 
 
+_TWO_DOC_ROWS = {
+    "doc-1": _doc("pending", created_at="2026-01-01T00:00:00+00:00"),
+    "doc-2": _doc("pending", created_at="2026-02-01T00:00:00+00:00"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # A two-entry object (another backend's cursor shape) and a
+        # two-character string both unpack to two strings; read as a keyset
+        # position, ('pending', 'failed') sorts after every real row, so a
+        # strict sweep would end early and report itself complete.
+        pytest.param(
+            json.dumps({"pending": "doc-a", "failed": "doc-b"}), id="two-key-object"
+        ),
+        pytest.param(json.dumps("ab"), id="two-char-string"),
+    ],
+)
+async def test_cursor_payload_must_be_a_two_element_list(tmp_path, payload):
+    storage = await _storage(tmp_path, dict(_TWO_DOC_ROWS))
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page(
+            [DocStatus.PENDING],
+            limit=1,
+            position=CursorAfter(payload),
+            strict=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_genuine_cursor_still_resumes_after_consumed_key(tmp_path):
+    """The shape check must not reject this backend's own cursor."""
+    storage = await _storage(tmp_path, dict(_TWO_DOC_ROWS))
+    page = await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING],
+        limit=1,
+        position=CursorAfter(json.dumps(["2026-01-01T00:00:00+00:00", "doc-1"])),
+        strict=True,
+    )
+    assert list(page.docs) == ["doc-2"]
+
+
 @pytest.mark.asyncio
 async def test_content_hash_lookup_returns_the_earliest_holder(tmp_path):
     """Dict insertion order is not creation order once rows are reloaded or
